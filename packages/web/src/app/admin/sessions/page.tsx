@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useQueryStates } from "nuqs";
+import { useQueryStates, useQueryState, parseAsInteger } from "nuqs";
+import { z } from "zod";
 import { sessionsSearchParams } from "./search-params";
-import { getSessionColumns, type SessionRow, type SessionActions } from "./columns";
-import { useAtlasConfig } from "@/ui/context";
+import { getSessionColumns, type SessionActions } from "./columns";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
@@ -14,12 +13,15 @@ import { Input } from "@/components/ui/input";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
-import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { useState } from "react";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { SessionStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { bulkFailureSummary, failedIdsFrom } from "@/ui/components/admin/queue";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,216 +36,227 @@ import {
 
 const LIMIT = 50;
 
+const SessionRowSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  userEmail: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  expiresAt: z.string(),
+  ipAddress: z.string().nullable(),
+  userAgent: z.string().nullable(),
+});
+
+const SessionsListSchema = z.object({
+  sessions: z.array(SessionRowSchema),
+  total: z.number(),
+});
+
 export default function SessionsPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
-  const [rows, setRows] = useState<SessionRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
-  const [fetchKey, setFetchKey] = useState(0);
-
   const [params, setParams] = useQueryStates(sessionsSearchParams);
   const { search } = params;
+
+  // `useDataTable` writes pagination to `?page=` (1-indexed) and `?perPage=`.
+  // Read both here so `useAdminFetch` can key on the offset + limit without a
+  // circular dependency on the table instance, and so a page-size change in
+  // the DataTable footer refetches with the right limit.
+  const [page] = useQueryState("page", parseAsInteger.withDefault(1));
+  const [perPage] = useQueryState("perPage", parseAsInteger.withDefault(LIMIT));
+  const offset = (page - 1) * perPage;
+
+  const [bulkError, setBulkError] = useState<string | null>(null);
 
   const { mutate: revokeMutate, error: revokeError, isMutating } = useAdminMutation({
     method: "DELETE",
   });
 
-  // Revoke a single session
-  async function revokeSession(sessionId: string) {
-    setError(null);
+  // Throwing variant used by the bulk revoke path — Promise.allSettled
+  // categorizes by rejection, so a failed mutation must throw. The hook's own
+  // `error` state is clobbered by concurrent mutations and can't be trusted
+  // for bulk.
+  async function revokeSessionOrThrow(sessionId: string): Promise<void> {
     const result = await revokeMutate({
       path: `/api/v1/admin/sessions/${sessionId}`,
       itemId: sessionId,
     });
-    if (result.ok) {
-      setFetchKey((k) => k + 1);
+    // useAdminMutation auto-invalidates admin-fetch queries on success, so the
+    // list and stats refetch without manual coordination.
+    if (!result.ok) {
+      throw new Error(result.error.message);
     }
   }
 
-  // Column definitions with action callbacks
   const sessionActions: SessionActions = {
-    onRevoke: revokeSession,
+    // Non-throwing wrapper for the single-row Revoke dialog — failures surface
+    // through the hook's `revokeError` state; swallowing the rejection here
+    // prevents an unhandled promise rejection without losing signal.
+    onRevoke: async (id) => {
+      try {
+        await revokeSessionOrThrow(id);
+      } catch (err) {
+        // intentionally ignored: single-row failures surface through
+        // useAdminMutation's `revokeError` state and render in the banner
+        // below. Debug-log for traceability — the hook's error is the
+        // user-facing signal.
+        console.debug("revokeSession rejected", err);
+      }
+    },
     isRevoking: (id: string) => isMutating(id),
   };
   const columns = getSessionColumns(sessionActions);
 
-  // Data table
-  const pageCount = Math.max(1, Math.ceil(total / LIMIT));
+  const { data: stats } = useAdminFetch("/api/v1/admin/sessions/stats", {
+    schema: SessionStatsSchema,
+  });
+
+  const qs = new URLSearchParams({
+    limit: String(perPage),
+    offset: String(offset),
+  });
+  if (search) qs.set("search", search);
+
+  const {
+    data: listData,
+    loading,
+    error,
+    refetch,
+  } = useAdminFetch(`/api/v1/admin/sessions?${qs}`, {
+    schema: SessionsListSchema,
+    deps: [search, offset, perPage],
+  });
+
+  const rows = listData?.sessions ?? [];
+  const total = listData?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
+
   const { table } = useDataTable({
     data: rows,
     columns,
     pageCount,
     initialState: {
       sorting: [{ id: "updatedAt", desc: true }],
-      pagination: { pageIndex: 0, pageSize: LIMIT },
+      pagination: { pageIndex: 0, pageSize: perPage },
     },
     getRowId: (row) => row.id,
   });
 
-  // Stats
-  const { data: stats, error: statsError } = useAdminFetch(
-    "/api/v1/admin/sessions/stats",
-    { schema: SessionStatsSchema, deps: [fetchKey] },
-  );
-
-  // Read pagination from table state
-  const { pageIndex, pageSize } = table.getState().pagination;
-  const offset = pageIndex * pageSize;
-
-  // Fetch sessions
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchSessions() {
-      setLoading(true);
-      setError(null);
-      try {
-        const qs = new URLSearchParams({
-          limit: String(pageSize),
-          offset: String(offset),
-        });
-        if (search) qs.set("search", search);
-
-        const res = await fetch(`${apiUrl}/api/v1/admin/sessions?${qs}`, { credentials });
-        if (!res.ok) {
-          if (!cancelled) {
-            let msg = `HTTP ${res.status}`;
-            try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
-            setError({ message: msg, status: res.status });
-          }
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          setRows(data.sessions ?? []);
-          setTotal(data.total ?? 0);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError({ message: err instanceof Error ? err.message : "Failed to load sessions" });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    fetchSessions();
-    return () => { cancelled = true; };
-  }, [apiUrl, offset, pageSize, search, credentials, fetchKey]);
-
-  // Bulk revoke selected sessions
   async function revokeSelected() {
+    setBulkError(null);
     const selected = table.getSelectedRowModel().rows.map((r) => r.original.id);
-    await Promise.all(selected.map((id) => revokeSession(id)));
-    table.resetRowSelection();
+    const results = await Promise.allSettled(selected.map((id) => revokeSessionOrThrow(id)));
+    const failedIds = failedIdsFrom(results, selected);
+    if (failedIds.length === 0) {
+      table.resetRowSelection();
+      return;
+    }
+    // Keep only failed rows selected so the operator can retry them.
+    table.setRowSelection(Object.fromEntries(failedIds.map((id) => [id, true])));
+    setBulkError(bulkFailureSummary(results, selected, "revocations"));
   }
 
   const hasFilters = !!search;
   const selectedCount = table.getSelectedRowModel().rows.length;
 
   return (
-    <div className="p-6">
-      {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>
-          <p className="text-sm text-muted-foreground">Manage active user sessions</p>
-        </div>
-        {selectedCount > 0 && (
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="destructive" size="sm">
-                <Trash2 className="mr-1.5 size-3.5" />
-                Revoke {selectedCount} selected
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Revoke {selectedCount} session(s)?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  These users will be signed out immediately. This cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={revokeSelected}>Revoke</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        )}
-      </div>
-
-      <ErrorBoundary>
-        <div className="space-y-6">
-          {/* Stats */}
-          {stats && !statsError && (
-            <div className="grid gap-4 sm:grid-cols-3">
-              <StatCard title="Total Sessions" value={stats.total.toLocaleString()} icon={<Monitor className="size-4" />} />
-              <StatCard title="Active Sessions" value={stats.active.toLocaleString()} icon={<Activity className="size-4" />} />
-              <StatCard title="Unique Users" value={stats.uniqueUsers.toLocaleString()} icon={<Users className="size-4" />} />
-            </div>
-          )}
-
-          {/* Search */}
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="relative flex-1 min-w-[200px] max-w-sm">
-              <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
-              <Input
-                placeholder="Search by email or IP..."
-                value={search}
-                onChange={(e) => {
-                  table.setPageIndex(0);
-                  setParams({ search: e.target.value });
-                }}
-                className="h-9 pl-8"
-              />
-            </div>
-            {hasFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-9"
-                onClick={() => {
-                  table.setPageIndex(0);
-                  setParams({ search: "" });
-                }}
-              >
-                <X className="mr-1.5 size-3.5" />
-                Clear
-              </Button>
-            )}
+    <TooltipProvider>
+      <div className="p-6">
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>
+            <p className="text-sm text-muted-foreground">Manage active user sessions</p>
           </div>
-
-          {revokeError && (
-            <ErrorBanner message={friendlyError(revokeError)} onRetry={() => setFetchKey((k) => k + 1)} />
+          {selectedCount > 0 && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm">
+                  <Trash2 className="mr-1.5 size-3.5" />
+                  Revoke {selectedCount} selected
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Revoke {selectedCount} session(s)?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    These users will be signed out immediately. This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={revokeSelected}>Revoke</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           )}
-          <AdminContentWrapper
-            loading={loading}
-            error={error}
-            feature="Sessions"
-            onRetry={() => setFetchKey((k) => k + 1)}
-            loadingMessage="Loading sessions..."
-            emptyIcon={Monitor}
-            emptyTitle="No active sessions"
-            emptyDescription="Sessions will appear here when users sign in."
-            hasFilters={hasFilters}
-            onClearFilters={() => {
-              table.setPageIndex(0);
-              setParams({ search: "" });
-            }}
-            isEmpty={rows.length === 0}
-          >
-            <DataTable table={table}>
-              <DataTableToolbar table={table}>
-                <DataTableSortList table={table} />
-              </DataTableToolbar>
-            </DataTable>
-          </AdminContentWrapper>
         </div>
-      </ErrorBoundary>
-    </div>
+
+        <ErrorBoundary>
+          <div className="space-y-6">
+            {stats && (
+              <div className="grid gap-4 sm:grid-cols-3">
+                <StatCard title="Total Sessions" value={stats.total.toLocaleString()} icon={<Monitor className="size-4" />} />
+                <StatCard title="Active Sessions" value={stats.active.toLocaleString()} icon={<Activity className="size-4" />} />
+                <StatCard title="Unique Users" value={stats.uniqueUsers.toLocaleString()} icon={<Users className="size-4" />} />
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="relative flex-1 min-w-[200px] max-w-sm">
+                <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="Search by email or IP..."
+                  value={search}
+                  onChange={(e) => {
+                    table.setPageIndex(0);
+                    setParams({ search: e.target.value });
+                  }}
+                  className="h-9 pl-8"
+                />
+              </div>
+              {hasFilters && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9"
+                  onClick={() => {
+                    table.setPageIndex(0);
+                    setParams({ search: "" });
+                  }}
+                >
+                  <X className="mr-1.5 size-3.5" />
+                  Clear
+                </Button>
+              )}
+            </div>
+
+            {bulkError && <ErrorBanner message={bulkError} />}
+            {revokeError && !bulkError && (
+              <ErrorBanner message={friendlyError(revokeError)} />
+            )}
+            <AdminContentWrapper
+              loading={loading}
+              error={error}
+              feature="Sessions"
+              onRetry={refetch}
+              loadingMessage="Loading sessions..."
+              emptyIcon={Monitor}
+              emptyTitle="No active sessions"
+              emptyDescription="Sessions will appear here when users sign in."
+              hasFilters={hasFilters}
+              onClearFilters={() => {
+                table.setPageIndex(0);
+                setParams({ search: "" });
+              }}
+              isEmpty={rows.length === 0}
+            >
+              <DataTable table={table}>
+                <DataTableToolbar table={table}>
+                  <DataTableSortList table={table} />
+                </DataTableToolbar>
+              </DataTable>
+            </AdminContentWrapper>
+          </div>
+        </ErrorBoundary>
+      </div>
+    </TooltipProvider>
   );
 }

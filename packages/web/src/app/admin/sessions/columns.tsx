@@ -4,8 +4,19 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Clock, User, Globe, Monitor, Trash2 } from "lucide-react";
-import { formatShortDateTime } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -35,7 +46,7 @@ function shortUA(ua: string | null): string {
 // ── Columns ───────────────────────────────────────────────────────
 
 export interface SessionActions {
-  onRevoke: (sessionId: string) => void;
+  onRevoke: (sessionId: string) => Promise<void>;
   isRevoking: (id: string) => boolean;
 }
 
@@ -84,11 +95,11 @@ export function getSessionColumns(actions?: SessionActions): ColumnDef<SessionRo
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {formatShortDateTime(row.getValue<string>("createdAt"))}
+          <RelativeTimestamp iso={row.getValue<string>("createdAt")} />
         </span>
       ),
       meta: { label: "Created", icon: Clock },
-      size: 160,
+      size: 140,
     },
     {
       id: "updatedAt",
@@ -98,11 +109,11 @@ export function getSessionColumns(actions?: SessionActions): ColumnDef<SessionRo
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {formatShortDateTime(row.getValue<string>("updatedAt"))}
+          <RelativeTimestamp iso={row.getValue<string>("updatedAt")} />
         </span>
       ),
       meta: { label: "Last Active", icon: Clock },
-      size: 160,
+      size: 140,
     },
     {
       id: "ipAddress",
@@ -143,19 +154,35 @@ export function getSessionColumns(actions?: SessionActions): ColumnDef<SessionRo
             cell: ({ row }: { row: { original: SessionRow } }) => {
               const s = row.original;
               const revoking = actions.isRevoking(s.id);
+              const who = s.userEmail ?? s.userId;
               return (
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-destructive hover:text-destructive"
-                    disabled={revoking}
-                    onClick={() => actions.onRevoke(s.id)}
-                  >
-                    <Trash2 className="mr-1 size-3" />
-                    Revoke
-                  </Button>
-                </div>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-destructive hover:text-destructive"
+                      disabled={revoking}
+                    >
+                      <Trash2 className="mr-1 size-3" />
+                      Revoke
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Revoke session?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        {who} will be signed out immediately. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => actions.onRevoke(s.id)}>
+                        Revoke
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               );
             },
             enableSorting: false,

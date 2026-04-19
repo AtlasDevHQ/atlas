@@ -76,6 +76,19 @@ describe("bulkFailureSummary", () => {
       "1 of 1 rollbacks failed: 1× nope",
     );
   });
+
+  test("Error and string rejections with the same payload merge into one count", async () => {
+    // String("Forbidden") === new Error("Forbidden").message, so both branches
+    // produce the same Map key — they must bucket together, not split into
+    // two "1× Forbidden" entries.
+    const results = await Promise.allSettled([
+      Promise.reject(new Error("Forbidden")),
+      Promise.reject("Forbidden"),
+    ]);
+    expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
+      "2 of 2 denials failed: 2× Forbidden",
+    );
+  });
 });
 
 describe("bulkPartialSummary", () => {

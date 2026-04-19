@@ -1,18 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, type ComponentType, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +25,18 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { Shield, Plus, Trash2, Loader2, AlertTriangle, Globe } from "lucide-react";
+import { formatDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import {
+  Shield,
+  ShieldCheck,
+  Plus,
+  Trash2,
+  Loader2,
+  AlertTriangle,
+  Globe,
+  Network,
+} from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -53,6 +55,195 @@ const IPAllowlistResponseSchema = z.object({
   total: z.number(),
   callerIP: z.string().nullable(),
 });
+
+// ── Shared Design Primitives (locally duplicated per #1551) ──────────────
+
+type StatusKind = "connected" | "disconnected" | "unavailable";
+
+function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "unavailable" && "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+        className,
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+const STATUS_LABEL: Record<StatusKind, string> = {
+  connected: "Active",
+  disconnected: "Inactive",
+  unavailable: "Unavailable",
+};
+
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  action,
+  titleAccessory,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  action?: ReactNode;
+  titleAccessory?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
+        "hover:bg-card/70 hover:border-border/80",
+        status === "unavailable" && "opacity-60",
+      )}
+    >
+      <span
+        className={cn(
+          "grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground",
+        )}
+      >
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {title}
+          </h3>
+          {titleAccessory}
+          <StatusDot kind={status} className="shrink-0" />
+          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
+        </div>
+        {/* Newline-delimited descriptions render as a two-line subtitle (e.g. a
+            rule's human description on top and its added-at/by metadata below).
+            Single-line descriptions truncate as before. */}
+        {(() => {
+          const lines = description.split("\n");
+          if (lines.length > 1) {
+            return (
+              <div className="mt-0.5 space-y-0.5">
+                <p className="truncate text-xs text-muted-foreground">
+                  {lines[0]}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground/70">
+                  {lines.slice(1).join(" · ")}
+                </p>
+              </div>
+            );
+          }
+          return (
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {description}
+            </p>
+          );
+        })()}
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+function IntegrationShell({
+  icon: Icon,
+  title,
+  description,
+  status,
+  titleAccessory,
+  children,
+  actions,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  titleAccessory?: ReactNode;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <section
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
+        "hover:border-border/80",
+        status === "connected" && "border-primary/20",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-gradient-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" && "border-primary/30 text-primary",
+            status !== "connected" && "text-muted-foreground",
+          )}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+              {title}
+            </h3>
+            {titleAccessory}
+            {status === "connected" && (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+                <StatusDot kind="connected" />
+                Live
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground">
+            {description}
+          </p>
+        </div>
+      </header>
+
+      {children != null && (
+        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
+      )}
+
+      {actions && (
+        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function SectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
+}
 
 // ── Add Entry Dialog ──────────────────────────────────────────────
 
@@ -254,102 +445,145 @@ export default function IPAllowlistPage() {
   const entries = data?.entries ?? [];
   const callerIP = data?.callerIP ?? null;
 
+  const ruleCount = entries.length;
+  const enforcing = ruleCount > 0;
+  const enforcementDescription = enforcing
+    ? `Active — ${ruleCount} range${ruleCount !== 1 ? "s" : ""} permitted`
+    : "No ranges configured — the workspace accepts requests from any IP";
+
   return (
-    <div className="p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">IP Allowlist</h1>
-          <p className="text-sm text-muted-foreground">
-            Restrict workspace access by IP address (enterprise)
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      {/* Hero */}
+      <header className="mb-10 flex flex-col gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          Atlas · Admin
+        </p>
+        <div className="flex items-baseline justify-between gap-6">
+          <h1 className="text-3xl font-semibold tracking-tight">IP allowlist</h1>
+          <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+            <span className={cn(ruleCount > 0 ? "text-primary" : "text-muted-foreground")}>
+              {String(ruleCount).padStart(2, "0")}
+            </span>
+            <span className="opacity-50">{" "}ranges</span>
           </p>
         </div>
-        <Button onClick={() => setAddDialogOpen(true)} size="sm">
-          <Plus className="mr-1 size-3.5" />
-          Add Entry
-        </Button>
-      </div>
+        <p className="max-w-xl text-sm text-muted-foreground">
+          Restrict workspace access to specific CIDR ranges.
+        </p>
+        {callerIP && (
+          <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <Globe className="size-3.5" />
+            Your current IP
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+              {callerIP}
+            </code>
+          </div>
+        )}
+      </header>
 
       <ErrorBoundary>
-        <div>
-          {callerIP && (
-            <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
-              <Globe className="size-3.5" />
-              Your current IP: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{callerIP}</code>
-            </div>
-          )}
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="IP Allowlist"
+          onRetry={refetch}
+          loadingMessage="Loading IP allowlist..."
+          isEmpty={false}
+        >
+          <div className="space-y-10">
+            {/* Enforcement */}
+            <section>
+              <SectionHeading
+                title="Enforcement"
+                description="Access is restricted when one or more ranges are configured"
+              />
+              {enforcing ? (
+                <IntegrationShell
+                  icon={ShieldCheck}
+                  title="Allowlist enforcement"
+                  description={enforcementDescription}
+                  status="connected"
+                  actions={
+                    <span className="text-xs text-muted-foreground">
+                      Requests outside these ranges are rejected
+                    </span>
+                  }
+                />
+              ) : (
+                <CompactRow
+                  icon={Shield}
+                  title="Allowlist enforcement"
+                  description={enforcementDescription}
+                  status="disconnected"
+                />
+              )}
+            </section>
 
-          <AdminContentWrapper
-            loading={loading}
-            error={error}
-            feature="IP Allowlist"
-            onRetry={refetch}
-            loadingMessage="Loading IP allowlist..."
-            emptyIcon={Shield}
-            emptyTitle="No IP restrictions configured"
-            emptyDescription="The workspace is accessible from any IP address. Add CIDR ranges to restrict access to specific networks."
-            emptyAction={{ label: "Add First Entry", onClick: () => setAddDialogOpen(true) }}
-            isEmpty={entries.length === 0}
-          >
-            <Card className="shadow-none">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Shield className="size-4" />
-                  Allowlist Entries
-                </CardTitle>
-                <CardDescription>
-                  When entries are configured, only requests from these CIDR ranges can access the workspace.
-                  Remove all entries to disable the allowlist.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>CIDR Range</TableHead>
-                      <TableHead>Description</TableHead>
-                      <TableHead>Created By</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead className="w-[60px]" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {entries.map((entry) => (
-                      <TableRow key={entry.id}>
-                        <TableCell className="font-mono text-sm">
-                          {entry.cidr}
-                          {entry.cidr.includes(":") ? (
-                            <Badge variant="outline" className="ml-2 text-[10px]">IPv6</Badge>
-                          ) : (
-                            <Badge variant="outline" className="ml-2 text-[10px]">IPv4</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {entry.description || "-"}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">
-                          {entry.createdBy || "-"}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">
-                          {new Date(entry.createdAt).toLocaleDateString()}
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-                            onClick={() => setDeleteEntry(entry)}
-                          >
-                            <Trash2 className="size-3.5" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </AdminContentWrapper>
-        </div>
+            {/* Ranges */}
+            <section>
+              <SectionHeading
+                title="Ranges"
+                description="IPv4 and IPv6 CIDR blocks permitted to reach the workspace"
+              />
+              <div className="space-y-2">
+                {entries.map((entry) => {
+                  const addedLine = `Added ${formatDateTime(entry.createdAt)}${entry.createdBy ? ` · ${entry.createdBy}` : ""}`;
+                  // Render description (when present) AND the added-at/by metadata.
+                  // Newline triggers the two-line subtitle fork inside CompactRow so
+                  // rules with a description don't drop their created metadata.
+                  const description = entry.description
+                    ? `${entry.description}\n${addedLine}`
+                    : addedLine;
+                  return (
+                  <CompactRow
+                    key={entry.id}
+                    icon={Network}
+                    title={entry.cidr}
+                    description={description}
+                    status="connected"
+                    titleAccessory={
+                      <Badge
+                        variant="outline"
+                        className="shrink-0 font-mono text-[10px] uppercase"
+                      >
+                        {entry.cidr.includes(":") ? "IPv6" : "IPv4"}
+                      </Badge>
+                    }
+                    action={
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setDeleteEntry(entry)}
+                        className="text-muted-foreground hover:text-destructive"
+                        aria-label={`Remove ${entry.cidr}`}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    }
+                  />
+                  );
+                })}
+
+                <CompactRow
+                  icon={Plus}
+                  title={entries.length === 0 ? "Add your first range" : "Add another range"}
+                  description={
+                    entries.length === 0
+                      ? "Paste an IPv4 or IPv6 CIDR block — e.g. 10.0.0.0/8 or 2001:db8::/32"
+                      : "Add an IPv4 or IPv6 CIDR block to the allowlist"
+                  }
+                  status="disconnected"
+                  action={
+                    <Button size="sm" onClick={() => setAddDialogOpen(true)}>
+                      <Plus className="mr-1.5 size-3.5" />
+                      Add range
+                    </Button>
+                  }
+                />
+              </div>
+            </section>
+          </div>
+        </AdminContentWrapper>
       </ErrorBoundary>
 
       <AddEntryDialog

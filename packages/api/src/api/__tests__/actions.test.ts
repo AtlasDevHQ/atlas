@@ -76,6 +76,30 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   getActionConfig: mockGetActionConfig,
 }));
 
+// --- Bulk module mocks ---
+
+type BulkResult = {
+  updated: string[];
+  notFound: string[];
+  forbidden: string[];
+  errors: Array<{ id: string; error: string }>;
+};
+
+const mockBulkApproveActions = mock(
+  (): Promise<BulkResult> =>
+    Promise.resolve({ updated: [], notFound: [], forbidden: [], errors: [] }),
+);
+const mockBulkDenyActions = mock(
+  (): Promise<BulkResult> =>
+    Promise.resolve({ updated: [], notFound: [], forbidden: [], errors: [] }),
+);
+
+mock.module("@atlas/api/lib/tools/actions/bulk", () => ({
+  bulkApproveActions: mockBulkApproveActions,
+  bulkDenyActions: mockBulkDenyActions,
+  BULK_ACTIONS_MAX: 100,
+}));
+
 // Mock other modules required by the Hono app (same as conversations.test.ts)
 
 mock.module("@atlas/api/lib/agent", () => ({
@@ -199,6 +223,20 @@ describe("actions routes", () => {
     mockGetActionConfig.mockReturnValue({ approval: "manual" });
     mockRollbackAction.mockReset();
     mockRollbackAction.mockResolvedValue(null);
+    mockBulkApproveActions.mockReset();
+    mockBulkApproveActions.mockResolvedValue({
+      updated: [],
+      notFound: [],
+      forbidden: [],
+      errors: [],
+    });
+    mockBulkDenyActions.mockReset();
+    mockBulkDenyActions.mockResolvedValue({
+      updated: [],
+      notFound: [],
+      forbidden: [],
+      errors: [],
+    });
   });
 
   afterEach(() => {
@@ -862,6 +900,214 @@ describe("actions routes", () => {
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/actions/bulk
+  // -------------------------------------------------------------------------
+
+  describe("POST /api/v1/actions/bulk", () => {
+    const VALID_ID_2 = "b2c3d4e5-f6a7-8901-bcde-f23456789012";
+
+    it("returns 200 with aggregated buckets on successful approve", async () => {
+      mockBulkApproveActions.mockResolvedValueOnce({
+        updated: [VALID_ID, VALID_ID_2],
+        notFound: [],
+        forbidden: [],
+        errors: [],
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [VALID_ID, VALID_ID_2], action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+
+      const body = (await response.json()) as BulkResult;
+      expect(body.updated).toEqual([VALID_ID, VALID_ID_2]);
+      expect(body.notFound).toEqual([]);
+      expect(body.forbidden).toEqual([]);
+      expect(body.errors).toEqual([]);
+    });
+
+    it("returns 200 with partial-failure buckets for deny", async () => {
+      mockBulkDenyActions.mockResolvedValueOnce({
+        updated: [VALID_ID],
+        notFound: [VALID_ID_2],
+        forbidden: [],
+        errors: [],
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ids: [VALID_ID, VALID_ID_2],
+            action: "deny",
+            reason: "Not approved",
+          }),
+        }),
+      );
+      expect(response.status).toBe(200);
+
+      const body = (await response.json()) as BulkResult;
+      expect(body.updated).toEqual([VALID_ID]);
+      expect(body.notFound).toEqual([VALID_ID_2]);
+      expect(mockBulkDenyActions).toHaveBeenCalledTimes(1);
+
+      const call = mockBulkDenyActions.mock.calls[0] as unknown as [{ ids: string[]; reason?: string; user?: { id: string } }];
+      expect(call[0].ids).toEqual([VALID_ID, VALID_ID_2]);
+      expect(call[0].reason).toBe("Not approved");
+      expect(call[0].user?.id).toBe("u1");
+    });
+
+    it("dispatches to bulkApproveActions when action is 'approve'", async () => {
+      await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [VALID_ID], action: "approve" }),
+        }),
+      );
+      expect(mockBulkApproveActions).toHaveBeenCalledTimes(1);
+      expect(mockBulkDenyActions).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 when ids is empty", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [], action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("returns 400 when ids exceeds the bulk cap", async () => {
+      const tooMany = Array.from({ length: 101 }, (_, i) => {
+        const hex = i.toString(16).padStart(12, "0");
+        return `00000000-0000-0000-0000-${hex}`;
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: tooMany, action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("returns 400 when any id is malformed", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ["not-a-uuid"], action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("returns 400 when action value is invalid", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [VALID_ID], action: "wiggle" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("returns 400 when body is malformed JSON", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{ not valid",
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      delete process.env.DATABASE_URL;
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [VALID_ID], action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 401 when unauthenticated", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401 as const,
+        error: "API key required",
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [VALID_ID], action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 500 with requestId when the service throws", async () => {
+      mockBulkApproveActions.mockRejectedValueOnce(new Error("DB blew up"));
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [VALID_ID], action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(500);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toEqual(expect.any(String));
+    });
+
+    it("passes orgId from auth.activeOrganizationId to the service", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u1",
+          label: "test@test.com",
+          mode: "simple-key" as const,
+          activeOrganizationId: "org-42",
+        },
+      });
+
+      await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [VALID_ID], action: "approve" }),
+        }),
+      );
+
+      const call = mockBulkApproveActions.mock.calls[0] as unknown as [{ orgId?: string | null }];
+      expect(call[0].orgId).toBe("org-42");
     });
   });
 });

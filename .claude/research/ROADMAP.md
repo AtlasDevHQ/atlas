@@ -1271,8 +1271,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Tooling
 - [x] `/revamp` slash command (PR #1539) — encodes the page-revamp workflow + `CompactRow` / `IntegrationShell` / `DetailList` / `InlineError` / `SectionHeading` primitives cheat sheet
 - [x] Deeper `--primary` teal for UI action surfaces (PR #1538) — light `oklch(0.759 0.148 167.71)` → `oklch(0.58 0.185 167.71)`; dark chroma `0.148` → `0.175`
+- [x] ScrollArea on sidebar, admin layout, conversation list (PR #1559) — overflow polish for long admin pages + conversation lists
 
-### Pages
+### Pages (initial batch)
 - [x] `/admin/integrations` — CompactRow with inline expansion across 8 platforms + brand teal retune (PR #1538)
 - [x] `/admin/email-provider` — scope to org, lock provider to Resend (#1540)
 - [x] `/admin/billing` — CompactRow + detail list (PR #1544)
@@ -1284,16 +1285,47 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] `/admin/settings` — CompactRow + per-section icons (PR #1552)
 - [x] `/admin/model-config` — BYOT gate + CompactRow (PR #1556)
 
-### Bug Fixes (surfaced during revamp)
+### Pages (second wave — post-primitive extraction)
+- [x] `/admin/plugins` — CompactRow + progressive disclosure (PR #1560)
+- [x] `/admin/sso` — CompactRow + progressive disclosure (PR #1561)
+- [x] `/admin/connections` — CompactRow + progressive disclosure (PR #1562)
+- [x] `/admin/ip-allowlist` — CompactRow + progressive disclosure (PR #1565)
+- [x] `/admin/scim` — CompactRow + progressive disclosure (PR #1566)
+- [x] `/admin/api-keys` — CompactRow + progressive disclosure (PR #1586)
+
+### Primitive extraction & migration (#1551)
+- [x] Extract `CompactRow` / `IntegrationShell` / `DetailList` / `InlineError` / `SectionHeading` primitives to `@/ui/components/admin/compact/` (#1551, PR #1573 — triggered on third adopter per the #1551 rule)
+- [x] Migrate initial-batch pages to shared primitives: `/admin/custom-domain` (PR #1574), `/admin/billing` (PR #1575), `/admin/model-config` (PR #1576), `/admin/plugins` (PR #1577), `/admin/sandbox` (PR #1578), `/admin/residency` (PR #1579), `/admin/branding` (PR #1580), `/admin/ip-allowlist` (PR #1581), `/admin/sso` (PR #1582), `/admin/settings` (PR #1583), `/admin/connections` (PR #1584), `/admin/scim` (PR #1585)
+
+### Bucket 1 — queue/moderation (tracker #1588)
+Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approval`, `/admin/abuse` identified shared shape: button-row filter affordance, inline-expand or Sheet detail (page-dependent), reason-on-deny dialog with audit reason capture, single funneled error banner, `RelativeTimestamp` with absolute tooltip, real optimistic revert with snapshot-inside-functional-setState, `extractFetchError` for requestId preservation, type-specific payload rendering. Primitives extract on third adopter (PR 3 = `/admin/approval`).
+- [x] `/admin/actions` — reason-on-deny dialog (closed legacy "Denied by admin" hardcode) + `PayloadView` SQL/API/file/JSON branch rendering + single ErrorBanner + `extractFetchError` (PR #1592)
+- [x] `/admin/learned-patterns` — real optimistic revert + server error surfacing + button-row filter consolidation + StatCards → inline strip + `bulkPartialSummary` for 200-with-errors response (PR #1594)
+- [ ] `/admin/approval` — structural revamp (Tabs-as-pages → CompactRow, always-visible review form → inline expand, bulk actions, deny confirmation). Extracts shared `queue/` primitives per #1551 rule
+
+### Bug fixes (surfaced during revamp)
 - [x] `parseCIDR` crashes on non-string DB rows — auth middleware 500d, broke admin-integrations tests (#1541, PR #1546)
 - [x] Drop `aria-controls` from CompactRow triggers whose panel isn't mounted — disclosure pattern correctness (#1545, PR #1547)
+- [x] `useAdminMutation` dialog stays open on 204 No Content + `combineMutationErrors` helper surfaces concurrent failures (#1555, #1557, PR #1558)
+- [x] `setState`-in-render on SaaS-mode redirect in `/admin/plugins` — moved redirect into `useEffect` (#1563, PR #1564)
+- [x] `ip-allowlist` enforcement status lies when EE disabled or internal DB missing — surface `effectivelyEnforced` in response (#1567, PR #1571)
+
+### Feature polish
+- [x] Distinct `EnterpriseError` rendering in `AdminContentWrapper` — paywall upsell vs generic error (#1569, PR #1572)
+- [x] SCIM stale-sync badge + schema passthrough (#1568, PR #1570)
 
 ### Follow-ups
-- [ ] Extract `CompactRow` / `ProviderShell` primitives to `@/ui/components/admin/` after third adopter (#1551)
-- [ ] `useAdminMutation` dialog stays open when server returns 204 No Content (#1555)
-- [ ] Admin mutation banners: surface concurrent failures instead of narrowing to first (#1557)
+- [x] Extract `CompactRow` / `ProviderShell` primitives to `@/ui/components/admin/` after third adopter (#1551, PR #1573)
+- [x] `useAdminMutation` dialog stays open when server returns 204 No Content (#1555, PR #1558)
+- [x] Admin mutation banners: surface concurrent failures instead of narrowing to first (#1557, PR #1558)
 - [ ] Share `EMAIL_PROVIDERS` via `@useatlas/types` after next publish (#1543)
 - [ ] Make `ProviderConfig` a tagged union keyed on provider (#1542)
+- [ ] Silent clipboard failure on one-time-reveal Copy button in `/admin/api-keys` (#1587)
+- [ ] `/admin/abuse` row needs investigation depth, not just reinstate (#1589)
+- [ ] Atomic `POST /api/v1/actions/bulk` endpoint (#1590)
+- [ ] Unify `ActionStatus` / `ActionDisplayStatus`, drop `mapStatus` (#1591)
+- [ ] Pure-function tests + e2e spec for `/admin/actions` approval flow (#1593)
+- [ ] `useAdminMutation` should return structured `FetchError`, not flattened string (#1595)
 
 ---
 

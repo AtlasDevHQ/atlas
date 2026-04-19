@@ -1304,6 +1304,10 @@ Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approv
 - [x] `/admin/approval` — structural revamp (Tabs-as-pages → CompactRow, always-visible review form → inline expand, bulk actions, deny confirmation) + extracted `QueueFilterRow` / `RelativeTimestamp` / `ReasonDialog` / `useQueueRow` / `bulkFailureSummary` / `bulkPartialSummary` to `@/ui/components/admin/queue/` (PR #1600)
 - [ ] `/admin/abuse` — different shape from the other 3; filed separately as #1589 (needs investigation depth, not just reinstate)
 
+### Bucket 2 — data tables (tracker #1588)
+Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/clarify` per the tracker's intent. Primitives only extract if a pattern emerges across 3+ pages.
+- [x] `/admin/sessions` — AlertDialog confirm on single-row Revoke (previously one-click destructive) + RelativeTimestamp on Created/Last Active + migrated from bespoke fetch to `useAdminFetch` + `perPage` URL drift fix + `Promise.allSettled` + `bulkFailureSummary` for partial failures (PR #1628, review-driven fixes in same PR)
+
 ### Bug fixes (surfaced during revamp)
 - [x] `parseCIDR` crashes on non-string DB rows — auth middleware 500d, broke admin-integrations tests (#1541, PR #1546)
 - [x] Drop `aria-controls` from CompactRow triggers whose panel isn't mounted — disclosure pattern correctness (#1545, PR #1547)
@@ -1340,13 +1344,16 @@ Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approv
 - [x] `useAdminMutation.error` hook-level field still flattens `FetchError` — ~40 admin pages (#1615, PR #1622) — hook-level `error` widened to `FetchError | null`; `friendlyError()` + new `friendlyErrorOrNull()` helper rolled out atomically; architecture win #30
 - [x] ESLint guard to prevent re-introducing `{ message: result.error }` wrap (#1616, PR #1622) — `no-restricted-syntax` rule in root `eslint.config.mjs`; broader `.error?.y` optional-chain variant carved out as follow-up #1625
 - [x] `useAdminMutation` catch conflates `invalidates()` callback errors with fetch errors (#1617, PR #1622) — `invalidates()` callbacks moved outside the `mutateAsync` try-catch; throwing invalidates no longer flips `result.ok` or populates `error`; debug log preserved
-- [ ] Sibling to #1611: `action-approval-card` surfaces 'Unknown error' when `res.text()` rejects (#1620)
+- [x] Sibling to #1611: `action-approval-card` surfaces 'Unknown error' when `res.text()` rejects (#1620, PR #1633)
 - [ ] Follow-up to #1613: demo page still references `chatEndpoint` / `conversationsEndpoint` that don't exist on `AtlasChatProps` — decide wire-up vs drop (#1621)
 - [ ] Dead `enterprise_required` gate branch in `/admin/custom-domain` — drop or wire up (#1623, surfaced during #1615 migration)
 - [ ] `MutationErrorSurface` — route mutation `FetchError`s through `EnterpriseUpsell` / `FeatureGate` primitive (#1624, architecture, follow-up to win #30)
-- [ ] Broaden `no-restricted-syntax` guard to catch `{ message: X.error?.y }` optional-chain variants (#1625, follow-up to #1616)
-- [ ] Regression test for structured plan-gate in `/admin/custom-domain` (code-based, not message-substring) (#1626)
-- [ ] Cover `combineMutationErrors` + `formError` fallback chain in `/admin/email-provider` (#1627)
+- [x] Broaden `no-restricted-syntax` guard to catch `{ message: X.error?.y }` optional-chain variants (#1625, PR #1633)
+- [x] Regression test for structured plan-gate in `/admin/custom-domain` (code-based, not message-substring) (#1626, PR #1634)
+- [x] Cover `combineMutationErrors` + `formError` fallback chain in `/admin/email-provider` (#1627, PR #1634)
+- [x] Shared `ADMIN_FETCH_QUERY_KEY` constant between `useAdminFetch` + `useAdminMutation` (#1630, PR #1633) — `packages/web/src/ui/hooks/admin-query-keys.ts`; prevents silent cache-stale on rename
+- [x] `useAdminMutation` concurrent error state stomping (#1629, PR #1635, architecture) — per-item error slots in `errorsByItemId`, unblocks every bulk-mutation admin page. Architecture win candidate #31 (pending entry in architecture-wins.md)
+- [ ] Sessions e2e smoke spec + pure-function tests for `shortUA` + `SessionsListSchema` round-trip (#1631, follow-up to PR #1628)
 
 ---
 

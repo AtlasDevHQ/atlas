@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -25,6 +25,14 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import {
+  CompactRow,
+  DetailList,
+  DetailRow,
+  SectionHeading,
+  Shell,
+  type StatusKind,
+} from "@/ui/components/admin/compact";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
@@ -51,207 +59,7 @@ import { CreateProviderDialog } from "@/ui/components/admin/sso/create-provider-
 import { EditProviderDialog } from "@/ui/components/admin/sso/edit-provider-dialog";
 import { DeleteProviderDialog } from "@/ui/components/admin/sso/delete-provider-dialog";
 
-// ── Shared Design Primitives (locally duplicated per #1551) ──────────────
-
-type StatusKind = "connected" | "disconnected" | "unavailable";
-
-function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "relative inline-flex size-1.5 shrink-0 rounded-full",
-        kind === "connected" &&
-          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
-        kind === "disconnected" && "bg-muted-foreground/40",
-        kind === "unavailable" && "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
-        className,
-      )}
-    >
-      {kind === "connected" && (
-        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
-      )}
-    </span>
-  );
-}
-
-const STATUS_LABEL: Record<StatusKind, string> = {
-  connected: "Active",
-  disconnected: "Inactive",
-  unavailable: "Unavailable",
-};
-
-function CompactRow({
-  icon: Icon,
-  title,
-  description,
-  status,
-  action,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: string;
-  status: StatusKind;
-  action?: ReactNode;
-}) {
-  return (
-    <div
-      className={cn(
-        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
-        "hover:bg-card/70 hover:border-border/80",
-        status === "unavailable" && "opacity-60",
-      )}
-    >
-      <span
-        className={cn(
-          "grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground",
-        )}
-      >
-        <Icon className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {title}
-          </h3>
-          <StatusDot kind={status} className="shrink-0" />
-          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
-        </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {description}
-        </p>
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
-
-function IntegrationShell({
-  icon: Icon,
-  title,
-  description,
-  status,
-  titleAccessory,
-  children,
-  actions,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: string;
-  status: StatusKind;
-  titleAccessory?: ReactNode;
-  children?: ReactNode;
-  actions?: ReactNode;
-}) {
-  return (
-    <section
-      className={cn(
-        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
-        "hover:border-border/80",
-        status === "connected" && "border-primary/20",
-      )}
-    >
-      {status === "connected" && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-gradient-to-b from-transparent via-primary to-transparent opacity-70"
-        />
-      )}
-
-      <header className="flex items-start gap-3 p-4 pb-3">
-        <span
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
-            status === "connected" && "border-primary/30 text-primary",
-            status !== "connected" && "text-muted-foreground",
-          )}
-        >
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-              {title}
-            </h3>
-            {titleAccessory}
-            {status === "connected" && (
-              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
-                <StatusDot kind="connected" />
-                Live
-              </span>
-            )}
-          </div>
-          <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground">
-            {description}
-          </p>
-        </div>
-      </header>
-
-      {children != null && (
-        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
-      )}
-
-      {actions && (
-        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
-          {actions}
-        </footer>
-      )}
-    </section>
-  );
-}
-
-function DetailRow({
-  label,
-  value,
-  mono,
-  truncate,
-}: {
-  label: string;
-  value: ReactNode;
-  mono?: boolean;
-  truncate?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          "min-w-0 text-right",
-          mono && "font-mono text-[11px]",
-          truncate && "truncate",
-          !mono && "font-medium",
-        )}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function DetailList({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
-      {children}
-    </div>
-  );
-}
-
-function SectionHeading({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
-      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
-    </div>
-  );
-}
+// ── Page-local helpers ────────────────────────────────────────────
 
 function VerificationBadge({ status }: { status: "pending" | "verified" | "failed" }) {
   switch (status) {
@@ -445,7 +253,7 @@ export default function SSOPage() {
                 description="Force every member to sign in through SSO"
               />
               {enforced ? (
-                <IntegrationShell
+                <Shell
                   icon={ShieldCheck}
                   title="SSO enforcement"
                   description={enforcementDescription}
@@ -509,7 +317,7 @@ export default function SSOPage() {
               />
               <div className="space-y-2">
                 {providers.map((provider) => (
-                  <ProviderShell
+                  <ProviderRow
                     key={provider.id}
                     provider={provider}
                     onEdit={setEditProvider}
@@ -598,7 +406,7 @@ export default function SSOPage() {
 
 // ── Provider row ────────────────────────────────────────────────
 
-function ProviderShell({
+function ProviderRow({
   provider,
   onEdit,
   onDelete,
@@ -629,12 +437,12 @@ function ProviderShell({
   const spAcsUrl = `${origin}/api/auth/sso/${provider.type}/callback/${provider.id}`;
 
   return (
-    <IntegrationShell
+    <Shell
       icon={Icon}
       title={provider.domain}
       description={provider.issuer}
       status={status}
-      titleAccessory={
+      titleBadge={
         <Badge variant="secondary" className="shrink-0 font-mono text-[10px] uppercase">
           {provider.type}
         </Badge>
@@ -730,6 +538,6 @@ function ProviderShell({
           </div>
         </DetailList>
       )}
-    </IntegrationShell>
+    </Shell>
   );
 }

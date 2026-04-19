@@ -46,7 +46,7 @@ function shortUA(ua: string | null): string {
 // ── Columns ───────────────────────────────────────────────────────
 
 export interface SessionActions {
-  onRevoke: (sessionId: string) => void;
+  onRevoke: (sessionId: string) => Promise<void>;
   isRevoking: (id: string) => boolean;
 }
 

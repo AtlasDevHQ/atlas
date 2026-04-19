@@ -15,11 +15,13 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { SessionStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { bulkFailureSummary, failedIdsFrom } from "@/ui/components/admin/queue";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,27 +56,51 @@ export default function SessionsPage() {
   const [params, setParams] = useQueryStates(sessionsSearchParams);
   const { search } = params;
 
-  // `useDataTable` writes pagination to `?page=` (1-indexed). Read it here so
-  // `useAdminFetch` can key on the offset without a circular dependency on
-  // the table instance.
+  // `useDataTable` writes pagination to `?page=` (1-indexed) and `?perPage=`.
+  // Read both here so `useAdminFetch` can key on the offset + limit without a
+  // circular dependency on the table instance, and so a page-size change in
+  // the DataTable footer refetches with the right limit.
   const [page] = useQueryState("page", parseAsInteger.withDefault(1));
-  const offset = (page - 1) * LIMIT;
+  const [perPage] = useQueryState("perPage", parseAsInteger.withDefault(LIMIT));
+  const offset = (page - 1) * perPage;
+
+  const [bulkError, setBulkError] = useState<string | null>(null);
 
   const { mutate: revokeMutate, error: revokeError, isMutating } = useAdminMutation({
     method: "DELETE",
   });
 
-  async function revokeSession(sessionId: string) {
-    await revokeMutate({
+  // Throwing variant used by the bulk revoke path — Promise.allSettled
+  // categorizes by rejection, so a failed mutation must throw. The hook's own
+  // `error` state is clobbered by concurrent mutations and can't be trusted
+  // for bulk.
+  async function revokeSessionOrThrow(sessionId: string): Promise<void> {
+    const result = await revokeMutate({
       path: `/api/v1/admin/sessions/${sessionId}`,
       itemId: sessionId,
     });
-    // useAdminMutation auto-invalidates all admin-fetch queries on success,
-    // so the list and stats refetch without manual coordination.
+    // useAdminMutation auto-invalidates admin-fetch queries on success, so the
+    // list and stats refetch without manual coordination.
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
   }
 
   const sessionActions: SessionActions = {
-    onRevoke: revokeSession,
+    // Non-throwing wrapper for the single-row Revoke dialog — failures surface
+    // through the hook's `revokeError` state; swallowing the rejection here
+    // prevents an unhandled promise rejection without losing signal.
+    onRevoke: async (id) => {
+      try {
+        await revokeSessionOrThrow(id);
+      } catch (err) {
+        // intentionally ignored: single-row failures surface through
+        // useAdminMutation's `revokeError` state and render in the banner
+        // below. Debug-log for traceability — the hook's error is the
+        // user-facing signal.
+        console.debug("revokeSession rejected", err);
+      }
+    },
     isRevoking: (id: string) => isMutating(id),
   };
   const columns = getSessionColumns(sessionActions);
@@ -84,7 +110,7 @@ export default function SessionsPage() {
   });
 
   const qs = new URLSearchParams({
-    limit: String(LIMIT),
+    limit: String(perPage),
     offset: String(offset),
   });
   if (search) qs.set("search", search);
@@ -96,12 +122,12 @@ export default function SessionsPage() {
     refetch,
   } = useAdminFetch(`/api/v1/admin/sessions?${qs}`, {
     schema: SessionsListSchema,
-    deps: [search, offset],
+    deps: [search, offset, perPage],
   });
 
   const rows = listData?.sessions ?? [];
   const total = listData?.total ?? 0;
-  const pageCount = Math.max(1, Math.ceil(total / LIMIT));
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
 
   const { table } = useDataTable({
     data: rows,
@@ -109,15 +135,23 @@ export default function SessionsPage() {
     pageCount,
     initialState: {
       sorting: [{ id: "updatedAt", desc: true }],
-      pagination: { pageIndex: 0, pageSize: LIMIT },
+      pagination: { pageIndex: 0, pageSize: perPage },
     },
     getRowId: (row) => row.id,
   });
 
   async function revokeSelected() {
+    setBulkError(null);
     const selected = table.getSelectedRowModel().rows.map((r) => r.original.id);
-    await Promise.all(selected.map((id) => revokeSession(id)));
-    table.resetRowSelection();
+    const results = await Promise.allSettled(selected.map((id) => revokeSessionOrThrow(id)));
+    const failedIds = failedIdsFrom(results, selected);
+    if (failedIds.length === 0) {
+      table.resetRowSelection();
+      return;
+    }
+    // Keep only failed rows selected so the operator can retry them.
+    table.setRowSelection(Object.fromEntries(failedIds.map((id) => [id, true])));
+    setBulkError(bulkFailureSummary(results, selected, "revocations"));
   }
 
   const hasFilters = !!search;
@@ -194,8 +228,9 @@ export default function SessionsPage() {
               )}
             </div>
 
-            {revokeError && (
-              <ErrorBanner message={friendlyError(revokeError)} onRetry={refetch} />
+            {bulkError && <ErrorBanner message={bulkError} />}
+            {revokeError && !bulkError && (
+              <ErrorBanner message={friendlyError(revokeError)} />
             )}
             <AdminContentWrapper
               loading={loading}

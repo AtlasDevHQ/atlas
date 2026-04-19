@@ -54,6 +54,11 @@ const IPAllowlistResponseSchema = z.object({
   entries: z.array(IPAllowlistEntrySchema),
   total: z.number(),
   callerIP: z.string().nullable(),
+  // Server-side truth. The middleware in ee/src/auth/ip-allowlist.ts
+  // short-circuits to `{ allowed: true }` when enterprise is disabled or
+  // the internal DB is missing, so the UI can't derive enforcement from
+  // entry count alone without lying to admins.
+  effectivelyEnforced: z.boolean(),
 });
 
 // ── Shared Design Primitives (locally duplicated per #1551) ──────────────
@@ -85,6 +90,15 @@ const STATUS_LABEL: Record<StatusKind, string> = {
   disconnected: "Inactive",
   unavailable: "Unavailable",
 };
+
+function InlineError({ children }: { children: ReactNode }) {
+  if (!children) return null;
+  return (
+    <div className="mt-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      {children}
+    </div>
+  );
+}
 
 function CompactRow({
   icon: Icon,
@@ -444,12 +458,31 @@ export default function IPAllowlistPage() {
 
   const entries = data?.entries ?? [];
   const callerIP = data?.callerIP ?? null;
+  // Server-computed: true only when EE is enabled, the internal DB is
+  // configured, AND at least one entry exists. Never derive this from
+  // `entries.length` alone — the request-time middleware will short-circuit
+  // to allow-all when EE is off or the internal DB is missing.
+  const effectivelyEnforced = data?.effectivelyEnforced ?? false;
 
   const ruleCount = entries.length;
-  const enforcing = ruleCount > 0;
-  const enforcementDescription = enforcing
-    ? `Active — ${ruleCount} range${ruleCount !== 1 ? "s" : ""} permitted`
-    : "No ranges configured — the workspace accepts requests from any IP";
+  // "Dormant" = has rules but enforcement is off (EE disabled or no internal
+  // DB). Admins in that state must be told the rules aren't actually gating
+  // requests, instead of seeing the same green "Active" affordance as a
+  // properly-enforcing deploy.
+  const enforcementDormant = !effectivelyEnforced && ruleCount > 0;
+
+  let enforcementStatus: StatusKind;
+  let enforcementDescription: string;
+  if (effectivelyEnforced) {
+    enforcementStatus = "connected";
+    enforcementDescription = `Active — ${ruleCount} range${ruleCount !== 1 ? "s" : ""} permitted`;
+  } else if (enforcementDormant) {
+    enforcementStatus = "unavailable";
+    enforcementDescription = `${ruleCount} range${ruleCount !== 1 ? "s" : ""} configured, but not being enforced`;
+  } else {
+    enforcementStatus = "disconnected";
+    enforcementDescription = "No ranges configured — the workspace accepts requests from any IP";
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -497,7 +530,7 @@ export default function IPAllowlistPage() {
                 title="Enforcement"
                 description="Access is restricted when one or more ranges are configured"
               />
-              {enforcing ? (
+              {enforcementStatus === "connected" ? (
                 <IntegrationShell
                   icon={ShieldCheck}
                   title="Allowlist enforcement"
@@ -510,12 +543,22 @@ export default function IPAllowlistPage() {
                   }
                 />
               ) : (
-                <CompactRow
-                  icon={Shield}
-                  title="Allowlist enforcement"
-                  description={enforcementDescription}
-                  status="disconnected"
-                />
+                <>
+                  <CompactRow
+                    icon={enforcementStatus === "unavailable" ? ShieldCheck : Shield}
+                    title="Allowlist enforcement"
+                    description={enforcementDescription}
+                    status={enforcementStatus}
+                  />
+                  {enforcementDormant && (
+                    <InlineError>
+                      These ranges aren&apos;t being enforced. IP allowlisting requires
+                      an Atlas Enterprise license and a configured internal database
+                      (<code className="rounded bg-destructive/10 px-1 font-mono">DATABASE_URL</code>).
+                      Until both are present, the workspace accepts requests from any IP.
+                    </InlineError>
+                  )}
+                </>
               )}
             </section>
 

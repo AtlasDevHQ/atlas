@@ -45,6 +45,7 @@ export {
   ApprovalRuleSchema,
   ApprovalRequestSchema,
   CustomDomainSchema,
+  IntegrationStatusSchema,
 } from "@useatlas/schemas";
 
 // ── Connection ────────────────────────────────────────────────────
@@ -603,102 +604,6 @@ const ApiKeyRowSchema = z.object({
 export const ListApiKeysResponseSchema = z.object({
   apiKeys: z.array(ApiKeyRowSchema),
   total: z.number(),
-});
-
-// ── Integrations ─────────────────────────────────────────────────
-
-const SlackStatusSchema = z.object({
-  connected: z.boolean(),
-  teamId: z.string().nullable(),
-  workspaceName: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  oauthConfigured: z.boolean(),
-  envConfigured: z.boolean(),
-  configurable: z.boolean(),
-});
-
-const TeamsStatusSchema = z.object({
-  connected: z.boolean(),
-  tenantId: z.string().nullable(),
-  tenantName: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const DiscordStatusSchema = z.object({
-  connected: z.boolean(),
-  guildId: z.string().nullable(),
-  guildName: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const TelegramStatusSchema = z.object({
-  connected: z.boolean(),
-  botId: z.string().nullable(),
-  botUsername: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const GChatStatusSchema = z.object({
-  connected: z.boolean(),
-  projectId: z.string().nullable(),
-  serviceAccountEmail: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const GitHubStatusSchema = z.object({
-  connected: z.boolean(),
-  username: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const LinearStatusSchema = z.object({
-  connected: z.boolean(),
-  userName: z.string().nullable(),
-  userEmail: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const WhatsAppStatusSchema = z.object({
-  connected: z.boolean(),
-  phoneNumberId: z.string().nullable(),
-  displayPhone: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const EmailStatusSchema = z.object({
-  connected: z.boolean(),
-  provider: z.string().nullable(),
-  senderAddress: z.string().nullable(),
-  installedAt: z.string().nullable(),
-  configurable: z.boolean(),
-});
-
-const WebhookStatusSchema = z.object({
-  activeCount: z.number(),
-  configurable: z.boolean(),
-});
-
-export const IntegrationStatusSchema = z.object({
-  slack: SlackStatusSchema,
-  teams: TeamsStatusSchema,
-  discord: DiscordStatusSchema,
-  telegram: TelegramStatusSchema,
-  gchat: GChatStatusSchema,
-  github: GitHubStatusSchema,
-  linear: LinearStatusSchema,
-  whatsapp: WhatsAppStatusSchema,
-  email: EmailStatusSchema,
-  webhooks: WebhookStatusSchema,
-  deliveryChannels: z.array(z.string()),
-  deployMode: z.string(),
-  hasInternalDB: z.boolean(),
 });
 
 // ── Plugins ──────────────────────────────────────────────────────

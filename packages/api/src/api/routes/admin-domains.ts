@@ -7,8 +7,10 @@
  *
  * Wraps the existing EE domain module used by platform-domains.ts, scoping
  * operations to the caller's active organization. When the EE module is
- * unavailable (e.g. open-source builds), all routes return 404 with a
- * "not_available" error code.
+ * unavailable (e.g. open-source builds), write endpoints emit 403
+ * `enterprise_required` via `EnterpriseError` so the admin page can route
+ * them through `EnterpriseUpsell` / the `isPlanGated` CompactRow (see
+ * #1622 / #1623). Read endpoints return 404 `not_available` unchanged.
  */
 
 import { Effect } from "effect";
@@ -107,7 +109,7 @@ const removeDomainRoute = createRoute({
     },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "No custom domain configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
@@ -127,7 +129,7 @@ const verifyDomainRoute = createRoute({
     },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "No custom domain configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
@@ -147,7 +149,7 @@ const verifyDnsTxtRoute = createRoute({
     },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "No custom domain configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },

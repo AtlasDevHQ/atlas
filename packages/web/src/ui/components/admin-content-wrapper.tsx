@@ -13,13 +13,13 @@ import { friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
  * Detect an `EnterpriseError` that was serialized over HTTP.
  *
  * The API encodes the typed error as `{ error: "enterprise_required", ... }`
- * with status 403 — that code lives in `FetchError.code`. We also keep a
- * message-based fallback for callers / tests that omit the `error` field.
+ * with status 403 — that code lives in `FetchError.code`. Match only on the
+ * machine-readable code so unrelated 403s whose message happens to mention
+ * "Enterprise features" (e.g. future billing copy) don't misroute into the
+ * upsell surface.
  */
 function isEnterpriseRequired(error: FetchError): boolean {
-  if (error.code === "enterprise_required") return true;
-  // Legacy fallback: some older responses / tests only set the human message.
-  return error.status === 403 && error.message.includes("Enterprise features");
+  return error.code === "enterprise_required";
 }
 
 export interface AdminContentWrapperProps {

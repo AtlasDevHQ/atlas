@@ -30,7 +30,7 @@ export function EnterpriseUpsell({
           {feature} requires an enterprise plan
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          {message ??
+          {message ||
             `${feature} is part of Atlas Enterprise. Upgrade your plan or contact sales to enable it for your workspace.`}
         </p>
         <div className="mt-4 flex justify-center">

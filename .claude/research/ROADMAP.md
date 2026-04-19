@@ -1298,10 +1298,11 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Migrate initial-batch pages to shared primitives: `/admin/custom-domain` (PR #1574), `/admin/billing` (PR #1575), `/admin/model-config` (PR #1576), `/admin/plugins` (PR #1577), `/admin/sandbox` (PR #1578), `/admin/residency` (PR #1579), `/admin/branding` (PR #1580), `/admin/ip-allowlist` (PR #1581), `/admin/sso` (PR #1582), `/admin/settings` (PR #1583), `/admin/connections` (PR #1584), `/admin/scim` (PR #1585)
 
 ### Bucket 1 — queue/moderation (tracker #1588)
-Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approval`, `/admin/abuse` identified shared shape: button-row filter affordance, inline-expand or Sheet detail (page-dependent), reason-on-deny dialog with audit reason capture, single funneled error banner, `RelativeTimestamp` with absolute tooltip, real optimistic revert with snapshot-inside-functional-setState, `extractFetchError` for requestId preservation, type-specific payload rendering. Primitives extract on third adopter (PR 3 = `/admin/approval`).
+Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approval`, `/admin/abuse` identified shared shape: button-row filter affordance, inline-expand or Sheet detail (page-dependent), reason-on-deny dialog with audit reason capture, single funneled error banner, `RelativeTimestamp` with absolute tooltip, real optimistic revert with snapshot-inside-functional-setState, `extractFetchError` for requestId preservation, type-specific payload rendering. Primitives extracted on third adopter (PR 3 = `/admin/approval`, PR #1600) into `@/ui/components/admin/queue/` — architecture win #27.
 - [x] `/admin/actions` — reason-on-deny dialog (closed legacy "Denied by admin" hardcode) + `PayloadView` SQL/API/file/JSON branch rendering + single ErrorBanner + `extractFetchError` (PR #1592)
 - [x] `/admin/learned-patterns` — real optimistic revert + server error surfacing + button-row filter consolidation + StatCards → inline strip + `bulkPartialSummary` for 200-with-errors response (PR #1594)
-- [ ] `/admin/approval` — structural revamp (Tabs-as-pages → CompactRow, always-visible review form → inline expand, bulk actions, deny confirmation). Extracts shared `queue/` primitives per #1551 rule
+- [x] `/admin/approval` — structural revamp (Tabs-as-pages → CompactRow, always-visible review form → inline expand, bulk actions, deny confirmation) + extracted `QueueFilterRow` / `RelativeTimestamp` / `ReasonDialog` / `useQueueRow` / `bulkFailureSummary` / `bulkPartialSummary` to `@/ui/components/admin/queue/` (PR #1600)
+- [ ] `/admin/abuse` — different shape from the other 3; filed separately as #1589 (needs investigation depth, not just reinstate)
 
 ### Bug fixes (surfaced during revamp)
 - [x] `parseCIDR` crashes on non-string DB rows — auth middleware 500d, broke admin-integrations tests (#1541, PR #1546)
@@ -1318,14 +1319,20 @@ Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approv
 - [x] Extract `CompactRow` / `ProviderShell` primitives to `@/ui/components/admin/` after third adopter (#1551, PR #1573)
 - [x] `useAdminMutation` dialog stays open when server returns 204 No Content (#1555, PR #1558)
 - [x] Admin mutation banners: surface concurrent failures instead of narrowing to first (#1557, PR #1558)
+- [x] Silent clipboard failure on one-time-reveal Copy button in `/admin/api-keys` (#1587, PR #1599)
+- [x] Atomic `POST /api/v1/actions/bulk` endpoint (#1590, PR #1601)
+- [x] Expand pricing EE comparison + unify Business-plan gating (#1597, #1598, PR #1605) — 13 EE features shown (was 4), Business tier card backfilled, 22 docs MDX pages unified, `admin-domains`/`admin-residency` route descriptions fixed at source
+- [x] OpenAPI ↔ api-reference drift CI gate (#1606, PR #1605) — `scripts/check-openapi-drift.sh` catches route changes that forget `openapi:extract`. Caught real drift on first run (#1601's bulk endpoint MDX)
 - [ ] Share `EMAIL_PROVIDERS` via `@useatlas/types` after next publish (#1543)
 - [ ] Make `ProviderConfig` a tagged union keyed on provider (#1542)
-- [ ] Silent clipboard failure on one-time-reveal Copy button in `/admin/api-keys` (#1587)
 - [ ] `/admin/abuse` row needs investigation depth, not just reinstate (#1589)
-- [ ] Atomic `POST /api/v1/actions/bulk` endpoint (#1590)
 - [ ] Unify `ActionStatus` / `ActionDisplayStatus`, drop `mapStatus` (#1591)
 - [ ] Pure-function tests + e2e spec for `/admin/actions` approval flow (#1593)
 - [ ] `useAdminMutation` should return structured `FetchError`, not flattened string (#1595)
+- [ ] `bulk-summary`: group by failure class, carry requestIds in trailing slot (#1602)
+- [ ] Rollback warning: handle non-string warning shape (#1603)
+- [ ] `ReasonDialog`: surface thrown `onConfirm` as local error, not just console (#1604)
+- [ ] Out-of-scope stale "enterprise plan" mentions in pre-PR#1605 pages (#1607)
 
 ---
 

@@ -5,6 +5,9 @@
   "type": "module",
   "private": true,
   "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "test": "bun test src/__tests__"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./abuse": "./src/abuse.ts"

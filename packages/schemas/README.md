@@ -32,8 +32,11 @@ belongs here.
 @atlas/api   @atlas/web
 ```
 
-`@useatlas/schemas` must **never** import from `@atlas/api` or `@atlas/web`.
-Keeping types Zod-free preserves zero-dep imports for SDK consumers.
+`@useatlas/schemas` must **never** import from `@atlas/api`, `@atlas/web`, or
+`@atlas/ee`. This is enforced by an ESLint `no-restricted-imports` rule in
+`eslint.config.mjs` scoped to `packages/schemas/**` — an upward import
+fails lint, not just review. Keeping `@useatlas/types` Zod-free preserves
+zero-dep imports for SDK consumers.
 
 ## Publishing
 
@@ -44,14 +47,14 @@ before.
 
 ## Follow-up schemas to migrate
 
-Tracked in #1642. Next candidates (highest drift risk first):
+Tracked in #1648 (follow-up tracker; #1642 was the scaffold-plus-abuse PR). Next
+candidates (highest drift risk first):
 
 1. `ApprovalRule` / `ApprovalRequest` — complex nested shapes.
-2. `AbuseStatus` (already partially here — the list endpoint still re-declares it inline; consolidate once the route helper stabilizes).
-3. `CustomDomain` — DNS-verification-status union is easy to drift.
-4. `IntegrationStatus` family (10 platforms × the same shape).
-5. `PlatformWorkspace` / `NoisyNeighbor` / `BillingStatus`.
-6. Region/SLA/Backup/Audit analytics shapes.
+2. `CustomDomain` — DNS-verification-status union is easy to drift.
+3. `IntegrationStatus` family (10 platforms × the same shape).
+4. `PlatformWorkspace` / `NoisyNeighbor` / `BillingStatus`.
+5. Region/SLA/Backup/Audit analytics shapes.
 
 Migrate one schema per PR so each change stays reviewable and the OpenAPI
 diff is inspectable at merge time.

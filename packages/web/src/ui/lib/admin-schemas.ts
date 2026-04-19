@@ -2,9 +2,16 @@
  * Zod schemas for types imported from @useatlas/types, used by admin page
  * useAdminFetch calls for runtime response validation.
  *
- * Schemas use z.string() for string-literal unions (e.g. DBType) to remain
- * resilient when the API adds new values. Type annotations ensure the
- * schema output is assignable to the imported TypeScript interface.
+ * Most schemas in this file use z.string() for string-literal unions
+ * (e.g. DBType) to remain resilient when the API adds new values
+ * independently of the web bundle. Type annotations keep the schema
+ * output assignable to the imported TypeScript interface.
+ *
+ * Exceptions: wire shapes that live in `@useatlas/schemas` are re-exported
+ * at the top of this file and use `z.enum(TUPLE)` where the TS union and
+ * the tuple come from the same `@useatlas/types` source (so enum
+ * tightening is drift-free by construction). See
+ * `packages/schemas/README.md`.
  */
 import { z } from "zod";
 import type {
@@ -117,12 +124,6 @@ export const ApprovalRequestSchema = z.object({
   createdAt: z.string(),
   expiresAt: z.string(),
 }) as z.ZodType<ApprovalRequest>;
-
-// ── Abuse ─────────────────────────────────────────────────────────
-//
-// AbuseStatusSchema / AbuseThresholdConfigSchema / AbuseDetailSchema are
-// re-exported from `@useatlas/schemas` at the top of this file. Shared
-// with the API route layer so a field rename can't silently drift.
 
 // ── Compliance ────────────────────────────────────────────────────
 

@@ -50,10 +50,25 @@ const SCIMConnectionSchema = z.object({
   organizationId: z.string().nullable(),
 });
 
+// Forward-compat: `lastSyncError` / `lastSyncStatus` aren't populated by the
+// backend yet (ee/src/scim/ still lacks sync instrumentation), but Zod strips
+// unknown keys by default. Declaring them optional here means the day the
+// backend starts returning them, the UI code below already handles them —
+// no schema diff needed. Tracked in #1568.
+//
+// `lastSyncStatus` is typed as a permissive string (not `z.enum([...])`) on
+// purpose. The known values today are "ok" | "error" | "running", but an
+// enum would *reject* an unknown value like "queued" or "throttled" at
+// parse time — which would make `useAdminFetch` fail and crash the whole
+// SCIM page, exactly the silent-strip failure mode this schema extension
+// was meant to avoid. The render layer narrows to the known values and
+// lets unknowns fall through to the default "synced" treatment.
 const SCIMSyncStatusSchema = z.object({
   connections: z.number(),
   provisionedUsers: z.number(),
   lastSyncAt: z.string().nullable(),
+  lastSyncError: z.string().optional(),
+  lastSyncStatus: z.string().optional(),
 });
 
 const SCIMStatusResponseSchema = z.object({
@@ -75,7 +90,7 @@ const GroupMappingsResponseSchema = z.object({
 
 // ── Shared Design Primitives (locally duplicated per #1551) ──────────────
 
-type StatusKind = "connected" | "disconnected" | "unavailable";
+type StatusKind = "connected" | "transitioning" | "disconnected" | "unavailable";
 
 function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
   return (
@@ -85,6 +100,10 @@ function StatusDot({ kind, className }: { kind: StatusKind; className?: string }
         "relative inline-flex size-1.5 shrink-0 rounded-full",
         kind === "connected" &&
           "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+        // `--warning` isn't part of the shadcn neutral base — hardcode amber-500
+        // to stay self-contained, same convention as /admin/plugins (see #1551).
+        kind === "transitioning" &&
+          "bg-amber-500 shadow-[0_0_0_3px_color-mix(in_oklch,_oklch(0.75_0.17_70)_15%,_transparent)]",
         kind === "disconnected" && "bg-muted-foreground/40",
         kind === "unavailable" && "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
         className,
@@ -99,6 +118,7 @@ function StatusDot({ kind, className }: { kind: StatusKind; className?: string }
 
 const STATUS_LABEL: Record<StatusKind, string> = {
   connected: "Active",
+  transitioning: "Transitioning",
   disconnected: "Inactive",
   unavailable: "Unavailable",
 };
@@ -121,6 +141,7 @@ function CompactRow({
       className={cn(
         "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
         "hover:bg-card/70 hover:border-border/80",
+        status === "transitioning" && "border-amber-500/20",
         status === "unavailable" && "opacity-60",
       )}
     >
@@ -354,6 +375,35 @@ export default function SCIMPage() {
   const lastSyncLabel = syncStatus.lastSyncAt
     ? formatDateTime(syncStatus.lastSyncAt)
     : "Never";
+  // Stale threshold: 24h. Picked over 12h because SCIM providers typically
+  // push on-event (create/update/delete), not on a fixed cadence — a quiet
+  // IdP can legitimately go half a day without pushing. A full day without
+  // *any* sync activity is where it starts reading as "probably broken".
+  // Once the backend populates lastSyncStatus, that signal takes precedence.
+  const STALE_MS = 24 * 60 * 60 * 1000;
+  const lastSyncMs = syncStatus.lastSyncAt ? Date.parse(syncStatus.lastSyncAt) : NaN;
+  const isStale =
+    Number.isFinite(lastSyncMs) && Date.now() - lastSyncMs > STALE_MS;
+  // Treat "running" and "stale" as the same visual affordance (amber
+  // transitioning dot) — both communicate "sync isn't in a settled ok state
+  // right now". Error wins over both and drives a destructive dot + inline
+  // error message.
+  const syncStatusKind: StatusKind =
+    syncStatus.lastSyncStatus === "error"
+      ? "unavailable"
+      : syncStatus.lastSyncStatus === "running" || isStale
+        ? "transitioning"
+        : syncStatus.lastSyncAt
+          ? "connected"
+          : "disconnected";
+  const syncBadgeLabel =
+    syncStatus.lastSyncStatus === "error"
+      ? "Error"
+      : syncStatus.lastSyncStatus === "running"
+        ? "Running"
+        : isStale
+          ? "Stale"
+          : null;
   // Gate the hero stat chip on loaded, error-free, present data so the chip
   // doesn't peek out above AdminContentWrapper's loading / error / EE-gated
   // early returns (otherwise a non-EE deployment sees "00 / 00 active" above
@@ -448,8 +498,42 @@ export default function SCIMPage() {
                       </span>
                     }
                   />
-                  <DetailRow label="Last sync" value={lastSyncLabel} />
+                  <DetailRow
+                    label="Last sync"
+                    value={
+                      <span className="inline-flex items-center gap-2">
+                        <span>{lastSyncLabel}</span>
+                        {syncBadgeLabel && (
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.06em]",
+                              syncStatusKind === "unavailable" &&
+                                "border-destructive/30 bg-destructive/10 text-destructive",
+                              syncStatusKind === "transitioning" &&
+                                "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+                            )}
+                          >
+                            <StatusDot kind={syncStatusKind} />
+                            {syncBadgeLabel}
+                          </span>
+                        )}
+                      </span>
+                    }
+                  />
                 </DetailList>
+                {syncStatus.lastSyncStatus === "error" && (
+                  <InlineError>
+                    {/* Empty string fails the truthy check, but the status
+                        itself is authoritative — if the backend says error,
+                        we must render the InlineError even without a
+                        message, otherwise the amber "Error" pill points at
+                        nothing. */}
+                    Last sync failed —{" "}
+                    {syncStatus.lastSyncError && syncStatus.lastSyncError.length > 0
+                      ? syncStatus.lastSyncError
+                      : "no details provided."}
+                  </InlineError>
+                )}
                 {syncDivergence !== 0 && (
                   <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                     <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

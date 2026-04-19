@@ -255,10 +255,6 @@ function PlatformPageContent() {
 
   // ── Render ───────────────────────────────────────────────────────
 
-  if (statsError && wsError) {
-    return <MutationErrorSurface error={statsError} feature="Platform Admin" />;
-  }
-
   return (
     <div className="p-6 space-y-6">
       <div>

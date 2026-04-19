@@ -569,6 +569,37 @@ export const SessionStatsSchema = z.object({
   uniqueUsers: z.number(),
 });
 
+/**
+ * One row in the admin sessions list. `ipAddress` and `userAgent` are
+ * `.nullable()` (not `.optional()`) on purpose — the API always emits
+ * these keys with an explicit `null` when the value is unknown. The
+ * sessions-schema round-trip test guards this distinction so we notice
+ * if the API ever drifts from `string | null` to `string | undefined`.
+ */
+export const SessionRowSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  userEmail: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  expiresAt: z.string(),
+  ipAddress: z.string().nullable(),
+  userAgent: z.string().nullable(),
+});
+
+export const SessionsListSchema = z.object({
+  sessions: z.array(SessionRowSchema),
+  total: z.number(),
+});
+
+/**
+ * Authoritative TypeScript shape for one admin session row. Inferred from
+ * the schema so the Zod parse at `useAdminFetch` time is the single source
+ * of truth — columns.tsx re-exports this for its `ColumnDef<SessionRow>`
+ * generic, and the inference guarantees the two stay in lockstep.
+ */
+export type SessionRow = z.infer<typeof SessionRowSchema>;
+
 // ── Token Usage ──────────────────────────────────────────────────
 
 export const TokenSummarySchema = z.object({

@@ -1,7 +1,6 @@
 "use client";
 
 import { useQueryStates, useQueryState, parseAsInteger } from "nuqs";
-import { z } from "zod";
 import { sessionsSearchParams } from "./search-params";
 import { getSessionColumns, type SessionActions } from "./columns";
 import { DataTable } from "@/components/data-table/data-table";
@@ -19,7 +18,7 @@ import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
-import { SessionStatsSchema } from "@/ui/lib/admin-schemas";
+import { SessionStatsSchema, SessionsListSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { bulkFailureSummary, failedIdsFrom } from "@/ui/components/admin/queue";
 import {
@@ -35,22 +34,6 @@ import {
 } from "@/components/ui/alert-dialog";
 
 const LIMIT = 50;
-
-const SessionRowSchema = z.object({
-  id: z.string(),
-  userId: z.string(),
-  userEmail: z.string().nullable(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  expiresAt: z.string(),
-  ipAddress: z.string().nullable(),
-  userAgent: z.string().nullable(),
-});
-
-const SessionsListSchema = z.object({
-  sessions: z.array(SessionRowSchema),
-  total: z.number(),
-});
 
 export default function SessionsPage() {
   const [params, setParams] = useQueryStates(sessionsSearchParams);

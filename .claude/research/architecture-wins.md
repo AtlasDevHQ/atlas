@@ -594,3 +594,71 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - **Last remaining caller** — `getPopularSuggestions` in `lib/db/internal.ts` — tracked in #1531. It can't import `content-mode` directly because of a circular-import risk (`content-mode/registry` imports `InternalDB` from `internal.ts`). Resolution options documented in the issue.
 
 **Category:** Textbook module deepening — a set of shallow, parallel policies (three read-filter styles, hand-written `UNION ALL`, four hand-written UPDATEs) consolidated into a deep module with a narrow three-method interface. The single source of truth is the static tuple; the wire type is derived from it; every caller reads the same dispatch logic. Adding a new participating table exercises the narrow interface once instead of six times.
+
+---
+
+## 27. Queue/moderation primitives — `@/ui/components/admin/queue/`
+
+**Date:** 2026-04-19
+**Issue:** #1596
+**PR:** #1600
+**Tracker:** #1588 (bucket-1)
+
+**Problem:** Three admin queue/moderation pages — `/admin/actions` (PR #1592), `/admin/learned-patterns` (PR #1594), `/admin/approval` (this PR) — had independently grown the same vocabulary: button-row filter chips with inline bulk-action bar, short relative-timestamp with absolute tooltip, compliance-grade reason-on-deny dialog, optimistic single-row update with revert-on-failure, and summarizers for the two bulk-result shapes (client fan-out via `Promise.allSettled` and server partial-success `{ updated, notFound, errors? }`). PR #1592 shipped the pattern with `DenyActionDialog` + local helpers; PR #1594 re-implemented the same helpers because it needed the partial-success shape; PR #1600 would have been the third to copy the dialog, the timestamp, the filter row, and the optimistic-revert hook. Classic #1551 extract-on-3rd-adopter territory.
+
+**Solution:** Landed the `/admin/approval` structural revamp alongside the extraction. New module `packages/web/src/ui/components/admin/queue/`:
+
+- `QueueFilterRow<T>` — status chips with `aria-pressed` + optional `trailing` slot (callers own their bulk-action UI).
+- `RelativeTimestamp` — short Intl.RelativeTimeFormat label with absolute `<time dateTime>` tooltip.
+- `ReasonDialog` — generalized from `DenyActionDialog`; takes `title` / `context` / `confirmLabel` / `required`. **Never substitutes a hardcoded placeholder reason** — the audit log receives exactly what the operator typed (whitespace-trimmed), including the empty string. Regression test `reason-dialog.test.tsx` pins the compliance contract the hardcode-bug closure in PR #1592 had no test for.
+- `useQueueRow<Row>({ rows, setRows, getId })` — optimistic single-row update with revert-on-failure. Snapshots `original` synchronously from a rows-ref **before** calling `setRows` because React defers setState updaters past `await` boundaries under test `act()` batching (reading `prev.find(...)` inside the updater leaves `original === undefined` in tests). Safe for single-row because callers gate concurrent actions via `inProgress.has(id)`. When the row is absent at mutation time (refetched away), emits a `console.debug` instead of silently no-opping so the operator's stuck optimistic state is at least traceable.
+- `bulkFailureSummary` / `bulkPartialSummary` / `failedIdsFrom` — pure helpers.
+
+**Impact:**
+- **+1055 net lines** (1808 added, 753 removed across 14 files). The new module is ~470 lines; the back-migrations netted `-150`+ lines across the two sibling pages (removed two copies of `RelativeTimestamp`, two copies of the bulk summarizer helpers, one copy of the dialog and the relevant formatters). The rest is the structural /admin/approval rewrite (+540 lines replacing a Tabs-as-pages + always-visible review form with CompactRow inline-expand + QueueFilterRow + bulk + ReasonDialog) and new tests.
+- **Four-agent review found 6 HIGH-severity issues that would have shipped otherwise** — fix commit addressed them all:
+  - Shared `reviewMutation` between approve+deny leaked the approve error into the deny-dialog open on a later row (code-reviewer #1); split into two mutations.
+  - `FetchError` was being flattened to a string and losing `status` / `code` for `friendlyError` branching (silent-failure-hunter #3); now stored typed and rendered via `friendlyError`.
+  - `useQueueRow` silently no-opped on `original === undefined` (silent-failure-hunter #1); now logs a debug message.
+  - No `invalidates` on approve/deny mutations meant a failure left stale optimistic state with no refetch (silent-failure-hunter #6); now wired on both mutations.
+  - Missing compliance-contract tests for `ReasonDialog` (test-analyzer #1); added 8 cases covering empty / whitespace / required-gating / close-blocked-while-loading / thrown-onConfirm.
+  - Test title `"captures the snapshot inside the setRows updater"` contradicted the actual implementation (comment-analyzer #1); renamed.
+- **Three follow-ups filed during review:** #1602 (bulk-summary groups lose aggregation when requestIds are embedded — extract to a `(IDs: …)` trailing slot), #1603 (rollback non-string-warning handling, pre-existing from PR #1592), #1604 (e2e browser test for approval flow gated on EE in test harness).
+- **Test coverage added:** 22 unit tests across 3 files — `queue-bulk-summary.test.ts` (10 cases, pure helpers), `use-queue-row.test.tsx` (5 cases including concurrency and id-absent), `reason-dialog.test.tsx` (8 cases, compliance contract).
+- **Call-site convergence:** three sibling queue pages now share one filter-row primitive, one dialog primitive, one timestamp primitive, one optimistic hook, and the same bulk-result vocabulary. A fourth adopter costs essentially nothing.
+
+**Category:** Extract-on-3rd-adopter applied to UI primitives. Textbook module deepening: three parallel, slightly-diverged implementations consolidated into a narrow-interface shared module with compliance contracts codified as regression tests. The snapshot-via-ref rationale in `use-queue-row.ts` and the "never fabricate a reason" rationale in `reason-dialog.tsx` are exactly the kind of non-obvious invariants that belong in the code (not the PR description).
+
+---
+
+## 28. CompactRow / Shell / useDisclosure — `@/ui/components/admin/compact.tsx`
+
+**Date:** 2026-04-19 (retroactive — extraction shipped during the admin-console revamp wave that closed #1551)
+**Issue:** #1551
+**Module:** `packages/web/src/ui/components/admin/compact.tsx`
+
+**Problem:** The admin-console revamp wave (14 pages: `/admin/integrations`, `/admin/email-provider`, `/admin/billing`, `/admin/branding`, `/admin/custom-domain`, `/admin/sandbox`, `/admin/residency`, `/admin/starter-prompts`, `/admin/settings`, `/admin/model-config`, `/admin/plugins`, `/admin/sso`, `/admin/connections`, `/admin/scim`, `/admin/ip-allowlist`, `/admin/api-keys`) all converged on the same progressive-disclosure vocabulary: a thin `CompactRow` with status dot + title + action that expands into a full `Shell` with icon, status pill, body (`DetailList` + `DetailRow`), and footer actions. Focus management on expand/collapse needed identical handling across every adopter. The extraction rule (#1551) said third adopter — the revamp wave blew past that.
+
+**Solution:** `compact.tsx` consolidates the vocabulary. Exports:
+
+- `StatusKind` — union of 6 kinds (`connected`, `disconnected`, `unavailable`, `ready`, `transitioning`, `unhealthy`) — widest across callers, per-caller subset is fine.
+- `StatusDot` — 1.5×1.5 dot with kind-specific color + halo. Connected adds a motion-safe ping.
+- `CompactRow` — collapsed-state row. Icon slot, title, status dot, action slot.
+- `Shell` — expanded-state card. Icon slot (status-tinted), title (+ optional `titleBadge`), description, `trailing` ornament (defaults to Live/Unhealthy pill), collapse X, body children, footer `actions`. `titleText` prop for aria-label when `title` is JSX.
+- `DetailList` / `DetailRow` — bordered key/value spec sheet. `mono` + `truncate` props.
+- `InlineError` / `SectionHeading` — per-item error surface + section eyebrow.
+- `useDisclosure({ onCollapseCleanup, collapseOn })` — the heart of the extraction. Returns `{ expanded, setExpanded, collapse, triggerRef, panelRef, panelId }` and handles:
+  1. expand/collapse state + stable panel id
+  2. focus into first form field on expand
+  3. return focus to trigger button on collapse
+  4. caller-provided cleanup (mutation error reset) on collapse
+  5. auto-collapse when an external signal flips (e.g. `connected` after a successful BYOT flow) so a later disconnect doesn't re-open a stale `expanded=true` panel
+
+**Impact:**
+- **14 pages converged on one vocabulary** during the revamp wave (PRs #1538, #1540, #1544, #1548, #1549, #1550, #1552, #1553, #1554, #1556, and others).
+- **Focus-management bugs that would have been 14 regressions became 1 fix.** The plugins page initially dropped the X close button when `trailing` was customized (#1560) — caught once, fixed in `Shell`, the fix propagated to all 14 adopters.
+- **aria-controls-on-unmounted-panel class bug (#1545, fixed PR #1547)** was also a single-fix-propagates across all adopters because every page read the panel id from `useDisclosure`.
+- **`CompactRow` + `Shell` as one module** (rather than two separate files) was the right call — they share `StatusKind` and `STATUS_LABEL`, and callers frequently render both forms side-by-side (connected Shell, other items collapsed CompactRow).
+- **`statusLabel` override** on both `Shell` and `CompactRow` lets callers with different status semantics (plugins use "Enabled"/"Disabled" rather than "Connected"/"Not connected") reuse the primitive without forking.
+
+**Category:** Progressive-disclosure UI pattern consolidated from 14 inline duplications into one shared module. `useDisclosure` is the cleanest win — five concerns (state, focus in, focus out, cleanup, auto-collapse) bundled behind six return values. Compare with the starter state of most revamped pages, which had three or four of the five concerns wired by hand and the fifth missing entirely (stale `expanded=true` after a successful mutation was a recurring bug).

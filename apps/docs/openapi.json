@@ -34737,6 +34737,403 @@
         "operationId": "postAdminAbuseByWorkspaceIdReinstate"
       }
     },
+    "/api/v1/admin/abuse/{workspaceId}/detail": {
+      "get": {
+        "tags": [
+          "Admin — Abuse Prevention"
+        ],
+        "summary": "Investigation detail for a flagged workspace",
+        "description": "SaaS only. Returns live counters, thresholds, the current flag instance, and up to 5 prior flag instances so operators can investigate without leaving the page.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Investigation detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "workspaceName": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "level": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "warning",
+                        "throttled",
+                        "suspended"
+                      ]
+                    },
+                    "trigger": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "query_rate",
+                        "error_rate",
+                        "unique_tables",
+                        "manual",
+                        null
+                      ]
+                    },
+                    "message": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    },
+                    "counters": {
+                      "type": "object",
+                      "properties": {
+                        "queryCount": {
+                          "type": "number"
+                        },
+                        "errorCount": {
+                          "type": "number"
+                        },
+                        "errorRatePct": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "uniqueTablesAccessed": {
+                          "type": "number"
+                        },
+                        "escalations": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "queryCount",
+                        "errorCount",
+                        "errorRatePct",
+                        "uniqueTablesAccessed",
+                        "escalations"
+                      ]
+                    },
+                    "thresholds": {
+                      "type": "object",
+                      "properties": {
+                        "queryRateLimit": {
+                          "type": "number"
+                        },
+                        "queryRateWindowSeconds": {
+                          "type": "number"
+                        },
+                        "errorRateThreshold": {
+                          "type": "number"
+                        },
+                        "uniqueTablesLimit": {
+                          "type": "number"
+                        },
+                        "throttleDelayMs": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "queryRateLimit",
+                        "queryRateWindowSeconds",
+                        "errorRateThreshold",
+                        "uniqueTablesLimit",
+                        "throttleDelayMs"
+                      ]
+                    },
+                    "currentInstance": {
+                      "type": "object",
+                      "properties": {
+                        "startedAt": {
+                          "type": "string"
+                        },
+                        "endedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "peakLevel": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "warning",
+                            "throttled",
+                            "suspended"
+                          ]
+                        },
+                        "events": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "workspaceId": {
+                                "type": "string"
+                              },
+                              "level": {
+                                "type": "string",
+                                "enum": [
+                                  "none",
+                                  "warning",
+                                  "throttled",
+                                  "suspended"
+                                ]
+                              },
+                              "trigger": {
+                                "type": "string",
+                                "enum": [
+                                  "query_rate",
+                                  "error_rate",
+                                  "unique_tables",
+                                  "manual"
+                                ]
+                              },
+                              "message": {
+                                "type": "string"
+                              },
+                              "metadata": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "actor": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "workspaceId",
+                              "level",
+                              "trigger",
+                              "message",
+                              "metadata",
+                              "createdAt",
+                              "actor"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "startedAt",
+                        "endedAt",
+                        "peakLevel",
+                        "events"
+                      ]
+                    },
+                    "priorInstances": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "startedAt": {
+                            "type": "string"
+                          },
+                          "endedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "peakLevel": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "warning",
+                              "throttled",
+                              "suspended"
+                            ]
+                          },
+                          "events": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "workspaceId": {
+                                  "type": "string"
+                                },
+                                "level": {
+                                  "type": "string",
+                                  "enum": [
+                                    "none",
+                                    "warning",
+                                    "throttled",
+                                    "suspended"
+                                  ]
+                                },
+                                "trigger": {
+                                  "type": "string",
+                                  "enum": [
+                                    "query_rate",
+                                    "error_rate",
+                                    "unique_tables",
+                                    "manual"
+                                  ]
+                                },
+                                "message": {
+                                  "type": "string"
+                                },
+                                "metadata": {
+                                  "type": "object",
+                                  "additionalProperties": {}
+                                },
+                                "createdAt": {
+                                  "type": "string"
+                                },
+                                "actor": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "workspaceId",
+                                "level",
+                                "trigger",
+                                "message",
+                                "metadata",
+                                "createdAt",
+                                "actor"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "startedAt",
+                          "endedAt",
+                          "peakLevel",
+                          "events"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "workspaceName",
+                    "level",
+                    "trigger",
+                    "message",
+                    "updatedAt",
+                    "counters",
+                    "thresholds",
+                    "currentInstance",
+                    "priorInstances"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workspace not flagged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminAbuseByWorkspaceIdDetail"
+      }
+    },
     "/api/v1/admin/abuse/config": {
       "get": {
         "tags": [

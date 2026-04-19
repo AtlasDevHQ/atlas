@@ -22,12 +22,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { DomainsResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -289,8 +288,8 @@ function DomainsPageContent() {
         </Card>
 
         {/* Verify/delete error banners */}
-        {verifyError && <ErrorBanner message={friendlyError(verifyError)} />}
-        {deleteError && <ErrorBanner message={friendlyError(deleteError)} />}
+        <MutationErrorSurface error={verifyError} feature="Custom Domains" onRetry={clearVerifyError} />
+        <MutationErrorSurface error={deleteError} feature="Custom Domains" onRetry={clearDeleteError} />
 
         {/* Add domain dialog */}
       <Dialog open={addDialog} onOpenChange={(open) => { if (!open) { setAddDialog(false); setNewDomain(""); setNewWorkspaceId(""); clearRegisterError(); } }}>
@@ -320,7 +319,7 @@ function DomainsPageContent() {
                 onChange={(e) => setNewDomain(e.target.value)}
               />
             </div>
-            {registerError && <ErrorBanner message={friendlyError(registerError)} />}
+            <MutationErrorSurface error={registerError} feature="Custom Domains" onRetry={clearRegisterError} />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAddDialog(false); setNewDomain(""); setNewWorkspaceId(""); clearRegisterError(); }}>

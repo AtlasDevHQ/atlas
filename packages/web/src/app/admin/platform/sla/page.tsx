@@ -25,14 +25,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import {
   SLAWorkspacesResponseSchema,
   SLAAlertsResponseSchema,
@@ -298,7 +297,7 @@ function SLAPageContent() {
           {slaLoading ? (
             <LoadingState message="Loading SLA metrics..." />
           ) : slaError ? (
-            <ErrorBanner message={friendlyError(slaError)} />
+            <MutationErrorSurface error={slaError} feature="SLA Monitoring" />
           ) : workspaces.length === 0 ? (
             <Card className="shadow-none">
               <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
@@ -373,7 +372,7 @@ function SLAPageContent() {
           {alertsLoading ? (
             <LoadingState message="Loading alerts..." />
           ) : alertsError ? (
-            <ErrorBanner message={friendlyError(alertsError)} />
+            <MutationErrorSurface error={alertsError} feature="SLA Monitoring" />
           ) : (alertsData?.alerts ?? []).length === 0 ? (
             <Card className="shadow-none">
               <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
@@ -440,7 +439,7 @@ function SLAPageContent() {
           {detailLoading ? (
             <LoadingState message="Loading detail..." />
           ) : detailError ? (
-            <ErrorBanner message={friendlyError(detailError)} />
+            <MutationErrorSurface error={detailError} feature="SLA Monitoring" />
           ) : detailData ? (
             <div className="space-y-6">
               {/* Summary stats */}
@@ -516,7 +515,7 @@ function SLAPageContent() {
               Configure the default SLA alert thresholds. Alerts fire when metrics exceed these values.
             </DialogDescription>
           </DialogHeader>
-          {thresholdError && <ErrorBanner message={friendlyError(thresholdError)} />}
+          <MutationErrorSurface error={thresholdError} feature="SLA Monitoring" onRetry={clearThresholdError} />
           {editThresholds && (
             <div className="space-y-4">
               <div className="space-y-2">

@@ -31,11 +31,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { useAdminFetch, friendlyError, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import {
   PlatformStatsSchema,
@@ -256,7 +256,7 @@ function PlatformPageContent() {
   // ── Render ───────────────────────────────────────────────────────
 
   if (statsError && wsError) {
-    return <ErrorBanner message={friendlyError(statsError)} />;
+    return <MutationErrorSurface error={statsError} feature="Platform Admin" />;
   }
 
   return (
@@ -283,7 +283,7 @@ function PlatformPageContent() {
           {statsLoading ? (
             <LoadingState message="Loading platform stats..." />
           ) : statsError ? (
-            <ErrorBanner message={friendlyError(statsError)} />
+            <MutationErrorSurface error={statsError} feature="Platform Admin" />
           ) : stats ? (
             <>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -366,7 +366,7 @@ function PlatformPageContent() {
           {wsLoading ? (
             <LoadingState message="Loading workspaces..." />
           ) : wsError ? (
-            <ErrorBanner message={friendlyError(wsError)} />
+            <MutationErrorSurface error={wsError} feature="Platform Admin" />
           ) : (
             <Card className="shadow-none">
               <Table>
@@ -496,7 +496,7 @@ function PlatformPageContent() {
           {neighborsLoading ? (
             <LoadingState message="Analyzing resource usage..." />
           ) : neighborsError ? (
-            <ErrorBanner message={friendlyError(neighborsError)} />
+            <MutationErrorSurface error={neighborsError} feature="Platform Admin" />
           ) : neighborsData && neighborsData.neighbors.length === 0 ? (
             <Card className="shadow-none">
               <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
@@ -573,7 +573,7 @@ function PlatformPageContent() {
           {detailLoading ? (
             <LoadingState message="Loading details..." />
           ) : detailError ? (
-            <ErrorBanner message={friendlyError(detailError)} />
+            <MutationErrorSurface error={detailError} feature="Platform Admin" />
           ) : detailData ? (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -687,7 +687,7 @@ function PlatformPageContent() {
               />
             </div>
           )}
-          {actionError && <ErrorBanner message={friendlyError(actionError)} />}
+          <MutationErrorSurface error={actionError} feature="Platform Admin" onRetry={clearActionError} />
           <DialogFooter>
             <Button variant="outline" onClick={() => { setConfirmAction(null); clearActionError(); setPurgeConfirmName(""); }}>Cancel</Button>
             <Button
@@ -722,7 +722,7 @@ function PlatformPageContent() {
               Update the plan tier for &quot;{planChange?.workspace.name}&quot;.
             </DialogDescription>
           </DialogHeader>
-          {planError && <ErrorBanner message={friendlyError(planError)} />}
+          <MutationErrorSurface error={planError} feature="Platform Admin" onRetry={clearPlanError} />
           <Select
             value={planChange?.newTier ?? "free"}
             onValueChange={(v) => planChange && setPlanChange({ ...planChange, newTier: v as PlanTier })}

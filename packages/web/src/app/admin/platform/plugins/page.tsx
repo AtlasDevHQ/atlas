@@ -53,6 +53,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -386,11 +387,11 @@ function CatalogFormDialog({
               )}
             />
 
-            {mutation.error && (
-              <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {friendlyError(mutation.error)}
-              </div>
-            )}
+            <MutationErrorSurface
+              error={mutation.error}
+              feature="Plugin Catalog"
+              variant="inline"
+            />
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

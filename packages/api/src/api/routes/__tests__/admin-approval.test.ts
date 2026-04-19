@@ -1,20 +1,16 @@
 /**
- * Tests for admin approval routes — specifically the ?status= query validation
- * on GET /queue (#1662).
- *
- * Tests the `adminApproval` sub-router directly. We exercise the
- * @hono/zod-openapi query validation by hitting the route with an invalid
- * `status` enum value and asserting the 422 validation_error response from
- * the shared `validationHook`. The 400 in the issue description corresponds
- * to "validation failed", but this project's convention is 422 via
- * `validationHook` (see packages/api/src/api/routes/validation-hook.ts).
+ * Tests for GET /api/v1/admin/approval/queue — exercises the
+ * @hono/zod-openapi query validation on `?status=` and the shared
+ * `validationHook` which surfaces zod errors as 422 (see
+ * packages/api/src/api/routes/validation-hook.ts).
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import { Data, Effect } from "effect";
 
-// Domain error class matching the real ApprovalError from @atlas/ee/governance/approval.
-// Declared here so the mock module can return a constructor without a hoisted require().
+// Declared at module scope so `mock.module()` factories — which run before
+// imported module code — can capture this class reference. An inline require()
+// inside the factory would violate the @typescript-eslint/no-require-imports rule.
 class MockApprovalError extends Data.TaggedError("ApprovalError")<{
   message: string;
   code: "validation" | "not_found" | "conflict" | "expired";
@@ -35,19 +31,21 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
-const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
-  () =>
-    Promise.resolve({
-      authenticated: true,
+const defaultAuthResponse = () =>
+  Promise.resolve({
+    authenticated: true,
+    mode: "managed",
+    user: {
+      id: "admin-1",
       mode: "managed",
-      user: {
-        id: "admin-1",
-        mode: "managed",
-        label: "admin@test.dev",
-        role: "admin",
-        activeOrganizationId: "org-test",
-      },
-    }),
+      label: "admin@test.dev",
+      role: "admin",
+      activeOrganizationId: "org-test",
+    },
+  });
+
+const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
+  () => defaultAuthResponse(),
 );
 
 mock.module("@atlas/api/lib/auth/middleware", () => ({
@@ -123,9 +121,11 @@ const { adminApproval } = await import("../admin-approval");
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("GET /queue — ?status= query validation (#1662)", () => {
+describe("GET /queue — ?status= query validation", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
+    mockAuthenticateRequest.mockReset();
+    mockAuthenticateRequest.mockImplementation(defaultAuthResponse);
     mockListApprovalRequests.mockClear();
     mockListApprovalRequests.mockImplementation(() => Effect.succeed([]));
   });

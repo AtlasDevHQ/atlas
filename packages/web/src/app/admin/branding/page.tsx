@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useEffect, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -22,12 +15,19 @@ import {
   RotateCcw,
   ShieldOff,
   Type,
-  X,
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import {
+  CompactRow,
+  InlineError,
+  SectionHeading,
+  Shell,
+  type StatusKind,
+  useDisclosure,
+} from "@/ui/components/admin/compact";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -41,7 +41,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { WorkspaceBrandingSchema } from "@/ui/lib/admin-schemas";
-import { cn } from "@/lib/utils";
 
 const BrandingResponseSchema = z
   .object({ branding: WorkspaceBrandingSchema.nullable() })
@@ -69,243 +68,21 @@ const EMPTY: BrandingValues = {
   hideAtlasBranding: false,
 };
 
-// ── Shared design primitives ──────────────────────────────────────
-// Mirrors the copies in admin/billing and admin/integrations. The three
-// duplicates are load-bearing until extraction; do not drift them.
-// TODO: extract to @/ui/components/admin/ in a dedicated refactor PR.
+// ── Helpers ───────────────────────────────────────────────────────
 
-type StatusKind = "connected" | "disconnected" | "unavailable";
-
-function StatusDot({
-  kind,
-  className,
-}: {
-  kind: StatusKind;
-  className?: string;
-}) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "relative inline-flex size-1.5 shrink-0 rounded-full",
-        kind === "connected" &&
-          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
-        kind === "disconnected" && "bg-muted-foreground/40",
-        kind === "unavailable" &&
-          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
-        className,
-      )}
-    >
-      {kind === "connected" && (
-        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
-      )}
-    </span>
-  );
-}
-
-const STATUS_LABEL: Record<StatusKind, string> = {
+// Shared status-label overrides for CompactRow's sr-only status text. Branding
+// semantics differ from the compact primitive defaults (Connected / Not
+// connected / Unavailable) — customization is the operative concept here.
+const BRANDING_STATUS_LABEL: Record<StatusKind, string> = {
   connected: "Customized",
   disconnected: "Default",
   unavailable: "Unavailable",
+  // These three kinds aren't used by branding rows, but StatusKind is the
+  // full union from compact.tsx — satisfy the Record shape for type-safety.
+  ready: "Ready",
+  transitioning: "Transitioning",
+  unhealthy: "Unhealthy",
 };
-
-function BrandingShell({
-  id,
-  icon,
-  title,
-  description,
-  status,
-  children,
-  actions,
-  onCollapse,
-  panelRef,
-}: {
-  id?: string;
-  icon: ReactNode;
-  title: string;
-  description: string;
-  status: StatusKind;
-  children?: ReactNode;
-  actions?: ReactNode;
-  onCollapse?: () => void;
-  panelRef?: RefObject<HTMLElement | null>;
-}) {
-  return (
-    <section
-      id={id}
-      ref={panelRef}
-      className={cn(
-        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
-        "hover:border-border/80",
-        status === "connected" && "border-primary/20",
-      )}
-    >
-      {status === "connected" && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
-        />
-      )}
-
-      <header className="flex items-start gap-3 p-4 pb-3">
-        <span
-          className={cn(
-            // [&>svg]:size-4 restores billing's sizing invariant since
-            // we widened the icon prop to ReactNode for the swatch case
-            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40 [&>svg]:size-4",
-            status === "connected" && "border-primary/30 text-primary",
-            status !== "connected" && "text-muted-foreground",
-          )}
-        >
-          {icon}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-              {title}
-            </h3>
-            {status === "connected" && (
-              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
-                <StatusDot kind="connected" />
-                Live
-              </span>
-            )}
-            {status !== "connected" && onCollapse && (
-              <button
-                type="button"
-                aria-label="Cancel"
-                onClick={onCollapse}
-                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            )}
-          </div>
-          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
-            {description}
-          </p>
-        </div>
-      </header>
-
-      {children != null && (
-        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
-      )}
-
-      {actions && (
-        <footer className="flex items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
-          {actions}
-        </footer>
-      )}
-    </section>
-  );
-}
-
-function CompactRow({
-  icon,
-  title,
-  description,
-  status,
-  action,
-}: {
-  icon: ReactNode;
-  title: string;
-  description: ReactNode;
-  status: StatusKind;
-  action?: ReactNode;
-}) {
-  return (
-    <div
-      className={cn(
-        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
-        "hover:bg-card/70 hover:border-border/80",
-        status === "unavailable" && "opacity-60",
-      )}
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground [&>svg]:size-4">
-        {icon}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {title}
-          </h3>
-          <StatusDot kind={status} className="shrink-0" />
-          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
-        </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {description}
-        </p>
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
-
-function SectionHeading({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
-      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
-    </div>
-  );
-}
-
-function InlineError({ children }: { children: ReactNode }) {
-  if (!children) return null;
-  return (
-    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-      {children}
-    </div>
-  );
-}
-
-/**
- * Disclosure helper for progressive-disclosure rows. Moves focus into the
- * revealed panel on expand, restores it to the trigger on collapse.
- *
- * Branding rows have no per-row side effects to clean up on collapse,
- * so this is the trimmed variant of the admin/integrations hook — no
- * `connected` arg, no `onCollapseCleanup` callback. If a future branding
- * row needs cleanup, pull in the admin/integrations shape.
- */
-function useDisclosure() {
-  const [expanded, setExpanded] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef = useRef<HTMLElement | null>(null);
-  const panelId = useId();
-  const prev = useRef(false);
-
-  useEffect(() => {
-    if (expanded && !prev.current) {
-      const first = panelRef.current?.querySelector<HTMLElement>(
-        "input:not([disabled]), textarea:not([disabled])",
-      );
-      first?.focus();
-    } else if (!expanded && prev.current) {
-      triggerRef.current?.focus();
-    }
-    prev.current = expanded;
-  }, [expanded]);
-
-  return {
-    expanded,
-    setExpanded,
-    collapse: () => setExpanded(false),
-    triggerRef,
-    panelRef,
-    panelId,
-  };
-}
-
-// ── Helpers ───────────────────────────────────────────────────────
 
 function truncateUrl(url: string, max = 44): string {
   if (url.length <= max) return url;
@@ -523,14 +300,16 @@ function LogoUrlRow() {
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure();
   const value = useWatchField("logoUrl");
+  const status: StatusKind = value ? "connected" : "disconnected";
 
   if (!expanded) {
     return (
       <CompactRow
-        icon={<ImageIcon className="size-4" />}
+        icon={ImageIcon}
         title="Logo image"
         description={value || "Replace the Atlas logo with your own image"}
-        status={value ? "connected" : "disconnected"}
+        status={status}
+        statusLabel={BRANDING_STATUS_LABEL[status]}
         action={
           <Button
             ref={triggerRef}
@@ -555,10 +334,10 @@ function LogoUrlRow() {
   }
 
   return (
-    <BrandingShell
+    <Shell
       id={panelId}
       panelRef={panelRef}
-      icon={<ImageIcon className="size-4" />}
+      icon={ImageIcon}
       title="Logo image"
       description="PNG, SVG, or JPEG recommended. Served from your own origin."
       status="disconnected"
@@ -580,7 +359,7 @@ function LogoUrlRow() {
           </FormItem>
         )}
       />
-    </BrandingShell>
+    </Shell>
   );
 }
 
@@ -588,14 +367,16 @@ function LogoTextRow() {
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure();
   const value = useWatchField("logoText");
+  const status: StatusKind = value ? "connected" : "disconnected";
 
   if (!expanded) {
     return (
       <CompactRow
-        icon={<Type className="size-4" />}
+        icon={Type}
         title="Logo text"
         description={value || "Displayed next to or instead of the logo"}
-        status={value ? "connected" : "disconnected"}
+        status={status}
+        statusLabel={BRANDING_STATUS_LABEL[status]}
         action={
           <Button
             ref={triggerRef}
@@ -620,10 +401,10 @@ function LogoTextRow() {
   }
 
   return (
-    <BrandingShell
+    <Shell
       id={panelId}
       panelRef={panelRef}
-      icon={<Type className="size-4" />}
+      icon={Type}
       title="Logo text"
       description="Usually your company name. Shown in the sidebar header."
       status="disconnected"
@@ -641,7 +422,7 @@ function LogoTextRow() {
           </FormItem>
         )}
       />
-    </BrandingShell>
+    </Shell>
   );
 }
 
@@ -658,20 +439,24 @@ function PrimaryColorRow() {
       ? "connected"
       : "disconnected";
 
-  const swatchIcon = swatchColor ? (
-    <span
-      aria-hidden
-      className="size-4 rounded-sm border border-border/60"
-      style={{ backgroundColor: swatchColor }}
-    />
-  ) : (
-    <Palette />
-  );
+  // Compact's `icon` prop expects a ComponentType<{className?: string}>. For
+  // the swatch case we wrap the colored span in a local component so the
+  // outer tile's neutral grid frame keeps rendering uniformly; Palette falls
+  // through as the lucide fallback.
+  const SwatchIcon = swatchColor
+    ? ({ className }: { className?: string }) => (
+        <span
+          aria-hidden
+          className={`rounded-sm border border-border/60 ${className ?? ""}`}
+          style={{ backgroundColor: swatchColor }}
+        />
+      )
+    : Palette;
 
   if (!expanded) {
     return (
       <CompactRow
-        icon={swatchIcon}
+        icon={SwatchIcon}
         title="Primary color"
         description={
           invalid ? (
@@ -685,6 +470,7 @@ function PrimaryColorRow() {
           )
         }
         status={status}
+        statusLabel={BRANDING_STATUS_LABEL[status]}
         action={
           <Button
             ref={triggerRef}
@@ -709,10 +495,10 @@ function PrimaryColorRow() {
   }
 
   return (
-    <BrandingShell
+    <Shell
       id={panelId}
       panelRef={panelRef}
-      icon={swatchIcon}
+      icon={SwatchIcon}
       title="Primary color"
       description="6-digit hex (e.g. #FF5500). Used for buttons and accents."
       status="disconnected"
@@ -743,7 +529,7 @@ function PrimaryColorRow() {
           </FormItem>
         )}
       />
-    </BrandingShell>
+    </Shell>
   );
 }
 
@@ -751,14 +537,16 @@ function FaviconRow() {
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure();
   const value = useWatchField("faviconUrl");
+  const status: StatusKind = value ? "connected" : "disconnected";
 
   if (!expanded) {
     return (
       <CompactRow
-        icon={<Globe className="size-4" />}
+        icon={Globe}
         title="Favicon"
         description={value ? truncateUrl(value) : "Shown in browser tabs and bookmarks"}
-        status={value ? "connected" : "disconnected"}
+        status={status}
+        statusLabel={BRANDING_STATUS_LABEL[status]}
         action={
           <Button
             ref={triggerRef}
@@ -783,10 +571,10 @@ function FaviconRow() {
   }
 
   return (
-    <BrandingShell
+    <Shell
       id={panelId}
       panelRef={panelRef}
-      icon={<Globe className="size-4" />}
+      icon={Globe}
       title="Favicon"
       description="Accepts .ico, .png, or .svg."
       status="disconnected"
@@ -811,7 +599,7 @@ function FaviconRow() {
           </FormItem>
         )}
       />
-    </BrandingShell>
+    </Shell>
   );
 }
 
@@ -819,29 +607,33 @@ function AttributionRow() {
   return (
     <FormField
       name="hideAtlasBranding"
-      render={({ field }) => (
-        <FormItem className="space-y-0">
-          <CompactRow
-            icon={<ShieldOff className="size-4" />}
-            title="Hide Atlas branding"
-            description={
-              field.value
-                ? "“Atlas” and “Powered by Atlas” text are hidden"
-                : "Default — Atlas attribution remains visible"
-            }
-            status={field.value ? "connected" : "disconnected"}
-            action={
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                  aria-label="Hide Atlas branding"
-                />
-              </FormControl>
-            }
-          />
-        </FormItem>
-      )}
+      render={({ field }) => {
+        const status: StatusKind = field.value ? "connected" : "disconnected";
+        return (
+          <FormItem className="space-y-0">
+            <CompactRow
+              icon={ShieldOff}
+              title="Hide Atlas branding"
+              description={
+                field.value
+                  ? "“Atlas” and “Powered by Atlas” text are hidden"
+                  : "Default — Atlas attribution remains visible"
+              }
+              status={status}
+              statusLabel={BRANDING_STATUS_LABEL[status]}
+              action={
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                    aria-label="Hide Atlas branding"
+                  />
+                </FormControl>
+              }
+            />
+          </FormItem>
+        );
+      }}
     />
   );
 }
@@ -867,8 +659,8 @@ function PreviewShell({
   }, [logoUrl]);
 
   return (
-    <BrandingShell
-      icon={<Eye className="size-4" />}
+    <Shell
+      icon={Eye}
       title="Sidebar header"
       description="Live preview — reflects unsaved edits."
       status={anyCustomized ? "connected" : "disconnected"}
@@ -936,7 +728,7 @@ function PreviewShell({
           image with permissive CORS headers.
         </p>
       )}
-    </BrandingShell>
+    </Shell>
   );
 }
 

@@ -13,12 +13,19 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 // Lazy-load EE module to break circular @atlas/api ↔ @atlas/ee dependency
 async function loadEE() {
   return import("@atlas/ee/auth/ip-allowlist");
+}
+
+// Lazy-load the enterprise gate for the same reason. Mirrors the pattern in
+// ee/src/auth/ip-allowlist.ts which dynamically imports `isEnterpriseEnabled`.
+async function loadEnterpriseGate() {
+  return import("@atlas/ee/index");
 }
 
 /** Map IPAllowlistError codes to HTTP responses. */
@@ -74,6 +81,16 @@ const listEntriesRoute = createRoute({
             entries: z.array(IPAllowlistEntrySchema),
             total: z.number(),
             callerIP: z.string().nullable(),
+            // True iff enterprise is enabled, the internal DB is configured,
+            // AND at least one CIDR entry exists. The IP allowlist middleware
+            // short-circuits to `{ allowed: true }` when either gate is off,
+            // so admins need a way to tell "we have rules but they aren't
+            // actually being enforced" apart from "rules are being enforced".
+            effectivelyEnforced: z.boolean().openapi({
+              example: true,
+              description:
+                "Whether the workspace's IP allowlist is actively gating requests. False when enterprise is disabled, internal DB is missing, or no entries exist.",
+            }),
           }),
         },
       },
@@ -145,6 +162,7 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
     const callerIP = getClientIP(c.req.raw);
 
     const ee = yield* Effect.promise(loadEE);
+    const enterpriseGate = yield* Effect.promise(loadEnterpriseGate);
 
     const entries = yield* Effect.tryPromise({
       try: () => Effect.runPromise(ee.listIPAllowlistEntries(orgId!)),
@@ -160,7 +178,19 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
 
     // If catchAll produced an early response, return it
     if (entries instanceof Response) return entries;
-    return c.json({ entries, total: (entries as unknown[]).length, callerIP }, 200);
+
+    // Mirror the preconditions in ee/src/auth/ip-allowlist.ts#checkIPAllowlist
+    // exactly: the middleware short-circuits to `{ allowed: true }` when EE is
+    // disabled OR the internal DB is missing, regardless of row count. So
+    // "enforcing" has to include both gates, not just entries.length > 0.
+    const list = entries as unknown[];
+    const effectivelyEnforced =
+      enterpriseGate.isEnterpriseEnabled() && hasInternalDB() && list.length > 0;
+
+    return c.json(
+      { entries, total: list.length, callerIP, effectivelyEnforced },
+      200,
+    );
   }), { label: "list IP allowlist entries" });
 });
 

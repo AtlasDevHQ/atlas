@@ -1367,6 +1367,25 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 
 ---
 
+## 1.2.2 — Admin Console Polish & Schema Consolidation
+
+**Milestone #36.** Finish the admin console final pass (Bucket 2 data tables + remaining MutationErrorSurface migrations) and consolidate wire-format schemas under `@useatlas/schemas`. Post-1.2.1 polish arc carrying the security/refactor follow-ups from the abuse + admin work.
+
+### Shipped
+- [x] DB CHECK + server-side enum drift coercion for `abuse_events.level` / `trigger_type` (#1653, PR #1655) — migration `0031_abuse_events_enum_checks.sql` coerces pre-drifted rows to safe defaults (`none` / `manual`) then adds idempotent `CHECK` constraints; server-side `coerceAbuseEnums()` helper validates hydrated rows against canonical tuples and emits `log.warn` on drift; replaces unchecked `as AbuseLevel` / `as AbuseTrigger` casts in `getAbuseEvents` + `restoreAbuseState`; 3 TDD drift tests
+- [x] ApprovalRule / ApprovalRequest + CustomDomain → `@useatlas/schemas` (#1648 chunk, PR #1654) — second consumer of the package after AbuseDetail; deletes route-level copies in `admin-approval.ts` + `shared-domains.ts` and web-level copies in `admin-schemas.ts`; tightens `ApprovalRule.ruleType` / `ApprovalRequest.status` / `CustomDomain.status` / `CustomDomain.certificateStatus` from relaxed `z.string()` to strict `z.enum()`; 22 TDD tests; zero OpenAPI diff. Follow-ups #1660 / #1661 / #1662 filed during review
+- [x] `MutationErrorSurface` phase 2A — platform/* subtree (#1649 chunk A, PR #1656) — 7 `/admin/platform/*` pages migrated (backups, domains, page.tsx, plugins, residency, settings, sla); `FormDialog` `serverError` props stay on `friendlyErrorOrNull()` per phase-1 contract; local-synthesized last-wins strings preserved per carve-out. Follow-ups #1657 (assignmentsError consistency) / #1658 (early-return drops wsError) / #1659 (wire onRetry on configError) filed during migration
+
+### In-flight
+- [ ] `@useatlas/schemas` tracker — 13 more schemas to migrate (#1648 reopened) — IntegrationStatus family, PlatformWorkspace / BillingStatus / Backup / Region / SLA / PIIColumnClassification / SemanticDiffResponse / WorkspaceBranding / WorkspaceModelConfig / ConnectionInfo / Audit analytics / Token usage / UsageSummary
+- [ ] `MutationErrorSurface` phase 2 remainder (~25 core admin pages) (#1624 parent + #1649 tracker) — chunks: actions, api-keys, approval, audit/retention-panel, cache, compliance, connections, custom-domain, email-provider, model-config, prompts, residency, roles, sandbox, scheduled-tasks, semantic, semantic/improve, sessions, settings, starter-prompts, usage, users + SCIM row-pin + billing PlanShell
+- [ ] Bucket 2 — admin data-table polish (#1588) — /admin/users, /admin/organizations, /admin/audit, /admin/admin-actions, /admin/token-usage, /admin/usage (sessions shipped in PR #1628)
+- [ ] Type-design hardening for `<MutationErrorSurface>` — branded `FeatureName` + empty-message invariant (#1652)
+- [ ] Remaining abuse follow-ups: factory + computed helpers for `AbuseInstance` invariants (#1644), extract `errorRatePct` branch (#1638), integration test for `getAbuseDetail` (#1639)
+- [ ] Phase-1 architecture tails: share `EMAIL_PROVIDERS` via `@useatlas/types` (#1543), `ProviderConfig` tagged union (#1542), unify `ActionStatus` / `ActionDisplayStatus` (#1591), `getPopularSuggestions` → `registry.readFilter` (#1531), approval pure-function tests + e2e (#1593), `z.enum()` vs `z.string()` in admin-schemas (#1643)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

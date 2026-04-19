@@ -20,11 +20,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -232,17 +231,29 @@ export default function SSOPage() {
         >
           {enforcementMutationError && (
             <div className="mb-4">
-              <ErrorBanner message={friendlyError(enforcementMutationError)} onRetry={clearEnforcementError} />
+              <MutationErrorSurface
+                error={enforcementMutationError}
+                feature="SSO"
+                onRetry={clearEnforcementError}
+              />
             </div>
           )}
           {toggleError && (
             <div className="mb-4">
-              <ErrorBanner message={friendlyError(toggleError)} onRetry={clearToggleError} />
+              <MutationErrorSurface
+                error={toggleError}
+                feature="SSO"
+                onRetry={clearToggleError}
+              />
             </div>
           )}
           {verifyError && (
             <div className="mb-4">
-              <ErrorBanner message={friendlyError(verifyError)} onRetry={clearVerifyError} />
+              <MutationErrorSurface
+                error={verifyError}
+                feature="SSO"
+                onRetry={clearVerifyError}
+              />
             </div>
           )}
 
@@ -364,7 +375,11 @@ export default function SSOPage() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           {enforcementMutationError && (
-            <ErrorBanner message={friendlyError(enforcementMutationError)} onRetry={clearEnforcementError} />
+            <MutationErrorSurface
+              error={enforcementMutationError}
+              feature="SSO"
+              onRetry={clearEnforcementError}
+            />
           )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={enforcementSaving}>Cancel</AlertDialogCancel>

@@ -727,3 +727,36 @@ A pre-existing bug also hid in the hook: `invalidates()` callbacks ran inside th
 - **Follow-up filed: #1621** (pre-existing `demo/page.tsx` type error using stale `chatEndpoint`/`conversationsEndpoint` props on `<AtlasChat>` — surfaced by `tsgo --noEmit -p packages/web/tsconfig.json` when auditing web-package type-check output; unrelated to this PR but noticed during the review).
 
 **Category:** Completion pass on a two-phase data-structure migration. Win #29 unblocked the primary code path (`result.error`); win #30 sweeps the ~40 pages that read the *secondary* hook-level surface the first pass left flattened, plus adds ESLint enforcement so the invariant survives churn. The #1617 callback-isolation fix rides along because silent-failure-hunter flagged it during #1614 review — cheap to fix atomically with the hook widening, since both touch the same `mutate()` body. Generalizes: when you're partway through a migration and the follow-up is "same class of bug, different surface," do the full sweep plus a lint rule; the ESLint `no-restricted-syntax` AST selector is a cheap safety net for any `X.something` shape you need to prevent callers from re-flattening.
+
+
+---
+
+## 31. `<MutationErrorSurface>` — write-path parity with `AdminContentWrapper` feature-gate routing
+
+**Date:** 2026-04-19
+**Issue:** #1624
+**PR:** TBD (phase 1 of 2 — 5 admin pages migrated, follow-up issue tracks the remaining ~35)
+
+**Problem:** Wins #29 and #30 widened `MutateResult.error` and `mutation.error` to `FetchError`, preserving `code` / `status` / `requestId` across the hook boundary. But `AdminContentWrapper`'s `isEnterpriseRequired()` + `FeatureGate` decision tree — the code that routes `403 + code: "enterprise_required"` to `EnterpriseUpsell` and known status codes to `FeatureGate` — was still only reachable from the read path (`useAdminFetch`). Admin pages rendering mutation errors wrote `<ErrorBanner message={friendlyError(mutation.error)} />` at their render boundary, which flattens the structured `FetchError` to a string *again* before any gating can fire. A non-EE admin clicking "Enable SSO enforcement" on a gated workspace saw the translated 403 copy ("Access denied. Admin role required.") — wrong message, wrong CTA, no path to the upsell.
+
+Same as the #1595 / #1614 pattern but at the render boundary instead of the hook boundary: structured error survives the transport layer, gets flattened one step later because the UI primitive accepts a `string`, not a `FetchError`.
+
+**Solution:** `<MutationErrorSurface>` in `packages/web/src/ui/components/admin/mutation-error-surface.tsx` accepts `FetchError | null` and encapsulates the same decision tree `AdminContentWrapper` applies to fetch errors — moved up a level from the wrapper into a dedicated component so the write path doesn't have to thread its errors back through `AdminContentWrapper`'s fetch-oriented API.
+
+Two variants:
+- **`variant="banner"` (default)** — mirrors `AdminContentWrapper` exactly: `enterprise_required` → `<EnterpriseUpsell>`, status in {401, 403, 404, 503} → `<FeatureGate>`, else → `<ErrorBanner>` with `friendlyError` copy + retry.
+- **`variant="inline"`** — for compact rows and dialog bodies that can't host a full-page upsell card. `enterprise_required` routes to a condensed `<InlineError>` that keeps the enterprise link ("… requires Enterprise. Learn more →") so the routing win isn't lost; other errors render as `<InlineError>` with an optional bold prefix ("Save failed." etc.). Inline variant intentionally does *not* route other 401/403/404/503 through `<FeatureGate>` — replacing a tiny row-level error slot with a full-page gate would be more disruptive than useful, and the page-level wrapper still handles those on refresh.
+
+Phase 1 migration (this PR) covers 5 highest-value pages — the ones called out explicitly in #1624 as the surfaces where the gap is most visible:
+- `/admin/sso` — 3 `ErrorBanner` sites (enforcement, toggle, verify) + 1 in the enforce-confirmation dialog.
+- `/admin/scim` — 1 page-level `ErrorBanner`. Per-row `InlineError` (with synthesized "Revoke failed —" prefix) stays as-is — that's a different concern (last-wins row pinning) punted to phase 2.
+- `/admin/branding` — 2 `InlineError` sites (save + reset).
+- `/admin/billing` — 2 `InlineError` sites (model change + BYOT toggle). `PlanShell.combinedError` deliberately skipped — blends a mutation error with local `portalError` state; phase 2.
+- `/admin/ip-allowlist` — inline div in delete dialog.
+
+**Impact:**
+- **One component, five pages, ~35 remaining.** Component itself is small — most of it is the docstring explaining the decision tree and why the inline variant opts out of FeatureGate routing. Each call site dropped 3–5 lines — `{err && <ErrorBanner … />}` → `<MutationErrorSurface error={err} feature="…" />` plus the null-render handling moves into the component.
+- **10 component tests, full branch coverage.** Enterprise_required (banner + inline), all 4 FeatureGate status codes, plain error with requestId, retry button wiring, inline prefix rendering, null → null. Inline + `enterprise_required` asserts the compact upsell link is present AND the full `EnterpriseUpsell` button is *not* — guards the variant separation.
+- **Phase 2 is mechanical.** ~35 admin pages still write `<ErrorBanner message={friendlyError(mutation.error)} />` or the equivalent. Follow-up issue enumerates the full list so the second PR can sweep them in one pass without re-analysis.
+
+**Category:** Render-boundary completion of the structured-error migration line (wins #29 → #30 → #31). Each win moves the invariant one step further through the stack: hook result → hook state → render output. The pattern generalizes — if a UI primitive accepts a flattened type (`string`, `number`) where the caller has a structured type (`FetchError`, `Money`, `Duration`), the decision tree *on* the structured fields belongs in a dedicated component, not at every call site. Call sites otherwise drop the structure before gating can fire.

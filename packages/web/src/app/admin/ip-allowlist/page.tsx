@@ -22,9 +22,10 @@ import {
 } from "@/components/form-dialog";
 import { z } from "zod";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -240,11 +241,11 @@ function DeleteEntryDialog({
               </div>
             )}
 
-            {error && (
-              <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {friendlyError(error)}
-              </div>
-            )}
+            <MutationErrorSurface
+              error={error}
+              feature="IP Allowlist"
+              variant="inline"
+            />
           </div>
         )}
 

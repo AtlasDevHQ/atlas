@@ -18,8 +18,8 @@ import {
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -146,7 +146,7 @@ export default function BrandingPage() {
   const busy = save.saving || reset.saving;
 
   async function handleSave(v: BrandingValues) {
-    // saveError state is surfaced via <InlineError> below — no throw
+    // saveError is surfaced by <MutationErrorSurface> below — no throw
     // needed; react-hook-form's handleSubmit would swallow it anyway.
     await save.mutate({
       method: "PUT",
@@ -211,18 +211,18 @@ export default function BrandingPage() {
                 <PreviewShell values={values} colorValid={colorValid} />
               </section>
 
-              {save.error && (
-                <InlineError>
-                  <span className="font-semibold">Save failed.</span>{" "}
-                  {friendlyError(save.error)}
-                </InlineError>
-              )}
-              {reset.error && (
-                <InlineError>
-                  <span className="font-semibold">Reset failed.</span>{" "}
-                  {friendlyError(reset.error)}
-                </InlineError>
-              )}
+              <MutationErrorSurface
+                error={save.error}
+                feature="Branding"
+                variant="inline"
+                inlinePrefix="Save failed."
+              />
+              <MutationErrorSurface
+                error={reset.error}
+                feature="Branding"
+                variant="inline"
+                inlinePrefix="Reset failed."
+              />
               {!colorValid && (
                 <InlineError>
                   Primary color must be a 6-digit hex (e.g. #FF5500). Open

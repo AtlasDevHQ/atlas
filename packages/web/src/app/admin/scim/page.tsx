@@ -24,7 +24,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -153,6 +153,12 @@ export default function SCIMPage() {
     const result = await deleteMutate({ path });
     setDeleteTarget(null);
     if (!result.ok) {
+      // TODO(#1649): route per-row errors through <MutationErrorSurface> too.
+      // Page-level banner already uses the surface and picks up `enterprise_required`
+      // routing; per-row pin still flattens to string so a gated row revoke renders
+      // as a plain InlineError rather than an inline upsell. Not wired here because
+      // rowError needs id/kind tracking that the surface doesn't model — phase 2
+      // reshapes this state to `{ fetchError, id, kind }` and lets the surface render.
       setRowError({ message: friendlyError(result.error), id: target.id, kind: target.type });
     }
   }
@@ -263,7 +269,11 @@ export default function SCIMPage() {
         >
           {showTopMutationError && mutationError && (
             <div className="mb-4">
-              <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />
+              <MutationErrorSurface
+                error={mutationError}
+                feature="SCIM"
+                onRetry={clearMutationError}
+              />
             </div>
           )}
 

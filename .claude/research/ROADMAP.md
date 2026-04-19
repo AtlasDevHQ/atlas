@@ -1323,16 +1323,23 @@ Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approv
 - [x] Atomic `POST /api/v1/actions/bulk` endpoint (#1590, PR #1601)
 - [x] Expand pricing EE comparison + unify Business-plan gating (#1597, #1598, PR #1605) — 13 EE features shown (was 4), Business tier card backfilled, 22 docs MDX pages unified, `admin-domains`/`admin-residency` route descriptions fixed at source
 - [x] OpenAPI ↔ api-reference drift CI gate (#1606, PR #1605) — `scripts/check-openapi-drift.sh` catches route changes that forget `openapi:extract`. Caught real drift on first run (#1601's bulk endpoint MDX)
+- [x] `useAdminMutation` returns structured `FetchError` (#1595, PR #1614) — `MutateResult.error` carries `{ message, status, requestId, code }`; 13 caller sites migrated atomically; `friendlyError()` + `EnterpriseUpsell` now fire on mutation failures (not just page-load). Architecture win #29
+- [x] `ReasonDialog` surfaces thrown `onConfirm` as local error (#1604, PR #1609) — local error state + render `localError ?? error` in alert block; logs via `console.debug` AND surfaces to user; compliance contract test asserts trimmed reason pass-through unchanged
+- [x] Out-of-scope stale "enterprise plan" mentions unified to Business plan (#1607, PR #1608) — 4 MDX + 1 route source + regenerated api-reference
 - [ ] Share `EMAIL_PROVIDERS` via `@useatlas/types` after next publish (#1543)
 - [ ] Make `ProviderConfig` a tagged union keyed on provider (#1542)
 - [ ] `/admin/abuse` row needs investigation depth, not just reinstate (#1589)
 - [ ] Unify `ActionStatus` / `ActionDisplayStatus`, drop `mapStatus` (#1591)
 - [ ] Pure-function tests + e2e spec for `/admin/actions` approval flow (#1593)
-- [ ] `useAdminMutation` should return structured `FetchError`, not flattened string (#1595)
 - [ ] `bulk-summary`: group by failure class, carry requestIds in trailing slot (#1602)
 - [ ] Rollback warning: handle non-string warning shape (#1603)
-- [ ] `ReasonDialog`: surface thrown `onConfirm` as local error, not just console (#1604)
-- [ ] Out-of-scope stale "enterprise plan" mentions in pre-PR#1605 pages (#1607)
+- [ ] `plugin-marketplace` docs describe UI that doesn't exist — "Available tab", "Enterprise badge" (#1610, discovered during #1607 work)
+- [ ] `bulkFailureSummary` loses non-Error rejection values (#1611)
+- [ ] `ReasonDialog` caller `error` prop hidden while `localError` is set (#1612, discovered during #1604 review)
+- [ ] `AtlasChat` demo usage has unknown prop `chatEndpoint` / `conversationsEndpoint` (#1613)
+- [ ] `useAdminMutation.error` hook-level field still flattens `FetchError` — ~15 admin pages affected (#1615, architecture)
+- [ ] ESLint guard to prevent re-introducing `{ message: result.error }` wrap (#1616)
+- [ ] `useAdminMutation` catch conflates `invalidates()` callback errors with fetch errors (#1617)
 
 ---
 

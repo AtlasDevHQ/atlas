@@ -210,7 +210,7 @@ function ResidencyPageContent() {
         {assignmentsLoading ? (
           <LoadingState message="Loading assignments..." />
         ) : assignmentsError ? (
-          <MutationErrorSurface error={assignmentsError} feature="Data Residency" />
+          <MutationErrorSurface error={assignmentsError} feature="Data Residency" onRetry={refetchAssignments} />
         ) : (
           <Card>
             <CardContent className="p-0">

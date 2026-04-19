@@ -14,10 +14,23 @@ import {
 
 // --- Mocks ---
 
+type LogCall = { msg: string; ctx: Record<string, unknown> };
+const warnCalls: LogCall[] = [];
+const infoCalls: LogCall[] = [];
+
+function resetLogCalls(): void {
+  warnCalls.length = 0;
+  infoCalls.length = 0;
+}
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
-    info: () => {},
-    warn: () => {},
+    info: (ctx: Record<string, unknown>, msg: string) => {
+      infoCalls.push({ msg, ctx: ctx ?? {} });
+    },
+    warn: (ctx: Record<string, unknown>, msg: string) => {
+      warnCalls.push({ msg, ctx: ctx ?? {} });
+    },
     error: () => {},
     debug: () => {},
   }),
@@ -25,10 +38,23 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
+// Reconfigurable internal-DB mock so drift-coercion tests can swap in
+// hydration rows without tearing down the whole mock.module registration.
+let _hasInternalDB = false;
+let _internalQueryImpl: <T>(sql: string, params?: unknown[]) => Promise<T[]> =
+  async () => [];
+
+function setInternalDB(enabled: boolean): void {
+  _hasInternalDB = enabled;
+}
+function setInternalQuery<T>(impl: (sql: string, params?: unknown[]) => Promise<T[]>): void {
+  _internalQueryImpl = impl as typeof _internalQueryImpl;
+}
+
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => false,
+  hasInternalDB: () => _hasInternalDB,
   internalExecute: mock(() => {}),
-  internalQuery: mock(async () => []),
+  internalQuery: <T>(sql: string, params?: unknown[]) => _internalQueryImpl<T>(sql, params),
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
   getPendingAmendmentCount: mock(async () => 0),
@@ -42,12 +68,16 @@ const {
   listFlaggedWorkspaces,
   reinstateWorkspace,
   getAbuseConfig,
+  getAbuseEvents,
   _resetAbuseState,
 } = await import("../abuse");
 
 describe("Abuse Prevention Engine", () => {
   beforeEach(() => {
     _resetAbuseState();
+    resetLogCalls();
+    setInternalDB(false);
+    setInternalQuery(async () => []);
   });
 
   describe("getAbuseConfig()", () => {
@@ -219,6 +249,90 @@ describe("Abuse Prevention Engine", () => {
         recordQueryEvent("ws-counters", { success: true });
       }
       expect(checkAbuseStatus("ws-counters").level).toBe("none");
+    });
+  });
+
+  describe("getAbuseEvents() hydration enum drift", () => {
+    it("coerces an unknown level to 'none' and emits a drift warning", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "drift-level-1",
+          workspace_id: "ws-drift",
+          level: "mystery-level", // not in ABUSE_LEVELS
+          trigger_type: "query_rate",
+          message: "bad row",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+      ]);
+
+      const events = await getAbuseEvents("ws-drift", 10);
+
+      expect(events.length).toBe(1);
+      expect(events[0].level).toBe("none");
+      expect(events[0].trigger).toBe("query_rate");
+
+      const drift = warnCalls.find((c) =>
+        c.msg.includes("abuse event with drifted enum"),
+      );
+      expect(drift).toBeDefined();
+      expect(drift?.ctx.rowId).toBe("drift-level-1");
+      expect(drift?.ctx.rawLevel).toBe("mystery-level");
+    });
+
+    it("coerces an unknown trigger_type to 'manual' and emits a drift warning", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "drift-trigger-1",
+          workspace_id: "ws-drift",
+          level: "warning",
+          trigger_type: "bogus_trigger", // not in ABUSE_TRIGGERS
+          message: "bad row",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+      ]);
+
+      const events = await getAbuseEvents("ws-drift", 10);
+
+      expect(events.length).toBe(1);
+      expect(events[0].level).toBe("warning");
+      expect(events[0].trigger).toBe("manual");
+
+      const drift = warnCalls.find((c) =>
+        c.msg.includes("abuse event with drifted enum"),
+      );
+      expect(drift).toBeDefined();
+      expect(drift?.ctx.rowId).toBe("drift-trigger-1");
+      expect(drift?.ctx.rawTrigger).toBe("bogus_trigger");
+    });
+
+    it("does not warn for rows whose enums are already valid", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "clean-1",
+          workspace_id: "ws-clean",
+          level: "throttled",
+          trigger_type: "error_rate",
+          message: "fine",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+      ]);
+
+      const events = await getAbuseEvents("ws-clean", 10);
+
+      expect(events[0].level).toBe("throttled");
+      expect(events[0].trigger).toBe("error_rate");
+      expect(
+        warnCalls.find((c) => c.msg.includes("abuse event with drifted enum")),
+      ).toBeUndefined();
     });
   });
 

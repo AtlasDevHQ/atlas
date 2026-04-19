@@ -14,17 +14,69 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
-import type {
-  AbuseLevel,
-  AbuseTrigger,
-  AbuseEvent,
-  AbuseStatus,
-  AbuseThresholdConfig,
-  AbuseDetail,
+import {
+  ABUSE_LEVELS,
+  ABUSE_TRIGGERS,
+  type AbuseLevel,
+  type AbuseTrigger,
+  type AbuseEvent,
+  type AbuseStatus,
+  type AbuseThresholdConfig,
+  type AbuseDetail,
 } from "@useatlas/types";
 import { splitIntoInstances } from "./abuse-instances";
 
 const log = createLogger("abuse");
+
+// ---------------------------------------------------------------------------
+// Enum drift coercion
+// ---------------------------------------------------------------------------
+//
+// `abuse_events.level` and `abuse_events.trigger_type` are plain TEXT columns
+// historically — PR #1653 adds a CHECK constraint, but rows predating it (or
+// written by a future code path that forgot to update the tuple) may hold
+// values that fail strict `z.enum` parsing in the admin wire schema.
+//
+// A single drifted row must not crash the admin abuse page. These helpers
+// validate a raw string against the canonical tuple, coerce unknowns to a
+// safe default, and emit a `log.warn` so operators see drift in observability.
+
+const LEVEL_SET: ReadonlySet<string> = new Set(ABUSE_LEVELS);
+const TRIGGER_SET: ReadonlySet<string> = new Set(ABUSE_TRIGGERS);
+
+function isAbuseLevel(v: unknown): v is AbuseLevel {
+  return typeof v === "string" && LEVEL_SET.has(v);
+}
+
+function isAbuseTrigger(v: unknown): v is AbuseTrigger {
+  return typeof v === "string" && TRIGGER_SET.has(v);
+}
+
+/**
+ * Validate and coerce a hydrated abuse_events row's enum columns.
+ *
+ * Returns the coerced `{ level, trigger }` pair. Any unknown/non-string input
+ * is replaced with a safe default (`none` / `manual`) and a single drift
+ * warning is emitted per row so we can diagnose the source of the bad write.
+ */
+function coerceAbuseEnums(
+  rowId: string,
+  rawLevel: unknown,
+  rawTrigger: unknown,
+): { level: AbuseLevel; trigger: AbuseTrigger } {
+  const levelOk = isAbuseLevel(rawLevel);
+  const triggerOk = isAbuseTrigger(rawTrigger);
+  if (!levelOk || !triggerOk) {
+    log.warn(
+      { rowId, rawLevel, rawTrigger },
+      "abuse event with drifted enum",
+    );
+  }
+  return {
+    level: levelOk ? rawLevel : "none",
+    trigger: triggerOk ? rawTrigger : "manual",
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Configuration — env var thresholds
@@ -425,16 +477,19 @@ export async function getAbuseEvents(
       [workspaceId, limit],
     );
 
-    return rows.map((r) => ({
-      id: r.id,
-      workspaceId: r.workspace_id,
-      level: r.level as AbuseLevel,
-      trigger: r.trigger_type as AbuseTrigger,
-      message: r.message,
-      metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) as Record<string, unknown> : (r.metadata as Record<string, unknown>),
-      createdAt: r.created_at,
-      actor: r.actor,
-    }));
+    return rows.map((r) => {
+      const { level, trigger } = coerceAbuseEnums(r.id, r.level, r.trigger_type);
+      return {
+        id: r.id,
+        workspaceId: r.workspace_id,
+        level,
+        trigger,
+        message: r.message,
+        metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) as Record<string, unknown> : (r.metadata as Record<string, unknown>),
+        createdAt: r.created_at,
+        actor: r.actor,
+      };
+    });
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), workspaceId },
@@ -463,12 +518,16 @@ export async function restoreAbuseState(): Promise<void> {
     );
 
     for (const row of rows) {
-      const level = row.level as AbuseLevel;
+      const { level, trigger } = coerceAbuseEnums(
+        row.workspace_id,
+        row.level,
+        row.trigger_type,
+      );
       if (level === "none") continue; // Already reinstated
 
       const state = getState(row.workspace_id);
       state.level = level;
-      state.trigger = row.trigger_type as AbuseTrigger;
+      state.trigger = trigger;
       state.message = row.message;
       state.updatedAt = new Date(row.created_at).getTime();
       // Set escalations based on current level to maintain correct position in the ladder

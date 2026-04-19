@@ -17,7 +17,18 @@ import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 // --- Unified mocks ---
 
-const mocks = createApiTestMocks();
+const mockGetWorkspaceNamesByIds: Mock<(ids: string[]) => Promise<Map<string, string | null>>> =
+  mock(async (ids) => {
+    const m = new Map<string, string | null>();
+    for (const id of ids) m.set(id, null);
+    return m;
+  });
+
+const mocks = createApiTestMocks({
+  internal: {
+    getWorkspaceNamesByIds: mockGetWorkspaceNamesByIds,
+  },
+});
 
 // --- Abuse mock overrides (test-specific) ---
 
@@ -46,6 +57,7 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   abuseCleanupTick: mock(() => {}),
   ABUSE_CLEANUP_INTERVAL_MS: 300_000,
 }));
+
 
 // --- Import app after mocks ---
 
@@ -78,6 +90,12 @@ describe("Admin Abuse API", () => {
     mockListFlagged.mockImplementation(() => []);
     mockReinstateWorkspace.mockImplementation(() => true);
     mockGetAbuseEvents.mockImplementation(async () => []);
+    mockGetWorkspaceNamesByIds.mockClear();
+    mockGetWorkspaceNamesByIds.mockImplementation(async (ids) => {
+      const m = new Map<string, string | null>();
+      for (const id of ids) m.set(id, null);
+      return m;
+    });
   });
 
   // --- GET /api/v1/admin/abuse ---
@@ -108,6 +126,69 @@ describe("Admin Abuse API", () => {
       const body = await res.json() as Record<string, unknown>;
       expect((body.workspaces as unknown[]).length).toBe(1);
       expect(body.total).toBe(1);
+    });
+
+    it("resolves workspaceName from the internal DB (#1640)", async () => {
+      mockListFlagged.mockImplementation(() => [
+        {
+          workspaceId: "org-1",
+          workspaceName: null,
+          level: "warning",
+          trigger: "query_rate",
+          message: "Excessive queries",
+          updatedAt: "2026-03-23T00:00:00.000Z",
+          events: [],
+        },
+        {
+          workspaceId: "org-2",
+          workspaceName: null,
+          level: "throttled",
+          trigger: "query_rate",
+          message: "Still too many",
+          updatedAt: "2026-03-23T00:01:00.000Z",
+          events: [],
+        },
+      ]);
+      mockGetWorkspaceNamesByIds.mockImplementation(async (ids) => {
+        const m = new Map<string, string | null>();
+        // Return a name for org-1 and a missing/null for org-2 so we assert both branches.
+        for (const id of ids) m.set(id, id === "org-1" ? "Acme Corp" : null);
+        return m;
+      });
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/abuse"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { workspaces: Array<{ workspaceId: string; workspaceName: string | null }> };
+      expect(mockGetWorkspaceNamesByIds).toHaveBeenCalledTimes(1);
+      expect(mockGetWorkspaceNamesByIds.mock.calls[0]?.[0]).toEqual(["org-1", "org-2"]);
+      const byId = Object.fromEntries(body.workspaces.map((w) => [w.workspaceId, w.workspaceName]));
+      expect(byId).toEqual({ "org-1": "Acme Corp", "org-2": null });
+      // Admin table expects most-recent-first ordering from listFlaggedWorkspaces.
+      // Enrichment must preserve input order — a refactor that traversed
+      // Map.keys() on names instead of workspaces would scramble this silently.
+      expect(body.workspaces.map((w) => w.workspaceId)).toEqual(["org-1", "org-2"]);
+    });
+
+    it("falls back to null when name resolution rejects (#1640)", async () => {
+      mockListFlagged.mockImplementation(() => [
+        {
+          workspaceId: "org-1",
+          workspaceName: null,
+          level: "warning",
+          trigger: "query_rate",
+          message: "boom",
+          updatedAt: "2026-03-23T00:00:00.000Z",
+          events: [],
+        },
+      ]);
+      mockGetWorkspaceNamesByIds.mockImplementation(async () => {
+        throw new Error("internal DB unreachable");
+      });
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/abuse"));
+      // Must still 200 — name resolution is advisory. The page renders the
+      // opaque id rather than 500'ing the admin.
+      expect(res.status).toBe(200);
+      const body = await res.json() as { workspaces: Array<{ workspaceId: string; workspaceName: string | null }> };
+      expect(body.workspaces[0]?.workspaceName).toBeNull();
     });
 
     it("returns 403 for non-admin", async () => {
@@ -199,6 +280,71 @@ describe("Admin Abuse API", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.workspaceId).toBe("org-1");
       expect((body.counters as Record<string, unknown>).queryCount).toBe(250);
+    });
+
+    it("detail route falls back to null workspaceName when resolution rejects (#1640)", async () => {
+      mockGetAbuseDetail.mockImplementation(async () => ({
+        workspaceId: "org-1",
+        workspaceName: null,
+        level: "warning",
+        trigger: "query_rate",
+        message: "boom",
+        updatedAt: "2026-03-23T00:00:00.000Z",
+        counters: { queryCount: 1, errorCount: 0, errorRatePct: null, uniqueTablesAccessed: 0, escalations: 0 },
+        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: 0.5, uniqueTablesLimit: 50, throttleDelayMs: 2000 },
+        currentInstance: { startedAt: "2026-03-23T00:00:00.000Z", endedAt: null, peakLevel: "warning", events: [] },
+        priorInstances: [],
+      }));
+      mockGetWorkspaceNamesByIds.mockImplementation(async () => {
+        throw new Error("internal DB unreachable");
+      });
+      const res = await app.fetch(
+        adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
+      );
+      // Must still 200 — name resolution is advisory for the detail panel
+      // just as it is for the list (regression guard for #1640 follow-up).
+      expect(res.status).toBe(200);
+      const body = await res.json() as { workspaceName: string | null };
+      expect(body.workspaceName).toBeNull();
+    });
+
+    it("resolves workspaceName on the detail route (#1640)", async () => {
+      mockGetAbuseDetail.mockImplementation(async () => ({
+        workspaceId: "org-1",
+        workspaceName: null,
+        level: "warning",
+        trigger: "query_rate",
+        message: "Excessive queries",
+        updatedAt: "2026-03-23T00:00:00.000Z",
+        counters: {
+          queryCount: 1,
+          errorCount: 0,
+          errorRatePct: null,
+          uniqueTablesAccessed: 0,
+          escalations: 0,
+        },
+        thresholds: {
+          queryRateLimit: 200,
+          queryRateWindowSeconds: 300,
+          errorRateThreshold: 0.5,
+          uniqueTablesLimit: 50,
+          throttleDelayMs: 2000,
+        },
+        currentInstance: { startedAt: "2026-03-23T00:00:00.000Z", endedAt: null, peakLevel: "warning", events: [] },
+        priorInstances: [],
+      }));
+      mockGetWorkspaceNamesByIds.mockImplementation(async (ids) => {
+        const m = new Map<string, string | null>();
+        for (const id of ids) m.set(id, "Acme Corp");
+        return m;
+      });
+      const res = await app.fetch(
+        adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json() as { workspaceName: string | null; workspaceId: string };
+      expect(body.workspaceName).toBe("Acme Corp");
+      expect(body.workspaceId).toBe("org-1");
     });
 
     it("returns 404 when workspace is not flagged", async () => {

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   bulkFailureSummary,
+  BulkRequestError,
   bulkPartialSummary,
+  extractBulkRequestId,
   failedIdsFrom,
   type BulkPartialResult,
 } from "../bulk-summary";
@@ -88,6 +90,122 @@ describe("bulkFailureSummary", () => {
     expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
       "2 of 2 denials failed: 2× Forbidden",
     );
+  });
+
+  test("BulkRequestError with identical messages collapses to one group with trailing IDs", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500", "req-abc")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-def")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-ghi")),
+    ]);
+    expect(bulkFailureSummary(results, ["a", "b", "c"], "denials")).toBe(
+      "3 of 3 denials failed: 3× HTTP 500 (IDs: req-abc, req-def, req-ghi)",
+    );
+  });
+
+  test("BulkRequestError single-id group uses singular 'ID' label", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500", "req-only")),
+    ]);
+    expect(bulkFailureSummary(results, ["a"], "denials")).toBe(
+      "1 of 1 denials failed: 1× HTTP 500 (ID: req-only)",
+    );
+  });
+
+  test("BulkRequestError without requestId drops the trailing slot", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500")),
+      Promise.reject(new BulkRequestError("HTTP 500")),
+    ]);
+    expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
+      "2 of 2 denials failed: 2× HTTP 500",
+    );
+  });
+
+  test("BulkRequestError groups separately by message and carries only its own ids", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("Forbidden", "req-1")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-2")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-3")),
+    ]);
+    expect(bulkFailureSummary(results, ["a", "b", "c"], "denials")).toBe(
+      "3 of 3 denials failed: 1× Forbidden (ID: req-1); 2× HTTP 500 (IDs: req-2, req-3)",
+    );
+  });
+
+  test("mixed BulkRequestError and plain Error merge by message; only the typed one contributes an ID", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500", "req-abc")),
+      Promise.reject(new Error("HTTP 500")),
+    ]);
+    // Plain Error has no requestId, so the group shows only the typed one's id.
+    expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
+      "2 of 2 denials failed: 2× HTTP 500 (ID: req-abc)",
+    );
+  });
+
+  test("all-success produces the empty-summary baseline (callers guard with failedIdsFrom)", async () => {
+    const results = await Promise.allSettled([Promise.resolve("ok"), Promise.resolve("ok")]);
+    // Production callers skip rendering when failedIdsFrom is empty, but the
+    // pure-function shape should still be well-defined on the zero-failure path.
+    expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
+      "0 of 2 denials failed: ",
+    );
+  });
+
+  test("requestId from useAdminMutation-style { fetchError: { requestId } } attachments is picked up", async () => {
+    // Future-proofs against callers that attach requestId via the mutation
+    // fetchError pattern instead of throwing BulkRequestError directly (#1646).
+    const mutationError = Object.assign(new Error("HTTP 500"), {
+      fetchError: { requestId: "req-mut" },
+    });
+    const results = await Promise.allSettled([Promise.reject(mutationError)]);
+    expect(bulkFailureSummary(results, ["a"], "denials")).toBe(
+      "1 of 1 denials failed: 1× HTTP 500 (ID: req-mut)",
+    );
+  });
+
+  test("requestId from a direct .requestId property is picked up", async () => {
+    const err = Object.assign(new Error("HTTP 500"), { requestId: "req-direct" });
+    const results = await Promise.allSettled([Promise.reject(err)]);
+    expect(bulkFailureSummary(results, ["a"], "denials")).toBe(
+      "1 of 1 denials failed: 1× HTTP 500 (ID: req-direct)",
+    );
+  });
+});
+
+describe("extractBulkRequestId", () => {
+  test("returns requestId from BulkRequestError instance", () => {
+    expect(extractBulkRequestId(new BulkRequestError("x", "req-a"))).toBe("req-a");
+    expect(extractBulkRequestId(new BulkRequestError("x"))).toBeUndefined();
+  });
+
+  test("returns requestId from { fetchError: { requestId } } attachment", () => {
+    const err = Object.assign(new Error("x"), { fetchError: { requestId: "req-b" } });
+    expect(extractBulkRequestId(err)).toBe("req-b");
+  });
+
+  test("returns requestId from a direct .requestId string property", () => {
+    expect(extractBulkRequestId({ requestId: "req-c" })).toBe("req-c");
+  });
+
+  test("fetchError attachment wins over a conflicting direct .requestId", () => {
+    const err = {
+      fetchError: { requestId: "req-fetch" },
+      requestId: "req-direct",
+    };
+    expect(extractBulkRequestId(err)).toBe("req-fetch");
+  });
+
+  test("returns undefined for unrecognized shapes", () => {
+    expect(extractBulkRequestId(null)).toBeUndefined();
+    expect(extractBulkRequestId(undefined)).toBeUndefined();
+    expect(extractBulkRequestId("just a string")).toBeUndefined();
+    expect(extractBulkRequestId(42)).toBeUndefined();
+    expect(extractBulkRequestId({})).toBeUndefined();
+    // Non-string requestId value is ignored (can't splice a number into the banner).
+    expect(extractBulkRequestId({ requestId: 42 })).toBeUndefined();
+    expect(extractBulkRequestId({ fetchError: { requestId: 42 } })).toBeUndefined();
   });
 });
 

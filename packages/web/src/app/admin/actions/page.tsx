@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
 import { ACTION_TYPE_LABELS, actionTypeIcon, actionTypeLabel } from "./labels";
+import { coerceRollbackWarning, logUnsurfacedRollbackWarning } from "./rollback-warning";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -29,11 +30,12 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import {
+  bulkFailureSummary,
+  BulkRequestError,
+  failedIdsFrom,
   QueueFilterRow,
   ReasonDialog,
   RelativeTimestamp,
-  bulkFailureSummary,
-  failedIdsFrom,
 } from "@/ui/components/admin/queue";
 import { extractFetchError, friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import {
@@ -266,8 +268,7 @@ export default function ActionsPage() {
     });
     if (!res.ok) {
       const fe = await extractFetchError(res);
-      const msg = fe.requestId ? `${fe.message} (Request ID: ${fe.requestId})` : fe.message;
-      throw new Error(msg);
+      throw new BulkRequestError(fe.message, fe.requestId);
     }
   }
 
@@ -303,11 +304,13 @@ export default function ActionsPage() {
       onSuccess: (data) => {
         // Server returns { warning } on 200 when the rollback persisted but the
         // side-effect may not have actually reversed (e.g. external API has no
-        // true undo). Surface to a dismissible warning, not an error.
+        // true undo). Surface to a dismissible warning, not an error; log
+        // anything we couldn't surface verbatim for schema-drift detection.
         const body = data as Record<string, unknown> | undefined;
-        if (body?.warning && typeof body.warning === "string") {
-          setMutationWarning(body.warning);
-        }
+        const raw = body?.warning;
+        const warning = coerceRollbackWarning(raw);
+        if (warning) setMutationWarning(warning);
+        logUnsurfacedRollbackWarning(raw);
       },
     });
     if (!result.ok) setMutationError(friendlyError(result.error));

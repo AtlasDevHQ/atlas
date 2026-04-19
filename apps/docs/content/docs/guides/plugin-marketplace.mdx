@@ -1,80 +1,80 @@
 ---
 title: Plugin Marketplace
-description: Browse, install, configure, and uninstall plugins from the workspace plugin marketplace.
+description: Manage installed plugins from the workspace admin console. Self-service browse-and-install is not yet available.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The plugin marketplace lets workspace admins discover and install plugins without editing configuration files. Browse available plugins, install them with one click, configure settings, and uninstall when no longer needed.
+The plugins admin page lets workspace admins view, configure, health-check, enable, and disable plugins that are already loaded in their workspace. Install and uninstall happen outside the admin UI today — see [Installing plugins](#installing-plugins) below.
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
-- An internal database configured (`DATABASE_URL`)
+- An internal database configured (`DATABASE_URL`) — required for enable/disable state
 - A user with the `admin` role
-- **SaaS mode** — the marketplace is available on app.useatlas.dev. In self-hosted mode, manage plugins via `atlas.config.ts`
+</Callout>
+
+{/* When self-service browse ships (marketplace catalog UI + plan-required badge), update both this callout AND the "no web consumer yet" note under API endpoints below. */}
+<Callout type="warn" title="Self-service browse is not shipped yet">
+The admin console renders only the **Installed** list today — there is no Available/browse tab and no separate tier badges on plugin cards. Install/uninstall happens through `atlas.config.ts` (self-hosted) or platform admin (SaaS). The marketplace API exists but has no web consumer; self-service browse is tracked as a future enhancement.
 </Callout>
 
 ---
 
-## Accessing the Marketplace
+## Accessing the plugins page
 
-Navigate to **Admin > Plugins** (`/admin/plugins`). In SaaS mode, the page shows two tabs:
-
-- **Installed** — Plugins currently active in your workspace (both config-loaded and marketplace-installed)
-- **Available** — Plugins in the platform catalog that you haven't installed yet
-
-In self-hosted mode, only config-loaded plugins are shown with a note to manage them via `atlas.config.ts`.
+Navigate to **Admin → Plugins** (`/admin/plugins`). The page lists every plugin loaded in your workspace (from `atlas.config.ts` and, on SaaS, any plugins installed by a platform admin on your behalf). Each row shows the plugin's name, type badge, enable/disable state, and a toggle to expand configuration and health details.
 
 ---
 
-## Browsing Available Plugins
+## What the page shows for each plugin
 
-Switch to the **Available** tab to see plugins you can install. Each card shows:
-
-- **Name** and **type badge** (Datasource, Context, Interaction, Action, Sandbox)
-- **Description** of what the plugin does
-- **Enterprise badge** — if the plugin requires a Business plan
-- **Install button**
-
-Use the **search bar** to filter by name or the **type dropdown** to filter by plugin category.
+- **Name** and **type badge** — Datasource, Context, Interaction, Action, or Sandbox
+- **Status** — healthy, unhealthy, or unknown (based on the last health check)
+- **Enable/disable toggle** — turn a plugin on or off without restarting; disabled plugins are excluded from the agent loop
+- **Configure** — edit the plugin's runtime configuration (typed form if `getConfigSchema()` is defined, read-only JSON otherwise)
+- **Health** — run a live probe and see the plugin's status
 
 <Callout type="info">
-Plugins are filtered by your workspace's plan tier. Each plugin has a minimum plan requirement — only plugins your tier qualifies for are shown.
+The enable/disable toggle and configuration edits require an internal database (`DATABASE_URL`). Without one, plugins always run with the values baked into `atlas.config.ts` and the toggle is a no-op.
 </Callout>
 
 ---
 
-## Installing a Plugin
+## Installing plugins
 
-1. Find the plugin in the **Available** tab
-2. Click **Install**
-3. If the plugin has a config schema, a dialog appears with configuration fields — fill them in
-4. If no config is needed, a confirmation dialog appears
-5. Click **Install** to confirm
+There is no self-service install UI today. Pick the path that matches your deployment:
 
-The plugin is immediately available in your workspace. It appears in the **Installed** tab with a **marketplace** badge.
+### Self-hosted (`atlas.config.ts`)
+
+1. Add the plugin package to `package.json` (`bun add @useatlas/bigquery`, etc.)
+2. Import and register it in `atlas.config.ts`:
+
+   ```ts
+   import { defineConfig } from "@atlas/api/lib/config";
+   import bigquery from "@useatlas/bigquery";
+
+   export default defineConfig({
+     plugins: [bigquery({ /* plugin-specific config */ })],
+     // ...
+   });
+   ```
+
+3. Restart the server. The plugin appears on `/admin/plugins`.
+
+See the [Plugin Authoring Guide](/plugins/authoring-guide) for the full `definePlugin()` API and the published plugins on [npm](https://www.npmjs.com/search?q=%40useatlas) for what's available.
+
+### SaaS (app.useatlas.dev)
+
+SaaS workspaces don't edit `atlas.config.ts` directly. To request a plugin be installed on your workspace, contact your account manager or platform admin. Platform admins install plugins via the platform catalog (tracked under [Plugin Catalog](/platform-ops/plugin-catalog)). Plan gating is evaluated server-side — each plugin has a `minPlan` (default `"starter"`); plugins above your workspace's plan tier are not offered.
 
 ---
 
-## Configuring Installed Plugins
+## Configuring an installed plugin
 
-### Marketplace Plugins
-
-1. In the **Installed** tab, find the marketplace plugin (marked with a "marketplace" badge)
-2. Click the **gear icon** (Configure)
-3. If the plugin defines a config schema, typed form fields appear (text, number, boolean). If not, a JSON editor is shown
-4. Edit the configuration values
-5. Click **Save**
-
-Changes take effect immediately.
-
-### Config-Loaded Plugins
-
-Config-loaded plugins (from `atlas.config.ts`) also appear in the Installed tab. Click the **gear icon** to open the config dialog:
-
-- If the plugin exposes a `getConfigSchema()`, a typed form is shown
-- If not, current config is displayed as read-only JSON
-- Config changes are saved to the internal database and take effect on restart
+1. Expand the plugin row
+2. Click **Configure**
+3. If the plugin exposes `getConfigSchema()`, a typed form is shown (text, number, boolean fields). Otherwise the current config is displayed as editable JSON
+4. Click **Save** — changes take effect immediately (no restart)
 
 <Callout type="info">
 Without an internal database, plugin configuration is read-only — all values come from `atlas.config.ts`.
@@ -82,47 +82,46 @@ Without an internal database, plugin configuration is read-only — all values c
 
 ---
 
-## Managing Plugin State
+## Enable / disable
 
-For config-loaded plugins:
-
-- **Enable/disable toggle** — Toggle a plugin on or off without restarting. Disabled plugins are excluded from the agent loop
-- **Health check** — Click **Health** to run a live probe and see the plugin's status
+The **enable/disable toggle** flips a plugin on or off for the current workspace without editing `atlas.config.ts`. Disabled plugins are excluded from the agent loop on the next request; no restart is needed.
 
 <Callout type="info">
-The enable/disable toggle requires an internal database (`DATABASE_URL`). Without it, all plugins are always enabled.
+Disabling a datasource plugin **does not** revoke access to already-open queries — it prevents the plugin from being selected for new queries. Existing conversations that referenced the plugin's tables will continue to function against cached semantic context until a refresh.
 </Callout>
 
 ---
 
-## Uninstalling a Plugin
+## Uninstalling
 
-1. In the **Installed** tab, find the marketplace plugin
-2. Click the **trash icon** (Uninstall)
-3. Confirm in the dialog
+### Self-hosted
 
-The plugin is removed from your workspace. You can reinstall it later from the Available tab. Config-loaded plugins cannot be uninstalled from the UI — remove them from `atlas.config.ts`.
+Remove the plugin from `atlas.config.ts` and restart. The admin UI does not offer an uninstall button for config-loaded plugins.
+
+### SaaS
+
+Contact your platform admin. Platform-installed plugins are uninstalled through the platform catalog.
 
 ---
 
-## API Endpoints
+## API endpoints
+
+The endpoints consumed by the admin page today:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/admin/plugins/marketplace/available` | List available plugins for this workspace |
-| `POST` | `/api/v1/admin/plugins/marketplace/install` | Install a plugin (body: `{ catalogId, config? }`) |
-| `DELETE` | `/api/v1/admin/plugins/marketplace/:id` | Uninstall a marketplace plugin |
-| `PUT` | `/api/v1/admin/plugins/marketplace/:id/config` | Update marketplace plugin config |
-| `GET` | `/api/v1/admin/plugins` | List all installed plugins (config + marketplace) |
+| `GET` | `/api/v1/admin/plugins` | List all loaded plugins (config + platform) |
 | `POST` | `/api/v1/admin/plugins/:id/health` | Run health check |
 | `POST` | `/api/v1/admin/plugins/:id/enable` | Enable a plugin |
 | `POST` | `/api/v1/admin/plugins/:id/disable` | Disable a plugin |
-| `GET` | `/api/v1/admin/plugins/:id/schema` | Get config schema and values |
-| `PUT` | `/api/v1/admin/plugins/:id/config` | Update config-loaded plugin config |
+| `GET` | `/api/v1/admin/plugins/:id/schema` | Get config schema and current values |
+| `PUT` | `/api/v1/admin/plugins/:id/config` | Update plugin config |
+
+The marketplace catalog API (`GET /api/v1/admin/plugins/marketplace/available`, etc.) has no web consumer yet — see the callout at the top of this page. Programmatic clients can still call it directly; responses honor the same `minPlan` gating.
 
 ---
 
-## See Also
+## See also
 
 - [Admin Console — Plugins](/guides/admin-console#plugins) — Overview of the plugins admin page
 - [Plugin Catalog](/platform-ops/plugin-catalog) — Platform operator guide for managing the catalog

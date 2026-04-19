@@ -6,6 +6,8 @@
 export {
   bulkFailureSummary,
   bulkPartialSummary,
+  BulkRequestError,
+  extractBulkRequestId,
   failedIdsFrom,
   type BulkPartialResult,
 } from "./bulk-summary";

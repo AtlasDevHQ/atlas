@@ -37,11 +37,11 @@ interface ReasonDialogProps {
  * Compliance-grade reason capture dialog shared across queue/moderation
  * surfaces. Records the reason in the audit log alongside the reviewer.
  *
- * **Never substitutes a hardcoded placeholder** — if the reason is empty
- * and `required: false`, the audit log must reflect "no reason given"
- * rather than fabricating one. Passing `onConfirm(reason || "Denied")`
- * silently corrupts the audit trail; callers must receive exactly what
- * the user typed (whitespace-trimmed), including the empty string.
+ * **Caller contract:** pass the `reason` through to the audit log
+ * unchanged. Substituting a hardcoded fallback (e.g. `reason || "Denied"`)
+ * corrupts the trail — the empty string is semantically distinct from
+ * "no reason given" only if callers preserve it. The dialog emits exactly
+ * what the user typed, whitespace-trimmed, including the empty string.
  */
 export function ReasonDialog({
   open,
@@ -66,6 +66,16 @@ export function ReasonDialog({
       setLocalError(null);
     }
   }, [open]);
+
+  // A fresh non-null `error` prop clears any stale localError so the
+  // caller's message wins. Without this, `displayError = localError ?? error`
+  // keeps showing a prior-throw "Unexpected error: ..." and hides a real
+  // server error that arrives later. Fires on every non-null error, not
+  // just the null→non-null transition, so sequential retries each surface
+  // the latest caller-provided diagnosis.
+  useEffect(() => {
+    if (error != null) setLocalError(null);
+  }, [error]);
 
   const trimmed = reason.trim();
   const canConfirm = required ? trimmed.length > 0 : true;

@@ -17,6 +17,42 @@ export interface BulkPartialResult {
   errors?: Array<{ id: string; error: string }>;
 }
 
+/**
+ * Rejection carrying the server's user-facing message and its requestId as
+ * separate fields so `bulkFailureSummary` groups rejections by message
+ * alone. Embedding the requestId into `message` would splinter each group
+ * into a bucket of one, since no two requestIds repeat.
+ */
+export class BulkRequestError extends Error {
+  readonly requestId?: string;
+  constructor(message: string, requestId?: string) {
+    super(message);
+    this.name = "BulkRequestError";
+    this.requestId = requestId;
+  }
+}
+
+/**
+ * Extract a correlated requestId from a Promise-rejection value. Accepts
+ * BulkRequestError instances, `useAdminMutation`-style `{ fetchError:
+ * { requestId } }` attachments, and direct `.requestId` string properties.
+ * Returns undefined when no recognizable id is present. Exported so tests
+ * can pin the union of accepted shapes.
+ */
+export function extractBulkRequestId(reason: unknown): string | undefined {
+  if (reason instanceof BulkRequestError) return reason.requestId;
+  if (reason != null && typeof reason === "object") {
+    const fetchError = (reason as { fetchError?: unknown }).fetchError;
+    if (fetchError != null && typeof fetchError === "object") {
+      const id = (fetchError as { requestId?: unknown }).requestId;
+      if (typeof id === "string") return id;
+    }
+    const direct = (reason as { requestId?: unknown }).requestId;
+    if (typeof direct === "string") return direct;
+  }
+  return undefined;
+}
+
 /** Indices of `results` that rejected, mapped back to their input ids. */
 export function failedIdsFrom(
   results: PromiseSettledResult<unknown>[],
@@ -25,22 +61,38 @@ export function failedIdsFrom(
   return results.flatMap((r, i) => (r.status === "rejected" ? [ids[i]] : []));
 }
 
-/** "3 of 5 denials failed: 2× Forbidden; 1× Internal error" — counts per reason. */
+/**
+ * "3 of 5 denials failed: 2× Forbidden (IDs: abc, def); 1× Internal error (ID: ghi)"
+ *
+ * Groups rejections by message; appends requestIds per group so identical
+ * failures stay collapsed. RequestIds are extracted via
+ * `extractBulkRequestId` so any rejection shape carrying a correlated id
+ * (BulkRequestError, mutation fetchError attachment, direct .requestId)
+ * contributes it.
+ */
 export function bulkFailureSummary(
   results: PromiseSettledResult<unknown>[],
   ids: string[],
   noun: string,
 ): string {
-  const reasonCounts = new Map<string, number>();
+  const groups = new Map<string, { count: number; requestIds: string[] }>();
   for (const r of results) {
-    if (r.status === "rejected") {
-      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      reasonCounts.set(msg, (reasonCounts.get(msg) ?? 0) + 1);
-    }
+    if (r.status !== "rejected") continue;
+    const reason = r.reason;
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const requestId = extractBulkRequestId(reason);
+    const group = groups.get(msg) ?? { count: 0, requestIds: [] };
+    group.count += 1;
+    if (requestId) group.requestIds.push(requestId);
+    groups.set(msg, group);
   }
-  const failedCount = [...reasonCounts.values()].reduce((a, b) => a + b, 0);
-  const summary = [...reasonCounts.entries()]
-    .map(([msg, n]) => `${n}× ${msg}`)
+  const failedCount = [...groups.values()].reduce((a, g) => a + g.count, 0);
+  const summary = [...groups.entries()]
+    .map(([msg, { count, requestIds }]) => {
+      if (requestIds.length === 0) return `${count}× ${msg}`;
+      const label = requestIds.length === 1 ? "ID" : "IDs";
+      return `${count}× ${msg} (${label}: ${requestIds.join(", ")})`;
+    })
     .join("; ");
   return `${failedCount} of ${ids.length} ${noun} failed: ${summary}`;
 }
@@ -49,8 +101,8 @@ export function bulkFailureSummary(
  * Summarize a partial-success bulk response.
  * "3 of 10 approvals failed: 2 not found; 1× db timeout"
  *
- * `total` is the number of rows originally requested (so the ratio shows
- * "failed / requested", not "failed / touched").
+ * `total` is the caller-supplied request count — pass in the input size,
+ * not the server's touched count.
  */
 export function bulkPartialSummary(
   data: BulkPartialResult,

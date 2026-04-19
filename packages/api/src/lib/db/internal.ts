@@ -1394,6 +1394,28 @@ export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus
 }
 
 /**
+ * Batch-resolve display names for a list of organization ids. Every
+ * requested id is present in the returned map; the value is `null` when the
+ * row is missing (deleted / unknown), when the internal DB is unavailable,
+ * or when the row exists but its `name` column is itself `null`. Safe to
+ * call with an empty list — returns an empty map without touching the DB.
+ */
+export async function getWorkspaceNamesByIds(
+  orgIds: string[],
+): Promise<Map<string, string | null>> {
+  const byId = new Map<string, string | null>();
+  if (orgIds.length === 0) return byId;
+  for (const id of orgIds) byId.set(id, null);
+  if (!hasInternalDB()) return byId;
+  const rows = await internalQuery<{ id: string; name: string | null }>(
+    `SELECT id, name FROM organization WHERE id = ANY($1::text[])`,
+    [orgIds],
+  );
+  for (const row of rows) byId.set(row.id, row.name);
+  return byId;
+}
+
+/**
  * Get full workspace details for an organization.
  */
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {

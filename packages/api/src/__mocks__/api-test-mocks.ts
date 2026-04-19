@@ -322,6 +322,11 @@ export function createApiTestMocks(
     getAuditLogQueries: mock(() => Promise.resolve([])),
     getWorkspaceStatus: mock(async () => "active"),
     getWorkspaceDetails: mock(async () => null),
+    getWorkspaceNamesByIds: mock(async (ids: string[]) => {
+      const map = new Map<string, string | null>();
+      for (const id of ids) map.set(id, null);
+      return map;
+    }),
     updateWorkspaceStatus: mock(async () => true),
     updateWorkspacePlanTier: mock(async () => true),
     cascadeWorkspaceDelete: mock(async () => ({

@@ -38,6 +38,7 @@ import {
 } from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
@@ -471,7 +472,7 @@ function ProviderRow({
       if (val) credentials[field.key] = val;
     }
     const result = await connectMutation.mutate({ body: { credentials } });
-    if (!result.ok) setValidationError(result.error);
+    if (!result.ok) setValidationError(friendlyError(result.error));
   }
 
   return (

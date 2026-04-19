@@ -179,11 +179,46 @@ describe("useAdminMutation", () => {
 
     expect(mutateResult!.ok).toBe(false);
     if (!mutateResult!.ok) {
-      expect(mutateResult!.error).toBe("Not found");
+      expect(mutateResult!.error.message).toBe("Not found");
+      expect(mutateResult!.error.status).toBe(404);
     }
     await waitFor(() => {
       expect(result.current.error).toBe("Not found");
     });
+  });
+
+  test("MutateResult.error preserves FetchError fields (code, status, requestId)", async () => {
+    // Structured fields must reach the caller so friendlyError() and
+    // EnterpriseUpsell branching can fire — without them, mutation failures
+    // render as raw "HTTP 403" and generic banners on EE-gated endpoints.
+    mockFetch(
+      jsonResponse(
+        {
+          message: "Enterprise features required",
+          error: "enterprise_required",
+          requestId: "req-abc-123",
+        },
+        403,
+      ),
+    );
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/test" }),
+      { wrapper },
+    );
+
+    let mutateResult: MutateResult<unknown>;
+    await act(async () => {
+      mutateResult = await result.current.mutate();
+    });
+
+    expect(mutateResult!.ok).toBe(false);
+    if (!mutateResult!.ok) {
+      expect(mutateResult!.error.message).toBe("Enterprise features required");
+      expect(mutateResult!.error.status).toBe(403);
+      expect(mutateResult!.error.code).toBe("enterprise_required");
+      expect(mutateResult!.error.requestId).toBe("req-abc-123");
+    }
   });
 
   test("returns { ok: false, error } for network failure", async () => {
@@ -203,7 +238,9 @@ describe("useAdminMutation", () => {
 
     expect(mutateResult!.ok).toBe(false);
     if (!mutateResult!.ok) {
-      expect(mutateResult!.error).toBe("Network error");
+      expect(mutateResult!.error.message).toBe("Network error");
+      // Non-HTTP failures have no status — callers can detect via `status === undefined`.
+      expect(mutateResult!.error.status).toBeUndefined();
     }
   });
 
@@ -220,7 +257,7 @@ describe("useAdminMutation", () => {
 
     expect(mutateResult!.ok).toBe(false);
     if (!mutateResult!.ok) {
-      expect(mutateResult!.error).toContain("no path");
+      expect(mutateResult!.error.message).toContain("no path");
     }
   });
 

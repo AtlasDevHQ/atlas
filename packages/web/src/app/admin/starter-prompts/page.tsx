@@ -38,6 +38,7 @@ import {
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { Loader2, Plus } from "lucide-react";
 import type {
   SuggestionApprovalStatus,
@@ -361,7 +362,7 @@ function StarterPromptsContent() {
       // the row didn't move between tabs. Without this branch, the
       // spinner stops and the UI appears to succeed.
       if (!result.ok) {
-        setRowActionError(result.error);
+        setRowActionError(friendlyError(result.error));
       }
     } finally {
       setPendingRowId(null);

@@ -57,6 +57,7 @@ import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import {
   PlatformCatalogResponseSchema,
@@ -455,7 +456,7 @@ function PlatformPluginCatalogPageContent() {
     if (result.ok) {
       refetch();
     } else {
-      setMutationError(`Failed to ${entry.enabled ? "disable" : "enable"} "${entry.name}": ${result.error}`);
+      setMutationError(`Failed to ${entry.enabled ? "disable" : "enable"} "${entry.name}": ${friendlyError(result.error)}`);
     }
   }
 
@@ -468,7 +469,7 @@ function PlatformPluginCatalogPageContent() {
     if (result.ok) {
       refetch();
     } else {
-      setMutationError(`Failed to delete "${deleteTarget.name}": ${result.error}`);
+      setMutationError(`Failed to delete "${deleteTarget.name}": ${friendlyError(result.error)}`);
     }
     setDeleteTarget(null);
   }

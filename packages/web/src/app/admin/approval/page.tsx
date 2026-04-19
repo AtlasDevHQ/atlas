@@ -532,7 +532,7 @@ function QueueSection() {
         }),
     );
     if (!result.ok) {
-      setMutationError(result.error);
+      setMutationError(friendlyError(result.error));
     }
   }
 

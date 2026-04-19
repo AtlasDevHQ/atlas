@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import {
   Loader2,
   Upload,
@@ -213,7 +214,7 @@ function EditProviderDialogInner({
       if (result.ok && result.data) {
         setTestResult(result.data);
       } else if (!result.ok) {
-        setTestError(result.error);
+        setTestError(friendlyError(result.error));
       }
     } finally {
       setTesting(false);

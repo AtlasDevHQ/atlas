@@ -23,6 +23,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAdminFetch } from "../../hooks/use-admin-fetch";
 import { useAdminMutation } from "../../hooks/use-admin-mutation";
+import { friendlyError } from "../../lib/fetch-error";
 import type { Dashboard, DashboardChartConfig, ChartType } from "../../lib/types";
 import { CHART_TYPES } from "../../lib/types";
 import type { ChartDetectionResult } from "../chart/chart-detection";
@@ -166,7 +167,7 @@ export function AddToDashboardDialog({
           body: { title: newDashboardTitle.trim() },
         });
         if (!result.ok) {
-          setError(result.error ?? "Failed to create dashboard.");
+          setError(friendlyError(result.error));
           return;
         }
         dashboardId = (result.data as Dashboard).id;
@@ -195,13 +196,13 @@ export function AddToDashboardDialog({
         if (createdNewDashboard) {
           // Dashboard was created but card failed — guide user to retry
           setError(
-            `Dashboard "${newDashboardTitle.trim()}" was created, but adding the card failed: ${cardResult.error ?? "Unknown error"}. ` +
+            `Dashboard "${newDashboardTitle.trim()}" was created, but adding the card failed: ${friendlyError(cardResult.error)}. ` +
             `Select it from "Existing" to retry.`
           );
           setMode("existing");
           setSelectedDashboardId(dashboardId);
         } else {
-          setError(cardResult.error ?? "Failed to add card.");
+          setError(friendlyError(cardResult.error));
         }
         return;
       }

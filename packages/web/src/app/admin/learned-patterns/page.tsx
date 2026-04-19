@@ -243,7 +243,7 @@ export default function LearnedPatternsPage() {
       // optimistic state from a concurrent mutation on another row.
       setPatterns((curr) => curr.map((p) => (p.id === id && originalRow ? originalRow : p)));
       setDetailPattern((curr) => (curr?.id === id ? originalDetail : curr));
-      setError({ message: result.error });
+      setError(result.error);
     }
     setFetchKey((k) => k + 1);
     inProgress.stop(id);
@@ -261,7 +261,7 @@ export default function LearnedPatternsPage() {
       if (detailPattern?.id === id) setDetailPattern(null);
       setFetchKey((k) => k + 1);
     } else {
-      setError({ message: result.error });
+      setError(result.error);
     }
     setDeleteTarget(null);
     inProgress.stop(id);
@@ -296,7 +296,7 @@ export default function LearnedPatternsPage() {
       // operator can retry.
       setPatterns((curr) => curr.map((p) => originalRows.get(p.id) ?? p));
       setDetailPattern((curr) => (curr && ids.has(curr.id) ? originalDetail : curr));
-      setError({ message: result.error });
+      setError(result.error);
       setFetchKey((k) => k + 1);
       return;
     }

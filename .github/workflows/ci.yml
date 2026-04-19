@@ -49,6 +49,9 @@ jobs:
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
+      - name: Check OpenAPI ↔ api-reference drift
+        run: bash scripts/check-openapi-drift.sh
+
       - name: Check Drizzle schema ↔ migration drift
         run: bash scripts/check-schema-drift.sh
 
@@ -72,4 +75,3 @@ jobs:
 
       - name: Test
         run: bun run test
-

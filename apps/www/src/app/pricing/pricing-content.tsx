@@ -313,7 +313,7 @@ function TierCard({ tier, billing }: { tier: Tier; billing: BillingPeriod }) {
           {tier.name}
         </span>
       </div>
-      <div className="mb-2 min-h-[22px]">
+      <div className="mb-2 min-h-5.5">
         {tier.badge && (
           <span className="inline-block rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
             {tier.badge}

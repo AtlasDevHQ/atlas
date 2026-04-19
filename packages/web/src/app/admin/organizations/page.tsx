@@ -98,7 +98,11 @@ export default function OrganizationsPage() {
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/organizations`, { credentials });
         if (!res.ok) {
-          if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
+          // intentionally ignored: body may be empty or non-JSON on error —
+          // status-code message is the fallback.
+          const body = (await res.json().catch(() => ({}))) as { message?: string };
+          const message = body.message ?? `Failed to load organizations (HTTP ${res.status})`;
+          if (!cancelled) setError({ message, status: res.status });
           return;
         }
         const data = await res.json();
@@ -132,7 +136,9 @@ export default function OrganizationsPage() {
     try {
       const res = await fetch(`${apiUrl}/api/v1/admin/organizations/${orgId}`, { credentials });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+        // intentionally ignored: body may be empty or non-JSON on error — we
+        // fall back to the status-code message below.
+        const body = (await res.json().catch(() => ({}))) as { message?: string };
         setDetailError(body.message ?? `Failed to load organization (HTTP ${res.status})`);
         setSelectedOrg(null);
         return;
@@ -310,6 +316,10 @@ export default function OrganizationsPage() {
             <div className="flex h-32 items-center justify-center">
               <LoadingState message="Loading organization..." />
             </div>
+          ) : detailError ? (
+            <div className="flex h-32 items-center justify-center px-4 text-center text-sm text-destructive">
+              {detailError}
+            </div>
           ) : selectedOrg ? (
             <div className="space-y-6 px-4">
               {/* Members */}
@@ -385,10 +395,6 @@ export default function OrganizationsPage() {
                   </div>
                 );
               })()}
-            </div>
-          ) : detailError ? (
-            <div className="flex h-32 items-center justify-center px-4 text-center text-sm text-destructive">
-              {detailError}
             </div>
           ) : (
             <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">

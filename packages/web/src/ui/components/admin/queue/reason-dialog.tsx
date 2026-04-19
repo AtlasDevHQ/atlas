@@ -183,9 +183,10 @@ export function ReasonDialog({
 
         {/* Precedence: localError (dialog-internal onConfirm throw) >
             mutationError (structured, routed through MutationErrorSurface) >
-            error (string, e.g. bulk-failure summary). The first two render
-            as role="alert" blocks; the third delegates styling + routing to
-            MutationErrorSurface. */}
+            error (string, e.g. bulk-failure summary). All three branches
+            expose role="alert" so screen readers announce changes — the
+            mutationError branch wraps MutationErrorSurface because
+            InlineError itself has no live-region semantics. */}
         {localError ? (
           <div
             role="alert"
@@ -194,11 +195,13 @@ export function ReasonDialog({
             {localError}
           </div>
         ) : mutationError ? (
-          <MutationErrorSurface
-            error={mutationError}
-            feature={feature ?? ""}
-            variant="inline"
-          />
+          <div role="alert">
+            <MutationErrorSurface
+              error={mutationError}
+              feature={feature ?? ""}
+              variant="inline"
+            />
+          </div>
         ) : error ? (
           <div
             role="alert"

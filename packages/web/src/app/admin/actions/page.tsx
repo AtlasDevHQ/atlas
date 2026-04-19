@@ -290,7 +290,13 @@ export default function ActionsPage() {
   }
 
   async function confirmSingleDeny(reason: string) {
-    if (!denyTarget) return;
+    if (!denyTarget) {
+      console.warn("confirmSingleDeny: denyTarget cleared before confirm");
+      setMutationError({
+        message: "Unable to deny — the target was cleared. Please retry.",
+      });
+      return;
+    }
     const id = denyTarget.id;
     const body: Record<string, unknown> = {};
     if (reason) body.reason = reason;

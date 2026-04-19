@@ -597,9 +597,11 @@ export function TaskFormDialog({
           )}
         </div>
 
-        {/* Client-side validation wins over server mutation error —
-            validation blocks submit, so submitMutation.error is always
-            stale if both are present. */}
+        {/* Hide the server mutation error while a client-side validation
+            error is showing — stacking two destructive banners doubles
+            the noise for no new signal. handleSubmit clears both slots
+            at entry, so both being set simultaneously only happens
+            mid-render. */}
         {validationError ? (
           <p role="alert" className="text-sm text-destructive">
             {validationError}

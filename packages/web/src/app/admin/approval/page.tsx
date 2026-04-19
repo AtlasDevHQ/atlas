@@ -53,7 +53,7 @@ import {
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { extractFetchError, friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import { ApprovalRuleSchema } from "@/ui/lib/admin-schemas";
 import type { ApprovalRequest, ApprovalRule, ApprovalRuleType, ApprovalStatus } from "@/ui/lib/types";
 import {
@@ -243,7 +243,7 @@ function RulesSection() {
       onRetry={refetch}
     >
       <MutationErrorSurface
-        error={mutationError ?? null}
+        error={mutationError}
         feature="Approval Workflows"
         onRetry={clearMutationError}
       />
@@ -692,11 +692,16 @@ function QueueSection() {
           }
         />
 
-        <MutationErrorSurface
-          error={fetchError}
-          feature="Approval Workflows"
-          onRetry={() => setRefetchKey((k) => k + 1)}
-        />
+        {/* QueueSection has no AdminContentWrapper, so the read-path
+            fetchError is a mid-Card slot — keep ErrorBanner here instead
+            of MutationErrorSurface, whose FeatureGate branch renders
+            full-page chrome that would break the Card layout. */}
+        {fetchError && (
+          <ErrorBanner
+            message={friendlyError(fetchError)}
+            onRetry={() => setRefetchKey((k) => k + 1)}
+          />
+        )}
         <MutationErrorSurface
           error={mutationError}
           feature="Approval Workflows"

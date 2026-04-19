@@ -78,6 +78,30 @@ function isExpired(expiresAt: string | null): boolean {
   return new Date(expiresAt).getTime() < Date.now();
 }
 
+export const COPY_FALLBACK_MESSAGE =
+  "Copy failed — select the key below and copy manually.";
+
+// Exported so the success / failure branches stay unit-testable without
+// mounting the full page.
+export async function copyApiKeyToClipboard(args: {
+  text: string;
+  setCopied: (copied: boolean) => void;
+  setCopyError: (msg: string | null) => void;
+}): Promise<void> {
+  const { text, setCopied, setCopyError } = args;
+  try {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setCopyError(null);
+    setTimeout(() => setCopied(false), 2000);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("API key clipboard write failed:", msg);
+    setCopied(false);
+    setCopyError(COPY_FALLBACK_MESSAGE);
+  }
+}
+
 // -- Component --
 
 export default function ApiKeysPage() {
@@ -108,6 +132,9 @@ export default function ApiKeysPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createdKey, setCreatedKey] = useState<{ key: string; name: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // Surfaces clipboard failures (insecure origin, Permissions-Policy, private
+  // mode) — silent no-op is unrecoverable on a one-time-reveal surface.
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyRow | null>(null);
 
   // -- Handlers --
@@ -116,6 +143,7 @@ export default function ApiKeysPage() {
     createMutation.reset();
     setCreatedKey(null);
     setCopied(false);
+    setCopyError(null);
     setCreateOpen(true);
   }
 
@@ -128,16 +156,6 @@ export default function ApiKeysPage() {
         refetch();
       },
     });
-  }
-
-  async function handleCopy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // intentionally ignored: clipboard API not available — user can select and copy manually
-    }
   }
 
   async function handleRevoke() {
@@ -255,21 +273,35 @@ export default function ApiKeysPage() {
               <div className="space-y-1.5">
                 <Label>API Key</Label>
                 <div className="flex gap-2">
+                  {/* No readOnly: keeps manual select → Ctrl+C as a fallback
+                      when navigator.clipboard.writeText is blocked. */}
                   <Input
-                    readOnly
                     value={createdKey.key}
+                    onChange={() => { /* server-issued; ignore edits */ }}
                     className="h-9 font-mono text-xs"
+                    aria-describedby={copyError ? "copy-error" : undefined}
                   />
                   <Button
                     variant="outline"
                     size="sm"
                     className="h-9 shrink-0"
-                    onClick={() => handleCopy(createdKey.key)}
+                    onClick={() =>
+                      copyApiKeyToClipboard({
+                        text: createdKey.key,
+                        setCopied,
+                        setCopyError,
+                      })
+                    }
                   >
                     {copied ? <Check className="mr-1.5 size-3.5" /> : <Copy className="mr-1.5 size-3.5" />}
                     {copied ? "Copied" : "Copy"}
                   </Button>
                 </div>
+                {copyError && (
+                  <p id="copy-error" role="alert" className="text-xs text-destructive">
+                    {copyError}
+                  </p>
+                )}
               </div>
               <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950">
                 <KeyRound className="mt-0.5 size-4 text-amber-600 dark:text-amber-400" />

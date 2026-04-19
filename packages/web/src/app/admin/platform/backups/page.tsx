@@ -308,7 +308,7 @@ function BackupsPageContent() {
               Configure automated backup schedule, retention policy, and storage location.
             </DialogDescription>
           </DialogHeader>
-          <MutationErrorSurface error={configError} feature="Backups" />
+          <MutationErrorSurface error={configError} feature="Backups" onRetry={clearConfigError} />
           {editConfig && (
             <div className="space-y-4">
               <div className="space-y-2">

@@ -28,7 +28,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
@@ -211,7 +210,7 @@ function ResidencyPageContent() {
         {assignmentsLoading ? (
           <LoadingState message="Loading assignments..." />
         ) : assignmentsError ? (
-          <ErrorBanner message={assignmentsError.message} />
+          <MutationErrorSurface error={assignmentsError} feature="Data Residency" />
         ) : (
           <Card>
             <CardContent className="p-0">

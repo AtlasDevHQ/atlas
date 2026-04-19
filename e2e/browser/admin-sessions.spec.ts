@@ -131,7 +131,13 @@ async function installSessionMocks(
     });
   });
 
-  await page.route(/\/api\/v1\/admin\/sessions(?:\?|$)/, async (route: Route) => {
+  // Anchor the list-path regex to end-of-path-or-query so future relaxation
+  // of the pattern can't accidentally shadow `/stats` or `/<id>` handlers
+  // registered above. Playwright evaluates handlers in reverse-registration
+  // order, so without the anchor a broadened match here would silently
+  // intercept the more specific routes (code review flagged this as a
+  // drift hazard).
+  await page.route(/\/api\/v1\/admin\/sessions(?:\?[^/]*)?$/, async (route: Route) => {
     const req = route.request();
     if (req.method() !== "GET") {
       await route.fallback();

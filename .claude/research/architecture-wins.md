@@ -662,3 +662,35 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - **`statusLabel` override** on both `Shell` and `CompactRow` lets callers with different status semantics (plugins use "Enabled"/"Disabled" rather than "Connected"/"Not connected") reuse the primitive without forking.
 
 **Category:** Progressive-disclosure UI pattern consolidated from 14 inline duplications into one shared module. `useDisclosure` is the cleanest win — five concerns (state, focus in, focus out, cleanup, auto-collapse) bundled behind six return values. Compare with the starter state of most revamped pages, which had three or four of the five concerns wired by hand and the fifth missing entirely (stale `expanded=true` after a successful mutation was a recurring bug).
+
+---
+
+## 29. Structured-error passthrough across admin mutations (`useAdminMutation`)
+
+**Date:** 2026-04-19
+**Issue:** #1595
+**PR:** #1614
+**Commit:** a3cc16a9
+
+**Problem:** `useAdminMutation.mutate()` resolved to `{ ok: false, error: string }` — a flattened string built from `extractFetchError()`. The structured fields `status`, `requestId`, and `code` (the machine-readable `enterprise_required` signal from the API) were dropped at the hook boundary. Two downstream consumers silently degraded:
+
+- `friendlyError()` branches on `status` to translate 401/403/404/503 into admin-appropriate copy; with the status gone, every mutation failure rendered raw `"HTTP 403 (Request ID: …)"` instead of `"Access denied. Admin role required to view this page."`.
+- `AdminContentWrapper`'s `isEnterpriseRequired()` branches on `code === "enterprise_required"`; with the code gone, an EE-gated mutation failure rendered a generic `ErrorBanner` instead of the `EnterpriseUpsell` component — non-EE admins saw "something went wrong" with no path to the upgrade CTA.
+
+The problem was silent — surfaced during the 4-agent review on #1594 when the silent-failure-hunter noticed `result.error` was a string but `friendlyError` expected a `FetchError`. The #1594 page applied a minimal local mitigation (`setError({ message: result.error })`); full fix moved up to the hook.
+
+**Solution:** `MutateResult.error: string` → `FetchError`. The hook smuggles the structured error across the throw boundary via `Object.assign(new Error(msg), { fetchError })` — TanStack's own log still gets a human-readable `Error.message`, but the catch in `mutate()` can recover the `FetchError` attachment. Non-HTTP failures (network errors) fall back to a minimal `{ message }` `FetchError` preserving the `FetchError` interface contract. All 13 caller sites that read `result.error` migrated in the same PR (breaking shape change, atomic migration required — a two-PR split would have left `main` with a broken intermediate commit):
+
+- **String-typed state:** pipes through `friendlyError(result.error)` (canonical wrap; fires translations, appends requestId).
+- **`FetchError | null` state** (`/admin/learned-patterns`): passes the error straight through to `setError()` so `AdminContentWrapper` can branch on `.code` and `.status`.
+- **Zero remaining `{ message: result.error }` wraps** (grep-verified post-merge).
+
+The hook's own `error: string | null` state is explicitly unchanged — out of scope per the issue (follow-up in #1615).
+
+**Impact:**
+- **+244 net lines** (273 added, 29 removed across 15 files). Most of the delta is the new integration test file (`admin-mutation-error-passthrough.test.tsx`, +188 lines) that drives the full flow through `AdminContentWrapper`. The hook itself changed by ~14 useful lines; the 13 caller migrations averaged 2 lines each.
+- **Four-agent review surfaced only sub-threshold findings, no CRITICAL/HIGH.** Comment-analyzer flagged `#1595` references that would rot on close and one comment that restated obvious code (fixed in a second commit). Code-reviewer and silent-failure-hunter both flagged unreachable `|| "Failed to…"` fallbacks on top of `friendlyError()` (which always returns a non-empty string) — dead code, removed in the same follow-up commit. Three follow-ups filed: **#1615** (hook-level `mutation.error` still flattens for the ~15 callers that read it directly — same class of bug, different surface), **#1616** (ESLint guard against re-introducing the `{ message: result.error }` wrap), **#1617** (invalidates() callback throws conflated with mutation errors — pre-existing, surfaced during silent-failure review).
+- **Test coverage added:** `use-admin-mutation.test.ts` gets a regression guard asserting `code/status/requestId` survive the catch (the exact regression that would re-introduce #1595). The new `admin-mutation-error-passthrough.test.tsx` drives five distinct error paths through `AdminContentWrapper` — 403+`enterprise_required` → `EnterpriseUpsell`, plain 403 → `FeatureGate` access-denied copy, 401/404/503 → `FeatureGate` copy. Every test also asserts the raw `"HTTP 4xx"` string does **not** render, so a future re-flatten would fail both directions.
+- **`AdminContentWrapper` invariant codified in a test.** Pre-PR, the wrapper's `isEnterpriseRequired(error)` / `FeatureGate status={…}` branching was reachable only from `useAdminFetch` (read path); mutations bypassed it because the error was a string. Post-PR, mutations reach the same branches and there's an integration test pinning the contract both pages and wrapper need to uphold.
+
+**Category:** Data-structure preservation across a hook boundary. The hook had been deepening the wrong way — adding convenience (auto-invalidate, per-item loading, onSuccess outside try/catch) while narrowing the error surface. Widening `MutateResult.error` back to the full `FetchError` cost ~14 lines of hook and unlocked two already-built downstream features (`friendlyError`, `EnterpriseUpsell`) that had been quietly half-dead on the mutation path. The pattern generalizes — any hook boundary that flattens structured-error shape to a string is a silent-failure candidate, and `Object.assign(new Error(msg), { structured })` is a cheap way to thread it through whatever library throws for you (here TanStack's `useMutation`).

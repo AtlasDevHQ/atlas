@@ -33,8 +33,12 @@ export interface SessionRow {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-/** Extract a short browser/OS label from a full user-agent string. */
-function shortUA(ua: string | null): string {
+/**
+ * Extract a short browser/OS label from a full user-agent string.
+ * Exported for unit testing — five branches: null, browser match,
+ * long UA (truncated), short UA (passthrough), unrecognized (passthrough).
+ */
+export function shortUA(ua: string | null): string {
   if (!ua) return "—";
   // Try to extract browser name + version
   const match = ua.match(/(Chrome|Firefox|Safari|Edge|Opera|Brave)\/[\d.]+/);

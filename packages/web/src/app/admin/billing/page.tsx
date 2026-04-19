@@ -27,6 +27,7 @@ import {
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { formatDate, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -546,7 +547,7 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
           Saving…
         </p>
       )}
-      <InlineError>{error ? friendlyError(error) : null}</InlineError>
+      <MutationErrorSurface error={error} feature="AI Model" variant="inline" />
     </Shell>
   );
 }
@@ -598,7 +599,7 @@ function ByotRow({
           </div>
         }
       />
-      <InlineError>{error ? friendlyError(error) : null}</InlineError>
+      <MutationErrorSurface error={error} feature="BYOT" variant="inline" />
     </div>
   );
 }

@@ -24,7 +24,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -263,7 +263,11 @@ export default function SCIMPage() {
         >
           {showTopMutationError && mutationError && (
             <div className="mb-4">
-              <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />
+              <MutationErrorSurface
+                error={mutationError}
+                feature="SCIM"
+                onRetry={clearMutationError}
+              />
             </div>
           )}
 

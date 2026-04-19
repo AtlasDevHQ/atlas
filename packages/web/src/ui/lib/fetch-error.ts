@@ -76,7 +76,15 @@ export function friendlyErrorOrNull(err: FetchError | null | undefined): string 
  */
 export function friendlyError(err: FetchError): string {
   let msg: string;
-  if (err.status === 401) msg = "Not authenticated. Please sign in.";
+  // Schema mismatch only wins for client-side parse failures (status undefined),
+  // because the body parses as 200 OK but fails Zod — HTTP status alone can't
+  // distinguish this case. Gating on `status === undefined` prevents an HTTP
+  // error whose body happens to set `error: "schema_mismatch"` from masking
+  // the 401/403/404/503 mappings below — the 401 "sign in" message has to
+  // reach the user even if a misconfigured server tags the body that way.
+  if (err.code === "schema_mismatch" && err.status === undefined)
+    msg = "The server returned data this version of the app can't read. This usually means the server and app are out of sync — contact your administrator or try again later.";
+  else if (err.status === 401) msg = "Not authenticated. Please sign in.";
   else if (err.status === 403)
     msg = "Access denied. Admin role required to view this page.";
   else if (err.status === 404)

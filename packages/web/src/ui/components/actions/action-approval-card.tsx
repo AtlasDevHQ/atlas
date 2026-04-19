@@ -139,7 +139,18 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
     }
 
     if (!res.ok) {
-      const text = await res.text().catch(() => "Unknown error");
+      // Body-read failure (aborted stream, malformed transfer encoding) is
+      // distinct from a server-returned body — log + prefix the substituted
+      // string with `<could not read body: …>` so the rendered message can't
+      // be confused with a literal server response of the same text.
+      const text = await res.text().catch((err) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `action-approval-card: failed to read ${res.status} response body:`,
+          reason,
+        );
+        return `<could not read body: ${reason}>`;
+      });
       throw new Error(`Server responded ${res.status}: ${text}`);
     }
 

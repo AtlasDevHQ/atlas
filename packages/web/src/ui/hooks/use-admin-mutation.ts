@@ -4,6 +4,7 @@ import { useState, useCallback, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
 import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
 
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
@@ -155,7 +156,7 @@ export function useAdminMutation<TResponse = unknown>(
     onSuccess: () => {
       // Invalidate all admin-fetch queries so useAdminFetch consumers get fresh data.
       // This is intentionally broad — can be narrowed to specific keys if needed.
-      queryClient.invalidateQueries({ queryKey: ["admin-fetch"] });
+      queryClient.invalidateQueries({ queryKey: [ADMIN_FETCH_QUERY_KEY] });
     },
   });
 

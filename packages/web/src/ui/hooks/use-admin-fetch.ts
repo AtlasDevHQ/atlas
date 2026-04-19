@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
 
 // Re-export from @/ui/lib/fetch-error (canonical location) for backward
 // compatibility. New code should import directly from @/ui/lib/fetch-error.
@@ -40,7 +41,7 @@ export function useAdminFetch<T>(
   const [errorOverride, setErrorOverride] = useState<FetchError | null>(null);
 
   const query = useQuery<T, FetchError>({
-    queryKey: ["admin-fetch", path, ...(opts?.deps ?? [])],
+    queryKey: [ADMIN_FETCH_QUERY_KEY, path, ...(opts?.deps ?? [])],
     queryFn: async ({ signal }) => {
       // Clear any manual error override when a real fetch starts.
       setErrorOverride(null);
@@ -68,8 +69,13 @@ export function useAdminFetch<T>(
         const parsed = opts.schema.safeParse(json);
         if (!parsed.success) {
           console.warn(`useAdminFetch schema validation failed for ${path}:`, parsed.error.issues);
+          // `code: "schema_mismatch"` lets `friendlyError()` swap in copy
+          // tailored to a server/client version drift — refreshing won't fix
+          // it, so the default "try again" guidance in the bare message is
+          // actively misleading.
           const err: FetchError = {
-            message: `Unexpected response format from ${path}. Try refreshing the page.`,
+            message: `Server returned an unexpected response from ${path}. This is likely a version mismatch — contact your administrator or try again later.`,
+            code: "schema_mismatch",
           };
           throw err;
         }

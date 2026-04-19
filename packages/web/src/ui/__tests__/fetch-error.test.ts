@@ -125,6 +125,33 @@ describe("friendlyError", () => {
       "Not authenticated. Please sign in. (Request ID: req-abc)",
     );
   });
+
+  test("routes schema_mismatch to a version-drift specific message", () => {
+    // No status field — emulates the useAdminFetch schema-failure throw, which
+    // is the only legitimate producer of `code: "schema_mismatch"`.
+    expect(friendlyError({ message: "raw", code: "schema_mismatch" })).toContain(
+      "out of sync",
+    );
+  });
+
+  test("HTTP status mapping wins over schema_mismatch when status is set", () => {
+    // Defensive: if a server response body ever sets `error: "schema_mismatch"`
+    // on a 401/403/404/503, the auth/role/feature copy must still reach the
+    // user — masking it with "out of sync" would break the sign-in loop.
+    expect(
+      friendlyError({ message: "x", status: 401, code: "schema_mismatch" }),
+    ).toBe("Not authenticated. Please sign in.");
+    expect(
+      friendlyError({ message: "x", status: 403, code: "schema_mismatch" }),
+    ).toContain("Access denied");
+  });
+
+  test("schema_mismatch falls through to raw message when status is set without a friendly mapping", () => {
+    // 500 has no friendly mapping, so the raw message wins (not "out of sync").
+    expect(
+      friendlyError({ message: "raw 500", status: 500, code: "schema_mismatch" }),
+    ).toBe("raw 500");
+  });
 });
 
 describe("extractFetchError empty-message clobber guard", () => {

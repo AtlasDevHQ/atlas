@@ -58,7 +58,14 @@ const IPAllowlistResponseSchema = z.object({
   // short-circuits to `{ allowed: true }` when enterprise is disabled or
   // the internal DB is missing, so the UI can't derive enforcement from
   // entry count alone without lying to admins.
-  effectivelyEnforced: z.boolean(),
+  //
+  // `.optional()` keeps rolling deploys safe: during a web-before-api rollout
+  // an older API server returns no `effectivelyEnforced`, and a required
+  // boolean would fail safeParse and brick the whole page. Missing → treated
+  // as `false` at the read site (pessimistic — shows the dormant banner, which
+  // is technically wrong if the older server was actually enforcing but is
+  // harmless and self-heals on the next successful deploy).
+  effectivelyEnforced: z.boolean().optional(),
 });
 
 // ── Shared Design Primitives (locally duplicated per #1551) ──────────────

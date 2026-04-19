@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { z } from "zod";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -39,6 +39,7 @@ import {
 import { cn } from "@/lib/utils";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { KeyRound, Plus, Copy, Check, Loader2, Trash2 } from "lucide-react";
+import { copyApiKeyToClipboard } from "./copy-api-key";
 
 // -- Types --
 
@@ -78,30 +79,6 @@ function isExpired(expiresAt: string | null): boolean {
   return new Date(expiresAt).getTime() < Date.now();
 }
 
-export const COPY_FALLBACK_MESSAGE =
-  "Copy failed — select the key below and copy manually.";
-
-// Exported so the success / failure branches stay unit-testable without
-// mounting the full page.
-export async function copyApiKeyToClipboard(args: {
-  text: string;
-  setCopied: (copied: boolean) => void;
-  setCopyError: (msg: string | null) => void;
-}): Promise<void> {
-  const { text, setCopied, setCopyError } = args;
-  try {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setCopyError(null);
-    setTimeout(() => setCopied(false), 2000);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn("API key clipboard write failed:", msg);
-    setCopied(false);
-    setCopyError(COPY_FALLBACK_MESSAGE);
-  }
-}
-
 // -- Component --
 
 export default function ApiKeysPage() {
@@ -131,10 +108,6 @@ export default function ApiKeysPage() {
   // -- Dialog state --
   const [createOpen, setCreateOpen] = useState(false);
   const [createdKey, setCreatedKey] = useState<{ key: string; name: string } | null>(null);
-  const [copied, setCopied] = useState(false);
-  // Surfaces clipboard failures (insecure origin, Permissions-Policy, private
-  // mode) — silent no-op is unrecoverable on a one-time-reveal surface.
-  const [copyError, setCopyError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyRow | null>(null);
 
   // -- Handlers --
@@ -142,8 +115,6 @@ export default function ApiKeysPage() {
   function openCreateDialog() {
     createMutation.reset();
     setCreatedKey(null);
-    setCopied(false);
-    setCopyError(null);
     setCreateOpen(true);
   }
 
@@ -258,63 +229,11 @@ export default function ApiKeysPage() {
 
       {/* Create dialog — result phase (show full key) */}
       {createdKey && (
-        <Dialog
+        <RevealKeyDialog
           open={createOpen && !!createdKey}
           onOpenChange={(open) => { if (!open) setCreateOpen(false); }}
-        >
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>API key created</DialogTitle>
-              <DialogDescription>
-                Copy your API key now. You will not be able to see it again.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <Label>API Key</Label>
-                <div className="flex gap-2">
-                  {/* No readOnly: keeps manual select → Ctrl+C as a fallback
-                      when navigator.clipboard.writeText is blocked. */}
-                  <Input
-                    value={createdKey.key}
-                    onChange={() => { /* server-issued; ignore edits */ }}
-                    className="h-9 font-mono text-xs"
-                    aria-describedby={copyError ? "copy-error" : undefined}
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-9 shrink-0"
-                    onClick={() =>
-                      copyApiKeyToClipboard({
-                        text: createdKey.key,
-                        setCopied,
-                        setCopyError,
-                      })
-                    }
-                  >
-                    {copied ? <Check className="mr-1.5 size-3.5" /> : <Copy className="mr-1.5 size-3.5" />}
-                    {copied ? "Copied" : "Copy"}
-                  </Button>
-                </div>
-                {copyError && (
-                  <p id="copy-error" role="alert" className="text-xs text-destructive">
-                    {copyError}
-                  </p>
-                )}
-              </div>
-              <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950">
-                <KeyRound className="mt-0.5 size-4 text-amber-600 dark:text-amber-400" />
-                <p className="text-sm text-amber-700 dark:text-amber-400">
-                  Store this key securely. It will only be displayed once.
-                </p>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button onClick={() => setCreateOpen(false)}>Done</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+          apiKey={createdKey}
+        />
       )}
 
       {/* Create dialog — form phase */}
@@ -393,6 +312,87 @@ export default function ApiKeysPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ── Reveal dialog (one-time key display) ─────────────────────────
+
+function RevealKeyDialog({
+  open,
+  onOpenChange,
+  apiKey,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  apiKey: { key: string; name: string };
+}) {
+  const [copied, setCopied] = useState(false);
+  // Surfaces clipboard failures (insecure origin, Permissions-Policy, private
+  // mode) — silent no-op is unrecoverable on a one-time-reveal surface.
+  const [copyError, setCopyError] = useState<string | null>(null);
+
+  // Auto-reset the "Copied" affordance. Co-locating the timer with the
+  // component lifecycle ensures the cleanup fires on unmount, so a stale
+  // timer can't flip the next dialog instance's state.
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>API key created</DialogTitle>
+          <DialogDescription>
+            Copy your API key now. You will not be able to see it again.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label>API Key</Label>
+            <div className="flex gap-2">
+              <Input
+                readOnly
+                value={apiKey.key}
+                className="h-9 font-mono text-xs"
+                aria-describedby={copyError ? "copy-error" : undefined}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9 shrink-0"
+                onClick={() =>
+                  copyApiKeyToClipboard({
+                    text: apiKey.key,
+                    setCopied,
+                    setCopyError,
+                  })
+                }
+              >
+                {copied ? <Check className="mr-1.5 size-3.5" /> : <Copy className="mr-1.5 size-3.5" />}
+                {copied ? "Copied" : "Copy"}
+              </Button>
+            </div>
+            {copyError && (
+              <p id="copy-error" role="alert" className="text-xs text-destructive">
+                {copyError}
+              </p>
+            )}
+          </div>
+          <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950">
+            <KeyRound className="mt-0.5 size-4 text-amber-600 dark:text-amber-400" />
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              Store this key securely. It will only be displayed once.
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>Done</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

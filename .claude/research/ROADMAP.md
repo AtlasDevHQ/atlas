@@ -1334,12 +1334,19 @@ Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approv
 - [ ] `bulk-summary`: group by failure class, carry requestIds in trailing slot (#1602)
 - [ ] Rollback warning: handle non-string warning shape (#1603)
 - [ ] `plugin-marketplace` docs describe UI that doesn't exist — "Available tab", "Enterprise badge" (#1610, discovered during #1607 work)
-- [ ] `bulkFailureSummary` loses non-Error rejection values (#1611)
+- [x] `bulkFailureSummary` loses non-Error rejection values (#1611, PR #1619) — one-line `String(r.reason)` fallback + new test file `bulk-summary.test.ts` covering both Error and non-Error rejection paths; also migrated an older `queue-bulk-summary.test.ts` into the proper `__tests__/` dir
 - [ ] `ReasonDialog` caller `error` prop hidden while `localError` is set (#1612, discovered during #1604 review)
-- [ ] `AtlasChat` demo usage has unknown prop `chatEndpoint` / `conversationsEndpoint` (#1613)
-- [ ] `useAdminMutation.error` hook-level field still flattens `FetchError` — ~15 admin pages affected (#1615, architecture)
-- [ ] ESLint guard to prevent re-introducing `{ message: result.error }` wrap (#1616)
-- [ ] `useAdminMutation` catch conflates `invalidates()` callback errors with fetch errors (#1617)
+- [x] `AtlasChat` demo usage has unknown prop `chatEndpoint` / `conversationsEndpoint` (#1613, PR #1618) — added `@atlas/web` to root `bun run type` so future drift catches in CI; surfaced a concrete repro (#1621 — props genuinely don't exist on current `AtlasChatProps` build) tracked as follow-up
+- [x] `useAdminMutation.error` hook-level field still flattens `FetchError` — ~40 admin pages (#1615, PR #1622) — hook-level `error` widened to `FetchError | null`; `friendlyError()` + new `friendlyErrorOrNull()` helper rolled out atomically; architecture win #30
+- [x] ESLint guard to prevent re-introducing `{ message: result.error }` wrap (#1616, PR #1622) — `no-restricted-syntax` rule in root `eslint.config.mjs`; broader `.error?.y` optional-chain variant carved out as follow-up #1625
+- [x] `useAdminMutation` catch conflates `invalidates()` callback errors with fetch errors (#1617, PR #1622) — `invalidates()` callbacks moved outside the `mutateAsync` try-catch; throwing invalidates no longer flips `result.ok` or populates `error`; debug log preserved
+- [ ] Sibling to #1611: `action-approval-card` surfaces 'Unknown error' when `res.text()` rejects (#1620)
+- [ ] Follow-up to #1613: demo page still references `chatEndpoint` / `conversationsEndpoint` that don't exist on `AtlasChatProps` — decide wire-up vs drop (#1621)
+- [ ] Dead `enterprise_required` gate branch in `/admin/custom-domain` — drop or wire up (#1623, surfaced during #1615 migration)
+- [ ] `MutationErrorSurface` — route mutation `FetchError`s through `EnterpriseUpsell` / `FeatureGate` primitive (#1624, architecture, follow-up to win #30)
+- [ ] Broaden `no-restricted-syntax` guard to catch `{ message: X.error?.y }` optional-chain variants (#1625, follow-up to #1616)
+- [ ] Regression test for structured plan-gate in `/admin/custom-domain` (code-based, not message-substring) (#1626)
+- [ ] Cover `combineMutationErrors` + `formError` fallback chain in `/admin/email-provider` (#1627)
 
 ---
 

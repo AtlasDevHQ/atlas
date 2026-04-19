@@ -3,6 +3,7 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
+import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Mail, UserIcon, Shield, Activity, Calendar } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -126,11 +127,8 @@ export function getUserColumns(): ColumnDef<User>[] {
         <DataTableColumnHeader column={column} label="Created" />
       ),
       cell: ({ row }) => (
-        <span className="text-xs text-muted-foreground">
-          {new Date(row.getValue<string>("createdAt")).toLocaleDateString(
-            undefined,
-            { month: "short", day: "numeric", year: "numeric" },
-          )}
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          <RelativeTimestamp iso={row.getValue<string>("createdAt")} />
         </span>
       ),
       meta: { label: "Created", icon: Calendar },
@@ -197,11 +195,8 @@ export function getInvitationColumns(): ColumnDef<Invitation>[] {
         <DataTableColumnHeader column={column} label="Expires" />
       ),
       cell: ({ row }) => (
-        <span className="text-xs text-muted-foreground">
-          {new Date(row.getValue<string>("expires_at")).toLocaleDateString(
-            undefined,
-            { month: "short", day: "numeric", year: "numeric" },
-          )}
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          <RelativeTimestamp iso={row.getValue<string>("expires_at")} />
         </span>
       ),
       meta: { label: "Expires", icon: Calendar },
@@ -214,11 +209,8 @@ export function getInvitationColumns(): ColumnDef<Invitation>[] {
         <DataTableColumnHeader column={column} label="Sent" />
       ),
       cell: ({ row }) => (
-        <span className="text-xs text-muted-foreground">
-          {new Date(row.getValue<string>("created_at")).toLocaleDateString(
-            undefined,
-            { month: "short", day: "numeric", year: "numeric" },
-          )}
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          <RelativeTimestamp iso={row.getValue<string>("created_at")} />
         </span>
       ),
       meta: { label: "Sent", icon: Calendar },

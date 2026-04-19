@@ -53,9 +53,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   FormDialog,
   FormField,
@@ -69,7 +71,7 @@ import {
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { UserStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -96,10 +98,21 @@ import {
 type ConfirmAction =
   | { type: "ban"; user: User }
   | { type: "delete"; user: User }
+  | { type: "revoke-sessions"; user: User }
+  | { type: "revoke-invitation"; invitation: Invitation }
+  | { type: "role-demote"; user: User; newRole: (typeof ROLES)[number] }
   | null;
 
 const LIMIT = 50;
 const ROLES = ["member", "admin", "owner"] as const;
+// Rank for detecting demotions — higher is more privileged. Promotions skip
+// the confirm step; demotions route through AlertDialog so an accidental
+// click doesn't strip a coworker's access.
+const ROLE_RANK: Record<(typeof ROLES)[number], number> = {
+  member: 0,
+  admin: 1,
+  owner: 2,
+};
 
 const inviteSchema = z.object({
   email: z.string().email("Valid email address is required"),
@@ -171,17 +184,25 @@ export default function UsersPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {ROLES.map((r) =>
-                r !== user.role ? (
+              {ROLES.map((r) => {
+                if (r === user.role) return null;
+                const fromRank = ROLE_RANK[user.role as keyof typeof ROLE_RANK] ?? 0;
+                const toRank = ROLE_RANK[r];
+                const isDemotion = toRank < fromRank;
+                return (
                   <DropdownMenuItem
                     key={r}
-                    onClick={() => handleRoleChange(user.id, r)}
+                    onClick={() =>
+                      isDemotion
+                        ? setConfirmAction({ type: "role-demote", user, newRole: r })
+                        : handleRoleChange(user.id, r)
+                    }
                   >
                     <Shield className="mr-2 size-4" />
                     Set {r}
                   </DropdownMenuItem>
-                ) : null,
-              )}
+                );
+              })}
               <DropdownMenuSeparator />
               {user.banned ? (
                 <DropdownMenuItem onClick={() => handleUnban(user.id)}>
@@ -196,9 +217,11 @@ export default function UsersPage() {
                   Ban user
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => handleRevoke(user.id)}>
+              <DropdownMenuItem
+                onClick={() => setConfirmAction({ type: "revoke-sessions", user })}
+              >
                 <LogOut className="mr-2 size-4" />
-                Revoke sessions
+                Sign out all sessions
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -245,8 +268,11 @@ export default function UsersPage() {
             variant="ghost"
             size="sm"
             className="size-8 p-0 text-muted-foreground hover:text-destructive"
-            onClick={() => handleRevokeInvitation(inv.id)}
+            onClick={() =>
+              setConfirmAction({ type: "revoke-invitation", invitation: inv })
+            }
             title="Revoke invitation"
+            aria-label={`Revoke invitation to ${inv.email}`}
           >
             <X className="size-4" />
           </Button>
@@ -421,6 +447,7 @@ export default function UsersPage() {
   const pendingInvitations = invitations.filter((i) => i.status === "pending");
 
   return (
+    <TooltipProvider>
     <div className="p-6">
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
@@ -512,8 +539,16 @@ export default function UsersPage() {
         </div>
 
         {/* Content */}
-        {adminAction.error && <ErrorBanner message={friendlyError(adminAction.error)} onRetry={adminAction.clearError} />}
-        {revokeInvitation.error && <ErrorBanner message={friendlyError(revokeInvitation.error)} onRetry={revokeInvitation.clearError} />}
+        <MutationErrorSurface
+          error={adminAction.error}
+          feature="Users"
+          onRetry={adminAction.clearError}
+        />
+        <MutationErrorSurface
+          error={revokeInvitation.error}
+          feature="Users"
+          onRetry={revokeInvitation.clearError}
+        />
 
         <AdminContentWrapper
           loading={loading}
@@ -544,9 +579,11 @@ export default function UsersPage() {
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <Mail className="size-4 text-muted-foreground" />
-              <h2 className="text-lg font-semibold">Pending Invitations</h2>
+              <h2 className="text-lg font-semibold">Invitations</h2>
               {pendingInvitations.length > 0 && (
-                <Badge variant="outline">{pendingInvitations.length}</Badge>
+                <Badge variant="outline">
+                  {pendingInvitations.length} pending
+                </Badge>
               )}
             </div>
             <DataTable table={invitationsTable} />
@@ -728,6 +765,98 @@ export default function UsersPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Revoke sessions confirmation dialog */}
+      <AlertDialog
+        open={confirmAction?.type === "revoke-sessions"}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Sign out all sessions?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{confirmAction?.type === "revoke-sessions" ? confirmAction.user.email : ""}</strong> will
+              be signed out of every active session immediately. They will need to sign in again to continue.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmAction?.type === "revoke-sessions") {
+                  handleRevoke(confirmAction.user.id);
+                  setConfirmAction(null);
+                }
+              }}
+            >
+              Sign out
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Revoke invitation confirmation dialog */}
+      <AlertDialog
+        open={confirmAction?.type === "revoke-invitation"}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revoke invitation?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The invite link for <strong>{confirmAction?.type === "revoke-invitation" ? confirmAction.invitation.email : ""}</strong> will
+              stop working immediately. You can send a new invitation at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmAction?.type === "revoke-invitation") {
+                  handleRevokeInvitation(confirmAction.invitation.id);
+                  setConfirmAction(null);
+                }
+              }}
+            >
+              Revoke
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Role demote confirmation dialog */}
+      <AlertDialog
+        open={confirmAction?.type === "role-demote"}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Change role to {confirmAction?.type === "role-demote" ? confirmAction.newRole : ""}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{confirmAction?.type === "role-demote" ? confirmAction.user.email : ""}</strong> will
+              lose access to features available at their current <strong>
+                {confirmAction?.type === "role-demote" ? confirmAction.user.role : ""}
+              </strong> role. You can restore it later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmAction?.type === "role-demote") {
+                  handleRoleChange(confirmAction.user.id, confirmAction.newRole);
+                  setConfirmAction(null);
+                }
+              }}
+            >
+              Change role
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
+    </TooltipProvider>
   );
 }

@@ -592,6 +592,14 @@ export const SessionsListSchema = z.object({
   total: z.number(),
 });
 
+/**
+ * Authoritative TypeScript shape for one admin session row. Inferred from
+ * the schema so the Zod parse at `useAdminFetch` time is the single source
+ * of truth — columns.tsx re-exports this for its `ColumnDef<SessionRow>`
+ * generic, and the inference guarantees the two stay in lockstep.
+ */
+export type SessionRow = z.infer<typeof SessionRowSchema>;
+
 // ── Token Usage ──────────────────────────────────────────────────
 
 export const TokenSummarySchema = z.object({

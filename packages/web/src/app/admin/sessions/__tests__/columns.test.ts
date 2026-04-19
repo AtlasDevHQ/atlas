@@ -6,13 +6,25 @@ describe("shortUA", () => {
     expect(shortUA(null)).toBe("—");
   });
 
+  test("empty string also returns the em-dash placeholder", () => {
+    // The helper uses `if (!ua)` — not a typeof/null check — so the
+    // falsy-coalesce path handles both `null` and `""`. Pinned so a
+    // refactor to a strict null check (which would render "" verbatim)
+    // would be caught.
+    expect(shortUA("")).toBe("—");
+  });
+
   test("browser match returns the Chrome/version segment only", () => {
     const ua =
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
       "(KHTML, like Gecko) Chrome/120.0.6099.129 Safari/537.36";
-    // The regex is greedy on the first browser alternation, so Chrome wins
-    // over Safari when both are present — the test pins that behavior so a
-    // refactor that reorders the alternation would be caught.
+    // When multiple browser tokens appear in the UA, the leftmost match
+    // in the input string wins — JS regex scans left-to-right and returns
+    // the first position where any alternative matches. Chrome appears
+    // before Safari in real Chromium UAs, which is what this fixture
+    // pins. A refactor that swapped the order of tokens in the input
+    // (not a reordering of the regex alternation) would change the
+    // match target, which is the actual contract worth guarding.
     expect(shortUA(ua)).toBe("Chrome/120.0.6099.129");
   });
 

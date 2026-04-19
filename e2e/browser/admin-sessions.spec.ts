@@ -72,11 +72,23 @@ function buildFixture(): MockSession[] {
 interface MockOptions {
   /** Session ids for which DELETE should return 500 (partial-failure tests). */
   failDeleteIds?: Set<string>;
+  /** Milliseconds to sleep before fulfilling DELETE (disabled-button test). */
+  deleteDelayMs?: number;
 }
 
 /**
  * Install mocks for the three endpoints the sessions page hits. Returns
  * the mutable session map so the test can assert on remaining state.
+ *
+ * Scope limits deliberately kept narrow:
+ *  - The list handler returns the full fixture regardless of `?search=`,
+ *    `?limit=`, or `?offset=`. This spec never exercises search or
+ *    pagination; a future spec that does should either extend this mock
+ *    or build a new one that honors the query string.
+ *  - Non-DELETE on the id path and non-GET on the list path `route.abort`
+ *    rather than `route.fallback()` — falling back would hit the real
+ *    network in CI, which could mask a regression that starts issuing
+ *    unexpected requests by silently succeeding against a real admin API.
  */
 async function installSessionMocks(
   page: Page,
@@ -86,6 +98,7 @@ async function installSessionMocks(
     buildFixture().map((s) => [s.id, s]),
   );
   const failDeleteIds = opts.failDeleteIds ?? new Set<string>();
+  const deleteDelayMs = opts.deleteDelayMs ?? 0;
 
   await page.route(/\/api\/v1\/admin\/sessions\/stats(?:\?|$)/, async (route: Route) => {
     await route.fulfill({
@@ -102,15 +115,17 @@ async function installSessionMocks(
   await page.route(/\/api\/v1\/admin\/sessions\/[^/?]+(?:\?|$)/, async (route: Route) => {
     const req = route.request();
     if (req.method() !== "DELETE") {
-      // Anything that isn't a DELETE to an id path (e.g. a future GET)
-      // should fall through to the real network — the mock isn't trying
-      // to be exhaustive.
-      await route.fallback();
+      // Abort (not fallback) so an unexpected method is a loud failure
+      // in CI, not a silent real-network passthrough.
+      await route.abort("failed");
       return;
     }
     const url = new URL(req.url());
     // path is `/api/v1/admin/sessions/<id>` — take the last segment.
     const id = url.pathname.split("/").pop()!;
+    if (deleteDelayMs > 0) {
+      await new Promise<void>((r) => setTimeout(r, deleteDelayMs));
+    }
     if (failDeleteIds.has(id)) {
       await route.fulfill({
         status: 500,
@@ -140,7 +155,7 @@ async function installSessionMocks(
   await page.route(/\/api\/v1\/admin\/sessions(?:\?[^/]*)?$/, async (route: Route) => {
     const req = route.request();
     if (req.method() !== "GET") {
-      await route.fallback();
+      await route.abort("failed");
       return;
     }
     const sessions = [...state.values()].sort(
@@ -261,6 +276,65 @@ test.describe("Admin sessions revoke flow", () => {
     expect(state.has("sess_alice")).toBe(false);
     expect(state.has("sess_bob")).toBe(false);
     expect(state.has("sess_carol")).toBe(true);
+  });
+
+  test("row Revoke button is disabled while the mutation is in flight", async ({ page }) => {
+    // Delay the DELETE response so the disabled state is observable
+    // between the dialog closing and the refetch removing the row.
+    // The page wires `disabled={revoking}` to `isMutating(sessionId)` —
+    // a regression in the `useAdminMutation` per-item tracking would
+    // otherwise go silent.
+    await installSessionMocks(page, { deleteDelayMs: 800 });
+    await page.goto("/admin/sessions");
+    const aliceRow = page.getByRole("row").filter({ hasText: "alice.e2e@useatlas.dev" });
+    await expect(aliceRow).toBeVisible({ timeout: 15_000 });
+
+    const rowRevoke = aliceRow.getByRole("button", { name: "Revoke" });
+    await expect(rowRevoke).toBeEnabled();
+    await rowRevoke.click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Revoke" })
+      .click();
+
+    // Dialog closes immediately; row is still visible during the 800ms
+    // mock delay. Button should flip to disabled until the DELETE
+    // resolves and the refetch removes the row.
+    await expect(rowRevoke).toBeDisabled({ timeout: 2_000 });
+    await expect(aliceRow).toHaveCount(0, { timeout: 5_000 });
+  });
+
+  test("single-row revoke failure renders the error banner", async ({ page }) => {
+    // The `revokeError` banner path (page.tsx: `revokeError && !bulkError`)
+    // was not covered by the bulk tests. A 500 on the single-row revoke
+    // must populate the hook's `error` slot and render `<ErrorBanner />`
+    // with the friendlyError message — regressions to either the
+    // `!bulkError` guard or the hook's error wiring would go silent
+    // otherwise.
+    const state = await installSessionMocks(page, {
+      failDeleteIds: new Set(["sess_alice"]),
+    });
+    await page.goto("/admin/sessions");
+    const aliceRow = page.getByRole("row").filter({ hasText: "alice.e2e@useatlas.dev" });
+    await expect(aliceRow).toBeVisible({ timeout: 15_000 });
+
+    await aliceRow.getByRole("button", { name: "Revoke" }).click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Revoke" })
+      .click();
+
+    // friendlyError passes the server message through verbatim for
+    // non-mapped statuses (500 is not 401/403/404/503) and appends the
+    // request id. Assert on the banner's role + the server message so
+    // the test doesn't over-pin the exact formatting.
+    const banner = page.getByRole("alert").filter({ hasText: /Internal server error/ });
+    await expect(banner).toBeVisible({ timeout: 10_000 });
+    await expect(banner).toContainText(/Request ID: req_mock_sess_alice/);
+
+    // Row survives — failure must not remove it from the table.
+    await expect(aliceRow).toBeVisible();
+    expect(state.has("sess_alice")).toBe(true);
   });
 
   test("bulk revoke partial failure shows banner and keeps failed row selected", async ({

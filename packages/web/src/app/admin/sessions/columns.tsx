@@ -17,26 +17,26 @@ import {
 } from "@/components/ui/alert-dialog";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Clock, User, Globe, Monitor, Trash2 } from "lucide-react";
+import type { SessionRow } from "@/ui/lib/admin-schemas";
 
 // ── Types ─────────────────────────────────────────────────────────
 
-export interface SessionRow {
-  id: string;
-  userId: string;
-  userEmail: string | null;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string;
-  ipAddress: string | null;
-  userAgent: string | null;
-}
+// `SessionRow` is re-exported here so consumers can keep importing it from
+// the colocated columns module even though admin-schemas.ts owns the
+// authoritative shape (inferred from `SessionRowSchema`).
+export type { SessionRow };
 
 // ── Helpers ───────────────────────────────────────────────────────
 
 /**
  * Extract a short browser/OS label from a full user-agent string.
- * Exported for unit testing — five branches: null, browser match,
- * long UA (truncated), short UA (passthrough), unrecognized (passthrough).
+ * Exported for unit testing.
+ *
+ * Cases (pinned by `__tests__/columns.test.ts`):
+ *  - null / empty → em-dash placeholder
+ *  - browser-regex match → `Name/version` (leftmost match in UA string wins)
+ *  - long unrecognized (>50 chars) → 50-char prefix + ellipsis
+ *  - short unrecognized (≤50 chars) → passthrough
  */
 export function shortUA(ua: string | null): string {
   if (!ua) return "—";

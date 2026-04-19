@@ -28,6 +28,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -152,7 +153,7 @@ export default function SCIMPage() {
     const result = await deleteMutate({ path });
     setDeleteTarget(null);
     if (!result.ok) {
-      setRowError({ message: result.error, id: target.id, kind: target.type });
+      setRowError({ message: friendlyError(result.error), id: target.id, kind: target.type });
     }
   }
 

@@ -35,7 +35,7 @@ import {
   bulkFailureSummary,
   failedIdsFrom,
 } from "@/ui/components/admin/queue";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { extractFetchError, friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import {
   Zap,
   Check,
@@ -278,7 +278,7 @@ export default function ActionsPage() {
       body: {},
       itemId: id,
     });
-    if (!result.ok) setMutationError(result.error);
+    if (!result.ok) setMutationError(friendlyError(result.error));
   }
 
   async function confirmSingleDeny(reason: string) {
@@ -310,7 +310,7 @@ export default function ActionsPage() {
         }
       },
     });
-    if (!result.ok) setMutationError(result.error);
+    if (!result.ok) setMutationError(friendlyError(result.error));
   }
 
   async function handleBulkApprove() {

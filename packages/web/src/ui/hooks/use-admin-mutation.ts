@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
-import { extractFetchError } from "@/ui/lib/fetch-error";
+import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
@@ -12,11 +12,13 @@ type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
  * Discriminated result returned by `mutate()`.
  * Discriminates on `ok`: true means the request succeeded (data is
  * undefined for 204 No Content or non-JSON responses), false means
- * an error occurred.
+ * an error occurred. `error` is the structured {@link FetchError} so callers
+ * can pass it to `friendlyError()` or branch on `code === "enterprise_required"`
+ * without re-parsing the message string.
  */
 export type MutateResult<T> =
   | { ok: true; data: T | undefined }
-  | { ok: false; error: string };
+  | { ok: false; error: FetchError };
 
 /** Options for a single mutate() call. */
 interface MutateOptions<TResponse = unknown> {
@@ -123,10 +125,14 @@ export function useAdminMutation<TResponse = unknown>(
 
       if (!res.ok) {
         const fetchError = await extractFetchError(res);
+        // Preserve the structured FetchError across the throw boundary so the
+        // catch in `mutate()` can return it as `MutateResult.error`. The bare
+        // `Error.message` is kept human-readable as a fallback for anything
+        // that inspects the thrown error directly (e.g. TanStack's own logs).
         const msg = fetchError.requestId
           ? `${fetchError.message} (Request ID: ${fetchError.requestId})`
           : fetchError.message;
-        throw new Error(msg);
+        throw Object.assign(new Error(msg), { fetchError });
       }
 
       // Parse response (handle 204 No Content)
@@ -155,7 +161,7 @@ export function useAdminMutation<TResponse = unknown>(
       if (!callOpts?.path && !opts?.path) {
         const msg = "useAdminMutation: no path provided";
         setError(msg);
-        return { ok: false, error: msg };
+        return { ok: false, error: { message: msg } };
       }
 
       // Track loading state
@@ -184,8 +190,12 @@ export function useAdminMutation<TResponse = unknown>(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const errorMessage = msg || "Request failed";
+        // Recover the structured FetchError the mutationFn attached before
+        // throwing (non-HTTP failures like network errors reach this path with
+        // no attachment — fall back to a minimal FetchError preserving message).
+        const fetchError = (err as { fetchError?: FetchError }).fetchError;
         setError(errorMessage);
-        return { ok: false, error: errorMessage };
+        return { ok: false, error: fetchError ?? { message: errorMessage } };
       } finally {
         if (itemId) {
           setInFlight((prev) => {

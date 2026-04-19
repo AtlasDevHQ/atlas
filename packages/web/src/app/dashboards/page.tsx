@@ -33,6 +33,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { NavBar } from "@/ui/components/tour/nav-bar";
 import { authClient } from "@/lib/auth/client";
 import type { Dashboard } from "@/ui/lib/types";
@@ -90,7 +91,7 @@ export default function DashboardsPage() {
       body: { title: newTitle.trim() },
     });
     if (!result.ok) {
-      setCreateError(result.error ?? "Failed to create dashboard.");
+      setCreateError(friendlyError(result.error) || "Failed to create dashboard.");
       return;
     }
     setNewTitle("");

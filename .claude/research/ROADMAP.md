@@ -1335,11 +1335,11 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 - [x] `/admin/abuse` row needs investigation depth, not just reinstate (#1589, PR #1641) — shipped as Bucket 1 PR 4 (see Bucket 1 section above)
 - [ ] Unify `ActionStatus` / `ActionDisplayStatus`, drop `mapStatus` (#1591)
 - [ ] Pure-function tests + e2e spec for `/admin/actions` approval flow (#1593)
-- [ ] `bulk-summary`: group by failure class, carry requestIds in trailing slot (#1602)
-- [ ] Rollback warning: handle non-string warning shape (#1603)
-- [ ] `plugin-marketplace` docs describe UI that doesn't exist — "Available tab", "Enterprise badge" (#1610, discovered during #1607 work)
+- [x] `bulk-summary`: group by failure class, carry requestIds in trailing slot (#1602, PR #1645) — `BulkRequestError` carries `requestId` separately + `extractBulkRequestId()` accepts `{fetchError:{requestId}}` and direct `.requestId` shapes too; identical-message failures collapse to one bucket with trailing `(IDs: ...)` slot instead of splintering per-requestId
+- [x] Rollback warning: handle non-string warning shape (#1603, PR #1645) — pure `coerceRollbackWarning(raw: unknown): string | null` helper with compliance contract (never empty string for non-null) + `logUnsurfacedRollbackWarning()` observability helper for schema drift; 13 unit tests on the decision tree
+- [x] `plugin-marketplace` docs describe UI that doesn't exist — rewrote guide (Option 1) to match shipped admin UI with a sentinel WARN callout about missing self-service browse; softened "Enterprise badge doesn't exist" to "no separate tier badges" (#1610, PR #1645)
 - [x] `bulkFailureSummary` loses non-Error rejection values (#1611, PR #1619) — one-line `String(r.reason)` fallback + new test file `bulk-summary.test.ts` covering both Error and non-Error rejection paths; also migrated an older `queue-bulk-summary.test.ts` into the proper `__tests__/` dir
-- [ ] `ReasonDialog` caller `error` prop hidden while `localError` is set (#1612, discovered during #1604 review)
+- [x] `ReasonDialog` caller `error` prop hidden while `localError` is set (#1612, PR #1645) — `useEffect` on `error` prop clears stale localError when a fresh non-null error arrives; null→null transition is a no-op; covers retry-flow distinct-non-null cases
 - [x] `AtlasChat` demo usage has unknown prop `chatEndpoint` / `conversationsEndpoint` (#1613, PR #1618) — added `@atlas/web` to root `bun run type` so future drift catches in CI; surfaced a concrete repro (#1621 — props genuinely don't exist on current `AtlasChatProps` build) tracked as follow-up
 - [x] `useAdminMutation.error` hook-level field still flattens `FetchError` — ~40 admin pages (#1615, PR #1622) — hook-level `error` widened to `FetchError | null`; `friendlyError()` + new `friendlyErrorOrNull()` helper rolled out atomically; architecture win #30
 - [x] ESLint guard to prevent re-introducing `{ message: result.error }` wrap (#1616, PR #1622) — `no-restricted-syntax` rule in root `eslint.config.mjs`; broader `.error?.y` optional-chain variant carved out as follow-up #1625
@@ -1356,11 +1356,13 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 - [ ] Sessions e2e smoke spec + pure-function tests for `shortUA` + `SessionsListSchema` round-trip (#1631, follow-up to PR #1628)
 - [ ] Extract + unit-test `errorRatePct` branch in abuse detail (#1638, follow-up to PR #1641)
 - [ ] Integration test for `getAbuseDetail` against real in-memory state (#1639, follow-up to PR #1641)
-- [ ] Resolve `workspaceName` in abuse list + detail routes (#1640, pre-existing list-path bug mirrored into detail, surfaced during PR #1641 review)
+- [x] Resolve `workspaceName` in abuse list + detail routes (#1640, PR #1645) — new `getWorkspaceNamesByIds()` batch helper avoids N+1; advisory fallback to null with `log.warn` (stack + orgIdCount + sampleOrgIds) on DB failure; admins now see display names instead of opaque `org_01K...` ids
 - [ ] Single-source Zod schemas for `AbuseDetail` (drop duplicate `AbuseDetailSchema` between api + web) (#1642, architecture, follow-up to PR #1641)
 - [ ] `z.enum()` vs `z.string()` — tighten client validation in `admin-schemas.ts` (#1643, architecture, follow-up to PR #1641)
 - [ ] Factory + computed helpers for `AbuseInstance` invariants (#1644, follow-up to PR #1641)
 - [x] Regenerate `apps/docs/openapi.json` + api-reference MDX after #1641 merge (CI drift gate #1606 caught it post-merge, commit c807b91f)
+- [x] Bundled 5-bug sweep PR #1645 — closes #1602 + #1603 + #1610 + #1612 + #1640 in one PR with review-driven follow-ups inlined (silent-failure R1+A1, pr-test-analyzer coverage gaps, all 8 comment-analyzer polish items, B1 future-proofing). 5-agent review + fix cycle. 16 new tests (17 bulk-summary + 13 rollback-warning + 4 reason-dialog + 3 admin-abuse); total tests after merge: api 242/242, cli 19/19, web 70/70, ee 25/25, react 9/9
+- [x] `bulkFailureSummary` recognize `requestId` on non-`BulkRequestError` rejections (#1646, PR #1645 inline) — `extractBulkRequestId()` accepts BulkRequestError, `{ fetchError: { requestId } }`, and direct `.requestId` shapes; filed as follow-up during review then fixed inline before merge
 
 ---
 

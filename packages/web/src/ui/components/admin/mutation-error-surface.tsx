@@ -63,11 +63,17 @@ export function MutationErrorSurface({
 
   if (variant === "inline") {
     if (isEnterpriseRequired) {
+      // Pass `error.message` through when the server sent one. Banner variant
+      // gives it to `EnterpriseUpsell.message`; the inline variant has to
+      // render it inline or the server's context-specific copy ("Enterprise
+      // tier required on hosted plans — contact sales@…") is lost. The fixed
+      // headline + Learn more link still anchor the upsell affordance.
       return (
         <InlineError>
           <span className="font-semibold">
             {feature} requires Enterprise.
           </span>{" "}
+          {error.message && <>{error.message} </>}
           <a
             href="https://www.useatlas.dev/enterprise"
             target="_blank"

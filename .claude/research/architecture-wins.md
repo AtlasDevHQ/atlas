@@ -755,7 +755,7 @@ Phase 1 migration (this PR) covers 5 highest-value pages — the ones called out
 - `/admin/ip-allowlist` — inline div in delete dialog.
 
 **Impact:**
-- **One component, five pages, ~35 remaining.** Component itself is 107 lines (70 of which are the docstring explaining the decision tree and why the inline variant opts out of FeatureGate routing). Each call site dropped 3–5 lines — `{err && <ErrorBanner … />}` → `<MutationErrorSurface error={err} feature="…" />` plus the null-render handling moves into the component.
+- **One component, five pages, ~35 remaining.** Component itself is small — most of it is the docstring explaining the decision tree and why the inline variant opts out of FeatureGate routing. Each call site dropped 3–5 lines — `{err && <ErrorBanner … />}` → `<MutationErrorSurface error={err} feature="…" />` plus the null-render handling moves into the component.
 - **10 component tests, full branch coverage.** Enterprise_required (banner + inline), all 4 FeatureGate status codes, plain error with requestId, retry button wiring, inline prefix rendering, null → null. Inline + `enterprise_required` asserts the compact upsell link is present AND the full `EnterpriseUpsell` button is *not* — guards the variant separation.
 - **Phase 2 is mechanical.** ~35 admin pages still write `<ErrorBanner message={friendlyError(mutation.error)} />` or the equivalent. Follow-up issue enumerates the full list so the second PR can sweep them in one pass without re-analysis.
 

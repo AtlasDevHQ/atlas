@@ -72,6 +72,42 @@ describe("MutationErrorSurface", () => {
     expect(container.textContent).toContain("Custom Domains");
   });
 
+  test("enterprise_required without a status still routes to EnterpriseUpsell", () => {
+    // Locks the ordering of the two gate checks inside the banner branch.
+    // A refactor that puts the `status in {401,403,404,503}` check first
+    // would still pass the other enterprise_required tests (they all have
+    // status 403), but would silently drop a code-only error into
+    // FeatureGate instead of EnterpriseUpsell.
+    const error: FetchError = {
+      message: "Enterprise required",
+      code: "enterprise_required",
+    };
+    const { container } = render(
+      <MutationErrorSurface error={error} feature="SSO" />,
+    );
+    expect(container.textContent).toContain("SSO requires an enterprise plan");
+    expect(container.querySelector('a[href*="useatlas.dev/enterprise"]')).not.toBeNull();
+  });
+
+  test("status outside {401,403,404,503} falls through to ErrorBanner, not FeatureGate", () => {
+    // Locks the whitelist semantics on the FeatureGate gate. A refactor that
+    // replaces `[401,403,404,503].includes(error.status)` with a truthy check
+    // would render FeatureGate for 429/500/... and break the cast
+    // `as 401 | 403 | 404 | 503`. 429 is the canonical "known status code
+    // that MUST NOT route to FeatureGate" — rate-limited mutations should
+    // render the generic banner with retry.
+    const error: FetchError = { message: "Too Many Requests", status: 429 };
+    const { container } = render(
+      <MutationErrorSurface error={error} feature="Billing" />,
+    );
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert!.textContent).toContain("Too Many Requests");
+    // FeatureGate uses h-full + centered copy — the "Access denied" text
+    // must not appear.
+    expect(container.textContent).not.toContain("Access denied");
+  });
+
   test("plain error (banner) renders ErrorBanner with friendlyError message + requestId", () => {
     const error: FetchError = {
       message: "Upstream failed",
@@ -137,7 +173,7 @@ describe("MutationErrorSurface", () => {
 
   test("inline variant + enterprise_required renders compact inline upsell (not full EnterpriseUpsell)", () => {
     const error: FetchError = {
-      message: "Enterprise required",
+      message: "Enterprise tier required — contact sales@example.com",
       status: 403,
       code: "enterprise_required",
     };
@@ -152,6 +188,12 @@ describe("MutationErrorSurface", () => {
     expect(link).not.toBeNull();
     expect(container.textContent).toContain("BYOT");
     expect(container.textContent).toContain("Enterprise");
+    // Server-provided message must survive — banner variant passes it via
+    // EnterpriseUpsell.message, inline variant must render it too or the
+    // specific guidance ("contact sales@...") silently drops.
+    expect(container.textContent).toContain(
+      "Enterprise tier required — contact sales@example.com",
+    );
     // Inline chrome (not the centered card with the shield icon and button).
     expect(container.querySelector(".bg-destructive\\/10")).not.toBeNull();
     expect(

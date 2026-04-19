@@ -146,7 +146,7 @@ export default function BrandingPage() {
   const busy = save.saving || reset.saving;
 
   async function handleSave(v: BrandingValues) {
-    // saveError state is surfaced via <InlineError> below — no throw
+    // saveError is surfaced by <MutationErrorSurface> below — no throw
     // needed; react-hook-form's handleSubmit would swallow it anyway.
     await save.mutate({
       method: "PUT",

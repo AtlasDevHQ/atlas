@@ -22,12 +22,12 @@ import {
   FormMessage,
 } from "@/components/form-dialog";
 import { Separator } from "@/components/ui/separator";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
@@ -382,11 +382,11 @@ function BrandColorCard({
           </p>
         )}
 
-        {error && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {friendlyError(error)}
-          </div>
-        )}
+        <MutationErrorSurface
+          error={error}
+          feature="Platform Settings"
+          variant="inline"
+        />
 
         {manageable && (
           <div className="flex gap-2">
@@ -469,9 +469,11 @@ function PlatformSettingsContent() {
       </div>
 
       <div>
-        {mutationError && (
-          <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />
-        )}
+        <MutationErrorSurface
+          error={mutationError}
+          feature="Platform Settings"
+          onRetry={clearMutationError}
+        />
 
         <AdminContentWrapper
           loading={loading}

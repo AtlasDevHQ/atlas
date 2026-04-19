@@ -32,12 +32,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { BackupsResponseSchema, BackupConfigSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -309,7 +308,7 @@ function BackupsPageContent() {
               Configure automated backup schedule, retention policy, and storage location.
             </DialogDescription>
           </DialogHeader>
-          {configError && <ErrorBanner message={friendlyError(configError)} />}
+          <MutationErrorSurface error={configError} feature="Backups" />
           {editConfig && (
             <div className="space-y-4">
               <div className="space-y-2">

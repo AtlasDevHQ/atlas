@@ -29,13 +29,13 @@ import {
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { RegionsResponseSchema, AssignmentsResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import type { WorkspaceRegion } from "@/ui/lib/types";
@@ -276,7 +276,7 @@ function ResidencyPageContent() {
                 </SelectContent>
               </Select>
             </div>
-            {assignError && <ErrorBanner message={friendlyError(assignError)} />}
+            <MutationErrorSurface error={assignError} feature="Data Residency" onRetry={clearAssignError} />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAssignDialog(null); setSelectedRegion(""); clearAssignError(); }}>

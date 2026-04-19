@@ -14,6 +14,7 @@ import {
   getAbuseConfig,
   getAbuseDetail,
 } from "@atlas/api/lib/security/abuse";
+import { ABUSE_LEVELS, ABUSE_TRIGGERS } from "@useatlas/types";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
@@ -23,11 +24,17 @@ import { createAdminRouter } from "./admin-router";
 // Schemas
 // ---------------------------------------------------------------------------
 
+// Sourced from `@useatlas/types` so the enum values stay structurally
+// coupled to the TS unions — adding a new level or trigger in `types/abuse.ts`
+// propagates here without manual duplication.
+const LevelEnum = z.enum(ABUSE_LEVELS);
+const TriggerEnum = z.enum(ABUSE_TRIGGERS);
+
 const AbuseEventSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
-  level: z.enum(["none", "warning", "throttled", "suspended"]),
-  trigger: z.enum(["query_rate", "error_rate", "unique_tables", "manual"]),
+  level: LevelEnum,
+  trigger: TriggerEnum,
   message: z.string(),
   metadata: z.record(z.string(), z.unknown()),
   createdAt: z.string(),
@@ -37,8 +44,8 @@ const AbuseEventSchema = z.object({
 const AbuseStatusSchema = z.object({
   workspaceId: z.string(),
   workspaceName: z.string().nullable(),
-  level: z.enum(["none", "warning", "throttled", "suspended"]),
-  trigger: z.enum(["query_rate", "error_rate", "unique_tables", "manual"]).nullable(),
+  level: LevelEnum,
+  trigger: TriggerEnum.nullable(),
   message: z.string().nullable(),
   updatedAt: z.string(),
   events: z.array(AbuseEventSchema),
@@ -71,15 +78,15 @@ const AbuseCountersSchema = z.object({
 const AbuseInstanceSchema = z.object({
   startedAt: z.string(),
   endedAt: z.string().nullable(),
-  peakLevel: z.enum(["none", "warning", "throttled", "suspended"]),
+  peakLevel: LevelEnum,
   events: z.array(AbuseEventSchema),
 });
 
 const AbuseDetailResponseSchema = z.object({
   workspaceId: z.string(),
   workspaceName: z.string().nullable(),
-  level: z.enum(["none", "warning", "throttled", "suspended"]),
-  trigger: z.enum(["query_rate", "error_rate", "unique_tables", "manual"]).nullable(),
+  level: LevelEnum,
+  trigger: TriggerEnum.nullable(),
   message: z.string().nullable(),
   updatedAt: z.string(),
   counters: AbuseCountersSchema,

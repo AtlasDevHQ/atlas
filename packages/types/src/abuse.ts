@@ -86,14 +86,15 @@ export interface AbuseInstance {
  *
  * Returned from `GET /api/v1/admin/abuse/:workspaceId/detail`. Lazy-loaded on
  * row expand — the list endpoint stays lightweight.
+ *
+ * Extends `Omit<AbuseStatus, "events">` so the identity fields
+ * (workspaceId, workspaceName, level, trigger, message, updatedAt) stay
+ * structurally coupled to the list response. Events move into
+ * `currentInstance.events` / `priorInstances[i].events` — the detail panel
+ * splits them by flag instance so the list's flat `events` array is the
+ * wrong shape here.
  */
-export interface AbuseDetail {
-  workspaceId: string;
-  workspaceName: string | null;
-  level: AbuseLevel;
-  trigger: AbuseTrigger | null;
-  message: string | null;
-  updatedAt: string;
+export interface AbuseDetail extends Omit<AbuseStatus, "events"> {
   counters: AbuseCounters;
   thresholds: AbuseThresholdConfig;
   /**

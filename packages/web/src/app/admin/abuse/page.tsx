@@ -10,7 +10,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -40,6 +39,7 @@ import type { AbuseStatus } from "@/ui/lib/types";
 import { AbuseStatusSchema, AbuseThresholdConfigSchema } from "@/ui/lib/admin-schemas";
 import { abuseSearchParams } from "./search-params";
 import { AbuseDetailPanel } from "./detail-panel";
+import { levelBadge, triggerLabel } from "./helpers";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -56,48 +56,6 @@ const FILTER_OPTIONS: { value: LevelFilter; label: string }[] = [
   { value: "throttled", label: "Throttled" },
   { value: "suspended", label: "Suspended" },
 ];
-
-function levelBadge(level: string) {
-  switch (level) {
-    case "warning":
-      return (
-        <Badge
-          variant="outline"
-          className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-        >
-          Warning
-        </Badge>
-      );
-    case "throttled":
-      return (
-        <Badge
-          variant="outline"
-          className="border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300"
-        >
-          Throttled
-        </Badge>
-      );
-    case "suspended":
-      return <Badge variant="destructive">Suspended</Badge>;
-    default:
-      return <Badge variant="outline">None</Badge>;
-  }
-}
-
-function triggerLabel(trigger: string | null): string {
-  switch (trigger) {
-    case "query_rate":
-      return "Excessive queries";
-    case "error_rate":
-      return "High error rate";
-    case "unique_tables":
-      return "Unusual table access";
-    case "manual":
-      return "Manual action";
-    default:
-      return "—";
-  }
-}
 
 // ── Main Page ─────────────────────────────────────────────────────
 

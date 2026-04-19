@@ -2,7 +2,6 @@
 
 import { Fragment } from "react";
 import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -12,54 +11,12 @@ import { AbuseDetailSchema } from "@/ui/lib/admin-schemas";
 import type {
   AbuseCounters,
   AbuseInstance,
-  AbuseLevel,
   AbuseThresholdConfig,
 } from "@/ui/lib/types";
+import { levelBadge, triggerLabel } from "./helpers";
 
 // Keep the inline-expand layout usable when the panel is still loading.
 const SKELETON_HEIGHT = "min-h-40";
-
-function levelBadge(level: AbuseLevel) {
-  switch (level) {
-    case "warning":
-      return (
-        <Badge
-          variant="outline"
-          className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-        >
-          Warning
-        </Badge>
-      );
-    case "throttled":
-      return (
-        <Badge
-          variant="outline"
-          className="border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300"
-        >
-          Throttled
-        </Badge>
-      );
-    case "suspended":
-      return <Badge variant="destructive">Suspended</Badge>;
-    default:
-      return <Badge variant="outline">None</Badge>;
-  }
-}
-
-function triggerLabel(trigger: string | null): string {
-  switch (trigger) {
-    case "query_rate":
-      return "Excessive queries";
-    case "error_rate":
-      return "High error rate";
-    case "unique_tables":
-      return "Unusual table access";
-    case "manual":
-      return "Manual action";
-    default:
-      return "—";
-  }
-}
 
 /**
  * "147 / 100 queries in 60s" — formats a counter against its threshold so the
@@ -271,13 +228,12 @@ export function AbuseDetailPanel({
   });
 
   async function handleReinstate() {
-    const result = await reinstate.mutate({
+    // Errors surface via `reinstate.error` in the banner below. On success the
+    // parent's `onReinstated` refetch drops this workspace from the list and
+    // unmounts the panel.
+    await reinstate.mutate({
       path: `/api/v1/admin/abuse/${encodeURIComponent(workspaceId)}/reinstate`,
     });
-    // Errors surface via reinstate.error in the banner below; explicit early
-    // return so future success-only UI work (toast, focus management) doesn't
-    // need to re-read the hook state.
-    if (!result.ok) return;
   }
 
   if (loading && !data) {

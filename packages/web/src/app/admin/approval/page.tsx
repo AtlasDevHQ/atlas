@@ -42,6 +42,7 @@ import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import {
   bulkFailureSummary,
+  BulkRequestError,
   failedIdsFrom,
   QueueFilterRow,
   ReasonDialog,
@@ -579,8 +580,7 @@ function QueueSection() {
     });
     if (!res.ok) {
       const fe = await extractFetchError(res);
-      const msg = fe.requestId ? `${fe.message} (Request ID: ${fe.requestId})` : fe.message;
-      throw new Error(msg);
+      throw new BulkRequestError(fe.message, fe.requestId);
     }
   }
 

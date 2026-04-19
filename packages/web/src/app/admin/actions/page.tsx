@@ -29,11 +29,12 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import {
+  bulkFailureSummary,
+  BulkRequestError,
+  failedIdsFrom,
   QueueFilterRow,
   ReasonDialog,
   RelativeTimestamp,
-  bulkFailureSummary,
-  failedIdsFrom,
 } from "@/ui/components/admin/queue";
 import { extractFetchError, friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import {
@@ -266,8 +267,7 @@ export default function ActionsPage() {
     });
     if (!res.ok) {
       const fe = await extractFetchError(res);
-      const msg = fe.requestId ? `${fe.message} (Request ID: ${fe.requestId})` : fe.message;
-      throw new Error(msg);
+      throw new BulkRequestError(fe.message, fe.requestId);
     }
   }
 

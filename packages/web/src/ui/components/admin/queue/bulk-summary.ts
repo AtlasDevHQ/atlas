@@ -17,6 +17,22 @@ export interface BulkPartialResult {
   errors?: Array<{ id: string; error: string }>;
 }
 
+/**
+ * Rejection carrying the server's user-facing message and its requestId as
+ * separate fields. Callers in fan-out bulk flows should throw this instead
+ * of `new Error("${message} (Request ID: ${requestId})")` — that embedded
+ * form causes `bulkFailureSummary` to group every row into its own bucket
+ * (one per unique requestId) instead of collapsing identical failures.
+ */
+export class BulkRequestError extends Error {
+  readonly requestId?: string;
+  constructor(message: string, requestId?: string) {
+    super(message);
+    this.name = "BulkRequestError";
+    this.requestId = requestId;
+  }
+}
+
 /** Indices of `results` that rejected, mapped back to their input ids. */
 export function failedIdsFrom(
   results: PromiseSettledResult<unknown>[],
@@ -25,22 +41,37 @@ export function failedIdsFrom(
   return results.flatMap((r, i) => (r.status === "rejected" ? [ids[i]] : []));
 }
 
-/** "3 of 5 denials failed: 2× Forbidden; 1× Internal error" — counts per reason. */
+/**
+ * "3 of 5 denials failed: 2× Forbidden (IDs: abc, def); 1× Internal error (ID: ghi)"
+ *
+ * Groups by message (so N identical failures collapse to one line). When any
+ * grouped rejection carries a requestId, appends a trailing `(ID: …)` slot
+ * per group so on-call still has the correlation token without splintering
+ * the grouping.
+ */
 export function bulkFailureSummary(
   results: PromiseSettledResult<unknown>[],
   ids: string[],
   noun: string,
 ): string {
-  const reasonCounts = new Map<string, number>();
+  const groups = new Map<string, { count: number; requestIds: string[] }>();
   for (const r of results) {
-    if (r.status === "rejected") {
-      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      reasonCounts.set(msg, (reasonCounts.get(msg) ?? 0) + 1);
-    }
+    if (r.status !== "rejected") continue;
+    const reason = r.reason;
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const requestId = reason instanceof BulkRequestError ? reason.requestId : undefined;
+    const group = groups.get(msg) ?? { count: 0, requestIds: [] };
+    group.count += 1;
+    if (requestId) group.requestIds.push(requestId);
+    groups.set(msg, group);
   }
-  const failedCount = [...reasonCounts.values()].reduce((a, b) => a + b, 0);
-  const summary = [...reasonCounts.entries()]
-    .map(([msg, n]) => `${n}× ${msg}`)
+  const failedCount = [...groups.values()].reduce((a, g) => a + g.count, 0);
+  const summary = [...groups.entries()]
+    .map(([msg, { count, requestIds }]) => {
+      if (requestIds.length === 0) return `${count}× ${msg}`;
+      const label = requestIds.length === 1 ? "ID" : "IDs";
+      return `${count}× ${msg} (${label}: ${requestIds.join(", ")})`;
+    })
     .join("; ");
   return `${failedCount} of ${ids.length} ${noun} failed: ${summary}`;
 }

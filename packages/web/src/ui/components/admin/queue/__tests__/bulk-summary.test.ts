@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   bulkFailureSummary,
+  BulkRequestError,
   bulkPartialSummary,
   failedIdsFrom,
   type BulkPartialResult,
@@ -87,6 +88,58 @@ describe("bulkFailureSummary", () => {
     ]);
     expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
       "2 of 2 denials failed: 2× Forbidden",
+    );
+  });
+
+  test("BulkRequestError with identical messages collapses to one group with trailing IDs", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500", "req-abc")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-def")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-ghi")),
+    ]);
+    expect(bulkFailureSummary(results, ["a", "b", "c"], "denials")).toBe(
+      "3 of 3 denials failed: 3× HTTP 500 (IDs: req-abc, req-def, req-ghi)",
+    );
+  });
+
+  test("BulkRequestError single-id group uses singular 'ID' label", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500", "req-only")),
+    ]);
+    expect(bulkFailureSummary(results, ["a"], "denials")).toBe(
+      "1 of 1 denials failed: 1× HTTP 500 (ID: req-only)",
+    );
+  });
+
+  test("BulkRequestError without requestId drops the trailing slot", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500")),
+      Promise.reject(new BulkRequestError("HTTP 500")),
+    ]);
+    expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
+      "2 of 2 denials failed: 2× HTTP 500",
+    );
+  });
+
+  test("BulkRequestError groups separately by message and carries only its own ids", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("Forbidden", "req-1")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-2")),
+      Promise.reject(new BulkRequestError("HTTP 500", "req-3")),
+    ]);
+    expect(bulkFailureSummary(results, ["a", "b", "c"], "denials")).toBe(
+      "3 of 3 denials failed: 1× Forbidden (ID: req-1); 2× HTTP 500 (IDs: req-2, req-3)",
+    );
+  });
+
+  test("mixed BulkRequestError and plain Error merge by message; only the typed one contributes an ID", async () => {
+    const results = await Promise.allSettled([
+      Promise.reject(new BulkRequestError("HTTP 500", "req-abc")),
+      Promise.reject(new Error("HTTP 500")),
+    ]);
+    // Plain Error has no requestId, so the group shows only the typed one's id.
+    expect(bulkFailureSummary(results, ["a", "b"], "denials")).toBe(
+      "2 of 2 denials failed: 2× HTTP 500 (ID: req-abc)",
     );
   });
 });

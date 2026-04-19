@@ -8,13 +8,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas supports approval workflows for sensitive queries. Admins define rules that intercept queries before execution, requiring sign-off from designated approvers. This adds a governance layer for compliance-sensitive environments.
 
 <Callout type="info" title="SaaS Feature">
-  Approval workflows are available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments do not include enterprise features.
+  Approval workflows are available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features.
 </Callout>
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
 - Internal database configured (`DATABASE_URL`)
-- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
+- Active Business plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Admin role required for all approval workflow endpoints
 </Callout>
 
@@ -139,7 +139,7 @@ The standard audit log also records queries that were blocked pending approval.
 
 ### Approval check not triggering
 
-- Verify the workspace has an active Enterprise plan
+- Verify the workspace has an active Business plan
 - Check that the internal database is configured (`DATABASE_URL`)
 - Ensure the rule is enabled and the pattern matches (case-insensitive)
 - Table rules match both bare names (`users`) and schema-qualified names (`public.users`)

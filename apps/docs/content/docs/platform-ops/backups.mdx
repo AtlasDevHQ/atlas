@@ -8,11 +8,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas provides automated backup and disaster recovery for the internal PostgreSQL database (`DATABASE_URL`). This database stores auth, audit logs, semantic layer metadata, billing, SLA metrics, learned patterns, and chat state — protecting it is critical.
 
 <Callout type="info" title="SaaS Feature">
-  Managed backups are available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments should use their own backup strategy (e.g. managed database backups from your cloud provider).
+  Managed backups are available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments should use their own backup strategy (e.g. managed database backups from your cloud provider).
 </Callout>
 
 <Callout title="Prerequisites">
-- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
+- Active Business plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Internal database configured (`DATABASE_URL`)
 - Platform admin role for dashboard access
 - `pg_dump` and `psql` available on the server `PATH`

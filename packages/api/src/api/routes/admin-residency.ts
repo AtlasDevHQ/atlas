@@ -109,7 +109,7 @@ const assignRegionRoute = createRoute({
   summary: "Assign data residency region to workspace",
   description:
     "Assigns a region to the current workspace. This action is permanent — " +
-    "the region cannot be changed after assignment. Enterprise plan required.",
+    "the region cannot be changed after assignment. Business plan required.",
   request: {
     body: {
       content: {

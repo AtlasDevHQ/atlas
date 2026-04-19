@@ -8,11 +8,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 Custom domains let workspaces use their own URL (e.g. `data.acme.com`) instead of the default `app.useatlas.dev`. Atlas integrates with Railway's custom domain API for provisioning and automatic TLS certificate management via Let's Encrypt.
 
 <Callout type="info" title="SaaS Feature">
-  Custom domains are available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments configure domains directly in their hosting provider. Workspace admins can self-serve via **Admin Console → Configuration → Custom Domain**. Platform admins retain cross-workspace management at **Admin Console → Platform → Custom Domains**.
+  Custom domains are available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments configure domains directly in their hosting provider. Workspace admins can self-serve via **Admin Console → Configuration → Custom Domain**. Platform admins retain cross-workspace management at **Admin Console → Platform → Custom Domains**.
 </Callout>
 
 <Callout title="Prerequisites">
-- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev) (or self-hosted "free" tier)
+- Active Business plan on [app.useatlas.dev](https://app.useatlas.dev) (or self-hosted "free" tier)
 - Internal database configured (`DATABASE_URL`)
 - Admin role (workspace admin for self-serve, platform admin for cross-workspace management)
 - Railway deployment with API token configured
@@ -52,7 +52,7 @@ RAILWAY_WEB_SERVICE_ID=your-web-service-id
 
 ## Workspace Admin (Self-Serve)
 
-Workspace admins on Enterprise plans can manage their own custom domain at **Admin Console → Configuration → Custom Domain**. One domain per workspace (MVP).
+Workspace admins on Business plans can manage their own custom domain at **Admin Console → Configuration → Custom Domain**. One domain per workspace (MVP).
 
 ### Adding a Domain
 
@@ -127,7 +127,7 @@ When a request arrives on a custom domain, Atlas:
 
 ### Workspace Admin Endpoints
 
-Require `admin` role and active organization. Enterprise plan required for adding a domain (`POST /api/v1/admin/domain`).
+Require `admin` role and active organization. Business plan required for adding a domain (`POST /api/v1/admin/domain`).
 
 | Method | Path | Description |
 |--------|------|-------------|

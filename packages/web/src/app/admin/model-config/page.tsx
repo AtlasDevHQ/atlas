@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -33,6 +33,13 @@ import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import {
+  CompactRow,
+  DetailList,
+  DetailRow,
+  SectionHeading,
+  Shell,
+} from "@/ui/components/admin/compact";
+import {
   Cpu,
   KeyRound,
   Loader2,
@@ -41,7 +48,6 @@ import {
   Lock,
   Eye,
   EyeOff,
-  X,
   ArrowUpRight,
 } from "lucide-react";
 import { WorkspaceModelConfigSchema, BillingStatusSchema } from "@/ui/lib/admin-schemas";
@@ -88,167 +94,6 @@ const modelConfigSchema = z.object({
   apiKey: z.string(),
   baseUrl: z.string(),
 });
-
-// ── Design primitives (local — promote to shared admin/ when a 4th page lifts) ─
-
-type StatusKind = "connected" | "disconnected" | "locked" | "unavailable";
-
-function StatusDot({ kind }: { kind: StatusKind }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "relative inline-flex size-1.5 shrink-0 rounded-full",
-        kind === "connected" &&
-          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
-        kind === "disconnected" && "bg-muted-foreground/40",
-        kind === "locked" && "bg-muted-foreground/30",
-        kind === "unavailable" &&
-          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
-      )}
-    >
-      {kind === "connected" && (
-        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
-      )}
-    </span>
-  );
-}
-
-function SectionHeading({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
-      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
-    </div>
-  );
-}
-
-function CompactRow({
-  icon: Icon,
-  title,
-  description,
-  status,
-  trailingLabel,
-  action,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: string;
-  status: StatusKind;
-  trailingLabel?: ReactNode;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors hover:bg-card/70 hover:border-border/80">
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
-        <Icon className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">{title}</h3>
-          <StatusDot kind={status} />
-        </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>
-      </div>
-      {trailingLabel && (
-        <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-          {trailingLabel}
-        </span>
-      )}
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
-
-function OverrideShell({
-  status,
-  title,
-  description,
-  onCollapse,
-  children,
-  actions,
-}: {
-  status: StatusKind;
-  title: string;
-  description: string;
-  onCollapse?: () => void;
-  children?: ReactNode;
-  actions?: ReactNode;
-}) {
-  return (
-    <section
-      className={cn(
-        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 transition-colors",
-        status === "connected" && "border-primary/20",
-      )}
-    >
-      {status === "connected" && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
-        />
-      )}
-      <header className="flex items-start gap-3 p-4 pb-3">
-        <span
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
-            status === "connected" ? "border-primary/30 text-primary" : "text-muted-foreground",
-          )}
-        >
-          <KeyRound className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">{title}</h3>
-            {status === "connected" ? (
-              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
-                <StatusDot kind="connected" />
-                Live
-              </span>
-            ) : onCollapse ? (
-              <button
-                type="button"
-                aria-label="Cancel"
-                onClick={onCollapse}
-                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            ) : null}
-          </div>
-          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
-        </div>
-      </header>
-      {children != null && <div className="flex-1 space-y-4 px-4 pb-3 text-sm">{children}</div>}
-      {actions && (
-        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
-          {actions}
-        </footer>
-      )}
-    </section>
-  );
-}
-
-function DetailRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span className={cn("min-w-0 text-right", mono ? "font-mono text-[11px]" : "font-medium")}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function DetailList({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
-      {children}
-    </div>
-  );
-}
 
 // ── Main page ─────────────────────────────────────────────────────
 
@@ -463,17 +308,17 @@ export default function ModelConfigPage() {
                       ? `Every chat routes through ${platformModel} unless this workspace overrides it.`
                       : "Every chat routes through the platform default unless this workspace overrides it."
                 }
-                status="locked"
-                trailingLabel={
+                status="disconnected"
+                action={
                   billingMissing ? (
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                       <Lock className="size-3" />
                       Locked
                     </span>
                   ) : (
                     <Link
                       href="/admin/billing"
-                      className="flex items-center gap-1 hover:text-foreground"
+                      className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground"
                     >
                       <Lock className="size-3" />
                       Managed on billing
@@ -560,7 +405,8 @@ export default function ModelConfigPage() {
 
               {/* BYOT permitted + editor visible (either has override or user expanded) */}
               {canOverride && showEditor && (
-                <OverrideShell
+                <Shell
+                  icon={KeyRound}
                   status={hasOverride ? "connected" : "disconnected"}
                   title={
                     hasOverride && existingConfig
@@ -775,7 +621,7 @@ export default function ModelConfigPage() {
                       )}
                     </form>
                   </Form>
-                </OverrideShell>
+                </Shell>
               )}
             </section>
           </div>

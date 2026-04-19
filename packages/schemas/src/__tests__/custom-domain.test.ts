@@ -28,12 +28,8 @@ const verifiedDomain = {
   verifiedAt: "2026-04-19T12:30:00.000Z",
 };
 
-// ---------------------------------------------------------------------------
-// Happy-path round-trips
-// ---------------------------------------------------------------------------
-
 describe("happy-path parses", () => {
-  test("CustomDomainSchema parses a pending domain (null optionals)", () => {
+  test("CustomDomainSchema parses a pending domain", () => {
     expect(CustomDomainSchema.parse(validDomain)).toEqual(validDomain);
   });
 
@@ -44,6 +40,19 @@ describe("happy-path parses", () => {
   test("CustomDomainSchema permits null certificateStatus (pre-Railway row)", () => {
     const nullCert = { ...validDomain, certificateStatus: null };
     expect(CustomDomainSchema.parse(nullCert).certificateStatus).toBeNull();
+  });
+
+  test("CustomDomainSchema permits null railwayDomainId / cnameTarget / verificationToken (pre-migration row)", () => {
+    const preMigration = {
+      ...validDomain,
+      railwayDomainId: null,
+      cnameTarget: null,
+      verificationToken: null,
+    };
+    const parsed = CustomDomainSchema.parse(preMigration);
+    expect(parsed.railwayDomainId).toBeNull();
+    expect(parsed.cnameTarget).toBeNull();
+    expect(parsed.verificationToken).toBeNull();
   });
 });
 
@@ -87,11 +96,16 @@ describe("enum strict rejection", () => {
       ).toBe(certificateStatus);
     }
   });
-});
 
-// ---------------------------------------------------------------------------
-// Structural validation — proves schemas still reject genuinely broken shapes
-// ---------------------------------------------------------------------------
+  test("all DOMAIN_VERIFICATION_STATUSES values parse", () => {
+    for (const domainVerificationStatus of ["pending", "verified", "failed"] as const) {
+      expect(
+        CustomDomainSchema.parse({ ...validDomain, domainVerificationStatus })
+          .domainVerificationStatus,
+      ).toBe(domainVerificationStatus);
+    }
+  });
+});
 
 describe("structural rejection", () => {
   test("CustomDomainSchema rejects missing workspaceId", () => {

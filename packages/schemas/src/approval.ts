@@ -4,9 +4,9 @@
  * Single source of truth for the admin approval surface
  * (`/api/v1/admin/approval`). The route layer imports these for OpenAPI
  * response validation; the web layer imports them for `useAdminFetch`
- * response parsing. Before this module, each layer kept its own Zod
- * copy — with the route enforcing strict `z.enum(...)` while the web
- * copy silently relaxed `ruleType` / `status` to `z.string()`. That
+ * response parsing. Before #1648, each layer kept its own Zod copy —
+ * with the route enforcing strict `z.enum(...)` while the web copy
+ * silently relaxed `ruleType` / `status` to `z.string()`. That
  * asymmetry is exactly the drift surface this package exists to close.
  *
  * The enum tuples (`APPROVAL_RULE_TYPES`, `APPROVAL_STATUSES`) come from

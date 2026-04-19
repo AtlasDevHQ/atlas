@@ -5,13 +5,13 @@
  * admin surface (`/api/v1/admin/domain`) and the platform surface
  * (`/api/v1/platform/domains`). The route layer imports this for
  * OpenAPI response validation; the web layer imports it for
- * `useAdminFetch` response parsing. Before this module lived here, the
- * route copies used strict `z.enum(...)` on every status column while
- * the web copy silently relaxed `status` / `certificateStatus` to
- * `z.string()` and only kept `domainVerificationStatus` strict. The
- * three enum columns are the most drift-prone part of the shape —
- * pinning them to the tuples from `@useatlas/types` is the point of
- * moving this schema here.
+ * `useAdminFetch` response parsing. Before #1648, the route copies
+ * used strict `z.enum(...)` on every status column while the web copy
+ * silently relaxed `status` / `certificateStatus` to `z.string()` and
+ * only kept `domainVerificationStatus` strict. The three enum columns
+ * are the most drift-prone part of the shape — pinning them to the
+ * tuples from `@useatlas/types` is the point of moving this schema
+ * here.
  *
  * Tuples (`DOMAIN_STATUSES`, `CERTIFICATE_STATUSES`,
  * `DOMAIN_VERIFICATION_STATUSES`) come from `@useatlas/types` so adding

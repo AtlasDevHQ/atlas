@@ -43,10 +43,6 @@ const validRequest = {
   expiresAt: "2026-04-20T12:00:00.000Z",
 };
 
-// ---------------------------------------------------------------------------
-// Happy-path round-trips
-// ---------------------------------------------------------------------------
-
 describe("happy-path parses", () => {
   test("ApprovalRuleSchema parses a table rule", () => {
     expect(ApprovalRuleSchema.parse(validRule)).toEqual(validRule);
@@ -58,6 +54,13 @@ describe("happy-path parses", () => {
 
   test("ApprovalRequestSchema parses a pending request with null reviewer fields", () => {
     expect(ApprovalRequestSchema.parse(validRequest)).toEqual(validRequest);
+  });
+
+  test("ApprovalRequestSchema parses an anonymous request (null requesterEmail + explanation)", () => {
+    const anon = { ...validRequest, requesterEmail: null, explanation: null };
+    const parsed = ApprovalRequestSchema.parse(anon);
+    expect(parsed.requesterEmail).toBeNull();
+    expect(parsed.explanation).toBeNull();
   });
 
   test("ApprovalRequestSchema parses each non-pending status", () => {
@@ -105,10 +108,6 @@ describe("enum strict rejection", () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Structural validation — proves schemas still reject genuinely broken shapes
-// ---------------------------------------------------------------------------
 
 describe("structural rejection", () => {
   test("ApprovalRuleSchema rejects missing id", () => {

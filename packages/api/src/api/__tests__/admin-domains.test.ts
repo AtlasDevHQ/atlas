@@ -101,37 +101,53 @@ async function request(urlPath: string, method: string, body?: unknown) {
 
 // --- Tests ---
 
+/**
+ * Assert the contract shape that `AdminContentWrapper.isEnterpriseRequired()`
+ * and `page.tsx` isPlanGated depend on: `{ error: "enterprise_required",
+ * message: <non-empty>, requestId: <defined> }`. Pulled into a helper so every
+ * write-path test locks down the same shape — otherwise adding a new write
+ * endpoint with a subtly different shape would slip through.
+ */
+async function expectEnterpriseRequired403(res: Response): Promise<void> {
+  expect(res.status).toBe(403);
+  const json = (await res.json()) as { error: string; message: string; requestId: string };
+  expect(json.error).toBe("enterprise_required");
+  expect(json.message).toBeTruthy();
+  expect(json.requestId).toBeDefined();
+}
+
 describe("admin custom domain — EE disabled (loadDomains returns null)", () => {
   beforeEach(resetMocks);
 
   it("POST / returns 403 enterprise_required so the web isPlanGated branch fires", async () => {
     const res = await request("/", "POST", { domain: "data.acme.com" });
-    expect(res.status).toBe(403);
-    const json = (await res.json()) as { error: string; message: string; requestId: string };
-    expect(json.error).toBe("enterprise_required");
-    expect(json.message).toBeTruthy();
-    expect(json.requestId).toBeDefined();
+    await expectEnterpriseRequired403(res);
   });
 
   it("DELETE / returns 403 enterprise_required (write endpoint, matches POST)", async () => {
     const res = await request("/", "DELETE");
-    expect(res.status).toBe(403);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("enterprise_required");
+    await expectEnterpriseRequired403(res);
   });
 
   it("POST /verify returns 403 enterprise_required (write endpoint)", async () => {
     const res = await request("/verify", "POST");
-    expect(res.status).toBe(403);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("enterprise_required");
+    await expectEnterpriseRequired403(res);
   });
 
   it("POST /verify-dns returns 403 enterprise_required (write endpoint)", async () => {
     const res = await request("/verify-dns", "POST");
-    expect(res.status).toBe(403);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("enterprise_required");
+    await expectEnterpriseRequired403(res);
+  });
+
+  it("message does not leak EE module internals (no MODULE_NOT_FOUND, stack, @atlas/ee)", async () => {
+    // `classifyError` sanitizes domain-error messages for 5xx but passes 4xx
+    // messages through. The EnterpriseError message is hand-authored in
+    // admin-domains.ts (EE_REQUIRED_MESSAGE), so this guards against a future
+    // refactor that accidentally stringifies a module-load error into the
+    // response body. A user-facing 403 should never expose infra internals.
+    const res = await request("/", "POST", { domain: "data.acme.com" });
+    const json = (await res.json()) as { message: string };
+    expect(json.message).not.toMatch(/MODULE_NOT_FOUND|stack|@atlas\/ee/i);
   });
 
   it("GET / keeps 404 not_available (read endpoints unchanged per #1623 scope)", async () => {

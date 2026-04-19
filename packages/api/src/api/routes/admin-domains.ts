@@ -7,10 +7,12 @@
  *
  * Wraps the existing EE domain module used by platform-domains.ts, scoping
  * operations to the caller's active organization. When the EE module is
- * unavailable (e.g. open-source builds), write endpoints emit 403
- * `enterprise_required` via `EnterpriseError` so the admin page can route
- * them through `EnterpriseUpsell` / the `isPlanGated` CompactRow (see
- * #1622 / #1623). Read endpoints return 404 `not_available` unchanged.
+ * unavailable (e.g. open-source builds), write endpoints (POST /, DELETE /,
+ * POST /verify, POST /verify-dns) emit 403 `enterprise_required` via
+ * `EnterpriseError` so the admin page can route them through
+ * `EnterpriseUpsell` / the `isPlanGated` CompactRow (see #1622 / #1623).
+ * Read endpoints (GET /, GET /domain-check) return 404 `not_available`
+ * unchanged.
  */
 
 import { Effect } from "effect";

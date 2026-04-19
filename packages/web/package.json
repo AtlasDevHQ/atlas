@@ -7,7 +7,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "type": "tsc --noEmit",
+    "type": "tsgo --noEmit",
     "test": "bun scripts/test-isolated.ts"
   },
   "exports": {

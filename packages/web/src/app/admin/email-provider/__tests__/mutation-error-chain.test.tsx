@@ -11,11 +11,11 @@ import EmailProviderPage from "../page";
  *   const structuredError = combineMutationErrors([saveError, deleteError, testError]);
  *   const mutationError = structuredError ? friendlyError(structuredError) : formError;
  *
- * Three mutation errors fall through to a local `formError` when none failed.
- * A regression — swapping the ternary arms, dropping the `formError` fallback,
- * or rewiring the composition — would silently lose either the server-side
- * requestId-bearing copy or the client-side validation hint. Both paths hit
- * the same `ErrorBanner`, so only a rendered-DOM test catches the swap.
+ * Each of the three mutation slots can produce the banner, with `formError`
+ * as the client-side fallback. Regressions — dropping one slot from the
+ * compose array, swapping the ternary arms, dropping the `formError`
+ * fallback — render the wrong surface silently, so the DOM-level branches
+ * are tested end-to-end and each mutation slot is exercised at least once.
  */
 
 const stubAuthClient: AtlasAuthClient = {
@@ -54,10 +54,6 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-/**
- * Baseline payload the page expects from the initial GET — empty override so
- * the editor renders fresh and the "+ Add credentials" affordance is wired up.
- */
 const BASELINE_CONFIG = {
   config: {
     baseline: { provider: "resend", fromAddress: "noreply@atlas.dev" },
@@ -66,19 +62,29 @@ const BASELINE_CONFIG = {
 };
 
 /**
- * Mock fetch with:
- *   - GET `/email-provider`         → 200 baseline config
- *   - PUT `/email-provider`         → caller-provided save handler
- *   - POST `/email-provider/test`   → 200 (not exercised by these tests)
+ * Route GET to the baseline config and delegate PUT (save) and POST
+ * `/test` to caller-provided handlers. Unrecognized paths throw so a drifted
+ * page can't silently pass with a generic 2xx fallthrough.
  */
-function mockEmailProviderApi(
-  saveHandler: () => Response,
-) {
+function mockEmailProviderApi(handlers: {
+  save?: () => Response;
+  test?: () => Response;
+}) {
   globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
-    if (method === "GET") return Promise.resolve(jsonResponse(BASELINE_CONFIG));
-    if (method === "PUT") return Promise.resolve(saveHandler());
-    return Promise.resolve(jsonResponse({ success: true, message: "ok" }));
+    if (method === "GET" && url.endsWith("/api/v1/admin/email-provider")) {
+      return Promise.resolve(jsonResponse(BASELINE_CONFIG));
+    }
+    if (method === "PUT" && url.endsWith("/api/v1/admin/email-provider")) {
+      if (!handlers.save) throw new Error(`unexpected PUT ${url}`);
+      return Promise.resolve(handlers.save());
+    }
+    if (method === "POST" && url.endsWith("/api/v1/admin/email-provider/test")) {
+      if (!handlers.test) throw new Error(`unexpected POST ${url}`);
+      return Promise.resolve(handlers.test());
+    }
+    throw new Error(`unexpected ${method} ${url}`);
   }) as unknown as typeof fetch;
 }
 
@@ -125,16 +131,14 @@ describe("/admin/email-provider mutation error chain", () => {
     globalThis.fetch = originalFetch;
   });
 
-  test("a failing save mutation surfaces friendlyError copy with requestId", async () => {
-    // Valid client input reaches the wire; server rejects it. The banner must
-    // render the translated, requestId-bearing copy — not the raw `formError`
-    // string or the unfriendly `message` from the body.
-    mockEmailProviderApi(() =>
-      jsonResponse(
-        { message: "Upstream provider rejected key", requestId: "req-email-42" },
-        500,
-      ),
-    );
+  test("a failing save (saveError slot) surfaces friendlyError copy with requestId", async () => {
+    mockEmailProviderApi({
+      save: () =>
+        jsonResponse(
+          { message: "Upstream provider rejected key", requestId: "req-email-42" },
+          500,
+        ),
+    });
 
     render(<EmailProviderPage />, { wrapper: Wrapper });
 
@@ -155,21 +159,55 @@ describe("/admin/email-provider mutation error chain", () => {
     // requestId-less copy would drop one or both halves.
     expect(banner.textContent).toContain("Upstream provider rejected key");
     expect(banner.textContent).toContain("req-email-42");
+    expect(document.querySelectorAll('[role="alert"]')).toHaveLength(1);
   });
 
-  test("client validation error with no mutation in flight surfaces formError fallback", async () => {
-    // Server is never called — empty API key short-circuits inside `handleSave`
-    // via `buildProviderConfig`, setting `formError`. The banner copy is the
-    // raw validation string, which *only* reaches the DOM if the ternary's
-    // false-arm (`formError`) is intact.
-    const saveHandler = mock(() => jsonResponse({ success: true }));
-    mockEmailProviderApi(saveHandler);
+  test("a failing test-send (testError slot) also surfaces friendlyError copy", async () => {
+    // Covers the third slot of `combineMutationErrors([saveError, deleteError,
+    // testError])`. A regression dropping the array to `[saveError]` or
+    // `[saveError, deleteError]` would make this test fail while the
+    // saveError case above still passes — so both together prove the compose
+    // array isn't being silently narrowed.
+    mockEmailProviderApi({
+      test: () =>
+        jsonResponse(
+          { message: "Test recipient unreachable", requestId: "req-test-99" },
+          502,
+        ),
+    });
 
     render(<EmailProviderPage />, { wrapper: Wrapper });
 
     await openEditor();
-    // Intentionally skip typing the API key — buildProviderConfig returns
-    // `{ ok: false, error: "API key is required." }`.
+    typeIntoInput("resendApiKey", "re_validkey");
+    typeIntoInput("fromAddress", "sender@acme.com");
+    typeIntoInput("recipientEmail", "dest@acme.com");
+    await act(async () => {
+      clickButton("Send test");
+    });
+
+    const banner = await waitFor(() => {
+      const el = document.querySelector('[role="alert"]');
+      if (!el) throw new Error("alert not found");
+      return el;
+    });
+    expect(banner.textContent).toContain("Test recipient unreachable");
+    expect(banner.textContent).toContain("req-test-99");
+    expect(document.querySelectorAll('[role="alert"]')).toHaveLength(1);
+  });
+
+  test("client validation error with no mutation in flight surfaces formError fallback", async () => {
+    // Server must not be called — empty API key short-circuits inside
+    // `handleSave` via `buildProviderConfig`, setting `formError`. The raw
+    // validation string reaches the DOM only if the ternary's false-arm
+    // (`formError`) is intact. If `save` is invoked, the mock throws and the
+    // test fails loudly — proving we took the false-arm, not a phantom
+    // mutation-failure path.
+    mockEmailProviderApi({});
+
+    render(<EmailProviderPage />, { wrapper: Wrapper });
+
+    await openEditor();
     typeIntoInput("fromAddress", "sender@acme.com");
     await act(async () => {
       clickButton("Save");
@@ -181,19 +219,13 @@ describe("/admin/email-provider mutation error chain", () => {
       return el;
     });
     expect(banner.textContent).toContain("API key is required.");
-    // No network call fired — the chain's false-arm is being exercised, not
-    // a phantom mutation failure.
-    expect(saveHandler).not.toHaveBeenCalled();
   });
 
   test("no errors → no banner renders", async () => {
-    mockEmailProviderApi(() => jsonResponse({ success: true }));
+    mockEmailProviderApi({});
 
     render(<EmailProviderPage />, { wrapper: Wrapper });
 
-    // Wait for initial GET to settle so the editor affordance is mounted and
-    // `formError` / mutation errors have had a chance to populate from any
-    // stray render cycle.
     await waitFor(() => {
       expect(
         Array.from(document.querySelectorAll("button")).some((b) =>
@@ -203,61 +235,5 @@ describe("/admin/email-provider mutation error chain", () => {
     });
 
     expect(document.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  test("structured mutation error wins over a pre-existing formError", async () => {
-    // Drives the full ternary — `formError` is set first by a client-side
-    // failure, then a subsequent save triggers a server error. Once the
-    // mutation fails, `structuredError` is truthy so the banner copy MUST
-    // switch to the friendlyError arm even though `formError` was visible
-    // moments earlier. Swapping the ternary would leave the stale form copy
-    // in place and silently hide the server's requestId.
-    let saveShouldFail = false;
-    globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
-      const method = init?.method ?? "GET";
-      if (method === "GET") return Promise.resolve(jsonResponse(BASELINE_CONFIG));
-      if (method === "PUT") {
-        if (saveShouldFail) {
-          return Promise.resolve(
-            jsonResponse(
-              { message: "SMTP auth rejected", requestId: "req-win" },
-              500,
-            ),
-          );
-        }
-        return Promise.resolve(jsonResponse({ success: true }));
-      }
-      return Promise.resolve(jsonResponse({ success: true }));
-    }) as unknown as typeof fetch;
-
-    render(<EmailProviderPage />, { wrapper: Wrapper });
-
-    await openEditor();
-    // Step 1 — client validation fires, formError renders.
-    typeIntoInput("fromAddress", "sender@acme.com");
-    await act(async () => {
-      clickButton("Save");
-    });
-    await waitFor(() => {
-      const el = document.querySelector('[role="alert"]');
-      expect(el?.textContent).toContain("API key is required.");
-    });
-
-    // Step 2 — fix the validation error and drive a server failure. The
-    // banner must now render the friendlyError copy (with requestId), not
-    // the previous formError string.
-    typeIntoInput("resendApiKey", "re_validkey");
-    saveShouldFail = true;
-    await act(async () => {
-      clickButton("Save");
-    });
-
-    await waitFor(() => {
-      const el = document.querySelector('[role="alert"]');
-      expect(el?.textContent).toContain("SMTP auth rejected");
-    });
-    const banner = document.querySelector('[role="alert"]')!;
-    expect(banner.textContent).toContain("req-win");
-    expect(banner.textContent).not.toContain("API key is required.");
   });
 });

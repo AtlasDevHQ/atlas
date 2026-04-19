@@ -139,14 +139,18 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
     }
 
     if (!res.ok) {
-      // Surface the actual rejection reason so an aborted/malformed response
-      // body produces a diagnosable message (e.g. "AbortError: signal aborted")
-      // instead of a literal "Unknown error" that's indistinguishable from a
-      // server that genuinely returned the body "Unknown error". Mirrors the
-      // pattern used by `bulkFailureSummary` and `useAdminMutation`.
-      const text = await res
-        .text()
-        .catch((err) => (err instanceof Error ? err.message : String(err)));
+      // Body-read failure (aborted stream, malformed transfer encoding) is
+      // distinct from a server-returned body — log + prefix the substituted
+      // string with `<could not read body: …>` so the rendered message can't
+      // be confused with a literal server response of the same text.
+      const text = await res.text().catch((err) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `action-approval-card: failed to read ${res.status} response body:`,
+          reason,
+        );
+        return `<could not read body: ${reason}>`;
+      });
       throw new Error(`Server responded ${res.status}: ${text}`);
     }
 

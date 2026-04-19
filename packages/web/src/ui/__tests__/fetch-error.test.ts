@@ -127,23 +127,30 @@ describe("friendlyError", () => {
   });
 
   test("routes schema_mismatch to a version-drift specific message", () => {
+    // No status field — emulates the useAdminFetch schema-failure throw, which
+    // is the only legitimate producer of `code: "schema_mismatch"`.
     expect(friendlyError({ message: "raw", code: "schema_mismatch" })).toContain(
       "out of sync",
     );
   });
 
-  test("schema_mismatch wins over status (e.g. 200 OK with bad body)", () => {
-    // No status field — emulates the useAdminFetch schema-failure throw.
-    expect(friendlyError({ message: "raw", code: "schema_mismatch" })).not.toBe("raw");
-  });
-
-  test("schema_mismatch wins over a 401 status", () => {
-    // Defensive: if a future endpoint somehow returned 401 with a schema
-    // mismatch payload, the version-drift copy is more actionable than
-    // "Not authenticated".
+  test("HTTP status mapping wins over schema_mismatch when status is set", () => {
+    // Defensive: if a server response body ever sets `error: "schema_mismatch"`
+    // on a 401/403/404/503, the auth/role/feature copy must still reach the
+    // user — masking it with "out of sync" would break the sign-in loop.
     expect(
       friendlyError({ message: "x", status: 401, code: "schema_mismatch" }),
-    ).toContain("out of sync");
+    ).toBe("Not authenticated. Please sign in.");
+    expect(
+      friendlyError({ message: "x", status: 403, code: "schema_mismatch" }),
+    ).toContain("Access denied");
+  });
+
+  test("schema_mismatch falls through to raw message when status is set without a friendly mapping", () => {
+    // 500 has no friendly mapping, so the raw message wins (not "out of sync").
+    expect(
+      friendlyError({ message: "raw 500", status: 500, code: "schema_mismatch" }),
+    ).toBe("raw 500");
   });
 });
 

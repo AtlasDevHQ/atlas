@@ -33,9 +33,11 @@ export default tseslint.config(
   // The Identifier-aliased form (`const e = x.error; setError({ message: e })`)
   // requires data-flow analysis ESLint can't do via selectors — relying on
   // code review for that variant is an accepted gap. Function-wrapped uses
-  // (e.g. `{ message: friendlyError(x.error) }`) are NOT flagged because the
-  // value's top-level type is CallExpression, which fails the value.type
-  // filter on both selectors.
+  // (e.g. `{ message: friendlyError(x.error) }`) are NOT flagged: the
+  // `[value.type='MemberExpression']` / `[value.type='ChainExpression']`
+  // filter on the Property gates the descendant search, so a CallExpression
+  // value short-circuits both selectors. Don't drop those filters or the
+  // function-wrapped carve-out goes away.
   {
     files: ["packages/web/**/*.{ts,tsx}"],
     rules: {

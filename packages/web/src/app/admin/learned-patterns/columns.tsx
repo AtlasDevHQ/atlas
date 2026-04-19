@@ -208,14 +208,14 @@ export function getLearnedPatternColumns(): ColumnDef<LearnedPattern>[] {
       id: "repetitionCount",
       accessorKey: "repetitionCount",
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} label="Reps" />
+        <DataTableColumnHeader column={column} label="Seen" />
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground tabular-nums">
           {row.getValue<number>("repetitionCount")}
         </span>
       ),
-      meta: { label: "Repetitions", icon: Hash },
+      meta: { label: "Times seen", icon: Hash },
       size: 72,
     },
     {

@@ -126,7 +126,11 @@ export default function CachePage() {
             onRetry={clearFlushError}
           />
           {flushMessage && (
-            <div className="mb-6 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+            <div
+              role="status"
+              aria-live="polite"
+              className="mb-6 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"
+            >
               {flushMessage}
             </div>
           )}
@@ -169,7 +173,11 @@ export default function CachePage() {
                     </span>
                     <span className="text-sm text-muted-foreground">hit rate</span>
                   </div>
-                  <Progress value={data.hitRate * 100} className="h-2" />
+                  <Progress
+                    value={data.hitRate * 100}
+                    className="h-2"
+                    aria-label={`Cache hit rate ${formatPercent(data.hitRate)}`}
+                  />
                   <div className="grid grid-cols-2 gap-4 pt-2">
                     <div className="space-y-1">
                       <p className="text-sm text-muted-foreground">Hits</p>
@@ -199,7 +207,7 @@ export default function CachePage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid grid-cols-3 gap-6">
+                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
                     <StatItem
                       label="Entries"
                       value={`${data.entryCount.toLocaleString()} / ${data.maxSize.toLocaleString()}`}
@@ -216,13 +224,11 @@ export default function CachePage() {
                       icon={Clock}
                     />
                   </div>
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>{data.entryCount.toLocaleString()} entries</span>
-                      <span>{data.maxSize.toLocaleString()} max</span>
-                    </div>
-                    <Progress value={fillPercent} className="h-2" />
-                  </div>
+                  <Progress
+                    value={fillPercent}
+                    className="h-2"
+                    aria-label={`Cache fill ${fillPercent.toFixed(1)}%`}
+                  />
                 </CardContent>
               </Card>
 
@@ -243,6 +249,13 @@ export default function CachePage() {
                       <Button
                         variant="destructive"
                         disabled={flushing || !data.enabled || data.entryCount === 0}
+                        title={
+                          !data.enabled
+                            ? "Cache is disabled"
+                            : data.entryCount === 0
+                              ? "Cache is empty"
+                              : undefined
+                        }
                       >
                         Flush Cache
                       </Button>

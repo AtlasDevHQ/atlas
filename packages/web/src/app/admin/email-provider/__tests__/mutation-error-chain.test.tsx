@@ -9,13 +9,14 @@ import EmailProviderPage from "../page";
  * Regression guard for the three-way error chain at `email-provider/page.tsx`:
  *
  *   const structuredError = combineMutationErrors([saveError, deleteError, testError]);
- *   const mutationError = structuredError ? friendlyError(structuredError) : formError;
+ *   // structuredError → MutationErrorSurface, formError → ErrorBanner fallback
  *
  * Each of the three mutation slots can produce the banner, with `formError`
  * as the client-side fallback. Regressions — dropping one slot from the
- * compose array, swapping the ternary arms, dropping the `formError`
- * fallback — render the wrong surface silently, so the DOM-level branches
- * are tested end-to-end and each mutation slot is exercised at least once.
+ * compose array, swapping the structured/fallback branches, dropping the
+ * `formError` fallback — render the wrong surface silently, so the DOM-level
+ * branches are tested end-to-end and each mutation slot is exercised at
+ * least once.
  */
 
 const stubAuthClient: AtlasAuthClient = {

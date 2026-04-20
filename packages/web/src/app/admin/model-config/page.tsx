@@ -25,11 +25,10 @@ import {
   FormDescription,
   FormMessage,
 } from "@/components/ui/form";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -282,7 +281,11 @@ export default function ModelConfigPage() {
       <ErrorBoundary>
         {mutationError && (
           <div className="mx-auto mb-4 max-w-3xl">
-            <ErrorBanner message={friendlyError(mutationError)} onRetry={clearAllErrors} actionLabel="Dismiss" />
+            <MutationErrorSurface
+              error={mutationError}
+              feature="AI Provider"
+              onRetry={clearAllErrors}
+            />
           </div>
         )}
 

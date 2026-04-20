@@ -19,12 +19,12 @@ import {
   FormControl,
   FormMessage,
 } from "@/components/form-dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { SectionHeading } from "@/ui/components/admin/compact";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { cn } from "@/lib/utils";
@@ -460,9 +460,11 @@ export default function SettingsPage() {
           isEmpty={workspaceSections.size === 0}
         >
           <div className="mx-auto max-w-3xl space-y-8">
-            {mutationError && (
-              <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />
-            )}
+            <MutationErrorSurface
+              error={mutationError}
+              feature="Settings"
+              onRetry={clearMutationError}
+            />
 
             {!manageable && !isSaas && (
               <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">

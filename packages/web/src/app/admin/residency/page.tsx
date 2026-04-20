@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   CompactRow,
   DetailList,
@@ -32,7 +32,7 @@ import {
   StatusDot,
   type StatusKind,
 } from "@/ui/components/admin/compact";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
@@ -266,20 +266,17 @@ function ResidencyPageContent() {
         emptyDescription="Data residency is not available in this deployment."
       >
         <div className="mx-auto max-w-3xl space-y-8">
-          {mutationError && (
-            <ErrorBanner
-              message={friendlyError(mutationError)}
-              onRetry={clearMutationError}
-              actionLabel="Dismiss"
-            />
-          )}
+          <MutationErrorSurface
+            error={mutationError}
+            feature="Data Residency"
+            onRetry={clearMutationError}
+          />
 
-          {migrationFetchError && (
-            <ErrorBanner
-              message={friendlyError(migrationFetchError)}
-              onRetry={refetchMigration}
-            />
-          )}
+          <MutationErrorSurface
+            error={migrationFetchError}
+            feature="Data Residency"
+            onRetry={refetchMigration}
+          />
 
           {data && (
             <section>

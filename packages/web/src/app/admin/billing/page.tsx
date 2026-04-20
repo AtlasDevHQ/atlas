@@ -245,13 +245,16 @@ function PlanShell({ data }: { data: BillingStatus }) {
     }
   }
 
-  // portalError covers the 200-but-missing-URL edge case (set locally when
-  // the server returns success but no portal link); portalMutationError
-  // covers all non-2xx responses. Structured mutation error wins over the
-  // local string — a 403 `enterprise_required` on a plan that doesn't expose
-  // a Stripe portal must route into <EnterpriseUpsell>, which means the
-  // FetchError can't be flattened here. The local "no URL" string only
-  // surfaces when there's no structured error to render.
+  // Structured mutation error wins over the local string: a 403
+  // `enterprise_required` on a plan that doesn't expose a Stripe portal
+  // must route into <EnterpriseUpsell>, which means we can't flatten the
+  // FetchError into portalError's string slot. portalError (the
+  // 200-but-missing-URL degraded-success copy) only surfaces when no
+  // structured error is pinned. The two are mutually exclusive by
+  // construction — openBillingPortal() clears portalError at call start
+  // and useAdminMutation clears portalMutationError at call start — so
+  // the retry handler below clears both defensively, keeping them
+  // exclusive on a user-driven dismiss too.
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
   return (
@@ -336,7 +339,10 @@ function PlanShell({ data }: { data: BillingStatus }) {
       <MutationErrorSurface
         error={portalMutationError}
         feature="Billing"
-        onRetry={clearPortalMutation}
+        onRetry={() => {
+          clearPortalMutation();
+          setPortalError(null);
+        }}
       />
       {!portalMutationError && portalError && (
         <ErrorBanner message={portalError} />

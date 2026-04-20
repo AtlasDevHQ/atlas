@@ -16,6 +16,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -108,6 +114,13 @@ export default function CachePage() {
 
   const totalQueries = data ? data.hits + data.misses : 0;
   const fillPercent = data && data.maxSize > 0 ? (data.entryCount / data.maxSize) * 100 : 0;
+  const flushDisabledReason = data
+    ? !data.enabled
+      ? "Cache is disabled"
+      : data.entryCount === 0
+        ? "Cache is empty"
+        : null
+    : null;
 
   return (
     <div className="p-6">
@@ -119,14 +132,18 @@ export default function CachePage() {
       </div>
 
       <ErrorBoundary>
-        <div>
+        <TooltipProvider>
           <MutationErrorSurface
             error={flushError}
             feature="Cache"
             onRetry={clearFlushError}
           />
           {flushMessage && (
-            <div className="mb-6 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+            <div
+              role="status"
+              aria-live="polite"
+              className="mb-6 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"
+            >
               {flushMessage}
             </div>
           )}
@@ -169,7 +186,11 @@ export default function CachePage() {
                     </span>
                     <span className="text-sm text-muted-foreground">hit rate</span>
                   </div>
-                  <Progress value={data.hitRate * 100} className="h-2" />
+                  <Progress
+                    value={data.hitRate * 100}
+                    className="h-2"
+                    aria-label={`Cache hit rate ${formatPercent(data.hitRate)}`}
+                  />
                   <div className="grid grid-cols-2 gap-4 pt-2">
                     <div className="space-y-1">
                       <p className="text-sm text-muted-foreground">Hits</p>
@@ -199,7 +220,7 @@ export default function CachePage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid grid-cols-3 gap-6">
+                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
                     <StatItem
                       label="Entries"
                       value={`${data.entryCount.toLocaleString()} / ${data.maxSize.toLocaleString()}`}
@@ -216,13 +237,11 @@ export default function CachePage() {
                       icon={Clock}
                     />
                   </div>
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>{data.entryCount.toLocaleString()} entries</span>
-                      <span>{data.maxSize.toLocaleString()} max</span>
-                    </div>
-                    <Progress value={fillPercent} className="h-2" />
-                  </div>
+                  <Progress
+                    value={fillPercent}
+                    className="h-2"
+                    aria-label={`Cache fill ${fillPercent.toFixed(1)}%`}
+                  />
                 </CardContent>
               </Card>
 
@@ -239,14 +258,27 @@ export default function CachePage() {
                 </CardHeader>
                 <CardContent>
                   <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button
-                        variant="destructive"
-                        disabled={flushing || !data.enabled || data.entryCount === 0}
-                      >
-                        Flush Cache
-                      </Button>
-                    </AlertDialogTrigger>
+                    {flushDisabledReason ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          {/* span wrapper: disabled buttons don't fire pointer
+                              events in Safari/Firefox, so the tooltip trigger
+                              must sit on an enabled element. */}
+                          <span className="inline-block">
+                            <Button variant="destructive" disabled>
+                              Flush Cache
+                            </Button>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>{flushDisabledReason}</TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <AlertDialogTrigger asChild>
+                        <Button variant="destructive" disabled={flushing}>
+                          Flush Cache
+                        </Button>
+                      </AlertDialogTrigger>
+                    )}
                     <AlertDialogContent>
                       <AlertDialogHeader>
                         <AlertDialogTitle>Flush cache?</AlertDialogTitle>
@@ -267,7 +299,7 @@ export default function CachePage() {
               </Card>
             </div>}
           </AdminContentWrapper>
-        </div>
+        </TooltipProvider>
       </ErrorBoundary>
     </div>
   );

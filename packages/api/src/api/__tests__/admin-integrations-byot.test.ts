@@ -1404,7 +1404,7 @@ describe("BYOT routes", () => {
       const res = await jsonPost("/api/v1/admin/integrations/email", {
         provider: "sendgrid",
         senderAddress: "noreply@example.com",
-        config: { apiKey: "SG.test" },
+        config: { provider: "sendgrid", apiKey: "SG.test" },
       });
       expect(res.status).toBe(401);
     });
@@ -1426,7 +1426,7 @@ describe("BYOT routes", () => {
       const res = await jsonPost("/api/v1/admin/integrations/email", {
         provider: "sendgrid",
         senderAddress: "noreply@example.com",
-        config: { apiKey: "SG.test" },
+        config: { provider: "sendgrid", apiKey: "SG.test" },
       });
       expect(res.status).toBe(400);
     });
@@ -1440,7 +1440,7 @@ describe("BYOT routes", () => {
       const res = await jsonPost("/api/v1/admin/integrations/email", {
         provider: "sendgrid",
         senderAddress: "noreply@example.com",
-        config: { apiKey: "SG.test-key" },
+        config: { provider: "sendgrid", apiKey: "SG.test-key" },
       });
       expect(res.status).toBe(200);
 
@@ -1452,7 +1452,7 @@ describe("BYOT routes", () => {
       expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
         provider: "sendgrid",
         senderAddress: "noreply@example.com",
-        config: { apiKey: "SG.test-key" },
+        config: { provider: "sendgrid", apiKey: "SG.test-key" },
       });
     });
 
@@ -1460,14 +1460,14 @@ describe("BYOT routes", () => {
       const res = await jsonPost("/api/v1/admin/integrations/email", {
         provider: "postmark",
         senderAddress: "noreply@example.com",
-        config: { serverToken: "pm-test-token" },
+        config: { provider: "postmark", serverToken: "pm-test-token" },
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
       expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
         provider: "postmark",
         senderAddress: "noreply@example.com",
-        config: { serverToken: "pm-test-token" },
+        config: { provider: "postmark", serverToken: "pm-test-token" },
       });
     });
 
@@ -1475,14 +1475,14 @@ describe("BYOT routes", () => {
       const res = await jsonPost("/api/v1/admin/integrations/email", {
         provider: "smtp",
         senderAddress: "noreply@example.com",
-        config: { host: "smtp.example.com", port: 587, username: "user", password: "pass", tls: true },
+        config: { provider: "smtp", host: "smtp.example.com", port: 587, username: "user", password: "pass", tls: true },
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
       expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
         provider: "smtp",
         senderAddress: "noreply@example.com",
-        config: { host: "smtp.example.com", port: 587, username: "user", password: "pass", tls: true },
+        config: { provider: "smtp", host: "smtp.example.com", port: 587, username: "user", password: "pass", tls: true },
       });
     });
 
@@ -1490,14 +1490,14 @@ describe("BYOT routes", () => {
       const res = await jsonPost("/api/v1/admin/integrations/email", {
         provider: "ses",
         senderAddress: "noreply@example.com",
-        config: { region: "us-east-1", accessKeyId: "AKIA...", secretAccessKey: "secret" },
+        config: { provider: "ses", region: "us-east-1", accessKeyId: "AKIA...", secretAccessKey: "secret" },
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
       expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
         provider: "ses",
         senderAddress: "noreply@example.com",
-        config: { region: "us-east-1", accessKeyId: "AKIA...", secretAccessKey: "secret" },
+        config: { provider: "ses", region: "us-east-1", accessKeyId: "AKIA...", secretAccessKey: "secret" },
       });
     });
 
@@ -1506,7 +1506,7 @@ describe("BYOT routes", () => {
       const res = await jsonPost("/api/v1/admin/integrations/email", {
         provider: "sendgrid",
         senderAddress: "noreply@example.com",
-        config: { apiKey: "SG.test" },
+        config: { provider: "sendgrid", apiKey: "SG.test" },
       });
       // requireOrgContext middleware returns 404 when no internal DB
       expect(res.status).toBe(404);
@@ -1534,7 +1534,7 @@ describe("BYOT routes", () => {
         config_id: "test-id",
         provider: "sendgrid",
         sender_address: "noreply@example.com",
-        config: { apiKey: "SG.test" },
+        config: { provider: "sendgrid", apiKey: "SG.test" },
         org_id: "org-1",
         installed_at: new Date().toISOString(),
       }));

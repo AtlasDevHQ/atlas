@@ -3,7 +3,7 @@
 import type { ActionDisplayStatus } from "../../lib/action-types";
 
 const STATUS_CONFIG: Record<ActionDisplayStatus, { label: string; classes: string }> = {
-  pending_approval: {
+  pending: {
     label: "Pending Approval",
     classes: "bg-yellow-100 text-yellow-700 dark:bg-yellow-600/20 dark:text-yellow-400",
   },

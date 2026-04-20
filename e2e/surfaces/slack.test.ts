@@ -199,7 +199,7 @@ const mockDenyAction: Mock<(actionId: string, denierId: string) => Promise<{
 } | null>> = mock(() => Promise.resolve(null));
 
 mock.module("@atlas/api/lib/tools/actions/handler", () => ({
-  handleAction: mock(() => Promise.resolve({ status: "pending_approval", actionId: "act-1" })),
+  handleAction: mock(() => Promise.resolve({ status: "pending", actionId: "act-1" })),
   approveAction: mockApproveAction,
   denyAction: mockDenyAction,
   getAction: mockGetAction,

@@ -110,7 +110,7 @@ describe("ToolPart", () => {
         part={makePart("createReport", {
           output: {
             actionId: "act-123",
-            status: "pending_approval",
+            status: "pending",
             summary: "Create monthly report",
           },
         })}

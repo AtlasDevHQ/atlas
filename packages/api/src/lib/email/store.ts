@@ -8,7 +8,12 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { EmailInstallationWithSecret, EmailProvider, ProviderConfig } from "@atlas/api/lib/integrations/types";
+import {
+  EMAIL_PROVIDERS,
+  type EmailInstallationWithSecret,
+  type EmailProvider,
+  type ProviderConfig,
+} from "@atlas/api/lib/integrations/types";
 
 export { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
 export type {
@@ -29,6 +34,38 @@ const log = createLogger("email-store");
 // Shared row parser
 // ---------------------------------------------------------------------------
 
+function isEmailProvider(value: string): value is EmailProvider {
+  return (EMAIL_PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * Parse a DB row into an `EmailInstallationWithSecret`.
+ *
+ * Post-#1542 `ProviderConfig` is a discriminated union keyed on `provider`,
+ * but the JSONB `config` column still stores the provider-specific payload
+ * WITHOUT the discriminator (SMTP host/port/etc, API key, etc.). The
+ * sibling `provider` column is the authoritative source, so the parser
+ * injects it into the config at read time. Downstream consumers (delivery,
+ * admin handlers) can then `switch (install.config.provider)` and have
+ * TypeScript narrow without `as` casts.
+ *
+ * Two guards protect the cast:
+ *
+ * 1. `isEmailProvider(provider)` — the sibling column must name a
+ *    recognized provider. A row with `provider = 'mailgun'` (legacy
+ *    column, manual SQL patch, future-not-yet-enum'd value) returns null
+ *    with a warn log rather than shipping an unrepresentable config
+ *    variant to the caller (CLAUDE.md: no silent coercion of unknown
+ *    enums).
+ *
+ * 2. **Sibling-spread-last ordering** — `{ ...rawConfig, provider }`
+ *    means the sibling column always wins over whatever lives inside
+ *    the JSONB. Legacy rows (written before the save-path strip-on-write
+ *    was added) or rows touched by out-of-band SQL can carry a stale
+ *    `config.provider` that disagrees with the authoritative column; we
+ *    overwrite it here and emit a warn breadcrumb so operators can
+ *    reconcile the drift.
+ */
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
@@ -36,21 +73,40 @@ function parseInstallationRow(
   const configId = row.config_id;
   const provider = row.provider;
   const senderAddress = row.sender_address;
-  const config = row.config;
+  const rawConfig = row.config;
   if (
     typeof configId !== "string" || !configId ||
     typeof provider !== "string" || !provider ||
     typeof senderAddress !== "string" || !senderAddress ||
-    !config || typeof config !== "object"
+    !rawConfig || typeof rawConfig !== "object"
   ) {
     log.warn(context, "Invalid email installation record in database");
     return null;
   }
+  if (!isEmailProvider(provider)) {
+    log.warn(
+      { ...context, provider },
+      "Email installation row references unknown provider — skipping",
+    );
+    return null;
+  }
+  const rawConfigRecord = rawConfig as Record<string, unknown>;
+  if (
+    typeof rawConfigRecord.provider === "string" &&
+    rawConfigRecord.provider !== provider
+  ) {
+    log.warn(
+      { ...context, columnProvider: provider, jsonbProvider: rawConfigRecord.provider },
+      "Email installation JSONB config.provider disagrees with sibling provider column — sibling wins",
+    );
+  }
+  // Sibling-last: overwrites any stale `provider` carried by legacy rows.
+  const taggedConfig = { ...rawConfigRecord, provider } as unknown as ProviderConfig;
   return {
     config_id: configId,
-    provider: provider as EmailProvider,
+    provider,
     sender_address: senderAddress,
-    config: config as ProviderConfig,
+    config: taggedConfig,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
   };
@@ -116,6 +172,13 @@ export async function saveEmailInstallation(
 
   try {
     // Atomic upsert — the UNIQUE index on org_id ensures one config per org.
+    //
+    // Strip the `provider` discriminator from the JSONB payload: it lives
+    // on the sibling `provider` column (#1542 keeps both in lockstep via
+    // the parser in `parseInstallationRow`). Persisting the tag twice
+    // would cause round-trip duplication + drift risk if the columns ever
+    // diverged.
+    const { provider: _provider, ...configJson } = opts.config;
     await internalQuery(
       `INSERT INTO email_installations (provider, sender_address, config, org_id)
        VALUES ($1, $2, $3, $4)
@@ -124,7 +187,7 @@ export async function saveEmailInstallation(
          sender_address = $2,
          config = $3,
          installed_at = now()`,
-      [opts.provider, opts.senderAddress, JSON.stringify(opts.config), orgId],
+      [opts.provider, opts.senderAddress, JSON.stringify(configJson), orgId],
     );
   } catch (err) {
     log.error(

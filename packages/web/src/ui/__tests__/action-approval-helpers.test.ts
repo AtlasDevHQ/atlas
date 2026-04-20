@@ -144,7 +144,7 @@ describe("status set consistency", () => {
     expect(ALL_STATUSES).toHaveLength(8);
   });
 
-  test("RESOLVED_STATUSES has exactly 7 entries (all except pending_approval)", () => {
+  test("RESOLVED_STATUSES has exactly 7 entries (all except pending)", () => {
     expect(RESOLVED_STATUSES.size).toBe(7);
   });
 
@@ -166,15 +166,15 @@ describe("status set consistency", () => {
     }
   });
 
-  test("RESOLVED_STATUSES + pending_approval covers the same set as ALL_STATUSES", () => {
+  test("RESOLVED_STATUSES + pending covers the same set as ALL_STATUSES", () => {
     const combined = new Set<string>(RESOLVED_STATUSES);
-    combined.add("pending_approval");
+    combined.add("pending");
     const allSet = new Set<string>(ALL_STATUSES);
     expect(combined).toEqual(allSet);
   });
 
-  test("RESOLVED_STATUSES does not include pending_approval", () => {
-    expect(RESOLVED_STATUSES.has("pending_approval")).toBe(false);
+  test("RESOLVED_STATUSES does not include pending", () => {
+    expect(RESOLVED_STATUSES.has("pending")).toBe(false);
   });
 
   test("ALL_STATUSES contains no duplicates", () => {
@@ -191,7 +191,7 @@ describe("isActionToolResult edge cases", () => {
   test("object with extra properties passes (permissive)", () => {
     expect(
       isActionToolResult({
-        status: "pending_approval",
+        status: "pending",
         actionId: "act_1",
         summary: "Send email",
         details: { to: "bob@example.com" },
@@ -252,7 +252,7 @@ describe("isActionToolResult edge cases", () => {
 
   test("every ALL_STATUSES value produces a valid action result", () => {
     const fixtures: Record<string, Record<string, unknown>> = {
-      pending_approval: { summary: "Do the thing" },
+      pending: { summary: "Do the thing" },
       approved: { result: "ok" },
       executed: { result: "ok" },
       auto_approved: { result: "ok" },

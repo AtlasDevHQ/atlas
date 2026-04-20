@@ -6,17 +6,19 @@
  * `/api/v1/platform/residency` (region listing + assignment) — shared by
  * route-layer OpenAPI validation and web-layer response parsing.
  *
- * Before this migration, the admin-residency route pinned `status` to
- * `z.enum(MIGRATION_STATUSES)` while the web copy pinned the same field to
- * a hand-typed `z.enum(["pending", "in_progress", "completed", "failed",
- * "cancelled"])` literal tuple. Two drift traps — adding a new migration
- * status in `@useatlas/types` would silently pass the route but fail the
- * web parse. Pinning both sides to the same canonical tuple closes that
- * gap. Strict `z.enum(TUPLE)` also matches the `@hono/zod-openapi`
- * extractor's expectations — it cannot serialize `ZodCatch` wrappers
- * (#1653).
+ * `RegionMigrationSchema` is `z.discriminatedUnion` over `status` to match
+ * the `RegionMigration` type in `@useatlas/types` (#1696). The variants
+ * encode the terminal-vs-in-flight timestamp invariants: pending/in_progress
+ * rows must have `completedAt === null` and `errorMessage === null`,
+ * failed rows require both fields set, completed rows have `completedAt`
+ * but no error, and cancelled rows have `completedAt` with `errorMessage`
+ * kept as `string | null` for legacy 'Cancelled by admin' rows.
  *
- * Every schema uses `satisfies z.ZodType<T>` (not `as z.ZodType<T>`) so a
+ * Strict `z.enum(TUPLE)` on the discriminator literals matches the
+ * `@hono/zod-openapi` extractor's expectations — it cannot serialize
+ * `ZodCatch` wrappers (#1653).
+ *
+ * Every variant uses `satisfies z.ZodType<T>` (not `as z.ZodType<T>`) so a
  * field rename in `@useatlas/types` — or in the local composite-response
  * interfaces below — breaks this file at compile time instead of passing
  * through to runtime.
@@ -56,17 +58,59 @@ export const WorkspaceRegionSchema = z.object({
   assignedAt: IsoTimestampSchema,
 }) satisfies z.ZodType<WorkspaceRegion>;
 
-export const RegionMigrationSchema = z.object({
+const RegionMigrationBaseShape = {
   id: z.string(),
   workspaceId: z.string(),
   sourceRegion: z.string(),
   targetRegion: z.string(),
-  status: MigrationStatusEnum,
   requestedBy: z.string().nullable(),
   requestedAt: IsoTimestampSchema,
-  completedAt: IsoTimestampSchema.nullable(),
+};
+
+const PendingMigrationSchema = z.object({
+  ...RegionMigrationBaseShape,
+  status: z.literal("pending"),
+  completedAt: z.null(),
+  errorMessage: z.null(),
+});
+
+const InProgressMigrationSchema = z.object({
+  ...RegionMigrationBaseShape,
+  status: z.literal("in_progress"),
+  completedAt: z.null(),
+  errorMessage: z.null(),
+});
+
+const CompletedMigrationSchema = z.object({
+  ...RegionMigrationBaseShape,
+  status: z.literal("completed"),
+  completedAt: IsoTimestampSchema,
+  errorMessage: z.null(),
+});
+
+const FailedMigrationSchema = z.object({
+  ...RegionMigrationBaseShape,
+  status: z.literal("failed"),
+  completedAt: IsoTimestampSchema,
+  errorMessage: z.string(),
+});
+
+const CancelledMigrationSchema = z.object({
+  ...RegionMigrationBaseShape,
+  status: z.literal("cancelled"),
+  completedAt: IsoTimestampSchema,
   errorMessage: z.string().nullable(),
-}) satisfies z.ZodType<RegionMigration>;
+});
+
+export const RegionMigrationSchema = z.discriminatedUnion("status", [
+  PendingMigrationSchema,
+  InProgressMigrationSchema,
+  CompletedMigrationSchema,
+  FailedMigrationSchema,
+  CancelledMigrationSchema,
+]) satisfies z.ZodType<RegionMigration>;
+
+export { MigrationStatusEnum };
 
 // ---------------------------------------------------------------------------
 // Composite response shapes

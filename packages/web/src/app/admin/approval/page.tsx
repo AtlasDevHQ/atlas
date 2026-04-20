@@ -526,11 +526,21 @@ function QueueSection() {
     // the client can't predict).
     const result = await runOptimistic(
       id,
+      // Optimistic placeholder: server stamps the authoritative reviewerId
+      // + reviewerEmail values that replace this in onSuccess. The cast
+      // satisfies the post-#1660 discriminated union at the type layer —
+      // the UI only reads `status` / `reviewedAt` between patch and
+      // replacement, so the stubbed reviewer values are never rendered.
+      // `__optimistic__` is a sentinel, deliberately distinct from the
+      // `pending` status literal to avoid grep ambiguity.
       (r) => ({
         ...r,
-        status: "approved" as const,
+        status: "approved",
+        reviewerId: r.reviewerId ?? "__optimistic__",
+        reviewerEmail: r.reviewerEmail,
+        reviewComment: r.reviewComment,
         reviewedAt: new Date().toISOString(),
-      }),
+      }) as ApprovalRequest,
       () =>
         approveMutation.mutate({
           path: `/api/v1/admin/approval/queue/${id}`,
@@ -564,12 +574,18 @@ function QueueSection() {
     setBulkApproveSummary(null);
     const result = await runOptimistic(
       id,
+      // Optimistic placeholder — see handleApprove comment. Denied variant
+      // requires reviewerId: string too; the server replaces this shape in
+      // onSuccess with the real reviewer id. `__optimistic__` sentinel
+      // matches the approve-path sentinel.
       (r) => ({
         ...r,
-        status: "denied" as const,
+        status: "denied",
+        reviewerId: r.reviewerId ?? "__optimistic__",
+        reviewerEmail: r.reviewerEmail,
         reviewedAt: new Date().toISOString(),
         reviewComment: reason || null,
-      }),
+      }) as ApprovalRequest,
       () =>
         denyMutation.mutate({
           path: `/api/v1/admin/approval/queue/${id}`,

@@ -26,7 +26,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ActionStatusBadge } from "@/ui/components/actions/action-status-badge";
-import type { ActionDisplayStatus } from "@/ui/lib/action-types";
 import type { ActionLogEntry } from "@/ui/lib/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
@@ -64,10 +63,6 @@ const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "rolled_back", label: "Rolled Back" },
   { value: "all", label: "All" },
 ];
-
-function mapStatus(status: ActionLogEntry["status"]): ActionDisplayStatus {
-  return status === "pending" ? "pending_approval" : status;
-}
 
 function ActionTypeIcon({ type }: { type: string }) {
   const Icon = actionTypeIcon(type);
@@ -475,7 +470,7 @@ export default function ActionsPage() {
                           </Tooltip>
                         </TableCell>
                         <TableCell>
-                          <ActionStatusBadge status={mapStatus(action.status)} />
+                          <ActionStatusBadge status={action.status} />
                         </TableCell>
                         <TableCell className="text-right">
                           {isPending && (

@@ -13,7 +13,11 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
-import { EMAIL_PROVIDERS, type EmailProvider } from "@atlas/api/lib/integrations/types";
+import {
+  EMAIL_PROVIDERS,
+  type EmailProvider,
+  type ProviderConfig,
+} from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("email-delivery");
 
@@ -35,7 +39,13 @@ export interface DeliveryResult {
 interface EmailTransport {
   provider: EmailProvider;
   senderAddress: string;
-  config: Record<string, unknown>;
+  /**
+   * Provider-specific credentials, tagged with `provider` (#1542). The
+   * discriminator is redundant with the sibling field above but keeps
+   * `switch (config.provider)` narrowing inside `deliverViaTransport`
+   * without having to pass both.
+   */
+  config: ProviderConfig;
 }
 
 function isEmailProvider(s: string): s is EmailProvider {
@@ -58,7 +68,7 @@ export async function getEmailTransport(
       return {
         provider: install.provider,
         senderAddress: install.sender_address,
-        config: install.config as unknown as Record<string, unknown>,
+        config: install.config,
       };
     }
   } catch (err) {
@@ -92,7 +102,7 @@ function getPlatformEmailConfig(): EmailTransport | null {
         log.warn({ provider }, "Platform email provider is resend but RESEND_API_KEY is not set — falling through");
         return null;
       }
-      return { provider: "resend", senderAddress: fromAddress, config: { apiKey } };
+      return { provider: "resend", senderAddress: fromAddress, config: { provider: "resend", apiKey } };
     }
     case "sendgrid": {
       const apiKey = getSetting("SENDGRID_API_KEY");
@@ -100,7 +110,7 @@ function getPlatformEmailConfig(): EmailTransport | null {
         log.warn({ provider }, "Platform email provider is sendgrid but SENDGRID_API_KEY is not set — falling through");
         return null;
       }
-      return { provider: "sendgrid", senderAddress: fromAddress, config: { apiKey } };
+      return { provider: "sendgrid", senderAddress: fromAddress, config: { provider: "sendgrid", apiKey } };
     }
     case "postmark": {
       const serverToken = getSetting("POSTMARK_SERVER_TOKEN");
@@ -108,16 +118,24 @@ function getPlatformEmailConfig(): EmailTransport | null {
         log.warn({ provider }, "Platform email provider is postmark but POSTMARK_SERVER_TOKEN is not set — falling through");
         return null;
       }
-      return { provider: "postmark", senderAddress: fromAddress, config: { serverToken } };
+      return { provider: "postmark", senderAddress: fromAddress, config: { provider: "postmark", serverToken } };
     }
     case "smtp":
-    case "ses":
-      // SMTP/SES at platform level still require the ATLAS_SMTP_URL bridge
+    case "ses": {
+      // SMTP/SES at platform level still require the ATLAS_SMTP_URL bridge.
+      // The bridge carries credentials out of band, so we emit a synthetic
+      // minimal config tagged with the provider; deliverViaTransport only
+      // reads it for the `provider` discriminator before delegating to
+      // the webhook.
       if (!process.env.ATLAS_SMTP_URL) {
         log.warn({ provider }, "Platform email provider requires ATLAS_SMTP_URL bridge — falling through");
         return null;
       }
-      return { provider, senderAddress: fromAddress, config: {} };
+      const placeholder: ProviderConfig = provider === "smtp"
+        ? { provider: "smtp", host: "", port: 0, username: "", password: "", tls: false }
+        : { provider: "ses", region: "", accessKeyId: "", secretAccessKey: "" };
+      return { provider, senderAddress: fromAddress, config: placeholder };
+    }
     default:
       return null; // unreachable — isEmailProvider guard above
   }
@@ -186,32 +204,49 @@ async function deliverViaTransport(
 ): Promise<DeliveryResult> {
   const from = transport.senderAddress;
 
-  switch (transport.provider) {
-    case "resend": {
-      const apiKey = transport.config.apiKey;
-      if (typeof apiKey !== "string") return { success: false, provider: "resend", error: "Missing Resend API key in config" };
-      return deliverResend(message, from, apiKey);
-    }
+  // `transport.config` is a tagged union keyed on `provider` (#1542); the
+  // switch narrows each case to the matching `ProviderConfig` variant so
+  // `apiKey` / `serverToken` accesses are structurally guaranteed.
+  //
+  // Defense-in-depth against a discriminator that slipped past the store
+  // layer's `isEmailProvider` guard (e.g. a plugin registering a new
+  // EmailProvider value, a direct mock in tests): the exhaustive switch
+  // below has a `default` arm that surfaces the unknown tag as a
+  // structured DeliveryResult instead of letting the async function
+  // resolve to `undefined` and crashing downstream `result.success`.
+  switch (transport.config.provider) {
+    case "resend":
+      return deliverResend(message, from, transport.config.apiKey);
 
-    case "sendgrid": {
-      const apiKey = transport.config.apiKey;
-      if (typeof apiKey !== "string") return { success: false, provider: "sendgrid", error: "Missing SendGrid API key in stored config" };
-      return deliverSendGrid(message, from, apiKey);
-    }
+    case "sendgrid":
+      return deliverSendGrid(message, from, transport.config.apiKey);
 
-    case "postmark": {
-      const serverToken = transport.config.serverToken;
-      if (typeof serverToken !== "string") return { success: false, provider: "postmark", error: "Missing Postmark token in stored config" };
-      return deliverPostmark(message, from, serverToken);
-    }
+    case "postmark":
+      return deliverPostmark(message, from, transport.config.serverToken);
 
-    default:
-      // For smtp/ses, delegate to ATLAS_SMTP_URL webhook if available
+    case "smtp":
+    case "ses":
       if (process.env.ATLAS_SMTP_URL) {
         return deliverWebhook(message, from);
       }
       log.warn({ to: message.to, provider: transport.provider }, "DB email config found but provider requires ATLAS_SMTP_URL bridge");
       return { success: false, provider: "log", error: `${transport.provider} provider requires ATLAS_SMTP_URL bridge` };
+
+    default: {
+      // `never` at the type layer — if this arm fires, the store/wire
+      // guards missed a discriminator that compile-time thought was
+      // impossible.
+      const unknownProvider: string = (transport.config as { provider: string }).provider;
+      log.error(
+        { to: message.to, unknownProvider },
+        "deliverViaTransport received unknown provider discriminator — refusing to deliver",
+      );
+      return {
+        success: false,
+        provider: "log",
+        error: `Unknown email provider discriminator: ${unknownProvider}`,
+      };
+    }
   }
 }
 

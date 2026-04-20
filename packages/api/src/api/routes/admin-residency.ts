@@ -20,7 +20,7 @@ import {
   resetMigrationForRetry,
   cancelMigration,
 } from "@atlas/api/lib/residency/migrate";
-import { MIGRATION_STATUSES } from "@useatlas/types";
+import { MIGRATION_STATUSES, type RegionMigration } from "@useatlas/types";
 import { RegionMigrationSchema, MigrationStatusResponseSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -43,6 +43,114 @@ function narrowMigrationStatus(
     "coerced unknown migration status to failed",
   );
   return "failed";
+}
+
+interface MigrationRow {
+  id: string;
+  workspace_id: string;
+  source_region: string;
+  target_region: string;
+  status: string;
+  requested_by: string | null;
+  requested_at: string;
+  completed_at: string | null;
+  error_message: string | null;
+  // Satisfy `queryEffect<T extends Record<string, unknown>>` — the query
+  // returns this exact column set but the generic constraint needs a
+  // catch-all signature.
+  [key: string]: unknown;
+}
+
+/**
+ * Build the discriminated `RegionMigration` variant (#1696) that matches
+ * the row's status.
+ *
+ * Behavior per status when the row's timestamp/error fields contradict
+ * the declared status:
+ *
+ * - **pending / in_progress** — the variant requires `completedAt: null`
+ *   and `errorMessage: null`. The fields on the row are ignored; if they
+ *   were populated, a warn breadcrumb fires so ops can notice drift.
+ * - **completed** — requires `completedAt: string`. If `completed_at` is
+ *   null, we fall back to `requestedAt` and warn. `errorMessage` is
+ *   always coerced to null.
+ * - **failed** — requires `completedAt: string` and `errorMessage: string`.
+ *   Missing `completed_at` falls back to `requestedAt`; missing
+ *   `error_message` falls back to a stock string. Both paths warn.
+ * - **cancelled** — keeps `errorMessage: string | null` for legacy
+ *   'Cancelled by admin' rows. Missing `completed_at` falls back to
+ *   `requestedAt` with a warn.
+ *
+ * Unknown status strings are coerced to `"failed"` by
+ * `narrowMigrationStatus`, which emits its own warn.
+ *
+ * The alternative to sanitizing here would be returning null and
+ * 404-ing the caller — strictly worse for migrated production data
+ * where the row is legit but the columns drifted.
+ */
+function rowToMigration(
+  row: MigrationRow,
+  ctx: { requestId: string },
+): RegionMigration {
+  const status = narrowMigrationStatus(row.status, { migrationId: row.id, requestId: ctx.requestId });
+  const base = {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    sourceRegion: row.source_region,
+    targetRegion: row.target_region,
+    requestedBy: row.requested_by,
+    requestedAt: row.requested_at,
+  };
+  switch (status) {
+    case "pending":
+    case "in_progress":
+      if (row.completed_at !== null || row.error_message !== null) {
+        log.warn(
+          {
+            migrationId: row.id,
+            status,
+            dbCompletedAt: row.completed_at,
+            dbErrorMessage: row.error_message,
+            requestId: ctx.requestId,
+          },
+          "In-flight migration has populated completed_at/error_message — coercing to null",
+        );
+      }
+      return { ...base, status, completedAt: null, errorMessage: null };
+    case "completed":
+      if (!row.completed_at) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Completed migration missing completed_at — falling back to requestedAt");
+        return { ...base, status: "completed", completedAt: row.requested_at, errorMessage: null };
+      }
+      if (row.error_message !== null) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Completed migration has populated error_message — coercing to null");
+      }
+      return { ...base, status: "completed", completedAt: row.completed_at, errorMessage: null };
+    case "failed": {
+      if (!row.completed_at) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Failed migration missing completed_at — falling back to requestedAt");
+      }
+      if (!row.error_message) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Failed migration missing error_message — using stock string");
+      }
+      return {
+        ...base,
+        status: "failed",
+        completedAt: row.completed_at ?? row.requested_at,
+        errorMessage: row.error_message ?? "Migration failed (no error message recorded)",
+      };
+    }
+    case "cancelled":
+      if (!row.completed_at) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Cancelled migration missing completed_at — falling back to requestedAt");
+      }
+      return {
+        ...base,
+        status: "cancelled",
+        completedAt: row.completed_at ?? row.requested_at,
+        errorMessage: row.error_message,
+      };
+  }
 }
 
 // Schedule the background migration executor. `triggerMigrationExecution` is
@@ -462,17 +570,7 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      const rows = yield* queryEffect<{
-        id: string;
-        workspace_id: string;
-        source_region: string;
-        target_region: string;
-        status: string;
-        requested_by: string | null;
-        requested_at: string;
-        completed_at: string | null;
-        error_message: string | null;
-      }>(
+      const rows = yield* queryEffect<MigrationRow>(
         `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
          FROM region_migrations
          WHERE workspace_id = $1
@@ -486,21 +584,7 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
         return c.json({ migration: null }, 200);
       }
 
-      const status = narrowMigrationStatus(row.status, { migrationId: row.id, requestId });
-
-      return c.json({
-        migration: {
-          id: row.id,
-          workspaceId: row.workspace_id,
-          sourceRegion: row.source_region,
-          targetRegion: row.target_region,
-          status,
-          requestedBy: row.requested_by,
-          requestedAt: row.requested_at,
-          completedAt: row.completed_at,
-          errorMessage: row.error_message,
-        },
-      }, 200);
+      return c.json({ migration: rowToMigration(row, { requestId }) }, 200);
     }),
     { label: "get migration status" },
   );
@@ -607,12 +691,12 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
         log.warn({ err: err instanceof Error ? err.message : String(err) }, "Stale migration check failed");
       });
 
-      const migration = {
+      const migration: RegionMigration = {
         id: migrationId,
         workspaceId: orgId,
         sourceRegion: assignment.region,
         targetRegion,
-        status: "pending" as const,
+        status: "pending",
         requestedBy,
         requestedAt: now,
         completedAt: null,
@@ -651,17 +735,7 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
       scheduleMigrationExecution(id, requestId);
 
       // Fetch updated migration to return
-      const rows = yield* queryEffect<{
-        id: string;
-        workspace_id: string;
-        source_region: string;
-        target_region: string;
-        status: string;
-        requested_by: string | null;
-        requested_at: string;
-        completed_at: string | null;
-        error_message: string | null;
-      }>(
+      const rows = yield* queryEffect<MigrationRow>(
         `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
          FROM region_migrations WHERE id = $1 AND workspace_id = $2`,
         [id, orgId],
@@ -674,17 +748,7 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
 
       log.info({ requestId, migrationId: id }, "Migration retry triggered");
 
-      return c.json({
-        id: row.id,
-        workspaceId: row.workspace_id,
-        sourceRegion: row.source_region,
-        targetRegion: row.target_region,
-        status: narrowMigrationStatus(row.status, { migrationId: row.id, requestId }),
-        requestedBy: row.requested_by,
-        requestedAt: row.requested_at,
-        completedAt: row.completed_at,
-        errorMessage: row.error_message,
-      }, 200);
+      return c.json(rowToMigration(row, { requestId }), 200);
     }),
     { label: "retry region migration" },
   );

@@ -456,6 +456,165 @@ describe("PUT /api/v1/admin/residency", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// GET /migration — rowToMigration fallback branches
+//
+// Post-#1696 `RegionMigration` is a discriminated union; `rowToMigration`
+// builds the matching variant from the DB row. When columns contradict
+// the declared status, the helper sanitizes with a warn log rather than
+// 404-ing the caller. These tests lock in each fallback branch.
+// ---------------------------------------------------------------------------
+
+describe("GET /migration — rowToMigration fallbacks", () => {
+  beforeEach(resetMocks);
+
+  function row(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "mig-1",
+      workspace_id: "org-1",
+      source_region: "us-east",
+      target_region: "eu-west",
+      status: "pending",
+      requested_by: "admin-1",
+      requested_at: "2026-04-01T00:00:00Z",
+      completed_at: null,
+      error_message: null,
+      ...overrides,
+    };
+  }
+
+  it("returns null migration when no row exists", async () => {
+    mockInternalQueryResult = [];
+    const res = await request("GET", "/migration");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { migration: unknown };
+    expect(json.migration).toBeNull();
+  });
+
+  it("returns a pending migration with nulled terminal fields", async () => {
+    mockInternalQueryResult = [row()];
+    const res = await request("GET", "/migration");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { migration: { status: string; completedAt: string | null; errorMessage: string | null } };
+    expect(json.migration.status).toBe("pending");
+    expect(json.migration.completedAt).toBeNull();
+    expect(json.migration.errorMessage).toBeNull();
+  });
+
+  it("coerces populated completed_at on a pending row back to null", async () => {
+    mockInternalQueryResult = [row({ completed_at: "2026-04-02T00:00:00Z", error_message: "stale error" })];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; completedAt: string | null; errorMessage: string | null } };
+    expect(json.migration.status).toBe("pending");
+    expect(json.migration.completedAt).toBeNull();
+    expect(json.migration.errorMessage).toBeNull();
+  });
+
+  it("returns a completed migration with its completed_at", async () => {
+    mockInternalQueryResult = [row({ status: "completed", completed_at: "2026-04-03T00:00:00Z" })];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; completedAt: string | null; errorMessage: string | null } };
+    expect(json.migration.status).toBe("completed");
+    expect(json.migration.completedAt).toBe("2026-04-03T00:00:00Z");
+    expect(json.migration.errorMessage).toBeNull();
+  });
+
+  it("falls back to requested_at when a completed row is missing completed_at", async () => {
+    mockInternalQueryResult = [
+      row({ status: "completed", completed_at: null, requested_at: "2026-04-04T00:00:00Z" }),
+    ];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; completedAt: string | null } };
+    expect(json.migration.status).toBe("completed");
+    expect(json.migration.completedAt).toBe("2026-04-04T00:00:00Z");
+  });
+
+  it("returns a failed migration with populated error_message", async () => {
+    mockInternalQueryResult = [
+      row({ status: "failed", completed_at: "2026-04-05T00:00:00Z", error_message: "export failed" }),
+    ];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; errorMessage: string | null } };
+    expect(json.migration.status).toBe("failed");
+    expect(json.migration.errorMessage).toBe("export failed");
+  });
+
+  it("falls back to a stock error message when a failed row is missing error_message", async () => {
+    mockInternalQueryResult = [
+      row({ status: "failed", completed_at: "2026-04-05T00:00:00Z", error_message: null }),
+    ];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; errorMessage: string | null } };
+    expect(json.migration.status).toBe("failed");
+    expect(json.migration.errorMessage).toBe("Migration failed (no error message recorded)");
+  });
+
+  it("returns a cancelled migration with legacy 'Cancelled by admin' errorMessage", async () => {
+    mockInternalQueryResult = [
+      row({ status: "cancelled", completed_at: "2026-04-06T00:00:00Z", error_message: "Cancelled by admin" }),
+    ];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; errorMessage: string | null } };
+    expect(json.migration.status).toBe("cancelled");
+    expect(json.migration.errorMessage).toBe("Cancelled by admin");
+  });
+
+  it("returns a cancelled migration with null errorMessage", async () => {
+    mockInternalQueryResult = [
+      row({ status: "cancelled", completed_at: "2026-04-06T00:00:00Z", error_message: null }),
+    ];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; errorMessage: string | null } };
+    expect(json.migration.status).toBe("cancelled");
+    expect(json.migration.errorMessage).toBeNull();
+  });
+
+  it("coerces an unknown status string to 'failed'", async () => {
+    mockInternalQueryResult = [row({ status: "exploded", completed_at: "2026-04-07T00:00:00Z" })];
+    const res = await request("GET", "/migration");
+    const json = (await res.json()) as { migration: { status: string; errorMessage: string | null } };
+    expect(json.migration.status).toBe("failed");
+    // The coercion path still needs an errorMessage (failed variant
+    // invariant); falls back to stock string because the row had none.
+    expect(json.migration.errorMessage).toBe("Migration failed (no error message recorded)");
+  });
+
+  it("returns 404 when internal DB is not available", async () => {
+    mockHasInternalDB = false;
+    const res = await request("GET", "/migration");
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /migrate — request migration", () => {
+  beforeEach(resetMocks);
+
+  it("creates a pending migration with nulled terminal fields", async () => {
+    mockAssignment = {
+      workspaceId: "org-1",
+      region: "us-east",
+      assignedAt: "2026-04-01T00:00:00Z",
+    };
+    // Two internalQuery calls follow: "existing migration" check + rate limit.
+    // Both must return empty rows for the handler to proceed to INSERT.
+    mockInternalQueryResult = [];
+    const res = await request("POST", "/migrate", { targetRegion: "eu-west" });
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as {
+      status: string;
+      completedAt: string | null;
+      errorMessage: string | null;
+      sourceRegion: string;
+      targetRegion: string;
+    };
+    expect(json.status).toBe("pending");
+    expect(json.completedAt).toBeNull();
+    expect(json.errorMessage).toBeNull();
+    expect(json.sourceRegion).toBe("us-east");
+    expect(json.targetRegion).toBe("eu-west");
+  });
+});
+
 describe("POST /migrate/:id/retry", () => {
   beforeEach(resetMocks);
 

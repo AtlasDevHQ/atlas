@@ -17,25 +17,18 @@ import {
   testModelConfig,
   ModelConfigError,
 } from "@atlas/ee/platform/model-routing";
+import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
 const modelConfigDomainError = domainError(ModelConfigError, { validation: 400, not_found: 404, test_failed: 422 });
 
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
-const ModelConfigSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  provider: z.enum(["anthropic", "openai", "azure-openai", "custom"]),
-  model: z.string(),
-  baseUrl: z.string().nullable(),
-  apiKeyMasked: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
+// `ModelConfigSchema` is re-exported under its prior local alias from
+// `@useatlas/schemas`. The request-body schemas below keep the strict
+// provider enum (`anthropic | openai | azure-openai | custom`) since that
+// enum is for input validation — the response-side is typed via
+// `@useatlas/types`'s `WorkspaceModelConfig.provider: string` (provider
+// list is not a canonical tuple in `@useatlas/types`).
 
 const SetModelConfigBodySchema = z.object({
   provider: z.enum(["anthropic", "openai", "azure-openai", "custom"]).openapi({

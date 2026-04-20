@@ -32,28 +32,18 @@ import {
   ReportError,
 } from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
+import { PIIColumnClassificationSchema as PIIClassificationSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const complianceDomainError = domainError(ComplianceError, { validation: 400, not_found: 404, conflict: 409 });
 const reportDomainError = domainError(ReportError, { validation: 400, not_available: 404 });
 
-// ── Schemas ─────────────────────────────────────────────────────
-
-const PIIClassificationSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  tableName: z.string(),
-  columnName: z.string(),
-  connectionId: z.string(),
-  category: z.string(),
-  confidence: z.string(),
-  maskingStrategy: z.string(),
-  reviewed: z.boolean(),
-  dismissed: z.boolean(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
+// `PIIClassificationSchema` is re-exported under its prior local alias from
+// `@useatlas/schemas`. That migration tightens `category` / `confidence` /
+// `maskingStrategy` from `z.string()` → `z.enum(TUPLE)` using the canonical
+// tuples in `@useatlas/types`. `UpdateClassificationBodySchema` below
+// keeps its local inline enums for request-body validation.
 
 const UpdateClassificationBodySchema = z.object({
   category: z.enum(["email", "phone", "ssn", "credit_card", "name", "ip_address", "date_of_birth", "address", "passport", "driver_license", "other"]).optional().openapi({

@@ -27805,13 +27805,7 @@
                           "type": "string"
                         },
                         "provider": {
-                          "type": "string",
-                          "enum": [
-                            "anthropic",
-                            "openai",
-                            "azure-openai",
-                            "custom"
-                          ]
+                          "type": "string"
                         },
                         "model": {
                           "type": "string"
@@ -27826,10 +27820,12 @@
                           "type": "string"
                         },
                         "createdAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         },
                         "updatedAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         }
                       },
                       "required": [
@@ -28030,13 +28026,7 @@
                           "type": "string"
                         },
                         "provider": {
-                          "type": "string",
-                          "enum": [
-                            "anthropic",
-                            "openai",
-                            "azure-openai",
-                            "custom"
-                          ]
+                          "type": "string"
                         },
                         "model": {
                           "type": "string"
@@ -28051,10 +28041,12 @@
                           "type": "string"
                         },
                         "createdAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         },
                         "updatedAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         }
                       },
                       "required": [
@@ -31161,13 +31153,37 @@
                             "type": "string"
                           },
                           "category": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "email",
+                              "phone",
+                              "ssn",
+                              "credit_card",
+                              "name",
+                              "ip_address",
+                              "date_of_birth",
+                              "address",
+                              "passport",
+                              "driver_license",
+                              "other"
+                            ]
                           },
                           "confidence": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "high",
+                              "medium",
+                              "low"
+                            ]
                           },
                           "maskingStrategy": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "full",
+                              "partial",
+                              "hash",
+                              "redact"
+                            ]
                           },
                           "reviewed": {
                             "type": "boolean"
@@ -31176,10 +31192,12 @@
                             "type": "boolean"
                           },
                           "createdAt": {
-                            "type": "string"
+                            "type": "string",
+                            "format": "date-time"
                           },
                           "updatedAt": {
-                            "type": "string"
+                            "type": "string",
+                            "format": "date-time"
                           }
                         },
                         "required": [
@@ -31391,13 +31409,37 @@
                           "type": "string"
                         },
                         "category": {
-                          "type": "string"
+                          "type": "string",
+                          "enum": [
+                            "email",
+                            "phone",
+                            "ssn",
+                            "credit_card",
+                            "name",
+                            "ip_address",
+                            "date_of_birth",
+                            "address",
+                            "passport",
+                            "driver_license",
+                            "other"
+                          ]
                         },
                         "confidence": {
-                          "type": "string"
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium",
+                            "low"
+                          ]
                         },
                         "maskingStrategy": {
-                          "type": "string"
+                          "type": "string",
+                          "enum": [
+                            "full",
+                            "partial",
+                            "hash",
+                            "redact"
+                          ]
                         },
                         "reviewed": {
                           "type": "boolean"
@@ -31406,10 +31448,12 @@
                           "type": "boolean"
                         },
                         "createdAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         },
                         "updatedAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         }
                       },
                       "required": [
@@ -32313,10 +32357,12 @@
                           "type": "boolean"
                         },
                         "createdAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         },
                         "updatedAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         }
                       },
                       "required": [
@@ -32550,10 +32596,12 @@
                           "type": "boolean"
                         },
                         "createdAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         },
                         "updatedAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         }
                       },
                       "required": [
@@ -52821,16 +52869,13 @@
                             "type": "string"
                           },
                           "latencyP50Ms": {
-                            "type": "number",
-                            "minimum": 0
+                            "type": "number"
                           },
                           "latencyP95Ms": {
-                            "type": "number",
-                            "minimum": 0
+                            "type": "number"
                           },
                           "latencyP99Ms": {
-                            "type": "number",
-                            "minimum": 0
+                            "type": "number"
                           },
                           "errorRatePct": {
                             "type": "number",
@@ -52843,18 +52888,17 @@
                             "maximum": 100
                           },
                           "totalQueries": {
-                            "type": "number",
-                            "minimum": 0
+                            "type": "number"
                           },
                           "failedQueries": {
-                            "type": "number",
-                            "minimum": 0
+                            "type": "number"
                           },
                           "lastQueryAt": {
                             "type": [
                               "string",
                               "null"
-                            ]
+                            ],
+                            "format": "date-time"
                           }
                         },
                         "required": [
@@ -52984,16 +53028,13 @@
                           "type": "string"
                         },
                         "latencyP50Ms": {
-                          "type": "number",
-                          "minimum": 0
+                          "type": "number"
                         },
                         "latencyP95Ms": {
-                          "type": "number",
-                          "minimum": 0
+                          "type": "number"
                         },
                         "latencyP99Ms": {
-                          "type": "number",
-                          "minimum": 0
+                          "type": "number"
                         },
                         "errorRatePct": {
                           "type": "number",
@@ -53006,18 +53047,17 @@
                           "maximum": 100
                         },
                         "totalQueries": {
-                          "type": "number",
-                          "minimum": 0
+                          "type": "number"
                         },
                         "failedQueries": {
-                          "type": "number",
-                          "minimum": 0
+                          "type": "number"
                         },
                         "lastQueryAt": {
                           "type": [
                             "string",
                             "null"
-                          ]
+                          ],
+                          "format": "date-time"
                         }
                       },
                       "required": [
@@ -53039,7 +53079,8 @@
                         "type": "object",
                         "properties": {
                           "timestamp": {
-                            "type": "string"
+                            "type": "string",
+                            "format": "date-time"
                           },
                           "value": {
                             "type": "number"
@@ -53057,7 +53098,8 @@
                         "type": "object",
                         "properties": {
                           "timestamp": {
-                            "type": "string"
+                            "type": "string",
+                            "format": "date-time"
                           },
                           "value": {
                             "type": "number"
@@ -53209,19 +53251,22 @@
                             "type": "string"
                           },
                           "firedAt": {
-                            "type": "string"
+                            "type": "string",
+                            "format": "date-time"
                           },
                           "resolvedAt": {
                             "type": [
                               "string",
                               "null"
-                            ]
+                            ],
+                            "format": "date-time"
                           },
                           "acknowledgedAt": {
                             "type": [
                               "string",
                               "null"
-                            ]
+                            ],
+                            "format": "date-time"
                           },
                           "acknowledgedBy": {
                             "type": [
@@ -53346,17 +53391,12 @@
                   "type": "object",
                   "properties": {
                     "latencyP99Ms": {
-                      "type": "number",
-                      "minimum": 0,
-                      "description": "P99 latency threshold in ms",
-                      "example": 5000
+                      "type": "number"
                     },
                     "errorRatePct": {
                       "type": "number",
                       "minimum": 0,
-                      "maximum": 100,
-                      "description": "Error rate threshold in percent",
-                      "example": 5
+                      "maximum": 100
                     }
                   },
                   "required": [
@@ -53456,17 +53496,12 @@
                 "type": "object",
                 "properties": {
                   "latencyP99Ms": {
-                    "type": "number",
-                    "minimum": 0,
-                    "description": "P99 latency threshold in ms",
-                    "example": 5000
+                    "type": "number"
                   },
                   "errorRatePct": {
                     "type": "number",
                     "minimum": 0,
-                    "maximum": 100,
-                    "description": "Error rate threshold in percent",
-                    "example": 5
+                    "maximum": 100
                   }
                 },
                 "required": [
@@ -53492,17 +53527,12 @@
                       "type": "object",
                       "properties": {
                         "latencyP99Ms": {
-                          "type": "number",
-                          "minimum": 0,
-                          "description": "P99 latency threshold in ms",
-                          "example": 5000
+                          "type": "number"
                         },
                         "errorRatePct": {
                           "type": "number",
                           "minimum": 0,
-                          "maximum": 100,
-                          "description": "Error rate threshold in percent",
-                          "example": 5
+                          "maximum": 100
                         }
                       },
                       "required": [
@@ -53780,19 +53810,22 @@
                             "type": "string"
                           },
                           "firedAt": {
-                            "type": "string"
+                            "type": "string",
+                            "format": "date-time"
                           },
                           "resolvedAt": {
                             "type": [
                               "string",
                               "null"
-                            ]
+                            ],
+                            "format": "date-time"
                           },
                           "acknowledgedAt": {
                             "type": [
                               "string",
                               "null"
-                            ]
+                            ],
+                            "format": "date-time"
                           },
                           "acknowledgedBy": {
                             "type": [

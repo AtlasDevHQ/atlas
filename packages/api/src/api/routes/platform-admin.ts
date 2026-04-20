@@ -40,12 +40,16 @@ import {
   type WorkspaceStatus,
 } from "@atlas/api/lib/db/internal";
 import {
-  WORKSPACE_STATUSES,
   PLAN_TIERS,
-  NOISY_NEIGHBOR_METRICS,
   type PlatformWorkspace,
 } from "@useatlas/types";
-import { ATLAS_ROLES, type AtlasRole } from "@atlas/api/lib/auth/types";
+import {
+  PlatformStatsSchema,
+  PlatformWorkspaceSchema,
+  PlatformWorkspaceUserSchema,
+  NoisyNeighborSchema,
+} from "@useatlas/schemas";
+import { type AtlasRole } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("platform-admin");
@@ -55,54 +59,10 @@ const VALID_PLAN_TIERS = new Set<string>(PLAN_TIERS);
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
-
-const PlatformWorkspaceSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  slug: z.string(),
-  status: z.enum(WORKSPACE_STATUSES),
-  planTier: z.enum(PLAN_TIERS),
-  byot: z.boolean(),
-  members: z.number(),
-  conversations: z.number(),
-  queriesLast24h: z.number(),
-  connections: z.number(),
-  scheduledTasks: z.number(),
-  stripeCustomerId: z.string().nullable(),
-  trialEndsAt: z.string().nullable(),
-  suspendedAt: z.string().nullable(),
-  deletedAt: z.string().nullable(),
-  region: z.string().nullable(),
-  regionAssignedAt: z.string().nullable(),
-  createdAt: z.string(),
-});
-
-const PlatformWorkspaceUserSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  email: z.string(),
-  role: z.enum(ATLAS_ROLES),
-  createdAt: z.string(),
-});
-
-const PlatformStatsSchema = z.object({
-  totalWorkspaces: z.number(),
-  activeWorkspaces: z.number(),
-  suspendedWorkspaces: z.number(),
-  totalUsers: z.number(),
-  totalQueries24h: z.number(),
-  mrr: z.number(),
-});
-
-const NoisyNeighborSchema = z.object({
-  workspaceId: z.string(),
-  workspaceName: z.string(),
-  planTier: z.enum(PLAN_TIERS),
-  metric: z.enum(NOISY_NEIGHBOR_METRICS),
-  value: z.number(),
-  median: z.number(),
-  ratio: z.number(),
-});
+// Platform response schemas come from @useatlas/schemas so the route,
+// the web parse, and the generated OpenAPI spec all describe the same shape.
+// Request-validation schemas (like ChangePlanBodySchema below) stay local
+// because they describe server input, not wire-format output.
 
 const ChangePlanBodySchema = z.object({
   planTier: z.enum(PLAN_TIERS).openapi({

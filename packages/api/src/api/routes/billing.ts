@@ -30,6 +30,7 @@ import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 import { getSettingLive } from "@atlas/api/lib/settings";
+import { BillingStatusSchema } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -105,7 +106,7 @@ const getBillingStatusRoute = createRoute({
       description: "Billing status for the workspace",
       content: {
         "application/json": {
-          schema: z.record(z.string(), z.unknown()),
+          schema: BillingStatusSchema,
         },
       },
     },

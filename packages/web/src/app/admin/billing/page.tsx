@@ -31,6 +31,7 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { formatDate, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import type { BillingStatus } from "@useatlas/schemas";
 import {
   Bot,
   Coins,
@@ -42,50 +43,6 @@ import {
   ServerOff,
   Zap,
 } from "lucide-react";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface BillingStatus {
-  workspaceId: string;
-  plan: {
-    tier: string;
-    displayName: string;
-    pricePerSeat: number;
-    defaultModel: string;
-    byot: boolean;
-    trialEndsAt: string | null;
-  };
-  limits: {
-    tokenBudgetPerSeat: number | null;
-    totalTokenBudget: number | null;
-    maxSeats: number | null;
-    maxConnections: number | null;
-  };
-  usage: {
-    queryCount: number;
-    tokenCount: number;
-    seatCount: number;
-    tokenUsagePercent: number;
-    tokenOverageStatus: string;
-    periodStart: string;
-    periodEnd: string;
-  };
-  seats?: {
-    count: number;
-    max: number | null;
-  };
-  connections?: {
-    count: number;
-    max: number | null;
-  };
-  currentModel?: string;
-  overagePerMillionTokens?: number;
-  subscription: {
-    stripeSubscriptionId: string;
-    plan: string;
-    status: string;
-  } | null;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────
 

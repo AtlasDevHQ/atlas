@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
 
 // Re-export from @/ui/lib/fetch-error (canonical location) for backward
@@ -56,8 +56,10 @@ export function useAdminFetch<T>(
         // Network failure (DNS, offline, CORS) — normalize to FetchError and log.
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`useAdminFetch ${path}:`, msg);
-        const fetchErr: FetchError = { message: msg || "Request failed" };
-        throw fetchErr;
+        // Route through `buildFetchError` so the empty-message invariant
+        // applies — a network error with no message would otherwise render
+        // blank alert chrome.
+        throw buildFetchError({ message: msg });
       }
 
       if (!res.ok) {

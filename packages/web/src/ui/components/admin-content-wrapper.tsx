@@ -4,6 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Search } from "lucide-react";
 import { EnterpriseUpsell, FeatureGate } from "@/ui/components/admin/feature-disabled";
+import type { FeatureName } from "@/ui/components/admin/feature-registry";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
@@ -25,7 +26,7 @@ function isEnterpriseRequired(error: FetchError): boolean {
 export interface AdminContentWrapperProps {
   loading: boolean;
   error: FetchError | null;
-  feature?: string;
+  feature?: FeatureName;
   onRetry?: () => void;
   loadingMessage?: string;
   emptyIcon?: LucideIcon;

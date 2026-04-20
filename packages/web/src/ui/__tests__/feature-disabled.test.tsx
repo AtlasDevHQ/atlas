@@ -16,7 +16,7 @@ describe("FeatureGate", () => {
   });
 
   test("renders 401 — authentication required", () => {
-    const { container } = render(<FeatureGate status={401} feature="Audit" />);
+    const { container } = render(<FeatureGate status={401} feature="Audit Log" />);
     expect(container.textContent).toContain("Authentication required");
     expect(container.textContent).toContain("sign in");
   });

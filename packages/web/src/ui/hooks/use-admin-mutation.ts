@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
 
 /** HTTP methods supported by admin mutations. */
@@ -299,7 +299,9 @@ export function useAdminMutation<TResponse = unknown>(
       const callGen = generationRef.current;
 
       if (!callOpts?.path && !opts?.path) {
-        const fetchError: FetchError = { message: "useAdminMutation: no path provided" };
+        const fetchError = buildFetchError({
+          message: "useAdminMutation: no path provided",
+        });
         // Populate both slots for itemized callers — a bulk surface reading
         // only `errorFor(id)` would otherwise miss the failure and the row
         // would silently look healthy.
@@ -339,10 +341,11 @@ export function useAdminMutation<TResponse = unknown>(
         const msg = err instanceof Error ? err.message : String(err);
         // Recover the structured FetchError the mutationFn attached before
         // throwing (non-HTTP failures like network errors reach this path with
-        // no attachment — fall back to a minimal FetchError preserving message).
+        // no attachment — route through `buildFetchError` so the empty-message
+        // invariant applies even to the network-error fallback path).
         const fetchError =
           (err as { fetchError?: FetchError }).fetchError ??
-          ({ message: msg || "Request failed" } satisfies FetchError);
+          buildFetchError({ message: msg });
 
         if (generationRef.current !== callGen) {
           // `reset()` ran after this mutation was dispatched — swallow the

@@ -15,12 +15,60 @@ export interface FetchError {
 }
 
 /**
+ * Construct a {@link FetchError} with an empty-message invariant.
+ *
+ * `MutationErrorSurface` / `ErrorBanner` / `InlineError` render `error.message`
+ * directly for non-gated statuses — an empty string produces alert chrome with
+ * no copy, indistinguishable from a successful render. This helper is the
+ * single point of enforcement: in development it throws so the regression
+ * surfaces during review, and in production it substitutes a generic string so
+ * the banner has something to render plus a `console.warn` for Sentry
+ * breadcrumbs.
+ *
+ * System boundaries — `extractFetchError` HTTP path and `useAdminFetch`
+ * network-error fallback — route through this helper so the invariant is
+ * codified once.
+ */
+export function buildFetchError(input: {
+  message?: string;
+  status?: number;
+  code?: string;
+  requestId?: string;
+}): FetchError {
+  const message = input.message?.trim();
+  if (!message) {
+    const fallback = `Request failed (${input.status ?? "unknown"})`;
+    if (process.env.NODE_ENV !== "production") {
+      throw new Error(
+        `[buildFetchError] refused to construct FetchError with empty message. ` +
+          `status=${input.status} code=${input.code} requestId=${input.requestId}`,
+      );
+    }
+    console.warn(
+      `[buildFetchError] empty message, substituting generic. status=${input.status}`,
+    );
+    return {
+      message: fallback,
+      ...(input.status !== undefined && { status: input.status }),
+      ...(input.code && { code: input.code }),
+      ...(input.requestId && { requestId: input.requestId }),
+    };
+  }
+  return {
+    message,
+    ...(input.status !== undefined && { status: input.status }),
+    ...(input.code && { code: input.code }),
+    ...(input.requestId && { requestId: input.requestId }),
+  };
+}
+
+/**
  * Extract a structured error from a failed fetch response.
  * Parses the JSON body for `message`, `error` (machine-readable code), and
  * `requestId` fields; falls back to a status-only message if the body isn't JSON.
  */
 export async function extractFetchError(res: Response): Promise<FetchError> {
-  let message = `HTTP ${res.status}`;
+  let message: string | undefined;
   let requestId: string | undefined;
   let code: string | undefined;
   try {
@@ -44,12 +92,16 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
       console.debug("extractFetchError: unexpected error reading response body", err);
     }
   }
-  return {
-    message,
+  // Route the status-only fallback through `buildFetchError` so the empty-
+  // message invariant applies to hand-constructed paths too. The message is
+  // always non-empty here (either the body field or the `HTTP ${status}`
+  // fallback below), so the dev-throw branch never fires on happy paths.
+  return buildFetchError({
+    message: message ?? `HTTP ${res.status}`,
     status: res.status,
-    ...(requestId && { requestId }),
-    ...(code && { code }),
-  };
+    code,
+    requestId,
+  });
 }
 
 /**

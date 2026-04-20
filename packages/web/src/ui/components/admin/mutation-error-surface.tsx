@@ -6,6 +6,7 @@ import {
   FeatureGate,
 } from "@/ui/components/admin/feature-disabled";
 import { InlineError } from "@/ui/components/admin/compact";
+import type { FeatureName } from "@/ui/components/admin/feature-registry";
 import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 
 type Variant = "banner" | "inline";
@@ -13,8 +14,12 @@ type Variant = "banner" | "inline";
 export interface MutationErrorSurfaceProps {
   /** Structured error from `useAdminMutation().error`, or null to render nothing. */
   error: FetchError | null;
-  /** Feature name used in EnterpriseUpsell / FeatureGate copy (e.g. "SSO", "SCIM"). */
-  feature: string;
+  /**
+   * Feature name used in EnterpriseUpsell / FeatureGate copy (e.g. "SSO", "SCIM").
+   * Constrained to the canonical registry in `feature-registry.ts` so typos
+   * (`"sso"` → "sso requires an enterprise plan") are caught at compile time.
+   */
+  feature: FeatureName;
   /** Visual treatment — banner (default) mirrors ErrorBanner, inline mirrors InlineError. */
   variant?: Variant;
   /** Banner-only: wires the ErrorBanner retry button (usually a `clearError` callback). */

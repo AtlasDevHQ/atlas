@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
-import type { FetchError } from "@/ui/lib/fetch-error";
+import type { FeatureName } from "@/ui/components/admin/feature-registry";
+import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import { Loader2, X } from "lucide-react";
 
 interface ReasonDialogProps {
@@ -47,9 +48,11 @@ interface ReasonDialogProps {
   mutationError?: FetchError | null;
   /**
    * Feature name for `MutationErrorSurface` routing when `mutationError` is
-   * present. Should match the page's `AdminContentWrapper` feature.
+   * present. Should match the page's `AdminContentWrapper` feature. When
+   * omitted alongside a `mutationError`, the dialog falls back to a flat
+   * `friendlyError()` alert (no enterprise routing).
    */
-  feature?: string;
+  feature?: FeatureName;
 }
 
 /**
@@ -194,13 +197,23 @@ export function ReasonDialog({
           >
             {localError}
           </div>
-        ) : mutationError ? (
+        ) : mutationError && feature ? (
           <div role="alert">
             <MutationErrorSurface
               error={mutationError}
-              feature={feature ?? ""}
+              feature={feature}
               variant="inline"
             />
+          </div>
+        ) : mutationError ? (
+          // No feature → no structured enterprise routing; render the
+          // friendly message in the same alert chrome as `error` so the
+          // dialog still surfaces the failure to a screen reader.
+          <div
+            role="alert"
+            className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          >
+            {friendlyError(mutationError)}
           </div>
         ) : error ? (
           <div

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AtlasProvider, type AtlasAuthClient } from "../context";
 import { useAdminMutation } from "../hooks/use-admin-mutation";
 import { AdminContentWrapper } from "../components/admin-content-wrapper";
+import type { FeatureName } from "../components/admin/feature-registry";
 import type { FetchError } from "../lib/fetch-error";
 
 /**
@@ -49,7 +50,7 @@ function Wrapper({ children }: { children: ReactNode }) {
  * on mount, stores the structured `FetchError`, and feeds it straight to
  * `AdminContentWrapper` so the component's EE/FriendlyError branches execute.
  */
-function MutationHarness({ feature }: { feature: string }) {
+function MutationHarness({ feature }: { feature: FeatureName }) {
   const [error, setError] = useState<FetchError | null>(null);
   const [settled, setSettled] = useState(false);
   const { mutate } = useAdminMutation({ path: "/api/v1/admin/test", method: "POST" });
@@ -144,7 +145,7 @@ describe("admin mutation error passthrough", () => {
 
     let utils!: ReturnType<typeof render>;
     await act(async () => {
-      utils = render(<MutationHarness feature="Audit" />, { wrapper: Wrapper });
+      utils = render(<MutationHarness feature="Audit Log" />, { wrapper: Wrapper });
     });
 
     await waitFor(() => {

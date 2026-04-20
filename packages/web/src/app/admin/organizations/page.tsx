@@ -386,7 +386,7 @@ export default function OrganizationsPage() {
           <AdminContentWrapper
             loading={loading}
             error={error}
-            feature="Organization Management"
+            feature="Organizations"
             onRetry={refetch}
             loadingMessage="Loading organizations..."
             emptyIcon={Building2}

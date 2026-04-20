@@ -195,14 +195,14 @@ function CustomDomainPageContent() {
       <AdminContentWrapper
         loading={loading}
         error={error}
-        feature="Custom Domain"
+        feature="Custom Domains"
         onRetry={refetch}
         loadingMessage="Loading domain configuration..."
       >
         <div className="mx-auto max-w-3xl space-y-8">
           <MutationErrorSurface
             error={mutationError}
-            feature="Custom Domain"
+            feature="Custom Domains"
             onRetry={clearMutationError}
           />
 
@@ -263,7 +263,7 @@ function CustomDomainPageContent() {
                     root domain.
                   </p>
                 </div>
-                <MutationErrorSurface error={addError} feature="Custom Domain" />
+                <MutationErrorSurface error={addError} feature="Custom Domains" />
               </Shell>
             )}
 

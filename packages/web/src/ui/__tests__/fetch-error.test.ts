@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { extractFetchError, friendlyError, friendlyErrorOrNull } from "../lib/fetch-error";
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
+import {
+  buildFetchError,
+  extractFetchError,
+  friendlyError,
+  friendlyErrorOrNull,
+} from "../lib/fetch-error";
 
 function mockResponse(status: number, body?: unknown, headers?: Record<string, string>): Response {
   const init: ResponseInit = { status, headers };
@@ -175,6 +180,115 @@ describe("extractFetchError empty-message clobber guard", () => {
     );
     const err = await extractFetchError(res);
     expect(err).toEqual({ message: "HTTP 403", status: 403, code: "enterprise_required" });
+  });
+});
+
+describe("buildFetchError empty-message invariant", () => {
+  const originalEnv = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    process.env.NODE_ENV = "test";
+  });
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalEnv;
+  });
+
+  test("returns a FetchError with trimmed message on happy path", () => {
+    const err = buildFetchError({
+      message: "  Server error  ",
+      status: 500,
+      code: "internal",
+      requestId: "req-abc",
+    });
+    expect(err).toEqual({
+      message: "Server error",
+      status: 500,
+      code: "internal",
+      requestId: "req-abc",
+    });
+  });
+
+  test("omits undefined optional fields", () => {
+    const err = buildFetchError({ message: "msg" });
+    expect(err).toEqual({ message: "msg" });
+    expect("status" in err).toBe(false);
+    expect("code" in err).toBe(false);
+    expect("requestId" in err).toBe(false);
+  });
+
+  test("throws in development when message is empty", () => {
+    process.env.NODE_ENV = "development";
+    expect(() => buildFetchError({ message: "", status: 500 })).toThrow(
+      /refused to construct FetchError with empty message/,
+    );
+  });
+
+  test("throws in development when message is whitespace-only", () => {
+    process.env.NODE_ENV = "development";
+    expect(() => buildFetchError({ message: "   ", status: 500 })).toThrow(
+      /refused to construct FetchError with empty message/,
+    );
+  });
+
+  test("throws in development when message is undefined", () => {
+    process.env.NODE_ENV = "development";
+    expect(() => buildFetchError({ status: 500 })).toThrow(
+      /refused to construct FetchError with empty message/,
+    );
+  });
+
+  test("throws in non-production (e.g. test env too)", () => {
+    process.env.NODE_ENV = "test";
+    expect(() => buildFetchError({ message: "" })).toThrow();
+  });
+
+  test("substitutes a generic message in production", () => {
+    process.env.NODE_ENV = "production";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const err = buildFetchError({ message: "", status: 502 });
+      expect(err).toEqual({
+        message: "Request failed (502)",
+        status: 502,
+      });
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("production substitute uses 'unknown' when status is undefined", () => {
+    process.env.NODE_ENV = "production";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const err = buildFetchError({ message: undefined });
+      expect(err).toEqual({ message: "Request failed (unknown)" });
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("production substitute still preserves code and requestId", () => {
+    process.env.NODE_ENV = "production";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const err = buildFetchError({
+        message: "",
+        status: 403,
+        code: "enterprise_required",
+        requestId: "req-ee",
+      });
+      expect(err).toEqual({
+        message: "Request failed (403)",
+        status: 403,
+        code: "enterprise_required",
+        requestId: "req-ee",
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

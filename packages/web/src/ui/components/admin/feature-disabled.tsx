@@ -2,6 +2,7 @@
 
 import { Ban, DatabaseZap, ShieldCheck, ShieldX } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { FeatureName } from "@/ui/components/admin/feature-registry";
 
 /**
  * Dedicated upsell shown when an admin page returns an
@@ -15,7 +16,7 @@ export function EnterpriseUpsell({
   feature,
   message,
 }: {
-  feature: string;
+  feature: FeatureName;
   /** Optional override for the description text (usually the server message). */
   message?: string;
 }) {
@@ -64,7 +65,7 @@ export function FeatureGate({
   message,
 }: {
   status: 401 | 403 | 404 | 503;
-  feature: string;
+  feature: FeatureName;
   /** Optional override for the description text. */
   message?: string;
 }) {

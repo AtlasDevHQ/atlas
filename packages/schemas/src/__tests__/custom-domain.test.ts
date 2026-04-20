@@ -84,9 +84,12 @@ describe("enum strict rejection", () => {
   });
 
   test("all DOMAIN_STATUSES values parse", () => {
-    for (const status of ["pending", "verified", "failed"] as const) {
+    // `verified` needs the `verifiedAt` stamp per the #1661 invariant; the
+    // other two tests use the pending-state base row.
+    for (const status of ["pending", "failed"] as const) {
       expect(CustomDomainSchema.parse({ ...validDomain, status }).status).toBe(status);
     }
+    expect(CustomDomainSchema.parse(verifiedDomain).status).toBe("verified");
   });
 
   test("all CERTIFICATE_STATUSES values parse", () => {
@@ -98,12 +101,15 @@ describe("enum strict rejection", () => {
   });
 
   test("all DOMAIN_VERIFICATION_STATUSES values parse", () => {
-    for (const domainVerificationStatus of ["pending", "verified", "failed"] as const) {
+    // `verified` must agree with `domainVerified=true` + `domainVerifiedAt`
+    // set per the #1661 invariant — use `verifiedDomain` for that case.
+    for (const domainVerificationStatus of ["pending", "failed"] as const) {
       expect(
         CustomDomainSchema.parse({ ...validDomain, domainVerificationStatus })
           .domainVerificationStatus,
       ).toBe(domainVerificationStatus);
     }
+    expect(CustomDomainSchema.parse(verifiedDomain).domainVerificationStatus).toBe("verified");
   });
 });
 
@@ -121,5 +127,62 @@ describe("structural rejection", () => {
   test("CustomDomainSchema rejects missing domainVerificationStatus", () => {
     const { domainVerificationStatus: _dvs, ...missing } = validDomain;
     expect(CustomDomainSchema.safeParse(missing).success).toBe(false);
+  });
+
+  test("CustomDomainSchema rejects empty domain string", () => {
+    const drifted = { ...validDomain, domain: "" };
+    expect(CustomDomainSchema.safeParse(drifted).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Invariant rejection — see #1661.
+//
+// DNS TXT verification writes `domain_verified`, `domain_verified_at`, and
+// `domain_verification_status` atomically in `ee/src/platform/domains.ts`
+// (see `verifyDomainDnsTxt`). The row-to-wire mapper defaults pre-migration
+// rows to the all-unverified state. A row that shows `domainVerified=true`
+// but `domainVerifiedAt=null` (or vice versa) is a bug somewhere upstream —
+// either the DB or a partial hand-edit — and should fail parse at
+// `useAdminFetch` time, not leak into the domain-detail UI as a silent
+// mismatch.
+//
+// Railway CNAME/cert verification separately sets `status='verified'`
+// together with `verified_at = now()` (same UPDATE statement in
+// `verifyDomain`). A `verified` status without a `verifiedAt` stamp is
+// drift.
+// ---------------------------------------------------------------------------
+
+describe("3-way verification invariant", () => {
+  test("rejects domainVerified=true with domainVerifiedAt=null", () => {
+    const drifted = {
+      ...verifiedDomain,
+      domainVerifiedAt: null,
+    };
+    expect(CustomDomainSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("rejects domainVerified=true with domainVerificationStatus!=='verified'", () => {
+    const drifted = {
+      ...verifiedDomain,
+      domainVerificationStatus: "pending" as const,
+    };
+    expect(CustomDomainSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("rejects domainVerified=false with domainVerificationStatus='verified'", () => {
+    const drifted = {
+      ...validDomain,
+      domainVerificationStatus: "verified" as const,
+    };
+    expect(CustomDomainSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("rejects status='verified' with verifiedAt=null", () => {
+    const drifted = {
+      ...verifiedDomain,
+      verifiedAt: null,
+    };
+    expect(CustomDomainSchema.safeParse(drifted).success).toBe(false);
   });
 });

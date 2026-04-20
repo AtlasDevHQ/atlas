@@ -3,6 +3,7 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
+import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Clock, User, Code, Timer, Rows3, CheckCircle, Table2 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -34,15 +35,7 @@ export function getAuditColumns(): ColumnDef<AuditRow>[] {
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {new Date(row.getValue<string>("timestamp")).toLocaleString(
-            undefined,
-            {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            },
-          )}
+          <RelativeTimestamp iso={row.getValue<string>("timestamp")} />
         </span>
       ),
       meta: {

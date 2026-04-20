@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { extractFetchError, friendlyError } from "@/ui/lib/fetch-error";
+import { extractFetchError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,8 +21,21 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { Shield, Clock, Trash2, Download } from "lucide-react";
 
@@ -223,8 +236,13 @@ export function RetentionPanel() {
         <StatCard
           title="Last Purge"
           value={policy?.lastPurgeAt
-            ? `${policy.lastPurgeCount?.toLocaleString() ?? 0} entries at ${new Date(policy.lastPurgeAt).toLocaleDateString()}`
+            ? `${policy.lastPurgeCount?.toLocaleString() ?? 0} entries`
             : "Never"
+          }
+          description={
+            policy?.lastPurgeAt
+              ? <RelativeTimestamp iso={policy.lastPurgeAt} />
+              : undefined
           }
           icon={<Trash2 className="size-4" />}
         />
@@ -290,7 +308,11 @@ export function RetentionPanel() {
             </div>
           </div>
 
-          {saveError && <ErrorBanner message={friendlyError(saveError)} />}
+          <MutationErrorSurface
+            error={saveError}
+            feature="Audit Retention"
+            onRetry={clearSaveError}
+          />
           {saveSuccess && (
             <p className="text-sm text-green-600">Retention policy saved successfully.</p>
           )}
@@ -299,13 +321,30 @@ export function RetentionPanel() {
             <Button onClick={handleSave} disabled={saving}>
               {saving ? "Saving..." : "Save Policy"}
             </Button>
-            <Button variant="outline" onClick={handlePurge} disabled={purging}>
-              <Trash2 className="mr-1.5 size-3.5" />
-              {purging ? "Purging..." : "Run Purge Now"}
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" disabled={purging}>
+                  <Trash2 className="mr-1.5 size-3.5" />
+                  {purging ? "Purging..." : "Run Purge Now"}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Purge expired audit entries?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Soft-deletes all entries past the retention window. Entries become
+                    permanently unrecoverable after the hard-delete delay elapses.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handlePurge}>Run purge</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
 
-          {purgeError && <ErrorBanner message={friendlyError(purgeError)} />}
+          <MutationErrorSurface error={purgeError} feature="Audit Retention" />
           {purgeResult && (
             <p className="text-sm text-muted-foreground">{purgeResult}</p>
           )}

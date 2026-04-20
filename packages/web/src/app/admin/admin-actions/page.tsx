@@ -23,6 +23,8 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAtlasConfig } from "@/ui/context";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { RelativeTimestamp } from "@/ui/components/admin/queue";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   ChevronLeft,
   ChevronRight,
@@ -105,21 +107,6 @@ const TARGET_TYPE_OPTIONS = [
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatTimestamp(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  } catch {
-    // intentionally ignored: invalid date string — fall back to raw ISO
-    return iso;
-  }
-}
 
 function statusBadge(status: string) {
   return status === "success"
@@ -343,7 +330,7 @@ function AdminActionsPageContent() {
               {actions.map((action) => (
                 <TableRow key={action.id}>
                   <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                    {formatTimestamp(action.timestamp)}
+                    <RelativeTimestamp iso={action.timestamp} />
                   </TableCell>
                   <TableCell className="text-sm">{action.actorEmail}</TableCell>
                   <TableCell>
@@ -400,7 +387,9 @@ function AdminActionsPageContent() {
 export default function AdminActionsPage() {
   return (
     <ErrorBoundary>
-      <AdminActionsPageContent />
+      <TooltipProvider>
+        <AdminActionsPageContent />
+      </TooltipProvider>
     </ErrorBoundary>
   );
 }

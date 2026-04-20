@@ -4,7 +4,6 @@ import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { UsageSummarySchema } from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +12,9 @@ import { Progress } from "@/components/ui/progress";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+import { RelativeTimestamp } from "@/ui/components/admin/queue";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
@@ -66,7 +68,7 @@ export default function UsageDashboardPage() {
     { schema: UsageSummarySchema },
   );
 
-  const { mutate: portalMutate, saving: portalLoading, error: portalError } =
+  const { mutate: portalMutate, saving: portalLoading, error: portalError, clearError: clearPortalError } =
     useAdminMutation<{ url?: string }>({
       path: "/api/v1/billing/portal",
       method: "POST",
@@ -100,6 +102,7 @@ export default function UsageDashboardPage() {
 
   return (
     <ErrorBoundary>
+    <TooltipProvider>
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
@@ -125,8 +128,26 @@ export default function UsageDashboardPage() {
       </div>
 
       <div className="space-y-6">
-        {/* Portal error */}
-        {(portalError ?? portalUrlError) && <ErrorBanner message={(portalError ? friendlyError(portalError) : portalUrlError)!} onRetry={() => { setPortalUrlError(null); openBillingPortal(); }} />}
+        {/* Billing portal: FetchError routes through MutationErrorSurface;
+            portalUrlError is the local-fallback string for "200 OK but no URL"
+            edge case (not a FetchError, so kept as a plain ErrorBanner). */}
+        <MutationErrorSurface
+          error={portalError}
+          feature="Billing Portal"
+          onRetry={() => {
+            clearPortalError();
+            openBillingPortal();
+          }}
+        />
+        {portalUrlError && (
+          <ErrorBanner
+            message={portalUrlError}
+            onRetry={() => {
+              setPortalUrlError(null);
+              openBillingPortal();
+            }}
+          />
+        )}
 
         <AdminContentWrapper
           loading={loading}
@@ -159,9 +180,12 @@ export default function UsageDashboardPage() {
                 value={data.plan.displayName}
                 icon={<CreditCard className="size-4" />}
                 description={
-                  data.plan.trialEndsAt
-                    ? `Trial ends ${new Date(data.plan.trialEndsAt).toLocaleDateString()}`
-                    : undefined
+                  data.plan.trialEndsAt ? (
+                    <RelativeTimestamp
+                      iso={data.plan.trialEndsAt}
+                      label="Trial ends"
+                    />
+                  ) : undefined
                 }
               />
             </div>
@@ -207,6 +231,7 @@ export default function UsageDashboardPage() {
         </AdminContentWrapper>
       </div>
     </div>
+    </TooltipProvider>
     </ErrorBoundary>
   );
 }

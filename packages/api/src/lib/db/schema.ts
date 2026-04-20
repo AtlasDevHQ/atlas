@@ -894,11 +894,22 @@ export const customDomains = pgTable(
     railwayDomainId: text("railway_domain_id"),
     cnameTarget: text("cname_target"),
     certificateStatus: text("certificate_status"),
+    // DNS TXT ownership verification — mirrors sso_providers (migration 0022).
+    // Written by ee/src/platform/domains.ts (registerDomain + verifyDomainDnsTxt)
+    // and read by rowToDomain + hasVerifiedCustomDomain.
+    verificationToken: text("verification_token"),
+    domainVerified: boolean("domain_verified").notNull().default(false),
+    domainVerifiedAt: timestamp("domain_verified_at", { withTimezone: true }),
+    domainVerificationStatus: text("domain_verification_status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
   },
   (t) => [
     check("chk_domain_status", sql`status IN ('pending', 'verified', 'failed')`),
+    check(
+      "chk_custom_domain_verification_status",
+      sql`domain_verification_status IN ('pending', 'verified', 'failed')`,
+    ),
     index("idx_custom_domains_workspace").on(t.workspaceId),
     index("idx_custom_domains_status").on(t.status),
   ],

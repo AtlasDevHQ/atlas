@@ -87,7 +87,7 @@ describe("Abuse Prevention Engine", () => {
       const config = getAbuseConfig();
       expect(config.queryRateLimit).toBe(200);
       expect(config.queryRateWindowSeconds).toBe(300);
-      expect(config.errorRateThreshold).toBe(0.5);
+      expect(config.errorRateThreshold).toBe<number>(0.5);
       expect(config.uniqueTablesLimit).toBe(50);
       expect(config.throttleDelayMs).toBe(2000);
     });
@@ -705,7 +705,7 @@ describe("Abuse Prevention Engine", () => {
       // Counters mirror the real in-memory window — 201 queries, 0 errors, 5 tables.
       expect(detail.counters.queryCount).toBe(config.queryRateLimit + 1);
       expect(detail.counters.errorCount).toBe(0);
-      expect(detail.counters.errorRatePct).toBe(0); // baseline met, all succeeded
+      expect(detail.counters.errorRatePct).toBe<number>(0); // baseline met, all succeeded (branded Percentage, #1685)
       expect(detail.counters.uniqueTablesAccessed).toBe(5);
       // escalate() bumps `escalations` on every call while over threshold —
       // first breach transitions to warning, subsequent bumps keep going.

@@ -6,6 +6,8 @@
 // CHECK in `packages/api/src/lib/db/migrations/*_abuse_events_enum_checks.sql`
 // — otherwise `persistAbuseEvent` will fail at INSERT time.
 
+import type { Percentage, Ratio } from "./percentage";
+
 /** Graduated abuse response levels (escalation order). */
 export const ABUSE_LEVELS = ["none", "warning", "throttled", "suspended"] as const;
 export type AbuseLevel = (typeof ABUSE_LEVELS)[number];
@@ -50,8 +52,14 @@ export interface AbuseThresholdConfig {
   queryRateLimit: number;
   /** Sliding window duration in seconds. */
   queryRateWindowSeconds: number;
-  /** Max error rate (0–1) before escalation. */
-  errorRateThreshold: number;
+  /**
+   * Max error rate before escalation. `Ratio` (0–1) — authored in
+   * `atlas.config.ts` / env vars as a fraction because the engine's
+   * internal comparison `errorCount / totalCount > errorRateThreshold`
+   * works on fractions too. Cross-scale mixups with `AbuseCounters.errorRatePct`
+   * (a `Percentage`) are prevented by the brand (#1685).
+   */
+  errorRateThreshold: Ratio;
   /** Max unique tables accessed per window before escalation. */
   uniqueTablesLimit: number;
   /** Delay injected for throttled workspaces, in milliseconds. */
@@ -62,8 +70,14 @@ export interface AbuseThresholdConfig {
 export interface AbuseCounters {
   queryCount: number;
   errorCount: number;
-  /** Null when queryCount < 10 (the engine only evaluates error rate once it has a baseline). */
-  errorRatePct: number | null;
+  /**
+   * Error rate as a `Percentage` (0–100), matching the SLA surfaces'
+   * convention. Null when queryCount < 10 (the engine only evaluates
+   * error rate once it has a baseline). Branded (#1685) so a caller that
+   * compares against `AbuseThresholdConfig.errorRateThreshold` (a
+   * `Ratio`) must go through `percentageToRatio` explicitly.
+   */
+  errorRatePct: Percentage | null;
   uniqueTablesAccessed: number;
   /** Consecutive escalation count currently driving the level. */
   escalations: number;

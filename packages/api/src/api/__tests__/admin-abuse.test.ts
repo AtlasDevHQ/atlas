@@ -15,6 +15,7 @@ import {
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import type { AbuseDetail } from "@useatlas/types";
+import { asPercentage, asRatio } from "@useatlas/types";
 import { createAbuseInstance } from "@atlas/api/lib/security/abuse-instances";
 
 // --- Unified mocks ---
@@ -261,14 +262,14 @@ describe("Admin Abuse API", () => {
         counters: {
           queryCount: 250,
           errorCount: 0,
-          errorRatePct: 0,
+          errorRatePct: asPercentage(0),
           uniqueTablesAccessed: 3,
           escalations: 1,
         },
         thresholds: {
           queryRateLimit: 200,
           queryRateWindowSeconds: 300,
-          errorRateThreshold: 0.5,
+          errorRateThreshold: asRatio(0.5),
           uniqueTablesLimit: 50,
           throttleDelayMs: 2000,
         },
@@ -295,7 +296,7 @@ describe("Admin Abuse API", () => {
         message: "boom",
         updatedAt: "2026-03-23T00:00:00.000Z",
         counters: { queryCount: 1, errorCount: 0, errorRatePct: null, uniqueTablesAccessed: 0, escalations: 0 },
-        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: 0.5, uniqueTablesLimit: 50, throttleDelayMs: 2000 },
+        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: asRatio(0.5), uniqueTablesLimit: 50, throttleDelayMs: 2000 },
         currentInstance: createAbuseInstance([]),
         priorInstances: [],
         eventsStatus: "ok",
@@ -331,7 +332,7 @@ describe("Admin Abuse API", () => {
         thresholds: {
           queryRateLimit: 200,
           queryRateWindowSeconds: 300,
-          errorRateThreshold: 0.5,
+          errorRateThreshold: asRatio(0.5),
           uniqueTablesLimit: 50,
           throttleDelayMs: 2000,
         },
@@ -364,8 +365,8 @@ describe("Admin Abuse API", () => {
         trigger: "query_rate",
         message: "was flagged",
         updatedAt: "2026-03-23T00:00:00.000Z",
-        counters: { queryCount: 201, errorCount: 0, errorRatePct: 0, uniqueTablesAccessed: 0, escalations: 1 },
-        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: 0.5, uniqueTablesLimit: 50, throttleDelayMs: 2000 },
+        counters: { queryCount: 201, errorCount: 0, errorRatePct: asPercentage(0), uniqueTablesAccessed: 0, escalations: 1 },
+        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: asRatio(0.5), uniqueTablesLimit: 50, throttleDelayMs: 2000 },
         currentInstance: createAbuseInstance([]),
         priorInstances: [],
         eventsStatus: "load_failed",

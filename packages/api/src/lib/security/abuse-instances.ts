@@ -20,7 +20,7 @@
  *      preserve threshold-comparison precision at the 0.01% level.
  */
 
-import type { AbuseEvent, AbuseInstance, AbuseLevel } from "@useatlas/types";
+import { asPercentage, type AbuseEvent, type AbuseInstance, type AbuseLevel, type Percentage } from "@useatlas/types";
 
 const LEVEL_RANK: Record<AbuseLevel, number> = {
   none: 0,
@@ -100,7 +100,7 @@ export function createAbuseInstance(eventsChrono: readonly AbuseEvent[]): AbuseI
  * caller bug, but surfacing e.g. 150% would mislead the admin more than
  * displaying 100% does.
  */
-export function errorRatePct(errorCount: number, totalCount: number): number {
+export function errorRatePct(errorCount: number, totalCount: number): Percentage {
   if (!Number.isFinite(errorCount) || !Number.isFinite(totalCount)) {
     throw new Error(
       `errorRatePct: non-finite input (errorCount=${errorCount}, totalCount=${totalCount})`,
@@ -111,9 +111,9 @@ export function errorRatePct(errorCount: number, totalCount: number): number {
       `errorRatePct: negative input (errorCount=${errorCount}, totalCount=${totalCount})`,
     );
   }
-  if (totalCount === 0) return 0;
+  if (totalCount === 0) return asPercentage(0);
   const raw = (errorCount / totalCount) * 100;
-  return Math.min(100, Math.round(raw * 100) / 100);
+  return asPercentage(Math.min(100, Math.round(raw * 100) / 100));
 }
 
 /**

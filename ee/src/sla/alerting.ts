@@ -14,6 +14,7 @@ import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SLAAlert, SLAAlertStatus, SLAAlertType, SLAThresholds } from "@useatlas/types";
+import { asPercentage } from "@useatlas/types";
 
 const log = createLogger("ee:sla-alerting");
 
@@ -43,7 +44,9 @@ export const getThresholds = (workspaceId?: string): Effect.Effect<SLAThresholds
       if (rows.length > 0) {
         return {
           latencyP99Ms: rows[0].latency_p99_ms,
-          errorRatePct: rows[0].error_rate_pct,
+          // DB column is stored on the 0–100 scale; `asPercentage` brands
+          // the value without changing it (#1685).
+          errorRatePct: asPercentage(rows[0].error_rate_pct),
         };
       }
     }
@@ -56,7 +59,7 @@ export const getThresholds = (workspaceId?: string): Effect.Effect<SLAThresholds
     if (defaults.length > 0) {
       return {
         latencyP99Ms: defaults[0].latency_p99_ms,
-        errorRatePct: defaults[0].error_rate_pct,
+        errorRatePct: asPercentage(defaults[0].error_rate_pct),
       };
     }
 
@@ -68,7 +71,7 @@ function defaultThresholds(): SLAThresholds {
   const errorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "");
   return {
     latencyP99Ms: isNaN(latency) ? 5000 : latency,
-    errorRatePct: isNaN(errorRate) ? 5 : errorRate,
+    errorRatePct: asPercentage(isNaN(errorRate) ? 5 : errorRate),
   };
 }
 

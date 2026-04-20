@@ -17,6 +17,8 @@ import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
+  asRatio,
+  percentageToRatio,
   type AbuseLevel,
   type AbuseTrigger,
   type AbuseEvent,
@@ -101,7 +103,10 @@ export function getAbuseConfig(): AbuseThresholdConfig {
   return {
     queryRateLimit: envInt("ATLAS_ABUSE_QUERY_RATE", 200),
     queryRateWindowSeconds: envInt("ATLAS_ABUSE_WINDOW_SECONDS", 300),
-    errorRateThreshold: envFloat("ATLAS_ABUSE_ERROR_RATE", 0.5),
+    // Env-var value is already a 0–1 fraction (e.g. ATLAS_ABUSE_ERROR_RATE=0.5);
+    // `asRatio` brands it so the cross-scale guard in `checkThresholds` +
+    // detail-panel comparisons type-checks (#1685).
+    errorRateThreshold: asRatio(envFloat("ATLAS_ABUSE_ERROR_RATE", 0.5)),
     uniqueTablesLimit: envInt("ATLAS_ABUSE_UNIQUE_TABLES", 50),
     throttleDelayMs: envInt("ATLAS_ABUSE_THROTTLE_DELAY_MS", 2000),
   };

@@ -239,6 +239,10 @@ export const MigrationStatusResponseSchema = z.object({
 
 // ── SLA ──────────────────────────────────────────────────────────
 
+// `as unknown as z.ZodType<...>` — the wire shape is plain numbers, the TS
+// type has branded `Percentage` for `errorRatePct` / `uptimePct` (#1685).
+// The brand is phantom at runtime; the double-cast is the escape hatch we
+// use only at the web `useAdminFetch` boundary.
 export const WorkspaceSLASummarySchema = z.object({
   workspaceId: z.string(),
   workspaceName: z.string(),
@@ -250,7 +254,7 @@ export const WorkspaceSLASummarySchema = z.object({
   totalQueries: z.number(),
   failedQueries: z.number(),
   lastQueryAt: z.string().nullable(),
-}) as z.ZodType<WorkspaceSLASummary>;
+}) as unknown as z.ZodType<WorkspaceSLASummary>;
 
 const SLAMetricPointSchema = z.object({
   timestamp: z.string(),
@@ -281,7 +285,7 @@ export const SLAAlertSchema = z.object({
 export const SLAThresholdsSchema = z.object({
   latencyP99Ms: z.number(),
   errorRatePct: z.number(),
-}) as z.ZodType<SLAThresholds>;
+}) as unknown as z.ZodType<SLAThresholds>;
 
 export const SLAWorkspacesResponseSchema = z.object({
   workspaces: z.array(WorkspaceSLASummarySchema),

@@ -5,6 +5,8 @@
  * query latency, error rate tracking, and alerting.
  */
 
+import type { Percentage } from "./percentage";
+
 // ---------------------------------------------------------------------------
 // Metric types
 // ---------------------------------------------------------------------------
@@ -16,10 +18,10 @@ export interface WorkspaceSLASummary {
   latencyP50Ms: number;
   latencyP95Ms: number;
   latencyP99Ms: number;
-  /** Error rate as a percentage (0–100). */
-  errorRatePct: number;
-  /** Uptime as a percentage (0–100), derived from successful query ratio. */
-  uptimePct: number;
+  /** Error rate on a 0–100 scale, branded `Percentage` (#1685). */
+  errorRatePct: Percentage;
+  /** Uptime on a 0–100 scale, branded `Percentage`. */
+  uptimePct: Percentage;
   totalQueries: number;
   failedQueries: number;
   lastQueryAt: string | null;
@@ -72,6 +74,12 @@ export interface SLAAlert {
 export interface SLAThresholds {
   /** P99 latency threshold in milliseconds. */
   latencyP99Ms: number;
-  /** Error rate threshold as a percentage (0–100). */
-  errorRatePct: number;
+  /**
+   * Error rate threshold on a 0–100 scale, branded `Percentage` (#1685).
+   * Opposite convention from `AbuseThresholdConfig.errorRateThreshold`
+   * (which is a `Ratio`) — the SLA surface kept the legacy percentage
+   * format, and the brand makes the cross-module mixup a typecheck
+   * failure instead of a runtime boundary bug.
+   */
+  errorRatePct: Percentage;
 }

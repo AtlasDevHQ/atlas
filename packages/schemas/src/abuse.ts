@@ -32,12 +32,16 @@ import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
   ABUSE_EVENTS_STATUSES,
+  asPercentage,
+  asRatio,
   type AbuseEvent,
   type AbuseStatus,
   type AbuseThresholdConfig,
   type AbuseDetail,
   type AbuseInstance,
   type AbuseCounters,
+  type Percentage,
+  type Ratio,
 } from "@useatlas/types";
 
 const LevelEnum = z.enum(ABUSE_LEVELS);
@@ -65,21 +69,31 @@ export const AbuseStatusSchema = z.object({
   events: z.array(AbuseEventSchema),
 }) satisfies z.ZodType<AbuseStatus>;
 
+// `errorRateThreshold` is branded `Ratio` (#1685). The Zod input is a plain
+// `number`; the `.transform` brands at the wire boundary so call sites
+// cannot accidentally pass an unbranded `number` in its place. `asRatio`
+// is a no-op at runtime (pure phantom type).
 export const AbuseThresholdConfigSchema = z.object({
   queryRateLimit: z.number(),
   queryRateWindowSeconds: z.number(),
-  errorRateThreshold: z.number(),
+  errorRateThreshold: z.number().transform((n): Ratio => asRatio(n)),
   uniqueTablesLimit: z.number(),
   throttleDelayMs: z.number(),
-}) satisfies z.ZodType<AbuseThresholdConfig>;
+}) satisfies z.ZodType<AbuseThresholdConfig, unknown>;
 
+// `errorRatePct` is branded `Percentage` (#1685). Same wire-boundary cast
+// pattern as `errorRateThreshold` above; the `nullable` wrapper keeps the
+// "baseline pending" null-pass-through for queryCount < 10.
 export const AbuseCountersSchema = z.object({
   queryCount: z.number(),
   errorCount: z.number(),
-  errorRatePct: z.number().nullable(),
+  errorRatePct: z
+    .number()
+    .transform((n): Percentage => asPercentage(n))
+    .nullable(),
   uniqueTablesAccessed: z.number(),
   escalations: z.number(),
-}) satisfies z.ZodType<AbuseCounters>;
+}) satisfies z.ZodType<AbuseCounters, unknown>;
 
 // `AbuseInstance` is nominally branded at the TS layer (#1684) so only the
 // factory + this parser may mint values. `.transform((v) => v as ...)` is

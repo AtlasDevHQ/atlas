@@ -80,7 +80,11 @@ describe("happy-path parses", () => {
   });
 
   test("AbuseThresholdConfigSchema parses a valid config", () => {
-    expect(AbuseThresholdConfigSchema.parse(validThresholds)).toEqual(validThresholds);
+    // `.toMatchObject` — `errorRateThreshold` is branded `Ratio` on the
+    // parse output (#1685) but a plain number on the input literal, so
+    // structural `.toEqual` can't unify the two. Field equality is still
+    // pinned below.
+    expect(AbuseThresholdConfigSchema.parse(validThresholds)).toMatchObject(validThresholds);
   });
 
   test("AbuseCountersSchema accepts null errorRatePct (warmup)", () => {

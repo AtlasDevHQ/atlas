@@ -195,46 +195,51 @@ describe("splitIntoInstances", () => {
 // engine's own check still escalated on the unrounded fraction.
 // ---------------------------------------------------------------------------
 
+// `errorRatePct` returns a branded `Percentage` (#1685). `.toBe` with a
+// plain number literal fails typecheck because the brand is nominally
+// distinct; the tests below use `toBe<number>(literal)` to assert runtime
+// numeric equality while leaving the compile-time brand intact. The brand
+// itself is pinned separately in `packages/types/src/__tests__/percentage.test.ts`.
 describe("errorRatePct", () => {
   it("returns 0 when totalCount is 0 (no baseline, avoids NaN)", () => {
-    expect(errorRatePct(0, 0)).toBe(0);
+    expect(errorRatePct(0, 0)).toBe<number>(0);
   });
 
   it("returns 0 when errorCount is 0 with a real baseline", () => {
-    expect(errorRatePct(0, 50)).toBe(0);
+    expect(errorRatePct(0, 50)).toBe<number>(0);
   });
 
   it("rounds a normal case to 2 decimal places", () => {
     // 1/3 * 100 = 33.333… → 33.33
-    expect(errorRatePct(1, 3)).toBe(33.33);
+    expect(errorRatePct(1, 3)).toBe<number>(33.33);
     // 2/3 * 100 = 66.666… → 66.67
-    expect(errorRatePct(2, 3)).toBe(66.67);
+    expect(errorRatePct(2, 3)).toBe<number>(66.67);
   });
 
   it("preserves threshold-boundary precision at the 2nd decimal", () => {
     // Guards the detail-panel "over threshold" boundary: with default
     // errorRateThreshold=0.5 (50%), a real rate of 50.04% (5004 / 10000)
-    // must serialize as > 50 so `counters.errorRatePct / 100 > 0.5` is true.
+    // must serialize as > 50 so the comparison against 0.5 stays true.
     // 1-decimal rounding silently flipped this flag off.
-    expect(errorRatePct(5004, 10000)).toBe(50.04);
+    expect(errorRatePct(5004, 10000)).toBe<number>(50.04);
     expect(errorRatePct(5004, 10000) / 100 > 0.5).toBe(true);
   });
 
   it("returns 100 for a fully-errored baseline", () => {
-    expect(errorRatePct(10, 10)).toBe(100);
+    expect(errorRatePct(10, 10)).toBe<number>(100);
   });
 
   it("clamps to 100 when errorCount exceeds totalCount (caller bug guard)", () => {
     // errorCount > totalCount is a caller bug — surfacing 150% would mislead
     // the admin more than capping at 100%.
-    expect(errorRatePct(15, 10)).toBe(100);
+    expect(errorRatePct(15, 10)).toBe<number>(100);
   });
 
   it("preserves precision for large counts", () => {
     // 1234 / 98765 ≈ 1.24943% → 1.25 (2-decimal)
-    expect(errorRatePct(1234, 98765)).toBe(1.25);
+    expect(errorRatePct(1234, 98765)).toBe<number>(1.25);
     // 12345 / 98765 ≈ 12.4994% → 12.5 (trailing zero collapsed by JS)
-    expect(errorRatePct(12345, 98765)).toBe(12.5);
+    expect(errorRatePct(12345, 98765)).toBe<number>(12.5);
   });
 
   it("throws on non-finite inputs (NaN, Infinity) rather than propagating NaN", () => {
@@ -252,7 +257,7 @@ describe("errorRatePct", () => {
   it("returns a finite number for the documented (5, 0) zero-denominator case", () => {
     const rate = errorRatePct(5, 0);
     expect(Number.isFinite(rate)).toBe(true);
-    expect(rate).toBe(0);
+    expect(rate).toBe<number>(0);
   });
 });
 

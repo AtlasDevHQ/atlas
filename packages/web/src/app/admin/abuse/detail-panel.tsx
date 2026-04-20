@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
+import { percentageToRatio, ratioToPercentage } from "@useatlas/types";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { AbuseDetailSchema } from "@/ui/lib/admin-schemas";
 import type {
@@ -60,7 +61,10 @@ function CountersSection({
 }) {
   const errorRatePctDisplay =
     counters.errorRatePct !== null ? counters.errorRatePct.toFixed(0) : null;
-  const errorRateThresholdPct = (thresholds.errorRateThreshold * 100).toFixed(0);
+  // `errorRateThreshold` is a `Ratio` on the wire (0–1); display as a
+  // percentage via `ratioToPercentage`. The explicit conversion is what
+  // the type system uses to catch the old 0–100 vs 0–1 mixups (#1685).
+  const errorRateThresholdPct = ratioToPercentage(thresholds.errorRateThreshold).toFixed(0);
 
   return (
     <section>
@@ -81,7 +85,11 @@ function CountersSection({
           threshold={`${errorRateThresholdPct}%`}
           over={
             counters.errorRatePct !== null &&
-            counters.errorRatePct / 100 > thresholds.errorRateThreshold
+            // Explicit scale conversion — both sides of the comparison are
+            // `Ratio` now. Replacing `counters.errorRatePct / 100` with
+            // `percentageToRatio(counters.errorRatePct)` is what made the
+            // old convention-collision footgun a compile-time error.
+            percentageToRatio(counters.errorRatePct) > thresholds.errorRateThreshold
           }
         />
         <CounterRow

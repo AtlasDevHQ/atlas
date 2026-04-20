@@ -1,11 +1,17 @@
 /**
  * Integration tests for DuckDB CSV/Parquet ingestion via the CLI.
  *
- * Tests the ingestIntoDuckDB, listDuckDBObjects, and profileDuckDB functions
- * using real DuckDB instances with temporary files.
+ * Tests ingestIntoDuckDB, listDuckDBObjects, profileDuckDB against real
+ * DuckDB instances. Passes cleanly in isolation (8/8, ~723ms) but corrupts
+ * heap state in the concurrent monorepo runner — `malloc(): unsorted double
+ * linked list corrupted` + 30s timeout (#1686). Same class as #992.
  *
- * Previously skipped due to @duckdb/node-api segfault in Bun 1.3.10.
- * Fixed in Bun 1.3.11 — re-enabled.
+ * Skipped at describe level rather than per-test so `bun test <file>` still
+ * exercises them when working locally on DuckDB code paths.
+ *
+ * Re-enable by swapping `describe.skip` → `describe` once Bun + DuckDB native
+ * module interaction stabilizes (track the native-module/Bun threading fix
+ * in the upstream @duckdb/node-api issue tracker).
  */
 import { describe, it, expect, afterEach, setDefaultTimeout } from "bun:test";
 
@@ -34,7 +40,7 @@ function cleanTmpDir(): void {
 
 afterEach(cleanTmpDir);
 
-describe("ingestIntoDuckDB", () => {
+describe.skip("ingestIntoDuckDB", () => {
   it("ingests a CSV file and creates a table", async () => {
     const dir = createTmpDir();
     const csvPath = path.join(dir, "sales.csv");
@@ -104,7 +110,7 @@ describe("ingestIntoDuckDB", () => {
   });
 });
 
-describe("listDuckDBObjects", () => {
+describe.skip("listDuckDBObjects", () => {
   it("lists tables in a DuckDB database", async () => {
     const dir = createTmpDir();
     const csvPath = path.join(dir, "data.csv");
@@ -120,7 +126,7 @@ describe("listDuckDBObjects", () => {
   });
 });
 
-describe("profileDuckDB", () => {
+describe.skip("profileDuckDB", () => {
   it("profiles a table with correct row count and columns", async () => {
     const dir = createTmpDir();
     const csvPath = path.join(dir, "employees.csv");

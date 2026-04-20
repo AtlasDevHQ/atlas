@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQueryStates } from "nuqs";
 import { orgsSearchParams } from "./search-params";
 import type { ColumnDef } from "@tanstack/react-table";
-import { useAtlasConfig } from "@/ui/context";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { Badge } from "@/components/ui/badge";
@@ -15,25 +14,59 @@ import { useDataTable } from "@/hooks/use-data-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import type { FetchError } from "@/ui/hooks/use-admin-fetch";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { roleBadge } from "./roles";
+import { PLAN_TIERS } from "@useatlas/types";
+import type { PlanTier } from "@useatlas/types";
+import { OrgDetailSheet } from "./detail-sheet";
+import { planBadge, statusBadge } from "./statuses";
 import {
   Building2,
   Search,
   Users,
   Eye,
-  Mail,
+  MoreHorizontal,
+  Pause,
+  Play,
+  Trash2,
+  CreditCard,
 } from "lucide-react";
 
 // -- Types --
@@ -45,83 +78,53 @@ interface Org {
   logo: string | null;
   createdAt: string;
   memberCount: number;
+  workspaceStatus: string;
+  planTier: string;
+  suspendedAt: string | null;
+  deletedAt: string | null;
 }
 
-interface OrgDetail {
-  organization: {
-    id: string;
-    name: string;
-    slug: string;
-    logo: string | null;
-    createdAt: string;
-  };
-  members: Array<{
-    id: string;
-    userId: string;
-    role: string;
-    createdAt: string;
-    user: { id: string; name: string; email: string; image: string | null };
-  }>;
-  invitations: Array<{
-    id: string;
-    email: string;
-    role: string;
-    status: string;
-    expiresAt: string;
-    createdAt: string;
-  }>;
+interface OrgListResponse {
+  organizations: Org[];
+  total: number;
 }
+
+type ConfirmAction =
+  | { type: "suspend"; org: Org }
+  | { type: "activate"; org: Org }
+  | { type: "delete"; org: Org }
+  | { type: "plan"; org: Org }
+  | null;
 
 export default function OrganizationsPage() {
   const { blocked } = usePlatformAdminGuard();
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
   const [params, setParams] = useQueryStates(orgsSearchParams);
   const [searchInput, setSearchInput] = useState(params.search);
 
-  // Detail sheet
-  const [selectedOrg, setSelectedOrg] = useState<OrgDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  // Detail sheet — open + selected row tracked separately so the sheet keeps
+  // the row's name visible during the load (no "Loading…" placeholder header).
+  const [selectedOrg, setSelectedOrg] = useState<Org | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
 
-  // Fetch all organizations once — search is client-side
-  const [allOrgs, setAllOrgs] = useState<Org[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchOrgs() {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/organizations`, { credentials });
-        if (!res.ok) {
-          // intentionally ignored: body may be empty or non-JSON on error —
-          // status-code message is the fallback.
-          const body = (await res.json().catch(() => ({}))) as { message?: string };
-          const message = body.message ?? `Failed to load organizations (HTTP ${res.status})`;
-          if (!cancelled) setError({ message, status: res.status });
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          setAllOrgs(data.organizations ?? []);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError({ message: err instanceof Error ? err.message : "Failed to load organizations" });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchOrgs();
-    return () => { cancelled = true; };
-  }, [apiUrl, credentials]);
+  // Plan-change dialog selection — null until the operator picks a tier.
+  const [planTierSelection, setPlanTierSelection] = useState<PlanTier | "">("");
 
-  // Client-side search filtering
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+
+  const { data, loading, error, refetch } = useAdminFetch<OrgListResponse>(
+    "/api/v1/admin/organizations",
+  );
+  const allOrgs = data?.organizations ?? [];
+
+  // Single mutation hook — all four endpoints share the same in-flight slot
+  // and per-row error map. Banner uses `MutationErrorSurface` so a 403 gets
+  // routed through `EnterpriseUpsell` automatically.
+  const orgAction = useAdminMutation<{ message: string }>({
+    invalidates: refetch,
+  });
+
+  // Client-side search filtering (search stays client-side per scope).
   const orgs = params.search
     ? allOrgs.filter((o) => {
         const q = params.search.toLowerCase();
@@ -129,32 +132,52 @@ export default function OrganizationsPage() {
       })
     : allOrgs;
 
-  async function openDetail(orgId: string) {
+  function openDetail(org: Org) {
+    setSelectedOrg(org);
     setDetailOpen(true);
-    setDetailLoading(true);
-    setDetailError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/organizations/${orgId}`, { credentials });
-      if (!res.ok) {
-        // intentionally ignored: body may be empty or non-JSON on error — we
-        // fall back to the status-code message below.
-        const body = (await res.json().catch(() => ({}))) as { message?: string };
-        setDetailError(body.message ?? `Failed to load organization (HTTP ${res.status})`);
-        setSelectedOrg(null);
-        return;
-      }
-      const data = await res.json();
-      setSelectedOrg(data);
-    } catch (err) {
-      setDetailError(err instanceof Error ? err.message : "Network error loading organization");
-      setSelectedOrg(null);
-    } finally {
-      setDetailLoading(false);
-    }
   }
 
   function handleSearch() {
     setParams({ search: searchInput, page: 1 });
+  }
+
+  // Mutation handlers — return the discriminated `ok` so destructive
+  // confirms can stay open on failure (mirrors /admin/users handlers).
+  async function handleSuspend(org: Org): Promise<boolean> {
+    const result = await orgAction.mutate({
+      path: `/api/v1/admin/organizations/${org.id}/suspend`,
+      method: "PATCH",
+      itemId: org.id,
+    });
+    return result.ok;
+  }
+
+  async function handleActivate(org: Org): Promise<boolean> {
+    const result = await orgAction.mutate({
+      path: `/api/v1/admin/organizations/${org.id}/activate`,
+      method: "PATCH",
+      itemId: org.id,
+    });
+    return result.ok;
+  }
+
+  async function handleDelete(org: Org): Promise<boolean> {
+    const result = await orgAction.mutate({
+      path: `/api/v1/admin/organizations/${org.id}`,
+      method: "DELETE",
+      itemId: org.id,
+    });
+    return result.ok;
+  }
+
+  async function handleChangePlan(org: Org, tier: PlanTier): Promise<boolean> {
+    const result = await orgAction.mutate({
+      path: `/api/v1/admin/organizations/${org.id}/plan`,
+      method: "PATCH",
+      body: { planTier: tier },
+      itemId: org.id,
+    });
+    return result.ok;
   }
 
   const columns: ColumnDef<Org>[] = [
@@ -172,6 +195,32 @@ export default function OrganizationsPage() {
           </div>
         </div>
       ),
+    },
+    {
+      accessorKey: "workspaceStatus",
+      header: "Status",
+      cell: ({ row }) => {
+        const { Icon, className, label } = statusBadge(row.original.workspaceStatus);
+        return (
+          <Badge variant="outline" className={className}>
+            <Icon className="mr-1 size-3" />
+            {label}
+          </Badge>
+        );
+      },
+    },
+    {
+      accessorKey: "planTier",
+      header: "Plan",
+      cell: ({ row }) => {
+        const { Icon, className, label } = planBadge(row.original.planTier);
+        return (
+          <Badge variant="outline" className={className}>
+            <Icon className="mr-1 size-3" />
+            {label}
+          </Badge>
+        );
+      },
     },
     {
       accessorKey: "memberCount",
@@ -195,18 +244,80 @@ export default function OrganizationsPage() {
     {
       id: "actions",
       header: () => null,
-      cell: ({ row }) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="size-8 p-0"
-          onClick={() => openDetail(row.original.id)}
-        >
-          <Eye className="size-4" />
-        </Button>
-      ),
+      cell: ({ row }) => {
+        const org = row.original;
+        // Soft-deleted workspaces have no further actions other than view —
+        // suspend/activate/plan all 409 server-side, and delete also 409s.
+        const isDeleted = org.workspaceStatus === "deleted";
+        return (
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="size-8 p-0"
+              onClick={() => openDetail(org)}
+              aria-label={`View ${org.name}`}
+            >
+              <Eye className="size-4" />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="size-8 p-0"
+                  disabled={isDeleted}
+                  aria-label={`Actions for ${org.name}`}
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {org.workspaceStatus === "active" && (
+                  <DropdownMenuItem
+                    onClick={() => setConfirmAction({ type: "suspend", org })}
+                  >
+                    <Pause className="mr-2 size-4" />
+                    Suspend workspace
+                  </DropdownMenuItem>
+                )}
+                {org.workspaceStatus === "suspended" && (
+                  <DropdownMenuItem
+                    onClick={() => setConfirmAction({ type: "activate", org })}
+                  >
+                    <Play className="mr-2 size-4" />
+                    Activate workspace
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  onClick={() => {
+                    setPlanTierSelection(
+                      (PLAN_TIERS as readonly string[]).includes(org.planTier)
+                        ? (org.planTier as PlanTier)
+                        : "",
+                    );
+                    setConfirmAction({ type: "plan", org });
+                  }}
+                >
+                  <CreditCard className="mr-2 size-4" />
+                  Change plan
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive"
+                  onClick={() => setConfirmAction({ type: "delete", org })}
+                >
+                  <Trash2 className="mr-2 size-4" />
+                  Delete workspace
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        );
+      },
       enableSorting: false,
-      size: 64,
+      enableHiding: false,
+      size: 96,
     },
   ];
 
@@ -269,12 +380,19 @@ export default function OrganizationsPage() {
             </div>
           </div>
 
+          {/* Mutation error surface — routes 403/EE upsell, falls back to banner */}
+          <MutationErrorSurface
+            error={orgAction.error}
+            feature="Organizations"
+            onRetry={orgAction.clearError}
+          />
+
           {/* Content */}
           <AdminContentWrapper
             loading={loading}
             error={error}
             feature="Organization Management"
-            onRetry={() => setParams({ page: 1 })}
+            onRetry={refetch}
             loadingMessage="Loading organizations..."
             emptyIcon={Building2}
             emptyTitle="No organizations yet"
@@ -293,116 +411,184 @@ export default function OrganizationsPage() {
       </ErrorBoundary>
 
       {/* Organization detail sheet */}
-      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-full sm:max-w-lg overflow-auto">
-          <SheetHeader>
-            <SheetTitle>
-              {detailLoading
-                ? "Loading organization…"
-                : detailError
-                  ? "Could not load organization"
-                  : selectedOrg?.organization.name ?? "Organization details"}
-            </SheetTitle>
-            <SheetDescription>
-              {detailLoading
-                ? "Fetching members and invitations…"
-                : detailError
-                  ? "The organization could not be loaded. Try again in a moment."
-                  : selectedOrg?.organization.slug ?? ""}
-            </SheetDescription>
-          </SheetHeader>
+      <OrgDetailSheet
+        orgId={selectedOrg?.id ?? null}
+        open={detailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open);
+          if (!open) setSelectedOrg(null);
+        }}
+        fallbackName={selectedOrg?.name}
+        fallbackSlug={selectedOrg?.slug}
+      />
 
-          {detailLoading ? (
-            <div className="flex h-32 items-center justify-center">
-              <LoadingState message="Loading organization..." />
-            </div>
-          ) : detailError ? (
-            <div className="flex h-32 items-center justify-center px-4 text-center text-sm text-destructive">
-              {detailError}
-            </div>
-          ) : selectedOrg ? (
-            <div className="space-y-6 px-4">
-              {/* Members */}
-              <div className="space-y-3">
-                <h3 className="flex items-center gap-2 text-sm font-semibold">
-                  <Users className="size-4" />
-                  Members ({selectedOrg.members.length})
-                </h3>
-                <div className="space-y-2">
-                  {selectedOrg.members.map((m) => {
-                    const { Icon: RoleIcon, className: badgeClass } = roleBadge(m.role);
-                    return (
-                      <div key={m.id} className="flex items-center justify-between rounded-md border p-3">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <div className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-medium">
-                            {m.user.name?.charAt(0)?.toUpperCase() ?? m.user.email.charAt(0).toUpperCase()}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium">{m.user.name || m.user.email}</div>
-                            <div className="truncate text-xs text-muted-foreground">
-                              <span>{m.user.email}</span>
-                              <span aria-hidden="true"> · </span>
-                              <span>Joined </span>
-                              <RelativeTimestamp iso={m.createdAt} />
-                            </div>
-                          </div>
-                        </div>
-                        <Badge variant="outline" className={`capitalize shrink-0 ${badgeClass}`}>
-                          <RoleIcon className="mr-1 size-3" />
-                          {m.role}
-                        </Badge>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+      {/* Suspend confirmation dialog */}
+      <AlertDialog
+        open={confirmAction?.type === "suspend"}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Suspend workspace</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will block all queries from{" "}
+              <strong>{confirmAction?.type === "suspend" ? confirmAction.org.name : ""}</strong>{" "}
+              and drain its connection pools. You can reactivate it at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                if (confirmAction?.type !== "suspend") return;
+                const ok = await handleSuspend(confirmAction.org);
+                if (ok) setConfirmAction(null);
+              }}
+            >
+              Suspend
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-              {/* Pending invitations */}
-              {(() => {
-                const pending = selectedOrg.invitations.filter((i) => i.status === "pending");
-                if (pending.length === 0) return null;
-                return (
-                  <div className="space-y-3">
-                    <h3 className="flex items-center gap-2 text-sm font-semibold">
-                      <Mail className="size-4" />
-                      Pending Invitations
-                      <Badge variant="outline" className="ml-1 font-normal">
-                        {pending.length}
-                      </Badge>
-                    </h3>
-                    <div className="space-y-2">
-                      {pending.map((inv) => {
-                        const { className: badgeClass } = roleBadge(inv.role);
-                        return (
-                          <div key={inv.id} className="flex items-center justify-between rounded-md border p-3">
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium">{inv.email}</div>
-                              <div className="truncate text-xs text-muted-foreground">
-                                <span>Expires </span>
-                                <RelativeTimestamp iso={inv.expiresAt} />
-                                <span aria-hidden="true"> · </span>
-                                <span>Sent </span>
-                                <RelativeTimestamp iso={inv.createdAt} />
-                              </div>
-                            </div>
-                            <Badge variant="outline" className={`capitalize shrink-0 ${badgeClass}`}>
-                              {inv.role}
-                            </Badge>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+      {/* Activate confirmation dialog */}
+      <AlertDialog
+        open={confirmAction?.type === "activate"}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Activate workspace</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{confirmAction?.type === "activate" ? confirmAction.org.name : ""}</strong>{" "}
+              will resume normal operations and queries will be unblocked immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                if (confirmAction?.type !== "activate") return;
+                const ok = await handleActivate(confirmAction.org);
+                if (ok) setConfirmAction(null);
+              }}
+            >
+              Activate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog
+        open={confirmAction?.type === "delete"}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete workspace</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will soft-delete{" "}
+              <strong>{confirmAction?.type === "delete" ? confirmAction.org.name : ""}</strong>{" "}
+              and run cascading cleanup (drain pools, flush cache, remove associated data).
+              The workspace cannot be reactivated after deletion.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={async () => {
+                if (confirmAction?.type !== "delete") return;
+                const ok = await handleDelete(confirmAction.org);
+                if (ok) setConfirmAction(null);
+              }}
+            >
+              Delete workspace
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Plan-change dialog (Select + confirm — not destructive, so plain Dialog) */}
+      <Dialog
+        open={confirmAction?.type === "plan"}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmAction(null);
+            setPlanTierSelection("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change plan tier</DialogTitle>
+            <DialogDescription>
+              Update the plan tier for{" "}
+              <strong>{confirmAction?.type === "plan" ? confirmAction.org.name : ""}</strong>.
+              This takes effect immediately and invalidates the workspace's plan cache.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Select
+              value={planTierSelection}
+              onValueChange={(v) => setPlanTierSelection(v as PlanTier)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select a plan tier" />
+              </SelectTrigger>
+              <SelectContent>
+                {PLAN_TIERS.map((t) => (
+                  <SelectItem key={t} value={t} className="capitalize">
+                    {t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {confirmAction?.type === "plan" &&
+              planTierSelection &&
+              planTierSelection === confirmAction.org.planTier && (
+                <p className="text-xs text-muted-foreground">
+                  This is already the workspace's current plan.
+                </p>
+              )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmAction(null);
+                setPlanTierSelection("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={
+                !planTierSelection ||
+                (confirmAction?.type === "plan" &&
+                  planTierSelection === confirmAction.org.planTier) ||
+                orgAction.saving ||
+                (confirmAction?.type === "plan" &&
+                  orgAction.isMutating(confirmAction.org.id))
+              }
+              onClick={async () => {
+                if (confirmAction?.type !== "plan" || !planTierSelection) return;
+                const ok = await handleChangePlan(
+                  confirmAction.org,
+                  planTierSelection,
                 );
-              })()}
-            </div>
-          ) : (
-            <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-              No organization data to display.
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
+                if (ok) {
+                  setConfirmAction(null);
+                  setPlanTierSelection("");
+                }
+              }}
+            >
+              Update plan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
     </TooltipProvider>
   );

@@ -5,7 +5,7 @@ import {
   PlatformWorkspaceUserSchema,
   NoisyNeighborSchema,
 } from "../platform";
-import { WORKSPACE_STATUSES, PLAN_TIERS, NOISY_NEIGHBOR_METRICS } from "@useatlas/types";
+import { WORKSPACE_STATUSES, PLAN_TIERS, NOISY_NEIGHBOR_METRICS, ATLAS_ROLES } from "@useatlas/types";
 
 const validStats = {
   totalWorkspaces: 42,
@@ -137,10 +137,17 @@ describe("enum strict rejection", () => {
     }
   });
 
+  test("all ATLAS_ROLES values parse as PlatformWorkspaceUser.role", () => {
+    for (const role of ATLAS_ROLES) {
+      expect(PlatformWorkspaceUserSchema.parse({ ...validUser, role }).role).toBe(role);
+    }
+  });
+
   test("canonical tuples match expected values", () => {
     expect(WORKSPACE_STATUSES).toEqual(["active", "suspended", "deleted"]);
     expect(PLAN_TIERS).toEqual(["free", "trial", "starter", "pro", "business"]);
     expect(NOISY_NEIGHBOR_METRICS).toEqual(["queries", "tokens", "storage"]);
+    expect(ATLAS_ROLES).toEqual(["member", "admin", "owner", "platform_admin"]);
   });
 });
 

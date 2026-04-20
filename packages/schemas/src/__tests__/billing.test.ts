@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { BillingStatusSchema } from "../billing";
-import { OVERAGE_STATUSES, PLAN_TIERS } from "@useatlas/types";
+import { PLAN_TIERS } from "@useatlas/types";
+
+// Mirrors the private `OVERAGE_STATUSES` tuple in ../billing — kept in sync
+// by the "canonical tuples match expected values" assertion below so a
+// reorder or addition fails loud.
+const OVERAGE_STATUSES = ["ok", "warning", "soft_limit", "hard_limit"] as const;
 
 const validStatus = {
   workspaceId: "org_1",

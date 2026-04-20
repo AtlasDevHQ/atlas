@@ -31,7 +31,7 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { formatDate, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { BillingStatus } from "@useatlas/types";
+import type { BillingStatus } from "@useatlas/schemas";
 import {
   Bot,
   Coins,

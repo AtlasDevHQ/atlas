@@ -54,12 +54,16 @@ export function useAdminFetch<T>(
         });
       } catch (err) {
         // Network failure (DNS, offline, CORS) — normalize to FetchError and log.
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`useAdminFetch ${path}:`, msg);
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`useAdminFetch ${path}:`, rawMsg);
         // Route through `buildFetchError` so the empty-message invariant
-        // applies — a network error with no message would otherwise render
-        // blank alert chrome.
-        throw buildFetchError({ message: msg });
+        // applies — but default to a generic "Network error" when the caught
+        // value has no message so the helper's dev-throw doesn't escape the
+        // hook boundary and break the TanStack Query error contract. Real
+        // hand-constructed `{ message: "" }` literals still trip the throw.
+        throw buildFetchError({
+          message: rawMsg.trim() ? rawMsg : "Network error",
+        });
       }
 
       if (!res.ok) {
@@ -75,11 +79,10 @@ export function useAdminFetch<T>(
           // tailored to a server/client version drift — refreshing won't fix
           // it, so the default "try again" guidance in the bare message is
           // actively misleading.
-          const err: FetchError = {
+          throw buildFetchError({
             message: `Server returned an unexpected response from ${path}. This is likely a version mismatch — contact your administrator or try again later.`,
             code: "schema_mismatch",
-          };
-          throw err;
+          });
         }
         return parsed.data;
       }

@@ -338,14 +338,18 @@ export function useAdminMutation<TResponse = unknown>(
       try {
         data = await mutationRef.current.mutateAsync(callOpts);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const rawMsg = err instanceof Error ? err.message : String(err);
         // Recover the structured FetchError the mutationFn attached before
         // throwing (non-HTTP failures like network errors reach this path with
         // no attachment — route through `buildFetchError` so the empty-message
-        // invariant applies even to the network-error fallback path).
+        // invariant applies even to the network-error fallback path). Default
+        // to a generic "Request failed" when the caught value has no message
+        // so the helper's dev-throw doesn't escape the hook and break the
+        // `mutate()` contract that resolves to `{ ok: false, error }`. Real
+        // hand-constructed `{ message: "" }` literals still trip the throw.
         const fetchError =
           (err as { fetchError?: FetchError }).fetchError ??
-          buildFetchError({ message: msg });
+          buildFetchError({ message: rawMsg.trim() ? rawMsg : "Request failed" });
 
         if (generationRef.current !== callGen) {
           // `reset()` ran after this mutation was dispatched — swallow the

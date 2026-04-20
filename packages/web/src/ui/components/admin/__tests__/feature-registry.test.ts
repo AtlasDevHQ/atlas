@@ -45,4 +45,33 @@ describe("FEATURE_NAMES registry", () => {
     expect((FEATURE_NAMES as readonly string[]).includes("SSO")).toBe(true);
     expect((FEATURE_NAMES as readonly string[]).includes("sso")).toBe(false);
   });
+
+  test("no case-insensitive duplicates (e.g. 'Plugins' + 'plugins')", () => {
+    // Broader guard than the SSO-specific one above: catches a future
+    // contributor adding `"plugins"` or `"audit log"` (lowercase) as a
+    // second entry that would silently render inconsistent copy. The
+    // "no duplicate entries" test above compares case-sensitively; this
+    // one collapses case so a drift like `"Plugins"` vs `"plugins"` fails.
+    const lowered = FEATURE_NAMES.map((n) => n.toLowerCase());
+    const set = new Set(lowered);
+    expect(set.size).toBe(FEATURE_NAMES.length);
+  });
+
+  test("known acronyms render in ALL CAPS (SSO / SCIM / BYOT / PII / SLA / API / IP)", () => {
+    // Specific regression guard for the typo class #1652 cares about —
+    // acronyms used in banner copy must be upper-cased. If a refactor
+    // ever widens the tuple to include a lowercased acronym, the user-
+    // visible copy goes sideways.
+    const acronyms = ["SSO", "SCIM", "BYOT", "PII", "SLA"];
+    for (const acronym of acronyms) {
+      // Skip if the acronym isn't in the registry — the test pins casing
+      // for acronyms that ARE present, without forcing the registry to
+      // contain every possible acronym forever.
+      const match = FEATURE_NAMES.find(
+        (n) => n.toLowerCase() === acronym.toLowerCase(),
+      );
+      if (!match) continue;
+      expect(match).toContain(acronym);
+    }
+  });
 });

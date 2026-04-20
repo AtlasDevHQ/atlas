@@ -27,6 +27,42 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-residency");
 
+// Narrow a DB-sourced migration status string to the canonical tuple.
+// Unknown values (schema drift, manual SQL update, legacy rows) are coerced
+// to "failed" + a one-time-per-warn log breadcrumb so operators can spot
+// drift instead of being silently handed a mislabeled migration.
+function narrowMigrationStatus(
+  raw: string,
+  ctx: { migrationId: string; requestId: string },
+): (typeof MIGRATION_STATUSES)[number] {
+  if ((MIGRATION_STATUSES as readonly string[]).includes(raw)) {
+    return raw as (typeof MIGRATION_STATUSES)[number];
+  }
+  log.warn(
+    { migrationId: ctx.migrationId, dbStatus: raw, requestId: ctx.requestId },
+    "coerced unknown migration status to failed",
+  );
+  return "failed";
+}
+
+// Schedule the background migration executor. `triggerMigrationExecution` is
+// synchronous (schedules via setTimeout internally) but a synchronous throw
+// here would otherwise return 201 to the client with no execution and no
+// log trail. Wrap the call so a schedule-time failure surfaces in logs.
+function scheduleMigrationExecution(
+  migrationId: string,
+  requestId: string,
+): void {
+  try {
+    triggerMigrationExecution(migrationId);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), migrationId, requestId },
+      "Failed to schedule background migration execution",
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Lazy EE loader — fail-graceful when enterprise is disabled
 // ---------------------------------------------------------------------------
@@ -450,9 +486,7 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
         return c.json({ migration: null }, 200);
       }
 
-      const status = (MIGRATION_STATUSES as readonly string[]).includes(row.status)
-        ? (row.status as typeof MIGRATION_STATUSES[number])
-        : "failed";
+      const status = narrowMigrationStatus(row.status, { migrationId: row.id, requestId });
 
       return c.json({
         migration: {
@@ -566,7 +600,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       );
 
       // Trigger background execution (Phase 2)
-      triggerMigrationExecution(migrationId);
+      scheduleMigrationExecution(migrationId, requestId);
 
       // Also check for stale migrations while we're here
       failStaleMigrations().catch((err) => {
@@ -614,7 +648,7 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
       }
 
       // Re-trigger execution
-      triggerMigrationExecution(id);
+      scheduleMigrationExecution(id, requestId);
 
       // Fetch updated migration to return
       const rows = yield* queryEffect<{
@@ -645,7 +679,7 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
         workspaceId: row.workspace_id,
         sourceRegion: row.source_region,
         targetRegion: row.target_region,
-        status: row.status as typeof MIGRATION_STATUSES[number],
+        status: narrowMigrationStatus(row.status, { migrationId: row.id, requestId }),
         requestedBy: row.requested_by,
         requestedAt: row.requested_at,
         completedAt: row.completed_at,

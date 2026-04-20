@@ -29,6 +29,7 @@ import {
   type RegionStatus,
   type WorkspaceRegion,
 } from "@useatlas/types";
+import { IsoTimestampSchema } from "./common";
 
 const MigrationStatusEnum = z.enum(MIGRATION_STATUSES);
 
@@ -52,7 +53,7 @@ export const RegionStatusSchema = z.object({
 export const WorkspaceRegionSchema = z.object({
   workspaceId: z.string(),
   region: z.string(),
-  assignedAt: z.string(),
+  assignedAt: IsoTimestampSchema,
 }) satisfies z.ZodType<WorkspaceRegion>;
 
 export const RegionMigrationSchema = z.object({
@@ -62,8 +63,8 @@ export const RegionMigrationSchema = z.object({
   targetRegion: z.string(),
   status: MigrationStatusEnum,
   requestedBy: z.string().nullable(),
-  requestedAt: z.string(),
-  completedAt: z.string().nullable(),
+  requestedAt: IsoTimestampSchema,
+  completedAt: IsoTimestampSchema.nullable(),
   errorMessage: z.string().nullable(),
 }) satisfies z.ZodType<RegionMigration>;
 

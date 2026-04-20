@@ -81,22 +81,45 @@ export const MIGRATION_STATUSES = ["pending", "in_progress", "completed", "faile
 /** Status of a region migration request. */
 export type MigrationStatus = (typeof MIGRATION_STATUSES)[number];
 
-/** A workspace region migration request. */
-export interface RegionMigration {
+/**
+ * Fields common to every region migration. The `status`-keyed variants in
+ * `RegionMigration` intersect with this base to encode terminal-vs-in-flight
+ * timestamp and error-message invariants (#1696).
+ */
+interface RegionMigrationBase {
   id: string;
   workspaceId: string;
   sourceRegion: Region;
   targetRegion: Region;
-  status: MigrationStatus;
   /** User ID of who requested the migration. */
   requestedBy: string | null;
   /** ISO 8601 timestamp of when the migration was requested. */
   requestedAt: string;
-  /** ISO 8601 timestamp of when the migration completed (or failed). */
-  completedAt: string | null;
-  /** Error message if the migration failed. */
-  errorMessage: string | null;
 }
+
+/**
+ * A workspace region migration request.
+ *
+ * The discriminated union encodes two cross-field invariants the writer
+ * enforces atomically but the structural shape alone cannot express:
+ *
+ * - `pending` / `in_progress` rows have `completedAt === null` and
+ *   `errorMessage === null` — no terminal timestamp has been stamped.
+ * - `completed` rows have `completedAt: string` and `errorMessage === null`
+ *   — success path leaves errorMessage empty.
+ * - `failed` rows have `completedAt: string` and a populated
+ *   `errorMessage: string` — the failure reason is required.
+ * - `cancelled` rows have `completedAt: string`; `errorMessage` is
+ *   `string | null` because legacy cancellations stamped 'Cancelled by admin'
+ *   while newer code is free to leave it null.
+ */
+export type RegionMigration = RegionMigrationBase & (
+  | { status: "pending"; completedAt: null; errorMessage: null }
+  | { status: "in_progress"; completedAt: null; errorMessage: null }
+  | { status: "completed"; completedAt: string; errorMessage: null }
+  | { status: "failed"; completedAt: string; errorMessage: string }
+  | { status: "cancelled"; completedAt: string; errorMessage: string | null }
+);
 
 // ---------------------------------------------------------------------------
 // Region status (admin view)

@@ -8,17 +8,18 @@ export const ACTION_APPROVAL_MODES = ["auto", "manual", "admin-only"] as const;
 export type ActionApprovalMode = (typeof ACTION_APPROVAL_MODES)[number];
 
 // ---------------------------------------------------------------------------
-// Client-facing action display status lifecycle (frontend wire format)
+// Action status lifecycle (single unified enum for wire + DB)
 // ---------------------------------------------------------------------------
 
 /**
- * Display status lifecycle for action tools that require user approval.
- *
- * Distinct from the server-internal `ActionStatus` which uses "pending"
- * instead of "pending_approval".
+ * Action lifecycle status — the same value is persisted in action_log.status,
+ * emitted by action tools, and rendered in admin queues. Before #1591 the
+ * server used "pending" while the display layer used "pending_approval",
+ * requiring a `mapStatus` shim at every call site. Unifying the tuples
+ * removes the drift surface entirely.
  */
 export type ActionDisplayStatus =
-  | "pending_approval"
+  | "pending"
   | "approved"
   | "executed"
   | "auto_approved"
@@ -28,11 +29,11 @@ export type ActionDisplayStatus =
   | "timed_out";
 
 /** A display status that is terminal (no longer pending). */
-export type ResolvedDisplayStatus = Exclude<ActionDisplayStatus, "pending_approval">;
+export type ResolvedDisplayStatus = Exclude<ActionDisplayStatus, "pending">;
 
 /** Single source of truth for every ActionDisplayStatus value. */
 export const ALL_STATUSES = [
-  "pending_approval",
+  "pending",
   "approved",
   "executed",
   "auto_approved",
@@ -44,12 +45,12 @@ export const ALL_STATUSES = [
 
 /** All statuses that are terminal (no longer pending). */
 export const RESOLVED_STATUSES: ReadonlySet<ActionDisplayStatus> = new Set<ActionDisplayStatus>(
-  ALL_STATUSES.filter((s): s is ResolvedDisplayStatus => s !== "pending_approval"),
+  ALL_STATUSES.filter((s): s is ResolvedDisplayStatus => s !== "pending"),
 );
 
 /** Discriminated union returned by action tools in the tool result. */
 export type ActionToolResultShape =
-  | { status: "pending_approval"; actionId: string; summary: string; details?: Record<string, unknown> }
+  | { status: "pending"; actionId: string; summary: string; details?: Record<string, unknown> }
   | { status: "approved" | "executed" | "auto_approved"; actionId: string; result: unknown; summary?: string; details?: Record<string, unknown> }
   | { status: "denied"; actionId: string; reason?: string; summary?: string; details?: Record<string, unknown> }
   | { status: "failed"; actionId: string; error: string; summary?: string; details?: Record<string, unknown> }
@@ -80,10 +81,17 @@ export const ACTION_STATUSES = [
 export type ActionStatus = (typeof ACTION_STATUSES)[number];
 
 /**
- * Compile-time check: every non-pending ActionStatus must be a valid
- * ActionDisplayStatus. Prevents drift between server and display enums.
+ * Compile-time invariant: ActionStatus and ActionDisplayStatus describe the
+ * same closed set. If a new status is added to one tuple without the other,
+ * this type expression collapses to `never` and `_statusAlignmentCheck` fails
+ * to type-check.
  */
-type _AssertStatusAlignment = Exclude<ActionStatus, "pending"> extends ActionDisplayStatus ? true : never;
+type _AssertStatusAlignment =
+  [Exclude<ActionStatus, ActionDisplayStatus>] extends [never]
+    ? [Exclude<ActionDisplayStatus, ActionStatus>] extends [never]
+      ? true
+      : never
+    : never;
 const _statusAlignmentCheck: _AssertStatusAlignment = true;
 
 /** Information needed to undo an executed action. */
@@ -126,7 +134,7 @@ export function isActionToolResult(result: unknown): result is ActionToolResultS
   if (!VALID_STATUSES.has(r.status as ActionDisplayStatus)) return false;
 
   switch (r.status) {
-    case "pending_approval":
+    case "pending":
       return typeof r.summary === "string";
     case "approved":
     case "executed":

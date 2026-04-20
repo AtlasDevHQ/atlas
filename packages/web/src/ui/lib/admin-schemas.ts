@@ -196,12 +196,10 @@ export const DomainsResponseSchema = z.object({
 });
 
 // ── Region / Residency ───────────────────────────────────────────
-// RegionPickerItemSchema, RegionStatusSchema, WorkspaceRegionSchema,
-// RegionMigrationSchema, RegionsResponseSchema, AssignmentsResponseSchema,
-// MigrationStatusResponseSchema re-exported above from @useatlas/schemas.
-// `migration.status` is pinned to `MIGRATION_STATUSES` (canonical tuple
-// from @useatlas/types) — adding a status there propagates to both the
-// route OpenAPI contract and the web parse without a second edit.
+// Region / residency schemas re-exported above from @useatlas/schemas.
+// `migration.status` is pinned to `MIGRATION_STATUSES` from @useatlas/types
+// so adding a status propagates to both the route OpenAPI contract and the
+// web parse without a second edit.
 
 // ── SLA ──────────────────────────────────────────────────────────
 

@@ -19,6 +19,11 @@ import {
   RequestContext,
 } from "@atlas/api/lib/effect/services";
 import { ResidencyError } from "@atlas/ee/platform/residency";
+import {
+  WorkspaceRegionSchema,
+  RegionsResponseSchema,
+  AssignmentsResponseSchema,
+} from "@useatlas/schemas";
 
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
@@ -26,21 +31,12 @@ import { createPlatformRouter } from "./admin-router";
 const log = createLogger("platform-residency");
 
 // ---------------------------------------------------------------------------
-// Schemas
+// Schemas — `WorkspaceRegionSchema` and the composite response wrappers
+// live in `@useatlas/schemas` so the route OpenAPI contract and the web
+// parse share one source of truth. `AssignRegionBodySchema` is
+// request-only and stays local. `RegionsResponseSchema` composes
+// `RegionStatusSchema` internally, so a direct import isn't needed here.
 // ---------------------------------------------------------------------------
-
-const RegionStatusSchema = z.object({
-  region: z.string(),
-  label: z.string(),
-  workspaceCount: z.number(),
-  healthy: z.boolean(),
-});
-
-const WorkspaceRegionSchema = z.object({
-  workspaceId: z.string(),
-  region: z.string(),
-  assignedAt: z.string(),
-});
 
 const AssignRegionBodySchema = z.object({
   region: z.string().min(1).openapi({
@@ -63,12 +59,7 @@ const listRegionsRoute = createRoute({
     200: {
       description: "Regions list",
       content: {
-        "application/json": {
-          schema: z.object({
-            regions: z.array(RegionStatusSchema),
-            defaultRegion: z.string(),
-          }),
-        },
+        "application/json": { schema: RegionsResponseSchema },
       },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -134,7 +125,7 @@ const listAssignmentsRoute = createRoute({
   responses: {
     200: {
       description: "Workspace region assignments",
-      content: { "application/json": { schema: z.object({ assignments: z.array(WorkspaceRegionSchema) }) } },
+      content: { "application/json": { schema: AssignmentsResponseSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },

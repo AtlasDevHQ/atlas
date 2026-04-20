@@ -68,6 +68,16 @@ describe("happy-path parses", () => {
     expect(RegionMigrationSchema.parse(done)).toEqual(done);
   });
 
+  test("RegionMigrationSchema parses a failed migration with populated errorMessage", () => {
+    const failed = {
+      ...validMigration,
+      status: "failed" as const,
+      completedAt: "2026-04-16T00:00:00.000Z",
+      errorMessage: "connection to target region timed out",
+    };
+    expect(RegionMigrationSchema.parse(failed)).toEqual(failed);
+  });
+
   test("round-trip (parse → serialize → parse) preserves migration fields", () => {
     const parsed = RegionMigrationSchema.parse(validMigration);
     const serialized = JSON.parse(JSON.stringify(parsed));
@@ -76,8 +86,12 @@ describe("happy-path parses", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Enum strict rejection — `status` is sourced from `MIGRATION_STATUSES` so a
-// new status added in `@useatlas/types` needs a matching schema bump.
+// Enum strict rejection — the central win of this migration. Route
+// previously pinned `status` to `z.enum(MIGRATION_STATUSES)` while web
+// hand-typed `z.enum(["pending", …])`. A 6th status added in
+// `@useatlas/types` would silently pass the route and fail the web parse.
+// Pinning both sides to the same canonical tuple (sourced from types)
+// closes that drift trap.
 // ---------------------------------------------------------------------------
 
 describe("enum strict rejection", () => {
@@ -114,6 +128,16 @@ describe("structural rejection", () => {
     expect(RegionStatusSchema.safeParse(drifted).success).toBe(false);
   });
 
+  test("RegionStatusSchema rejects fractional workspaceCount", () => {
+    const drifted = { ...validStatus, workspaceCount: 1.5 };
+    expect(RegionStatusSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("RegionStatusSchema rejects negative workspaceCount", () => {
+    const drifted = { ...validStatus, workspaceCount: -3 };
+    expect(RegionStatusSchema.safeParse(drifted).success).toBe(false);
+  });
+
   test("WorkspaceRegionSchema rejects non-string assignedAt", () => {
     const drifted = { ...validAssignment, assignedAt: 123 };
     expect(WorkspaceRegionSchema.safeParse(drifted).success).toBe(false);
@@ -122,6 +146,14 @@ describe("structural rejection", () => {
   test("RegionPickerItemSchema rejects missing isDefault", () => {
     const { isDefault: _d, ...missing } = validPicker;
     expect(RegionPickerItemSchema.safeParse(missing).success).toBe(false);
+  });
+
+  test("RegionMigrationSchema rejects undefined on nullable field", () => {
+    // Zod's `.nullable()` accepts null but not undefined. This guards the
+    // route-serialization / web-parse contract — the API emits explicit
+    // null, not a missing key, so the distinction matters.
+    const drifted = { ...validMigration, requestedBy: undefined };
+    expect(RegionMigrationSchema.safeParse(drifted).success).toBe(false);
   });
 });
 
@@ -144,5 +176,22 @@ describe("composite response shapes", () => {
   test("MigrationStatusResponseSchema parses a migration", () => {
     const response = { migration: validMigration };
     expect(MigrationStatusResponseSchema.parse(response)).toEqual(response);
+  });
+
+  test("RegionsResponseSchema rejects missing defaultRegion", () => {
+    const drifted = { regions: [validStatus] };
+    expect(RegionsResponseSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("AssignmentsResponseSchema rejects non-array assignments", () => {
+    const drifted = { assignments: validAssignment };
+    expect(AssignmentsResponseSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("MigrationStatusResponseSchema rejects missing migration key", () => {
+    // Distinct from `{ migration: null }`, which is the happy path — the
+    // API emits `null` explicitly when no migration exists.
+    const drifted = {};
+    expect(MigrationStatusResponseSchema.safeParse(drifted).success).toBe(false);
   });
 });

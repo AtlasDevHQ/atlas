@@ -1,12 +1,21 @@
 /**
- * Pure grouping of abuse events into "instances" for the admin detail panel.
+ * Pure helpers for the admin abuse detail panel.
  *
- * An *instance* is one continuous stretch of non-"none" activity bookended by
- * an escalation event and (optionally) a manual reinstatement. The current
- * (unreinstated) instance is returned separately from prior closed instances
- * so the UI can render them differently — active incident vs history.
+ * Two responsibilities, both deliberately framework- and DB-free so they can
+ * be exercised without the sliding-window engine or the internal DB:
  *
- * Kept pure and mock-free so it can be unit-tested without a DB.
+ *   1. `createAbuseInstance` — the single constructor for `AbuseInstance`.
+ *      Encodes the invariants (peakLevel is the max of event levels, endedAt
+ *      non-null iff the last event is a manual "none" reinstatement, empty
+ *      events → sentinel shape) so callers can't hand-roll a mismatched
+ *      object.
+ *   2. `splitIntoInstances` — groups a workspace's event stream into the
+ *      current (open) instance plus prior closed instances.
+ *
+ * Also exposes `errorRatePct` — the small counter helper the detail panel
+ * needs for the "error rate %" card. Kept here so the handful of pure
+ * functions the detail endpoint depends on live together rather than drifting
+ * into the engine file.
  */
 
 import type { AbuseEvent, AbuseInstance, AbuseLevel } from "@useatlas/types";
@@ -23,7 +32,26 @@ function isReinstatement(e: AbuseEvent): boolean {
   return e.level === "none" && e.trigger === "manual";
 }
 
-function makeInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
+/**
+ * Build an `AbuseInstance` from a chronologically-ordered slice of events.
+ *
+ * The sole constructor for `AbuseInstance` in this codebase — callers MUST go
+ * through the factory rather than assembling the object inline, so the
+ * invariants below are enforced in exactly one place:
+ *
+ *   - `startedAt` = first event's `createdAt` (or `""` for an empty instance)
+ *   - `endedAt`   = last event's `createdAt` iff it is a manual "none"
+ *                   reinstatement, else `null` (instance still open)
+ *   - `peakLevel` = highest-ranked level across all events (escalation order,
+ *                   not chronological order)
+ *   - `events`    = the input array, verbatim (no mutation, no reorder)
+ *
+ * Input is expected to be chronological (oldest first). Passing events in
+ * reverse order will still produce a valid instance object, but `startedAt`
+ * will then be the newest rather than oldest timestamp — the factory does
+ * not sort for the caller.
+ */
+export function createAbuseInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
   if (eventsChrono.length === 0) {
     return { startedAt: "", endedAt: null, peakLevel: "none", events: [] };
   }
@@ -39,6 +67,19 @@ function makeInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
     peakLevel: peak,
     events: eventsChrono,
   };
+}
+
+/**
+ * Compute error rate as a percentage, rounded to 1 decimal place.
+ *
+ * Returns `0` when `totalCount` is 0 so callers never surface `NaN` or
+ * `Infinity` to the wire. The "baseline pending" decision (`null` when the
+ * window has fewer than the minimum samples) stays at the call site — this
+ * helper is a pure arithmetic primitive, not a display-policy decision.
+ */
+export function errorRatePct(errorCount: number, totalCount: number): number {
+  if (totalCount === 0) return 0;
+  return Math.round((errorCount / totalCount) * 1000) / 10;
 }
 
 /**
@@ -61,12 +102,12 @@ export function splitIntoInstances(
   for (const e of chronological) {
     buffer.push(e);
     if (isReinstatement(e)) {
-      closed.push(makeInstance(buffer));
+      closed.push(createAbuseInstance(buffer));
       buffer = [];
     }
   }
 
-  const currentInstance = makeInstance(buffer);
+  const currentInstance = createAbuseInstance(buffer);
   const priorInstances = closed.toReversed().slice(0, priorLimit);
 
   return { currentInstance, priorInstances };

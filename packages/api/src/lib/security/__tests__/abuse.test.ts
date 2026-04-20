@@ -69,6 +69,7 @@ const {
   reinstateWorkspace,
   getAbuseConfig,
   getAbuseEvents,
+  getAbuseDetail,
   restoreAbuseState,
   _resetAbuseState,
 } = await import("../abuse");
@@ -462,6 +463,242 @@ describe("Abuse Prevention Engine", () => {
         c.msg.includes("Restored abuse state"),
       );
       expect(summary).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // getAbuseDetail() — integration test against real in-memory state (#1639)
+  //
+  // Exercises the full read path: the sliding-window counters that
+  // `recordQueryEvent` populates in-memory, the fixture rows served back by
+  // the mocked `internalQuery`, and the `splitIntoInstances` grouping that
+  // runs over them. The function is covered elsewhere only via the route
+  // layer's mocks — these tests pin the data-layer behaviour itself.
+  // ---------------------------------------------------------------------
+
+  describe("getAbuseDetail() integration", () => {
+    it("returns null for unknown / non-flagged workspaces (route decides 404)", async () => {
+      // Sanity: no state, no DB hit — null short-circuits before any query.
+      setInternalDB(false);
+      const detail = await getAbuseDetail("ws-unknown");
+      expect(detail).toBeNull();
+    });
+
+    it("returns null after reinstate (level=none) without querying the DB", async () => {
+      // Flag, then reinstate — state exists but level is "none".
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-cleared", { success: true });
+      }
+      expect(checkAbuseStatus("ws-cleared").level).toBe("warning");
+      reinstateWorkspace("ws-cleared", "admin-1");
+
+      setInternalDB(true);
+      let queryInvoked = false;
+      setInternalQuery(async () => {
+        queryInvoked = true;
+        return [];
+      });
+      const detail = await getAbuseDetail("ws-cleared");
+      expect(detail).toBeNull();
+      // level=none short-circuits before getAbuseEvents runs.
+      expect(queryInvoked).toBe(false);
+    });
+
+    it("returns full counters + thresholds + open current instance for a flagged workspace", async () => {
+      // Trip the query-rate limit to get to "warning" with real counters.
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-detail", {
+          success: true,
+          tablesAccessed: [`t-${i % 5}`],
+        });
+      }
+      expect(checkAbuseStatus("ws-detail").level).toBe("warning");
+
+      // DB has the single escalation event that `escalate()` would have
+      // persisted — we stub it here since `persistAbuseEvent` is mocked.
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "evt-1",
+          workspace_id: "ws-detail",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "query rate exceeded",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      const detail = await getAbuseDetail("ws-detail");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+
+      expect(detail.workspaceId).toBe("ws-detail");
+      expect(detail.level).toBe("warning");
+      expect(detail.workspaceName).toBeNull(); // resolved by the route, not the lib
+
+      // Counters mirror the real in-memory window — 201 queries, 0 errors, 5 tables.
+      expect(detail.counters.queryCount).toBe(config.queryRateLimit + 1);
+      expect(detail.counters.errorCount).toBe(0);
+      expect(detail.counters.errorRatePct).toBe(0); // baseline met, all succeeded
+      expect(detail.counters.uniqueTablesAccessed).toBe(5);
+      expect(detail.counters.escalations).toBeGreaterThanOrEqual(1);
+
+      expect(detail.thresholds).toEqual(config);
+
+      // Open current instance (no reinstatement yet), prior history empty.
+      expect(detail.currentInstance.endedAt).toBeNull();
+      expect(detail.currentInstance.peakLevel).toBe("warning");
+      expect(detail.currentInstance.events).toHaveLength(1);
+      expect(detail.priorInstances).toEqual([]);
+    });
+
+    it("returns null errorRatePct while under the 10-query baseline", async () => {
+      // Directly hydrate state so we can control the exact counter values
+      // without racing the escalation ladder. `restoreAbuseState` sets level
+      // from the most recent event per workspace, landing us at "warning"
+      // with a fresh empty window.
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          workspace_id: "ws-baseline",
+          level: "warning",
+          trigger_type: "manual",
+          message: "seeded",
+          created_at: "2026-04-19T09:00:00Z",
+        },
+      ]);
+      await restoreAbuseState();
+
+      // Now swap the internalQuery impl so getAbuseEvents returns the same
+      // seed row as an AbuseEvent-shaped row.
+      setInternalQuery(async () => [
+        {
+          id: "evt-seed",
+          workspace_id: "ws-baseline",
+          level: "warning",
+          trigger_type: "manual",
+          message: "seeded",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T09:00:00Z",
+        },
+      ]);
+      // Add a handful of successful queries (< 10) so queryCount > 0 but
+      // below the baseline.
+      for (let i = 0; i < 5; i++) {
+        recordQueryEvent("ws-baseline", { success: true });
+      }
+
+      const detail = await getAbuseDetail("ws-baseline");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+
+      expect(detail.counters.queryCount).toBe(5);
+      // Below the 10-query baseline, errorRatePct is null — not 0 — so the
+      // UI can distinguish "no data" from "all successful".
+      expect(detail.counters.errorRatePct).toBeNull();
+    });
+
+    it("preserves prior history on a re-flagged workspace (reinstated-on-evidence)", async () => {
+      // In-memory state: re-flagged via recordQueryEvent so level != "none".
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-rehist", { success: true });
+      }
+      expect(checkAbuseStatus("ws-rehist").level).not.toBe("none");
+
+      // DB rows: [old escalation] → [manual reinstate] → [new escalation],
+      // returned newest-first as `getAbuseEvents` would.
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        // Newest: re-flagged after reinstatement
+        {
+          id: "evt-new",
+          workspace_id: "ws-rehist",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "re-flagged",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T12:00:00Z",
+        },
+        // Prior boundary: manual reinstatement
+        {
+          id: "evt-reinstate",
+          workspace_id: "ws-rehist",
+          level: "none",
+          trigger_type: "manual",
+          message: "reinstated",
+          metadata: "{}",
+          actor: "admin-1",
+          created_at: "2026-04-19T11:00:00Z",
+        },
+        // Oldest: prior escalation (peak of the closed instance)
+        {
+          id: "evt-old",
+          workspace_id: "ws-rehist",
+          level: "throttled",
+          trigger_type: "query_rate",
+          message: "old escalation",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      const detail = await getAbuseDetail("ws-rehist", 5, 50);
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+
+      // Current instance: only the newest (post-reinstate) escalation.
+      expect(detail.currentInstance.events).toHaveLength(1);
+      expect(detail.currentInstance.events[0]!.id).toBe("evt-new");
+      expect(detail.currentInstance.endedAt).toBeNull();
+      expect(detail.currentInstance.peakLevel).toBe("warning");
+
+      // Prior: the closed instance, bookended by the reinstatement event.
+      expect(detail.priorInstances).toHaveLength(1);
+      const prior = detail.priorInstances[0]!;
+      expect(prior.peakLevel).toBe("throttled");
+      expect(prior.endedAt).toBe("2026-04-19T11:00:00Z");
+      expect(prior.events.map((e) => e.id)).toEqual([
+        "evt-old",
+        "evt-reinstate",
+      ]);
+    });
+
+    it("degrades to empty events — not an exception — when the DB load fails", async () => {
+      // Flag the workspace so level != "none" and the detail path is taken.
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-dbfail", { success: true });
+      }
+
+      setInternalDB(true);
+      setInternalQuery(async () => {
+        throw new Error("simulated DB outage");
+      });
+
+      const detail = await getAbuseDetail("ws-dbfail");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+
+      // The admin panel stays useful: in-memory counters render even when
+      // the audit trail is momentarily unreachable. Events fall back to [].
+      expect(detail.currentInstance.events).toEqual([]);
+      expect(detail.priorInstances).toEqual([]);
+      expect(detail.counters.queryCount).toBe(config.queryRateLimit + 1);
+
+      // A warn line was emitted — we don't swallow silently.
+      expect(
+        warnCalls.find((c) =>
+          c.msg.includes("Failed to load abuse events"),
+        ),
+      ).toBeDefined();
     });
   });
 

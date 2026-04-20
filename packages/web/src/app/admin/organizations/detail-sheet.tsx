@@ -47,13 +47,12 @@ interface OrgDetail {
 }
 
 /**
- * Lazy-loaded organization detail content. Owns its own `useAdminFetch`
- * keyed by `orgId`, so the request only fires when the parent mounts this
- * component (i.e. when the sheet opens with a selected org). This mirrors
- * `AbuseDetailPanel`'s pattern — opening org A doesn't refetch org B.
+ * Owns its own `useAdminFetch` keyed by `orgId` so the request only fires
+ * when the parent mounts this component (i.e. on selection) — opening
+ * workspace A doesn't refetch workspace B.
  */
 function OrgDetailContent({ orgId }: { orgId: string }) {
-  const { data, loading, error } = useAdminFetch<OrgDetail>(
+  const { data, loading, error, refetch } = useAdminFetch<OrgDetail>(
     `/api/v1/admin/organizations/${orgId}`,
   );
 
@@ -68,7 +67,7 @@ function OrgDetailContent({ orgId }: { orgId: string }) {
   if (error) {
     return (
       <div className="px-4">
-        <ErrorBanner message={friendlyError(error)} />
+        <ErrorBanner message={friendlyError(error)} onRetry={() => refetch()} />
       </div>
     );
   }
@@ -89,7 +88,6 @@ function OrgDetailContent({ orgId }: { orgId: string }) {
 
   return (
     <div className="space-y-6 px-4">
-      {/* Status + plan badges (header carve-out) */}
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline" className={status.className}>
           <StatusIcon className="mr-1 size-3" />
@@ -111,7 +109,6 @@ function OrgDetailContent({ orgId }: { orgId: string }) {
         )}
       </div>
 
-      {/* Members */}
       <div className="space-y-3">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <Users className="size-4" />
@@ -155,7 +152,6 @@ function OrgDetailContent({ orgId }: { orgId: string }) {
         </div>
       </div>
 
-      {/* Pending invitations */}
       {pending.length > 0 && (
         <div className="space-y-3">
           <h3 className="flex items-center gap-2 text-sm font-semibold">

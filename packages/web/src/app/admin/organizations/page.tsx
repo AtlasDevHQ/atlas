@@ -102,12 +102,11 @@ export default function OrganizationsPage() {
   const [params, setParams] = useQueryStates(orgsSearchParams);
   const [searchInput, setSearchInput] = useState(params.search);
 
-  // Detail sheet — open + selected row tracked separately so the sheet keeps
-  // the row's name visible during the load (no "Loading…" placeholder header).
+  // Open + selected tracked separately so the sheet header keeps the row's
+  // name visible during the detail fetch instead of flashing "Loading…".
   const [selectedOrg, setSelectedOrg] = useState<Org | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
-  // Plan-change dialog selection — null until the operator picks a tier.
   const [planTierSelection, setPlanTierSelection] = useState<PlanTier | "">("");
 
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
@@ -117,14 +116,12 @@ export default function OrganizationsPage() {
   );
   const allOrgs = data?.organizations ?? [];
 
-  // Single mutation hook — all four endpoints share the same in-flight slot
-  // and per-row error map. Banner uses `MutationErrorSurface` so a 403 gets
-  // routed through `EnterpriseUpsell` automatically.
+  // Single hook so all four actions share one in-flight set and one per-row
+  // error map — `errorFor(org.id)` works across actions for any given row.
   const orgAction = useAdminMutation<{ message: string }>({
     invalidates: refetch,
   });
 
-  // Client-side search filtering (search stays client-side per scope).
   const orgs = params.search
     ? allOrgs.filter((o) => {
         const q = params.search.toLowerCase();
@@ -141,8 +138,8 @@ export default function OrganizationsPage() {
     setParams({ search: searchInput, page: 1 });
   }
 
-  // Mutation handlers — return the discriminated `ok` so destructive
-  // confirms can stay open on failure (mirrors /admin/users handlers).
+  // Returns `ok` so destructive confirms stay open on failure — the inline
+  // `MutationErrorSurface` inside each dialog body shows the operator why.
   async function handleSuspend(org: Org): Promise<boolean> {
     const result = await orgAction.mutate({
       path: `/api/v1/admin/organizations/${org.id}/suspend`,
@@ -246,8 +243,7 @@ export default function OrganizationsPage() {
       header: () => null,
       cell: ({ row }) => {
         const org = row.original;
-        // Soft-deleted workspaces have no further actions other than view —
-        // suspend/activate/plan all 409 server-side, and delete also 409s.
+        // Soft-deleted workspaces 409 on every action except view.
         const isDeleted = org.workspaceStatus === "deleted";
         return (
           <div className="flex items-center justify-end gap-1">
@@ -380,7 +376,6 @@ export default function OrganizationsPage() {
             </div>
           </div>
 
-          {/* Mutation error surface — routes 403/EE upsell, falls back to banner */}
           <MutationErrorSurface
             error={orgAction.error}
             feature="Organizations"
@@ -436,9 +431,21 @@ export default function OrganizationsPage() {
               and drain its connection pools. You can reactivate it at any time.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {confirmAction?.type === "suspend" && (
+            <MutationErrorSurface
+              error={orgAction.errorFor(confirmAction.org.id) ?? null}
+              feature="Suspend workspace"
+              variant="inline"
+              inlinePrefix="Suspend failed."
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={
+                confirmAction?.type === "suspend" &&
+                orgAction.isMutating(confirmAction.org.id)
+              }
               onClick={async () => {
                 if (confirmAction?.type !== "suspend") return;
                 const ok = await handleSuspend(confirmAction.org);
@@ -464,9 +471,21 @@ export default function OrganizationsPage() {
               will resume normal operations and queries will be unblocked immediately.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {confirmAction?.type === "activate" && (
+            <MutationErrorSurface
+              error={orgAction.errorFor(confirmAction.org.id) ?? null}
+              feature="Activate workspace"
+              variant="inline"
+              inlinePrefix="Activate failed."
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={
+                confirmAction?.type === "activate" &&
+                orgAction.isMutating(confirmAction.org.id)
+              }
               onClick={async () => {
                 if (confirmAction?.type !== "activate") return;
                 const ok = await handleActivate(confirmAction.org);
@@ -494,10 +513,22 @@ export default function OrganizationsPage() {
               The workspace cannot be reactivated after deletion.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {confirmAction?.type === "delete" && (
+            <MutationErrorSurface
+              error={orgAction.errorFor(confirmAction.org.id) ?? null}
+              feature="Delete workspace"
+              variant="inline"
+              inlinePrefix="Delete failed."
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={
+                confirmAction?.type === "delete" &&
+                orgAction.isMutating(confirmAction.org.id)
+              }
               onClick={async () => {
                 if (confirmAction?.type !== "delete") return;
                 const ok = await handleDelete(confirmAction.org);
@@ -510,7 +541,7 @@ export default function OrganizationsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Plan-change dialog (Select + confirm — not destructive, so plain Dialog) */}
+      {/* Plain Dialog — not destructive (sibling actions use AlertDialog). */}
       <Dialog
         open={confirmAction?.type === "plan"}
         onOpenChange={(open) => {
@@ -552,6 +583,14 @@ export default function OrganizationsPage() {
                   This is already the workspace's current plan.
                 </p>
               )}
+            {confirmAction?.type === "plan" && (
+              <MutationErrorSurface
+                error={orgAction.errorFor(confirmAction.org.id) ?? null}
+                feature="Change plan"
+                variant="inline"
+                inlinePrefix="Plan change failed."
+              />
+            )}
           </div>
           <DialogFooter>
             <Button
@@ -567,10 +606,8 @@ export default function OrganizationsPage() {
               disabled={
                 !planTierSelection ||
                 (confirmAction?.type === "plan" &&
-                  planTierSelection === confirmAction.org.planTier) ||
-                orgAction.saving ||
-                (confirmAction?.type === "plan" &&
-                  orgAction.isMutating(confirmAction.org.id))
+                  (planTierSelection === confirmAction.org.planTier ||
+                    orgAction.isMutating(confirmAction.org.id)))
               }
               onClick={async () => {
                 if (confirmAction?.type !== "plan" || !planTierSelection) return;

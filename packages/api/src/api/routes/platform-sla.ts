@@ -22,63 +22,22 @@ import {
   RequestContext,
   AuthContext,
 } from "@atlas/api/lib/effect/services";
+import { SLA_ALERT_STATUSES, asPercentage } from "@useatlas/types";
 import {
-  SLA_ALERT_STATUSES,
-  SLA_ALERT_TYPES,
-  asPercentage,
-} from "@useatlas/types";
+  SLAAlertSchema,
+  SLAThresholdsSchema,
+  WorkspaceSLADetailSchema,
+  WorkspaceSLASummarySchema,
+} from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-sla");
 
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
-const SLAMetricPointSchema = z.object({
-  timestamp: z.string(),
-  value: z.number(),
-});
-
-const WorkspaceSLASummarySchema = z.object({
-  workspaceId: z.string(),
-  workspaceName: z.string(),
-  latencyP50Ms: z.number().min(0),
-  latencyP95Ms: z.number().min(0),
-  latencyP99Ms: z.number().min(0),
-  errorRatePct: z.number().min(0).max(100),
-  uptimePct: z.number().min(0).max(100),
-  totalQueries: z.number().min(0),
-  failedQueries: z.number().min(0),
-  lastQueryAt: z.string().nullable(),
-});
-
-const WorkspaceSLADetailSchema = z.object({
-  summary: WorkspaceSLASummarySchema,
-  latencyTimeline: z.array(SLAMetricPointSchema),
-  errorTimeline: z.array(SLAMetricPointSchema),
-});
-
-const SLAAlertSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  workspaceName: z.string(),
-  type: z.enum(SLA_ALERT_TYPES),
-  status: z.enum(SLA_ALERT_STATUSES),
-  currentValue: z.number(),
-  threshold: z.number(),
-  message: z.string(),
-  firedAt: z.string(),
-  resolvedAt: z.string().nullable(),
-  acknowledgedAt: z.string().nullable(),
-  acknowledgedBy: z.string().nullable(),
-});
-
-const SLAThresholdsSchema = z.object({
-  latencyP99Ms: z.number().min(0).openapi({ description: "P99 latency threshold in ms", example: 5000 }),
-  errorRatePct: z.number().min(0).max(100).openapi({ description: "Error rate threshold in percent", example: 5 }),
-});
+// SLA wire schemas (Alert, Thresholds, Summary, Detail) live in
+// `@useatlas/schemas` so the route OpenAPI contract and the web parse stay
+// in lockstep. The `asPercentage` import is retained for in-handler branding
+// of percentage values before `c.json(...)`.
 
 // ---------------------------------------------------------------------------
 // Route definitions

@@ -11,13 +11,18 @@
   "exports": {
     ".": "./src/index.ts",
     "./abuse": "./src/abuse.ts",
+    "./admin-config": "./src/admin-config.ts",
+    "./analytics": "./src/analytics.ts",
     "./approval": "./src/approval.ts",
     "./backup": "./src/backup.ts",
     "./billing": "./src/billing.ts",
+    "./common": "./src/common.ts",
+    "./connection": "./src/connection.ts",
     "./custom-domain": "./src/custom-domain.ts",
     "./integrations": "./src/integrations.ts",
     "./platform": "./src/platform.ts",
-    "./residency": "./src/residency.ts"
+    "./residency": "./src/residency.ts",
+    "./sla": "./src/sla.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

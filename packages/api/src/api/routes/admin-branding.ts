@@ -15,26 +15,15 @@ import {
   deleteWorkspaceBranding,
   BrandingError,
 } from "@atlas/ee/branding/white-label";
+import { WorkspaceBrandingSchema as BrandingSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const brandingDomainError = domainError(BrandingError, { validation: 400, not_found: 404 });
 
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
-const BrandingSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  logoUrl: z.string().nullable(),
-  logoText: z.string().nullable(),
-  primaryColor: z.string().nullable(),
-  faviconUrl: z.string().nullable(),
-  hideAtlasBranding: z.boolean(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
+// `BrandingSchema` is re-exported under its prior local alias from
+// `@useatlas/schemas` so the existing route definitions below don't need
+// to change — single source of truth for the workspace-branding wire shape.
 
 const SetBrandingBodySchema = z.object({
   logoUrl: z.string().nullable().optional().openapi({

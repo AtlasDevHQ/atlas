@@ -43,6 +43,7 @@ import {
   PLAN_TIERS,
   type PlatformWorkspace,
 } from "@useatlas/types";
+import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
@@ -222,7 +223,7 @@ const changePlanRoute = createRoute({
   path: "/workspaces/{id}/plan",
   tags: ["Platform Admin"],
   summary: "Change workspace plan tier",
-  description: "SaaS only. Updates the plan tier for a workspace (free, trial, team, enterprise).",
+  description: "SaaS only. Updates the plan tier for a workspace (free, trial, starter, pro, business).",
   request: { body: { required: true, content: { "application/json": { schema: ChangePlanBodySchema } } } },
   responses: {
     200: {
@@ -316,13 +317,18 @@ function median(values: number[]): number {
     : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-// MRR estimates per plan tier (monthly recurring revenue)
-const PLAN_MRR: Record<string, number> = {
-  free: 0,
-  trial: 0,
-  team: 99,
-  enterprise: 499,
-};
+// MRR per seat per plan tier. Iterating the canonical `PLAN_TIERS` tuple
+// and reading `getPlanDefinition(tier).pricePerSeat` from
+// `lib/billing/plans.ts` means pricing stays in lockstep and every tier
+// that exists at runtime has a price. Exhaustiveness is enforced one
+// layer up: `PLANS: Record<PlanTier, PlanDefinition>` in `plans.ts` would
+// fail to compile if a tier were added without a definition. Regression
+// for #1680: migrations 0020 + 0027 renamed tiers to starter/pro/business
+// and the old hard-coded map silently returned $0 for every paying
+// workspace until now.
+const PLAN_MRR = Object.fromEntries(
+  PLAN_TIERS.map((tier) => [tier, getPlanDefinition(tier).pricePerSeat]),
+) as Record<PlanTier, number>;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -738,7 +744,26 @@ platformAdmin.openapi(platformStatsRoute, async (c) => {
     const mrrRows = yield* queryEffect<{ plan_tier: string; cnt: number }>(
       `SELECT plan_tier, COUNT(*)::int AS cnt FROM organization WHERE workspace_status = 'active' GROUP BY plan_tier`,
     );
-    const mrr = mrrRows.reduce((sum, row) => sum + (PLAN_MRR[row.plan_tier] ?? 0) * row.cnt, 0);
+    // Unknown tiers fall back to 0 to stay forward-compat during a staged
+    // tier rename (code deploys before the migration applies on every
+    // region). The reducer still emits a log.warn so the silent $0 trap
+    // that let #1680 hide for months leaves a breadcrumb this time. Dedup
+    // via a per-call Set so log volume is O(distinct unknown tiers).
+    const seenUnknown = new Set<string>();
+    const mrr = mrrRows.reduce((sum, row) => {
+      const price = PLAN_MRR[row.plan_tier as PlanTier];
+      if (price === undefined) {
+        if (!seenUnknown.has(row.plan_tier)) {
+          seenUnknown.add(row.plan_tier);
+          log.warn(
+            { planTier: row.plan_tier, cnt: row.cnt, requestId },
+            "Unknown plan_tier in MRR calculation — contributing $0",
+          );
+        }
+        return sum;
+      }
+      return sum + price * row.cnt;
+    }, 0);
 
     return c.json({
       totalWorkspaces: wsRows[0]?.total ?? 0,

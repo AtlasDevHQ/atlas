@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { runMigrations, runSeeds } from "@atlas/api/lib/db/migrate";
+import { BACKUP_STATUSES } from "@useatlas/types";
 
 const MIGRATIONS_DIR = path.join(import.meta.dir, "..", "migrations");
 
@@ -78,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(32);
+    expect(count).toBe(33);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -139,6 +140,7 @@ describe("runMigrations", () => {
         "0029_user_favorite_prompts.sql",
         "0030_starter_prompt_approval.sql",
         "0031_abuse_events_enum_checks.sql",
+        "0032_backups_status_check.sql",
       ],
     });
 
@@ -396,6 +398,58 @@ describe("0031_abuse_events_enum_checks.sql", () => {
     // so re-running the migration on an already-constrained DB is a no-op.
     const doBlocks = sql.match(/DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi) ?? [];
     expect(doBlocks.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0032_backups_status_check.sql
+// ---------------------------------------------------------------------------
+
+describe("0032_backups_status_check.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0032_backups_status_check.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("coerces pre-drifted rows to 'failed' before adding the CHECK", () => {
+    // Ordering is load-bearing: if the CHECK runs first, a single pre-drifted
+    // row would block the migration from applying on an upgrade. See 0031.
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    const updateIdx = sql.search(/UPDATE\s+backups\s+SET\s+status\s*=\s*'failed'/i);
+    const checkIdx = sql.search(/CHECK\s*\(\s*status\s+IN\b/i);
+
+    expect(updateIdx).toBeGreaterThan(-1);
+    expect(checkIdx).toBeGreaterThan(-1);
+    expect(updateIdx).toBeLessThan(checkIdx);
+  });
+
+  it("enumerates every canonical BACKUP_STATUSES value", () => {
+    // Pull the canonical tuple from @useatlas/types rather than hardcoding.
+    // If the tuple changes there, this test tracks it automatically.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    for (const v of BACKUP_STATUSES) {
+      expect(sql).toContain(`'${v}'`);
+    }
+  });
+
+  it("emits a RAISE NOTICE when drift rows are coerced", () => {
+    // Operators need a post-mortem breadcrumb for "why did my completed
+    // backup show as failed?" — 0031 shipped without one, 0032 must not.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(/RAISE\s+NOTICE[^;]*coerced/i);
+    expect(sql).toMatch(/GET\s+DIAGNOSTICS[^;]*ROW_COUNT/i);
+  });
+
+  it("wraps the ADD CONSTRAINT in an idempotent DO $$ … duplicate_object guard", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+    // Exactly one idempotency guard (the ADD CONSTRAINT). The RAISE
+    // NOTICE block is a separate DO $$ without an EXCEPTION clause.
+    const idempotentBlocks = sql.match(
+      /DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi,
+    ) ?? [];
+    expect(idempotentBlocks.length).toBe(1);
   });
 });
 

@@ -4,9 +4,9 @@ import { isActionToolResult } from "./action";
 describe("isActionToolResult", () => {
   // ── Valid variants ──────────────────────────────────────────────────
 
-  test("pending_approval with summary", () => {
+  test("pending with summary", () => {
     expect(
-      isActionToolResult({ status: "pending_approval", actionId: "a1", summary: "Do the thing" }),
+      isActionToolResult({ status: "pending", actionId: "a1", summary: "Do the thing" }),
     ).toBe(true);
   });
 
@@ -54,8 +54,8 @@ describe("isActionToolResult", () => {
 
   // ── Missing variant-specific required fields ────────────────────────
 
-  test("pending_approval missing summary", () => {
-    expect(isActionToolResult({ status: "pending_approval", actionId: "a1" })).toBe(false);
+  test("pending missing summary", () => {
+    expect(isActionToolResult({ status: "pending", actionId: "a1" })).toBe(false);
   });
 
   test("approved missing result", () => {
@@ -76,9 +76,9 @@ describe("isActionToolResult", () => {
 
   // ── Wrong types for required fields ─────────────────────────────────
 
-  test("pending_approval with non-string summary", () => {
+  test("pending with non-string summary", () => {
     expect(
-      isActionToolResult({ status: "pending_approval", actionId: "a1", summary: 42 }),
+      isActionToolResult({ status: "pending", actionId: "a1", summary: 42 }),
     ).toBe(false);
   });
 

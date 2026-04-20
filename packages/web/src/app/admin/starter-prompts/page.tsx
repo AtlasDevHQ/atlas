@@ -359,8 +359,9 @@ function StarterPromptsContent() {
         body: {},
         itemId: id,
       });
-      // Surface failures (403 cross-org, 404, 500) so the admin sees why
-      // the row didn't move between tabs. Without this branch, the
+      // Hand the structured error to MutationErrorSurface so auth /
+      // not-found / enterprise cases get tailored affordances and plain
+      // 500s still render a dismissible banner. Without this branch, the
       // spinner stops and the UI appears to succeed.
       if (!result.ok) {
         setRowActionError(result.error);

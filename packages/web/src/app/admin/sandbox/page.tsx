@@ -574,7 +574,8 @@ function ProviderRow({
                 onChange={(e) => {
                   setFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }));
                   // Clear prior client-side validation so a stale "required"
-                  // message can't mask a fresh server error on resubmit.
+                  // message doesn't persist after the user starts typing a
+                  // valid value.
                   if (validationError) setValidationError(null);
                 }}
               />

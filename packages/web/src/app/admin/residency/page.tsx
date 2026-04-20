@@ -680,7 +680,7 @@ function MigrationDialog({
     const success = await onMigrate(selected);
     if (success) setSelected("");
     // Close regardless of success — failures surface via the page-level
-    // ErrorBanner so the dialog doesn't trap the user over a stale form.
+    // MutationErrorSurface so the dialog doesn't trap the user over a stale form.
     setShowConfirm(false);
     setOpen(false);
   }

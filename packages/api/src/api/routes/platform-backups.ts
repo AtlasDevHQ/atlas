@@ -21,7 +21,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
 } from "@atlas/api/lib/effect/services";
-import { BACKUP_STATUSES } from "@useatlas/types";
+import { BackupEntrySchema, BackupConfigSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -30,22 +30,11 @@ const log = createLogger("platform-backups");
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
-
-const BackupEntrySchema = z.object({
-  id: z.string(),
-  createdAt: z.string(),
-  sizeBytes: z.number().nullable(),
-  status: z.enum(BACKUP_STATUSES),
-  storagePath: z.string(),
-  retentionExpiresAt: z.string(),
-  errorMessage: z.string().nullable(),
-});
-
-const BackupConfigSchema = z.object({
-  schedule: z.string().openapi({ description: "Cron expression for automated backups", example: "0 3 * * *" }),
-  retentionDays: z.number().min(1).max(365).openapi({ description: "Days to retain backups", example: 30 }),
-  storagePath: z.string().openapi({ description: "Backup storage path", example: "./backups" }),
-});
+// BackupEntrySchema + BackupConfigSchema come from @useatlas/schemas so the
+// route, the web parse, and the generated OpenAPI spec all describe the same
+// shape. Request-validation variants below still live here because they carry
+// server-specific constraints (cron regex, retentionDays range, path
+// traversal guard) that don't belong in the response-shape contract.
 
 const CRON_5_FIELD = /^(\*|[\d,\-/]+)(\s+(\*|[\d,\-/]+)){4}$/;
 

@@ -12,8 +12,11 @@
     ".": "./src/index.ts",
     "./abuse": "./src/abuse.ts",
     "./approval": "./src/approval.ts",
+    "./backup": "./src/backup.ts",
+    "./billing": "./src/billing.ts",
     "./custom-domain": "./src/custom-domain.ts",
-    "./integrations": "./src/integrations.ts"
+    "./integrations": "./src/integrations.ts",
+    "./platform": "./src/platform.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

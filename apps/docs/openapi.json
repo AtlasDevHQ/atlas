@@ -54601,21 +54601,13 @@
                   "type": "object",
                   "properties": {
                     "schedule": {
-                      "type": "string",
-                      "description": "Cron expression for automated backups",
-                      "example": "0 3 * * *"
+                      "type": "string"
                     },
                     "retentionDays": {
-                      "type": "number",
-                      "minimum": 1,
-                      "maximum": 365,
-                      "description": "Days to retain backups",
-                      "example": 30
+                      "type": "number"
                     },
                     "storagePath": {
-                      "type": "string",
-                      "description": "Backup storage path",
-                      "example": "./backups"
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -54753,21 +54745,13 @@
                       "type": "object",
                       "properties": {
                         "schedule": {
-                          "type": "string",
-                          "description": "Cron expression for automated backups",
-                          "example": "0 3 * * *"
+                          "type": "string"
                         },
                         "retentionDays": {
-                          "type": "number",
-                          "minimum": 1,
-                          "maximum": 365,
-                          "description": "Days to retain backups",
-                          "example": 30
+                          "type": "number"
                         },
                         "storagePath": {
-                          "type": "string",
-                          "description": "Backup storage path",
-                          "example": "./backups"
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -57118,7 +57102,203 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "plan": {
+                      "type": "object",
+                      "properties": {
+                        "tier": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "displayName": {
+                          "type": "string"
+                        },
+                        "pricePerSeat": {
+                          "type": "number"
+                        },
+                        "defaultModel": {
+                          "type": "string"
+                        },
+                        "byot": {
+                          "type": "boolean"
+                        },
+                        "trialEndsAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "tier",
+                        "displayName",
+                        "pricePerSeat",
+                        "defaultModel",
+                        "byot",
+                        "trialEndsAt"
+                      ]
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "tokenBudgetPerSeat": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "totalTokenBudget": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "maxSeats": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "maxConnections": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "tokenBudgetPerSeat",
+                        "totalTokenBudget",
+                        "maxSeats",
+                        "maxConnections"
+                      ]
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "queryCount": {
+                          "type": "number"
+                        },
+                        "tokenCount": {
+                          "type": "number"
+                        },
+                        "seatCount": {
+                          "type": "number"
+                        },
+                        "tokenUsagePercent": {
+                          "type": "number"
+                        },
+                        "tokenOverageStatus": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "warning",
+                            "soft_limit",
+                            "hard_limit"
+                          ]
+                        },
+                        "periodStart": {
+                          "type": "string"
+                        },
+                        "periodEnd": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "queryCount",
+                        "tokenCount",
+                        "seatCount",
+                        "tokenUsagePercent",
+                        "tokenOverageStatus",
+                        "periodStart",
+                        "periodEnd"
+                      ]
+                    },
+                    "seats": {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "type": "number"
+                        },
+                        "max": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "count",
+                        "max"
+                      ]
+                    },
+                    "connections": {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "type": "number"
+                        },
+                        "max": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "count",
+                        "max"
+                      ]
+                    },
+                    "currentModel": {
+                      "type": "string"
+                    },
+                    "overagePerMillionTokens": {
+                      "type": "number"
+                    },
+                    "subscription": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "stripeSubscriptionId": {
+                          "type": "string"
+                        },
+                        "plan": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "stripeSubscriptionId",
+                        "plan",
+                        "status"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "plan",
+                    "limits",
+                    "usage",
+                    "seats",
+                    "connections",
+                    "currentModel",
+                    "overagePerMillionTokens",
+                    "subscription"
+                  ]
                 }
               }
             }

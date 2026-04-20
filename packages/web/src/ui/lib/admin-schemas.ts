@@ -21,12 +21,6 @@ import type {
   WorkspaceModelConfig,
   PIIColumnClassification,
   SemanticDiffResponse,
-  PlatformStats,
-  PlatformWorkspace,
-  PlatformWorkspaceUser,
-  NoisyNeighbor,
-  BackupEntry,
-  BackupConfig,
   RegionMigration,
   RegionPickerItem,
   RegionStatus,
@@ -37,15 +31,27 @@ import type {
   SLAThresholds,
   SLAMetricPoint,
 } from "@/ui/lib/types";
-import { CustomDomainSchema } from "@useatlas/schemas";
+import {
+  BackupEntrySchema,
+  CustomDomainSchema,
+  PlatformWorkspaceSchema,
+  PlatformWorkspaceUserSchema,
+  NoisyNeighborSchema,
+} from "@useatlas/schemas";
 export {
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
   AbuseDetailSchema,
   ApprovalRuleSchema,
   ApprovalRequestSchema,
+  BackupEntrySchema,
+  BackupConfigSchema,
+  BillingStatusSchema,
   CustomDomainSchema,
   IntegrationStatusSchema,
+  PlatformStatsSchema,
+  PlatformWorkspaceSchema,
+  NoisyNeighborSchema,
 } from "@useatlas/schemas";
 
 // ── Connection ────────────────────────────────────────────────────
@@ -141,54 +147,10 @@ export const ConnectionsResponseSchema = z.object({
 }).transform((r) => r.connections ?? []);
 
 // ── Platform ─────────────────────────────────────────────────────
-
-export const PlatformStatsSchema = z.object({
-  totalWorkspaces: z.number(),
-  activeWorkspaces: z.number(),
-  suspendedWorkspaces: z.number(),
-  totalUsers: z.number(),
-  totalQueries24h: z.number(),
-  mrr: z.number(),
-}) as z.ZodType<PlatformStats>;
-
-export const PlatformWorkspaceSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  slug: z.string(),
-  planTier: z.string(),
-  status: z.string(),
-  byot: z.boolean(),
-  members: z.number(),
-  connections: z.number(),
-  conversations: z.number(),
-  queriesLast24h: z.number(),
-  scheduledTasks: z.number(),
-  stripeCustomerId: z.string().nullable(),
-  trialEndsAt: z.string().nullable(),
-  suspendedAt: z.string().nullable(),
-  deletedAt: z.string().nullable(),
-  region: z.string().nullable(),
-  regionAssignedAt: z.string().nullable(),
-  createdAt: z.string(),
-}) as z.ZodType<PlatformWorkspace>;
-
-const PlatformWorkspaceUserSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  email: z.string(),
-  role: z.string(),
-  createdAt: z.string(),
-}) as z.ZodType<PlatformWorkspaceUser>;
-
-export const NoisyNeighborSchema = z.object({
-  workspaceId: z.string(),
-  workspaceName: z.string(),
-  planTier: z.string(),
-  metric: z.string(),
-  value: z.number(),
-  median: z.number(),
-  ratio: z.number(),
-}) as z.ZodType<NoisyNeighbor>;
+// PlatformStatsSchema, PlatformWorkspaceSchema, NoisyNeighborSchema and
+// PlatformWorkspaceUserSchema come from @useatlas/schemas so the three
+// enum columns (status / planTier / metric) stay strict across the
+// route OpenAPI contract and the web parse.
 
 export const PlatformWorkspacesResponseSchema = z.object({
   workspaces: z.array(PlatformWorkspaceSchema),
@@ -209,22 +171,10 @@ export const PlatformWorkspaceDetailResponseSchema = z.object({
 });
 
 // ── Backups ──────────────────────────────────────────────────────
-
-export const BackupEntrySchema = z.object({
-  id: z.string(),
-  status: z.string(),
-  sizeBytes: z.number().nullable(),
-  storagePath: z.string(),
-  createdAt: z.string(),
-  retentionExpiresAt: z.string(),
-  errorMessage: z.string().nullable(),
-}) as z.ZodType<BackupEntry>;
-
-export const BackupConfigSchema = z.object({
-  schedule: z.string(),
-  retentionDays: z.number(),
-  storagePath: z.string(),
-}) as z.ZodType<BackupConfig>;
+// BackupEntrySchema + BackupConfigSchema re-exported above from
+// @useatlas/schemas — the web parse, route OpenAPI validation, and tests
+// share a single definition so tightening `status` to `z.enum(BACKUP_STATUSES)`
+// doesn't have to be applied twice.
 
 export const BackupsResponseSchema = z.object({
   backups: z.array(BackupEntrySchema),
@@ -420,48 +370,10 @@ export const AuditUsersResponseSchema = z.object({
 });
 
 // ── Billing ──────────────────────────────────────────────────────
-
-export const BillingStatusSchema = z.object({
-  workspaceId: z.string(),
-  plan: z.object({
-    tier: z.string(),
-    displayName: z.string(),
-    pricePerSeat: z.number(),
-    defaultModel: z.string(),
-    byot: z.boolean(),
-    trialEndsAt: z.string().nullable(),
-  }),
-  limits: z.object({
-    tokenBudgetPerSeat: z.number().nullable(),
-    totalTokenBudget: z.number().nullable(),
-    maxSeats: z.number().nullable(),
-    maxConnections: z.number().nullable(),
-  }),
-  usage: z.object({
-    queryCount: z.number(),
-    tokenCount: z.number(),
-    seatCount: z.number(),
-    tokenUsagePercent: z.number(),
-    tokenOverageStatus: z.string(),
-    periodStart: z.string(),
-    periodEnd: z.string(),
-  }),
-  seats: z.object({
-    count: z.number(),
-    max: z.number().nullable(),
-  }).optional(),
-  connections: z.object({
-    count: z.number(),
-    max: z.number().nullable(),
-  }).optional(),
-  currentModel: z.string().optional(),
-  overagePerMillionTokens: z.number().optional(),
-  subscription: z.object({
-    stripeSubscriptionId: z.string(),
-    plan: z.string(),
-    status: z.string(),
-  }).nullable(),
-});
+// BillingStatusSchema re-exported above from @useatlas/schemas. Tightens
+// `plan.tier` to PLAN_TIERS and `usage.tokenOverageStatus` to
+// OVERAGE_STATUSES — Stripe-controlled fields (subscription.plan /
+// subscription.status) stay free-form z.string().
 
 // ── Sessions ─────────────────────────────────────────────────────
 

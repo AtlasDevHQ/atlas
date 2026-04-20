@@ -85,3 +85,34 @@ describe("getPopularSuggestions — approval filter", () => {
     expect(captured[0]!.params).toEqual(["org-1", 25]);
   });
 });
+
+// Second gate beyond `approval_status = 'approved'`: the 1.2.0 mode axis.
+// `getPopularSuggestions` now owns the `AND ${statusClause}` composition
+// itself — the pre-#1531 helper returned a leading-AND string, so any
+// regression that drops the clause or flips to the wrong mode would slip
+// past the tests above. Assert the clause is composed in for both modes.
+describe("getPopularSuggestions — mode status filter", () => {
+  it("published mode (default) restricts to query_suggestions.status = 'published'", async () => {
+    await getPopularSuggestions("org-1", 10);
+    const sql = captured[0]!.sql;
+    expect(sql).toContain("query_suggestions.status = 'published'");
+    // Sanity: approval + mode gates are AND-composed, not OR
+    expect(sql).toContain("approval_status = 'approved' AND");
+  });
+
+  it("developer mode overlays drafts onto published rows", async () => {
+    await getPopularSuggestions("org-1", 10, "developer");
+    const sql = captured[0]!.sql;
+    expect(sql).toContain("query_suggestions.status IN ('published', 'draft')");
+    expect(sql).not.toContain("draft_delete");
+    expect(sql).not.toContain("archived");
+  });
+
+  it("published mode never surfaces draft or archived rows", async () => {
+    await getPopularSuggestions("org-1", 10, "published");
+    const sql = captured[0]!.sql;
+    expect(sql).toContain("query_suggestions.status = 'published'");
+    expect(sql).not.toContain("draft");
+    expect(sql).not.toContain("archived");
+  });
+});

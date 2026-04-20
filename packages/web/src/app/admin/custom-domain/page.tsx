@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   CompactRow,
   DetailList,
@@ -29,7 +29,6 @@ import {
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { DomainResponseSchema } from "@/ui/lib/admin-schemas";
 import { cn } from "@/lib/utils";
@@ -201,13 +200,11 @@ function CustomDomainPageContent() {
         loadingMessage="Loading domain configuration..."
       >
         <div className="mx-auto max-w-3xl space-y-8">
-          {mutationError && (
-            <ErrorBanner
-              message={friendlyError(mutationError)}
-              onRetry={clearMutationError}
-              actionLabel="Dismiss"
-            />
-          )}
+          <MutationErrorSurface
+            error={mutationError}
+            feature="Custom Domain"
+            onRetry={clearMutationError}
+          />
 
           <section>
             <SectionHeading
@@ -266,7 +263,7 @@ function CustomDomainPageContent() {
                     root domain.
                   </p>
                 </div>
-                {addError && <ErrorBanner message={friendlyError(addError)} />}
+                <MutationErrorSurface error={addError} feature="Custom Domain" />
               </Shell>
             )}
 

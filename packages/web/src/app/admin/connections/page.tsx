@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   Tooltip,
   TooltipContent,
@@ -430,11 +431,11 @@ function DeleteConnectionDialog({
             This action cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {deleteMutation.error && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {friendlyError(deleteMutation.error)}
-          </div>
-        )}
+        <MutationErrorSurface
+          error={deleteMutation.error}
+          feature="Connections"
+          variant="inline"
+        />
         <AlertDialogFooter>
           <AlertDialogCancel disabled={deleteMutation.saving}>Cancel</AlertDialogCancel>
           <AlertDialogAction
@@ -970,7 +971,13 @@ export default function ConnectionsPage() {
       <ErrorBoundary>
         <div className="space-y-6">
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
-          {testMutation.error && !mutationError && <ErrorBanner message={friendlyError(testMutation.error)} onRetry={testMutation.clearError} />}
+          {!mutationError && (
+            <MutationErrorSurface
+              error={testMutation.error}
+              feature="Connections"
+              onRetry={testMutation.clearError}
+            />
+          )}
 
           <PoolStatsSection onError={setMutationError} />
 

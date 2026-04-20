@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   CompactRow,
   DetailList,
@@ -38,7 +38,6 @@ import {
 } from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
@@ -218,13 +217,11 @@ export default function SandboxPage() {
           emptyDescription="No sandbox status available."
         >
           <div className="mx-auto max-w-3xl space-y-8">
-            {mutationError && (
-              <ErrorBanner
-                message={friendlyError(mutationError)}
-                onRetry={clearMutationError}
-                actionLabel="Dismiss"
-              />
-            )}
+            <MutationErrorSurface
+              error={mutationError}
+              feature="Sandbox"
+              onRetry={clearMutationError}
+            />
 
             {data &&
               (isSaas ? (
@@ -471,8 +468,7 @@ function ProviderRow({
       const val = fieldValues[field.key]?.trim();
       if (val) credentials[field.key] = val;
     }
-    const result = await connectMutation.mutate({ body: { credentials } });
-    if (!result.ok) setValidationError(friendlyError(result.error));
+    await connectMutation.mutate({ body: { credentials } });
   }
 
   return (
@@ -578,7 +574,8 @@ function ProviderRow({
                 onChange={(e) => {
                   setFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }));
                   // Clear prior client-side validation so a stale "required"
-                  // message can't mask a fresh server error on resubmit.
+                  // message doesn't persist after the user starts typing a
+                  // valid value.
                   if (validationError) setValidationError(null);
                 }}
               />
@@ -590,8 +587,17 @@ function ProviderRow({
         </div>
       )}
 
-      <InlineError>{validationError ?? friendlyErrorOrNull(connectMutation.error)}</InlineError>
-      <InlineError>{friendlyErrorOrNull(disconnectMutation.error)}</InlineError>
+      {validationError && <InlineError>{validationError}</InlineError>}
+      <MutationErrorSurface
+        error={connectMutation.error}
+        feature="Sandbox"
+        variant="inline"
+      />
+      <MutationErrorSurface
+        error={disconnectMutation.error}
+        feature="Sandbox"
+        variant="inline"
+      />
     </Shell>
   );
 }

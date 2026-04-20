@@ -36,9 +36,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
+import type { FetchError } from "@/ui/lib/fetch-error";
 import { Loader2, Plus } from "lucide-react";
 import type {
   SuggestionApprovalStatus,
@@ -303,11 +304,11 @@ function AuthorPromptDialog({ onAuthored }: { onAuthored: () => void }) {
             autoFocus
             data-testid="starter-prompt-author-text"
           />
-          {error && (
-            <p className="text-xs text-destructive" role="alert">
-              {friendlyError(error)}
-            </p>
-          )}
+          <MutationErrorSurface
+            error={error}
+            feature="Starter Prompts"
+            variant="inline"
+          />
           <DialogFooter>
             <Button
               type="submit"
@@ -342,7 +343,7 @@ function StarterPromptsContent() {
   const coldWindowDays = data?.coldWindowDays ?? 90;
 
   const [pendingRowId, setPendingRowId] = useState<string | null>(null);
-  const [rowActionError, setRowActionError] = useState<string | null>(null);
+  const [rowActionError, setRowActionError] = useState<FetchError | null>(null);
 
   const { mutate: mutateRow } = useAdminMutation<{ suggestion: QueueItem }>({
     method: "POST",
@@ -358,11 +359,12 @@ function StarterPromptsContent() {
         body: {},
         itemId: id,
       });
-      // Surface failures (403 cross-org, 404, 500) so the admin sees why
-      // the row didn't move between tabs. Without this branch, the
+      // Hand the structured error to MutationErrorSurface so auth /
+      // not-found / enterprise cases get tailored affordances and plain
+      // 500s still render a dismissible banner. Without this branch, the
       // spinner stops and the UI appears to succeed.
       if (!result.ok) {
-        setRowActionError(friendlyError(result.error));
+        setRowActionError(result.error);
       }
     } finally {
       setPendingRowId(null);
@@ -384,23 +386,11 @@ function StarterPromptsContent() {
           <AuthorPromptDialog onAuthored={refetch} />
         </div>
 
-        {rowActionError && (
-          <div
-            role="alert"
-            data-testid="starter-prompt-row-action-error"
-            className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive flex items-start justify-between gap-3"
-          >
-            <span>{rowActionError}</span>
-            <button
-              type="button"
-              onClick={() => setRowActionError(null)}
-              className="text-xs underline opacity-70 hover:opacity-100"
-              aria-label="Dismiss error"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
+        <MutationErrorSurface
+          error={rowActionError}
+          feature="Starter Prompts"
+          onRetry={() => setRowActionError(null)}
+        />
 
         <Tabs defaultValue="pending">
           <TabsList>

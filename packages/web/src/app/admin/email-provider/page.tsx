@@ -24,10 +24,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -470,7 +470,6 @@ export default function EmailProviderPage() {
     });
 
   const structuredError = combineMutationErrors([saveError, deleteError, testError]);
-  const mutationError = structuredError ? friendlyError(structuredError) : formError;
   const baseline = data?.config.baseline;
   const override = data?.config.override ?? null;
   const hasOverride = override !== null;
@@ -605,9 +604,16 @@ export default function EmailProviderPage() {
       </div>
 
       <ErrorBoundary>
-        {mutationError && (
+        {(structuredError || formError) && (
           <div className="mx-auto mb-4 max-w-3xl">
-            <ErrorBanner message={mutationError} onRetry={clearAllErrors} actionLabel="Dismiss" />
+            <MutationErrorSurface
+              error={structuredError}
+              feature="Email Provider"
+              onRetry={clearAllErrors}
+            />
+            {!structuredError && formError && (
+              <ErrorBanner message={formError} onRetry={clearAllErrors} actionLabel="Dismiss" />
+            )}
           </div>
         )}
 

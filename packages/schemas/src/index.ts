@@ -5,3 +5,4 @@ export * from "./billing";
 export * from "./custom-domain";
 export * from "./integrations";
 export * from "./platform";
+export * from "./residency";

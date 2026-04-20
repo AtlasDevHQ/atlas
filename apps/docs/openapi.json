@@ -54895,7 +54895,8 @@
                             "type": "string"
                           },
                           "workspaceCount": {
-                            "type": "number"
+                            "type": "integer",
+                            "minimum": 0
                           },
                           "healthy": {
                             "type": "boolean"

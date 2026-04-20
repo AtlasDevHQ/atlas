@@ -21,10 +21,6 @@ import type {
   WorkspaceModelConfig,
   PIIColumnClassification,
   SemanticDiffResponse,
-  RegionMigration,
-  RegionPickerItem,
-  RegionStatus,
-  WorkspaceRegion,
   WorkspaceSLASummary,
   WorkspaceSLADetail,
   SLAAlert,
@@ -53,6 +49,13 @@ export {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
   NoisyNeighborSchema,
+  RegionPickerItemSchema,
+  RegionStatusSchema,
+  WorkspaceRegionSchema,
+  RegionMigrationSchema,
+  RegionsResponseSchema,
+  AssignmentsResponseSchema,
+  MigrationStatusResponseSchema,
 } from "@useatlas/schemas";
 
 // ── Connection ────────────────────────────────────────────────────
@@ -193,50 +196,10 @@ export const DomainsResponseSchema = z.object({
 });
 
 // ── Region / Residency ───────────────────────────────────────────
-
-export const RegionPickerItemSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  isDefault: z.boolean(),
-}) as z.ZodType<RegionPickerItem>;
-
-export const RegionStatusSchema = z.object({
-  region: z.string(),
-  label: z.string(),
-  workspaceCount: z.number(),
-  healthy: z.boolean(),
-}) as z.ZodType<RegionStatus>;
-
-export const WorkspaceRegionSchema = z.object({
-  workspaceId: z.string(),
-  region: z.string(),
-  assignedAt: z.string(),
-}) as z.ZodType<WorkspaceRegion>;
-
-export const RegionsResponseSchema = z.object({
-  regions: z.array(RegionStatusSchema),
-  defaultRegion: z.string(),
-});
-
-export const AssignmentsResponseSchema = z.object({
-  assignments: z.array(WorkspaceRegionSchema),
-});
-
-export const RegionMigrationSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  sourceRegion: z.string(),
-  targetRegion: z.string(),
-  status: z.enum(["pending", "in_progress", "completed", "failed", "cancelled"]),
-  requestedBy: z.string().nullable(),
-  requestedAt: z.string(),
-  completedAt: z.string().nullable(),
-  errorMessage: z.string().nullable(),
-}) as z.ZodType<RegionMigration>;
-
-export const MigrationStatusResponseSchema = z.object({
-  migration: RegionMigrationSchema.nullable(),
-});
+// Region / residency schemas re-exported above from @useatlas/schemas.
+// `migration.status` is pinned to `MIGRATION_STATUSES` from @useatlas/types
+// so adding a status propagates to both the route OpenAPI contract and the
+// web parse without a second edit.
 
 // ── SLA ──────────────────────────────────────────────────────────
 

@@ -15,8 +15,11 @@ export type DBType = (typeof DB_TYPES)[number]["value"];
 export const CONNECTION_STATUSES = ["published", "draft", "archived"] as const;
 export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
 
+/** Valid health-check status values for a connection. */
+export const HEALTH_STATUSES = ["healthy", "degraded", "unhealthy"] as const;
+
 /** Health check status for a connection. */
-export type HealthStatus = "healthy" | "degraded" | "unhealthy";
+export type HealthStatus = (typeof HEALTH_STATUSES)[number];
 
 /** Wire format for a connection health check result (JSON-serialized). */
 export interface ConnectionHealth {

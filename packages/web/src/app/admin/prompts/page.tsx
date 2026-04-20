@@ -543,10 +543,10 @@ export default function PromptsPage() {
           </div>
 
           {/* Content */}
-          <MutationErrorSurface error={collectionMutation.error} feature="Prompts" onRetry={collectionMutation.clearError} />
-          <MutationErrorSurface error={deleteCollectionMutation.error} feature="Prompts" onRetry={deleteCollectionMutation.clearError} />
-          <MutationErrorSurface error={addItemMutation.error} feature="Prompts" onRetry={addItemMutation.clearError} />
-          <MutationErrorSurface error={deleteItemMutation.error} feature="Prompts" onRetry={deleteItemMutation.clearError} />
+          <MutationErrorSurface error={collectionMutation.error} feature="Prompt Library" onRetry={collectionMutation.clearError} />
+          <MutationErrorSurface error={deleteCollectionMutation.error} feature="Prompt Library" onRetry={deleteCollectionMutation.clearError} />
+          <MutationErrorSurface error={addItemMutation.error} feature="Prompt Library" onRetry={addItemMutation.clearError} />
+          <MutationErrorSurface error={deleteItemMutation.error} feature="Prompt Library" onRetry={deleteItemMutation.clearError} />
 
           <AdminContentWrapper
             loading={loading}

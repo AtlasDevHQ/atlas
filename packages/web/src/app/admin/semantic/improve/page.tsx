@@ -560,7 +560,7 @@ export default function SemanticImprovePage() {
                   {pendingError && (
                     <ErrorBanner message={pendingError.message} />
                   )}
-                  <MutationErrorSurface error={mutationError} feature="Semantic" />
+                  <MutationErrorSurface error={mutationError} feature="Semantic Layer" />
                   {proposals.length === 0 && !pendingLoading && (
                     <div className="py-12 text-center text-xs text-muted-foreground">
                       {messages.length === 0

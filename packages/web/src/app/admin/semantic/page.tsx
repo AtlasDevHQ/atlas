@@ -856,7 +856,7 @@ export default function SemanticPage() {
               The agent will no longer be able to query this table. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <MutationErrorSurface error={deleteError} feature="Semantic" variant="inline" />
+          <MutationErrorSurface error={deleteError} feature="Semantic Layer" variant="inline" />
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deletingEntity}>Cancel</AlertDialogCancel>
             <AlertDialogAction

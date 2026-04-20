@@ -253,7 +253,7 @@ function ClassificationsTab() {
         </div>
       )}
 
-      <MutationErrorSurface error={actionError} feature="Compliance" />
+      <MutationErrorSurface error={actionError} feature="PII Compliance" />
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">

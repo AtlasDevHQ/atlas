@@ -28,7 +28,7 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull, type FetchError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -101,8 +101,12 @@ const GroupMappingsResponseSchema = z.object({
 
 // ── Main Page ─────────────────────────────────────────────────────
 
+// Structured FetchError (not a flattened message) so MutationErrorSurface can
+// route `code === "enterprise_required"` into the compact inline upsell — a
+// gated SCIM revoke from a non-enterprise workspace otherwise degrades to a
+// generic "Revoke failed — …" string and loses the affordance.
 type RowError = {
-  message: string;
+  error: FetchError;
   id: string;
   kind: "connection" | "mapping";
 };
@@ -153,13 +157,7 @@ export default function SCIMPage() {
     const result = await deleteMutate({ path });
     setDeleteTarget(null);
     if (!result.ok) {
-      // TODO(#1649): route per-row errors through <MutationErrorSurface> too.
-      // Page-level banner already uses the surface and picks up `enterprise_required`
-      // routing; per-row pin still flattens to string so a gated row revoke renders
-      // as a plain InlineError rather than an inline upsell. Not wired here because
-      // rowError needs id/kind tracking that the surface doesn't model — phase 2
-      // reshapes this state to `{ fetchError, id, kind }` and lets the surface render.
-      setRowError({ message: friendlyError(result.error), id: target.id, kind: target.type });
+      setRowError({ error: result.error, id: target.id, kind: target.type });
     }
   }
 
@@ -410,9 +408,12 @@ export default function SCIMPage() {
                         )}
                       </DetailList>
                       {rowHasError && (
-                        <InlineError>
-                          Revoke failed — {rowError.message}
-                        </InlineError>
+                        <MutationErrorSurface
+                          error={rowError.error}
+                          feature="SCIM"
+                          variant="inline"
+                          inlinePrefix="Revoke failed."
+                        />
                       )}
                     </Shell>
                   );
@@ -480,9 +481,12 @@ export default function SCIMPage() {
                         <DetailRow label="Added" value={formatDateTime(mapping.createdAt)} />
                       </DetailList>
                       {rowHasError && (
-                        <InlineError>
-                          Remove failed — {rowError.message}
-                        </InlineError>
+                        <MutationErrorSurface
+                          error={rowError.error}
+                          feature="SCIM"
+                          variant="inline"
+                          inlinePrefix="Remove failed."
+                        />
                       )}
                     </Shell>
                   );

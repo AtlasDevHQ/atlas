@@ -18,15 +18,14 @@ import {
   CompactRow,
   DetailList,
   DetailRow,
-  InlineError,
   SectionHeading,
   Shell,
   type StatusKind,
   useDisclosure,
 } from "@/ui/components/admin/compact";
+import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { formatDate, formatNumber } from "@/lib/format";
@@ -222,7 +221,12 @@ function PlanShell({ data }: { data: BillingStatus }) {
   const totalMonthly = plan.pricePerSeat * seatCount;
   const overage = data.overagePerMillionTokens ?? 0;
 
-  const { mutate, saving, error: portalMutationError } = useAdminMutation<{
+  const {
+    mutate,
+    saving,
+    error: portalMutationError,
+    clearError: clearPortalMutation,
+  } = useAdminMutation<{
     url?: string;
   }>({
     path: "/api/v1/billing/portal",
@@ -243,11 +247,11 @@ function PlanShell({ data }: { data: BillingStatus }) {
 
   // portalError covers the 200-but-missing-URL edge case (set locally when
   // the server returns success but no portal link); portalMutationError
-  // covers all non-2xx responses. Use `||` so an empty-string
-  // friendlyError() result falls through to portalError rather than
-  // suppressing it.
-  const mutationCopy = portalMutationError ? friendlyError(portalMutationError) : "";
-  const combinedError = mutationCopy || portalError;
+  // covers all non-2xx responses. Structured mutation error wins over the
+  // local string — a 403 `enterprise_required` on a plan that doesn't expose
+  // a Stripe portal must route into <EnterpriseUpsell>, which means the
+  // FetchError can't be flattened here. The local "no URL" string only
+  // surfaces when there's no structured error to render.
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
   return (
@@ -329,7 +333,14 @@ function PlanShell({ data }: { data: BillingStatus }) {
         )}
       </DetailList>
 
-      <InlineError>{combinedError}</InlineError>
+      <MutationErrorSurface
+        error={portalMutationError}
+        feature="Billing"
+        onRetry={clearPortalMutation}
+      />
+      {!portalMutationError && portalError && (
+        <ErrorBanner message={portalError} />
+      )}
       {!subscription && plan.pricePerSeat > 0 && (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           No active subscription — portal access opens after you subscribe.

@@ -51815,7 +51815,7 @@
           "Platform Admin"
         ],
         "summary": "Change workspace plan tier",
-        "description": "SaaS only. Updates the plan tier for a workspace (free, trial, team, enterprise).",
+        "description": "SaaS only. Updates the plan tier for a workspace (free, trial, starter, pro, business).",
         "requestBody": {
           "required": true,
           "content": {

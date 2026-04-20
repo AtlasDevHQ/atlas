@@ -39078,13 +39078,15 @@
                           ]
                         },
                         "requestedAt": {
-                          "type": "string"
+                          "type": "string",
+                          "format": "date-time"
                         },
                         "completedAt": {
                           "type": [
                             "string",
                             "null"
-                          ]
+                          ],
+                          "format": "date-time"
                         },
                         "errorMessage": {
                           "type": [
@@ -39266,13 +39268,15 @@
                       ]
                     },
                     "requestedAt": {
-                      "type": "string"
+                      "type": "string",
+                      "format": "date-time"
                     },
                     "completedAt": {
                       "type": [
                         "string",
                         "null"
-                      ]
+                      ],
+                      "format": "date-time"
                     },
                     "errorMessage": {
                       "type": [
@@ -39490,13 +39494,15 @@
                       ]
                     },
                     "requestedAt": {
-                      "type": "string"
+                      "type": "string",
+                      "format": "date-time"
                     },
                     "completedAt": {
                       "type": [
                         "string",
                         "null"
-                      ]
+                      ],
+                      "format": "date-time"
                     },
                     "errorMessage": {
                       "type": [
@@ -55045,7 +55051,8 @@
                       "type": "string"
                     },
                     "assignedAt": {
-                      "type": "string"
+                      "type": "string",
+                      "format": "date-time"
                     }
                   },
                   "required": [
@@ -55199,7 +55206,8 @@
                       "type": "string"
                     },
                     "assignedAt": {
-                      "type": "string"
+                      "type": "string",
+                      "format": "date-time"
                     }
                   },
                   "required": [
@@ -55389,7 +55397,8 @@
                             "type": "string"
                           },
                           "assignedAt": {
-                            "type": "string"
+                            "type": "string",
+                            "format": "date-time"
                           }
                         },
                         "required": [

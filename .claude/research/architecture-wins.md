@@ -847,3 +847,50 @@ Three subtleties surfaced during phase 3 that are worth recording:
 - **Roughly 10 schemas remain** (SLA family, Region family, PIIColumnClassification, SemanticDiffResponse, Branding, ModelConfig, ConnectionInfo/Health, audit analytics, token usage/trends, UsageSummary). Tracker #1648 remains open with the punch list.
 
 **Category:** Continuation of win #32's cross-package consolidation. The interesting meta-lesson here is about **where wire-only types live**. `@useatlas/types` is published and consumed by scaffolds that track the last published version; `@useatlas/schemas` is workspace-internal and syncs into the monorepo copies. A type that only exists on the wire (like `BillingStatus`) belongs in `@useatlas/schemas` — putting it in `@useatlas/types` creates a version-skew failure mode that the scaffold tests catch but that's easy to miss locally. A type that crosses the wire boundary (like `OverageStatus`, used by enforcement) belongs in `@useatlas/types` and stays forward-compatible via `satisfies` at the schema layer. This boundary is now documented by the scaffold-tests failure mode; future schema migrations should default to "define the type in schemas unless something outside the wire needs it."
+
+---
+
+## 34. `createAbuseInstance` factory — narrowed constructor for `AbuseInstance` invariants
+
+**Date:** 2026-04-19
+**Issue:** #1644 (primary architecture label) + #1638 + #1639
+**PR:** #1681
+
+**Problem:** `AbuseInstance` is the admin detail panel's core grouping object — each instance represents one continuous stretch of non-"none" activity for a workspace, with three derived fields (`startedAt`, `endedAt`, `peakLevel`) that must agree with the underlying events. Before this change the single construction site (`makeInstance` inside `abuse-instances.ts`) was a private helper, which meant nothing prevented a fresh caller inside the abuse engine from hand-rolling `{ startedAt: ..., endedAt: ..., peakLevel: ..., events: ... }` inline. The invariants were implicit: you could produce a type-checking `AbuseInstance` with a mismatched `peakLevel` (lower rank than some event in `events`), a non-null `endedAt` on an open instance, or a `startedAt` that didn't match `events[0].createdAt`.
+
+A second, adjacent smell in the same module: the error-rate percentage calculation used by `getAbuseDetail` was inlined as `(w.errorCount / queryCount) * 100` with the divide-by-zero guard implicit in the surrounding `queryCount >= 10` branch. The arithmetic was untestable without standing up the whole engine, and a future caller that wanted the same percentage (e.g. the SLA surface, which does a structurally-identical calculation) would copy the formula rather than reuse it.
+
+**Solution:** Promoted `makeInstance` → exported `createAbuseInstance(events)` as the narrowed constructor for `AbuseInstance` within the abuse engine. The factory encodes all four invariants in one place:
+
+```ts
+export function createAbuseInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
+  if (eventsChrono.length === 0) {
+    return { startedAt: "", endedAt: null, peakLevel: "none", events: [] };
+  }
+  const last = eventsChrono[eventsChrono.length - 1]!;
+  const endedAt = isReinstatement(last) ? last.createdAt : null;
+  let peak: AbuseLevel = "none";
+  for (const e of eventsChrono) {
+    if (LEVEL_RANK[e.level] > LEVEL_RANK[peak]) peak = e.level;
+  }
+  return {
+    startedAt: eventsChrono[0]!.createdAt,
+    endedAt,
+    peakLevel: peak,
+    events: eventsChrono,
+  };
+}
+```
+
+`splitIntoInstances` now calls `createAbuseInstance` for both the closed and current-instance branches. Unit tests pin each invariant: empty → sentinel, startedAt from events[0], endedAt null on open, endedAt non-null only on manual "none" reinstatement, system-generated "none" is not a close boundary, peakLevel by rank not chronology, peakLevel "none" for all-reinstatement input, events aliased verbatim (no defensive copy — documented precondition so future refactors to a copy are deliberate), insertion order preserved when input is non-chronological.
+
+Also extracted `errorRatePct(errorCount, totalCount): number` as a pure counter helper alongside the factory. Tests cover zero denominator (returns 0 without NaN/Infinity), real baselines, threshold-boundary precision at 2 decimals, 100% cap on caller-bug inputs (`errorCount > totalCount`), large-count precision, and explicit throws on non-finite / negative inputs rather than silent propagation. `getAbuseDetail` now delegates the arithmetic to the helper while keeping the "baseline < 10 queries → null" display-policy decision at the call site (the helper is arithmetic; the null baseline is UI semantics).
+
+**Impact:**
+- Small module-shaped growth: the factory + helper add a handful of lines to `abuse-instances.ts`, the call site in `abuse.ts` is unchanged in shape (inlined arithmetic swapped for a helper call). The material growth is in tests — roughly 400 lines of behavior-pinning coverage across the factory's invariants, the helper's arithmetic edges, and the `getAbuseDetail` integration path.
+- `AbuseInstance` has a narrowed constructor within `packages/api/src/lib/security/**`. The type is still a structurally-typed interface exported from `@useatlas/types`, so route-layer test fixtures and the Zod wire-format parser can still produce the shape directly — the factory is advisory at the language level, load-bearing only inside the abuse engine. Upgrading to a branded type (phantom-symbol brand on `AbuseInstance` that only the factory can mint) is tracked as a follow-up; doing it in this PR would have touched every test fixture site.
+- `errorRatePct` is now reusable. The SLA surface (`ee/src/sla/metrics.ts`) does a structurally identical calculation with its own `Math.round(…) / 100` formula — not consolidated here, but flagged as a follow-up candidate since the helper is now importable.
+- **6 new integration tests** for `getAbuseDetail` against real in-memory state (seeded via `recordQueryEvent` + DB fixtures): existing-instance returns full counters + thresholds + open current instance, missing workspace returns null without a DB hit (proven by a `queryInvoked` flag, not just the null return), post-reinstate (level=none) returns null with DB still untouched, under-baseline queryCount surfaces `errorRatePct: null`, re-flagged workspace preserves prior closed instance with reinstatement boundary, DB load failure degrades to empty events rather than throwing (the log warning is explicitly asserted to fire, guarding against the silent-swallow pattern).
+- **Wire-format change: 2-decimal rounding.** `errorRatePct` now rounds to 2 decimals where it was unrounded before. The UI card in `detail-panel.tsx` displays via `.toFixed(0)` so the visible integer is unchanged, but a sibling usage in the same file computes a derived "over threshold" flag via `counters.errorRatePct / 100 > thresholds.errorRateThreshold`. Rounding to 1 decimal (the initial implementation) would have silently flipped that flag off within ±0.05% of the threshold while the engine itself still escalated on the unrounded fraction — so the UI and engine would have disagreed at boundary values. 2 decimals matches the SLA surface convention and keeps the boundary comparison faithful to 0.01%, which is well below any meaningful display resolution.
+
+**Category:** Module-deepening refactor that promotes an internal helper to a narrowed public factory. The factory pattern fits the "deep module with small interface" mold: callers pass one argument (the events array), the factory derives everything else. The caveat — and the follow-up — is that without a branded or nominal type, the factory is a convention, not a boundary. Generalizes: whenever a type has N derived fields that must agree, a single constructor function beats N scattered call sites hand-assembling the object, but the real enforcement wants a brand, a discriminated union, or a class-with-private-constructor on top.

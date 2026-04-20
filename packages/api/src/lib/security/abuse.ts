@@ -24,7 +24,7 @@ import {
   type AbuseThresholdConfig,
   type AbuseDetail,
 } from "@useatlas/types";
-import { splitIntoInstances } from "./abuse-instances";
+import { errorRatePct, splitIntoInstances } from "./abuse-instances";
 
 const log = createLogger("abuse");
 
@@ -358,10 +358,12 @@ export async function getAbuseDetail(
   const config = getAbuseConfig();
   const w = state.window;
   const queryCount = w.timestamps.length;
-  // Mirrors the check in `checkThresholds` — error rate is only meaningful
-  // once we've got a small baseline. Surface `null` so the UI can show
-  // "baseline pending" rather than a misleading 0% / 100%.
-  const errorRatePct = queryCount >= 10 ? (w.errorCount / queryCount) * 100 : null;
+  // Error rate is only meaningful once we've got a small baseline (mirrors
+  // `checkThresholds`). Surface `null` so the UI can show "baseline pending"
+  // rather than a misleading 0% / 100%. Arithmetic is delegated to the pure
+  // `errorRatePct` helper.
+  const errorRate =
+    queryCount >= 10 ? errorRatePct(w.errorCount, queryCount) : null;
 
   const events = await getAbuseEvents(workspaceId, eventLimit);
   const { currentInstance, priorInstances } = splitIntoInstances(events, priorLimit);
@@ -376,7 +378,7 @@ export async function getAbuseDetail(
     counters: {
       queryCount,
       errorCount: w.errorCount,
-      errorRatePct,
+      errorRatePct: errorRate,
       uniqueTablesAccessed: w.tables.size,
       escalations: state.escalations,
     },

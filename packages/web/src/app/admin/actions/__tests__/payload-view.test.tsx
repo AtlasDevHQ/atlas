@@ -22,22 +22,24 @@ afterEach(() => {
 
 describe("PayloadView — sql variants", () => {
   test("sql_write and sql render the same pre-block (alias parity)", () => {
-    const payload = { sql: "SELECT 1" };
-    const { container: sqlWrite } = render(
-      <PayloadView type="sql_write" payload={payload} />,
-    );
-    cleanup();
-    const { container: sqlPlain } = render(
-      <PayloadView type="sql" payload={payload} />,
-    );
-    // Both render a <pre> containing the SQL verbatim — locks the alias.
-    const preA = sqlWrite.querySelector("pre");
-    const preB = sqlPlain.querySelector("pre");
-    // sqlWrite was cleaned up, so it has no pre anymore — assert the alias
-    // via the second render alone plus a re-render of the first variant.
-    expect(preB?.textContent).toBe("SELECT 1");
+    // Render into two independent detached containers so we can capture
+    // both pre-blocks before any cleanup — a previous version cleaned up
+    // between renders and ended up asserting only on the second variant,
+    // which would have passed even if `sql_write` silently regressed to
+    // the JSON fallback. Independent mounts make the alias assertion real.
+    const sqlWriteHost = document.createElement("div");
+    const sqlHost = document.createElement("div");
+    render(<PayloadView type="sql_write" payload={{ sql: "SELECT 1" }} />, {
+      container: sqlWriteHost,
+    });
+    render(<PayloadView type="sql" payload={{ sql: "SELECT 1" }} />, {
+      container: sqlHost,
+    });
+    const preSqlWrite = sqlWriteHost.querySelector("pre");
+    const preSql = sqlHost.querySelector("pre");
+    expect(preSqlWrite?.textContent).toBe("SELECT 1");
+    expect(preSql?.textContent).toBe("SELECT 1");
     expect(consoleWarnSpy).not.toHaveBeenCalled();
-    void preA;
   });
 
   test("sql_write with non-string .sql falls through to JSON fallback + warns", () => {

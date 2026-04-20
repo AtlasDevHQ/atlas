@@ -18,12 +18,12 @@ import {
 import { ReasonDialog } from "@/ui/components/admin/queue";
 
 /**
- * ReasonDialog behaviors the /admin/actions page relies on, per #1593.
+ * ReasonDialog behaviors the /admin/actions page relies on.
  *
- * Distinct from the existing `reason-dialog.test.tsx` (which pins the
- * three-slot error precedence added in #1612). Tests here lock in the
- * timing, trimming, keyboard, and loading-disabled contracts that the
- * actions page approval flow depends on for correct audit behavior.
+ * Distinct from the sibling `reason-dialog.test.tsx` which covers the
+ * three-slot error-precedence contract. Tests here lock in the timing,
+ * trimming, keyboard, and loading-disabled contracts that the actions
+ * page approval flow depends on for correct audit behavior.
  */
 
 let consoleWarnSpy: Mock<(...args: unknown[]) => void>;
@@ -275,11 +275,11 @@ describe("ReasonDialog — trim behavior", () => {
 });
 
 describe("ReasonDialog — onOpenChange blocked while loading", () => {
-  test("attempt to close while loading is a no-op (cancel-doesn't-cancel fix)", async () => {
-    // Without the `if (!next && loading) return` guard, the operator
-    // thinks they aborted but the request still resolves server-side
-    // (and if the resolution is a deny, the audit trail records the
-    // deny without the operator's consent).
+  test("Cancel button is disabled while loading and clicks don't dispatch close", async () => {
+    // Primary cancel-doesn't-cancel guard: the Cancel button carries
+    // `disabled={loading}`, which removes the operator-visible path to
+    // cancel an in-flight request. Without this, clicking Cancel would
+    // look like "abort" but the request still resolves server-side.
     const onOpenChange = mock(() => {});
     render(
       <ReasonDialog
@@ -291,24 +291,46 @@ describe("ReasonDialog — onOpenChange blocked while loading", () => {
       />,
     );
 
-    // Cancel button should be disabled while loading.
     const buttons = [
       ...document.body.querySelectorAll("button"),
     ] as HTMLButtonElement[];
     const cancel = buttons.find((b) => b.textContent?.trim() === "Cancel");
     expect(cancel?.disabled).toBe(true);
 
-    // Radix's Escape handler fires onOpenChange(false). We simulate at the
-    // content level — the Dialog's onOpenChange prop should swallow the
-    // false-while-loading and never reach the caller's handler.
-    // Pressing Escape directly on the textarea is the cleanest simulation.
+    // Clicking a disabled button is a no-op at the DOM level — still
+    // assert onOpenChange never fires so a regression that dropped
+    // the disabled attribute would surface.
     await act(async () => {
-      fireEvent.keyDown(getTextarea(), { key: "Escape" });
+      fireEvent.click(cancel!);
+    });
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test("Radix-internal close path (Escape) while loading is swallowed by the guard", async () => {
+    // Belt-and-suspenders: even if Radix fires onOpenChange(false) from
+    // its internal Escape handler, the ReasonDialog wrapper
+    // `if (!next && loading) return` must swallow it. We exercise the
+    // guard by dispatching Escape at the document level (where Radix
+    // listens). If the Escape handler doesn't fire in jsdom, the guard
+    // still holds vacuously — the primary Cancel-disabled assertion
+    // above remains the load-bearing check.
+    const onOpenChange = mock(() => {});
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={onOpenChange}
+        title="Deny"
+        onConfirm={async () => {}}
+        loading
+      />,
+    );
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "Escape" });
     });
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
-  test("close path works normally when not loading", async () => {
+  test("Cancel dispatches onOpenChange(false) when not loading", async () => {
     const onOpenChange = mock(() => {});
     render(
       <ReasonDialog
@@ -318,12 +340,12 @@ describe("ReasonDialog — onOpenChange blocked while loading", () => {
         onConfirm={async () => {}}
       />,
     );
-    // Cancel button dispatches onOpenChange(false) directly.
     const buttons = [
       ...document.body.querySelectorAll("button"),
     ] as HTMLButtonElement[];
     const cancel = buttons.find((b) => b.textContent?.trim() === "Cancel");
     expect(cancel).toBeTruthy();
+    expect(cancel?.disabled).toBe(false);
     await act(async () => {
       fireEvent.click(cancel!);
     });

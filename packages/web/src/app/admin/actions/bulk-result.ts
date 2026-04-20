@@ -3,6 +3,20 @@ import {
   failedIdsFrom,
 } from "@/ui/components/admin/queue";
 
+/**
+ * Dialog title for the bulk-deny confirm dialog. Pluralization is
+ * load-bearing: a grammatically broken "Deny 0 actions" or "Deny 1
+ * actions" would ship as audit-trail-adjacent UX drift.
+ */
+export function bulkDenyTitle(selectedCount: number): string {
+  return `Deny ${selectedCount} action${selectedCount === 1 ? "" : "s"}`;
+}
+
+/** Confirm-button label for the bulk-deny dialog. */
+export function bulkDenyConfirmLabel(selectedCount: number): string {
+  return `Deny ${selectedCount}`;
+}
+
 export interface BulkResult {
   /** Banner copy when any request rejected. Null when nothing failed. */
   summary: string | null;

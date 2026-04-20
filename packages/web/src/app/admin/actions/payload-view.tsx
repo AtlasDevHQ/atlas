@@ -5,9 +5,10 @@
  * a JSON dump so the operator still sees *something* instead of a blank
  * expansion.
  *
- * The `console.warn` on malformed known-type payloads is load-bearing: it
- * surfaces schema drift when the agent starts emitting a new payload
- * shape. Without it, the fallback would silently hide the drift.
+ * The `console.warn` on malformed known-type payloads is intentional and
+ * asserted in `payload-view.test.tsx` — it surfaces schema drift when
+ * the agent starts emitting a new payload shape. Without it, the
+ * fallback would silently hide the drift.
  */
 export function PayloadView({
   type,

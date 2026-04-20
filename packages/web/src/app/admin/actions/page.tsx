@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
-import { summarizeBulkResult } from "./bulk-result";
+import { bulkDenyConfirmLabel, bulkDenyTitle, summarizeBulkResult } from "./bulk-result";
 import { ACTION_TYPE_LABELS, actionTypeIcon, actionTypeLabel } from "./labels";
 import { PayloadView } from "./payload-view";
 import { coerceRollbackWarning, logUnsurfacedRollbackWarning } from "./rollback-warning";
@@ -687,9 +687,9 @@ export default function ActionsPage() {
               setBulkError(null);
             }
           }}
-          title={`Deny ${selectedIds.size} action${selectedIds.size === 1 ? "" : "s"}`}
+          title={bulkDenyTitle(selectedIds.size)}
           description="Recorded in the audit log alongside your account. Reason is optional but recommended for traceability."
-          confirmLabel={`Deny ${selectedIds.size}`}
+          confirmLabel={bulkDenyConfirmLabel(selectedIds.size)}
           onConfirm={confirmBulkDeny}
           loading={bulkAction === "deny"}
           error={bulkError}

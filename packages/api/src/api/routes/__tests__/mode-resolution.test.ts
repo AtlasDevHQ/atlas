@@ -46,7 +46,8 @@ mock.module("@atlas/api/lib/residency/readonly", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-const { resolveMode, buildUnionStatusClause, parseModeFromCookie } = await import("../middleware");
+const { resolveMode, parseModeFromCookie } = await import("../middleware");
+const { resolveStatusClause } = await import("@atlas/api/lib/content-mode/port");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -214,7 +215,7 @@ describe("resolveMode", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildUnionStatusClause — shared helper for connections and prompt collections
+// parseModeFromCookie
 // ---------------------------------------------------------------------------
 
 describe("parseModeFromCookie", () => {
@@ -248,28 +249,63 @@ describe("parseModeFromCookie", () => {
   });
 });
 
-describe("buildUnionStatusClause", () => {
-  it("published mode restricts to status = 'published'", () => {
-    expect(buildUnionStatusClause("published")).toBe(" AND status = 'published'");
+// resolveStatusClause is the non-Effect public successor to
+// `buildUnionStatusClause` (retired in #1531). The same mode-semantics
+// invariants must hold for the simple-table clause regardless of which
+// entry point emits it — cover them here so a regression in either the
+// Effect path or the direct-call path (getPopularSuggestions) is caught.
+// The Effect path has richer coverage in `content-mode/__tests__/registry.test.ts`.
+describe("resolveStatusClause (simple content tables)", () => {
+  it("published mode restricts to <alias>.status = 'published'", () => {
+    expect(resolveStatusClause("query_suggestions", "published", "qs")).toBe(
+      "qs.status = 'published'",
+    );
   });
 
   it("developer mode includes draft alongside published", () => {
-    expect(buildUnionStatusClause("developer")).toBe(" AND status IN ('published', 'draft')");
+    expect(resolveStatusClause("query_suggestions", "developer", "qs")).toBe(
+      "qs.status IN ('published', 'draft')",
+    );
   });
 
   it("never returns archived in either mode (archived is always excluded)", () => {
-    expect(buildUnionStatusClause("published")).not.toContain("archived");
-    expect(buildUnionStatusClause("developer")).not.toContain("archived");
+    expect(resolveStatusClause("connections", "published", "c")).not.toContain("archived");
+    expect(resolveStatusClause("connections", "developer", "c")).not.toContain("archived");
   });
 
   it("developer mode never surfaces draft_delete via the simple union", () => {
-    // Tombstones only apply to semantic_entities (CTE overlay). Connections
-    // and prompt collections don't use draft_delete.
-    expect(buildUnionStatusClause("developer")).not.toContain("draft_delete");
+    // Tombstones only apply to semantic_entities (CTE overlay). Connections,
+    // prompt_collections, and query_suggestions don't use draft_delete.
+    expect(resolveStatusClause("prompt_collections", "developer", "p")).not.toContain(
+      "draft_delete",
+    );
   });
 
   it("undefined mode defaults to published (most restrictive)", () => {
-    expect(buildUnionStatusClause(undefined)).toBe(" AND status = 'published'");
+    expect(resolveStatusClause("query_suggestions", undefined, "qs")).toBe(
+      "qs.status = 'published'",
+    );
+  });
+
+  it("accepts either the segment key or the physical table name for aliases", () => {
+    expect(resolveStatusClause("prompts", "published", "p")).toBe(
+      "p.status = 'published'",
+    );
+    expect(resolveStatusClause("prompt_collections", "published", "p")).toBe(
+      "p.status = 'published'",
+    );
+  });
+
+  it("throws for unregistered tables (prevents typo drift)", () => {
+    expect(() => resolveStatusClause("bogus_table", "published", "b")).toThrow(
+      /not a registered content-mode table/,
+    );
+  });
+
+  it("throws for exotic tables — exotic entries need CTE overlays", () => {
+    expect(() =>
+      resolveStatusClause("semantic_entities", "developer", "s"),
+    ).toThrow(/exotic entry/);
   });
 });
 

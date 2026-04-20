@@ -377,8 +377,6 @@ export function parseModeFromCookie(cookieHeader: string | null): string | undef
   return undefined;
 }
 
-export { buildUnionStatusClause } from "@atlas/api/lib/mode";
-
 /**
  * Resolve the effective atlas mode for this request.
  *

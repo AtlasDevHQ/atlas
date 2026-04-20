@@ -27,6 +27,7 @@ import type {
 import {
   ExoticReadFilterUnavailableError,
   PublishPhaseError,
+  resolveStatusClause,
   UnknownTableError,
 } from "./port";
 import { CONTENT_MODE_TABLES } from "./tables";
@@ -93,12 +94,6 @@ export class ContentModeRegistry extends Context.Tag("ContentModeRegistry")<
   ContentModeRegistry,
   ContentModeRegistryService
 >() {}
-
-function defaultReadFilter(alias: string, mode: AtlasMode): string {
-  return mode === "developer"
-    ? `${alias}.status IN ('published', 'draft')`
-    : `${alias}.status = 'published'`;
-}
 
 /** Collapse a simple entry to its resolved DB identifiers, applying defaults. */
 function resolveSimple(entry: SimpleModeTable): {
@@ -256,7 +251,11 @@ export function makeService(
         }
         switch (entry.kind) {
           case "simple":
-            return defaultReadFilter(alias, mode);
+            // Delegate to the pure port helper so Effect and non-Effect
+            // callers (e.g. getPopularSuggestions) share one source of
+            // truth for simple-table mode semantics. `entry.key` is
+            // guaranteed resolvable since we found it above.
+            return resolveStatusClause(entry.key, mode, alias);
           case "exotic": {
             const exotic: ExoticModeAdapter = entry;
             if (!exotic.readFilter) {

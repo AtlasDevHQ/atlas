@@ -22,7 +22,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
-import { buildUnionStatusClause } from "@atlas/api/lib/mode";
+import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 
 const log = createLogger("internal-db");
 
@@ -1240,17 +1240,22 @@ export async function getPopularSuggestions(
     //     resolveMode(), so drafts can only leak via developer-mode
     //     admins previewing their own queue.
     //
-    // `buildUnionStatusClause()` is the shared helper driving the same
-    // mode branch on `connections` and `prompt_collections` — reuse it
-    // here so mode semantics stay in lockstep across every
-    // user-surfaced table. It returns " AND status = 'published'" or
-    // " AND status IN ('published', 'draft')" with the leading AND +
-    // space, safe to concat directly onto the WHERE clause.
-    const statusClause = buildUnionStatusClause(mode);
+    // `resolveStatusClause()` (in `content-mode/port.ts`) is the single
+    // source of truth for simple-table mode semantics — the same helper
+    // the Effect `ContentModeRegistry.readFilter` delegates to. Using it
+    // here keeps `query_suggestions` in lockstep with connections and
+    // prompt_collections on every mode-semantics change. The helper
+    // returns `query_suggestions.status = 'published'` (or `IN (...)`),
+    // with no leading AND — we prefix it ourselves.
+    const statusClause = resolveStatusClause(
+      "query_suggestions",
+      mode,
+      "query_suggestions",
+    );
 
     return await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
-       WHERE ${orgClause} AND approval_status = 'approved'${statusClause}
+       WHERE ${orgClause} AND approval_status = 'approved' AND ${statusClause}
        ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );

@@ -11,7 +11,7 @@ The 1.2.0 mode system worked but was shallow. Four content tables participated â
 
 | Concern | Pre-registry state |
 |---------|--------------------|
-| Read filter | Three drifting styles: `buildUnionStatusClause()` helper for connections, inline `statusClauseFor()` in prompt scoping, `listEntitiesWithOverlay()` CTE for semantic entities, inline `status='published'` filter for query_suggestions. |
+| Read filter | Three drifting styles: a hand-written union-status helper for connections, inline `statusClauseFor()` in prompt scoping, `listEntitiesWithOverlay()` CTE for semantic entities, inline `status='published'` filter for query_suggestions. All simple-table paths now funnel through one `resolveStatusClause()` in `content-mode/port.ts` (#1531); the Effect `ContentModeRegistry.readFilter` delegates to it so Effect and non-Effect callers share one source of truth. |
 | Draft counts | Hand-written 6-branch `UNION ALL` in `routes/mode.ts:97â€“127`. |
 | Publish transaction | Four parallel `UPDATE` statements in `admin-publish.ts` plus inline `applyTombstones()` + `promoteDraftEntities()` calls. |
 | Wire type | `ModeDraftCounts` in `@useatlas/types/mode` had to stay in lockstep with all three surfaces by hand. |

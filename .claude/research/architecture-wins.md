@@ -990,3 +990,32 @@ Tests cover both layers: runtime conversions (asPercentage / asRatio identity, p
 - One new module (`percentage.ts`) with two types + four constructors. Ten production sites updated. The convention-collision problem is resolved at the type layer, not by adding comments ("this is 0–100" vs "this is 0–1") that rot.
 
 **Category:** Type-level boundary enforcement for numeric units. Brand-via-unique-symbol converts structural `number` into nominal scale-specific types without runtime overhead. Generalizes to *any* unit-mixup risk: milliseconds vs seconds, bytes vs KB, basis points vs percentage, UTC vs local timestamps. Whenever the same primitive type means two incompatible things in different positions and the compiler silently lets you mix them, brand them. The explicit conversion call is the feature — it's where the bug would have been.
+
+
+---
+
+## 37. `resolveStatusClause` port helper — retires `buildUnionStatusClause` + `lib/mode.ts`
+
+**Date:** 2026-04-20
+**Issue:** #1531
+**PR:** refactor/content-mode-popular-suggestions
+
+**Problem:** Phase 2 of #1515 (win #26) migrated four of five simple-table mode-filter call sites onto `ContentModeRegistry.readFilter`. One caller held out: `getPopularSuggestions` in `packages/api/src/lib/db/internal.ts`. The registry imports `InternalDB` from `internal.ts` to power `countAllDrafts`, so having `internal.ts` import the registry in turn creates a module-init cycle with live bindings in the wrong order. Phase 2 therefore kept `internal.ts` on the old `buildUnionStatusClause(mode): string` helper in `packages/api/src/lib/mode.ts` — a parallel, non-Effect implementation of the exact same simple-table semantics. Two parallel implementations of the same mode-filter contract: the registry's Effect path (validated, tagged errors, delegates to `defaultReadFilter`) and the pure helper (no validation, leading `" AND "`). A contributor adjusting the simple-table overlay semantics would have to edit both places or silently drift one surface.
+
+**Solution:** Added `resolveStatusClause(table, mode, alias): string` to `packages/api/src/lib/content-mode/port.ts` as a pure, non-Effect helper and wired the registry's `readFilter` simple-branch to delegate to it. One source of truth, two call-site ergonomics:
+
+- **Effect callers** `yield* ContentModeRegistry` and call `registry.readFilter(table, mode, alias)` — get typed errors (`UnknownTableError`, `ExoticReadFilterUnavailableError`) via `Effect.fail`. Internally the simple branch calls `resolveStatusClause(entry.key, mode, alias)` after its lookup.
+- **Non-Effect callers** (e.g. `getPopularSuggestions`) call `resolveStatusClause(table, mode, alias)` directly. Unknown or exotic tables throw synchronously instead of flowing through Effect.
+
+The helper's signature intentionally mirrors the registry's `readFilter`, and it resolves the table against the live `CONTENT_MODE_TABLES` tuple so a rename or new simple table takes effect at both call paths simultaneously. The return value uses the `<alias>.status = '…'` shape (no leading `" AND "`) — callers compose the `AND` themselves, which matches how the registry already emits its filters at every adopter site. `getPopularSuggestions` migrated with a one-line change to the `WHERE` composition; the `query_suggestions` table now explicitly aliases itself to keep the clause unambiguous.
+
+The cycle-avoidance mechanics work because the ESM live-binding resolution for `port → tables → adapters/semantic-entities → port` only accesses `PublishPhaseError` inside function bodies in `adapters/semantic-entities.ts`, never at module init. `port.ts`'s class declarations finish before any function body runs, so the bindings resolve by the time `resolveStatusClause` actually consults `CONTENT_MODE_TABLES`. The comment on the import in `port.ts` documents this so a future refactor doesn't break it.
+
+**Impact:**
+- **Last caller migrated.** `buildUnionStatusClause` had one production call site after phase 2; both it and `packages/api/src/lib/mode.ts` are now deleted. The middleware re-export in `api/routes/middleware.ts` (`export { buildUnionStatusClause } from "@atlas/api/lib/mode"`) is gone.
+- **One source of truth.** Change the simple-table overlay semantics once in `resolveStatusClause`; the Effect path and every direct caller pick it up. A regression in either surface is caught by the shared test invariants.
+- **Test coverage migrated rather than duplicated.** The five original `buildUnionStatusClause` cases in `mode-resolution.test.ts` moved to `resolveStatusClause`, and four new cases exercise dispatch the old helper couldn't (segment-key vs physical-name resolution, unregistered-table throw, exotic-table refusal). The existing `registry.test.ts` `readFilter` suite continues to cover the Effect surface via delegation.
+- **Line counts:** net `-30` lines (28-line helper added in `port.ts` with docblock + 8 new test cases; `lib/mode.ts` 28 lines and middleware re-export deleted; 5 old test cases replaced with 8 new ones).
+- **Documentation:** CLAUDE.md's Content Mode System rule now names the registry's `readFilter` and the port helper instead of `buildUnionStatusClause`; `apps/docs/content/docs/architecture/content-mode.mdx` notes the phase-3 consolidation.
+
+**Category:** Consolidation follow-up to a deep module (#26). When a migration leaves one caller behind for a structural reason (circular import), the fix is usually to push the pure-function portion down the dependency graph rather than lift the caller up — here the pure helper stays in the content-mode package (no auth/logger/middleware deps) where both Effect and non-Effect callers can safely reach it. The registry remains the validated, Effect-typed gateway; the port helper is the pure SQL generator it delegates to. Same pattern as the `lib/` ↔ `api/routes/` split documented in CLAUDE.md's Code Style rule.

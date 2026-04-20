@@ -29,6 +29,7 @@ import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import { AuditStatsSchema, AuditFacetsSchema, AuditConnectionMetaSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const LIMIT = 50;
 
@@ -224,6 +225,7 @@ export default function AuditPage() {
   }
 
   return (
+    <TooltipProvider>
     <div className="p-6">
       <ErrorBoundary>
       <Tabs
@@ -490,5 +492,6 @@ export default function AuditPage() {
       </Tabs>
       </ErrorBoundary>
     </div>
+    </TooltipProvider>
   );
 }

@@ -14,7 +14,7 @@ export function StatCard({
   title: string;
   value: string | number;
   icon?: ReactNode;
-  description?: string;
+  description?: ReactNode;
   className?: string;
 }) {
   return (

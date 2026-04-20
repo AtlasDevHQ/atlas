@@ -8,8 +8,8 @@ import {
 
 const RTF = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 
-function absoluteTimestamp(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+function absoluteTimestamp(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -18,8 +18,8 @@ function absoluteTimestamp(iso: string): string {
   });
 }
 
-function relativeTime(iso: string): string {
-  const diffMs = new Date(iso).getTime() - Date.now();
+function relativeTime(ms: number): string {
+  const diffMs = ms - Date.now();
   const absSec = Math.abs(Math.round(diffMs / 1000));
   if (absSec < 60) return RTF.format(Math.round(diffMs / 1000), "second");
   const absMin = Math.abs(Math.round(diffMs / 60000));
@@ -34,6 +34,10 @@ function relativeTime(iso: string): string {
  * Caller must wrap the tree in `<TooltipProvider>` — this component
  * reuses the existing shadcn Tooltip primitives and does not create
  * its own provider.
+ *
+ * Invalid ISO strings render a dash rather than `"NaN days ago"` /
+ * `"Invalid Date"`. Servers should emit valid ISO; the guard is a
+ * belt-and-braces floor so a single bad row never degrades the table.
  */
 export function RelativeTimestamp({
   iso,
@@ -42,16 +46,19 @@ export function RelativeTimestamp({
   iso: string;
   label?: string;
 }) {
+  const ms = new Date(iso).getTime();
+  if (Number.isNaN(ms)) return <span className="text-muted-foreground">—</span>;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span>
           {label ? `${label}: ` : ""}
-          {relativeTime(iso)}
+          {relativeTime(ms)}
         </span>
       </TooltipTrigger>
       <TooltipContent>
-        <time dateTime={iso}>{absoluteTimestamp(iso)}</time>
+        <time dateTime={iso}>{absoluteTimestamp(ms)}</time>
       </TooltipContent>
     </Tooltip>
   );

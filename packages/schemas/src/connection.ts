@@ -8,12 +8,10 @@
  * `@useatlas/types` so mode-drift (published/draft/archived) fails parse
  * at the wire boundary instead of rendering a neutral fallback.
  *
- * `ConnectionHealth.status` tightens to a local enum literal
- * (`healthy | degraded | unhealthy`) matching the canonical `HealthStatus`
- * union in `@useatlas/types`. Not imported from a tuple because
- * `@useatlas/types` doesn't yet export one — #1703 tracks adding
- * `HEALTH_STATUSES` on the next types bump so this can switch to
- * `z.enum(HEALTH_STATUSES)` for drift-free construction.
+ * `ConnectionHealth.status` uses `z.enum(HEALTH_STATUSES)` from
+ * `@useatlas/types` so a new health-status variant added to the
+ * tuple fails at the schema call site rather than silently parsing
+ * through an inline enum.
  *
  * `ConnectionInfo.dbType` deliberately stays structurally typed via `as
  * z.ZodType<...>` (not `satisfies`) because plugins can register dbType
@@ -26,13 +24,14 @@
 import { z } from "zod";
 import {
   CONNECTION_STATUSES,
+  HEALTH_STATUSES,
   type ConnectionHealth,
   type ConnectionInfo,
 } from "@useatlas/types";
 import { IsoTimestampSchema } from "./common";
 
 export const ConnectionHealthSchema = z.object({
-  status: z.enum(["healthy", "degraded", "unhealthy"]),
+  status: z.enum(HEALTH_STATUSES),
   latencyMs: z.number(),
   message: z.string().optional(),
   checkedAt: IsoTimestampSchema,

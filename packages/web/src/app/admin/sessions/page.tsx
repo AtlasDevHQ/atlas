@@ -11,13 +11,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { SessionStatsSchema, SessionsListSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { bulkFailureSummary, failedIdsFrom } from "@/ui/components/admin/queue";
@@ -212,9 +212,7 @@ export default function SessionsPage() {
             </div>
 
             {bulkError && <ErrorBanner message={bulkError} />}
-            {revokeError && !bulkError && (
-              <ErrorBanner message={friendlyError(revokeError)} />
-            )}
+            {!bulkError && <MutationErrorSurface error={revokeError} feature="Sessions" />}
             <AdminContentWrapper
               loading={loading}
               error={error}

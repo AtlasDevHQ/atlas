@@ -34,10 +34,11 @@ import { z } from "zod";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   ShieldCheck,
@@ -252,7 +253,13 @@ function ClassificationsTab() {
         </div>
       )}
 
-      {actionError && <ErrorBanner message={friendlyError(actionError)} />}
+      {!editingId && (
+        <MutationErrorSurface
+          error={actionError}
+          feature="PII Compliance"
+          onRetry={resetAction}
+        />
+      )}
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -384,7 +391,7 @@ function ClassificationsTab() {
         }}
         submitLabel="Save Changes"
         saving={saving}
-        serverError={actionError ? friendlyError(actionError) : null}
+        serverError={friendlyErrorOrNull(actionError)}
       >
         {(form) => (
           <>

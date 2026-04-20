@@ -30,13 +30,14 @@ import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   SemanticFileTree,
   type SemanticSelection,
 } from "@/ui/components/admin/semantic-file-tree";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { EntityVersionHistory } from "@/ui/components/admin/entity-version-history";
@@ -855,11 +856,7 @@ export default function SemanticPage() {
               The agent will no longer be able to query this table. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {deleteError && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {friendlyError(deleteError)}
-            </div>
-          )}
+          <MutationErrorSurface error={deleteError} feature="Semantic Layer" variant="inline" />
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deletingEntity}>Cancel</AlertDialogCancel>
             <AlertDialogAction

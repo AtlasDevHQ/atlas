@@ -7,8 +7,7 @@ import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -557,12 +556,8 @@ export default function SemanticImprovePage() {
               </div>
               <ScrollArea className="min-h-0 flex-1 p-4">
                 <div className="space-y-3">
-                  {pendingError && (
-                    <ErrorBanner message={pendingError.message} />
-                  )}
-                  {mutationError && (
-                    <ErrorBanner message={friendlyError(mutationError)} />
-                  )}
+                  <MutationErrorSurface error={pendingError} feature="Semantic Layer" onRetry={refetchPending} />
+                  <MutationErrorSurface error={mutationError} feature="Semantic Layer" />
                   {proposals.length === 0 && !pendingLoading && (
                     <div className="py-12 text-center text-xs text-muted-foreground">
                       {messages.length === 0

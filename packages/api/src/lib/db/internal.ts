@@ -22,7 +22,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
-import { buildUnionStatusClause } from "@atlas/api/lib/mode";
+import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 
 const log = createLogger("internal-db");
 
@@ -1227,30 +1227,45 @@ export async function getPopularSuggestions(
   mode: import("@useatlas/types/auth").AtlasMode = "published",
 ): Promise<QuerySuggestionRow[]> {
   if (!hasInternalDB()) return [];
+
+  // Two independent gates enforce end-to-end moderation visibility:
+  //   approval_status = 'approved' — pending / hidden rows never
+  //     surface to the empty state, regardless of mode.
+  //   status IN (...)              — the 1.2.0 mode axis: non-admin
+  //     callers are downgraded to `published` upstream by
+  //     resolveMode(), so drafts can only leak via developer-mode
+  //     admins previewing their own queue.
+  //
+  // `resolveStatusClause()` (in `content-mode/port.ts`) is the single
+  // source of truth for simple-table mode semantics — the same helper
+  // the Effect `ContentModeRegistry.readFilter` delegates to. Using it
+  // here keeps `query_suggestions` in lockstep with connections and
+  // prompt_collections on every mode-semantics change. The helper
+  // returns `query_suggestions.status = 'published'` (or `IN (...)`),
+  // with no leading AND — we prefix it ourselves.
+  //
+  // Computed outside the try/catch on purpose: the helper's throw path
+  // is reserved for programmer errors (bogus table name, tuple rename
+  // that drops `query_suggestions`). The DB-connectivity catch below
+  // returns `[]` + log.error, which would mask that class of bug as
+  // "no popular suggestions" — the user sees an empty state, alerting
+  // fires on every call, but nothing distinguishes it from a real DB
+  // outage. Surfacing the throw to the caller converts it to a 500
+  // with a stack instead.
+  const statusClause = resolveStatusClause(
+    "query_suggestions",
+    mode,
+    "query_suggestions",
+  );
+
   try {
     const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
     const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
     const limitIdx = params.length;
 
-    // Two independent gates enforce end-to-end moderation visibility:
-    //   approval_status = 'approved' — pending / hidden rows never
-    //     surface to the empty state, regardless of mode.
-    //   status IN (...)              — the 1.2.0 mode axis: non-admin
-    //     callers are downgraded to `published` upstream by
-    //     resolveMode(), so drafts can only leak via developer-mode
-    //     admins previewing their own queue.
-    //
-    // `buildUnionStatusClause()` is the shared helper driving the same
-    // mode branch on `connections` and `prompt_collections` — reuse it
-    // here so mode semantics stay in lockstep across every
-    // user-surfaced table. It returns " AND status = 'published'" or
-    // " AND status IN ('published', 'draft')" with the leading AND +
-    // space, safe to concat directly onto the WHERE clause.
-    const statusClause = buildUnionStatusClause(mode);
-
     return await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
-       WHERE ${orgClause} AND approval_status = 'approved'${statusClause}
+       WHERE ${orgClause} AND approval_status = 'approved' AND ${statusClause}
        ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );

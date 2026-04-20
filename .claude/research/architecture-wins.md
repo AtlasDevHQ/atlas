@@ -993,7 +993,35 @@ Tests cover both layers: runtime conversions (asPercentage / asRatio identity, p
 
 ---
 
-## 37. `@useatlas/schemas` — phase 4 Regions family migration
+## 37. `resolveStatusClause` port helper — retires `buildUnionStatusClause` + `lib/mode.ts`
+
+**Date:** 2026-04-20
+**Issue:** #1531
+**PR:** refactor/content-mode-popular-suggestions
+
+**Problem:** Phase 2 of #1515 (win #26) migrated four of five simple-table mode-filter call sites onto `ContentModeRegistry.readFilter`. One caller held out: `getPopularSuggestions` in `packages/api/src/lib/db/internal.ts`. The registry imports `InternalDB` from `internal.ts` to power `countAllDrafts`, so having `internal.ts` import the registry in turn creates a module-init cycle with live bindings in the wrong order. Phase 2 therefore kept `internal.ts` on the old `buildUnionStatusClause(mode): string` helper in `packages/api/src/lib/mode.ts` — a parallel, non-Effect implementation of the exact same simple-table semantics. Two parallel implementations of the same mode-filter contract: the registry's Effect path (validated, tagged errors, delegates to `defaultReadFilter`) and the pure helper (no validation, leading `" AND "`). A contributor adjusting the simple-table overlay semantics would have to edit both places or silently drift one surface.
+
+**Solution:** Added `resolveStatusClause(table, mode, alias): string` to `packages/api/src/lib/content-mode/port.ts` as a pure, non-Effect helper and wired the registry's `readFilter` simple-branch to delegate to it. One source of truth, two call-site ergonomics:
+
+- **Effect callers** `yield* ContentModeRegistry` and call `registry.readFilter(table, mode, alias)` — get typed errors (`UnknownTableError`, `ExoticReadFilterUnavailableError`) via `Effect.fail`. Internally the simple branch calls `resolveStatusClause(entry.key, mode, alias)` after its lookup.
+- **Non-Effect callers** (e.g. `getPopularSuggestions`) call `resolveStatusClause(table, mode, alias)` directly. Unknown or exotic tables throw synchronously instead of flowing through Effect.
+
+The helper's signature intentionally mirrors the registry's `readFilter`, and it resolves the table against the live `CONTENT_MODE_TABLES` tuple so a rename or new simple table takes effect at both call paths simultaneously. The return value uses the `<alias>.status = '…'` shape (no leading `" AND "`) — callers compose the `AND` themselves, which matches how the registry already emits its filters at every adopter site. `getPopularSuggestions` migrated with a one-line change to the `WHERE` composition; the `query_suggestions` table now explicitly aliases itself to keep the clause unambiguous.
+
+The cycle-avoidance mechanics work because the ESM live-binding resolution for `port → tables → adapters/semantic-entities → port` only accesses `PublishPhaseError` inside function bodies in `adapters/semantic-entities.ts`, never at module init. `port.ts`'s class declarations finish before any function body runs, so the bindings resolve by the time `resolveStatusClause` actually consults `CONTENT_MODE_TABLES`. The comment on the import in `port.ts` documents this so a future refactor doesn't break it.
+
+**Impact:**
+- **Last caller migrated.** `buildUnionStatusClause` had one production call site after phase 2; both it and `packages/api/src/lib/mode.ts` are now deleted. The middleware re-export in `api/routes/middleware.ts` (`export { buildUnionStatusClause } from "@atlas/api/lib/mode"`) is gone.
+- **One source of truth.** Change the simple-table overlay semantics once in `resolveStatusClause`; the Effect path and every direct caller pick it up. A regression in either surface is caught by the shared test invariants.
+- **Test coverage migrated rather than duplicated.** The five original `buildUnionStatusClause` cases in `mode-resolution.test.ts` moved to `resolveStatusClause`, and four new cases exercise dispatch the old helper couldn't (segment-key vs physical-name resolution, unregistered-table throw, exotic-table refusal). The existing `registry.test.ts` `readFilter` suite continues to cover the Effect surface via delegation.
+- **Line counts:** net `-30` lines (28-line helper added in `port.ts` with docblock + 8 new test cases; `lib/mode.ts` 28 lines and middleware re-export deleted; 5 old test cases replaced with 8 new ones).
+- **Documentation:** CLAUDE.md's Content Mode System rule now names the registry's `readFilter` and the port helper instead of `buildUnionStatusClause`; `apps/docs/content/docs/architecture/content-mode.mdx` notes the phase-3 consolidation.
+
+**Category:** Consolidation follow-up to a deep module (#26). When a migration leaves one caller behind for a structural reason (circular import), the fix is usually to push the pure-function portion down the dependency graph rather than lift the caller up — here the pure helper stays in the content-mode package (no auth/logger/middleware deps) where both Effect and non-Effect callers can safely reach it. The registry remains the validated, Effect-typed gateway; the port helper is the pure SQL generator it delegates to. Same pattern as the `lib/` ↔ `api/routes/` split documented in CLAUDE.md's Code Style rule.
+
+---
+
+## 38. `@useatlas/schemas` — phase 4 Regions family migration
 
 **Date:** 2026-04-20
 **Issue:** #1648
@@ -1010,7 +1038,7 @@ Tests cover both layers: runtime conversions (asPercentage / asRatio identity, p
 - **Seven `as z.ZodType<T>` casts replaced with `satisfies z.ZodType<T>`** — a field rename in `@useatlas/types` now breaks `residency.ts` at compile time instead of silently drifting. Composite responses also get the `satisfies` guard against locally-declared wire-only interfaces.
 - **`workspaceCount` tightened to `z.number().int().nonnegative()`** — the field is a count, so fractional / negative values were previously accepted but semantically bogus. Cheap refinement at zero runtime cost.
 - **Zero OpenAPI drift** — `scripts/check-openapi-drift.sh` reports no changes. The shared schemas produce identical JSON to what `@hono/zod-openapi` was emitting for the route-level copies.
-- **Review-surfaced follow-ups filed, not fixed inline:** `admin-residency.ts` silently coerces unknown DB migration statuses to `"failed"` without a log and fires `triggerMigrationExecution` without catching failures (both pre-existing); `RegionMigration.status` + `completedAt` + `errorMessage` want a `z.discriminatedUnion("status", …)` shape to encode "terminal status iff completedAt non-null" (follows win #35's `AbuseInstance` brand pattern); a shared `IsoTimestampSchema = z.iso.datetime()` helper would harden every `z.string()` timestamp field across every schema family.
+- **Review-surfaced follow-ups filed, not fixed inline:** `admin-residency.ts` silently coerces unknown DB migration statuses to `"failed"` without a log and fires `triggerMigrationExecution` without catching failures (both pre-existing, #1695); `RegionMigration.status` + `completedAt` + `errorMessage` want a `z.discriminatedUnion("status", …)` shape to encode "terminal status iff completedAt non-null" (follows win #35's `AbuseInstance` brand pattern, #1696); a shared `IsoTimestampSchema = z.iso.datetime()` helper would harden every `z.string()` timestamp field across every schema family (#1697).
 - **~8 schemas remain** (SLA family, PIIColumnClassification, SemanticDiffResponse, Branding, ModelConfig, ConnectionInfo/Health, audit analytics, token usage/trends, UsageSummary). Tracker #1648 stays open with the dwindling punch list.
 
-**Category:** Continuation of wins #32 / #33's cross-package consolidation. The per-family migration tempo is now mechanical: (1) identify the dual-defined schemas, (2) hoist to `packages/schemas/src/<family>.ts` with `satisfies z.ZodType<T>`, (3) pin enums to the canonical `@useatlas/types` tuple, (4) replace the route copy with an import, (5) replace the web copy with a re-export. Each phase has also surfaced a second-order win — phase 3 found the silent MRR bug (#1680) and the missing `backups.status` CHECK constraint (#1679) by forcing a second read of each shape. Phase 4 surfaced no incidentals, but the pattern remains: every migration is one more shape where a wire-format drift fails parse loudly instead of passing through untyped.
+**Category:** Continuation of wins #32 / #33's cross-package consolidation. The per-family migration tempo is now mechanical: (1) identify the dual-defined schemas, (2) hoist to `packages/schemas/src/<family>.ts` with `satisfies z.ZodType<T>`, (3) pin enums to the canonical `@useatlas/types` tuple, (4) replace the route copy with an import, (5) replace the web copy with a re-export. Each phase has also surfaced a second-order win — phase 3 found the silent MRR bug (#1680) and the missing `backups.status` CHECK constraint (#1679) by forcing a second read of each shape. Phase 4 surfaced three reviewer-caught follow-ups instead (#1695 / #1696 / #1697), but the pattern remains: every migration is one more shape where a wire-format drift fails parse loudly instead of passing through untyped.

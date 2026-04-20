@@ -26,6 +26,7 @@ export {
   type PromotionReport,
   ExoticReadFilterUnavailableError,
   PublishPhaseError,
+  resolveStatusClause,
   UnknownTableError,
 } from "./port";
 

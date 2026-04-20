@@ -3,7 +3,9 @@
 import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
+import { bulkDenyConfirmLabel, bulkDenyTitle, summarizeBulkResult } from "./bulk-result";
 import { ACTION_TYPE_LABELS, actionTypeIcon, actionTypeLabel } from "./labels";
+import { PayloadView } from "./payload-view";
 import { coerceRollbackWarning, logUnsurfacedRollbackWarning } from "./rollback-warning";
 import { useAtlasConfig } from "@/ui/context";
 import {
@@ -31,9 +33,7 @@ import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
-  bulkFailureSummary,
   BulkRequestError,
-  failedIdsFrom,
   QueueFilterRow,
   ReasonDialog,
   RelativeTimestamp,
@@ -82,72 +82,6 @@ const EMPTY_MESSAGES: Record<StatusFilter, string> = {
   rolled_back: "No rolled back actions.",
   all: "No actions recorded yet.",
 };
-
-function PayloadView({ type, payload }: { type: string; payload: Record<string, unknown> }) {
-  const t = type.toLowerCase();
-
-  if (t === "sql_write" || t === "sql") {
-    if (typeof payload.sql === "string") {
-      return (
-        <pre className="overflow-auto rounded border bg-muted/60 p-2 font-mono text-xs leading-relaxed">
-          {payload.sql}
-        </pre>
-      );
-    }
-    console.warn(`PayloadView: ${type} payload missing string .sql`, payload);
-  }
-
-  if (t === "api_call" || t === "api") {
-    const method = typeof payload.method === "string" ? payload.method : null;
-    const url = typeof payload.url === "string" ? payload.url : null;
-    if (method || url) {
-      const body = payload.body;
-      return (
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2 rounded border bg-muted/60 px-2 py-1.5 font-mono text-xs">
-            {method && (
-              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                {method}
-              </span>
-            )}
-            {url && <span className="truncate text-foreground">{url}</span>}
-          </div>
-          {body != null && (
-            <pre className="overflow-auto rounded border bg-muted/40 p-2 text-xs">
-              {typeof body === "string" ? body : JSON.stringify(body, null, 2)}
-            </pre>
-          )}
-        </div>
-      );
-    }
-    console.warn(`PayloadView: ${type} payload missing method/url`, payload);
-  }
-
-  if (t === "file_write" || t === "file") {
-    if (typeof payload.path === "string") {
-      return (
-        <div className="space-y-1.5">
-          <div className="rounded border bg-muted/60 px-2 py-1.5 font-mono text-xs">
-            {payload.path}
-          </div>
-          {typeof payload.content === "string" && (
-            <pre className="overflow-auto rounded border bg-muted/40 p-2 font-mono text-xs">
-              {payload.content}
-            </pre>
-          )}
-        </div>
-      );
-    }
-    console.warn(`PayloadView: ${type} payload missing string .path`, payload);
-  }
-
-  // Fallback so payloads from new tools surface unformatted instead of disappearing.
-  return (
-    <pre className="overflow-auto rounded border bg-muted/40 p-2 text-xs">
-      {JSON.stringify(payload, null, 2)}
-    </pre>
-  );
-}
 
 function WarningBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   return (
@@ -357,8 +291,8 @@ export default function ActionsPage() {
       const results = await Promise.allSettled(
         ids.map((id) => bulkRequest(id, "deny", body)),
       );
-      const failedCount = results.filter((r) => r.status === "rejected").length;
-      if (failedCount === 0) {
+      const { summary, remainingIds } = summarizeBulkResult(results, ids, "denials");
+      if (summary === null) {
         setSelectedIds(new Set());
         setBulkDenyOpen(false);
         setRefetchKey((k) => k + 1);
@@ -367,9 +301,8 @@ export default function ActionsPage() {
       // Partial / total failure: narrow selection to failed IDs and surface
       // the summary inside the dialog so a retry click sees the *current*
       // attempt's stats, not the prior one (bulkError clears at fn entry).
-      const summary = bulkFailureSummary(results, ids, "denials");
       setBulkError(summary);
-      setSelectedIds(new Set(failedIdsFrom(results, ids)));
+      setSelectedIds(remainingIds);
       setRefetchKey((k) => k + 1);
     } finally {
       setBulkAction(null);
@@ -382,13 +315,9 @@ export default function ActionsPage() {
     ids: string[],
     noun: string,
   ) {
-    const failedIds = failedIdsFrom(results, ids);
-    if (failedIds.length > 0) {
-      setBulkApproveSummary(bulkFailureSummary(results, ids, noun));
-      setSelectedIds(new Set(failedIds));
-    } else {
-      setSelectedIds(new Set());
-    }
+    const { summary, remainingIds } = summarizeBulkResult(results, ids, noun);
+    setBulkApproveSummary(summary);
+    setSelectedIds(remainingIds);
     setRefetchKey((k) => k + 1);
   }
 
@@ -758,9 +687,9 @@ export default function ActionsPage() {
               setBulkError(null);
             }
           }}
-          title={`Deny ${selectedIds.size} action${selectedIds.size === 1 ? "" : "s"}`}
+          title={bulkDenyTitle(selectedIds.size)}
           description="Recorded in the audit log alongside your account. Reason is optional but recommended for traceability."
-          confirmLabel={`Deny ${selectedIds.size}`}
+          confirmLabel={bulkDenyConfirmLabel(selectedIds.size)}
           onConfirm={confirmBulkDeny}
           loading={bulkAction === "deny"}
           error={bulkError}

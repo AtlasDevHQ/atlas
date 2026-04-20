@@ -391,6 +391,96 @@ describe("Abuse Prevention Engine", () => {
     });
   });
 
+  // ---------------------------------------------------------------------
+  // getAbuseEvents() poisoned-metadata row isolation (#1683)
+  //
+  // A single corrupt `abuse_events.metadata` value (truncated JSON, old
+  // schema) used to throw inside the row-map and get caught by the outer
+  // try/catch — wiping every valid row in the response as if the DB itself
+  // had failed. Per-row isolation narrows the blast radius: the bad row is
+  // coerced to an empty metadata object with a warn, the rest pass through.
+  // ---------------------------------------------------------------------
+
+  describe("getAbuseEvents() poisoned metadata", () => {
+    it("returns valid rows and skips the poisoned one", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "clean-a",
+          workspace_id: "ws-mixed",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "ok",
+          metadata: '{"queryCount": 10}',
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+        {
+          id: "poisoned-1",
+          workspace_id: "ws-mixed",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "bad metadata",
+          metadata: '{"unterminated',
+          actor: "system",
+          created_at: "2026-04-19T10:05:00Z",
+        },
+        {
+          id: "clean-b",
+          workspace_id: "ws-mixed",
+          level: "throttled",
+          trigger_type: "query_rate",
+          message: "ok",
+          metadata: '{"queryCount": 250}',
+          actor: "system",
+          created_at: "2026-04-19T10:10:00Z",
+        },
+      ]);
+
+      const events = await getAbuseEvents("ws-mixed", 50);
+
+      // All three rows survive — the poisoned one just gets an empty metadata.
+      expect(events).toHaveLength(3);
+      expect(events.map((e) => e.id)).toEqual([
+        "clean-a",
+        "poisoned-1",
+        "clean-b",
+      ]);
+      expect(events[0]!.metadata).toEqual({ queryCount: 10 });
+      expect(events[1]!.metadata).toEqual({});
+      expect(events[2]!.metadata).toEqual({ queryCount: 250 });
+
+      // One warn emitted, naming the bad row so the operator can chase it.
+      const corrupt = warnCalls.filter((c) =>
+        c.msg.includes("corrupt abuse_events.metadata"),
+      );
+      expect(corrupt).toHaveLength(1);
+      expect(corrupt[0]!.ctx.rowId).toBe("poisoned-1");
+    });
+
+    it("does not log a corrupt warn for rows whose metadata parses cleanly", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "clean-1",
+          workspace_id: "ws-clean",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "ok",
+          metadata: '{"queryCount": 5}',
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      await getAbuseEvents("ws-clean", 10);
+
+      expect(
+        warnCalls.find((c) => c.msg.includes("corrupt abuse_events.metadata")),
+      ).toBeUndefined();
+    });
+  });
+
   describe("restoreAbuseState() fail-safe drift handling", () => {
     it("restores clean rows and skips drifted rows without leaking their level", async () => {
       setInternalDB(true);

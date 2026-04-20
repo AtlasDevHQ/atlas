@@ -480,6 +480,26 @@ export async function getAbuseEvents(
     );
 
     return rows.map((r) => {
+      // Per-row try/catch: a single truncated-JSON / old-schema row must not
+      // take out the remaining 49 valid rows by bubbling into the outer catch
+      // where the indistinguishable "DB outage" path returns []. Mirrors the
+      // coerceAbuseEnums pattern used above for level + trigger drift.
+      let metadata: Record<string, unknown> = {};
+      if (typeof r.metadata === "string") {
+        try {
+          metadata = JSON.parse(r.metadata) as Record<string, unknown>;
+        } catch (err) {
+          log.warn(
+            {
+              rowId: r.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "corrupt abuse_events.metadata — using empty object",
+          );
+        }
+      } else if (r.metadata) {
+        metadata = r.metadata as Record<string, unknown>;
+      }
       const { level, trigger } = coerceAbuseEnums(r.id, r.level, r.trigger_type);
       return {
         id: r.id,
@@ -487,7 +507,7 @@ export async function getAbuseEvents(
         level,
         trigger,
         message: r.message,
-        metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) as Record<string, unknown> : (r.metadata as Record<string, unknown>),
+        metadata,
         createdAt: r.created_at,
         actor: r.actor,
       };

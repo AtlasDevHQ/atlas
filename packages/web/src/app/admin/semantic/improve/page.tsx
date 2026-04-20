@@ -7,8 +7,8 @@ import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -560,9 +560,7 @@ export default function SemanticImprovePage() {
                   {pendingError && (
                     <ErrorBanner message={pendingError.message} />
                   )}
-                  {mutationError && (
-                    <ErrorBanner message={friendlyError(mutationError)} />
-                  )}
+                  <MutationErrorSurface error={mutationError} feature="Semantic" />
                   {proposals.length === 0 && !pendingLoading && (
                     <div className="py-12 text-center text-xs text-muted-foreground">
                       {messages.length === 0

@@ -35,9 +35,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { KeyRound, Plus, Pencil, Trash2, Loader2, Lock, Users } from "lucide-react";
 
@@ -299,11 +300,7 @@ function DeleteRoleDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
 
-        {error && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {friendlyError(error)}
-          </div>
-        )}
+        <MutationErrorSurface error={error} feature="Custom Roles" variant="inline" />
 
         <AlertDialogFooter>
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>

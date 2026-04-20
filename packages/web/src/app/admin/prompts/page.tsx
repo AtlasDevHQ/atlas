@@ -52,7 +52,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   FormDialog,
   FormField,
@@ -63,7 +63,7 @@ import {
 } from "@/components/form-dialog";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
@@ -543,10 +543,10 @@ export default function PromptsPage() {
           </div>
 
           {/* Content */}
-          {collectionMutation.error && <ErrorBanner message={friendlyError(collectionMutation.error)} onRetry={collectionMutation.clearError} />}
-          {deleteCollectionMutation.error && <ErrorBanner message={friendlyError(deleteCollectionMutation.error)} onRetry={deleteCollectionMutation.clearError} />}
-          {addItemMutation.error && <ErrorBanner message={friendlyError(addItemMutation.error)} onRetry={addItemMutation.clearError} />}
-          {deleteItemMutation.error && <ErrorBanner message={friendlyError(deleteItemMutation.error)} onRetry={deleteItemMutation.clearError} />}
+          <MutationErrorSurface error={collectionMutation.error} feature="Prompts" onRetry={collectionMutation.clearError} />
+          <MutationErrorSurface error={deleteCollectionMutation.error} feature="Prompts" onRetry={deleteCollectionMutation.clearError} />
+          <MutationErrorSurface error={addItemMutation.error} feature="Prompts" onRetry={addItemMutation.clearError} />
+          <MutationErrorSurface error={deleteItemMutation.error} feature="Prompts" onRetry={deleteItemMutation.clearError} />
 
           <AdminContentWrapper
             loading={loading}

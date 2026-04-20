@@ -1,21 +1,22 @@
 /**
  * Pure helpers for the admin abuse detail panel.
  *
- * Two responsibilities, both deliberately framework- and DB-free so they can
- * be exercised without the sliding-window engine or the internal DB:
+ * Three helpers, all deliberately framework- and DB-free so they can be
+ * exercised without the sliding-window engine or the internal DB:
  *
- *   1. `createAbuseInstance` — the single constructor for `AbuseInstance`.
+ *   1. `createAbuseInstance` — the narrowed constructor for `AbuseInstance`.
  *      Encodes the invariants (peakLevel is the max of event levels, endedAt
  *      non-null iff the last event is a manual "none" reinstatement, empty
- *      events → sentinel shape) so callers can't hand-roll a mismatched
- *      object.
+ *      events → sentinel shape) so production callers go through one place
+ *      rather than hand-rolling a mismatched object. Note: `AbuseInstance`
+ *      is a structurally-typed interface, so the factory is an *advisory*
+ *      boundary — tests and wire-format parsers can still produce the shape
+ *      directly.
  *   2. `splitIntoInstances` — groups a workspace's event stream into the
  *      current (open) instance plus prior closed instances.
- *
- * Also exposes `errorRatePct` — the small counter helper the detail panel
- * needs for the "error rate %" card. Kept here so the handful of pure
- * functions the detail endpoint depends on live together rather than drifting
- * into the engine file.
+ *   3. `errorRatePct` — the counter arithmetic the detail panel needs for
+ *      the "error rate %" card. Pure function, rounds to 2 decimals to
+ *      preserve threshold-comparison precision at the 0.01% level.
  */
 
 import type { AbuseEvent, AbuseInstance, AbuseLevel } from "@useatlas/types";
@@ -70,16 +71,44 @@ export function createAbuseInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
 }
 
 /**
- * Compute error rate as a percentage, rounded to 1 decimal place.
+ * Compute error rate as a percentage on [0, 100], rounded to 2 decimal places.
  *
  * Returns `0` when `totalCount` is 0 so callers never surface `NaN` or
- * `Infinity` to the wire. The "baseline pending" decision (`null` when the
- * window has fewer than the minimum samples) stays at the call site — this
- * helper is a pure arithmetic primitive, not a display-policy decision.
+ * `Infinity`. The "baseline pending" decision (`null` when the window has
+ * fewer than the minimum samples) stays at the call site — this helper is a
+ * pure arithmetic primitive, not a display-policy decision.
+ *
+ * Rounding is 2 decimals (not 1) deliberately: the admin detail panel reads
+ * the returned value both for display (`.toFixed(0)`) AND for a derived
+ * "over threshold" flag (`errorRatePct / 100 > errorRateThreshold`). Rounding
+ * to 1 decimal silently flips that flag within ±0.05% of the threshold while
+ * the engine's own `checkThresholds` still escalates on the unrounded
+ * fraction — so the UI and the engine would disagree at boundary values.
+ * Two-decimal rounding matches the SLA surface (`ee/src/sla/metrics.ts`) and
+ * keeps the boundary comparison faithful to 0.01%.
+ *
+ * Preconditions: `errorCount` and `totalCount` must be finite, non-negative,
+ * and `errorCount <= totalCount` in practice. The helper throws on
+ * non-finite or negative inputs (those would otherwise produce `NaN` /
+ * `Infinity` / negative percentages), and clamps `errorCount > totalCount`
+ * cases to 100 rather than returning a percentage > 100 — the latter is a
+ * caller bug, but surfacing e.g. 150% would mislead the admin more than
+ * displaying 100% does.
  */
 export function errorRatePct(errorCount: number, totalCount: number): number {
+  if (!Number.isFinite(errorCount) || !Number.isFinite(totalCount)) {
+    throw new Error(
+      `errorRatePct: non-finite input (errorCount=${errorCount}, totalCount=${totalCount})`,
+    );
+  }
+  if (errorCount < 0 || totalCount < 0) {
+    throw new Error(
+      `errorRatePct: negative input (errorCount=${errorCount}, totalCount=${totalCount})`,
+    );
+  }
   if (totalCount === 0) return 0;
-  return Math.round((errorCount / totalCount) * 1000) / 10;
+  const raw = (errorCount / totalCount) * 100;
+  return Math.min(100, Math.round(raw * 100) / 100);
 }
 
 /**

@@ -478,10 +478,16 @@ describe("Abuse Prevention Engine", () => {
 
   describe("getAbuseDetail() integration", () => {
     it("returns null for unknown / non-flagged workspaces (route decides 404)", async () => {
-      // Sanity: no state, no DB hit — null short-circuits before any query.
-      setInternalDB(false);
+      // Sanity: no state → null short-circuits before any query runs.
+      setInternalDB(true);
+      let queryInvoked = false;
+      setInternalQuery(async () => {
+        queryInvoked = true;
+        return [];
+      });
       const detail = await getAbuseDetail("ws-unknown");
       expect(detail).toBeNull();
+      expect(queryInvoked).toBe(false);
     });
 
     it("returns null after reinstate (level=none) without querying the DB", async () => {
@@ -545,7 +551,11 @@ describe("Abuse Prevention Engine", () => {
       expect(detail.counters.errorCount).toBe(0);
       expect(detail.counters.errorRatePct).toBe(0); // baseline met, all succeeded
       expect(detail.counters.uniqueTablesAccessed).toBe(5);
-      expect(detail.counters.escalations).toBeGreaterThanOrEqual(1);
+      // escalate() bumps `escalations` on every call while over threshold —
+      // first breach transitions to warning, subsequent bumps keep going.
+      // Pin the exact value so a future regression in the escalation
+      // counter is caught, not just "> 0".
+      expect(detail.counters.escalations).toBe(1);
 
       expect(detail.thresholds).toEqual(config);
 

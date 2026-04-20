@@ -360,8 +360,8 @@ export async function getAbuseDetail(
   const queryCount = w.timestamps.length;
   // Error rate is only meaningful once we've got a small baseline (mirrors
   // `checkThresholds`). Surface `null` so the UI can show "baseline pending"
-  // rather than a misleading 0% / 100%. The arithmetic itself is delegated
-  // to the pure `errorRatePct` helper — see abuse-instances.ts.
+  // rather than a misleading 0% / 100%. Arithmetic is delegated to the pure
+  // `errorRatePct` helper.
   const errorRate =
     queryCount >= 10 ? errorRatePct(w.errorCount, queryCount) : null;
 

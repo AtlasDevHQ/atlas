@@ -16,6 +16,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -108,6 +114,13 @@ export default function CachePage() {
 
   const totalQueries = data ? data.hits + data.misses : 0;
   const fillPercent = data && data.maxSize > 0 ? (data.entryCount / data.maxSize) * 100 : 0;
+  const flushDisabledReason = data
+    ? !data.enabled
+      ? "Cache is disabled"
+      : data.entryCount === 0
+        ? "Cache is empty"
+        : null
+    : null;
 
   return (
     <div className="p-6">
@@ -119,7 +132,7 @@ export default function CachePage() {
       </div>
 
       <ErrorBoundary>
-        <div>
+        <TooltipProvider>
           <MutationErrorSurface
             error={flushError}
             feature="Cache"
@@ -245,21 +258,27 @@ export default function CachePage() {
                 </CardHeader>
                 <CardContent>
                   <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button
-                        variant="destructive"
-                        disabled={flushing || !data.enabled || data.entryCount === 0}
-                        title={
-                          !data.enabled
-                            ? "Cache is disabled"
-                            : data.entryCount === 0
-                              ? "Cache is empty"
-                              : undefined
-                        }
-                      >
-                        Flush Cache
-                      </Button>
-                    </AlertDialogTrigger>
+                    {flushDisabledReason ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          {/* span wrapper: disabled buttons don't fire pointer
+                              events in Safari/Firefox, so the tooltip trigger
+                              must sit on an enabled element. */}
+                          <span className="inline-block">
+                            <Button variant="destructive" disabled>
+                              Flush Cache
+                            </Button>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>{flushDisabledReason}</TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <AlertDialogTrigger asChild>
+                        <Button variant="destructive" disabled={flushing}>
+                          Flush Cache
+                        </Button>
+                      </AlertDialogTrigger>
+                    )}
                     <AlertDialogContent>
                       <AlertDialogHeader>
                         <AlertDialogTitle>Flush cache?</AlertDialogTitle>
@@ -280,7 +299,7 @@ export default function CachePage() {
               </Card>
             </div>}
           </AdminContentWrapper>
-        </div>
+        </TooltipProvider>
       </ErrorBoundary>
     </div>
   );

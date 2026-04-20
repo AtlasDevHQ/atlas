@@ -634,7 +634,7 @@ export function createApiTestMocks(
   mock.module("@atlas/api/lib/security/abuse", () => ({
     listFlaggedWorkspaces: mock(() => []),
     reinstateWorkspace: mock(() => true),
-    getAbuseEvents: mock(async () => []),
+    getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
     getAbuseConfig: mock(() => ({
       queryRateLimit: 200,
       queryRateWindowSeconds: 300,

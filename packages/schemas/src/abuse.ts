@@ -31,6 +31,7 @@ import { z } from "zod";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
+  ABUSE_EVENTS_STATUSES,
   type AbuseEvent,
   type AbuseStatus,
   type AbuseThresholdConfig,
@@ -41,6 +42,7 @@ import {
 
 const LevelEnum = z.enum(ABUSE_LEVELS);
 const TriggerEnum = z.enum(ABUSE_TRIGGERS);
+const EventsStatusEnum = z.enum(ABUSE_EVENTS_STATUSES);
 
 export const AbuseEventSchema = z.object({
   id: z.string(),
@@ -97,4 +99,5 @@ export const AbuseDetailSchema = AbuseStatusSchema.omit({ events: true }).extend
   thresholds: AbuseThresholdConfigSchema,
   currentInstance: AbuseInstanceSchema,
   priorInstances: z.array(AbuseInstanceSchema),
+  eventsStatus: EventsStatusEnum,
 }) satisfies z.ZodType<AbuseDetail>;

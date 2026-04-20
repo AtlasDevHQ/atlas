@@ -63,6 +63,7 @@ const validDetail = {
   thresholds: validThresholds,
   currentInstance: validInstance,
   priorInstances: [],
+  eventsStatus: "ok" as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -156,5 +157,27 @@ describe("structural rejection", () => {
     // workspaceId is required on AbuseStatus; omitting it must fail parse.
     const { workspaceId: _workspaceId, ...missing } = validDetail;
     expect(AbuseDetailSchema.safeParse(missing).success).toBe(false);
+  });
+
+  // The diagnostic channel for DB-load failure (#1682) — operators need to
+  // distinguish "never flagged" from "history failed to load," so the
+  // schema tightens `eventsStatus` to the known tuple. A drifted value
+  // fails parse, and omitting the field entirely fails parse (the field is
+  // mandatory for every payload).
+  test("AbuseDetailSchema requires eventsStatus", () => {
+    const { eventsStatus: _eventsStatus, ...missing } = validDetail;
+    expect(AbuseDetailSchema.safeParse(missing).success).toBe(false);
+  });
+
+  test("AbuseDetailSchema rejects an unknown eventsStatus value", () => {
+    const drifted = { ...validDetail, eventsStatus: "partial" };
+    expect(AbuseDetailSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("AbuseDetailSchema accepts load_failed + db_unavailable as valid statuses", () => {
+    for (const status of ["ok", "load_failed", "db_unavailable"] as const) {
+      const parsed = AbuseDetailSchema.parse({ ...validDetail, eventsStatus: status });
+      expect(parsed.eventsStatus).toBe(status);
+    }
   });
 });

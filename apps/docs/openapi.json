@@ -35073,6 +35073,14 @@
                           "events"
                         ]
                       }
+                    },
+                    "eventsStatus": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "load_failed",
+                        "db_unavailable"
+                      ]
                     }
                   },
                   "required": [
@@ -35085,7 +35093,8 @@
                     "counters",
                     "thresholds",
                     "currentInstance",
-                    "priorInstances"
+                    "priorInstances",
+                    "eventsStatus"
                   ]
                 }
               }

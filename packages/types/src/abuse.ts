@@ -86,6 +86,28 @@ export interface AbuseInstance {
 }
 
 /**
+ * Diagnostic channel for the `events` payload on `AbuseDetail` (#1682).
+ *
+ * Before this tag, a DB load failure silently degraded `events` to `[]` —
+ * indistinguishable from "this workspace has never been flagged." An
+ * operator investigating a re-flagged workspace during a transient DB
+ * outage saw a clean slate and could reinstate a repeat offender based on
+ * false-empty history. `eventsStatus` surfaces the degraded state so the UI
+ * can show a loud warning rather than the benign empty-history copy.
+ *
+ * - `ok` — events loaded successfully (empty history is truly empty).
+ * - `load_failed` — `getAbuseEvents` caught a DB error. Counters + level in
+ *   the rest of the payload are still accurate (they come from in-memory
+ *   state), but the audit trail is unreachable; do not draw conclusions
+ *   from `currentInstance` / `priorInstances` being empty.
+ * - `db_unavailable` — `hasInternalDB()` returned false. Expected on a
+ *   self-hosted deploy without `DATABASE_URL`; the engine is running in
+ *   ephemeral in-memory mode. Prior flag history does not exist to load.
+ */
+export const ABUSE_EVENTS_STATUSES = ["ok", "load_failed", "db_unavailable"] as const;
+export type AbuseEventsStatus = (typeof ABUSE_EVENTS_STATUSES)[number];
+
+/**
  * Full investigation context for a single flagged workspace.
  *
  * Returned from `GET /api/v1/admin/abuse/:workspaceId/detail`. Lazy-loaded on
@@ -105,12 +127,19 @@ export interface AbuseDetail extends Omit<AbuseStatus, "events"> {
    * Current (unreinstated) flag instance.
    *
    * May be empty if the workspace is flagged in memory but no persisted event
-   * is yet readable — e.g. `DATABASE_URL` isn't set on a self-hosted deploy,
-   * the write is still in flight, or `persistAbuseEvent` failed and was
-   * swallowed. The detail-panel empty copy deliberately doesn't assume the DB
-   * is broken in this case.
+   * is yet readable — read `eventsStatus` to distinguish the three
+   * possibilities: really-empty history, DB load failure, or a self-hosted
+   * deploy without `DATABASE_URL`. The detail-panel UI renders a loud
+   * banner when `eventsStatus !== "ok"` so an operator does not mistake a
+   * degraded audit trail for "never flagged."
    */
   currentInstance: AbuseInstance;
   /** Prior closed instances, newest-first. Capped server-side. */
   priorInstances: AbuseInstance[];
+  /**
+   * Load status for the events payload. Propagates from `getAbuseEvents` →
+   * lib → route → UI so the admin panel can distinguish empty-because-clean
+   * from empty-because-broken. See `AbuseEventsStatus`.
+   */
+  eventsStatus: AbuseEventsStatus;
 }

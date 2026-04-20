@@ -20,6 +20,7 @@ import {
   type AbuseLevel,
   type AbuseTrigger,
   type AbuseEvent,
+  type AbuseEventsStatus,
   type AbuseStatus,
   type AbuseThresholdConfig,
   type AbuseDetail,
@@ -365,7 +366,7 @@ export async function getAbuseDetail(
   const errorRate =
     queryCount >= 10 ? errorRatePct(w.errorCount, queryCount) : null;
 
-  const events = await getAbuseEvents(workspaceId, eventLimit);
+  const { events, status: eventsStatus } = await getAbuseEvents(workspaceId, eventLimit);
   const { currentInstance, priorInstances } = splitIntoInstances(events, priorLimit);
 
   return {
@@ -385,6 +386,7 @@ export async function getAbuseDetail(
     thresholds: config,
     currentInstance,
     priorInstances,
+    eventsStatus,
   };
 }
 
@@ -453,12 +455,29 @@ function persistAbuseEvent(event: AbuseEvent): void {
   }
 }
 
-/** Load recent abuse events from DB for a workspace. */
+/**
+ * Load recent abuse events from DB for a workspace.
+ *
+ * Returns `{ events, status }` so callers can distinguish "really empty" from
+ * "DB unreachable" (#1682). Before the diagnostic channel, a DB failure
+ * silently produced `events: []` that `getAbuseDetail` passed through — an
+ * admin investigating a re-flagged workspace during a DB outage saw a clean
+ * slate and could reinstate a repeat offender based on the false empty
+ * history. Status values:
+ *
+ *   - `ok`             — query succeeded (empty is truly empty).
+ *   - `db_unavailable` — `hasInternalDB()` is false (self-hosted, no
+ *                        DATABASE_URL). Short-circuit, no query attempted.
+ *   - `load_failed`    — query threw. In-memory state is still valid; the
+ *                        audit trail is momentarily unreachable. UI must
+ *                        show a destructive banner so the operator does not
+ *                        conclude "never flagged."
+ */
 export async function getAbuseEvents(
   workspaceId: string,
   limit = 50,
-): Promise<AbuseEvent[]> {
-  if (!hasInternalDB()) return [];
+): Promise<{ events: AbuseEvent[]; status: AbuseEventsStatus }> {
+  if (!hasInternalDB()) return { events: [], status: "db_unavailable" };
 
   try {
     const rows = await internalQuery<{
@@ -479,7 +498,7 @@ export async function getAbuseEvents(
       [workspaceId, limit],
     );
 
-    return rows.map((r) => {
+    const events = rows.map((r) => {
       // Per-row try/catch: a single truncated-JSON / old-schema row must not
       // take out the remaining 49 valid rows by bubbling into the outer catch
       // where the indistinguishable "DB outage" path returns []. Mirrors the
@@ -512,12 +531,18 @@ export async function getAbuseEvents(
         actor: r.actor,
       };
     });
+
+    return { events, status: "ok" };
   } catch (err) {
+    // The .catch → [] fallback stays — in-memory counters + level in the
+    // detail payload are still worth rendering — but it is no longer silent:
+    // the `load_failed` status propagates to the UI's destructive banner so
+    // the operator treats the empty history as degraded, not benign.
     log.warn(
       { err: err instanceof Error ? err.message : String(err), workspaceId },
       "Failed to load abuse events",
     );
-    return [];
+    return { events: [], status: "load_failed" };
   }
 }
 

@@ -205,7 +205,7 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
     // batch fetch to avoid N+1; missing/deleted orgs fall back to null.
     const enriched = yield* Effect.promise(async () => {
       const orgIds = workspaces.map((ws) => ws.workspaceId);
-      const [events, names] = await Promise.all([
+      const [eventResults, names] = await Promise.all([
         Promise.all(workspaces.map((ws) => getAbuseEvents(ws.workspaceId, 10))),
         getWorkspaceNamesByIds(orgIds).catch((err) => {
           // Name resolution is advisory — if the DB hiccups, fall back to
@@ -227,7 +227,11 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
       return workspaces.map((ws, i) => ({
         ...ws,
         workspaceName: names.get(ws.workspaceId) ?? null,
-        events: events[i],
+        // List endpoint ignores the per-workspace events status — the list
+        // view only displays recent events to hint at context. The detail
+        // endpoint surfaces `eventsStatus` where operators actually make
+        // reinstate decisions.
+        events: eventResults[i]!.events,
       }));
     });
 

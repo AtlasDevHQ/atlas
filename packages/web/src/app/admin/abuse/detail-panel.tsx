@@ -10,6 +10,7 @@ import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { AbuseDetailSchema } from "@/ui/lib/admin-schemas";
 import type {
   AbuseCounters,
+  AbuseEventsStatus,
   AbuseInstance,
   AbuseThresholdConfig,
 } from "@/ui/lib/types";
@@ -154,6 +155,49 @@ function TimelineSection({
   );
 }
 
+/**
+ * Destructive banner for a degraded event-history load (#1682).
+ *
+ * Renders above the timeline when `eventsStatus !== "ok"` so an operator
+ * sees "history is missing, not empty" before reading the benign empty-
+ * state copy below. Without the banner, a transient DB outage produced a
+ * payload indistinguishable from "never flagged" and an admin could
+ * reinstate a repeat offender based on false history.
+ *
+ * `load_failed` is the dangerous case — a DB query errored and in-memory
+ * state cannot corroborate prior flags. `db_unavailable` is the expected
+ * self-hosted case (no `DATABASE_URL`); still worth signaling so the admin
+ * knows prior history is not stored, but copy is advisory rather than
+ * alarming.
+ */
+function EventsStatusBanner({ status }: { status: AbuseEventsStatus }) {
+  if (status === "ok") return null;
+  const { title, body } =
+    status === "load_failed"
+      ? {
+          title: "Event history failed to load",
+          body: "Counters and level are live, but the audit trail is unavailable. Do not reinstate based on missing history.",
+        }
+      : {
+          title: "Event history is not persisted",
+          body: "This deploy has no internal database configured (DATABASE_URL). Prior flag events are not recorded — reinstate decisions cannot reference past history.",
+        };
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs lg:col-span-2"
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+        <div className="flex-1">
+          <p className="font-medium text-destructive">{title}</p>
+          <p className="mt-0.5 text-muted-foreground">{body}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PriorInstancesSection({ instances }: { instances: AbuseInstance[] }) {
   if (instances.length === 0) {
     return (
@@ -294,6 +338,7 @@ export function AbuseDetailPanel({
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      <EventsStatusBanner status={data.eventsStatus} />
       <CountersSection counters={data.counters} thresholds={data.thresholds} />
       <TimelineSection
         title="Current flag timeline"

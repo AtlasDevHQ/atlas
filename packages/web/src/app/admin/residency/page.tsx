@@ -533,6 +533,10 @@ function AssignedRegionShell({
 
 function pillForMigration(migration: RegionMigration | null): ReactNode {
   if (!migration) return null;
+  // Post-#1696 `RegionMigration` is a discriminated union over `status`;
+  // the switch is exhaustive across every variant, so an "unknown status"
+  // fallback is unreachable at the type layer. If a new status is added
+  // to `MIGRATION_STATUSES` without a case here, this file stops compiling.
   switch (migration.status) {
     case "pending":
     case "in_progress":
@@ -548,14 +552,6 @@ function pillForMigration(migration: RegionMigration | null): ReactNode {
       return <StatusPill kind="connected" label="Migrated" />;
     case "cancelled":
       return <StatusPill kind="disconnected" label="Cancelled" />;
-    default: {
-      // Guard against an API-side status we don't know yet. Fails loudly in
-      // dev (exhaustiveness check below) while still rendering something
-      // neutral at runtime instead of silently falling through to the
-      // default "Live" pill in the shell header.
-      const _exhaustive: never = migration.status;
-      return <StatusPill kind="unavailable" label={String(_exhaustive)} />;
-    }
   }
 }
 

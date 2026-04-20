@@ -118,11 +118,11 @@ export async function executeAgentQuery(
         // Detect pending action approvals from any action tool
         if (tr.output && typeof tr.output === "object") {
           const out = tr.output as Record<string, unknown>;
-          if (out.status === "pending_approval") {
+          if (out.status === "pending") {
             if (typeof out.actionId !== "string" || !out.actionId) {
               log.warn(
                 { toolName: tr.toolName, outputKeys: Object.keys(out) },
-                "Tool returned pending_approval but missing or invalid actionId — skipping",
+                "Tool returned pending but missing or invalid actionId — skipping",
               );
             } else {
               const actionType = typeof (tr.input as Record<string, unknown>)?.actionType === "string"

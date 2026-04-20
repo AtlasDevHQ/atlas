@@ -28703,6 +28703,12 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "smtp"
+                            ]
+                          },
                           "host": {
                             "type": "string",
                             "minLength": 1
@@ -28725,6 +28731,7 @@
                           }
                         },
                         "required": [
+                          "provider",
                           "host",
                           "port",
                           "username",
@@ -28735,30 +28742,50 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "sendgrid"
+                            ]
+                          },
                           "apiKey": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "apiKey"
                         ]
                       },
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "postmark"
+                            ]
+                          },
                           "serverToken": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "serverToken"
                         ]
                       },
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "ses"
+                            ]
+                          },
                           "region": {
                             "type": "string",
                             "minLength": 1
@@ -28773,6 +28800,7 @@
                           }
                         },
                         "required": [
+                          "provider",
                           "region",
                           "accessKeyId",
                           "secretAccessKey"
@@ -28781,12 +28809,19 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "resend"
+                            ]
+                          },
                           "apiKey": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "apiKey"
                         ]
                       }
@@ -29153,6 +29188,12 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "smtp"
+                            ]
+                          },
                           "host": {
                             "type": "string",
                             "minLength": 1
@@ -29175,6 +29216,7 @@
                           }
                         },
                         "required": [
+                          "provider",
                           "host",
                           "port",
                           "username",
@@ -29185,30 +29227,50 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "sendgrid"
+                            ]
+                          },
                           "apiKey": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "apiKey"
                         ]
                       },
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "postmark"
+                            ]
+                          },
                           "serverToken": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "serverToken"
                         ]
                       },
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "ses"
+                            ]
+                          },
                           "region": {
                             "type": "string",
                             "minLength": 1
@@ -29223,6 +29285,7 @@
                           }
                         },
                         "required": [
+                          "provider",
                           "region",
                           "accessKeyId",
                           "secretAccessKey"
@@ -29231,12 +29294,19 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "resend"
+                            ]
+                          },
                           "apiKey": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "apiKey"
                         ]
                       }
@@ -29583,54 +29653,148 @@
                     "rules": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "orgId": {
-                            "type": "string"
-                          },
-                          "name": {
-                            "type": "string"
-                          },
-                          "ruleType": {
-                            "type": "string",
-                            "enum": [
-                              "table",
-                              "column",
-                              "cost"
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "updatedAt": {
+                                "type": "string"
+                              },
+                              "ruleType": {
+                                "type": "string",
+                                "enum": [
+                                  "cost"
+                                ]
+                              },
+                              "threshold": {
+                                "type": "number"
+                              },
+                              "pattern": {
+                                "type": "string",
+                                "enum": [
+                                  ""
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "name",
+                              "enabled",
+                              "createdAt",
+                              "updatedAt",
+                              "ruleType",
+                              "threshold",
+                              "pattern"
                             ]
                           },
-                          "pattern": {
-                            "type": "string"
-                          },
-                          "threshold": {
-                            "type": [
-                              "number",
-                              "null"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "updatedAt": {
+                                "type": "string"
+                              },
+                              "ruleType": {
+                                "type": "string",
+                                "enum": [
+                                  "table"
+                                ]
+                              },
+                              "pattern": {
+                                "type": "string"
+                              },
+                              "threshold": {
+                                "type": "null"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "name",
+                              "enabled",
+                              "createdAt",
+                              "updatedAt",
+                              "ruleType",
+                              "pattern",
+                              "threshold"
                             ]
                           },
-                          "enabled": {
-                            "type": "boolean"
-                          },
-                          "createdAt": {
-                            "type": "string"
-                          },
-                          "updatedAt": {
-                            "type": "string"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "updatedAt": {
+                                "type": "string"
+                              },
+                              "ruleType": {
+                                "type": "string",
+                                "enum": [
+                                  "column"
+                                ]
+                              },
+                              "pattern": {
+                                "type": "string"
+                              },
+                              "threshold": {
+                                "type": "null"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "name",
+                              "enabled",
+                              "createdAt",
+                              "updatedAt",
+                              "ruleType",
+                              "pattern",
+                              "threshold"
+                            ]
                           }
-                        },
-                        "required": [
-                          "id",
-                          "orgId",
-                          "name",
-                          "ruleType",
-                          "pattern",
-                          "threshold",
-                          "enabled",
-                          "createdAt",
-                          "updatedAt"
                         ]
                       }
                     }
@@ -29753,47 +29917,90 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Human-readable rule name.",
-                    "example": "Require approval for PII tables"
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Human-readable rule name.",
+                        "example": "Flag expensive queries"
+                      },
+                      "ruleType": {
+                        "type": "string",
+                        "enum": [
+                          "cost"
+                        ],
+                        "description": "Type of rule: cost threshold.",
+                        "example": "cost"
+                      },
+                      "threshold": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": "Cost threshold (positive integer — estimated row count).",
+                        "example": 1000
+                      },
+                      "pattern": {
+                        "type": "string",
+                        "enum": [
+                          ""
+                        ],
+                        "description": "Unused for cost rules."
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Whether the rule is active. Defaults to true.",
+                        "example": true
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "ruleType",
+                      "threshold"
+                    ]
                   },
-                  "ruleType": {
-                    "type": "string",
-                    "enum": [
-                      "table",
-                      "column",
-                      "cost"
-                    ],
-                    "description": "Type of rule: table name match, column name match, or cost threshold.",
-                    "example": "table"
-                  },
-                  "pattern": {
-                    "type": "string",
-                    "description": "Pattern to match. Table/column name for table/column rules. Unused for cost rules.",
-                    "example": "users"
-                  },
-                  "threshold": {
-                    "type": [
-                      "number",
-                      "null"
-                    ],
-                    "description": "Cost threshold. Required for cost rules, ignored for table/column rules.",
-                    "example": null
-                  },
-                  "enabled": {
-                    "type": "boolean",
-                    "description": "Whether the rule is active. Defaults to true.",
-                    "example": true
+                  {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Human-readable rule name.",
+                        "example": "Require approval for PII tables"
+                      },
+                      "ruleType": {
+                        "type": "string",
+                        "enum": [
+                          "table",
+                          "column"
+                        ],
+                        "description": "Type of rule: table name match or column name match.",
+                        "example": "table"
+                      },
+                      "pattern": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Pattern to match. Table/column name.",
+                        "example": "users"
+                      },
+                      "threshold": {
+                        "type": "null",
+                        "description": "Unused for table/column rules — must be null.",
+                        "example": null
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Whether the rule is active. Defaults to true.",
+                        "example": true
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "ruleType",
+                      "pattern"
+                    ]
                   }
-                },
-                "required": [
-                  "name",
-                  "ruleType",
-                  "pattern"
                 ]
               }
             }
@@ -29808,54 +30015,148 @@
                   "type": "object",
                   "properties": {
                     "rule": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "orgId": {
-                          "type": "string"
-                        },
-                        "name": {
-                          "type": "string"
-                        },
-                        "ruleType": {
-                          "type": "string",
-                          "enum": [
-                            "table",
-                            "column",
-                            "cost"
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "cost"
+                              ]
+                            },
+                            "threshold": {
+                              "type": "number"
+                            },
+                            "pattern": {
+                              "type": "string",
+                              "enum": [
+                                ""
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "threshold",
+                            "pattern"
                           ]
                         },
-                        "pattern": {
-                          "type": "string"
-                        },
-                        "threshold": {
-                          "type": [
-                            "number",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "table"
+                              ]
+                            },
+                            "pattern": {
+                              "type": "string"
+                            },
+                            "threshold": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "pattern",
+                            "threshold"
                           ]
                         },
-                        "enabled": {
-                          "type": "boolean"
-                        },
-                        "createdAt": {
-                          "type": "string"
-                        },
-                        "updatedAt": {
-                          "type": "string"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "column"
+                              ]
+                            },
+                            "pattern": {
+                              "type": "string"
+                            },
+                            "threshold": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "pattern",
+                            "threshold"
+                          ]
                         }
-                      },
-                      "required": [
-                        "id",
-                        "orgId",
-                        "name",
-                        "ruleType",
-                        "pattern",
-                        "threshold",
-                        "enabled",
-                        "createdAt",
-                        "updatedAt"
                       ]
                     }
                   },
@@ -30011,54 +30312,148 @@
                   "type": "object",
                   "properties": {
                     "rule": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "orgId": {
-                          "type": "string"
-                        },
-                        "name": {
-                          "type": "string"
-                        },
-                        "ruleType": {
-                          "type": "string",
-                          "enum": [
-                            "table",
-                            "column",
-                            "cost"
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "cost"
+                              ]
+                            },
+                            "threshold": {
+                              "type": "number"
+                            },
+                            "pattern": {
+                              "type": "string",
+                              "enum": [
+                                ""
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "threshold",
+                            "pattern"
                           ]
                         },
-                        "pattern": {
-                          "type": "string"
-                        },
-                        "threshold": {
-                          "type": [
-                            "number",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "table"
+                              ]
+                            },
+                            "pattern": {
+                              "type": "string"
+                            },
+                            "threshold": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "pattern",
+                            "threshold"
                           ]
                         },
-                        "enabled": {
-                          "type": "boolean"
-                        },
-                        "createdAt": {
-                          "type": "string"
-                        },
-                        "updatedAt": {
-                          "type": "string"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "column"
+                              ]
+                            },
+                            "pattern": {
+                              "type": "string"
+                            },
+                            "threshold": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "pattern",
+                            "threshold"
+                          ]
                         }
-                      },
-                      "required": [
-                        "id",
-                        "orgId",
-                        "name",
-                        "ruleType",
-                        "pattern",
-                        "threshold",
-                        "enabled",
-                        "createdAt",
-                        "updatedAt"
                       ]
                     }
                   },
@@ -30332,112 +30727,395 @@
                     "requests": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "orgId": {
-                            "type": "string"
-                          },
-                          "ruleId": {
-                            "type": "string"
-                          },
-                          "ruleName": {
-                            "type": "string"
-                          },
-                          "requesterId": {
-                            "type": "string"
-                          },
-                          "requesterEmail": {
-                            "type": [
-                              "string",
-                              "null"
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "ruleId": {
+                                "type": "string"
+                              },
+                              "ruleName": {
+                                "type": "string"
+                              },
+                              "requesterId": {
+                                "type": "string"
+                              },
+                              "requesterEmail": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "querySql": {
+                                "type": "string"
+                              },
+                              "explanation": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionId": {
+                                "type": "string"
+                              },
+                              "tablesAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "columnsAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "expiresAt": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "pending"
+                                ]
+                              },
+                              "reviewerId": {
+                                "type": "null"
+                              },
+                              "reviewerEmail": {
+                                "type": "null"
+                              },
+                              "reviewComment": {
+                                "type": "null"
+                              },
+                              "reviewedAt": {
+                                "type": "null"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "ruleId",
+                              "ruleName",
+                              "requesterId",
+                              "requesterEmail",
+                              "querySql",
+                              "explanation",
+                              "connectionId",
+                              "tablesAccessed",
+                              "columnsAccessed",
+                              "createdAt",
+                              "expiresAt",
+                              "status",
+                              "reviewerId",
+                              "reviewerEmail",
+                              "reviewComment",
+                              "reviewedAt"
                             ]
                           },
-                          "querySql": {
-                            "type": "string"
-                          },
-                          "explanation": {
-                            "type": [
-                              "string",
-                              "null"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "ruleId": {
+                                "type": "string"
+                              },
+                              "ruleName": {
+                                "type": "string"
+                              },
+                              "requesterId": {
+                                "type": "string"
+                              },
+                              "requesterEmail": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "querySql": {
+                                "type": "string"
+                              },
+                              "explanation": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionId": {
+                                "type": "string"
+                              },
+                              "tablesAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "columnsAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "expiresAt": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "approved"
+                                ]
+                              },
+                              "reviewerId": {
+                                "type": "string"
+                              },
+                              "reviewerEmail": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewComment": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "ruleId",
+                              "ruleName",
+                              "requesterId",
+                              "requesterEmail",
+                              "querySql",
+                              "explanation",
+                              "connectionId",
+                              "tablesAccessed",
+                              "columnsAccessed",
+                              "createdAt",
+                              "expiresAt",
+                              "status",
+                              "reviewerId",
+                              "reviewerEmail",
+                              "reviewComment",
+                              "reviewedAt"
                             ]
                           },
-                          "connectionId": {
-                            "type": "string"
-                          },
-                          "tablesAccessed": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "columnsAccessed": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "pending",
-                              "approved",
-                              "denied",
-                              "expired"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "ruleId": {
+                                "type": "string"
+                              },
+                              "ruleName": {
+                                "type": "string"
+                              },
+                              "requesterId": {
+                                "type": "string"
+                              },
+                              "requesterEmail": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "querySql": {
+                                "type": "string"
+                              },
+                              "explanation": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionId": {
+                                "type": "string"
+                              },
+                              "tablesAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "columnsAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "expiresAt": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "denied"
+                                ]
+                              },
+                              "reviewerId": {
+                                "type": "string"
+                              },
+                              "reviewerEmail": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewComment": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "ruleId",
+                              "ruleName",
+                              "requesterId",
+                              "requesterEmail",
+                              "querySql",
+                              "explanation",
+                              "connectionId",
+                              "tablesAccessed",
+                              "columnsAccessed",
+                              "createdAt",
+                              "expiresAt",
+                              "status",
+                              "reviewerId",
+                              "reviewerEmail",
+                              "reviewComment",
+                              "reviewedAt"
                             ]
                           },
-                          "reviewerId": {
-                            "type": [
-                              "string",
-                              "null"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "ruleId": {
+                                "type": "string"
+                              },
+                              "ruleName": {
+                                "type": "string"
+                              },
+                              "requesterId": {
+                                "type": "string"
+                              },
+                              "requesterEmail": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "querySql": {
+                                "type": "string"
+                              },
+                              "explanation": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionId": {
+                                "type": "string"
+                              },
+                              "tablesAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "columnsAccessed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "expiresAt": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "expired"
+                                ]
+                              },
+                              "reviewerId": {
+                                "type": "null"
+                              },
+                              "reviewerEmail": {
+                                "type": "null"
+                              },
+                              "reviewComment": {
+                                "type": "null"
+                              },
+                              "reviewedAt": {
+                                "type": "null"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "ruleId",
+                              "ruleName",
+                              "requesterId",
+                              "requesterEmail",
+                              "querySql",
+                              "explanation",
+                              "connectionId",
+                              "tablesAccessed",
+                              "columnsAccessed",
+                              "createdAt",
+                              "expiresAt",
+                              "status",
+                              "reviewerId",
+                              "reviewerEmail",
+                              "reviewComment",
+                              "reviewedAt"
                             ]
-                          },
-                          "reviewerEmail": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "reviewComment": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "reviewedAt": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "createdAt": {
-                            "type": "string"
-                          },
-                          "expiresAt": {
-                            "type": "string"
                           }
-                        },
-                        "required": [
-                          "id",
-                          "orgId",
-                          "ruleId",
-                          "ruleName",
-                          "requesterId",
-                          "requesterEmail",
-                          "querySql",
-                          "explanation",
-                          "connectionId",
-                          "tablesAccessed",
-                          "columnsAccessed",
-                          "status",
-                          "reviewerId",
-                          "reviewerEmail",
-                          "reviewComment",
-                          "reviewedAt",
-                          "createdAt",
-                          "expiresAt"
                         ]
                       }
                     }
@@ -30591,112 +31269,395 @@
                   "type": "object",
                   "properties": {
                     "request": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "orgId": {
-                          "type": "string"
-                        },
-                        "ruleId": {
-                          "type": "string"
-                        },
-                        "ruleName": {
-                          "type": "string"
-                        },
-                        "requesterId": {
-                          "type": "string"
-                        },
-                        "requesterEmail": {
-                          "type": [
-                            "string",
-                            "null"
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "pending"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "null"
+                            },
+                            "reviewerEmail": {
+                              "type": "null"
+                            },
+                            "reviewComment": {
+                              "type": "null"
+                            },
+                            "reviewedAt": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
                         },
-                        "querySql": {
-                          "type": "string"
-                        },
-                        "explanation": {
-                          "type": [
-                            "string",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "approved"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "string"
+                            },
+                            "reviewerEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewComment": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewedAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
                         },
-                        "connectionId": {
-                          "type": "string"
-                        },
-                        "tablesAccessed": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "columnsAccessed": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "pending",
-                            "approved",
-                            "denied",
-                            "expired"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "denied"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "string"
+                            },
+                            "reviewerEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewComment": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewedAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
                         },
-                        "reviewerId": {
-                          "type": [
-                            "string",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "expired"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "null"
+                            },
+                            "reviewerEmail": {
+                              "type": "null"
+                            },
+                            "reviewComment": {
+                              "type": "null"
+                            },
+                            "reviewedAt": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
-                        },
-                        "reviewerEmail": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "reviewComment": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "reviewedAt": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "createdAt": {
-                          "type": "string"
-                        },
-                        "expiresAt": {
-                          "type": "string"
                         }
-                      },
-                      "required": [
-                        "id",
-                        "orgId",
-                        "ruleId",
-                        "ruleName",
-                        "requesterId",
-                        "requesterEmail",
-                        "querySql",
-                        "explanation",
-                        "connectionId",
-                        "tablesAccessed",
-                        "columnsAccessed",
-                        "status",
-                        "reviewerId",
-                        "reviewerEmail",
-                        "reviewComment",
-                        "reviewedAt",
-                        "createdAt",
-                        "expiresAt"
                       ]
                     }
                   },
@@ -30851,112 +31812,395 @@
                   "type": "object",
                   "properties": {
                     "request": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "orgId": {
-                          "type": "string"
-                        },
-                        "ruleId": {
-                          "type": "string"
-                        },
-                        "ruleName": {
-                          "type": "string"
-                        },
-                        "requesterId": {
-                          "type": "string"
-                        },
-                        "requesterEmail": {
-                          "type": [
-                            "string",
-                            "null"
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "pending"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "null"
+                            },
+                            "reviewerEmail": {
+                              "type": "null"
+                            },
+                            "reviewComment": {
+                              "type": "null"
+                            },
+                            "reviewedAt": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
                         },
-                        "querySql": {
-                          "type": "string"
-                        },
-                        "explanation": {
-                          "type": [
-                            "string",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "approved"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "string"
+                            },
+                            "reviewerEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewComment": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewedAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
                         },
-                        "connectionId": {
-                          "type": "string"
-                        },
-                        "tablesAccessed": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "columnsAccessed": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "pending",
-                            "approved",
-                            "denied",
-                            "expired"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "denied"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "string"
+                            },
+                            "reviewerEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewComment": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reviewedAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
                         },
-                        "reviewerId": {
-                          "type": [
-                            "string",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "ruleId": {
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "requesterId": {
+                              "type": "string"
+                            },
+                            "requesterEmail": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "querySql": {
+                              "type": "string"
+                            },
+                            "explanation": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionId": {
+                              "type": "string"
+                            },
+                            "tablesAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "columnsAccessed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "expired"
+                              ]
+                            },
+                            "reviewerId": {
+                              "type": "null"
+                            },
+                            "reviewerEmail": {
+                              "type": "null"
+                            },
+                            "reviewComment": {
+                              "type": "null"
+                            },
+                            "reviewedAt": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "ruleId",
+                            "ruleName",
+                            "requesterId",
+                            "requesterEmail",
+                            "querySql",
+                            "explanation",
+                            "connectionId",
+                            "tablesAccessed",
+                            "columnsAccessed",
+                            "createdAt",
+                            "expiresAt",
+                            "status",
+                            "reviewerId",
+                            "reviewerEmail",
+                            "reviewComment",
+                            "reviewedAt"
                           ]
-                        },
-                        "reviewerEmail": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "reviewComment": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "reviewedAt": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "createdAt": {
-                          "type": "string"
-                        },
-                        "expiresAt": {
-                          "type": "string"
                         }
-                      },
-                      "required": [
-                        "id",
-                        "orgId",
-                        "ruleId",
-                        "ruleName",
-                        "requesterId",
-                        "requesterEmail",
-                        "querySql",
-                        "explanation",
-                        "connectionId",
-                        "tablesAccessed",
-                        "columnsAccessed",
-                        "status",
-                        "reviewerId",
-                        "reviewerEmail",
-                        "reviewComment",
-                        "reviewedAt",
-                        "createdAt",
-                        "expiresAt"
                       ]
                     }
                   },
@@ -37892,10 +39136,16 @@
                     "description": "Sender email address (From header)"
                   },
                   "config": {
-                    "anyOf": [
+                    "oneOf": [
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "smtp"
+                            ]
+                          },
                           "host": {
                             "type": "string",
                             "minLength": 1
@@ -37918,6 +39168,7 @@
                           }
                         },
                         "required": [
+                          "provider",
                           "host",
                           "port",
                           "username",
@@ -37928,30 +39179,50 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "sendgrid"
+                            ]
+                          },
                           "apiKey": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "apiKey"
                         ]
                       },
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "postmark"
+                            ]
+                          },
                           "serverToken": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "serverToken"
                         ]
                       },
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "ses"
+                            ]
+                          },
                           "region": {
                             "type": "string",
                             "minLength": 1
@@ -37966,6 +39237,7 @@
                           }
                         },
                         "required": [
+                          "provider",
                           "region",
                           "accessKeyId",
                           "secretAccessKey"
@@ -37974,17 +39246,24 @@
                       {
                         "type": "object",
                         "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "resend"
+                            ]
+                          },
                           "apiKey": {
                             "type": "string",
                             "minLength": 1
                           }
                         },
                         "required": [
+                          "provider",
                           "apiKey"
                         ]
                       }
                     ],
-                    "description": "Provider-specific configuration"
+                    "description": "Provider-specific configuration (tagged with the matching provider key)."
                   }
                 },
                 "required": [
@@ -39108,67 +40387,266 @@
                   "type": "object",
                   "properties": {
                     "migration": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "workspaceId": {
-                          "type": "string"
-                        },
-                        "sourceRegion": {
-                          "type": "string"
-                        },
-                        "targetRegion": {
-                          "type": "string"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "pending",
-                            "in_progress",
-                            "completed",
-                            "failed",
-                            "cancelled"
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "workspaceId": {
+                              "type": "string"
+                            },
+                            "sourceRegion": {
+                              "type": "string"
+                            },
+                            "targetRegion": {
+                              "type": "string"
+                            },
+                            "requestedBy": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "requestedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "pending"
+                              ]
+                            },
+                            "completedAt": {
+                              "type": "null"
+                            },
+                            "errorMessage": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "workspaceId",
+                            "sourceRegion",
+                            "targetRegion",
+                            "requestedBy",
+                            "requestedAt",
+                            "status",
+                            "completedAt",
+                            "errorMessage"
                           ]
                         },
-                        "requestedBy": {
-                          "type": [
-                            "string",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "workspaceId": {
+                              "type": "string"
+                            },
+                            "sourceRegion": {
+                              "type": "string"
+                            },
+                            "targetRegion": {
+                              "type": "string"
+                            },
+                            "requestedBy": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "requestedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "in_progress"
+                              ]
+                            },
+                            "completedAt": {
+                              "type": "null"
+                            },
+                            "errorMessage": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "workspaceId",
+                            "sourceRegion",
+                            "targetRegion",
+                            "requestedBy",
+                            "requestedAt",
+                            "status",
+                            "completedAt",
+                            "errorMessage"
                           ]
                         },
-                        "requestedAt": {
-                          "type": "string",
-                          "format": "date-time"
-                        },
-                        "completedAt": {
-                          "type": [
-                            "string",
-                            "null"
-                          ],
-                          "format": "date-time"
-                        },
-                        "errorMessage": {
-                          "type": [
-                            "string",
-                            "null"
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "workspaceId": {
+                              "type": "string"
+                            },
+                            "sourceRegion": {
+                              "type": "string"
+                            },
+                            "targetRegion": {
+                              "type": "string"
+                            },
+                            "requestedBy": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "requestedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "completed"
+                              ]
+                            },
+                            "completedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "errorMessage": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "workspaceId",
+                            "sourceRegion",
+                            "targetRegion",
+                            "requestedBy",
+                            "requestedAt",
+                            "status",
+                            "completedAt",
+                            "errorMessage"
                           ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "workspaceId": {
+                              "type": "string"
+                            },
+                            "sourceRegion": {
+                              "type": "string"
+                            },
+                            "targetRegion": {
+                              "type": "string"
+                            },
+                            "requestedBy": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "requestedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "failed"
+                              ]
+                            },
+                            "completedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "errorMessage": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "workspaceId",
+                            "sourceRegion",
+                            "targetRegion",
+                            "requestedBy",
+                            "requestedAt",
+                            "status",
+                            "completedAt",
+                            "errorMessage"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "workspaceId": {
+                              "type": "string"
+                            },
+                            "sourceRegion": {
+                              "type": "string"
+                            },
+                            "targetRegion": {
+                              "type": "string"
+                            },
+                            "requestedBy": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "requestedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "cancelled"
+                              ]
+                            },
+                            "completedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "errorMessage": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "workspaceId",
+                            "sourceRegion",
+                            "targetRegion",
+                            "requestedBy",
+                            "requestedAt",
+                            "status",
+                            "completedAt",
+                            "errorMessage"
+                          ]
+                        },
+                        {
+                          "type": "null"
                         }
-                      },
-                      "required": [
-                        "id",
-                        "workspaceId",
-                        "sourceRegion",
-                        "targetRegion",
-                        "status",
-                        "requestedBy",
-                        "requestedAt",
-                        "completedAt",
-                        "errorMessage"
                       ]
                     }
                   },
@@ -39301,64 +40779,263 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "workspaceId": {
-                      "type": "string"
-                    },
-                    "sourceRegion": {
-                      "type": "string"
-                    },
-                    "targetRegion": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "pending",
-                        "in_progress",
-                        "completed",
-                        "failed",
-                        "cancelled"
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "null"
+                        },
+                        "errorMessage": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
                       ]
                     },
-                    "requestedBy": {
-                      "type": [
-                        "string",
-                        "null"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "in_progress"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "null"
+                        },
+                        "errorMessage": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
                       ]
                     },
-                    "requestedAt": {
-                      "type": "string",
-                      "format": "date-time"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "errorMessage": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
+                      ]
                     },
-                    "completedAt": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "format": "date-time"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "failed"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "errorMessage": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
+                      ]
                     },
-                    "errorMessage": {
-                      "type": [
-                        "string",
-                        "null"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "cancelled"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "errorMessage": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
                       ]
                     }
-                  },
-                  "required": [
-                    "id",
-                    "workspaceId",
-                    "sourceRegion",
-                    "targetRegion",
-                    "status",
-                    "requestedBy",
-                    "requestedAt",
-                    "completedAt",
-                    "errorMessage"
                   ]
                 }
               }
@@ -39527,64 +41204,263 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "workspaceId": {
-                      "type": "string"
-                    },
-                    "sourceRegion": {
-                      "type": "string"
-                    },
-                    "targetRegion": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "pending",
-                        "in_progress",
-                        "completed",
-                        "failed",
-                        "cancelled"
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "null"
+                        },
+                        "errorMessage": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
                       ]
                     },
-                    "requestedBy": {
-                      "type": [
-                        "string",
-                        "null"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "in_progress"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "null"
+                        },
+                        "errorMessage": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
                       ]
                     },
-                    "requestedAt": {
-                      "type": "string",
-                      "format": "date-time"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "errorMessage": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
+                      ]
                     },
-                    "completedAt": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "format": "date-time"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "failed"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "errorMessage": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
+                      ]
                     },
-                    "errorMessage": {
-                      "type": [
-                        "string",
-                        "null"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "sourceRegion": {
+                          "type": "string"
+                        },
+                        "targetRegion": {
+                          "type": "string"
+                        },
+                        "requestedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "cancelled"
+                          ]
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "errorMessage": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "sourceRegion",
+                        "targetRegion",
+                        "requestedBy",
+                        "requestedAt",
+                        "status",
+                        "completedAt",
+                        "errorMessage"
                       ]
                     }
-                  },
-                  "required": [
-                    "id",
-                    "workspaceId",
-                    "sourceRegion",
-                    "targetRegion",
-                    "status",
-                    "requestedBy",
-                    "requestedAt",
-                    "completedAt",
-                    "errorMessage"
                   ]
                 }
               }

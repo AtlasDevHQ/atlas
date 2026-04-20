@@ -6,10 +6,10 @@ import { ALL_STATUSES, isActionToolResult, RESOLVED_STATUSES } from "../lib/acti
 /* ------------------------------------------------------------------ */
 
 describe("isActionToolResult", () => {
-  test("valid pending_approval result", () => {
+  test("valid pending result", () => {
     expect(
       isActionToolResult({
-        status: "pending_approval",
+        status: "pending",
         actionId: "act_123",
         summary: "Send Slack message to #general",
       }),
@@ -38,7 +38,7 @@ describe("isActionToolResult", () => {
 
   test("all valid statuses are accepted", () => {
     const fixtures: Record<string, Record<string, unknown>> = {
-      pending_approval: { summary: "Do the thing" },
+      pending: { summary: "Do the thing" },
       approved: { result: "ok" },
       executed: { result: "ok" },
       auto_approved: { result: "ok" },
@@ -71,11 +71,11 @@ describe("isActionToolResult", () => {
   });
 
   test("string returns false", () => {
-    expect(isActionToolResult("pending_approval")).toBe(false);
+    expect(isActionToolResult("pending")).toBe(false);
   });
 
   test("missing actionId returns false", () => {
-    expect(isActionToolResult({ status: "pending_approval" })).toBe(false);
+    expect(isActionToolResult({ status: "pending" })).toBe(false);
   });
 
   test("missing status returns false", () => {
@@ -87,7 +87,7 @@ describe("isActionToolResult", () => {
   });
 
   test("numeric actionId returns false", () => {
-    expect(isActionToolResult({ status: "pending_approval", actionId: 123 })).toBe(false);
+    expect(isActionToolResult({ status: "pending", actionId: 123 })).toBe(false);
   });
 
   test("empty object returns false", () => {
@@ -104,8 +104,8 @@ describe("ALL_STATUSES", () => {
     expect(ALL_STATUSES).toHaveLength(8);
   });
 
-  test("includes pending_approval and all resolved statuses", () => {
-    expect(ALL_STATUSES).toContain("pending_approval");
+  test("includes pending and all resolved statuses", () => {
+    expect(ALL_STATUSES).toContain("pending");
     for (const s of RESOLVED_STATUSES) {
       expect(ALL_STATUSES).toContain(s);
     }
@@ -113,8 +113,8 @@ describe("ALL_STATUSES", () => {
 });
 
 describe("RESOLVED_STATUSES", () => {
-  test("does not include pending_approval", () => {
-    expect(RESOLVED_STATUSES.has("pending_approval")).toBe(false);
+  test("does not include pending", () => {
+    expect(RESOLVED_STATUSES.has("pending")).toBe(false);
   });
 
   test("includes all terminal statuses", () => {
@@ -131,7 +131,7 @@ describe("RESOLVED_STATUSES", () => {
     expect(RESOLVED_STATUSES.size).toBe(7);
   });
 
-  test("is exactly ALL_STATUSES minus pending_approval", () => {
+  test("is exactly ALL_STATUSES minus pending", () => {
     expect(RESOLVED_STATUSES.size).toBe(ALL_STATUSES.length - 1);
   });
 });

@@ -1042,3 +1042,91 @@ The cycle-avoidance mechanics work because the ESM live-binding resolution for `
 - **~8 schemas remain** (SLA family, PIIColumnClassification, SemanticDiffResponse, Branding, ModelConfig, ConnectionInfo/Health, audit analytics, token usage/trends, UsageSummary). Tracker #1648 stays open with the dwindling punch list.
 
 **Category:** Continuation of wins #32 / #33's cross-package consolidation. The per-family migration tempo is now mechanical: (1) identify the dual-defined schemas, (2) hoist to `packages/schemas/src/<family>.ts` with `satisfies z.ZodType<T>`, (3) pin enums to the canonical `@useatlas/types` tuple, (4) replace the route copy with an import, (5) replace the web copy with a re-export. Each phase has also surfaced a second-order win — phase 3 found the silent MRR bug (#1680) and the missing `backups.status` CHECK constraint (#1679) by forcing a second read of each shape. Phase 4 surfaced three reviewer-caught follow-ups instead (#1695 / #1696 / #1697), but the pattern remains: every migration is one more shape where a wire-format drift fails parse loudly instead of passing through untyped.
+
+---
+
+## 39. `ProviderConfig` tagged union (email)
+
+**Date:** 2026-04-20
+**Issue:** #1542
+**Branch:** chore/types-0-0-14-consumer-migrations
+
+**Problem:** `ProviderConfig` in `packages/api/src/lib/integrations/types.ts` was a structural union (`SmtpConfig | SendGridConfig | PostmarkConfig | SesConfig | ResendConfig`) with the `provider` tag carried on the sibling `EmailInstallationWithSecret.provider` column. TypeScript cannot narrow the config from a sibling field — every read site either carried an `as` cast (`(config as { apiKey: string }).apiKey`, five sites in `admin-email-provider.ts`'s `describeOverride`) or re-typed the value as `Record<string, unknown>` and probed each field with a `typeof` guard (`EmailTransport.config` in `lib/email/delivery.ts`, plus `sendTestEmail` / per-provider test helpers in `admin-integrations.ts` took `Record<string, unknown>` and unpacked keys defensively). The cast-safety argument lived in a JSDoc paragraph with a forward reference ("save-time enforcement via `validateProviderConfig`"); a grep-only refactor couldn't prove it.
+
+**Solution:** Move `ProviderConfig` into `packages/types/src/email-provider.ts` as a `discriminated union keyed on `provider` — each variant (`SmtpConfig`, `SendGridConfig`, `PostmarkConfig`, `SesConfig`, `ResendConfig`) carries its own `provider` literal. The sibling `EmailInstallation.provider` column remains authoritative; `parseInstallationRow` in `lib/email/store.ts` injects the tag from the sibling column into the JSONB payload at read time, and `saveEmailInstallation` strips the tag before `INSERT` so the column isn't duplicated in storage. The wire-layer Zod schemas (`admin-email-provider.ts` `SetEmailProviderBodySchema`, `admin-integrations.ts` `POST /integrations/email`) become `z.discriminatedUnion("provider", [...])`. Client payloads now send `config: { provider: "smtp", ... }` instead of `{ provider: "smtp", config: { ... } }` — the OpenAPI spec regenerates with the tag on every variant.
+
+**Impact:**
+- **Five `as` casts removed in `describeOverride`.** The per-case blocks drop from `const apiKey = (config as { apiKey: string }).apiKey` to `config.apiKey` — the union's variant narrowing on `switch (config.provider)` is structurally guaranteed. `describeOverride` also drops its `provider` parameter; the discriminator is already on the config.
+- **`EmailTransport.config` typed as `ProviderConfig`.** `deliverViaTransport` narrows via `switch (transport.config.provider)` — each case reaches for the matching credential field directly (`config.apiKey`, `config.serverToken`) without the old `if (typeof apiKey !== "string")` guards. The `default` branch for smtp/ses collapses into the explicit variants.
+- **Three `Record<string, unknown>` config parameters removed** in `admin-integrations.ts` helpers (`sendSendGridTestEmail`, `sendPostmarkTestEmail`, `sendResendTestEmail`). Helpers now take the exact credential they need (`apiKey: string`, `serverToken: string`) — the caller's `switch (install.config.provider)` does the narrowing.
+- **`validateProviderConfig` removed from `admin-integrations.ts`.** The z.discriminatedUnion at the wire layer + the sibling-match check in the handler cover the same ground without double-validation.
+- **`getPlatformEmailConfig` emits tagged variants** — `{ provider: "resend", apiKey }` instead of `{ apiKey }`. SMTP/SES fall-through builds a minimal placeholder variant so the discriminator is always present; the bridge reads credentials out of band anyway.
+- **Zero runtime cost.** The variants flatten to the same JSON shape on the wire; the tag travels in the body instead of a sibling field. JSONB storage is unchanged (save still strips; read re-injects).
+- **Wire contract change** — clients that previously submitted `{ provider, config: { apiKey } }` must now submit `{ provider, config: { provider, apiKey } }`. Both tests (`admin-email-provider-route.test.ts`, `admin-integrations-byot.test.ts`) updated with 12 fixture revisions; the mismatch case (config carrying the wrong discriminator) returns 400 via `validateProviderConfig`'s schema parse. The admin UX is a page, not a long-lived SDK, so the breaking change doesn't need a deprecation bridge.
+
+**Category:** Discriminated-union consolidation. Same pattern as win #33's `CustomDomainSchema` refinement — the structural shape couldn't express the invariant, so `as` casts and runtime guards accumulated at every read site. Embedding the discriminator in the union closes the gap at the type layer; every downstream cast falls out.
+
+---
+
+## 40. `ActionDisplayStatus` unified with `ActionStatus`
+
+**Date:** 2026-04-20
+**Issue:** #1591
+**Branch:** chore/types-0-0-14-consumer-migrations
+
+**Problem:** `ActionDisplayStatus` (wire format for the admin queue + approval card) used `"pending_approval"` while `ActionStatus` (persisted in `action_log.status`) used `"pending"`. Every call site that bridged the two — `mapStatus` in `packages/web/src/app/admin/actions/page.tsx`, a case in `isActionToolResult`, the return of `handleAction`, the detection in `agent-query.ts` — had to translate between enums. The `_AssertStatusAlignment` compile-time check at the bottom of `packages/types/src/action.ts` encoded the drift rather than preventing it: it only asserted `Exclude<ActionStatus, "pending"> extends ActionDisplayStatus`, which passed as long as the rest of the enum matched. 20+ files (tests + source) kept pairs of string literals in sync by hand.
+
+**Solution:** Rename `ActionDisplayStatus.pending_approval` → `pending` (the value the server already emits). `ActionDisplayStatus` now exactly equals `ActionStatus`; the `_AssertStatusAlignment` check flips to `[Exclude<ActionStatus, ActionDisplayStatus>] extends [never] ? [Exclude<ActionDisplayStatus, ActionStatus>] extends [never] ? true : never : never` — a bidirectional equality assertion that fails compile if either tuple diverges. `mapStatus` gone (one-line drop in the admin page). `STATUS_CONFIG` key in `action-status-badge.tsx` renamed (label kept "Pending Approval"). `handleAction`'s return stamp changes to `status: "pending"` — the memory store already used that value, so the round-trip is identity.
+
+**Impact:**
+- **`mapStatus` deleted** along with the `ActionDisplayStatus` import in `admin/actions/page.tsx` — the badge renders `action.status` directly.
+- **~18 call sites renamed** across `packages/types`, `packages/api`, `packages/web`, `packages/react`, `ee/`, and `e2e/`. Every pair of literals (wire + DB) collapsed to one.
+- **`_AssertStatusAlignment` strengthened** — the old assertion would pass if someone added `"foo"` to `ActionDisplayStatus` but not `ActionStatus`; the new one fails. Same for the reverse direction.
+- **Badge label preserved** — `STATUS_CONFIG.pending.label` is still `"Pending Approval"`, so the UI text is identical post-rename. Only the storage key changed.
+- **Line count:** net `-10` lines (the `mapStatus` helper + call sites; no new abstractions).
+
+**Category:** Enum unification. The drift was "structurally aligned, surface-named differently" — the costly kind, because every bridge site looked like a translation helper but the translation was identity save for one string. Removing the split at the type layer deletes every translator.
+
+---
+
+## 41. `ApprovalRule` + `ApprovalRequest` discriminated unions
+
+**Date:** 2026-04-20
+**Issue:** #1660
+**Branch:** chore/types-0-0-14-consumer-migrations
+
+**Problem:** `ApprovalRule` in `@useatlas/types` described the "cost XOR pattern" invariant in field JSDoc: `pattern: string` with a note "For table/column rules" and `threshold: number | null` with "For cost rules". Nothing enforced it structurally. `validateRuleInput` in `ee/governance/approval.ts` checked the invariant at runtime and rejected cost rules missing thresholds; the HTTP route layer sent the payload through that helper rather than letting Zod reject it. Analogous story for `ApprovalRequest` — pending rows and reviewed rows shared one flat type, with `reviewerId`, `reviewerEmail`, `reviewComment`, `reviewedAt` all typed `string | null`. A pending request with a populated reviewer field would parse cleanly at every boundary.
+
+**Solution:** Both types become intersection unions. `ApprovalRule` = base `{ id, orgId, name, enabled, createdAt, updatedAt }` × `({ ruleType: "cost"; threshold: number; pattern: "" } | { ruleType: "table"; pattern: string; threshold: null } | { ruleType: "column"; pattern: string; threshold: null })`. `ApprovalRequest` = base (identity, query metadata, timestamps) × status-keyed reviewer blocks (pending/expired require null reviewer fields; approved/denied require `reviewerId: string` + `reviewedAt: string`). `CreateApprovalRuleRequest` mirrors the rule variants — a cost rule without threshold is a compile-time error, not a runtime 400. `packages/schemas/src/approval.ts` migrates to `z.discriminatedUnion("ruleType", [...])` / `z.discriminatedUnion("status", [...])` with a variant schema per case. The EE row-to-type helpers (`rowToRule`, `rowToRequest`) construct the matching variant and drop rows whose field nullness contradicts their status/type (with a warn log, same policy as the existing status-narrowing).
+
+**Impact:**
+- **Invariants enforced at the wire layer.** The admin-approval route's `CreateRuleBodySchema` becomes `z.discriminatedUnion("ruleType", [CostRuleBodySchema, NamedRuleBodySchema])`. A cost body missing `threshold`, or a table body missing `pattern`, is now a 422 from Zod before the handler runs — the run-time guard in `validateRuleInput` becomes a defense in depth against direct service callers.
+- **15 new schema tests** cover the invariants: cost rule with null threshold, table rule with non-null threshold, pending request with populated reviewer, approved without reviewerId, etc. Every combination that previously parsed silently now rejects with a structured ZodError.
+- **Row-to-type helpers robustified.** `rowToRule` for a cost row with `threshold IS NULL` skips the row with a warn log (previously: returned a half-constructed rule). Same for reviewed rows missing `reviewer_id` or `reviewed_at`.
+- **Optimistic UI patches updated.** The approval page's `runOptimistic` callbacks stamp a placeholder `reviewerId` alongside `status: "approved"` / `"denied"`; the server response replaces it in `onSuccess` before it renders. Documented inline.
+- **OpenAPI shape richer.** The spec now describes three rule-body variants and four request-status variants as anyOf union members. The extractor handles it cleanly (no `ZodCatch` workaround needed).
+- **Line count:** schemas grew by ~70 lines (variant schemas), tests by ~50; the EE row helpers grew by ~15. Net positive line count, but the invariants are now load-bearing instead of documented.
+
+**Category:** Discriminated-union consolidation. Same pattern as wins #33 + #39 — the structural shape couldn't encode "X and Y are mutually exclusive" or "if status=X then field F is non-null", so every handler and reader site independently re-derived the invariant. The union pushes that logic to the type layer once.
+
+---
+
+## 42. `RegionMigration` discriminated union
+
+**Date:** 2026-04-20
+**Issue:** #1696
+**Branch:** chore/types-0-0-14-consumer-migrations
+
+**Problem:** Follow-up filed against win #38 (residency schemas). The pre-union `RegionMigration` typed `completedAt: string | null` and `errorMessage: string | null` against a status enum of `"pending" | "in_progress" | "completed" | "failed" | "cancelled"`. The invariants the writer enforces atomically — in-flight statuses have both fields null, completed has a timestamp and no error, failed has both, cancelled has a timestamp — lived in field JSDoc. A row with `{ status: "pending", completedAt: "2026-04-16T..." }` would parse cleanly against every boundary.
+
+**Solution:** `RegionMigration` becomes a base × status-keyed variant union, each variant pinning `completedAt` / `errorMessage` to the exact nullability the writer produces. `failed` requires `errorMessage: string` structurally. `cancelled` keeps `errorMessage: string | null` because legacy 'Cancelled by admin' rows predate the current writer — tightening it would require a data migration (#1696 follow-up). `packages/schemas/src/residency.ts` migrates to `z.discriminatedUnion("status", [PendingMigrationSchema, InProgressMigrationSchema, CompletedMigrationSchema, FailedMigrationSchema, CancelledMigrationSchema])` with a variant schema per case. `admin-residency.ts` grows a `rowToMigration` helper that builds the matching variant from a DB row; unknown statuses still coerce to `failed` (#1695's existing policy), with a log breadcrumb on any row whose timestamps contradict its status (e.g. completed without `completed_at` → falls back to `requested_at`).
+
+**Impact:**
+- **Six new invariant tests** in `schemas/residency.test.ts`: pending with populated completedAt, pending with populated errorMessage, in_progress with populated completedAt, failed without completedAt, failed without errorMessage, completed with populated errorMessage. All previously would have parsed against the flat schema.
+- **Exhaustiveness checker added for free.** The web residency page's `pillForMigration` no longer needs a `default: never` fallback — the `switch (migration.status)` is exhaustive at the type layer, so adding a new status to `MIGRATION_STATUSES` stops the file from compiling.
+- **Row-to-type conversion centralized.** The three handlers that previously inlined an object literal (`GET /migration`, `POST /migrate` response, `POST /migrate/:id/retry` response) share one `rowToMigration` helper. Drift-proof: a new invariant gets added to the helper, not scattered across three sites.
+- **OpenAPI spec describes the union.** Failed migrations advertise a required `errorMessage: string` (non-nullable); pending/in_progress advertise `null`. A client using the spec to generate a parser (e.g. a future SDK) can narrow without runtime guards.
+- **Legacy 'Cancelled by admin' rows still parse.** `cancelled` keeps `errorMessage: string | null` in the schema. Cleaning up the legacy data is a future migration tracked via #1696's description; in the meantime the type is accurate.
+- **Line count:** residency type grew by ~18 lines, schema by ~30, `rowToMigration` added 45 lines while collapsing 3 inline literals.
+
+**Category:** Discriminated-union consolidation. Ties off #1696, the follow-up filed at the end of win #38 — the phase-4 migration left the invariant documented but unstructured; the tagged union makes it load-bearing.

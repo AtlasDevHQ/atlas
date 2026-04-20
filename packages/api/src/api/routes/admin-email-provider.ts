@@ -48,8 +48,12 @@ const log = createLogger("admin-email-provider");
 const BASELINE_PROVIDER: EmailProvider = "resend";
 const BASELINE_FROM_ADDRESS = "Atlas <noreply@useatlas.dev>";
 
-/** Provider-specific secret config shapes. */
+// Provider-specific secret config shapes. Each carries the `provider`
+// discriminator (#1542) — the wire contract now requires it on the
+// incoming body so the server can `switch (config.provider)` downstream
+// without `as` casts.
 const SmtpConfigSchema = z.object({
+  provider: z.literal("smtp"),
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535),
   username: z.string().min(1),
@@ -58,20 +62,24 @@ const SmtpConfigSchema = z.object({
 });
 
 const SendGridConfigSchema = z.object({
+  provider: z.literal("sendgrid"),
   apiKey: z.string().min(1),
 });
 
 const PostmarkConfigSchema = z.object({
+  provider: z.literal("postmark"),
   serverToken: z.string().min(1),
 });
 
 const SesConfigSchema = z.object({
+  provider: z.literal("ses"),
   region: z.string().min(1),
   accessKeyId: z.string().min(1),
   secretAccessKey: z.string().min(1),
 });
 
 const ResendConfigSchema = z.object({
+  provider: z.literal("resend"),
   apiKey: z.string().min(1),
 });
 
@@ -89,72 +97,54 @@ export function maskSecret(value: string): string {
  * masked; non-secret hints (SMTP host, SES region, etc.) pass through so
  * the UI can show the admin what they configured.
  *
- * The per-case `as` casts are safe: `ProviderConfig` is a structural union
- * that TypeScript cannot narrow from the sibling `provider` discriminator.
- * Callers only pass rows read from `email_installations`, where the config
- * shape was validated at save time via `validateProviderConfig` → zod. A
- * cleaner shape would be a tagged union (embed `provider` in the config);
- * tracked as a follow-up since that refactor crosses the wire contract in
- * `admin-integrations.ts` and the `email_installations` JSONB column.
+ * Post-#1542 `ProviderConfig` is a discriminated union keyed on
+ * `provider` — the `switch` below narrows the config structurally, so
+ * the per-case `as` casts are gone.
  */
 function describeOverride(
-  provider: EmailProvider,
   config: ProviderConfig,
 ): { secretLabel: string; secretMasked: string | null; hints: Record<string, string> } {
-  switch (provider) {
+  switch (config.provider) {
     case "resend":
-    case "sendgrid": {
-      const apiKey = (config as { apiKey: string }).apiKey;
-      return { secretLabel: "API key", secretMasked: apiKey ? maskSecret(apiKey) : null, hints: {} };
-    }
-    case "postmark": {
-      const token = (config as { serverToken: string }).serverToken;
-      return { secretLabel: "Server token", secretMasked: token ? maskSecret(token) : null, hints: {} };
-    }
-    case "smtp": {
-      const c = config as { host: string; port: number; username: string; password: string; tls: boolean };
+    case "sendgrid":
+      return { secretLabel: "API key", secretMasked: config.apiKey ? maskSecret(config.apiKey) : null, hints: {} };
+    case "postmark":
+      return { secretLabel: "Server token", secretMasked: config.serverToken ? maskSecret(config.serverToken) : null, hints: {} };
+    case "smtp":
       // Username and password are both credential material — usernames are
       // often full email addresses or account logins and shouldn't leave
       // the server in the clear (CLAUDE.md "No secrets in responses").
       return {
         secretLabel: "Password",
-        secretMasked: c.password ? maskSecret(c.password) : null,
+        secretMasked: config.password ? maskSecret(config.password) : null,
         hints: {
-          Host: c.host,
-          Port: String(c.port),
-          Username: c.username ? maskSecret(c.username) : "",
-          TLS: c.tls ? "enabled" : "disabled",
+          Host: config.host,
+          Port: String(config.port),
+          Username: config.username ? maskSecret(config.username) : "",
+          TLS: config.tls ? "enabled" : "disabled",
         },
       };
-    }
-    case "ses": {
-      const c = config as { region: string; accessKeyId: string; secretAccessKey: string };
+    case "ses":
       // AWS treats access-key-IDs as semi-sensitive — they pair with the
       // secret and leak identity/tenancy. Region is non-sensitive.
       return {
         secretLabel: "Secret access key",
-        secretMasked: c.secretAccessKey ? maskSecret(c.secretAccessKey) : null,
+        secretMasked: config.secretAccessKey ? maskSecret(config.secretAccessKey) : null,
         hints: {
-          Region: c.region,
-          "Access key ID": c.accessKeyId ? maskSecret(c.accessKeyId) : "",
+          Region: config.region,
+          "Access key ID": config.accessKeyId ? maskSecret(config.accessKeyId) : "",
         },
       };
-    }
-    default: {
-      // Exhaustiveness check — adding a new EmailProvider without handling it here
-      // is a compile-time error. The throw is a belt-and-braces runtime guard.
-      const _exhaustive: never = provider;
-      throw new Error(`Unhandled email provider: ${_exhaustive as string}`);
-    }
   }
 }
 
 /**
- * Validate provider-specific config shape at the HTTP boundary. This is THE
- * save-time enforcement point that `describeOverride`'s cast-safety comment
- * relies on — every config stored in `email_installations` flows through
- * here, so reads can cast from `ProviderConfig` to the narrow per-provider
- * shape without runtime checks.
+ * Validate provider-specific config shape at the HTTP boundary. Post-#1542
+ * each schema carries its own `provider` literal, so the body's `provider`
+ * and `config.provider` fields must agree; a mismatch is rejected as
+ * invalid. Every config stored in `email_installations` flows through
+ * here, so reads get a correctly-tagged `ProviderConfig` without further
+ * runtime checks.
  */
 function validateProviderConfig(
   provider: EmailProvider,
@@ -178,6 +168,8 @@ function validateProviderConfig(
   if (!result.success) {
     return { ok: false, error: `Invalid ${provider} config: ${result.error.issues.map((i) => i.message).join(", ")}` };
   }
+  // `schema` includes a `provider` literal matching the outer `provider`
+  // arg, so the parsed result is already a valid `ProviderConfig` variant.
   return { ok: true, config: result.data as ProviderConfig };
 }
 
@@ -327,7 +319,7 @@ adminEmailProvider.openapi(getConfigRoute, async (c) => {
 
     const override = install
       ? (() => {
-          const { secretLabel, secretMasked, hints } = describeOverride(install.provider, install.config);
+          const { secretLabel, secretMasked, hints } = describeOverride(install.config);
           return {
             provider: install.provider,
             fromAddress: install.sender_address,
@@ -385,7 +377,7 @@ adminEmailProvider.openapi(setConfigRoute, async (c) => {
 
     const override = saved
       ? (() => {
-          const { secretLabel, secretMasked, hints } = describeOverride(saved.provider, saved.config);
+          const { secretLabel, secretMasked, hints } = describeOverride(saved.config);
           return {
             provider: saved.provider,
             fromAddress: saved.sender_address,
@@ -457,7 +449,7 @@ adminEmailProvider.openapi(testConfigRoute, async (c) => {
         try: () => sendEmailWithTransport(testMessage, {
           provider: body.provider!,
           senderAddress: fromAddress,
-          config: validated.config as unknown as Record<string, unknown>,
+          config: validated.config,
         }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });

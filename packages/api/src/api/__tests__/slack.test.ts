@@ -71,7 +71,7 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   approveAction: mockApproveAction,
   denyAction: mockDenyAction,
   getAction: mockGetAction,
-  handleAction: mock(() => Promise.resolve({ status: "pending_approval", actionId: "act-001" })),
+  handleAction: mock(() => Promise.resolve({ status: "pending", actionId: "act-001" })),
   buildActionRequest: mock(() => ({ id: "act-001" })),
   getActionConfig: mock(() => ({ approval: "manual" })),
   registerActionExecutor: mock(() => {}),

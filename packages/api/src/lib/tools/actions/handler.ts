@@ -353,7 +353,7 @@ export async function handleAction(
   }
 
   // Manual or admin-only: pend for approval
-  return { status: "pending_approval", actionId: request.id, summary: request.summary };
+  return { status: "pending", actionId: request.id, summary: request.summary };
 }
 
 // ---------------------------------------------------------------------------

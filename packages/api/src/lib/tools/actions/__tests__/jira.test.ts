@@ -13,7 +13,7 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   }),
   handleAction: async (request: unknown, executeFn: unknown) => {
     lastHandleActionCall = { request, executeFn };
-    return { status: "pending_approval", actionId: "test-action-id", summary: "test" };
+    return { status: "pending", actionId: "test-action-id", summary: "test" };
   },
 }));
 

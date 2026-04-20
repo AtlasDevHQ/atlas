@@ -29,6 +29,17 @@ const log = createLogger("email-store");
 // Shared row parser
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse a DB row into an `EmailInstallationWithSecret`.
+ *
+ * Post-#1542 `ProviderConfig` is a discriminated union keyed on `provider`,
+ * but the JSONB `config` column still stores the provider-specific payload
+ * WITHOUT the discriminator (SMTP host/port/etc, API key, etc.). The
+ * sibling `provider` column is the authoritative source, so the parser
+ * injects it into the config at read time. Downstream consumers (delivery,
+ * admin handlers) can then `switch (install.config.provider)` and have
+ * TypeScript narrow without `as` casts.
+ */
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
@@ -36,21 +47,27 @@ function parseInstallationRow(
   const configId = row.config_id;
   const provider = row.provider;
   const senderAddress = row.sender_address;
-  const config = row.config;
+  const rawConfig = row.config;
   if (
     typeof configId !== "string" || !configId ||
     typeof provider !== "string" || !provider ||
     typeof senderAddress !== "string" || !senderAddress ||
-    !config || typeof config !== "object"
+    !rawConfig || typeof rawConfig !== "object"
   ) {
     log.warn(context, "Invalid email installation record in database");
     return null;
   }
+  // Inject the provider discriminator into the JSONB payload. The cast
+  // through `unknown` is deliberate — `rawConfig` was validated at save
+  // time by `validateProviderConfig` against the matching schema, so the
+  // combined `{ provider, ...fields }` structurally matches exactly one
+  // `ProviderConfig` variant.
+  const taggedConfig = { provider, ...(rawConfig as Record<string, unknown>) } as unknown as ProviderConfig;
   return {
     config_id: configId,
     provider: provider as EmailProvider,
     sender_address: senderAddress,
-    config: config as ProviderConfig,
+    config: taggedConfig,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
   };
@@ -116,6 +133,13 @@ export async function saveEmailInstallation(
 
   try {
     // Atomic upsert — the UNIQUE index on org_id ensures one config per org.
+    //
+    // Strip the `provider` discriminator from the JSONB payload: it lives
+    // on the sibling `provider` column (#1542 keeps both in lockstep via
+    // the parser in `parseInstallationRow`). Persisting the tag twice
+    // would cause round-trip duplication + drift risk if the columns ever
+    // diverged.
+    const { provider: _provider, ...configJson } = opts.config;
     await internalQuery(
       `INSERT INTO email_installations (provider, sender_address, config, org_id)
        VALUES ($1, $2, $3, $4)
@@ -124,7 +148,7 @@ export async function saveEmailInstallation(
          sender_address = $2,
          config = $3,
          installed_at = now()`,
-      [opts.provider, opts.senderAddress, JSON.stringify(opts.config), orgId],
+      [opts.provider, opts.senderAddress, JSON.stringify(configJson), orgId],
     );
   } catch (err) {
     log.error(

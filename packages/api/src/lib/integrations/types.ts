@@ -126,40 +126,35 @@ export interface WhatsAppInstallationWithSecret extends WhatsAppInstallation {
 }
 
 // ---------------------------------------------------------------------------
-// Email
+// Email — `ProviderConfig` is now a discriminated union keyed on `provider`.
+// Previously this module owned the structural per-provider configs; they now
+// live in `@useatlas/types/email-provider` so the web layer can import the
+// same types without dragging in the rest of `@atlas/api`. The JSONB rows
+// in `email_installations.config` still do not store the `provider` tag —
+// `lib/email/store.ts` injects it from the sibling column at read time.
 // ---------------------------------------------------------------------------
 
-import { EMAIL_PROVIDERS, type EmailProvider } from "@useatlas/types/email-provider";
+import {
+  EMAIL_PROVIDERS,
+  type EmailProvider,
+  type ProviderConfig,
+  type SmtpConfig,
+  type SendGridConfig,
+  type PostmarkConfig,
+  type SesConfig,
+  type ResendConfig,
+} from "@useatlas/types/email-provider";
 
-export { EMAIL_PROVIDERS, type EmailProvider };
-
-export interface SmtpConfig {
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  tls: boolean;
-}
-
-export interface SendGridConfig {
-  apiKey: string;
-}
-
-export interface PostmarkConfig {
-  serverToken: string;
-}
-
-export interface SesConfig {
-  region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-}
-
-export interface ResendConfig {
-  apiKey: string;
-}
-
-export type ProviderConfig = SmtpConfig | SendGridConfig | PostmarkConfig | SesConfig | ResendConfig;
+export {
+  EMAIL_PROVIDERS,
+  type EmailProvider,
+  type ProviderConfig,
+  type SmtpConfig,
+  type SendGridConfig,
+  type PostmarkConfig,
+  type SesConfig,
+  type ResendConfig,
+};
 
 export interface EmailInstallation extends BaseInstallation {
   config_id: string;

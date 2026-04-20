@@ -18,7 +18,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { APPROVAL_RULE_TYPES, APPROVAL_STATUSES } from "@useatlas/types";
+import { APPROVAL_STATUSES } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
@@ -44,21 +44,45 @@ const approvalDomainError = domainError(ApprovalError, { validation: 400, not_fo
 // Request body schemas — response shapes live in @useatlas/schemas.
 // ---------------------------------------------------------------------------
 
-const CreateRuleBodySchema = z.object({
+// Discriminated on `ruleType` (#1660) — encodes "cost needs threshold;
+// table/column need pattern" at the wire layer. A cost body missing
+// `threshold`, or a table body missing `pattern`, is now a 400 from the
+// Zod parser, not a runtime error from `validateRuleInput`.
+const CostRuleBodySchema = z.object({
+  name: z.string().min(1).openapi({
+    description: "Human-readable rule name.",
+    example: "Flag expensive queries",
+  }),
+  ruleType: z.literal("cost").openapi({
+    description: "Type of rule: cost threshold.",
+    example: "cost",
+  }),
+  threshold: z.number().positive().openapi({
+    description: "Cost threshold (positive integer — estimated row count).",
+    example: 1000,
+  }),
+  pattern: z.literal("").optional().openapi({ description: "Unused for cost rules." }),
+  enabled: z.boolean().optional().openapi({
+    description: "Whether the rule is active. Defaults to true.",
+    example: true,
+  }),
+});
+
+const NamedRuleBodySchema = z.object({
   name: z.string().min(1).openapi({
     description: "Human-readable rule name.",
     example: "Require approval for PII tables",
   }),
-  ruleType: z.enum(APPROVAL_RULE_TYPES).openapi({
-    description: "Type of rule: table name match, column name match, or cost threshold.",
+  ruleType: z.enum(["table", "column"]).openapi({
+    description: "Type of rule: table name match or column name match.",
     example: "table",
   }),
-  pattern: z.string().openapi({
-    description: "Pattern to match. Table/column name for table/column rules. Unused for cost rules.",
+  pattern: z.string().min(1).openapi({
+    description: "Pattern to match. Table/column name.",
     example: "users",
   }),
-  threshold: z.number().nullable().optional().openapi({
-    description: "Cost threshold. Required for cost rules, ignored for table/column rules.",
+  threshold: z.null().optional().openapi({
+    description: "Unused for table/column rules — must be null.",
     example: null,
   }),
   enabled: z.boolean().optional().openapi({
@@ -66,6 +90,11 @@ const CreateRuleBodySchema = z.object({
     example: true,
   }),
 });
+
+const CreateRuleBodySchema = z.discriminatedUnion("ruleType", [
+  CostRuleBodySchema,
+  NamedRuleBodySchema,
+]);
 
 const UpdateRuleBodySchema = z.object({
   name: z.string().min(1).optional(),
@@ -308,13 +337,13 @@ adminApproval.openapi(createRuleRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const body = c.req.valid("json");
 
-    const rule = yield* createApprovalRule(orgId!, {
-      name: body.name,
-      ruleType: body.ruleType,
-      pattern: body.pattern,
-      threshold: body.threshold ?? null,
-      enabled: body.enabled,
-    });
+    // `body` is narrowed by the discriminated union (#1660); pass it
+    // through as the matching CreateApprovalRuleRequest variant.
+    const input = body.ruleType === "cost"
+      ? { ruleType: "cost" as const, name: body.name, threshold: body.threshold, enabled: body.enabled }
+      : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled };
+
+    const rule = yield* createApprovalRule(orgId!, input);
     return c.json({ rule }, 201);
   }), { label: "create approval rule", domainErrors: [approvalDomainError] });
 });

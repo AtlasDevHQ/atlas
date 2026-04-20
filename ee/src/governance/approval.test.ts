@@ -179,18 +179,25 @@ describe("createApprovalRule", () => {
   });
 
   it("rejects invalid rule type", async () => {
+    // The cast punches through the discriminated union to simulate an
+    // invalid payload reaching the service layer (e.g. from tests or a
+    // mis-configured consumer) — the runtime guard in `validateRuleInput`
+    // still fires.
     await expect(
       run(createApprovalRule("org-1", {
         name: "test",
-        ruleType: "invalid" as "table",
+        ruleType: "invalid",
         pattern: "users",
-      })),
+      } as unknown as import("@useatlas/types").CreateApprovalRuleRequest)),
     ).rejects.toThrow("Invalid rule type");
   });
 
-  it("rejects cost rule without threshold", async () => {
+  it("rejects cost rule with non-positive threshold", async () => {
+    // The discriminated `CreateApprovalRuleRequest` makes threshold required at
+    // compile time for cost rules; this test still covers the runtime path
+    // that rejects zero / negative values.
     await expect(
-      run(createApprovalRule("org-1", { name: "test", ruleType: "cost", pattern: "" })),
+      run(createApprovalRule("org-1", { name: "test", ruleType: "cost", threshold: 0 })),
     ).rejects.toThrow("Cost rules require a positive threshold");
   });
 

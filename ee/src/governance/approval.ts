@@ -98,17 +98,26 @@ function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
     log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — skipping rule");
     return null;
   }
-  return {
+  const base = {
     id: row.id,
     orgId: row.org_id,
     name: row.name,
-    ruleType: row.rule_type,
-    pattern: row.pattern,
-    threshold: row.threshold,
     enabled: row.enabled,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
+  // The discriminated union (#1660) requires each variant constructed
+  // explicitly so TypeScript narrows `pattern`/`threshold` against the
+  // chosen `ruleType`. Legacy rows with the wrong nullness for their
+  // type are treated as corrupt and dropped with a warning.
+  if (row.rule_type === "cost") {
+    if (row.threshold == null) {
+      log.warn({ ruleId: row.id }, "Cost rule missing threshold in database — skipping rule");
+      return null;
+    }
+    return { ...base, ruleType: "cost", threshold: row.threshold, pattern: "" };
+  }
+  return { ...base, ruleType: row.rule_type, pattern: row.pattern, threshold: null };
 }
 
 function parseJsonArray(val: string | null): string[] {
@@ -130,7 +139,7 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
     log.warn({ requestId: row.id, status: row.status }, "Approval request has unexpected status in database — skipping request");
     return null;
   }
-  return {
+  const base = {
     id: row.id,
     orgId: row.org_id,
     ruleId: row.rule_id,
@@ -142,13 +151,40 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
     connectionId: row.connection_id,
     tablesAccessed: parseJsonArray(row.tables_accessed),
     columnsAccessed: parseJsonArray(row.columns_accessed),
-    status: row.status,
-    reviewerId: row.reviewer_id,
-    reviewerEmail: row.reviewer_email,
-    reviewComment: row.review_comment,
-    reviewedAt: row.reviewed_at ? String(row.reviewed_at) : null,
     createdAt: String(row.created_at),
     expiresAt: String(row.expires_at),
+  };
+  // Variant construction (#1660): approved/denied rows must carry reviewer
+  // metadata; pending/expired rows must not. A row stored with an invalid
+  // combination (e.g. status='pending' with reviewer_id populated) is
+  // treated as corrupt and dropped. The route layer's schema parse would
+  // fail on the same record; surfacing the warning here gives operators a
+  // log breadcrumb.
+  if (row.status === "approved" || row.status === "denied") {
+    if (!row.reviewer_id || !row.reviewed_at) {
+      log.warn(
+        { requestId: row.id, status: row.status },
+        "Approval request in reviewed status is missing reviewer metadata — skipping request",
+      );
+      return null;
+    }
+    return {
+      ...base,
+      status: row.status,
+      reviewerId: row.reviewer_id,
+      reviewerEmail: row.reviewer_email,
+      reviewComment: row.review_comment,
+      reviewedAt: String(row.reviewed_at),
+    };
+  }
+  // pending / expired
+  return {
+    ...base,
+    status: row.status,
+    reviewerId: null,
+    reviewerEmail: null,
+    reviewComment: null,
+    reviewedAt: null,
   };
 }
 
@@ -161,8 +197,11 @@ function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void
   if (input.name.trim().length > 200) {
     return Effect.fail(new ApprovalError({ message: "Rule name must be 200 characters or fewer.", code: "validation" }));
   }
-  if (!isValidRuleType(input.ruleType)) {
-    return Effect.fail(new ApprovalError({ message: `Invalid rule type "${input.ruleType}". Supported: ${APPROVAL_RULE_TYPES.join(", ")}`, code: "validation" }));
+  // ruleType is narrowed by the discriminated union (#1660); runtime check
+  // still covers wire-layer inputs that bypass the route Zod (e.g. direct
+  // test usage) — those paths receive a string that TS has already typed.
+  if (!isValidRuleType(input.ruleType as string)) {
+    return Effect.fail(new ApprovalError({ message: `Invalid rule type "${input.ruleType as string}". Supported: ${APPROVAL_RULE_TYPES.join(", ")}`, code: "validation" }));
   }
   if (input.ruleType === "cost") {
     if (input.threshold == null || input.threshold <= 0) {
@@ -249,8 +288,9 @@ export const createApprovalRule = (
         orgId,
         input.name.trim(),
         input.ruleType,
-        input.pattern?.trim() ?? "",
-        input.threshold ?? null,
+        // Discriminated union guarantees pattern for table/column and empty for cost.
+        input.ruleType === "cost" ? "" : input.pattern.trim(),
+        input.ruleType === "cost" ? input.threshold : null,
         input.enabled ?? true,
       ],
     ));

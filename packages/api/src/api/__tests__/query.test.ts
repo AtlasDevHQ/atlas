@@ -686,7 +686,7 @@ describe("POST /api/v1/query", () => {
               toolName: "sendNotification",
               input: { actionType: "notification", target: "#revenue" },
               output: {
-                status: "pending_approval",
+                status: "pending",
                 actionId: "act-001",
                 summary: "Send notification to #revenue",
                 target: "#revenue",
@@ -728,7 +728,7 @@ describe("POST /api/v1/query", () => {
                 toolName: "sendNotification",
                 input: { actionType: "notification", target: "#general" },
                 output: {
-                  status: "pending_approval",
+                  status: "pending",
                   actionId: "act-url-test",
                   summary: "Send notification",
                   target: "#general",
@@ -845,7 +845,7 @@ describe("POST /api/v1/query", () => {
               toolName: "sendReport",
               input: { actionType: "send_report", target: "email:team@company.com" },
               output: {
-                status: "pending_approval",
+                status: "pending",
                 actionId: "act-002",
                 summary: "Email report to team@company.com",
                 target: "email:team@company.com",

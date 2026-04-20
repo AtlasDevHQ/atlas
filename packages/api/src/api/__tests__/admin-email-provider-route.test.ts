@@ -434,7 +434,7 @@ describe("admin email-provider route", () => {
         config_id: "cfg-sg",
         provider: "sendgrid",
         sender_address: "Acme <noreply@acme.com>",
-        config: { apiKey: "SG.abcdefghijklmnop" },
+        config: { provider: "sendgrid", apiKey: "SG.abcdefghijklmnop" },
         org_id: "org-1",
         installed_at: "2026-04-18T00:00:00Z",
       }));
@@ -452,7 +452,7 @@ describe("admin email-provider route", () => {
         config_id: "cfg-pm",
         provider: "postmark",
         sender_address: "Acme <noreply@acme.com>",
-        config: { serverToken: "abcdefghijklmnopqrstuvwxyz" },
+        config: { provider: "postmark", serverToken: "abcdefghijklmnopqrstuvwxyz" },
         org_id: "org-1",
         installed_at: "2026-04-18T00:00:00Z",
       }));
@@ -470,7 +470,7 @@ describe("admin email-provider route", () => {
         config_id: "cfg-1",
         provider: "resend",
         sender_address: "Acme <noreply@acme.com>",
-        config: { apiKey: "re_abcdefghijklmnop" },
+        config: { provider: "resend", apiKey: "re_abcdefghijklmnop" },
         org_id: "org-1",
         installed_at: "2026-04-18T00:00:00Z",
       }));
@@ -495,6 +495,7 @@ describe("admin email-provider route", () => {
         provider: "smtp",
         sender_address: "Acme <noreply@acme.com>",
         config: {
+          provider: "smtp",
           host: "smtp.example.com",
           port: 587,
           username,
@@ -533,6 +534,7 @@ describe("admin email-provider route", () => {
         provider: "ses",
         sender_address: "Acme <noreply@acme.com>",
         config: {
+          provider: "ses",
           region: "us-east-1",
           accessKeyId: keyId,
           secretAccessKey: secret,
@@ -565,7 +567,7 @@ describe("admin email-provider route", () => {
           config_id: "cfg-1",
           provider: "resend",
           sender_address: "Acme <noreply@acme.com>",
-          config: { apiKey: "re_abcdefghijklmnop" },
+          config: { provider: "resend", apiKey: "re_abcdefghijklmnop" },
           org_id: "org-1",
           installed_at: "2026-04-18T00:00:00Z",
         }));
@@ -573,14 +575,14 @@ describe("admin email-provider route", () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "resend",
         fromAddress: "Acme <noreply@acme.com>",
-        config: { apiKey: "re_abcdefghijklmnop" },
+        config: { provider: "resend", apiKey: "re_abcdefghijklmnop" },
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
       expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
         provider: "resend",
         senderAddress: "Acme <noreply@acme.com>",
-        config: { apiKey: "re_abcdefghijklmnop" },
+        config: { provider: "resend", apiKey: "re_abcdefghijklmnop" },
       });
     });
 
@@ -588,7 +590,7 @@ describe("admin email-provider route", () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "smtp",
         fromAddress: "Acme <noreply@acme.com>",
-        config: { host: "smtp.example.com", port: 587, username: "u", password: "p", tls: true },
+        config: { provider: "smtp", host: "smtp.example.com", port: 587, username: "u", password: "p", tls: true },
       });
       expect(res.status).toBe(400);
       const data = (await res.json()) as { message: string };
@@ -601,7 +603,7 @@ describe("admin email-provider route", () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "smtp",
         fromAddress: "Acme <noreply@acme.com>",
-        config: { host: "smtp.example.com", port: 587, username: "u", password: "p", tls: true },
+        config: { provider: "smtp", host: "smtp.example.com", port: 587, username: "u", password: "p", tls: true },
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
@@ -611,7 +613,7 @@ describe("admin email-provider route", () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "ses",
         fromAddress: "Acme <noreply@acme.com>",
-        config: { region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "secret" },
+        config: { provider: "ses", region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "secret" },
       });
       expect(res.status).toBe(400);
       const data = (await res.json()) as { message: string };
@@ -625,17 +627,35 @@ describe("admin email-provider route", () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "ses",
         fromAddress: "Acme <noreply@acme.com>",
-        config: { region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "secret" },
+        config: { provider: "ses", region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "secret" },
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
     });
 
-    it("returns 400 when provider and config shape mismatch", async () => {
+    it("returns 422 when config shape doesn't match any provider variant", async () => {
+      // Post-#1542 `config` is a `z.discriminatedUnion("provider", [...])`
+      // at the wire layer. A config missing `provider` (or with an unknown
+      // value) fails the route Zod parse with 422 before the handler runs.
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "smtp",
         fromAddress: "Acme <noreply@acme.com>",
         config: { apiKey: "re_wrong_shape" },
+      });
+      expect(res.status).toBe(422);
+      expect(mockSaveEmailInstallation).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 when config.provider disagrees with sibling provider", async () => {
+      // Both sides carry a valid tag but they disagree. The union wire
+      // schema accepts the config (it's a valid ResendConfig), then
+      // `validateProviderConfig("smtp", resendConfig)` fails because
+      // SmtpConfigSchema's `provider` literal doesn't match — the handler
+      // surfaces this as a structured 400.
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "smtp",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { provider: "resend", apiKey: "re_wrong_provider" },
       });
       expect(res.status).toBe(400);
       const data = (await res.json()) as { message: string };
@@ -668,7 +688,7 @@ describe("admin email-provider route", () => {
         recipientEmail: "you@example.com",
         provider: "resend",
         fromAddress: "Acme <noreply@acme.com>",
-        config: { apiKey: "re_test_key" },
+        config: { provider: "resend", apiKey: "re_test_key" },
       });
       expect(res.status).toBe(200);
       expect(mockSendEmailWithTransport).toHaveBeenCalledTimes(1);
@@ -694,24 +714,28 @@ describe("admin email-provider route", () => {
       expect(mockSendEmailWithTransport).not.toHaveBeenCalled();
     });
 
-    it("returns 400 when config is supplied without provider", async () => {
+    it("returns 422 when config is supplied without a provider discriminator", async () => {
+      // Without `provider` on the config payload, the route's
+      // `z.discriminatedUnion` can't select a variant — wire-layer 422.
       const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
         recipientEmail: "you@example.com",
         config: { apiKey: "re_test_key" },
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
       expect(mockSendEmail).not.toHaveBeenCalled();
       expect(mockSendEmailWithTransport).not.toHaveBeenCalled();
     });
 
-    it("returns 400 when fresh config shape is invalid for the declared provider", async () => {
+    it("returns 422 when fresh config shape is invalid for the declared provider", async () => {
+      // `provider: "smtp"` + `config: { apiKey }` — the apiKey payload
+      // matches no smtp variant; discriminator lookup fails → 422.
       const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
         recipientEmail: "you@example.com",
         provider: "smtp",
         fromAddress: "Acme <noreply@acme.com>",
         config: { apiKey: "re_wrong_shape" },
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
       expect(mockSendEmailWithTransport).not.toHaveBeenCalled();
     });
 
@@ -748,7 +772,7 @@ describe("admin email-provider route", () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "resend",
         fromAddress: "x@example.com",
-        config: { apiKey: "re_abc" },
+        config: { provider: "resend", apiKey: "re_abc" },
       });
       expect(res.status).toBe(400);
       expect(mockSaveEmailInstallation).not.toHaveBeenCalled();
@@ -759,7 +783,7 @@ describe("admin email-provider route", () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "resend",
         fromAddress: "x@example.com",
-        config: { apiKey: "re_abc" },
+        config: { provider: "resend", apiKey: "re_abc" },
       });
       expect(res.status).toBe(404);
     });

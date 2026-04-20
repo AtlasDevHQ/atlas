@@ -25,7 +25,7 @@ export interface ActionRequest {
 
 /** Discriminated union returned by action tools to the agent loop. */
 export type ActionToolResult =
-  | { status: "pending_approval"; actionId: string; summary: string }
+  | { status: "pending"; actionId: string; summary: string }
   | { status: "executed"; actionId: string; result: unknown }
   | { status: "denied"; actionId: string; reason?: string }
   | { status: "auto_approved"; actionId: string; result: unknown }

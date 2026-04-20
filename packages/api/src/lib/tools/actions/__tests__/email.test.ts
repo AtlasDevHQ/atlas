@@ -13,7 +13,7 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   }),
   handleAction: async (request: unknown, executeFn: unknown) => {
     lastHandleActionCall = { request, executeFn };
-    return { status: "pending_approval", actionId: "test-action-id", summary: "test" };
+    return { status: "pending", actionId: "test-action-id", summary: "test" };
   },
 }));
 
@@ -195,7 +195,7 @@ describe("sendEmailReport — domain allowlist", () => {
       { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
     )) as { status: string };
 
-    expect(result.status).toBe("pending_approval");
+    expect(result.status).toBe("pending");
   });
 
   it("allows any domain when ATLAS_EMAIL_ALLOWED_DOMAINS is not set", async () => {
@@ -210,7 +210,7 @@ describe("sendEmailReport — domain allowlist", () => {
       { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
     )) as { status: string };
 
-    expect(result.status).toBe("pending_approval");
+    expect(result.status).toBe("pending");
   });
 
   it("blocks malformed email addresses without @ sign", async () => {
@@ -241,7 +241,7 @@ describe("sendEmailReport — domain allowlist", () => {
       { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
     )) as { status: string };
 
-    expect(result.status).toBe("pending_approval");
+    expect(result.status).toBe("pending");
   });
 
   it("blocks mixed recipients where some are disallowed", async () => {

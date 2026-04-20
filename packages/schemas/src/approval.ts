@@ -4,22 +4,24 @@
  * Single source of truth for the admin approval surface
  * (`/api/v1/admin/approval`). The route layer imports these for OpenAPI
  * response validation; the web layer imports them for `useAdminFetch`
- * response parsing. Before #1648, each layer kept its own Zod copy —
- * with the route enforcing strict `z.enum(...)` while the web copy
- * silently relaxed `ruleType` / `status` to `z.string()`. That
- * asymmetry is exactly the drift surface this package exists to close.
+ * response parsing.
  *
- * The enum tuples (`APPROVAL_RULE_TYPES`, `APPROVAL_STATUSES`) come from
- * `@useatlas/types` so adding a new rule type or status to the TS union
- * propagates here without manual duplication.
+ * `ApprovalRuleSchema` and `ApprovalRequestSchema` are `z.discriminatedUnion`
+ * over `ruleType` / `status` — matching the shape of `ApprovalRule` and
+ * `ApprovalRequest` in `@useatlas/types` (#1660). The variants encode the
+ * cross-field invariants the handler layer already enforced at
+ * construction time: cost rules require a threshold, table/column rules
+ * require a pattern; pending/expired requests cannot carry reviewer
+ * metadata; approved/denied requests must have a reviewer stamped.
  *
- * Every schema uses `satisfies z.ZodType<T>` (not `as z.ZodType<T>`) so
- * a field rename in `@useatlas/types` breaks this file at compile time
- * instead of passing through to runtime.
+ * Every variant uses `satisfies z.ZodType<T>` against the matching
+ * @useatlas/types branch so a field rename there breaks this file at
+ * compile time instead of passing through to runtime.
  *
- * Strict `z.enum(TUPLE)` matches the `@hono/zod-openapi` extractor's
- * expectations — it cannot serialize `ZodCatch` wrappers (#1653) — and
- * keeps the generated OpenAPI spec describing the genuine output shape.
+ * Strict `z.enum(TUPLE)` on the discriminator literal matches the
+ * `@hono/zod-openapi` extractor's expectations — it cannot serialize
+ * `ZodCatch` wrappers (#1653) — and keeps the generated OpenAPI spec
+ * describing the genuine output shape.
  */
 import { z } from "zod";
 import {
@@ -32,19 +34,55 @@ import {
 const RuleTypeEnum = z.enum(APPROVAL_RULE_TYPES);
 const StatusEnum = z.enum(APPROVAL_STATUSES);
 
-export const ApprovalRuleSchema = z.object({
+// ---------------------------------------------------------------------------
+// ApprovalRule — discriminated on `ruleType`
+// ---------------------------------------------------------------------------
+
+const ApprovalRuleBaseShape = {
   id: z.string(),
   orgId: z.string(),
   name: z.string(),
-  ruleType: RuleTypeEnum,
-  pattern: z.string(),
-  threshold: z.number().nullable(),
   enabled: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
-}) satisfies z.ZodType<ApprovalRule>;
+};
 
-export const ApprovalRequestSchema = z.object({
+const CostRuleSchema = z.object({
+  ...ApprovalRuleBaseShape,
+  ruleType: z.literal("cost"),
+  threshold: z.number(),
+  pattern: z.literal(""),
+});
+
+const TableRuleSchema = z.object({
+  ...ApprovalRuleBaseShape,
+  ruleType: z.literal("table"),
+  pattern: z.string(),
+  threshold: z.null(),
+});
+
+const ColumnRuleSchema = z.object({
+  ...ApprovalRuleBaseShape,
+  ruleType: z.literal("column"),
+  pattern: z.string(),
+  threshold: z.null(),
+});
+
+export const ApprovalRuleSchema = z.discriminatedUnion("ruleType", [
+  CostRuleSchema,
+  TableRuleSchema,
+  ColumnRuleSchema,
+]) satisfies z.ZodType<ApprovalRule>;
+
+// `RuleTypeEnum` is exported so existing callers that narrowed against the
+// tuple don't have to re-import from `@useatlas/types`.
+export { RuleTypeEnum };
+
+// ---------------------------------------------------------------------------
+// ApprovalRequest — discriminated on `status`
+// ---------------------------------------------------------------------------
+
+const ApprovalRequestBaseShape = {
   id: z.string(),
   orgId: z.string(),
   ruleId: z.string(),
@@ -56,11 +94,51 @@ export const ApprovalRequestSchema = z.object({
   connectionId: z.string(),
   tablesAccessed: z.array(z.string()),
   columnsAccessed: z.array(z.string()),
-  status: StatusEnum,
-  reviewerId: z.string().nullable(),
-  reviewerEmail: z.string().nullable(),
-  reviewComment: z.string().nullable(),
-  reviewedAt: z.string().nullable(),
   createdAt: z.string(),
   expiresAt: z.string(),
-}) satisfies z.ZodType<ApprovalRequest>;
+};
+
+const PendingRequestSchema = z.object({
+  ...ApprovalRequestBaseShape,
+  status: z.literal("pending"),
+  reviewerId: z.null(),
+  reviewerEmail: z.null(),
+  reviewComment: z.null(),
+  reviewedAt: z.null(),
+});
+
+const ApprovedRequestSchema = z.object({
+  ...ApprovalRequestBaseShape,
+  status: z.literal("approved"),
+  reviewerId: z.string(),
+  reviewerEmail: z.string().nullable(),
+  reviewComment: z.string().nullable(),
+  reviewedAt: z.string(),
+});
+
+const DeniedRequestSchema = z.object({
+  ...ApprovalRequestBaseShape,
+  status: z.literal("denied"),
+  reviewerId: z.string(),
+  reviewerEmail: z.string().nullable(),
+  reviewComment: z.string().nullable(),
+  reviewedAt: z.string(),
+});
+
+const ExpiredRequestSchema = z.object({
+  ...ApprovalRequestBaseShape,
+  status: z.literal("expired"),
+  reviewerId: z.null(),
+  reviewerEmail: z.null(),
+  reviewComment: z.null(),
+  reviewedAt: z.null(),
+});
+
+export const ApprovalRequestSchema = z.discriminatedUnion("status", [
+  PendingRequestSchema,
+  ApprovedRequestSchema,
+  DeniedRequestSchema,
+  ExpiredRequestSchema,
+]) satisfies z.ZodType<ApprovalRequest>;
+
+export { StatusEnum };

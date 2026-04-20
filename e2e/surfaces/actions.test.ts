@@ -288,7 +288,7 @@ describe("E2E: Action framework", () => {
       const { actionId, result } = await createPendingAction();
 
       expect(result).toMatchObject({
-        status: "pending_approval",
+        status: "pending",
         actionId,
       });
 
@@ -564,7 +564,7 @@ describe("E2E: Action framework", () => {
             }),
         );
 
-        expect(pendingResult.status).toBe("pending_approval");
+        expect(pendingResult.status).toBe("pending");
 
         // Approve it
         const approved = await approveAction(request.id, "admin-1");
@@ -639,7 +639,7 @@ describe("E2E: Action framework", () => {
             }),
         );
 
-        expect(pendingResult.status).toBe("pending_approval");
+        expect(pendingResult.status).toBe("pending");
 
         // Approve
         const approved = await approveAction(request.id, "admin-1");
@@ -830,8 +830,8 @@ describe("E2E: Action framework", () => {
             ),
         );
 
-        // Allowed domain should proceed to pending_approval (not error)
-        expect((result as { status: string }).status).toBe("pending_approval");
+        // Allowed domain should proceed to pending (not error)
+        expect((result as { status: string }).status).toBe("pending");
       } finally {
         restore();
         if (origDomains !== undefined) {
@@ -875,7 +875,7 @@ describe("E2E: Action framework", () => {
       );
 
       // Manual mode -> pending (error only happens on execution)
-      expect(failResult.status).toBe("pending_approval");
+      expect(failResult.status).toBe("pending");
 
       // Now approve — executor should fail
       const approved = await approveAction(request.id, "admin-1");

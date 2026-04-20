@@ -81,7 +81,7 @@ describe("buildActionRequest()", () => {
 // ---------------------------------------------------------------------------
 
 describe("handleAction()", () => {
-  it("returns pending_approval when approval mode is manual (default)", async () => {
+  it("returns pending when approval mode is manual (default)", async () => {
     const request = buildActionRequest({
       actionType: "slack:send",
       target: "#general",
@@ -95,9 +95,9 @@ describe("handleAction()", () => {
       () => handleAction(request, async () => "done"),
     );
 
-    expect(result.status).toBe("pending_approval");
+    expect(result.status).toBe("pending");
     expect(result.actionId).toBe(request.id);
-    if (result.status === "pending_approval") {
+    if (result.status === "pending") {
       expect(result.summary).toBe("Send message");
     }
   });
@@ -557,7 +557,7 @@ describe("getActionConfig()", () => {
 // ---------------------------------------------------------------------------
 
 describe("handleAction() — admin-only", () => {
-  it("returns pending_approval when approval mode is admin-only", async () => {
+  it("returns pending when approval mode is admin-only", async () => {
     process.env.ATLAS_ACTIONS_ENABLED = "true";
     process.env.ATLAS_ACTION_APPROVAL = "admin-only";
     await loadConfig("/tmp/handler-test-nonexistent");
@@ -575,9 +575,9 @@ describe("handleAction() — admin-only", () => {
       () => handleAction(request, async () => "done"),
     );
 
-    expect(result.status).toBe("pending_approval");
+    expect(result.status).toBe("pending");
     expect(result.actionId).toBe(request.id);
-    if (result.status === "pending_approval") {
+    if (result.status === "pending") {
       expect(result.summary).toBe("Admin action");
     }
   });

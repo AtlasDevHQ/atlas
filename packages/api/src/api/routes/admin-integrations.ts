@@ -2189,7 +2189,12 @@ adminIntegrations.openapi(disconnectWhatsAppRoute, async (c) => {
 
 const EmailProviderEnum = z.enum(EMAIL_PROVIDERS);
 
+// Provider-specific config schemas tagged with `provider` (#1542). Clients
+// now submit `config: { provider: "smtp", host: ... }` — the nested tag is
+// validated against the sibling `provider` field via
+// `z.discriminatedUnion` below.
 const SmtpConfigSchema = z.object({
+  provider: z.literal("smtp"),
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535),
   username: z.string().min(1),
@@ -2198,22 +2203,34 @@ const SmtpConfigSchema = z.object({
 });
 
 const SendGridConfigSchema = z.object({
+  provider: z.literal("sendgrid"),
   apiKey: z.string().min(1),
 });
 
 const PostmarkConfigSchema = z.object({
+  provider: z.literal("postmark"),
   serverToken: z.string().min(1),
 });
 
 const SesConfigSchema = z.object({
+  provider: z.literal("ses"),
   region: z.string().min(1),
   accessKeyId: z.string().min(1),
   secretAccessKey: z.string().min(1),
 });
 
 const ResendConfigSchema = z.object({
+  provider: z.literal("resend"),
   apiKey: z.string().min(1),
 });
+
+const ProviderConfigSchema = z.discriminatedUnion("provider", [
+  SmtpConfigSchema,
+  SendGridConfigSchema,
+  PostmarkConfigSchema,
+  SesConfigSchema,
+  ResendConfigSchema,
+]);
 
 const connectEmailRoute = createRoute({
   method: "post",
@@ -2233,8 +2250,10 @@ const connectEmailRoute = createRoute({
               .string()
               .email()
               .openapi({ description: "Sender email address (From header)" }),
-            config: z.union([SmtpConfigSchema, SendGridConfigSchema, PostmarkConfigSchema, SesConfigSchema, ResendConfigSchema])
-              .openapi({ description: "Provider-specific configuration" }),
+            // Discriminated union (#1542) — `config.provider` must match
+            // the sibling `provider` field above. Mismatch → 400.
+            config: ProviderConfigSchema
+              .openapi({ description: "Provider-specific configuration (tagged with the matching provider key)." }),
           }),
         },
       },
@@ -2290,11 +2309,13 @@ adminIntegrations.openapi(connectEmailRoute, async (c) => {
 
       const { provider, senderAddress, config } = c.req.valid("json");
 
-      // Validate provider-specific config shape
-      const configResult = validateProviderConfig(provider, config);
-      if (!configResult.ok) {
+      // `config` is already a tagged `ProviderConfig` variant (#1542) but
+      // the discriminator might disagree with the sibling `provider` field.
+      // Reject mismatches explicitly — this would be a client bug, not an
+      // operator config issue, and warrants a clear 400.
+      if (config.provider !== provider) {
         return c.json(
-          { error: "invalid_config", message: configResult.error },
+          { error: "invalid_config", message: `config.provider ("${config.provider}") must equal the sibling provider field ("${provider}").` },
           400,
         );
       }
@@ -2304,7 +2325,7 @@ adminIntegrations.openapi(connectEmailRoute, async (c) => {
           saveEmailInstallation(orgId, {
             provider: provider as EmailProvider,
             senderAddress,
-            config: config as ProviderConfig,
+            config,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
@@ -2514,35 +2535,9 @@ adminIntegrations.openapi(disconnectEmailRoute, async (c) => {
 // Email helpers
 // ---------------------------------------------------------------------------
 
-function validateProviderConfig(
-  provider: string,
-  config: unknown,
-): { ok: true } | { ok: false; error: string } {
-  switch (provider) {
-    case "smtp": {
-      const result = SmtpConfigSchema.safeParse(config);
-      if (!result.success) return { ok: false, error: `Invalid SMTP config: ${result.error.issues.map(i => i.message).join(", ")}` };
-      return { ok: true };
-    }
-    case "sendgrid": {
-      const result = SendGridConfigSchema.safeParse(config);
-      if (!result.success) return { ok: false, error: `Invalid SendGrid config: ${result.error.issues.map(i => i.message).join(", ")}` };
-      return { ok: true };
-    }
-    case "postmark": {
-      const result = PostmarkConfigSchema.safeParse(config);
-      if (!result.success) return { ok: false, error: `Invalid Postmark config: ${result.error.issues.map(i => i.message).join(", ")}` };
-      return { ok: true };
-    }
-    case "ses": {
-      const result = SesConfigSchema.safeParse(config);
-      if (!result.success) return { ok: false, error: `Invalid SES config: ${result.error.issues.map(i => i.message).join(", ")}` };
-      return { ok: true };
-    }
-    default:
-      return { ok: false, error: `Unknown provider: ${provider}` };
-  }
-}
+// `validateProviderConfig` was removed in #1542 — the route's
+// `ProviderConfigSchema` (z.discriminatedUnion) plus the sibling-match
+// check in the handler cover the same ground without double-validation.
 
 interface TestEmailResult {
   success: boolean;
@@ -2550,39 +2545,36 @@ interface TestEmailResult {
 }
 
 async function sendTestEmail(
-  install: { provider: string; sender_address: string; config: unknown },
+  install: { sender_address: string; config: ProviderConfig },
   recipientEmail: string,
 ): Promise<TestEmailResult> {
-  const config = install.config as Record<string, unknown>;
   const subject = "Atlas Email Test";
   const html = "<h1>Atlas Email Test</h1><p>This is a test email from Atlas to verify your email configuration is working correctly.</p>";
 
-  switch (install.provider) {
+  // `install.config` is a tagged union (#1542); the switch narrows each
+  // case to the matching variant so the helpers can accept their exact
+  // config shape rather than `Record<string, unknown>`.
+  switch (install.config.provider) {
     case "smtp":
-      return sendSmtpTestEmail(config, install.sender_address, recipientEmail, subject, html);
+      return sendSmtpTestEmail(install.sender_address, recipientEmail, subject, html);
     case "sendgrid":
-      return sendSendGridTestEmail(config, install.sender_address, recipientEmail, subject, html);
+      return sendSendGridTestEmail(install.config.apiKey, install.sender_address, recipientEmail, subject, html);
     case "postmark":
-      return sendPostmarkTestEmail(config, install.sender_address, recipientEmail, subject, html);
+      return sendPostmarkTestEmail(install.config.serverToken, install.sender_address, recipientEmail, subject, html);
     case "ses":
-      return sendSesTestEmail(config, install.sender_address, recipientEmail, subject, html);
+      return sendSesTestEmail(install.sender_address, recipientEmail, subject, html);
     case "resend":
-      return sendResendTestEmail(config, install.sender_address, recipientEmail, subject, html);
-    default:
-      return { success: false, error: `Unknown provider: ${install.provider}` };
+      return sendResendTestEmail(install.config.apiKey, install.sender_address, recipientEmail, subject, html);
   }
 }
 
 async function sendSendGridTestEmail(
-  config: Record<string, unknown>,
+  apiKey: string,
   from: string,
   to: string,
   subject: string,
   html: string,
 ): Promise<TestEmailResult> {
-  const apiKey = config.apiKey;
-  if (typeof apiKey !== "string") return { success: false, error: "Missing SendGrid API key" };
-
   try {
     const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
       method: "POST",
@@ -2610,15 +2602,12 @@ async function sendSendGridTestEmail(
 }
 
 async function sendPostmarkTestEmail(
-  config: Record<string, unknown>,
+  serverToken: string,
   from: string,
   to: string,
   subject: string,
   html: string,
 ): Promise<TestEmailResult> {
-  const serverToken = config.serverToken;
-  if (typeof serverToken !== "string") return { success: false, error: "Missing Postmark server token" };
-
   try {
     const res = await fetch("https://api.postmarkapp.com/email", {
       method: "POST",
@@ -2646,7 +2635,6 @@ async function sendPostmarkTestEmail(
 }
 
 async function sendSmtpTestEmail(
-  _config: Record<string, unknown>,
   from: string,
   to: string,
   subject: string,
@@ -2684,7 +2672,6 @@ async function sendSmtpTestEmail(
 }
 
 async function sendSesTestEmail(
-  _config: Record<string, unknown>,
   from: string,
   to: string,
   subject: string,
@@ -2721,15 +2708,12 @@ async function sendSesTestEmail(
 }
 
 async function sendResendTestEmail(
-  config: Record<string, unknown>,
+  apiKey: string,
   from: string,
   to: string,
   subject: string,
   html: string,
 ): Promise<TestEmailResult> {
-  const apiKey = config.apiKey;
-  if (typeof apiKey !== "string") return { success: false, error: "Missing Resend API key" };
-
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",

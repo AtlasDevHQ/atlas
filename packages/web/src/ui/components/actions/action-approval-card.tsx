@@ -43,7 +43,7 @@ type CardState =
 
 function borderColor(status: ActionDisplayStatus): string {
   switch (status) {
-    case "pending_approval":
+    case "pending":
       return "border-yellow-300 dark:border-yellow-900/50";
     case "approved":
     case "executed":
@@ -90,7 +90,7 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
   const effectiveStatus: ActionDisplayStatus =
     cardState.phase === "resolved" ? cardState.status : toolResult.status;
 
-  const isPending = effectiveStatus === "pending_approval" && cardState.phase !== "submitting";
+  const isPending = effectiveStatus === "pending" && cardState.phase !== "submitting";
   const isSubmitting = cardState.phase === "submitting";
   const resolvedResult = cardState.phase === "resolved"
     ? cardState.result

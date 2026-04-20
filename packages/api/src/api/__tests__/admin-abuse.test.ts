@@ -14,6 +14,8 @@ import {
   type Mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import type { AbuseDetail } from "@useatlas/types";
+import { createAbuseInstance } from "@atlas/api/lib/security/abuse-instances";
 
 // --- Unified mocks ---
 
@@ -44,7 +46,10 @@ const mockGetAbuseConfig: Mock<() => unknown> = mock(() => ({
   uniqueTablesLimit: 50,
   throttleDelayMs: 2000,
 }));
-const mockGetAbuseDetail: Mock<(wsId: string) => Promise<unknown | null>> = mock(async () => null);
+// Typed `AbuseDetail | null` so hand-rolling the nested `AbuseInstance`
+// shape inline fails typecheck (#1684). Fixtures that want a current or
+// prior instance must go through `createAbuseInstance`.
+const mockGetAbuseDetail: Mock<(wsId: string) => Promise<AbuseDetail | null>> = mock(async () => null);
 
 mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mockListFlagged,
@@ -267,12 +272,7 @@ describe("Admin Abuse API", () => {
           uniqueTablesLimit: 50,
           throttleDelayMs: 2000,
         },
-        currentInstance: {
-          startedAt: "2026-03-23T00:00:00.000Z",
-          endedAt: null,
-          peakLevel: "warning",
-          events: [],
-        },
+        currentInstance: createAbuseInstance([]),
         priorInstances: [],
         eventsStatus: "ok",
       }));
@@ -296,7 +296,7 @@ describe("Admin Abuse API", () => {
         updatedAt: "2026-03-23T00:00:00.000Z",
         counters: { queryCount: 1, errorCount: 0, errorRatePct: null, uniqueTablesAccessed: 0, escalations: 0 },
         thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: 0.5, uniqueTablesLimit: 50, throttleDelayMs: 2000 },
-        currentInstance: { startedAt: "2026-03-23T00:00:00.000Z", endedAt: null, peakLevel: "warning", events: [] },
+        currentInstance: createAbuseInstance([]),
         priorInstances: [],
         eventsStatus: "ok",
       }));
@@ -335,7 +335,7 @@ describe("Admin Abuse API", () => {
           uniqueTablesLimit: 50,
           throttleDelayMs: 2000,
         },
-        currentInstance: { startedAt: "2026-03-23T00:00:00.000Z", endedAt: null, peakLevel: "warning", events: [] },
+        currentInstance: createAbuseInstance([]),
         priorInstances: [],
         eventsStatus: "ok",
       }));
@@ -366,7 +366,7 @@ describe("Admin Abuse API", () => {
         updatedAt: "2026-03-23T00:00:00.000Z",
         counters: { queryCount: 201, errorCount: 0, errorRatePct: 0, uniqueTablesAccessed: 0, escalations: 1 },
         thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: 0.5, uniqueTablesLimit: 50, throttleDelayMs: 2000 },
-        currentInstance: { startedAt: "", endedAt: null, peakLevel: "none", events: [] },
+        currentInstance: createAbuseInstance([]),
         priorInstances: [],
         eventsStatus: "load_failed",
       }));

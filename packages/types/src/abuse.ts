@@ -70,19 +70,48 @@ export interface AbuseCounters {
 }
 
 /**
+ * Phantom brand for `AbuseInstance` (#1684).
+ *
+ * The brand is a `unique symbol` declared module-privately. Any caller that
+ * wants to mint an `AbuseInstance` must either go through
+ * `createAbuseInstance` (which localizes the `as AbuseInstance` cast and
+ * enforces invariants: peakLevel ≡ max(event levels), endedAt non-null iff
+ * last event is a manual "none" reinstatement, startedAt ≡ events[0].createdAt)
+ * or parse the wire format through `AbuseInstanceSchema` (which casts the
+ * parse result at the wire boundary).
+ *
+ * Hand-rolling `{ startedAt, endedAt, peakLevel, events }` as an
+ * `AbuseInstance` literal now fails typecheck — the mandatory brand is a
+ * `never`-typed symbol key that no plain object literal can satisfy. That
+ * breaks the previously-structural escape hatch that let test fixtures (and
+ * accidentally, new production call sites) produce mismatched instances
+ * where peakLevel disagreed with events.
+ *
+ * The brand has zero runtime cost — it is a phantom type that erases to
+ * nothing in emitted JS; the property key is never accessed at runtime.
+ */
+declare const abuseInstanceBrand: unique symbol;
+
+/**
  * A flag "instance" — one continuous stretch of non-"none" activity for a
  * workspace, bookended by an escalation event and (optionally) a reinstatement
  * event.
  *
- * `events` are chronological (oldest first). `endedAt` is null while the
- * instance is still active (no reinstatement yet).
+ * `events` are chronological (oldest first) and `readonly` — post-construction
+ * mutation would silently invalidate the cached `peakLevel` / `endedAt`
+ * invariants the factory established. `endedAt` is null while the instance
+ * is still active (no reinstatement yet).
+ *
+ * Nominally branded (see `abuseInstanceBrand` above) so only
+ * `createAbuseInstance` and the Zod parser can produce values of this type.
  */
 export interface AbuseInstance {
+  readonly [abuseInstanceBrand]: never;
   startedAt: string;
   endedAt: string | null;
   /** Highest level reached during the instance. */
   peakLevel: AbuseLevel;
-  events: AbuseEvent[];
+  events: readonly AbuseEvent[];
 }
 
 /**

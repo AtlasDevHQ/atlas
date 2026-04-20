@@ -89,11 +89,15 @@ describe("happy-path parses", () => {
   });
 
   test("AbuseInstanceSchema parses with null endedAt (open instance)", () => {
-    expect(AbuseInstanceSchema.parse(validInstance)).toEqual(validInstance);
+    // `.toMatchObject` — `AbuseInstance` is nominally branded (#1684), so
+    // `.toEqual(plainLiteral)` fails typecheck: the parsed output has a
+    // phantom symbol key that the literal does not. We still assert the
+    // wire fields pass through verbatim.
+    expect(AbuseInstanceSchema.parse(validInstance)).toMatchObject(validInstance);
   });
 
   test("AbuseDetailSchema parses a full detail payload", () => {
-    expect(AbuseDetailSchema.parse(validDetail)).toEqual(validDetail);
+    expect(AbuseDetailSchema.parse(validDetail)).toMatchObject(validDetail);
   });
 });
 

@@ -81,12 +81,25 @@ export const AbuseCountersSchema = z.object({
   escalations: z.number(),
 }) satisfies z.ZodType<AbuseCounters>;
 
-export const AbuseInstanceSchema = z.object({
-  startedAt: z.string(),
-  endedAt: z.string().nullable(),
-  peakLevel: LevelEnum,
-  events: z.array(AbuseEventSchema),
-}) satisfies z.ZodType<AbuseInstance>;
+// `AbuseInstance` is nominally branded at the TS layer (#1684) so only the
+// factory + this parser may mint values. `.transform((v) => v as ...)` is
+// the wire-boundary cast: the Zod output type is a plain object, the
+// transformed output is the branded interface. `satisfies` keeps the
+// structural drift guard — a field rename in `@useatlas/types` still breaks
+// this file at compile time — while widening the Input generic to `unknown`
+// (the brand makes Input == Output impossible since we can't produce a
+// branded value to `.parse()` with).
+export const AbuseInstanceSchema = z
+  .object({
+    startedAt: z.string(),
+    endedAt: z.string().nullable(),
+    peakLevel: LevelEnum,
+    events: z.array(AbuseEventSchema),
+  })
+  .transform((v): AbuseInstance => v as unknown as AbuseInstance) satisfies z.ZodType<
+    AbuseInstance,
+    unknown
+  >;
 
 // Structurally mirrors `AbuseDetail extends Omit<AbuseStatus, "events">` —
 // using `.omit().extend()` keeps the identity fields coupled to

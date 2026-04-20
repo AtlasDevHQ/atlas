@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { AbuseEvent } from "@useatlas/types";
+import type { AbuseEvent, AbuseInstance } from "@useatlas/types";
 import {
   createAbuseInstance,
   errorRatePct,
@@ -271,7 +271,11 @@ describe("errorRatePct", () => {
 describe("createAbuseInstance", () => {
   it("returns the empty-instance shape when events are empty", () => {
     const inst = createAbuseInstance([]);
-    expect(inst).toEqual({
+    // `toMatchObject` — the branded AbuseInstance's phantom symbol key
+    // prevents `toEqual` against a plain object literal from typechecking
+    // (#1684). The fields we care about are pinned below; the brand is
+    // itself a compile-time invariant, not a runtime assertion.
+    expect(inst).toMatchObject({
       startedAt: "",
       endedAt: null,
       peakLevel: "none",
@@ -374,5 +378,32 @@ describe("createAbuseInstance", () => {
     // And startedAt follows events[0] even when it's the newest — this is
     // the "garbage in, garbage out" contract the docstring flags.
     expect(inst.startedAt).toBe("2026-04-19T10:10:00Z");
+  });
+
+  // Nominal brand enforcement (#1684) — the phantom `unique symbol` in
+  // `@useatlas/types/abuse.ts` makes hand-rolled object literals fail
+  // typecheck. `@ts-expect-error` is the regression guard: if a future
+  // refactor relaxes the brand back to a structural interface, the lines
+  // below will type-check and the directives will fail the build, flagging
+  // the regression. Runtime assertions are irrelevant — this is a purely
+  // compile-time invariant — but the test harness still evaluates the
+  // expressions so TS sees them.
+  it("rejects hand-rolled AbuseInstance literals at the type layer", () => {
+    // @ts-expect-error hand-rolled shape must not satisfy AbuseInstance — use createAbuseInstance
+    const handRolled: AbuseInstance = {
+      startedAt: "2026-04-19T10:00:00Z",
+      endedAt: null,
+      peakLevel: "warning",
+      events: [],
+    };
+    expect(handRolled).toBeTruthy();
+  });
+
+  it("accepts AbuseInstance values minted via the factory", () => {
+    // Positive control: the factory's localized `as AbuseInstance` cast is
+    // what allows this assignment. If this starts failing while the
+    // hand-rolled test above starts passing, the brand is broken.
+    const fromFactory: AbuseInstance = createAbuseInstance([]);
+    expect(fromFactory.peakLevel).toBe("none");
   });
 });

@@ -317,13 +317,15 @@ function median(values: number[]): number {
     : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-// MRR per seat per plan tier. Derived from the canonical
-// `getPlanDefinition(tier).pricePerSeat` in `lib/billing/plans.ts` so a
-// price change there flows through automatically. Iterating `PLAN_TIERS`
-// means a new tier can't silently drop to $0 — `Record<PlanTier, number>`
-// forces exhaustive coverage at compile time. Regression for #1680:
-// migrations 0020 + 0027 renamed tiers to starter/pro/business and this
-// map silently returned 0 for every paying workspace until now.
+// MRR per seat per plan tier. Iterating the canonical `PLAN_TIERS` tuple
+// and reading `getPlanDefinition(tier).pricePerSeat` from
+// `lib/billing/plans.ts` means pricing stays in lockstep and every tier
+// that exists at runtime has a price. Exhaustiveness is enforced one
+// layer up: `PLANS: Record<PlanTier, PlanDefinition>` in `plans.ts` would
+// fail to compile if a tier were added without a definition. Regression
+// for #1680: migrations 0020 + 0027 renamed tiers to starter/pro/business
+// and the old hard-coded map silently returned $0 for every paying
+// workspace until now.
 const PLAN_MRR = Object.fromEntries(
   PLAN_TIERS.map((tier) => [tier, getPlanDefinition(tier).pricePerSeat]),
 ) as Record<PlanTier, number>;
@@ -742,12 +744,26 @@ platformAdmin.openapi(platformStatsRoute, async (c) => {
     const mrrRows = yield* queryEffect<{ plan_tier: string; cnt: number }>(
       `SELECT plan_tier, COUNT(*)::int AS cnt FROM organization WHERE workspace_status = 'active' GROUP BY plan_tier`,
     );
-    // Cast is safe: unknown values fall back to 0 via `??`, preserving
-    // forward-compat if the DB ever stores a tier not yet in PLAN_TIERS.
-    const mrr = mrrRows.reduce(
-      (sum, row) => sum + (PLAN_MRR[row.plan_tier as PlanTier] ?? 0) * row.cnt,
-      0,
-    );
+    // Unknown tiers fall back to 0 to stay forward-compat during a staged
+    // tier rename (code deploys before the migration applies on every
+    // region). The reducer still emits a log.warn so the silent $0 trap
+    // that let #1680 hide for months leaves a breadcrumb this time. Dedup
+    // via a per-call Set so log volume is O(distinct unknown tiers).
+    const seenUnknown = new Set<string>();
+    const mrr = mrrRows.reduce((sum, row) => {
+      const price = PLAN_MRR[row.plan_tier as PlanTier];
+      if (price === undefined) {
+        if (!seenUnknown.has(row.plan_tier)) {
+          seenUnknown.add(row.plan_tier);
+          log.warn(
+            { planTier: row.plan_tier, cnt: row.cnt, requestId },
+            "Unknown plan_tier in MRR calculation — contributing $0",
+          );
+        }
+        return sum;
+      }
+      return sum + price * row.cnt;
+    }, 0);
 
     return c.json({
       totalWorkspaces: wsRows[0]?.total ?? 0,

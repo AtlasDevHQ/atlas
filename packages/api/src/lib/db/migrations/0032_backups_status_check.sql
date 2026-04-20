@@ -12,16 +12,25 @@
 -- not trustworthy." We prefer coercion over aborting the migration so
 -- self-hosted deploys don't get stuck on historical junk data.
 --
--- Ordering is load-bearing: the cleanup UPDATE must run before the ADD
--- CONSTRAINT, otherwise a pre-drifted row would block the migration from
--- applying.
---
--- Mirrors the idempotency pattern from 0031_abuse_events_enum_checks.sql.
--- Related: #1679, #1680, #1678.
+-- Same UPDATE-before-CHECK ordering rationale + idempotency pattern as
+-- 0031_abuse_events_enum_checks.sql — see that migration's header.
+-- Originating issue: #1679. Related context: schemas phase 3 (#1678).
 -- ── 1. Coerce any pre-drifted rows to the safe default ───────────────
-UPDATE backups
-SET status = 'failed'
-WHERE status NOT IN ('in_progress', 'completed', 'failed', 'verified');
+-- Emit a RAISE NOTICE with the coerced row count so operators have a
+-- post-mortem breadcrumb instead of silent rewrites (0031 shipped
+-- without this — don't repeat that gap).
+DO $$
+DECLARE
+  coerced_count INTEGER;
+BEGIN
+  UPDATE backups
+  SET status = 'failed'
+  WHERE status NOT IN ('in_progress', 'completed', 'failed', 'verified');
+  GET DIAGNOSTICS coerced_count = ROW_COUNT;
+  IF coerced_count > 0 THEN
+    RAISE NOTICE 'backups.status drift: coerced % row(s) to ''failed''', coerced_count;
+  END IF;
+END $$;
 
 -- ── 2. Add CHECK constraint (idempotent) ─────────────────────────────
 DO $$ BEGIN

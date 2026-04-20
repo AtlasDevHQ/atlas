@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { runMigrations, runSeeds } from "@atlas/api/lib/db/migrate";
+import { BACKUP_STATUSES } from "@useatlas/types";
 
 const MIGRATIONS_DIR = path.join(import.meta.dir, "..", "migrations");
 
@@ -425,16 +426,30 @@ describe("0032_backups_status_check.sql", () => {
   });
 
   it("enumerates every canonical BACKUP_STATUSES value", () => {
+    // Pull the canonical tuple from @useatlas/types rather than hardcoding.
+    // If the tuple changes there, this test tracks it automatically.
     const sql = fs.readFileSync(filePath, "utf-8");
-    for (const v of ["in_progress", "completed", "failed", "verified"]) {
+    for (const v of BACKUP_STATUSES) {
       expect(sql).toContain(`'${v}'`);
     }
   });
 
-  it("wraps the ADD CONSTRAINT in an idempotent DO $$ … EXCEPTION guard", () => {
+  it("emits a RAISE NOTICE when drift rows are coerced", () => {
+    // Operators need a post-mortem breadcrumb for "why did my completed
+    // backup show as failed?" — 0031 shipped without one, 0032 must not.
     const sql = fs.readFileSync(filePath, "utf-8");
-    const doBlocks = sql.match(/DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi) ?? [];
-    expect(doBlocks.length).toBe(1);
+    expect(sql).toMatch(/RAISE\s+NOTICE[^;]*coerced/i);
+    expect(sql).toMatch(/GET\s+DIAGNOSTICS[^;]*ROW_COUNT/i);
+  });
+
+  it("wraps the ADD CONSTRAINT in an idempotent DO $$ … duplicate_object guard", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+    // Exactly one idempotency guard (the ADD CONSTRAINT). The RAISE
+    // NOTICE block is a separate DO $$ without an EXCEPTION clause.
+    const idempotentBlocks = sql.match(
+      /DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi,
+    ) ?? [];
+    expect(idempotentBlocks.length).toBe(1);
   });
 });
 

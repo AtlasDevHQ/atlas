@@ -32912,7 +32912,8 @@
                           "type": "string"
                         },
                         "domain": {
-                          "type": "string"
+                          "type": "string",
+                          "minLength": 1
                         },
                         "status": {
                           "type": "string",
@@ -33170,7 +33171,8 @@
                       "type": "string"
                     },
                     "domain": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "status": {
                       "type": "string",
@@ -33582,7 +33584,8 @@
                       "type": "string"
                     },
                     "domain": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "status": {
                       "type": "string",
@@ -33830,7 +33833,8 @@
                       "type": "string"
                     },
                     "domain": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "status": {
                       "type": "string",
@@ -55589,7 +55593,8 @@
                             "type": "string"
                           },
                           "domain": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
                           },
                           "status": {
                             "type": "string",
@@ -55830,7 +55835,8 @@
                       "type": "string"
                     },
                     "domain": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "status": {
                       "type": "string",
@@ -56089,7 +56095,8 @@
                       "type": "string"
                     },
                     "domain": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "status": {
                       "type": "string",

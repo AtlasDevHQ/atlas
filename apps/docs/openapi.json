@@ -27805,7 +27805,13 @@
                           "type": "string"
                         },
                         "provider": {
-                          "type": "string"
+                          "type": "string",
+                          "enum": [
+                            "anthropic",
+                            "openai",
+                            "azure-openai",
+                            "custom"
+                          ]
                         },
                         "model": {
                           "type": "string"
@@ -28026,7 +28032,13 @@
                           "type": "string"
                         },
                         "provider": {
-                          "type": "string"
+                          "type": "string",
+                          "enum": [
+                            "anthropic",
+                            "openai",
+                            "azure-openai",
+                            "custom"
+                          ]
                         },
                         "model": {
                           "type": "string"

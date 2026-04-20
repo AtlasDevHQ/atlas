@@ -102,7 +102,7 @@ export function RetentionPanel() {
       method: "PUT",
     });
 
-  const { mutate: purgeMutate, saving: purging, error: purgeError } =
+  const { mutate: purgeMutate, saving: purging, error: purgeError, clearError: clearPurgeError } =
     useAdminMutation<{ results: Array<{ orgId: string; softDeletedCount: number }> }>({
       path: "/api/v1/admin/audit/retention/purge",
       method: "POST",
@@ -344,7 +344,11 @@ export function RetentionPanel() {
             </AlertDialog>
           </div>
 
-          <MutationErrorSurface error={purgeError} feature="Audit Retention" />
+          <MutationErrorSurface
+            error={purgeError}
+            feature="Audit Retention"
+            onRetry={clearPurgeError}
+          />
           {purgeResult && (
             <p className="text-sm text-muted-foreground">{purgeResult}</p>
           )}

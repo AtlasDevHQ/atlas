@@ -90,6 +90,7 @@ export default function UsageDashboardPage() {
   });
 
   async function openBillingPortal() {
+    setPortalUrlError(null);
     const result = await portalMutate({
       body: { returnUrl: window.location.href },
     });
@@ -130,12 +131,15 @@ export default function UsageDashboardPage() {
       <div className="space-y-6">
         {/* Billing portal: FetchError routes through MutationErrorSurface;
             portalUrlError is the local-fallback string for "200 OK but no URL"
-            edge case (not a FetchError, so kept as a plain ErrorBanner). */}
+            edge case (not a FetchError, so kept as a plain ErrorBanner). Each
+            retry clears both slots — a stale banner from the prior attempt
+            mustn't co-render with the one the current attempt raised. */}
         <MutationErrorSurface
           error={portalError}
           feature="Billing Portal"
           onRetry={() => {
             clearPortalError();
+            setPortalUrlError(null);
             openBillingPortal();
           }}
         />
@@ -143,6 +147,7 @@ export default function UsageDashboardPage() {
           <ErrorBanner
             message={portalUrlError}
             onRetry={() => {
+              clearPortalError();
               setPortalUrlError(null);
               openBillingPortal();
             }}

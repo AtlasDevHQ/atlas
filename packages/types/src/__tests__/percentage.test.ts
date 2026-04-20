@@ -64,6 +64,50 @@ describe("Percentage / Ratio runtime conversions", () => {
   });
 });
 
+// Runtime validation (#1685 follow-up from PR review): `asPercentage` and
+// `asRatio` used to be no-op casts. That left a real silent-failure path —
+// a corrupted DB column or a scale-drifted SQL aggregate could brand
+// nonsense values (150%, -50, NaN, Infinity) and feed them straight into
+// operator-facing gauges without warning. The constructors now validate
+// non-finite + range with a small tolerance for IEEE-754 slop.
+describe("asPercentage / asRatio runtime validation", () => {
+  test("asPercentage throws on NaN / Infinity", () => {
+    expect(() => asPercentage(NaN)).toThrow(/non-finite/);
+    expect(() => asPercentage(Infinity)).toThrow(/non-finite/);
+    expect(() => asPercentage(-Infinity)).toThrow(/non-finite/);
+  });
+
+  test("asPercentage throws on out-of-range inputs (scale mixup guard)", () => {
+    // `asPercentage(1.5)` is the exact scale mixup the brand exists to
+    // surface — a caller who confused Ratio and Percentage.
+    expect(() => asPercentage(150)).toThrow(/out of range/);
+    expect(() => asPercentage(-50)).toThrow(/out of range/);
+    expect(() => asPercentage(101)).toThrow(/out of range/);
+  });
+
+  test("asPercentage tolerates SQL rounding overshoot at the 100% boundary", () => {
+    // `ROUND(0.9999 * 100, 2)` sometimes produces 100.00000001 in IEEE-754.
+    // The tolerance must accept this without flagging a scale mixup.
+    expect(asPercentage(100.0001)).toBe<number>(100.0001);
+    expect(asPercentage(-0.0001)).toBe<number>(-0.0001);
+  });
+
+  test("asRatio throws on NaN / Infinity", () => {
+    expect(() => asRatio(NaN)).toThrow(/non-finite/);
+    expect(() => asRatio(Infinity)).toThrow(/non-finite/);
+  });
+
+  test("asRatio throws on out-of-range inputs (scale mixup guard)", () => {
+    expect(() => asRatio(1.5)).toThrow(/out of range/);
+    expect(() => asRatio(50)).toThrow(/out of range/);
+    expect(() => asRatio(-0.5)).toThrow(/out of range/);
+  });
+
+  test("asRatio tolerates tiny IEEE-754 overshoot at the 1.0 boundary", () => {
+    expect(asRatio(1.000001)).toBe<number>(1.000001);
+  });
+});
+
 describe("Percentage / Ratio compile-time invariants", () => {
   // These tests are compile-time, not runtime. `@ts-expect-error` fails
   // the build if the following lines ever typecheck — i.e., if the brand

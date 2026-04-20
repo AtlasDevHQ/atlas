@@ -34562,6 +34562,14 @@
                                 "actor"
                               ]
                             }
+                          },
+                          "eventsStatus": {
+                            "type": "string",
+                            "enum": [
+                              "ok",
+                              "load_failed",
+                              "db_unavailable"
+                            ]
                           }
                         },
                         "required": [
@@ -34846,6 +34854,14 @@
                     "updatedAt": {
                       "type": "string"
                     },
+                    "eventsStatus": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "load_failed",
+                        "db_unavailable"
+                      ]
+                    },
                     "counters": {
                       "type": "object",
                       "properties": {
@@ -34859,7 +34875,9 @@
                           "type": [
                             "number",
                             "null"
-                          ]
+                          ],
+                          "minimum": 0,
+                          "maximum": 100
                         },
                         "uniqueTablesAccessed": {
                           "type": "number"
@@ -34886,7 +34904,9 @@
                           "type": "number"
                         },
                         "errorRateThreshold": {
-                          "type": "number"
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
                         },
                         "uniqueTablesLimit": {
                           "type": "number"
@@ -35073,14 +35093,6 @@
                           "events"
                         ]
                       }
-                    },
-                    "eventsStatus": {
-                      "type": "string",
-                      "enum": [
-                        "ok",
-                        "load_failed",
-                        "db_unavailable"
-                      ]
                     }
                   },
                   "required": [
@@ -35090,11 +35102,11 @@
                     "trigger",
                     "message",
                     "updatedAt",
+                    "eventsStatus",
                     "counters",
                     "thresholds",
                     "currentInstance",
-                    "priorInstances",
-                    "eventsStatus"
+                    "priorInstances"
                   ]
                 }
               }
@@ -35209,7 +35221,9 @@
                       "type": "number"
                     },
                     "errorRateThreshold": {
-                      "type": "number"
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
                     },
                     "uniqueTablesLimit": {
                       "type": "number"

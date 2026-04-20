@@ -452,8 +452,15 @@ function persistAbuseEvent(event: AbuseEvent): void {
       ],
     );
   } catch (err) {
+    // Include workspaceId + eventId so on-call can correlate the lost
+    // write with the workspace it was for, rather than blind-grepping the
+    // audit trail.
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      {
+        err: err instanceof Error ? err.message : String(err),
+        workspaceId: event.workspaceId,
+        eventId: event.id,
+      },
       "Failed to persist abuse event",
     );
   }
@@ -510,7 +517,18 @@ export async function getAbuseEvents(
       let metadata: Record<string, unknown> = {};
       if (typeof r.metadata === "string") {
         try {
-          metadata = JSON.parse(r.metadata) as Record<string, unknown>;
+          const parsed = JSON.parse(r.metadata) as unknown;
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            metadata = parsed as Record<string, unknown>;
+          } else {
+            // Parsed cleanly but the value is a scalar or array — still a
+            // corrupt row from our schema's perspective. Warn + default to
+            // {} rather than pass an unusable shape to the UI.
+            log.warn(
+              { rowId: r.id, parsedType: Array.isArray(parsed) ? "array" : typeof parsed },
+              "unexpected abuse_events.metadata shape — using empty object",
+            );
+          }
         } catch (err) {
           log.warn(
             {
@@ -520,8 +538,15 @@ export async function getAbuseEvents(
             "corrupt abuse_events.metadata — using empty object",
           );
         }
-      } else if (r.metadata) {
+      } else if (r.metadata !== null && typeof r.metadata === "object" && !Array.isArray(r.metadata)) {
+        // Driver pre-parsed jsonb into a value. Only accept object shapes;
+        // arrays and scalars fall through to the empty default.
         metadata = r.metadata as Record<string, unknown>;
+      } else if (r.metadata !== null && r.metadata !== undefined) {
+        log.warn(
+          { rowId: r.id, valueType: Array.isArray(r.metadata) ? "array" : typeof r.metadata },
+          "unexpected abuse_events.metadata driver shape — using empty object",
+        );
       }
       const { level, trigger } = coerceAbuseEnums(r.id, r.level, r.trigger_type);
       return {

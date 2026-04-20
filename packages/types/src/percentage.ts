@@ -16,15 +16,28 @@
  * while the engine's own `checkThresholds` kept escalating.
  *
  * `Percentage` and `Ratio` are nominally branded via `unique symbol`. The
- * brands are zero-runtime (phantom types); the emitted JS is pure `number`.
- * Only the `asPercentage`, `asRatio`, `percentageToRatio`, and
+ * brands are zero-runtime as types (phantom types; the emitted JS is pure
+ * `number`); the constructors below add a small one-time validation pass at
+ * mint time. Only the `asPercentage`, `asRatio`, `percentageToRatio`, and
  * `ratioToPercentage` constructors may mint branded values — ordinary
  * `number` expressions do not satisfy the brands.
  *
- * Conversion helpers are explicit by design. A caller writing
- * `percentageToRatio(counters.errorRatePct) > thresholds.errorRateThreshold`
- * has typechecked that both sides are `Ratio`. A caller who forgets the
- * conversion fails at compile time, not at runtime boundary rounding.
+ * What the brand *does* catch: assignment mixups. A plain `number` cannot
+ * flow into a `Percentage`-typed slot, a `Percentage` cannot flow into a
+ * `Ratio`-typed slot, and function arguments typed as `Ratio` reject raw
+ * numbers. Together with the `asPercentage` / `asRatio` boundary casts,
+ * this forces every numeric scale in the system to be declared at
+ * construction — the `errorRatePct / 100 > threshold` footgun (where both
+ * sides are raw `number`) is prevented by making `counters.errorRatePct`
+ * non-assignable to the bare-number comparison chain.
+ *
+ * What the brand does *not* catch: TypeScript permits `<` / `>` / `===`
+ * between any two number-subtype operands, so `p > r` still compiles.
+ * Defense is upstream: the branded operands can only be produced via the
+ * constructors, and they require explicit conversion (`percentageToRatio`
+ * / `ratioToPercentage`) at any site that mixes scales. The
+ * `@ts-expect-error` suite in `percentage.test.ts` pins exactly what the
+ * brand enforces (assignment) and what it does not (comparison).
  */
 
 declare const percentageBrand: unique symbol;
@@ -46,17 +59,34 @@ export type Percentage = number & { readonly [percentageBrand]: never };
  */
 export type Ratio = number & { readonly [ratioBrand]: never };
 
+// A small tolerance above the scale ceiling swallows IEEE-754 slop from
+// SQL aggregates (e.g. `ROUND(failed::float / total * 100, 2)` can overshoot
+// by a few ULPs) without permitting a genuine scale mixup like `1.5 → 150`.
+const PCT_TOLERANCE = 0.001;
+const RATIO_TOLERANCE = 0.00001;
+
 /**
  * Brand a raw number as a `Percentage` without performing a conversion.
  *
  * The caller is asserting the input is already on the 0–100 scale.
- * Typical use: wrapping an SQL aggregate that the query computed as a
- * percentage (e.g., `ROUND(failed::float / total * 100, 2)`).
+ * Typical use: wrapping an SQL aggregate (`ROUND(failed/total*100, 2)`),
+ * a DB-stored percentage column, a Zod-parsed wire value, or an operator-
+ * entered form field.
  *
- * No runtime range check — branding is a compile-time concern; validation
- * at the wire boundary is the Zod schema's job.
+ * Throws on non-finite input (NaN, Infinity) and on values outside
+ * `[0 - tolerance, 100 + tolerance]` — ruling out the silent "brand
+ * nonsense into existence" path that no-op casts would leave open. The
+ * tolerance permits SQL rounding overshoot; values like `150` or `-50`
+ * that signal a genuine scale mixup fail loudly at the cast site, not at
+ * the admin-panel comparison three modules downstream.
  */
 export function asPercentage(n: number): Percentage {
+  if (!Number.isFinite(n)) {
+    throw new Error(`asPercentage: non-finite input (${n})`);
+  }
+  if (n < -PCT_TOLERANCE || n > 100 + PCT_TOLERANCE) {
+    throw new Error(`asPercentage: out of range (${n}); expected 0..100`);
+  }
   return n as Percentage;
 }
 
@@ -65,8 +95,18 @@ export function asPercentage(n: number): Percentage {
  *
  * The caller is asserting the input is already on the 0–1 scale.
  * Typical use: wrapping config / env-var values authored as fractions.
+ *
+ * Throws on non-finite input and on values outside `[0 - ε, 1 + ε]`. Same
+ * rationale as `asPercentage`: the cast is where scale mixups should
+ * surface, not where they quietly propagate.
  */
 export function asRatio(n: number): Ratio {
+  if (!Number.isFinite(n)) {
+    throw new Error(`asRatio: non-finite input (${n})`);
+  }
+  if (n < -RATIO_TOLERANCE || n > 1 + RATIO_TOLERANCE) {
+    throw new Error(`asRatio: out of range (${n}); expected 0..1`);
+  }
   return n as Ratio;
 }
 

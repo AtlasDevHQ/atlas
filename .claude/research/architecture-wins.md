@@ -969,7 +969,7 @@ export function percentageToRatio(p: Percentage): Ratio { return (p / 100) as Ra
 export function ratioToPercentage(r: Ratio): Percentage { return (r * 100) as Percentage; }
 ```
 
-The brands are zero-runtime — emitted JS is plain `number`. Only the four constructors can mint branded values; any plain-number expression fails typecheck in a branded position. Cross-scale comparison (`Percentage > Ratio`) fails typecheck without an explicit `percentageToRatio` / `ratioToPercentage` call.
+The brands are zero-runtime as types — emitted JS is plain `number`. The constructors also add a one-time range + non-finite validation pass at mint time, so `asPercentage(150)`, `asRatio(NaN)`, etc. throw instead of silently branding nonsense. Only the four constructors can produce branded values; any plain-number expression fails typecheck in a branded *position* (assignment, function argument, return type, struct field). Comparison operators (`>`, `<`, `===`) remain structural and compile freely — the defense is that the *operands* on each side must be branded first, which forces every scale in the expression chain to be declared at a constructor call site.
 
 Applied the brands through the entire stack:
 - `@useatlas/types`: `AbuseCounters.errorRatePct: Percentage | null`, `AbuseThresholdConfig.errorRateThreshold: Ratio`, `WorkspaceSLASummary.errorRatePct / uptimePct: Percentage`, `SLAThresholds.errorRatePct: Percentage`.
@@ -984,7 +984,7 @@ Applied the brands through the entire stack:
 Tests cover both layers: runtime conversions (asPercentage / asRatio identity, percentageToRatio / ratioToPercentage math, round-trip precision at the 50.04% boundary that nearly regressed PR #1681) and compile-time invariants via `@ts-expect-error` directives for every cross-assignment that should fail (plain number → Percentage, plain number → Ratio, Percentage → Ratio without conversion, Ratio → Percentage without conversion). Any future refactor that erases the brand makes the directives stop being "expected" and the build fails.
 
 **Impact:**
-- The `errorRatePct / 100` footgun is now a compile-time error. A caller who forgets the conversion or applies it twice fails typecheck at the expression, not at runtime boundary rounding.
+- The `errorRatePct / 100` footgun is prevented by the upstream discipline: every producer of `errorRatePct` brands via `asPercentage` and every consumer of `errorRateThreshold` requires a `Ratio`. A caller who forgets the conversion fails typecheck at the function-argument or assignment boundary, not at the `>` operator itself (TypeScript permits `number > number` regardless of brand). The `@ts-expect-error` tests in `percentage.test.ts` pin exactly what is and is not caught.
 - Zero runtime cost. JS output is pure `number`; the brand erases.
 - Abuse and SLA surfaces now share one vocabulary (`Percentage` = 0–100, `Ratio` = 0–1) — future code can't accidentally compare a Percentage to a Ratio the way PR #1681 nearly did.
 - One new module (`percentage.ts`) with two types + four constructors. Ten production sites updated. The convention-collision problem is resolved at the type layer, not by adding comments ("this is 0–100" vs "this is 0–1") that rot.

@@ -78,8 +78,11 @@ export interface SLAThresholds {
    * Error rate threshold on a 0–100 scale, branded `Percentage` (#1685).
    * Opposite convention from `AbuseThresholdConfig.errorRateThreshold`
    * (which is a `Ratio`) — the SLA surface kept the legacy percentage
-   * format, and the brand makes the cross-module mixup a typecheck
-   * failure instead of a runtime boundary bug.
+   * format. The brand makes cross-module *assignment* a typecheck
+   * failure (passing an SLA threshold where an abuse threshold is
+   * expected fails immediately), while comparisons still compile — by
+   * that point the operands have been constructed via `asPercentage` /
+   * `asRatio` and a caller who mixed scales would have failed upstream.
    */
   errorRatePct: Percentage;
 }

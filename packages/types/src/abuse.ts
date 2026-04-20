@@ -44,6 +44,13 @@ export interface AbuseStatus {
   updatedAt: string;
   /** Recent abuse events for this workspace. */
   events: AbuseEvent[];
+  /**
+   * Per-workspace load status for the `events` payload (#1682). Defaults
+   * to `"ok"` in pre-existing callers that don't yet surface the signal,
+   * so list consumers who filter on `eventsStatus === "ok"` can safely
+   * treat the absence as the happy path.
+   */
+  eventsStatus?: AbuseEventsStatus;
 }
 
 /** Abuse threshold configuration (read-only from admin API). */
@@ -73,9 +80,10 @@ export interface AbuseCounters {
   /**
    * Error rate as a `Percentage` (0–100), matching the SLA surfaces'
    * convention. Null when queryCount < 10 (the engine only evaluates
-   * error rate once it has a baseline). Branded (#1685) so a caller that
-   * compares against `AbuseThresholdConfig.errorRateThreshold` (a
-   * `Ratio`) must go through `percentageToRatio` explicitly.
+   * error rate once it has a baseline). Branded (#1685) so a caller
+   * cannot assign this value into a `Ratio`-typed slot without an
+   * explicit `percentageToRatio` — the brand catches the scale mixup at
+   * assignment, not at the `>` / `<` operator.
    */
   errorRatePct: Percentage | null;
   uniqueTablesAccessed: number;
@@ -84,40 +92,26 @@ export interface AbuseCounters {
 }
 
 /**
- * Phantom brand for `AbuseInstance` (#1684).
- *
- * The brand is a `unique symbol` declared module-privately. Any caller that
- * wants to mint an `AbuseInstance` must either go through
- * `createAbuseInstance` (which localizes the `as AbuseInstance` cast and
- * enforces invariants: peakLevel ≡ max(event levels), endedAt non-null iff
- * last event is a manual "none" reinstatement, startedAt ≡ events[0].createdAt)
- * or parse the wire format through `AbuseInstanceSchema` (which casts the
- * parse result at the wire boundary).
- *
- * Hand-rolling `{ startedAt, endedAt, peakLevel, events }` as an
- * `AbuseInstance` literal now fails typecheck — the mandatory brand is a
- * `never`-typed symbol key that no plain object literal can satisfy. That
- * breaks the previously-structural escape hatch that let test fixtures (and
- * accidentally, new production call sites) produce mismatched instances
- * where peakLevel disagreed with events.
- *
- * The brand has zero runtime cost — it is a phantom type that erases to
- * nothing in emitted JS; the property key is never accessed at runtime.
+ * Phantom brand for `AbuseInstance` (#1684). `unique symbol` declared
+ * module-privately; the required `never`-typed key rejects plain object
+ * literals, so minting requires a localized cast. Two call sites own
+ * that cast: `createAbuseInstance` (enforces peakLevel ≡ max(event
+ * levels), endedAt non-null iff last event is a manual "none"
+ * reinstatement, startedAt ≡ events[0].createdAt) and `AbuseInstanceSchema`
+ * at the wire boundary. Zero runtime cost — the brand erases.
  */
 declare const abuseInstanceBrand: unique symbol;
 
 /**
  * A flag "instance" — one continuous stretch of non-"none" activity for a
- * workspace, bookended by an escalation event and (optionally) a reinstatement
- * event.
+ * workspace, bookended by an escalation event and (optionally) a
+ * reinstatement event.
  *
- * `events` are chronological (oldest first) and `readonly` — post-construction
- * mutation would silently invalidate the cached `peakLevel` / `endedAt`
- * invariants the factory established. `endedAt` is null while the instance
- * is still active (no reinstatement yet).
- *
- * Nominally branded (see `abuseInstanceBrand` above) so only
- * `createAbuseInstance` and the Zod parser can produce values of this type.
+ * `events` are chronological (oldest first) and `readonly` — post-
+ * construction mutation would silently invalidate the cached `peakLevel`
+ * / `endedAt` invariants the factory established. `endedAt` is null while
+ * the instance is still active (no reinstatement yet). See
+ * `abuseInstanceBrand` above for the nominal-typing guarantee.
  */
 export interface AbuseInstance {
   readonly [abuseInstanceBrand]: never;

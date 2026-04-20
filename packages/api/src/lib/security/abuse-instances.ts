@@ -58,7 +58,9 @@ export function createAbuseInstance(eventsChrono: readonly AbuseEvent[]): AbuseI
     // Localized `as AbuseInstance` cast: the brand is a phantom `never`
     // symbol key that no plain object literal can provide. The factory's
     // contract (invariants above) is what gives this cast its authority;
-    // external callers cannot reproduce it without going through here.
+    // the convention is that no other module adds an `as unknown as
+    // AbuseInstance` cast, enforced by code review + the `@ts-expect-error`
+    // regression test in abuse-instances.test.ts.
     return { startedAt: "", endedAt: null, peakLevel: "none", events: [] } as unknown as AbuseInstance;
   }
   const last = eventsChrono[eventsChrono.length - 1]!;

@@ -85,10 +85,10 @@ function CountersSection({
           threshold={`${errorRateThresholdPct}%`}
           over={
             counters.errorRatePct !== null &&
-            // Explicit scale conversion — both sides of the comparison are
-            // `Ratio` now. Replacing `counters.errorRatePct / 100` with
-            // `percentageToRatio(counters.errorRatePct)` is what made the
-            // old convention-collision footgun a compile-time error.
+            // Explicit scale conversion — `counters.errorRatePct` is
+            // `Percentage` (0–100), `thresholds.errorRateThreshold` is
+            // `Ratio` (0–1). `percentageToRatio` makes the scale mismatch
+            // obvious at the call site; both operands below are `Ratio`.
             percentageToRatio(counters.errorRatePct) > thresholds.errorRateThreshold
           }
         />
@@ -164,7 +164,7 @@ function TimelineSection({
 }
 
 /**
- * Destructive banner for a degraded event-history load (#1682).
+ * Banner for a degraded or absent event-history load (#1682).
  *
  * Renders above the timeline when `eventsStatus !== "ok"` so an operator
  * sees "history is missing, not empty" before reading the benign empty-
@@ -172,33 +172,44 @@ function TimelineSection({
  * payload indistinguishable from "never flagged" and an admin could
  * reinstate a repeat offender based on false history.
  *
- * `load_failed` is the dangerous case — a DB query errored and in-memory
- * state cannot corroborate prior flags. `db_unavailable` is the expected
- * self-hosted case (no `DATABASE_URL`); still worth signaling so the admin
- * knows prior history is not stored, but copy is advisory rather than
- * alarming.
+ * Two severities, two visual treatments — reusing one destructive red
+ * card for both would erode operator attention to the genuinely dangerous
+ * case (`load_failed`). `db_unavailable` is the expected steady state on
+ * a self-hosted deploy without DATABASE_URL, so it gets a neutral
+ * informational treatment.
+ *
+ *   - `load_failed` → destructive (red): the DB read threw; in-memory
+ *     state cannot corroborate prior flags. Admins must NOT reinstate
+ *     based on empty history.
+ *   - `db_unavailable` → advisory (muted): no internal DB is configured;
+ *     prior flag history simply does not exist to load. Reinstate
+ *     decisions still have only the current in-memory state to go on.
  */
-function EventsStatusBanner({ status }: { status: AbuseEventsStatus }) {
+export function EventsStatusBanner({ status }: { status: AbuseEventsStatus }) {
   if (status === "ok") return null;
-  const { title, body } =
-    status === "load_failed"
-      ? {
-          title: "Event history failed to load",
-          body: "Counters and level are live, but the audit trail is unavailable. Do not reinstate based on missing history.",
-        }
-      : {
-          title: "Event history is not persisted",
-          body: "This deploy has no internal database configured (DATABASE_URL). Prior flag events are not recorded — reinstate decisions cannot reference past history.",
-        };
+  const isDegraded = status === "load_failed";
+  const { title, body } = isDegraded
+    ? {
+        title: "Event history failed to load",
+        body: "Counters and level are live, but the audit trail is unavailable. Do not reinstate based on missing history.",
+      }
+    : {
+        title: "Event history is not persisted",
+        body: "This deploy has no internal database configured (DATABASE_URL). Prior flag events are not recorded — reinstate decisions cannot reference past history.",
+      };
+  const containerClass = isDegraded
+    ? "rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs lg:col-span-2"
+    : "rounded-md border bg-muted/50 px-3 py-2 text-xs lg:col-span-2";
+  const iconClass = isDegraded
+    ? "mt-0.5 size-4 shrink-0 text-destructive"
+    : "mt-0.5 size-4 shrink-0 text-muted-foreground";
+  const titleClass = isDegraded ? "font-medium text-destructive" : "font-medium";
   return (
-    <div
-      role="alert"
-      className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs lg:col-span-2"
-    >
+    <div role="alert" className={containerClass}>
       <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+        <AlertTriangle className={iconClass} />
         <div className="flex-1">
-          <p className="font-medium text-destructive">{title}</p>
+          <p className={titleClass}>{title}</p>
           <p className="mt-0.5 text-muted-foreground">{body}</p>
         </div>
       </div>

@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Crown, Shield, ShieldCheck } from "lucide-react";
-import { roleBadge } from "../roles";
+import { __resetWarnSets, roleBadge } from "../roles";
 
 describe("roleBadge", () => {
   let warnSpy: ReturnType<typeof spyOn<Console, "warn">>;
+
+  beforeEach(() => {
+    __resetWarnSets();
+  });
 
   afterEach(() => {
     warnSpy?.mockRestore();

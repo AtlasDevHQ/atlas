@@ -776,17 +776,15 @@ onboarding.openapi(
 // ---------------------------------------------------------------------------
 
 import { loadResidency, getResidencyDomainError } from "./shared-residency";
+import { RegionPickerItemSchema } from "@useatlas/schemas";
 
-const OnboardingRegionSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  isDefault: z.boolean(),
-});
-
+// OnboardingRegionSchema previously duplicated this shape inline; the signup
+// page already imports RegionPickerItemSchema from @useatlas/schemas, so
+// route + web consumer describe the same shape from one source.
 const OnboardingRegionsResponseSchema = z.object({
   configured: z.boolean(),
   defaultRegion: z.string(),
-  availableRegions: z.array(OnboardingRegionSchema),
+  availableRegions: z.array(RegionPickerItemSchema),
 });
 
 const AssignRegionBodySchema = z.object({

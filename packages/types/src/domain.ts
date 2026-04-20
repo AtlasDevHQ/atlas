@@ -30,6 +30,11 @@ export type DomainVerificationStatus = (typeof DOMAIN_VERIFICATION_STATUSES)[num
 
 // ---------------------------------------------------------------------------
 // Custom domain record
+//
+// Structural shape only — invariants (DNS TXT trio coupling, Railway
+// status→verifiedAt implication, non-empty domain) are enforced at the
+// wire boundary by `CustomDomainSchema` in `@useatlas/schemas`.
+// Code-only constructors of `CustomDomain` bypass those invariants.
 // ---------------------------------------------------------------------------
 
 export interface CustomDomain {

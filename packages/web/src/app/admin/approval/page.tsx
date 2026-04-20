@@ -531,10 +531,12 @@ function QueueSection() {
       // satisfies the post-#1660 discriminated union at the type layer —
       // the UI only reads `status` / `reviewedAt` between patch and
       // replacement, so the stubbed reviewer values are never rendered.
+      // `__optimistic__` is a sentinel, deliberately distinct from the
+      // `pending` status literal to avoid grep ambiguity.
       (r) => ({
         ...r,
         status: "approved",
-        reviewerId: r.reviewerId ?? "pending",
+        reviewerId: r.reviewerId ?? "__optimistic__",
         reviewerEmail: r.reviewerEmail,
         reviewComment: r.reviewComment,
         reviewedAt: new Date().toISOString(),
@@ -574,11 +576,12 @@ function QueueSection() {
       id,
       // Optimistic placeholder — see handleApprove comment. Denied variant
       // requires reviewerId: string too; the server replaces this shape in
-      // onSuccess with the real reviewer id.
+      // onSuccess with the real reviewer id. `__optimistic__` sentinel
+      // matches the approve-path sentinel.
       (r) => ({
         ...r,
         status: "denied",
-        reviewerId: r.reviewerId ?? "pending",
+        reviewerId: r.reviewerId ?? "__optimistic__",
         reviewerEmail: r.reviewerEmail,
         reviewedAt: new Date().toISOString(),
         reviewComment: reason || null,

@@ -451,11 +451,18 @@ export const checkApprovalRequired = (
       matchedRules,
     };
   }).pipe(
-    // intentionally caught: enterprise disabled — return safe default so agent queries proceed without approval
-    Effect.catchAll((err) => {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Approval check skipped — enterprise not enabled");
-      return Effect.succeed({ required: false, matchedRules: [] as ApprovalRule[] });
-    }),
+    // `catchIf` (not `catchAll`) — only the "enterprise disabled" failure
+    // should degrade to "approval not required"; a transient DB error
+    // must bubble so the route returns 500 instead of silently bypassing
+    // governance. See CLAUDE.md: `catch { return false }` on a security
+    // check is a bug, not a safe default.
+    Effect.catchIf(
+      (err): err is EnterpriseError => err instanceof EnterpriseError,
+      (err) => {
+        log.debug({ err: err.message }, "Approval check skipped — enterprise not enabled");
+        return Effect.succeed({ required: false, matchedRules: [] as ApprovalRule[] });
+      },
+    ),
   );
 
 // ── Queue management ────────────────────────────────────────────────
@@ -654,11 +661,15 @@ export const expireStaleRequests = (): Effect.Effect<number, never> =>
     }
     return rows.length;
   }).pipe(
-    // intentionally caught: enterprise disabled — skip expiration silently
-    Effect.catchAll((err) => {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Stale request expiration skipped — enterprise not enabled");
-      return Effect.succeed(0);
-    }),
+    // `catchIf` over EnterpriseError — a DB outage must not look like "no
+    // requests to expire"; let it surface as a defect so ops can spot it.
+    Effect.catchIf(
+      (err): err is EnterpriseError => err instanceof EnterpriseError,
+      (err) => {
+        log.debug({ err: err.message }, "Stale request expiration skipped — enterprise not enabled");
+        return Effect.succeed(0);
+      },
+    ),
   );
 
 /** Get count of pending approval requests for an organization. */
@@ -676,11 +687,16 @@ export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
 
     return rows.length > 0 ? Number(rows[0].count) : 0;
   }).pipe(
-    // intentionally caught: enterprise disabled — report zero pending
-    Effect.catchAll((err) => {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Pending count skipped — enterprise not enabled");
-      return Effect.succeed(0);
-    }),
+    // `catchIf` over EnterpriseError — a DB outage must not masquerade
+    // as "zero pending approvals" (governance bypass surface); let it
+    // propagate so the admin banner surfaces a real error.
+    Effect.catchIf(
+      (err): err is EnterpriseError => err instanceof EnterpriseError,
+      (err) => {
+        log.debug({ err: err.message }, "Pending count skipped — enterprise not enabled");
+        return Effect.succeed(0);
+      },
+    ),
   );
 
 /**
@@ -712,9 +728,17 @@ export const hasApprovedRequest = (
 
     return rows.length > 0;
   }).pipe(
-    // intentionally caught: enterprise disabled — stale approved records should not grant access
-    Effect.catchAll((err) => {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Approved request check skipped — enterprise not enabled");
-      return Effect.succeed(false);
-    }),
+    // `catchIf` over EnterpriseError — SQL-interception relies on this
+    // check. A DB outage returning `false` would force every query back
+    // through fresh approval (annoying) — and worse, a DB outage
+    // returning `true` (if the query ever drifted that way) would grant
+    // access. Only the "enterprise off" path degrades; everything else
+    // is a defect.
+    Effect.catchIf(
+      (err): err is EnterpriseError => err instanceof EnterpriseError,
+      (err) => {
+        log.debug({ err: err.message }, "Approved request check skipped — enterprise not enabled");
+        return Effect.succeed(false);
+      },
+    ),
   );

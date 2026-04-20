@@ -131,6 +131,21 @@ describe("listApprovalRules", () => {
     mockEnterpriseEnabled = false;
     await expect(run(listApprovalRules("org-1"))).rejects.toThrow("Enterprise features");
   });
+
+  it("drops cost rules missing their threshold", async () => {
+    // Post-#1660 cost rules require `threshold: number`. A DB row with
+    // `rule_type = 'cost'` + `threshold IS NULL` violates the variant
+    // invariant and must not surface to consumers — `rowToRule` returns
+    // null with a warn log and the row is filtered out of the list.
+    ee.queueMockRows([
+      makeRuleRow({ id: "rule-ok", rule_type: "table", pattern: "users" }),
+      makeRuleRow({ id: "rule-bad", rule_type: "cost", pattern: "", threshold: null }),
+      makeRuleRow({ id: "rule-ok-cost", rule_type: "cost", pattern: "", threshold: 1000 }),
+    ]);
+    const result = await run(listApprovalRules("org-1"));
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.id)).toEqual(["rule-ok", "rule-ok-cost"]);
+  });
 });
 
 describe("getApprovalRule", () => {
@@ -361,7 +376,7 @@ describe("listApprovalRequests", () => {
 
   it("skips requests with invalid status", async () => {
     ee.queueMockRows([
-      makeQueueRow({ id: "req-1", status: "approved" }),
+      makeQueueRow({ id: "req-1", status: "approved", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" }),
       makeQueueRow({ id: "req-2", status: "bogus" }),
       makeQueueRow({ id: "req-3", status: "pending" }),
     ]);
@@ -371,8 +386,26 @@ describe("listApprovalRequests", () => {
     expect(result[1].id).toBe("req-3");
   });
 
+  it("drops reviewed rows missing reviewer metadata", async () => {
+    // Post-#1660 approved/denied variants require reviewerId + reviewedAt.
+    // A DB row flagged approved but with null reviewer columns violates
+    // the invariant — rowToRequest drops it with a warn log. Emitting
+    // the half-populated row would leak a malformed shape into the admin
+    // queue.
+    ee.queueMockRows([
+      makeQueueRow({ id: "req-ok", status: "approved", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" }),
+      makeQueueRow({ id: "req-half-1", status: "approved", reviewer_id: null, reviewed_at: "2026-01-01T12:00:00Z" }),
+      makeQueueRow({ id: "req-half-2", status: "denied", reviewer_id: "admin-2", reviewed_at: null }),
+    ]);
+    const result = await run(listApprovalRequests("org-1"));
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("req-ok");
+  });
+
   it("filters by status", async () => {
-    ee.queueMockRows([makeQueueRow({ status: "approved" })]);
+    ee.queueMockRows([
+      makeQueueRow({ status: "approved", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" }),
+    ]);
     const result = await run(listApprovalRequests("org-1", "approved"));
     expect(result).toHaveLength(1);
     expect(ee.capturedQueries[0].sql).toContain("AND status = $2");
@@ -415,7 +448,9 @@ describe("reviewApprovalRequest", () => {
   });
 
   it("throws conflict for already-reviewed request", async () => {
-    ee.queueMockRows([makeQueueRow({ status: "approved" })]);
+    ee.queueMockRows([
+      makeQueueRow({ status: "approved", reviewer_id: "other-admin", reviewed_at: "2026-01-01T12:00:00Z" }),
+    ]);
     await expect(
       run(reviewApprovalRequest("org-1", "req-1", "admin-1", null, "approve")),
     ).rejects.toThrow("Cannot approve request");

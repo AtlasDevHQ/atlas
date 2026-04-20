@@ -207,6 +207,13 @@ async function deliverViaTransport(
   // `transport.config` is a tagged union keyed on `provider` (#1542); the
   // switch narrows each case to the matching `ProviderConfig` variant so
   // `apiKey` / `serverToken` accesses are structurally guaranteed.
+  //
+  // Defense-in-depth against a discriminator that slipped past the store
+  // layer's `isEmailProvider` guard (e.g. a plugin registering a new
+  // EmailProvider value, a direct mock in tests): the exhaustive switch
+  // below has a `default` arm that surfaces the unknown tag as a
+  // structured DeliveryResult instead of letting the async function
+  // resolve to `undefined` and crashing downstream `result.success`.
   switch (transport.config.provider) {
     case "resend":
       return deliverResend(message, from, transport.config.apiKey);
@@ -224,6 +231,22 @@ async function deliverViaTransport(
       }
       log.warn({ to: message.to, provider: transport.provider }, "DB email config found but provider requires ATLAS_SMTP_URL bridge");
       return { success: false, provider: "log", error: `${transport.provider} provider requires ATLAS_SMTP_URL bridge` };
+
+    default: {
+      // `never` at the type layer — if this arm fires, the store/wire
+      // guards missed a discriminator that compile-time thought was
+      // impossible.
+      const unknownProvider: string = (transport.config as { provider: string }).provider;
+      log.error(
+        { to: message.to, unknownProvider },
+        "deliverViaTransport received unknown provider discriminator — refusing to deliver",
+      );
+      return {
+        success: false,
+        provider: "log",
+        error: `Unknown email provider discriminator: ${unknownProvider}`,
+      };
+    }
   }
 }
 

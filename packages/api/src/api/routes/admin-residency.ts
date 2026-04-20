@@ -63,13 +63,30 @@ interface MigrationRow {
 
 /**
  * Build the discriminated `RegionMigration` variant (#1696) that matches
- * the row's status. When the row's timestamp/error fields contradict the
- * status (e.g. a "pending" row with a populated `completed_at`), the row
- * is coerced to a plausible shape with a warning: a pending row missing
- * its invariants becomes "failed"; a failed row missing `errorMessage`
- * falls back to a stock message. The alternative would be returning null
- * here and 404-ing the caller, which is strictly worse for migrated
- * production data.
+ * the row's status.
+ *
+ * Behavior per status when the row's timestamp/error fields contradict
+ * the declared status:
+ *
+ * - **pending / in_progress** — the variant requires `completedAt: null`
+ *   and `errorMessage: null`. The fields on the row are ignored; if they
+ *   were populated, a warn breadcrumb fires so ops can notice drift.
+ * - **completed** — requires `completedAt: string`. If `completed_at` is
+ *   null, we fall back to `requestedAt` and warn. `errorMessage` is
+ *   always coerced to null.
+ * - **failed** — requires `completedAt: string` and `errorMessage: string`.
+ *   Missing `completed_at` falls back to `requestedAt`; missing
+ *   `error_message` falls back to a stock string. Both paths warn.
+ * - **cancelled** — keeps `errorMessage: string | null` for legacy
+ *   'Cancelled by admin' rows. Missing `completed_at` falls back to
+ *   `requestedAt` with a warn.
+ *
+ * Unknown status strings are coerced to `"failed"` by
+ * `narrowMigrationStatus`, which emits its own warn.
+ *
+ * The alternative to sanitizing here would be returning null and
+ * 404-ing the caller — strictly worse for migrated production data
+ * where the row is legit but the columns drifted.
  */
 function rowToMigration(
   row: MigrationRow,
@@ -87,21 +104,46 @@ function rowToMigration(
   switch (status) {
     case "pending":
     case "in_progress":
+      if (row.completed_at !== null || row.error_message !== null) {
+        log.warn(
+          {
+            migrationId: row.id,
+            status,
+            dbCompletedAt: row.completed_at,
+            dbErrorMessage: row.error_message,
+            requestId: ctx.requestId,
+          },
+          "In-flight migration has populated completed_at/error_message — coercing to null",
+        );
+      }
       return { ...base, status, completedAt: null, errorMessage: null };
     case "completed":
       if (!row.completed_at) {
         log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Completed migration missing completed_at — falling back to requestedAt");
         return { ...base, status: "completed", completedAt: row.requested_at, errorMessage: null };
       }
+      if (row.error_message !== null) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Completed migration has populated error_message — coercing to null");
+      }
       return { ...base, status: "completed", completedAt: row.completed_at, errorMessage: null };
-    case "failed":
+    case "failed": {
+      if (!row.completed_at) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Failed migration missing completed_at — falling back to requestedAt");
+      }
+      if (!row.error_message) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Failed migration missing error_message — using stock string");
+      }
       return {
         ...base,
         status: "failed",
         completedAt: row.completed_at ?? row.requested_at,
         errorMessage: row.error_message ?? "Migration failed (no error message recorded)",
       };
+    }
     case "cancelled":
+      if (!row.completed_at) {
+        log.warn({ migrationId: row.id, status, requestId: ctx.requestId }, "Cancelled migration missing completed_at — falling back to requestedAt");
+      }
       return {
         ...base,
         status: "cancelled",

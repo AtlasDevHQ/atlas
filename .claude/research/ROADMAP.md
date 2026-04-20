@@ -1367,9 +1367,9 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 
 ---
 
-## 1.2.2 — Admin Console Polish & Schema Consolidation
+## 1.2.2 — Admin Console Polish & Schema Consolidation — CLOSED
 
-**Milestone #36.** Finish the admin console final pass (Bucket 2 data tables + remaining MutationErrorSurface migrations) and consolidate wire-format schemas under `@useatlas/schemas`. Post-1.2.1 polish arc carrying the security/refactor follow-ups from the abuse + admin work.
+**Milestone #36. Shipped 2026-04-20.** 70+ issues closed across 50+ PRs. Admin console final-pass (Buckets 1+2+4 complete, 3+5 explicitly deferred by design); `@useatlas/schemas` wire-format consolidation across 5 phases (18 schemas migrated, `admin-schemas.ts` 542 → 241 lines); 3 `@useatlas/types` publish cycles (0.0.11 → 0.0.14) landing `Percentage`/`Ratio`/`EMAIL_PROVIDERS`/`HEALTH_STATUSES` tuples + 4 discriminated-union migrations (`ProviderConfig`, `ActionStatus` unification, `ApprovalRule`/`Request`, `RegionMigration`); `MutationErrorSurface` phase 1 + 2A–2D + branded `FeatureName` registry shipped across ~40 admin pages; residency hardening; `buildFetchError` empty-message invariant at the system boundary; 10+ architecture wins recorded (#34–#43). No items rolled forward — milestone fully closed.
 
 ### Shipped
 - [x] DB CHECK + server-side enum drift coercion for `abuse_events.level` / `trigger_type` (#1653, PR #1655) — migration `0031_abuse_events_enum_checks.sql` coerces pre-drifted rows to safe defaults (`none` / `manual`) then adds idempotent `CHECK` constraints; server-side `coerceAbuseEnums()` helper validates hydrated rows against canonical tuples and emits `log.warn` on drift; replaces unchecked `as AbuseLevel` / `as AbuseTrigger` casts in `getAbuseEvents` + `restoreAbuseState`; 3 TDD drift tests

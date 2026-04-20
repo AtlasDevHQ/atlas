@@ -1406,6 +1406,31 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 
 ---
 
+## 1.2.3 — Security Sweep
+
+Full security audit with in-milestone remediation. Audit-and-fix shape: P0/P1/P2 findings fixed in-milestone, P3s punted to a cleanup tail. Findings captured in `.claude/research/security-audit-1-2-3.md`. Tracking issue #1718. Ships before 1.3.0.
+
+- [ ] Phase 1 — Audit Better Auth config + middleware coverage (#1720)
+- [ ] Phase 2 — Audit org-scoping on every route + ContentMode consumers (#1721)
+- [ ] Phase 3 — Audit SQL validation edges + fuzz the 4-layer validator (#1722)
+- [ ] Phase 4 — Audit audit-log coverage on write routes (#1723)
+- [ ] Phase 5 — Audit secret/error surfaces + plugin credential storage (#1724)
+- [ ] Phase 6 — Audit rate limiting, timeouts, pool caps, DoS surfaces (#1725)
+- [ ] Phase 7 — Audit EE governance bypasses — SSO / SCIM / IP / approval (#1726)
+
+## 1.3.0 — End-User UI Design Pass
+
+Revamp end-user facing surfaces using the treatment pattern from the 1.2.1/1.2.2 admin revamp (critique → distill → colorize → polish). No features, no backend. Tracking issue #1719. Starts after 1.2.3 closes; public-views bucket safe to pipeline in parallel.
+
+- [ ] Bucket 1 — Chat (`/`) — message density, starter-prompt grid, tool calls, result cards, conversation sidebar
+- [ ] Bucket 2 — Notebook (`/notebook`) — cell UX, fork-gutter verification, markdown cells, empty state
+- [ ] Bucket 3 — Dashboards (`/dashboards`, `/dashboards/[id]`) — tile chrome, edit vs view, empty state, share affordance
+- [ ] Bucket 4 — Public views (`/shared/[token]`, `/report/[token]`, embed) — branding, load perf, mobile, print — safe to pipeline with 1.2.3
+- [ ] Bucket 5 — Onboarding (`/signup/*`, `/login`, `/create-org`, `/wizard`) — region picker, workspace create, success
+- [ ] Bucket 6 — Demo (`/demo`) — the marketing hand-off surface
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

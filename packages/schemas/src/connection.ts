@@ -8,10 +8,18 @@
  * `@useatlas/types` so mode-drift (published/draft/archived) fails parse
  * at the wire boundary instead of rendering a neutral fallback.
  *
- * `ConnectionHealth.status` kept at `z.string()` — the canonical
- * `HealthStatus` union lives in `@useatlas/types` but lacks a runtime
- * tuple; tightening requires adding one + republishing types. Out of scope
- * for this migration; tracked as a follow-up.
+ * `ConnectionHealth.status` tightens to a local enum literal
+ * (`healthy | degraded | unhealthy`) matching the canonical `HealthStatus`
+ * union in `@useatlas/types`. Not imported from a tuple because
+ * `@useatlas/types` doesn't yet export one — #1703 tracks adding
+ * `HEALTH_STATUSES` on the next types bump so this can switch to
+ * `z.enum(HEALTH_STATUSES)` for drift-free construction.
+ *
+ * `ConnectionInfo.dbType` deliberately stays structurally typed via `as
+ * z.ZodType<...>` (not `satisfies`) because plugins can register dbType
+ * values outside the `DB_TYPES` tuple, and a strict `z.enum(DB_TYPES)`
+ * would reject plugin-emitted connections at parse time. The TypeScript
+ * type narrows to `DBType` for operator UX; the wire schema stays permissive.
  *
  * `checkedAt` goes through `IsoTimestampSchema` (#1697).
  */
@@ -24,7 +32,7 @@ import {
 import { IsoTimestampSchema } from "./common";
 
 export const ConnectionHealthSchema = z.object({
-  status: z.string(),
+  status: z.enum(["healthy", "degraded", "unhealthy"]),
   latencyMs: z.number(),
   message: z.string().optional(),
   checkedAt: IsoTimestampSchema,
@@ -36,7 +44,7 @@ export const ConnectionInfoSchema = z.object({
   description: z.string().nullable().optional(),
   status: z.enum(CONNECTION_STATUSES).optional(),
   health: ConnectionHealthSchema.optional(),
-}) satisfies z.ZodType<ConnectionInfo, unknown>;
+}) as z.ZodType<ConnectionInfo>;
 
 // ---------------------------------------------------------------------------
 // Composite response shape

@@ -26,7 +26,7 @@ const validBranding = {
 const validModelConfig = {
   id: "cfg_1",
   orgId: "org_1",
-  provider: "anthropic",
+  provider: "anthropic" as const,
   model: "claude-opus-4-6",
   baseUrl: null,
   apiKeyMasked: "sk-ant-...abc",

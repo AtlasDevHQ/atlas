@@ -7,7 +7,7 @@ import {
 import { CONNECTION_STATUSES } from "@useatlas/types";
 
 const validHealth = {
-  status: "healthy",
+  status: "healthy" as const,
   latencyMs: 42,
   message: "ok",
   checkedAt: "2026-04-20T12:00:00.000Z",
@@ -15,7 +15,7 @@ const validHealth = {
 
 const validInfo = {
   id: "conn_1",
-  dbType: "postgres",
+  dbType: "postgres" as const,
   description: "Primary analytics DB",
   status: "published" as const,
   health: validHealth,
@@ -31,7 +31,7 @@ describe("happy-path parses", () => {
   });
 
   test("ConnectionInfoSchema parses with optionals omitted", () => {
-    const minimal = { id: "conn_2", dbType: "mysql" };
+    const minimal = { id: "conn_2", dbType: "mysql" as const };
     expect(ConnectionInfoSchema.parse(minimal)).toEqual(minimal);
   });
 

@@ -17,6 +17,7 @@
 import { z } from "zod";
 import {
   MASKING_STRATEGIES,
+  MODEL_CONFIG_PROVIDERS,
   PII_CATEGORIES,
   PII_CONFIDENCE_LEVELS,
   type PIIColumnClassification,
@@ -49,7 +50,7 @@ export const WorkspaceBrandingSchema = z.object({
 export const WorkspaceModelConfigSchema = z.object({
   id: z.string(),
   orgId: z.string(),
-  provider: z.string(),
+  provider: z.enum(MODEL_CONFIG_PROVIDERS),
   model: z.string(),
   baseUrl: z.string().nullable(),
   apiKeyMasked: z.string(),

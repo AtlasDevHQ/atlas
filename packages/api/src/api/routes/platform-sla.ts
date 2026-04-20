@@ -22,7 +22,7 @@ import {
   RequestContext,
   AuthContext,
 } from "@atlas/api/lib/effect/services";
-import { asPercentage } from "@useatlas/types";
+import { SLA_ALERT_STATUSES, asPercentage } from "@useatlas/types";
 import {
   SLAAlertSchema,
   SLAThresholdsSchema,

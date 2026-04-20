@@ -139,6 +139,13 @@ describe("composite responses", () => {
     expect(parsed.hoursBack).toBe(24);
   });
 
+  test("SLAWorkspacesResponseSchema parses empty workspaces (new deploy / EE-disabled path)", () => {
+    const response = { workspaces: [], hoursBack: 24 };
+    const parsed = SLAWorkspacesResponseSchema.parse(response);
+    expect(parsed.workspaces).toEqual([]);
+    expect(parsed.hoursBack).toBe(24);
+  });
+
   test("SLAAlertsResponseSchema parses an alerts list", () => {
     const response = { alerts: [validAlert] };
     const parsed = SLAAlertsResponseSchema.parse(response);

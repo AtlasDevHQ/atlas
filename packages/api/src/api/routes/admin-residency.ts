@@ -21,7 +21,7 @@ import {
   cancelMigration,
 } from "@atlas/api/lib/residency/migrate";
 import { MIGRATION_STATUSES } from "@useatlas/types";
-import type { RegionMigration } from "@useatlas/types";
+import { RegionMigrationSchema, MigrationStatusResponseSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -152,24 +152,11 @@ const assignRegionRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// Migration schemas
+// Migration schemas — `RegionMigrationSchema` + `MigrationStatusResponseSchema`
+// live in `@useatlas/schemas` so the route OpenAPI contract and the web
+// parse stay in lockstep. `RequestMigrationBodySchema` is request-only and
+// stays local.
 // ---------------------------------------------------------------------------
-
-const MigrationSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  sourceRegion: z.string(),
-  targetRegion: z.string(),
-  status: z.enum(MIGRATION_STATUSES),
-  requestedBy: z.string().nullable(),
-  requestedAt: z.string(),
-  completedAt: z.string().nullable(),
-  errorMessage: z.string().nullable(),
-}) as z.ZodType<RegionMigration>;
-
-const MigrationStatusResponseSchema = z.object({
-  migration: MigrationSchema.nullable(),
-});
 
 const RequestMigrationBodySchema = z.object({
   targetRegion: z.string().min(1),
@@ -228,7 +215,7 @@ const requestMigrationRoute = createRoute({
   responses: {
     201: {
       description: "Migration request created",
-      content: { "application/json": { schema: MigrationSchema } },
+      content: { "application/json": { schema: RegionMigrationSchema } },
     },
     400: {
       description: "Invalid target region, same as current, or no region assigned",
@@ -271,7 +258,7 @@ const retryMigrationRoute = createRoute({
   responses: {
     200: {
       description: "Migration retried",
-      content: { "application/json": { schema: MigrationSchema } },
+      content: { "application/json": { schema: RegionMigrationSchema } },
     },
     400: {
       description: "Migration cannot be retried",

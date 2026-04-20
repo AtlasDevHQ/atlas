@@ -16,7 +16,8 @@
     "./billing": "./src/billing.ts",
     "./custom-domain": "./src/custom-domain.ts",
     "./integrations": "./src/integrations.ts",
-    "./platform": "./src/platform.ts"
+    "./platform": "./src/platform.ts",
+    "./residency": "./src/residency.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

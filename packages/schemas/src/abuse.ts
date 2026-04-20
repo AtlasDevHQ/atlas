@@ -31,16 +31,22 @@ import { z } from "zod";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
+  ABUSE_EVENTS_STATUSES,
+  asPercentage,
+  asRatio,
   type AbuseEvent,
   type AbuseStatus,
   type AbuseThresholdConfig,
   type AbuseDetail,
   type AbuseInstance,
   type AbuseCounters,
+  type Percentage,
+  type Ratio,
 } from "@useatlas/types";
 
 const LevelEnum = z.enum(ABUSE_LEVELS);
 const TriggerEnum = z.enum(ABUSE_TRIGGERS);
+const EventsStatusEnum = z.enum(ABUSE_EVENTS_STATUSES);
 
 export const AbuseEventSchema = z.object({
   id: z.string(),
@@ -61,30 +67,63 @@ export const AbuseStatusSchema = z.object({
   message: z.string().nullable(),
   updatedAt: z.string(),
   events: z.array(AbuseEventSchema),
+  // `eventsStatus` is optional on the wire so existing list consumers
+  // (pre-#1682) keep parsing; new consumers treat absent as "ok" — see the
+  // type comment on `AbuseStatus.eventsStatus`.
+  eventsStatus: EventsStatusEnum.optional(),
 }) satisfies z.ZodType<AbuseStatus>;
 
+// `errorRateThreshold` is branded `Ratio` (#1685). `z.number().min(0).max(1)`
+// enforces the 0–1 scale at the wire boundary — a drifted payload that
+// sneaks a percentage value into the ratio slot fails parse rather than
+// silently branding as a `Ratio` of 50 that would then compare wrong
+// against every `Percentage` the engine produces. `.transform` brands the
+// in-range value so call sites cannot substitute a raw `number`.
 export const AbuseThresholdConfigSchema = z.object({
   queryRateLimit: z.number(),
   queryRateWindowSeconds: z.number(),
-  errorRateThreshold: z.number(),
+  errorRateThreshold: z.number().min(0).max(1).transform((n): Ratio => asRatio(n)),
   uniqueTablesLimit: z.number(),
   throttleDelayMs: z.number(),
-}) satisfies z.ZodType<AbuseThresholdConfig>;
+}) satisfies z.ZodType<AbuseThresholdConfig, unknown>;
 
+// `errorRatePct` is branded `Percentage` (#1685). Same wire-boundary range
+// + cast pattern as `errorRateThreshold` above; `.nullable()` keeps the
+// "baseline pending" null-pass-through for queryCount < 10.
 export const AbuseCountersSchema = z.object({
   queryCount: z.number(),
   errorCount: z.number(),
-  errorRatePct: z.number().nullable(),
+  errorRatePct: z
+    .number()
+    .min(0)
+    .max(100)
+    .transform((n): Percentage => asPercentage(n))
+    .nullable(),
   uniqueTablesAccessed: z.number(),
   escalations: z.number(),
-}) satisfies z.ZodType<AbuseCounters>;
+}) satisfies z.ZodType<AbuseCounters, unknown>;
 
-export const AbuseInstanceSchema = z.object({
-  startedAt: z.string(),
-  endedAt: z.string().nullable(),
-  peakLevel: LevelEnum,
-  events: z.array(AbuseEventSchema),
-}) satisfies z.ZodType<AbuseInstance>;
+// `AbuseInstance` is nominally branded at the TS layer (#1684) so only the
+// factory + this parser may mint values. `.transform((v) => v as ...)` is
+// the wire-boundary cast: the Zod object literal's Output is a plain
+// object, the `.transform` Output is the branded interface. `satisfies`
+// keeps the structural drift guard — a field rename in `@useatlas/types`
+// still breaks this file at compile time. Input is widened to `unknown`
+// because `.transform` produces a schema whose Input (what `.parse()`
+// accepts) differs from its Output (what `.parse()` returns); the
+// single-generic `z.ZodType<AbuseInstance>` collapses them into the same
+// type and rejects the transform.
+export const AbuseInstanceSchema = z
+  .object({
+    startedAt: z.string(),
+    endedAt: z.string().nullable(),
+    peakLevel: LevelEnum,
+    events: z.array(AbuseEventSchema),
+  })
+  .transform((v): AbuseInstance => v as unknown as AbuseInstance) satisfies z.ZodType<
+    AbuseInstance,
+    unknown
+  >;
 
 // Structurally mirrors `AbuseDetail extends Omit<AbuseStatus, "events">` —
 // using `.omit().extend()` keeps the identity fields coupled to
@@ -97,4 +136,5 @@ export const AbuseDetailSchema = AbuseStatusSchema.omit({ events: true }).extend
   thresholds: AbuseThresholdConfigSchema,
   currentInstance: AbuseInstanceSchema,
   priorInstances: z.array(AbuseInstanceSchema),
+  eventsStatus: EventsStatusEnum,
 }) satisfies z.ZodType<AbuseDetail>;

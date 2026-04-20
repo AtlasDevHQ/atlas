@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import { Effect } from "effect";
+import { asPercentage } from "@useatlas/types";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ──────────────────────────────────────────────────────────
@@ -51,7 +52,7 @@ describe("getThresholds", () => {
 
     const thresholds = await run(getThresholds());
     expect(thresholds.latencyP99Ms).toBe(5000);
-    expect(thresholds.errorRatePct).toBe(5);
+    expect(thresholds.errorRatePct).toBe<number>(5);
   });
 
   it("returns workspace-specific thresholds when available", async () => {
@@ -61,7 +62,7 @@ describe("getThresholds", () => {
 
     const thresholds = await run(getThresholds("ws-1"));
     expect(thresholds.latencyP99Ms).toBe(3000);
-    expect(thresholds.errorRatePct).toBe(2);
+    expect(thresholds.errorRatePct).toBe<number>(2);
   });
 
   it("falls back to defaults when workspace thresholds not found", async () => {
@@ -79,7 +80,7 @@ describe("getThresholds", () => {
     const thresholds = await run(getThresholds("ws-1"));
     // Default from env: ATLAS_SLA_LATENCY_P99_MS=5000, ATLAS_SLA_ERROR_RATE_PCT=5
     expect(thresholds.latencyP99Ms).toBe(5000);
-    expect(thresholds.errorRatePct).toBe(5);
+    expect(thresholds.errorRatePct).toBe<number>(5);
   });
 });
 
@@ -93,7 +94,7 @@ describe("updateThresholds", () => {
     // ensureTable mocked; UPSERT
     ee.queueMockRows([]);
 
-    await run(updateThresholds({ latencyP99Ms: 3000, errorRatePct: 2 }));
+    await run(updateThresholds({ latencyP99Ms: 3000, errorRatePct: asPercentage(2) }));
     const upsert = ee.capturedQueries.find((q) => q.sql.includes("sla_thresholds"));
     expect(upsert).toBeDefined();
   });

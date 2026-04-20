@@ -20,6 +20,7 @@ export * from "./platform";
 export * from "./branding";
 export * from "./onboarding-email";
 export * from "./abuse";
+export * from "./percentage";
 export * from "./sla";
 export * from "./backups";
 export * from "./residency";

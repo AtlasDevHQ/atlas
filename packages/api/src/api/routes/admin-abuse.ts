@@ -205,7 +205,7 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
     // batch fetch to avoid N+1; missing/deleted orgs fall back to null.
     const enriched = yield* Effect.promise(async () => {
       const orgIds = workspaces.map((ws) => ws.workspaceId);
-      const [events, names] = await Promise.all([
+      const [eventResults, names] = await Promise.all([
         Promise.all(workspaces.map((ws) => getAbuseEvents(ws.workspaceId, 10))),
         getWorkspaceNamesByIds(orgIds).catch((err) => {
           // Name resolution is advisory — if the DB hiccups, fall back to
@@ -224,11 +224,24 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
           return new Map<string, string | null>();
         }),
       ]);
-      return workspaces.map((ws, i) => ({
-        ...ws,
-        workspaceName: names.get(ws.workspaceId) ?? null,
-        events: events[i],
-      }));
+      return workspaces.map((ws, i) => {
+        // Promise.all preserves order, so `eventResults[i]` always exists —
+        // but optional chaining + nullish fallback is the CLAUDE.md-preferred
+        // shape ("minimize non-null assertions") and it also gracefully
+        // degrades if a future refactor changes the upstream shape.
+        const result = eventResults[i] ?? { events: [], status: "load_failed" as const };
+        return {
+          ...ws,
+          workspaceName: names.get(ws.workspaceId) ?? null,
+          // Surface the per-workspace load status on the list row too — a
+          // future list consumer that filters / sorts by "has history"
+          // now has an explicit signal instead of inferring from an
+          // empty `events` array, which would reintroduce the #1682 bug
+          // class at the list boundary.
+          events: result.events,
+          eventsStatus: result.status,
+        };
+      });
     });
 
     return c.json({ workspaces: enriched, total: enriched.length }, 200);

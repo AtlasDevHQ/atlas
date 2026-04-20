@@ -17,9 +17,11 @@ import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
+  asRatio,
   type AbuseLevel,
   type AbuseTrigger,
   type AbuseEvent,
+  type AbuseEventsStatus,
   type AbuseStatus,
   type AbuseThresholdConfig,
   type AbuseDetail,
@@ -100,7 +102,10 @@ export function getAbuseConfig(): AbuseThresholdConfig {
   return {
     queryRateLimit: envInt("ATLAS_ABUSE_QUERY_RATE", 200),
     queryRateWindowSeconds: envInt("ATLAS_ABUSE_WINDOW_SECONDS", 300),
-    errorRateThreshold: envFloat("ATLAS_ABUSE_ERROR_RATE", 0.5),
+    // Env-var value is already a 0–1 fraction (e.g. ATLAS_ABUSE_ERROR_RATE=0.5);
+    // `asRatio` brands it so the cross-scale guard in `checkThresholds` +
+    // detail-panel comparisons type-checks (#1685).
+    errorRateThreshold: asRatio(envFloat("ATLAS_ABUSE_ERROR_RATE", 0.5)),
     uniqueTablesLimit: envInt("ATLAS_ABUSE_UNIQUE_TABLES", 50),
     throttleDelayMs: envInt("ATLAS_ABUSE_THROTTLE_DELAY_MS", 2000),
   };
@@ -365,7 +370,7 @@ export async function getAbuseDetail(
   const errorRate =
     queryCount >= 10 ? errorRatePct(w.errorCount, queryCount) : null;
 
-  const events = await getAbuseEvents(workspaceId, eventLimit);
+  const { events, status: eventsStatus } = await getAbuseEvents(workspaceId, eventLimit);
   const { currentInstance, priorInstances } = splitIntoInstances(events, priorLimit);
 
   return {
@@ -385,6 +390,7 @@ export async function getAbuseDetail(
     thresholds: config,
     currentInstance,
     priorInstances,
+    eventsStatus,
   };
 }
 
@@ -446,19 +452,43 @@ function persistAbuseEvent(event: AbuseEvent): void {
       ],
     );
   } catch (err) {
+    // Include workspaceId + eventId so on-call can correlate the lost
+    // write with the workspace it was for, rather than blind-grepping the
+    // audit trail.
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      {
+        err: err instanceof Error ? err.message : String(err),
+        workspaceId: event.workspaceId,
+        eventId: event.id,
+      },
       "Failed to persist abuse event",
     );
   }
 }
 
-/** Load recent abuse events from DB for a workspace. */
+/**
+ * Load recent abuse events from DB for a workspace.
+ *
+ * Returns `{ events, status }` so callers can distinguish "really empty" from
+ * "DB unreachable" (#1682). Before the diagnostic channel, a DB failure
+ * silently produced `events: []` that `getAbuseDetail` passed through — an
+ * admin investigating a re-flagged workspace during a DB outage saw a clean
+ * slate and could reinstate a repeat offender based on the false empty
+ * history. Status values:
+ *
+ *   - `ok`             — query succeeded (empty is truly empty).
+ *   - `db_unavailable` — `hasInternalDB()` is false (self-hosted, no
+ *                        DATABASE_URL). Short-circuit, no query attempted.
+ *   - `load_failed`    — query threw. In-memory state is still valid; the
+ *                        audit trail is momentarily unreachable. UI must
+ *                        show a destructive banner so the operator does not
+ *                        conclude "never flagged."
+ */
 export async function getAbuseEvents(
   workspaceId: string,
   limit = 50,
-): Promise<AbuseEvent[]> {
-  if (!hasInternalDB()) return [];
+): Promise<{ events: AbuseEvent[]; status: AbuseEventsStatus }> {
+  if (!hasInternalDB()) return { events: [], status: "db_unavailable" };
 
   try {
     const rows = await internalQuery<{
@@ -479,7 +509,45 @@ export async function getAbuseEvents(
       [workspaceId, limit],
     );
 
-    return rows.map((r) => {
+    const events = rows.map((r) => {
+      // Per-row try/catch: a single truncated-JSON / old-schema row must not
+      // take out the remaining 49 valid rows by bubbling into the outer catch
+      // where the indistinguishable "DB outage" path returns []. Mirrors the
+      // coerceAbuseEnums pattern used above for level + trigger drift.
+      let metadata: Record<string, unknown> = {};
+      if (typeof r.metadata === "string") {
+        try {
+          const parsed = JSON.parse(r.metadata) as unknown;
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            metadata = parsed as Record<string, unknown>;
+          } else {
+            // Parsed cleanly but the value is a scalar or array — still a
+            // corrupt row from our schema's perspective. Warn + default to
+            // {} rather than pass an unusable shape to the UI.
+            log.warn(
+              { rowId: r.id, parsedType: Array.isArray(parsed) ? "array" : typeof parsed },
+              "unexpected abuse_events.metadata shape — using empty object",
+            );
+          }
+        } catch (err) {
+          log.warn(
+            {
+              rowId: r.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "corrupt abuse_events.metadata — using empty object",
+          );
+        }
+      } else if (r.metadata !== null && typeof r.metadata === "object" && !Array.isArray(r.metadata)) {
+        // Driver pre-parsed jsonb into a value. Only accept object shapes;
+        // arrays and scalars fall through to the empty default.
+        metadata = r.metadata as Record<string, unknown>;
+      } else if (r.metadata !== null && r.metadata !== undefined) {
+        log.warn(
+          { rowId: r.id, valueType: Array.isArray(r.metadata) ? "array" : typeof r.metadata },
+          "unexpected abuse_events.metadata driver shape — using empty object",
+        );
+      }
       const { level, trigger } = coerceAbuseEnums(r.id, r.level, r.trigger_type);
       return {
         id: r.id,
@@ -487,17 +555,23 @@ export async function getAbuseEvents(
         level,
         trigger,
         message: r.message,
-        metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) as Record<string, unknown> : (r.metadata as Record<string, unknown>),
+        metadata,
         createdAt: r.created_at,
         actor: r.actor,
       };
     });
+
+    return { events, status: "ok" };
   } catch (err) {
+    // The .catch → [] fallback stays — in-memory counters + level in the
+    // detail payload are still worth rendering — but it is no longer silent:
+    // the `load_failed` status propagates to the UI's destructive banner so
+    // the operator treats the empty history as degraded, not benign.
     log.warn(
       { err: err instanceof Error ? err.message : String(err), workspaceId },
       "Failed to load abuse events",
     );
-    return [];
+    return { events: [], status: "load_failed" };
   }
 }
 

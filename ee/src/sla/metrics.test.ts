@@ -103,8 +103,8 @@ describe("getAllWorkspaceSLA", () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0].workspaceId).toBe("ws-1");
     expect(summaries[0].totalQueries).toBe(100);
-    expect(summaries[0].errorRatePct).toBe(5);
-    expect(summaries[0].uptimePct).toBe(95);
+    expect(summaries[0].errorRatePct).toBe<number>(5);
+    expect(summaries[0].uptimePct).toBe<number>(95);
   });
 
   it("returns empty array when no metrics", async () => {

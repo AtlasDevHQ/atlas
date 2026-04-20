@@ -87,7 +87,7 @@ describe("Abuse Prevention Engine", () => {
       const config = getAbuseConfig();
       expect(config.queryRateLimit).toBe(200);
       expect(config.queryRateWindowSeconds).toBe(300);
-      expect(config.errorRateThreshold).toBe(0.5);
+      expect(config.errorRateThreshold).toBe<number>(0.5);
       expect(config.uniqueTablesLimit).toBe(50);
       expect(config.throttleDelayMs).toBe(2000);
     });
@@ -270,11 +270,12 @@ describe("Abuse Prevention Engine", () => {
         },
       ]);
 
-      const events = await getAbuseEvents("ws-drift", 10);
+      const { events, status } = await getAbuseEvents("ws-drift", 10);
 
+      expect(status).toBe("ok");
       expect(events.length).toBe(1);
-      expect(events[0].level).toBe("none");
-      expect(events[0].trigger).toBe("query_rate");
+      expect(events[0]!.level).toBe("none");
+      expect(events[0]!.trigger).toBe("query_rate");
 
       const drift = warnCalls.find((c) =>
         c.msg.includes("abuse event with drifted enum"),
@@ -299,11 +300,12 @@ describe("Abuse Prevention Engine", () => {
         },
       ]);
 
-      const events = await getAbuseEvents("ws-drift", 10);
+      const { events, status } = await getAbuseEvents("ws-drift", 10);
 
+      expect(status).toBe("ok");
       expect(events.length).toBe(1);
-      expect(events[0].level).toBe("warning");
-      expect(events[0].trigger).toBe("manual");
+      expect(events[0]!.level).toBe("warning");
+      expect(events[0]!.trigger).toBe("manual");
 
       const drift = warnCalls.find((c) =>
         c.msg.includes("abuse event with drifted enum"),
@@ -328,18 +330,18 @@ describe("Abuse Prevention Engine", () => {
         },
       ]);
 
-      const events = await getAbuseEvents("ws-drift", 10);
+      const { events } = await getAbuseEvents("ws-drift", 10);
 
-      expect(events[0].level).toBe("none");
-      expect(events[0].trigger).toBe("manual");
+      expect(events[0]!.level).toBe("none");
+      expect(events[0]!.trigger).toBe("manual");
 
       const drifts = warnCalls.filter((c) =>
         c.msg.includes("abuse event with drifted enum"),
       );
       expect(drifts.length).toBe(1);
-      expect(drifts[0].ctx.rowId).toBe("both-bad-1");
-      expect(drifts[0].ctx.rawLevel).toBe("Mystery");
-      expect(drifts[0].ctx.rawTrigger).toBe("bogus");
+      expect(drifts[0]!.ctx.rowId).toBe("both-bad-1");
+      expect(drifts[0]!.ctx.rawLevel).toBe("Mystery");
+      expect(drifts[0]!.ctx.rawTrigger).toBe("bogus");
     });
 
     it("coerces null / non-string enum values without throwing", async () => {
@@ -357,10 +359,10 @@ describe("Abuse Prevention Engine", () => {
         },
       ]);
 
-      const events = await getAbuseEvents("ws-drift", 10);
+      const { events } = await getAbuseEvents("ws-drift", 10);
 
-      expect(events[0].level).toBe("none");
-      expect(events[0].trigger).toBe("manual");
+      expect(events[0]!.level).toBe("none");
+      expect(events[0]!.trigger).toBe("manual");
       expect(
         warnCalls.find((c) => c.msg.includes("abuse event with drifted enum")),
       ).toBeDefined();
@@ -381,13 +383,167 @@ describe("Abuse Prevention Engine", () => {
         },
       ]);
 
-      const events = await getAbuseEvents("ws-clean", 10);
+      const { events } = await getAbuseEvents("ws-clean", 10);
 
-      expect(events[0].level).toBe("throttled");
-      expect(events[0].trigger).toBe("error_rate");
+      expect(events[0]!.level).toBe("throttled");
+      expect(events[0]!.trigger).toBe("error_rate");
       expect(
         warnCalls.find((c) => c.msg.includes("abuse event with drifted enum")),
       ).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // getAbuseEvents() poisoned-metadata row isolation (#1683)
+  //
+  // A single corrupt `abuse_events.metadata` value (truncated JSON, old
+  // schema) used to throw inside the row-map and get caught by the outer
+  // try/catch — wiping every valid row in the response as if the DB itself
+  // had failed. Per-row isolation narrows the blast radius: the bad row is
+  // coerced to an empty metadata object with a warn, the rest pass through.
+  // ---------------------------------------------------------------------
+
+  describe("getAbuseEvents() poisoned metadata", () => {
+    it("returns valid rows and skips the poisoned one", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "clean-a",
+          workspace_id: "ws-mixed",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "ok",
+          metadata: '{"queryCount": 10}',
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+        {
+          id: "poisoned-1",
+          workspace_id: "ws-mixed",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "bad metadata",
+          metadata: '{"unterminated',
+          actor: "system",
+          created_at: "2026-04-19T10:05:00Z",
+        },
+        {
+          id: "clean-b",
+          workspace_id: "ws-mixed",
+          level: "throttled",
+          trigger_type: "query_rate",
+          message: "ok",
+          metadata: '{"queryCount": 250}',
+          actor: "system",
+          created_at: "2026-04-19T10:10:00Z",
+        },
+      ]);
+
+      const { events, status } = await getAbuseEvents("ws-mixed", 50);
+
+      // All three rows survive — the poisoned one just gets an empty
+      // metadata. Status stays "ok" because the query succeeded.
+      expect(status).toBe("ok");
+      expect(events).toHaveLength(3);
+      expect(events.map((e) => e.id)).toEqual([
+        "clean-a",
+        "poisoned-1",
+        "clean-b",
+      ]);
+      expect(events[0]!.metadata).toEqual({ queryCount: 10 });
+      expect(events[1]!.metadata).toEqual({});
+      expect(events[2]!.metadata).toEqual({ queryCount: 250 });
+
+      // One warn emitted, naming the bad row so the operator can chase it.
+      const corrupt = warnCalls.filter((c) =>
+        c.msg.includes("corrupt abuse_events.metadata"),
+      );
+      expect(corrupt).toHaveLength(1);
+      expect(corrupt[0]!.ctx.rowId).toBe("poisoned-1");
+    });
+
+    it("does not log a corrupt warn for rows whose metadata parses cleanly", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "clean-1",
+          workspace_id: "ws-clean",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "ok",
+          metadata: '{"queryCount": 5}',
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      await getAbuseEvents("ws-clean", 10);
+
+      expect(
+        warnCalls.find((c) => c.msg.includes("corrupt abuse_events.metadata")),
+      ).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // getAbuseEvents() diagnostic channel (#1682)
+  //
+  // Before the channel, a DB outage silently degraded events to [] — the
+  // detail panel then looked "this workspace has never been flagged" during
+  // a transient DB outage. These tests pin the three-state status so a
+  // future edit cannot collapse the states and bring the false-empty-
+  // history regression back.
+  // ---------------------------------------------------------------------
+
+  describe("getAbuseEvents() diagnostic status", () => {
+    it("returns status 'db_unavailable' when internal DB is not configured", async () => {
+      setInternalDB(false); // self-hosted without DATABASE_URL
+      let queryInvoked = false;
+      setInternalQuery(async () => {
+        queryInvoked = true;
+        return [];
+      });
+
+      const result = await getAbuseEvents("ws-any", 10);
+      expect(result.events).toEqual([]);
+      expect(result.status).toBe("db_unavailable");
+      expect(queryInvoked).toBe(false); // Short-circuits.
+    });
+
+    it("returns status 'load_failed' and warns when the DB query throws", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => {
+        throw new Error("simulated DB outage");
+      });
+
+      const { events, status } = await getAbuseEvents("ws-outage", 10);
+      expect(events).toEqual([]);
+      expect(status).toBe("load_failed");
+
+      // Loud by design — a silent [] used to be the bug.
+      expect(
+        warnCalls.find((c) => c.msg.includes("Failed to load abuse events")),
+      ).toBeDefined();
+    });
+
+    it("returns status 'ok' with a populated payload on a healthy read", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "evt-ok",
+          workspace_id: "ws-ok",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "fine",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      const { events, status } = await getAbuseEvents("ws-ok", 10);
+      expect(status).toBe("ok");
+      expect(events).toHaveLength(1);
     });
   });
 
@@ -549,7 +705,7 @@ describe("Abuse Prevention Engine", () => {
       // Counters mirror the real in-memory window — 201 queries, 0 errors, 5 tables.
       expect(detail.counters.queryCount).toBe(config.queryRateLimit + 1);
       expect(detail.counters.errorCount).toBe(0);
-      expect(detail.counters.errorRatePct).toBe(0); // baseline met, all succeeded
+      expect(detail.counters.errorRatePct).toBe<number>(0); // baseline met, all succeeded (branded Percentage, #1685)
       expect(detail.counters.uniqueTablesAccessed).toBe(5);
       // escalate() bumps `escalations` on every call while over threshold —
       // first breach transitions to warning, subsequent bumps keep going.
@@ -681,8 +837,12 @@ describe("Abuse Prevention Engine", () => {
       ]);
     });
 
-    it("degrades to empty events — not an exception — when the DB load fails", async () => {
-      // Flag the workspace so level != "none" and the detail path is taken.
+    it("surfaces eventsStatus='load_failed' on DB failure so the UI can warn (#1682)", async () => {
+      // Previously this test pinned a silent `events: []` fallback that
+      // was indistinguishable from "never flagged" in the UI. The
+      // diagnostic channel lets the admin detail panel render a
+      // destructive banner instead of false-empty history, so the
+      // invariant to pin is now the status tag.
       const config = getAbuseConfig();
       for (let i = 0; i <= config.queryRateLimit; i++) {
         recordQueryEvent("ws-dbfail", { success: true });
@@ -698,17 +858,61 @@ describe("Abuse Prevention Engine", () => {
       if (!detail) return;
 
       // The admin panel stays useful: in-memory counters render even when
-      // the audit trail is momentarily unreachable. Events fall back to [].
+      // the audit trail is momentarily unreachable.
+      expect(detail.counters.queryCount).toBe(config.queryRateLimit + 1);
+      // But the events payload is explicitly tagged as degraded — the UI
+      // treats this differently from an empty history.
+      expect(detail.eventsStatus).toBe("load_failed");
       expect(detail.currentInstance.events).toEqual([]);
       expect(detail.priorInstances).toEqual([]);
-      expect(detail.counters.queryCount).toBe(config.queryRateLimit + 1);
 
-      // A warn line was emitted — we don't swallow silently.
+      // Loud log line corroborates the status so ops can correlate.
       expect(
         warnCalls.find((c) =>
           c.msg.includes("Failed to load abuse events"),
         ),
       ).toBeDefined();
+    });
+
+    it("tags eventsStatus='ok' on a successful read (pins the happy-path signal)", async () => {
+      // Same workspace-flagged setup as the load_failed test, but the DB
+      // returns clean. The status must NOT collapse to the degraded value
+      // when there simply are no events yet.
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-clean", { success: true });
+      }
+
+      setInternalDB(true);
+      setInternalQuery(async () => []);
+
+      const detail = await getAbuseDetail("ws-clean");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+
+      expect(detail.eventsStatus).toBe("ok");
+      // Empty history on status=ok is the benign "really never flagged" case.
+      expect(detail.currentInstance.events).toEqual([]);
+      expect(detail.priorInstances).toEqual([]);
+    });
+
+    it("tags eventsStatus='db_unavailable' on a self-hosted deploy without DATABASE_URL", async () => {
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-selfhost", { success: true });
+      }
+
+      // hasInternalDB() false — the common no-DATABASE_URL case. The
+      // status tells the UI this is expected, not a DB outage.
+      setInternalDB(false);
+
+      const detail = await getAbuseDetail("ws-selfhost");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+
+      expect(detail.eventsStatus).toBe("db_unavailable");
+      expect(detail.currentInstance.events).toEqual([]);
+      expect(detail.priorInstances).toEqual([]);
     });
   });
 

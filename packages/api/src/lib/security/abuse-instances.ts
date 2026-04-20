@@ -8,10 +8,11 @@
  *      Encodes the invariants (peakLevel is the max of event levels, endedAt
  *      non-null iff the last event is a manual "none" reinstatement, empty
  *      events → sentinel shape) so production callers go through one place
- *      rather than hand-rolling a mismatched object. Note: `AbuseInstance`
- *      is a structurally-typed interface, so the factory is an *advisory*
- *      boundary — tests and wire-format parsers can still produce the shape
- *      directly.
+ *      rather than hand-rolling a mismatched object. `AbuseInstance` is now
+ *      nominally branded (#1684), so the factory is the only in-tree call
+ *      site that can mint the type — the localized `as AbuseInstance` cast
+ *      below is what grants it that authority. Tests that want an
+ *      `AbuseInstance` for a fixture must also go through the factory.
  *   2. `splitIntoInstances` — groups a workspace's event stream into the
  *      current (open) instance plus prior closed instances.
  *   3. `errorRatePct` — the counter arithmetic the detail panel needs for
@@ -19,7 +20,7 @@
  *      preserve threshold-comparison precision at the 0.01% level.
  */
 
-import type { AbuseEvent, AbuseInstance, AbuseLevel } from "@useatlas/types";
+import { asPercentage, type AbuseEvent, type AbuseInstance, type AbuseLevel, type Percentage } from "@useatlas/types";
 
 const LEVEL_RANK: Record<AbuseLevel, number> = {
   none: 0,
@@ -52,9 +53,15 @@ function isReinstatement(e: AbuseEvent): boolean {
  * will then be the newest rather than oldest timestamp — the factory does
  * not sort for the caller.
  */
-export function createAbuseInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
+export function createAbuseInstance(eventsChrono: readonly AbuseEvent[]): AbuseInstance {
   if (eventsChrono.length === 0) {
-    return { startedAt: "", endedAt: null, peakLevel: "none", events: [] };
+    // Localized `as AbuseInstance` cast: the brand is a phantom `never`
+    // symbol key that no plain object literal can provide. The factory's
+    // contract (invariants above) is what gives this cast its authority;
+    // the convention is that no other module adds an `as unknown as
+    // AbuseInstance` cast, enforced by code review + the `@ts-expect-error`
+    // regression test in abuse-instances.test.ts.
+    return { startedAt: "", endedAt: null, peakLevel: "none", events: [] } as unknown as AbuseInstance;
   }
   const last = eventsChrono[eventsChrono.length - 1]!;
   const endedAt = isReinstatement(last) ? last.createdAt : null;
@@ -67,7 +74,7 @@ export function createAbuseInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
     endedAt,
     peakLevel: peak,
     events: eventsChrono,
-  };
+  } as unknown as AbuseInstance;
 }
 
 /**
@@ -95,7 +102,7 @@ export function createAbuseInstance(eventsChrono: AbuseEvent[]): AbuseInstance {
  * caller bug, but surfacing e.g. 150% would mislead the admin more than
  * displaying 100% does.
  */
-export function errorRatePct(errorCount: number, totalCount: number): number {
+export function errorRatePct(errorCount: number, totalCount: number): Percentage {
   if (!Number.isFinite(errorCount) || !Number.isFinite(totalCount)) {
     throw new Error(
       `errorRatePct: non-finite input (errorCount=${errorCount}, totalCount=${totalCount})`,
@@ -106,9 +113,9 @@ export function errorRatePct(errorCount: number, totalCount: number): number {
       `errorRatePct: negative input (errorCount=${errorCount}, totalCount=${totalCount})`,
     );
   }
-  if (totalCount === 0) return 0;
+  if (totalCount === 0) return asPercentage(0);
   const raw = (errorCount / totalCount) * 100;
-  return Math.min(100, Math.round(raw * 100) / 100);
+  return asPercentage(Math.min(100, Math.round(raw * 100) / 100));
 }
 
 /**
@@ -119,7 +126,7 @@ export function errorRatePct(errorCount: number, totalCount: number): number {
  * @param priorLimit Max number of prior instances to return (newest-first).
  */
 export function splitIntoInstances(
-  events: AbuseEvent[],
+  events: readonly AbuseEvent[],
   priorLimit: number,
 ): { currentInstance: AbuseInstance; priorInstances: AbuseInstance[] } {
   // Flip to chronological so a forward walk can close instances on

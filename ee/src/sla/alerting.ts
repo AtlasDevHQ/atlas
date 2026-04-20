@@ -14,6 +14,7 @@ import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SLAAlert, SLAAlertStatus, SLAAlertType, SLAThresholds } from "@useatlas/types";
+import { asPercentage } from "@useatlas/types";
 
 const log = createLogger("ee:sla-alerting");
 
@@ -43,7 +44,9 @@ export const getThresholds = (workspaceId?: string): Effect.Effect<SLAThresholds
       if (rows.length > 0) {
         return {
           latencyP99Ms: rows[0].latency_p99_ms,
-          errorRatePct: rows[0].error_rate_pct,
+          // DB column is stored on the 0–100 scale; `asPercentage` brands
+          // the value without changing it (#1685).
+          errorRatePct: asPercentage(rows[0].error_rate_pct),
         };
       }
     }
@@ -56,19 +59,40 @@ export const getThresholds = (workspaceId?: string): Effect.Effect<SLAThresholds
     if (defaults.length > 0) {
       return {
         latencyP99Ms: defaults[0].latency_p99_ms,
-        errorRatePct: defaults[0].error_rate_pct,
+        errorRatePct: asPercentage(defaults[0].error_rate_pct),
       };
     }
 
     return defaultThresholds();
   });
 
+/**
+ * Env-var fallbacks for SLA thresholds. Each value is range-checked so
+ * that a malformed operator input (negative, out-of-scale, NaN) falls
+ * back to the hardcoded default with a warn — the previous `isNaN`-only
+ * guard silently accepted `ATLAS_SLA_ERROR_RATE_PCT=0.5` (0.5%, wildly
+ * over-sensitive) as if the operator meant 50%.
+ */
 function defaultThresholds(): SLAThresholds {
   const latency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "");
   const errorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "");
+  const latencyOk = Number.isFinite(latency) && latency > 0;
+  const errorRateOk = Number.isFinite(errorRate) && errorRate >= 0 && errorRate <= 100;
+  if (process.env.ATLAS_SLA_LATENCY_P99_MS && !latencyOk) {
+    log.warn(
+      { raw: process.env.ATLAS_SLA_LATENCY_P99_MS },
+      "ATLAS_SLA_LATENCY_P99_MS is not a positive finite number — falling back to 5000",
+    );
+  }
+  if (process.env.ATLAS_SLA_ERROR_RATE_PCT && !errorRateOk) {
+    log.warn(
+      { raw: process.env.ATLAS_SLA_ERROR_RATE_PCT },
+      "ATLAS_SLA_ERROR_RATE_PCT is not in 0..100 — falling back to 5",
+    );
+  }
   return {
-    latencyP99Ms: isNaN(latency) ? 5000 : latency,
-    errorRatePct: isNaN(errorRate) ? 5 : errorRate,
+    latencyP99Ms: latencyOk ? latency : 5000,
+    errorRatePct: asPercentage(errorRateOk ? errorRate : 5),
   };
 }
 

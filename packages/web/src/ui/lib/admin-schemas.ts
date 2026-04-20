@@ -38,6 +38,7 @@ import {
   PlatformWorkspaceUserSchema,
   NoisyNeighborSchema,
 } from "@useatlas/schemas";
+import { asPercentage } from "@useatlas/types";
 export {
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
@@ -239,18 +240,24 @@ export const MigrationStatusResponseSchema = z.object({
 
 // ── SLA ──────────────────────────────────────────────────────────
 
+// `.min(0).max(100)` on `errorRatePct` / `uptimePct` at the wire boundary
+// so a drifted response (scale mixup, NaN, negative) fails parse instead
+// of silently branding as `Percentage` (#1685). `.transform` brands the
+// validated value, then a `satisfies z.ZodType<WorkspaceSLASummary, unknown>`
+// at the end preserves the structural-drift guard (a `workspaceName`
+// rename in `@useatlas/types` still breaks this file at compile time).
 export const WorkspaceSLASummarySchema = z.object({
   workspaceId: z.string(),
   workspaceName: z.string(),
   latencyP50Ms: z.number(),
   latencyP95Ms: z.number(),
   latencyP99Ms: z.number(),
-  errorRatePct: z.number(),
-  uptimePct: z.number(),
+  errorRatePct: z.number().min(0).max(100).transform((n) => asPercentage(n)),
+  uptimePct: z.number().min(0).max(100).transform((n) => asPercentage(n)),
   totalQueries: z.number(),
   failedQueries: z.number(),
   lastQueryAt: z.string().nullable(),
-}) as z.ZodType<WorkspaceSLASummary>;
+}) satisfies z.ZodType<WorkspaceSLASummary, unknown>;
 
 const SLAMetricPointSchema = z.object({
   timestamp: z.string(),
@@ -280,8 +287,8 @@ export const SLAAlertSchema = z.object({
 
 export const SLAThresholdsSchema = z.object({
   latencyP99Ms: z.number(),
-  errorRatePct: z.number(),
-}) as z.ZodType<SLAThresholds>;
+  errorRatePct: z.number().min(0).max(100).transform((n) => asPercentage(n)),
+}) satisfies z.ZodType<SLAThresholds, unknown>;
 
 export const SLAWorkspacesResponseSchema = z.object({
   workspaces: z.array(WorkspaceSLASummarySchema),

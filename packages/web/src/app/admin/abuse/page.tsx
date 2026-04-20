@@ -36,6 +36,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import type { AbuseStatus } from "@/ui/lib/types";
+import { ratioToPercentage } from "@useatlas/types";
 import { AbuseStatusSchema, AbuseThresholdConfigSchema } from "@/ui/lib/admin-schemas";
 import { abuseSearchParams } from "./search-params";
 import { AbuseDetailPanel } from "./detail-panel";
@@ -128,7 +129,7 @@ function AbusePageContent() {
                 <div>
                   <p className="text-xs text-muted-foreground">Error Rate Threshold</p>
                   <p className="text-sm font-medium">
-                    {(config.errorRateThreshold * 100).toFixed(0)}%
+                    {ratioToPercentage(config.errorRateThreshold).toFixed(0)}%
                   </p>
                 </div>
                 <div>

@@ -63,6 +63,7 @@ const validDetail = {
   thresholds: validThresholds,
   currentInstance: validInstance,
   priorInstances: [],
+  eventsStatus: "ok" as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,7 +80,11 @@ describe("happy-path parses", () => {
   });
 
   test("AbuseThresholdConfigSchema parses a valid config", () => {
-    expect(AbuseThresholdConfigSchema.parse(validThresholds)).toEqual(validThresholds);
+    // `.toMatchObject` — `errorRateThreshold` is branded `Ratio` on the
+    // parse output (#1685) but a plain number on the input literal, so
+    // structural `.toEqual` can't unify the two. Field equality is still
+    // pinned below.
+    expect(AbuseThresholdConfigSchema.parse(validThresholds)).toMatchObject(validThresholds);
   });
 
   test("AbuseCountersSchema accepts null errorRatePct (warmup)", () => {
@@ -88,11 +93,15 @@ describe("happy-path parses", () => {
   });
 
   test("AbuseInstanceSchema parses with null endedAt (open instance)", () => {
-    expect(AbuseInstanceSchema.parse(validInstance)).toEqual(validInstance);
+    // `.toMatchObject` — `AbuseInstance` is nominally branded (#1684), so
+    // `.toEqual(plainLiteral)` fails typecheck: the parsed output has a
+    // phantom symbol key that the literal does not. We still assert the
+    // wire fields pass through verbatim.
+    expect(AbuseInstanceSchema.parse(validInstance)).toMatchObject(validInstance);
   });
 
   test("AbuseDetailSchema parses a full detail payload", () => {
-    expect(AbuseDetailSchema.parse(validDetail)).toEqual(validDetail);
+    expect(AbuseDetailSchema.parse(validDetail)).toMatchObject(validDetail);
   });
 });
 
@@ -156,5 +165,27 @@ describe("structural rejection", () => {
     // workspaceId is required on AbuseStatus; omitting it must fail parse.
     const { workspaceId: _workspaceId, ...missing } = validDetail;
     expect(AbuseDetailSchema.safeParse(missing).success).toBe(false);
+  });
+
+  // The diagnostic channel for DB-load failure (#1682) — operators need to
+  // distinguish "never flagged" from "history failed to load," so the
+  // schema tightens `eventsStatus` to the known tuple. A drifted value
+  // fails parse, and omitting the field entirely fails parse (the field is
+  // mandatory for every payload).
+  test("AbuseDetailSchema requires eventsStatus", () => {
+    const { eventsStatus: _eventsStatus, ...missing } = validDetail;
+    expect(AbuseDetailSchema.safeParse(missing).success).toBe(false);
+  });
+
+  test("AbuseDetailSchema rejects an unknown eventsStatus value", () => {
+    const drifted = { ...validDetail, eventsStatus: "partial" };
+    expect(AbuseDetailSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("AbuseDetailSchema accepts load_failed + db_unavailable as valid statuses", () => {
+    for (const status of ["ok", "load_failed", "db_unavailable"] as const) {
+      const parsed = AbuseDetailSchema.parse({ ...validDetail, eventsStatus: status });
+      expect(parsed.eventsStatus).toBe(status);
+    }
   });
 });

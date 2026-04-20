@@ -14,6 +14,9 @@ import {
   type Mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import type { AbuseDetail } from "@useatlas/types";
+import { asPercentage, asRatio } from "@useatlas/types";
+import { createAbuseInstance } from "@atlas/api/lib/security/abuse-instances";
 
 // --- Unified mocks ---
 
@@ -34,7 +37,9 @@ const mocks = createApiTestMocks({
 
 const mockListFlagged: Mock<() => unknown[]> = mock(() => []);
 const mockReinstateWorkspace: Mock<(wsId: string, actorId: string) => boolean> = mock(() => true);
-const mockGetAbuseEvents: Mock<(wsId: string, limit?: number) => Promise<unknown[]>> = mock(async () => []);
+const mockGetAbuseEvents: Mock<
+  (wsId: string, limit?: number) => Promise<{ events: unknown[]; status: string }>
+> = mock(async () => ({ events: [], status: "ok" }));
 const mockGetAbuseConfig: Mock<() => unknown> = mock(() => ({
   queryRateLimit: 200,
   queryRateWindowSeconds: 300,
@@ -42,7 +47,10 @@ const mockGetAbuseConfig: Mock<() => unknown> = mock(() => ({
   uniqueTablesLimit: 50,
   throttleDelayMs: 2000,
 }));
-const mockGetAbuseDetail: Mock<(wsId: string) => Promise<unknown | null>> = mock(async () => null);
+// Typed `AbuseDetail | null` so hand-rolling the nested `AbuseInstance`
+// shape inline fails typecheck (#1684). Fixtures that want a current or
+// prior instance must go through `createAbuseInstance`.
+const mockGetAbuseDetail: Mock<(wsId: string) => Promise<AbuseDetail | null>> = mock(async () => null);
 
 mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mockListFlagged,
@@ -89,7 +97,7 @@ describe("Admin Abuse API", () => {
     );
     mockListFlagged.mockImplementation(() => []);
     mockReinstateWorkspace.mockImplementation(() => true);
-    mockGetAbuseEvents.mockImplementation(async () => []);
+    mockGetAbuseEvents.mockImplementation(async () => ({ events: [], status: "ok" }));
     mockGetWorkspaceNamesByIds.mockClear();
     mockGetWorkspaceNamesByIds.mockImplementation(async (ids) => {
       const m = new Map<string, string | null>();
@@ -254,24 +262,20 @@ describe("Admin Abuse API", () => {
         counters: {
           queryCount: 250,
           errorCount: 0,
-          errorRatePct: 0,
+          errorRatePct: asPercentage(0),
           uniqueTablesAccessed: 3,
           escalations: 1,
         },
         thresholds: {
           queryRateLimit: 200,
           queryRateWindowSeconds: 300,
-          errorRateThreshold: 0.5,
+          errorRateThreshold: asRatio(0.5),
           uniqueTablesLimit: 50,
           throttleDelayMs: 2000,
         },
-        currentInstance: {
-          startedAt: "2026-03-23T00:00:00.000Z",
-          endedAt: null,
-          peakLevel: "warning",
-          events: [],
-        },
+        currentInstance: createAbuseInstance([]),
         priorInstances: [],
+        eventsStatus: "ok",
       }));
       const res = await app.fetch(
         adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
@@ -280,6 +284,7 @@ describe("Admin Abuse API", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.workspaceId).toBe("org-1");
       expect((body.counters as Record<string, unknown>).queryCount).toBe(250);
+      expect(body.eventsStatus).toBe("ok");
     });
 
     it("detail route falls back to null workspaceName when resolution rejects (#1640)", async () => {
@@ -291,9 +296,10 @@ describe("Admin Abuse API", () => {
         message: "boom",
         updatedAt: "2026-03-23T00:00:00.000Z",
         counters: { queryCount: 1, errorCount: 0, errorRatePct: null, uniqueTablesAccessed: 0, escalations: 0 },
-        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: 0.5, uniqueTablesLimit: 50, throttleDelayMs: 2000 },
-        currentInstance: { startedAt: "2026-03-23T00:00:00.000Z", endedAt: null, peakLevel: "warning", events: [] },
+        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: asRatio(0.5), uniqueTablesLimit: 50, throttleDelayMs: 2000 },
+        currentInstance: createAbuseInstance([]),
         priorInstances: [],
+        eventsStatus: "ok",
       }));
       mockGetWorkspaceNamesByIds.mockImplementation(async () => {
         throw new Error("internal DB unreachable");
@@ -326,12 +332,13 @@ describe("Admin Abuse API", () => {
         thresholds: {
           queryRateLimit: 200,
           queryRateWindowSeconds: 300,
-          errorRateThreshold: 0.5,
+          errorRateThreshold: asRatio(0.5),
           uniqueTablesLimit: 50,
           throttleDelayMs: 2000,
         },
-        currentInstance: { startedAt: "2026-03-23T00:00:00.000Z", endedAt: null, peakLevel: "warning", events: [] },
+        currentInstance: createAbuseInstance([]),
         priorInstances: [],
+        eventsStatus: "ok",
       }));
       mockGetWorkspaceNamesByIds.mockImplementation(async (ids) => {
         const m = new Map<string, string | null>();
@@ -345,6 +352,33 @@ describe("Admin Abuse API", () => {
       const body = await res.json() as { workspaceName: string | null; workspaceId: string };
       expect(body.workspaceName).toBe("Acme Corp");
       expect(body.workspaceId).toBe("org-1");
+    });
+
+    it("propagates eventsStatus='load_failed' through the detail route (#1682)", async () => {
+      // The diagnostic channel must reach the wire so the UI can render a
+      // destructive banner instead of the benign empty-history copy when
+      // the audit trail is unreachable.
+      mockGetAbuseDetail.mockImplementation(async () => ({
+        workspaceId: "org-1",
+        workspaceName: null,
+        level: "warning",
+        trigger: "query_rate",
+        message: "was flagged",
+        updatedAt: "2026-03-23T00:00:00.000Z",
+        counters: { queryCount: 201, errorCount: 0, errorRatePct: asPercentage(0), uniqueTablesAccessed: 0, escalations: 1 },
+        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: asRatio(0.5), uniqueTablesLimit: 50, throttleDelayMs: 2000 },
+        currentInstance: createAbuseInstance([]),
+        priorInstances: [],
+        eventsStatus: "load_failed",
+      }));
+      const res = await app.fetch(
+        adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json() as { eventsStatus: string; counters: Record<string, unknown> };
+      expect(body.eventsStatus).toBe("load_failed");
+      // Counters still render — the banner sits alongside live state, not instead of it.
+      expect(body.counters.queryCount).toBe(201);
     });
 
     it("returns 404 when workspace is not flagged", async () => {

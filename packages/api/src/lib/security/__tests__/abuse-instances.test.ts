@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { AbuseEvent } from "@useatlas/types";
+import type { AbuseEvent, AbuseInstance } from "@useatlas/types";
 import {
   createAbuseInstance,
   errorRatePct,
@@ -195,46 +195,51 @@ describe("splitIntoInstances", () => {
 // engine's own check still escalated on the unrounded fraction.
 // ---------------------------------------------------------------------------
 
+// `errorRatePct` returns a branded `Percentage` (#1685). `.toBe` with a
+// plain number literal fails typecheck because the brand is nominally
+// distinct; the tests below use `toBe<number>(literal)` to assert runtime
+// numeric equality while leaving the compile-time brand intact. The brand
+// itself is pinned separately in `packages/types/src/__tests__/percentage.test.ts`.
 describe("errorRatePct", () => {
   it("returns 0 when totalCount is 0 (no baseline, avoids NaN)", () => {
-    expect(errorRatePct(0, 0)).toBe(0);
+    expect(errorRatePct(0, 0)).toBe<number>(0);
   });
 
   it("returns 0 when errorCount is 0 with a real baseline", () => {
-    expect(errorRatePct(0, 50)).toBe(0);
+    expect(errorRatePct(0, 50)).toBe<number>(0);
   });
 
   it("rounds a normal case to 2 decimal places", () => {
     // 1/3 * 100 = 33.333… → 33.33
-    expect(errorRatePct(1, 3)).toBe(33.33);
+    expect(errorRatePct(1, 3)).toBe<number>(33.33);
     // 2/3 * 100 = 66.666… → 66.67
-    expect(errorRatePct(2, 3)).toBe(66.67);
+    expect(errorRatePct(2, 3)).toBe<number>(66.67);
   });
 
   it("preserves threshold-boundary precision at the 2nd decimal", () => {
     // Guards the detail-panel "over threshold" boundary: with default
     // errorRateThreshold=0.5 (50%), a real rate of 50.04% (5004 / 10000)
-    // must serialize as > 50 so `counters.errorRatePct / 100 > 0.5` is true.
+    // must serialize as > 50 so the comparison against 0.5 stays true.
     // 1-decimal rounding silently flipped this flag off.
-    expect(errorRatePct(5004, 10000)).toBe(50.04);
+    expect(errorRatePct(5004, 10000)).toBe<number>(50.04);
     expect(errorRatePct(5004, 10000) / 100 > 0.5).toBe(true);
   });
 
   it("returns 100 for a fully-errored baseline", () => {
-    expect(errorRatePct(10, 10)).toBe(100);
+    expect(errorRatePct(10, 10)).toBe<number>(100);
   });
 
   it("clamps to 100 when errorCount exceeds totalCount (caller bug guard)", () => {
     // errorCount > totalCount is a caller bug — surfacing 150% would mislead
     // the admin more than capping at 100%.
-    expect(errorRatePct(15, 10)).toBe(100);
+    expect(errorRatePct(15, 10)).toBe<number>(100);
   });
 
   it("preserves precision for large counts", () => {
     // 1234 / 98765 ≈ 1.24943% → 1.25 (2-decimal)
-    expect(errorRatePct(1234, 98765)).toBe(1.25);
+    expect(errorRatePct(1234, 98765)).toBe<number>(1.25);
     // 12345 / 98765 ≈ 12.4994% → 12.5 (trailing zero collapsed by JS)
-    expect(errorRatePct(12345, 98765)).toBe(12.5);
+    expect(errorRatePct(12345, 98765)).toBe<number>(12.5);
   });
 
   it("throws on non-finite inputs (NaN, Infinity) rather than propagating NaN", () => {
@@ -252,7 +257,7 @@ describe("errorRatePct", () => {
   it("returns a finite number for the documented (5, 0) zero-denominator case", () => {
     const rate = errorRatePct(5, 0);
     expect(Number.isFinite(rate)).toBe(true);
-    expect(rate).toBe(0);
+    expect(rate).toBe<number>(0);
   });
 });
 
@@ -271,7 +276,11 @@ describe("errorRatePct", () => {
 describe("createAbuseInstance", () => {
   it("returns the empty-instance shape when events are empty", () => {
     const inst = createAbuseInstance([]);
-    expect(inst).toEqual({
+    // `toMatchObject` — the branded AbuseInstance's phantom symbol key
+    // prevents `toEqual` against a plain object literal from typechecking
+    // (#1684). The fields we care about are pinned below; the brand is
+    // itself a compile-time invariant, not a runtime assertion.
+    expect(inst).toMatchObject({
       startedAt: "",
       endedAt: null,
       peakLevel: "none",
@@ -374,5 +383,32 @@ describe("createAbuseInstance", () => {
     // And startedAt follows events[0] even when it's the newest — this is
     // the "garbage in, garbage out" contract the docstring flags.
     expect(inst.startedAt).toBe("2026-04-19T10:10:00Z");
+  });
+
+  // Nominal brand enforcement (#1684) — the phantom `unique symbol` in
+  // `@useatlas/types/abuse.ts` makes hand-rolled object literals fail
+  // typecheck. `@ts-expect-error` is the regression guard: if a future
+  // refactor relaxes the brand back to a structural interface, the lines
+  // below will type-check and the directives will fail the build, flagging
+  // the regression. Runtime assertions are irrelevant — this is a purely
+  // compile-time invariant — but the test harness still evaluates the
+  // expressions so TS sees them.
+  it("rejects hand-rolled AbuseInstance literals at the type layer", () => {
+    // @ts-expect-error hand-rolled shape must not satisfy AbuseInstance — use createAbuseInstance
+    const handRolled: AbuseInstance = {
+      startedAt: "2026-04-19T10:00:00Z",
+      endedAt: null,
+      peakLevel: "warning",
+      events: [],
+    };
+    expect(handRolled).toBeTruthy();
+  });
+
+  it("accepts AbuseInstance values minted via the factory", () => {
+    // Positive control: the factory's localized `as AbuseInstance` cast is
+    // what allows this assignment. If this starts failing while the
+    // hand-rolled test above starts passing, the brand is broken.
+    const fromFactory: AbuseInstance = createAbuseInstance([]);
+    expect(fromFactory.peakLevel).toBe("none");
   });
 });

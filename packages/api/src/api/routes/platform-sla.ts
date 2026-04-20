@@ -25,6 +25,7 @@ import {
 import {
   SLA_ALERT_STATUSES,
   SLA_ALERT_TYPES,
+  asPercentage,
 } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
@@ -328,7 +329,13 @@ platformSLA.openapi(updateThresholdsRoute, async (c) => {
     const body = c.req.valid("json");
 
     const oldThresholds = yield* sla.getThresholds();
-    yield* sla.updateThresholds(body);
+    // `body.errorRatePct` is a plain number from Zod-validated request; the
+    // service expects branded `Percentage` (#1685). `asPercentage` brands
+    // the wire value at the route boundary without changing it.
+    yield* sla.updateThresholds({
+      latencyP99Ms: body.latencyP99Ms,
+      errorRatePct: asPercentage(body.errorRatePct),
+    });
     log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
 
     logAdminAction({

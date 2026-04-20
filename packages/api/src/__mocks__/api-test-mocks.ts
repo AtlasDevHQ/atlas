@@ -24,6 +24,7 @@
 
 import { mock, type Mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
+import { asRatio } from "@useatlas/types";
 import {
   createConnectionMock,
   type ConnectionMockOverrides,
@@ -634,11 +635,13 @@ export function createApiTestMocks(
   mock.module("@atlas/api/lib/security/abuse", () => ({
     listFlaggedWorkspaces: mock(() => []),
     reinstateWorkspace: mock(() => true),
-    getAbuseEvents: mock(async () => []),
+    getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
+    // `asRatio` brands the config value (#1685) — the real `getAbuseConfig`
+    // does the same at its env-var boundary, so the mock shape matches.
     getAbuseConfig: mock(() => ({
       queryRateLimit: 200,
       queryRateWindowSeconds: 300,
-      errorRateThreshold: 0.5,
+      errorRateThreshold: asRatio(0.5),
       uniqueTablesLimit: 50,
       throttleDelayMs: 2000,
     })),

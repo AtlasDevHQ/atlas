@@ -117,7 +117,9 @@ export type {
   AbuseCounters,
   AbuseInstance,
   AbuseDetail,
+  AbuseEventsStatus,
 } from "@useatlas/types";
+export type { Percentage, Ratio } from "@useatlas/types";
 export type {
   WorkspaceSLASummary,
   SLAMetricPoint,

@@ -57,6 +57,7 @@ import type {
   SLAAlertStatus,
   SLAThresholds,
 } from "@/ui/lib/types";
+import { asPercentage } from "@useatlas/types";
 
 // Dynamic import for Recharts (heavy dependency)
 const RechartsLine = dynamic(
@@ -198,7 +199,10 @@ function SLAPageContent() {
   });
 
   function openThresholdDialog() {
-    setEditThresholds(thresholdsData ?? { latencyP99Ms: 5000, errorRatePct: 5 });
+    // `asPercentage(5)` brands the fallback default so `editThresholds`
+    // stays typed as `SLAThresholds` (#1685). The Input handler below does
+    // the same when parsing user input.
+    setEditThresholds(thresholdsData ?? { latencyP99Ms: 5000, errorRatePct: asPercentage(5) });
     clearThresholdError();
     setThresholdDialogOpen(true);
   }
@@ -537,7 +541,7 @@ function SLAPageContent() {
                   max={100}
                   step={0.1}
                   value={editThresholds.errorRatePct}
-                  onChange={(e) => setEditThresholds({ ...editThresholds, errorRatePct: parseFloat(e.target.value) || 0 })}
+                  onChange={(e) => setEditThresholds({ ...editThresholds, errorRatePct: asPercentage(parseFloat(e.target.value) || 0) })}
                 />
               </div>
             </div>

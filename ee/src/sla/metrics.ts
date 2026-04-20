@@ -20,6 +20,7 @@ import { requireInternalDB } from "../lib/db-guard";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WorkspaceSLASummary, WorkspaceSLADetail, SLAMetricPoint } from "@useatlas/types";
+import { asPercentage } from "@useatlas/types";
 
 const log = createLogger("ee:sla-metrics");
 
@@ -185,8 +186,10 @@ export const getAllWorkspaceSLA = (
         latencyP50Ms: Math.round(r.latency_p50 ?? 0),
         latencyP95Ms: Math.round(r.latency_p95 ?? 0),
         latencyP99Ms: Math.round(r.latency_p99 ?? 0),
-        errorRatePct: total > 0 ? Math.round((failed / total) * 10000) / 100 : 0,
-        uptimePct: total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100,
+        // SQL aggregate is already on the 0–100 scale; `asPercentage`
+        // brands it (#1685) without changing the value.
+        errorRatePct: asPercentage(total > 0 ? Math.round((failed / total) * 10000) / 100 : 0),
+        uptimePct: asPercentage(total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100),
         totalQueries: total,
         failedQueries: failed,
         lastQueryAt: r.last_query_at,
@@ -239,8 +242,8 @@ export const getWorkspaceSLADetail = (
       latencyP50Ms: Math.round(r?.latency_p50 ?? 0),
       latencyP95Ms: Math.round(r?.latency_p95 ?? 0),
       latencyP99Ms: Math.round(r?.latency_p99 ?? 0),
-      errorRatePct: total > 0 ? Math.round((failed / total) * 10000) / 100 : 0,
-      uptimePct: total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100,
+      errorRatePct: asPercentage(total > 0 ? Math.round((failed / total) * 10000) / 100 : 0),
+      uptimePct: asPercentage(total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100),
       totalQueries: total,
       failedQueries: failed,
       lastQueryAt: r?.last_query_at ?? null,

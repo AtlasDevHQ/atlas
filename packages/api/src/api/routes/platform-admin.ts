@@ -43,6 +43,7 @@ import {
   PLAN_TIERS,
   type PlatformWorkspace,
 } from "@useatlas/types";
+import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
@@ -222,7 +223,7 @@ const changePlanRoute = createRoute({
   path: "/workspaces/{id}/plan",
   tags: ["Platform Admin"],
   summary: "Change workspace plan tier",
-  description: "SaaS only. Updates the plan tier for a workspace (free, trial, team, enterprise).",
+  description: "SaaS only. Updates the plan tier for a workspace (free, trial, starter, pro, business).",
   request: { body: { required: true, content: { "application/json": { schema: ChangePlanBodySchema } } } },
   responses: {
     200: {
@@ -316,13 +317,16 @@ function median(values: number[]): number {
     : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-// MRR estimates per plan tier (monthly recurring revenue)
-const PLAN_MRR: Record<string, number> = {
-  free: 0,
-  trial: 0,
-  team: 99,
-  enterprise: 499,
-};
+// MRR per seat per plan tier. Derived from the canonical
+// `getPlanDefinition(tier).pricePerSeat` in `lib/billing/plans.ts` so a
+// price change there flows through automatically. Iterating `PLAN_TIERS`
+// means a new tier can't silently drop to $0 — `Record<PlanTier, number>`
+// forces exhaustive coverage at compile time. Regression for #1680:
+// migrations 0020 + 0027 renamed tiers to starter/pro/business and this
+// map silently returned 0 for every paying workspace until now.
+const PLAN_MRR = Object.fromEntries(
+  PLAN_TIERS.map((tier) => [tier, getPlanDefinition(tier).pricePerSeat]),
+) as Record<PlanTier, number>;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -738,7 +742,12 @@ platformAdmin.openapi(platformStatsRoute, async (c) => {
     const mrrRows = yield* queryEffect<{ plan_tier: string; cnt: number }>(
       `SELECT plan_tier, COUNT(*)::int AS cnt FROM organization WHERE workspace_status = 'active' GROUP BY plan_tier`,
     );
-    const mrr = mrrRows.reduce((sum, row) => sum + (PLAN_MRR[row.plan_tier] ?? 0) * row.cnt, 0);
+    // Cast is safe: unknown values fall back to 0 via `??`, preserving
+    // forward-compat if the DB ever stores a tier not yet in PLAN_TIERS.
+    const mrr = mrrRows.reduce(
+      (sum, row) => sum + (PLAN_MRR[row.plan_tier as PlanTier] ?? 0) * row.cnt,
+      0,
+    );
 
     return c.json({
       totalWorkspaces: wsRows[0]?.total ?? 0,

@@ -87,9 +87,15 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
       if (typeof obj.error === "string") code = obj.error;
     }
   } catch (err) {
-    // Non-JSON body is expected — log unexpected errors (e.g. body already consumed) for debugging.
+    // Non-JSON body is expected (SyntaxError, swallowed silently). Unexpected
+    // cases — the motivating one is "body already consumed," i.e. a refactor
+    // read the Response twice — need to reach Sentry/dev tools, so use
+    // `console.warn` to match the treatment in `buildFetchError` and
+    // `useAdminFetch`'s network catch. `console.debug` would get filtered
+    // out by default log levels, hiding exactly the bugs this branch exists
+    // to surface (#1715).
     if (!(err instanceof SyntaxError)) {
-      console.debug("extractFetchError: unexpected error reading response body", err);
+      console.warn("extractFetchError: unexpected error reading response body", err);
     }
   }
   // Route the status-only fallback through `buildFetchError` so the empty-

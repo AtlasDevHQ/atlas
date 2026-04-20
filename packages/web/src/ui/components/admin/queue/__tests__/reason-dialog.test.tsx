@@ -223,7 +223,45 @@ describe("ReasonDialog error precedence (#1612)", () => {
   });
 });
 
-describe("ReasonDialog mutationError without feature (#1652)", () => {
+describe("ReasonDialog mutationError without feature (#1652, #1716)", () => {
+  test("warns in dev when mutationError is supplied without feature", () => {
+    // Dev-only breadcrumb so future callers who forget `feature` surface
+    // the regression during review, not after an enterprise_required 403
+    // renders the wrong copy in prod.
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny"
+        onConfirm={async () => {}}
+        mutationError={{ message: "Something broke", status: 500 }}
+      />,
+    );
+    const calls = consoleWarnSpy.mock.calls;
+    const warned = calls.some((args) =>
+      String(args[0] ?? "").includes("`mutationError` supplied without `feature`"),
+    );
+    expect(warned).toBe(true);
+  });
+
+  test("does not warn when both mutationError and feature are supplied", () => {
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny"
+        onConfirm={async () => {}}
+        feature="Approval Workflows"
+        mutationError={{ message: "Something broke", status: 500 }}
+      />,
+    );
+    const calls = consoleWarnSpy.mock.calls;
+    const warned = calls.some((args) =>
+      String(args[0] ?? "").includes("`mutationError` supplied without `feature`"),
+    );
+    expect(warned).toBe(false);
+  });
+
   test("renders friendlyError in alert chrome when mutationError is set but feature is omitted", () => {
     // When a caller passes `mutationError` but forgets `feature`, the dialog
     // can't route through `<MutationErrorSurface>` (which requires a

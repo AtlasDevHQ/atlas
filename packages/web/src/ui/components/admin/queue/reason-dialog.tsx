@@ -101,6 +101,31 @@ export function ReasonDialog({
     if (error != null || mutationError != null) setLocalError(null);
   }, [error, mutationError]);
 
+  // Dev-only warning when a caller supplies `mutationError` without
+  // `feature`. The fallback branch in the render body renders
+  // `friendlyError()` in plain alert chrome — accessible, but an
+  // `enterprise_required` 403 loses its EnterpriseUpsell routing and
+  // reads as a generic 403 "Access denied. Admin role required" instead
+  // of the upsell copy. No production path hits this today (all current
+  // callers pass `feature` when they pass `mutationError`), but the prop
+  // is optional so a future caller can regress silently. Tree-shaken in
+  // production via the NODE_ENV check; noisy in dev so the misuse
+  // surfaces during editing, not after a user-visible regression (#1716).
+  useEffect(() => {
+    if (
+      process.env.NODE_ENV !== "production" &&
+      mutationError != null &&
+      !feature
+    ) {
+      console.warn(
+        "ReasonDialog: `mutationError` supplied without `feature` — " +
+          "EnterpriseUpsell routing is skipped. Pass a `FeatureName` to " +
+          "`feature` so `enterprise_required` 403s render the upsell " +
+          "instead of a generic access-denied message.",
+      );
+    }
+  }, [mutationError, feature]);
+
   const trimmed = reason.trim();
   const canConfirm = required ? trimmed.length > 0 : true;
 

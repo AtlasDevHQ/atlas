@@ -58,6 +58,55 @@ export default tseslint.config(
       ],
     },
   },
+  // Admin components must type their `feature` prop as `FeatureName` from
+  // `@/ui/components/admin/feature-registry`, never `string`. The registry
+  // is the `tsgo`-enforced source of truth for user-visible feature labels
+  // (see #1652, win #43) — a `feature: string` slot reopens the typo-lands-
+  // in-banner-copy regression the registry closes. This rule enforces the
+  // "new admin surface joins the registry" invariant that TS alone can't
+  // express: TS catches bad *values* for `feature: FeatureName`, but it
+  // can't complain if a new component widens back to `string`. Scoped to
+  // admin/ directories so unrelated `feature: string` props are unaffected.
+  //
+  // The `no-restricted-syntax` rule is array-valued, so ESLint's flat-config
+  // merge semantics mean this block *replaces* the broader `packages/web/**`
+  // rule above. Both FetchError-flattening selectors are duplicated here so
+  // admin files keep the structured-error protection they had before.
+  {
+    files: [
+      "packages/web/src/ui/components/admin/**/*.{ts,tsx}",
+      "packages/web/src/app/admin/**/*.{ts,tsx}",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "ObjectExpression > Property[key.name='message'][value.type='MemberExpression'] MemberExpression[property.name='error']",
+          message:
+            "Do not flatten a mutation `.error` into `{ message: x.error }` — useAdminMutation surfaces a structured FetchError (status/code/requestId). Pass it straight to setError() / AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull().",
+        },
+        {
+          selector:
+            "ObjectExpression > Property[key.name='message'][value.type='ChainExpression'] MemberExpression[property.name='error']",
+          message:
+            "Do not flatten a mutation `.error` chain into `{ message: x?.error }` — useAdminMutation surfaces a structured FetchError. Pass it straight to setError() / AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull().",
+        },
+        {
+          selector:
+            "TSPropertySignature[key.name='feature'] > TSTypeAnnotation > TSStringKeyword",
+          message:
+            "Admin components must type `feature` as `FeatureName` from @/ui/components/admin/feature-registry, not `string`. A string slot reopens the typo-in-banner-copy regression the registry closes (#1652).",
+        },
+        {
+          selector:
+            "TSPropertySignature[key.name='feature'] > TSTypeAnnotation > TSUnionType > TSStringKeyword",
+          message:
+            "Admin components must type `feature` as `FeatureName` from @/ui/components/admin/feature-registry. Widening to `FeatureName | string` collapses to `string` and reopens the typo regression.",
+        },
+      ],
+    },
+  },
   // `@useatlas/schemas` is the one-source-of-truth wire-format package. Its
   // whole point is to sit below `@atlas/api` and `@atlas/web` in the
   // dependency graph so both layers import a shared validator. Allowing

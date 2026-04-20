@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
-import type { FetchError } from "@/ui/lib/fetch-error";
+import type { FeatureName } from "@/ui/components/admin/feature-registry";
+import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import { Loader2, X } from "lucide-react";
 
 interface ReasonDialogProps {
@@ -47,9 +48,11 @@ interface ReasonDialogProps {
   mutationError?: FetchError | null;
   /**
    * Feature name for `MutationErrorSurface` routing when `mutationError` is
-   * present. Should match the page's `AdminContentWrapper` feature.
+   * present. Should match the page's `AdminContentWrapper` feature. When
+   * omitted alongside a `mutationError`, the dialog falls back to a flat
+   * `friendlyError()` alert (no enterprise routing).
    */
-  feature?: string;
+  feature?: FeatureName;
 }
 
 /**
@@ -97,6 +100,31 @@ export function ReasonDialog({
   useEffect(() => {
     if (error != null || mutationError != null) setLocalError(null);
   }, [error, mutationError]);
+
+  // Dev-only warning when a caller supplies `mutationError` without
+  // `feature`. The fallback branch in the render body renders
+  // `friendlyError()` in plain alert chrome — accessible, but an
+  // `enterprise_required` 403 loses its EnterpriseUpsell routing and
+  // reads as a generic 403 "Access denied. Admin role required" instead
+  // of the upsell copy. No production path hits this today (all current
+  // callers pass `feature` when they pass `mutationError`), but the prop
+  // is optional so a future caller can regress silently. Tree-shaken in
+  // production via the NODE_ENV check; noisy in dev so the misuse
+  // surfaces during editing, not after a user-visible regression (#1716).
+  useEffect(() => {
+    if (
+      process.env.NODE_ENV !== "production" &&
+      mutationError != null &&
+      !feature
+    ) {
+      console.warn(
+        "ReasonDialog: `mutationError` supplied without `feature` — " +
+          "EnterpriseUpsell routing is skipped. Pass a `FeatureName` to " +
+          "`feature` so `enterprise_required` 403s render the upsell " +
+          "instead of a generic access-denied message.",
+      );
+    }
+  }, [mutationError, feature]);
 
   const trimmed = reason.trim();
   const canConfirm = required ? trimmed.length > 0 : true;
@@ -194,13 +222,23 @@ export function ReasonDialog({
           >
             {localError}
           </div>
-        ) : mutationError ? (
+        ) : mutationError && feature ? (
           <div role="alert">
             <MutationErrorSurface
               error={mutationError}
-              feature={feature ?? ""}
+              feature={feature}
               variant="inline"
             />
+          </div>
+        ) : mutationError ? (
+          // No feature → no structured enterprise routing; render the
+          // friendly message in the same alert chrome as `error` so the
+          // dialog still surfaces the failure to a screen reader.
+          <div
+            role="alert"
+            className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          >
+            {friendlyError(mutationError)}
           </div>
         ) : error ? (
           <div

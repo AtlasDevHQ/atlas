@@ -2,7 +2,7 @@
 
 import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { buildFetchError, extractFetchError } from "@/ui/lib/fetch-error";
 
 /**
  * Options for `adminQueryFn`.
@@ -50,10 +50,11 @@ export function adminQueryFn<T>(
       const parsed = opts.schema.safeParse(json);
       if (!parsed.success) {
         console.warn(`adminQueryFn schema validation failed for ${path}:`, parsed.error.issues);
-        const err: FetchError = {
+        // Route through `buildFetchError` so every FetchError construction in
+        // the codebase passes the empty-message invariant — see #1652.
+        throw buildFetchError({
           message: `Unexpected response format from ${path}. Try refreshing the page.`,
-        };
-        throw err;
+        });
       }
       return parsed.data;
     }

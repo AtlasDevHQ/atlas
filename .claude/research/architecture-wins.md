@@ -1130,3 +1130,31 @@ The cycle-avoidance mechanics work because the ESM live-binding resolution for `
 - **Line count:** residency type grew by ~18 lines, schema by ~30, `rowToMigration` added 45 lines while collapsing 3 inline literals.
 
 **Category:** Discriminated-union consolidation. Ties off #1696, the follow-up filed at the end of win #38 — the phase-4 migration left the invariant documented but unstructured; the tagged union makes it load-bearing.
+
+---
+
+## 43. Branded `FeatureName` registry + `buildFetchError` empty-message invariant
+
+**Date:** 2026-04-20
+**Issue:** #1652
+**Branch:** feat/mutation-error-surface-feature-registry
+
+**Problem:** Two holes identified by the 5-agent review of PR #1650.
+
+First, `<MutationErrorSurface feature: string>` (plus the component it composes — `<EnterpriseUpsell>`, `<FeatureGate>`, and the page-level `<AdminContentWrapper>` passthrough) accepted any string, so `feature="sso"` compiled but rendered "sso requires an enterprise plan" in the user-facing upsell. The 50+ admin page call sites had no guardrail against the casing typo, and three accidental duplicates drifted across the codebase ("Custom Domain" vs "Custom Domains", "Users" vs "User Management", "Organizations" vs "Organization Management") — the banner copy inconsistently named the same feature depending on which surface threw the error.
+
+Second, a hand-constructed `FetchError { message: "" }` would render blank `ErrorBanner` / `InlineError` chrome, indistinguishable from a successful render. `extractFetchError` already guarded the HTTP-body path (`length > 0`), but the two fallback paths — `extractFetchError`'s `HTTP ${status}` default and `useAdminFetch`'s network-error catch — constructed `FetchError` literals directly, so no single boundary enforced the invariant. No production path produced the empty message today, but the failure mode is silent and a future caller would discover it post-incident.
+
+**Solution:** Two-part type-design hardening, closing the remaining 1.2.2 gap.
+
+1. **Branded `FeatureName` registry.** New `packages/web/src/ui/components/admin/feature-registry.ts` exports `FEATURE_NAMES` — a `readonly` literal tuple of 49 canonical admin feature names — and `type FeatureName = (typeof FEATURE_NAMES)[number]`. `<MutationErrorSurface>`, `<EnterpriseUpsell>`, `<FeatureGate>`, `<AdminContentWrapper>`, and `<ReasonDialog>` all swap their `feature` prop from `string` to `FeatureName`. The migration surfaced three naming duplicates — consolidated in the registry and updated at call sites.
+2. **`buildFetchError` helper.** Added to `packages/web/src/ui/lib/fetch-error.ts` alongside the canonical type. Refuses empty (or whitespace-only) messages: throws in development so the regression surfaces during review, substitutes `"Request failed (${status})"` + `console.warn` in production so the banner still renders with Sentry breadcrumbs. Both system boundaries — `extractFetchError`'s fallback and `useAdminFetch`'s network-error catch — route through the helper; `useAdminMutation`'s catch and path-missing paths adopt it too, removing the redundant `|| "Request failed"` suffix that was defense-in-depth for an invariant no longer local to each caller.
+
+**Impact:**
+- **Typo regressions become compile errors.** `tsgo` now rejects `feature="sso"`, `feature="Model Config"` (not in registry), and every typo the team tried in reviewer feedback. The registry becomes the single source of truth — adding a new admin surface means adding its canonical name to the tuple first, then TS guides every consumer into agreement.
+- **Consolidation fixes three real drifts.** "User Management" → "Users" (one-off at `/admin/users`), "Organization Management" → "Organizations", and "Custom Domain" → "Custom Domains" (three sites in `/admin/custom-domain`). Each was a latent copy inconsistency — the workspace page would render "Custom Domain not enabled" while the platform-admin surface rendered "Custom Domains not enabled" for the same underlying feature. The banner copy is now internally consistent.
+- **Empty-message invariant codified.** One helper, three callers (`extractFetchError` fallback, `useAdminFetch` network catch, `useAdminMutation` path-missing + network catch). Every `FetchError` in the system now either comes from `extractFetchError` (which routes through `buildFetchError` for the fallback) or from code that opted into `buildFetchError` directly. Hand-constructed `FetchError` literals still type-check, but the only place in the codebase that constructs them directly is the helper itself. Dev throws surface regressions during review; prod substitutes keep users out of blank chrome with a breadcrumb.
+- **Two new test files.** `feature-registry.test.ts` asserts the `as const` tuple shape (no widening to `string[]`), no duplicates, non-empty trimmed entries, and a regression guard for `"SSO"` casing. `fetch-error.test.ts` grows a `buildFetchError` describe block with 10 cases — happy path trim, undefined-field omission, dev throw on empty/undefined/whitespace message, prod substitute with `status`/`undefined`/code+requestId preservation. All 36 existing fetch-error assertions + all 84 web-package tests still pass.
+- **Line count:** registry is 72 lines (50 tuple entries + JSDoc + type alias), helper is ~45 lines inclusive of JSDoc + prod-substitute path, call-site edits are one-line-each across ~4 pages (the rest were already canonical). Net positive line count, but every type-level guarantee is now load-bearing.
+
+**Category:** Branded-literal registry + system-boundary invariant helper. The registry deepens the 50+ admin page call surface by constraining what would otherwise be an open `string` slot to a canonical enumeration — future typos become compile errors instead of user-visible copy bugs. The helper codifies an invariant that was previously scattered across three fallback paths with matching-but-drifting `|| "Request failed"` suffixes. Closes the remaining type-design gap from the 1.2.2 arc.

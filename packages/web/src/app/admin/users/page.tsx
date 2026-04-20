@@ -551,7 +551,7 @@ export default function UsersPage() {
         <AdminContentWrapper
           loading={loading}
           error={error}
-          feature="User Management"
+          feature="Users"
           onRetry={() => setParams({ page: 1 })}
           loadingMessage="Loading users..."
           emptyIcon={Users}

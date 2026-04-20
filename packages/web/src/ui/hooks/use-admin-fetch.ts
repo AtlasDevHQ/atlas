@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
 
 // Re-export from @/ui/lib/fetch-error (canonical location) for backward
@@ -54,10 +54,16 @@ export function useAdminFetch<T>(
         });
       } catch (err) {
         // Network failure (DNS, offline, CORS) — normalize to FetchError and log.
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`useAdminFetch ${path}:`, msg);
-        const fetchErr: FetchError = { message: msg || "Request failed" };
-        throw fetchErr;
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`useAdminFetch ${path}:`, rawMsg);
+        // Route through `buildFetchError` so the empty-message invariant
+        // applies — but default to a generic "Network error" when the caught
+        // value has no message so the helper's dev-throw doesn't escape the
+        // hook boundary and break the TanStack Query error contract. Real
+        // hand-constructed `{ message: "" }` literals still trip the throw.
+        throw buildFetchError({
+          message: rawMsg.trim() ? rawMsg : "Network error",
+        });
       }
 
       if (!res.ok) {
@@ -73,11 +79,10 @@ export function useAdminFetch<T>(
           // tailored to a server/client version drift — refreshing won't fix
           // it, so the default "try again" guidance in the bare message is
           // actively misleading.
-          const err: FetchError = {
+          throw buildFetchError({
             message: `Server returned an unexpected response from ${path}. This is likely a version mismatch — contact your administrator or try again later.`,
             code: "schema_mismatch",
-          };
-          throw err;
+          });
         }
         return parsed.data;
       }

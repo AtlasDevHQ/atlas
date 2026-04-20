@@ -45,6 +45,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Immutable array operations** — Use `toSorted()`, `toReversed()`, `toSpliced()` in React components
 - [ ] **Dynamic imports for heavy components** — Use `next/dynamic` for Monaco, Recharts, syntax highlighters
 - [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
+- [ ] **`FeatureName` registry for admin surfaces** — `<MutationErrorSurface>`, `<EnterpriseUpsell>`, `<FeatureGate>`, `<AdminContentWrapper>`, and `<ReasonDialog>` type their `feature` prop as `FeatureName` from `@/ui/components/admin/feature-registry`. Adding a new admin surface means appending its canonical name to `FEATURE_NAMES` first — then TS guides every call site into agreement. Casing matches the banner copy ("SSO" not "sso"); consolidate duplicates rather than adding variants. The registry is the `tsgo`-enforced source of truth for user-visible feature labels — skip it and typos render in production upsells
 
 ### Effect.ts (packages/api only)
 - [ ] **Use Context.Tag for services** — All backend services use `class Foo extends Context.Tag("Foo")<Foo, FooShape>()`. Service interfaces are `FooShape` with `readonly` fields

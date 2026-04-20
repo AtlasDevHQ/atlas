@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
 
 /** HTTP methods supported by admin mutations. */
@@ -299,7 +299,9 @@ export function useAdminMutation<TResponse = unknown>(
       const callGen = generationRef.current;
 
       if (!callOpts?.path && !opts?.path) {
-        const fetchError: FetchError = { message: "useAdminMutation: no path provided" };
+        const fetchError = buildFetchError({
+          message: "useAdminMutation: no path provided",
+        });
         // Populate both slots for itemized callers — a bulk surface reading
         // only `errorFor(id)` would otherwise miss the failure and the row
         // would silently look healthy.
@@ -336,13 +338,18 @@ export function useAdminMutation<TResponse = unknown>(
       try {
         data = await mutationRef.current.mutateAsync(callOpts);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const rawMsg = err instanceof Error ? err.message : String(err);
         // Recover the structured FetchError the mutationFn attached before
         // throwing (non-HTTP failures like network errors reach this path with
-        // no attachment — fall back to a minimal FetchError preserving message).
+        // no attachment — route through `buildFetchError` so the empty-message
+        // invariant applies even to the network-error fallback path). Default
+        // to a generic "Request failed" when the caught value has no message
+        // so the helper's dev-throw doesn't escape the hook and break the
+        // `mutate()` contract that resolves to `{ ok: false, error }`. Real
+        // hand-constructed `{ message: "" }` literals still trip the throw.
         const fetchError =
           (err as { fetchError?: FetchError }).fetchError ??
-          ({ message: msg || "Request failed" } satisfies FetchError);
+          buildFetchError({ message: rawMsg.trim() ? rawMsg : "Request failed" });
 
         if (generationRef.current !== callGen) {
           // `reset()` ran after this mutation was dispatched — swallow the

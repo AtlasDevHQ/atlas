@@ -223,5 +223,84 @@ describe("ReasonDialog error precedence (#1612)", () => {
   });
 });
 
+describe("ReasonDialog mutationError without feature (#1652, #1716)", () => {
+  test("warns in dev when mutationError is supplied without feature", () => {
+    // Dev-only breadcrumb so future callers who forget `feature` surface
+    // the regression during review, not after an enterprise_required 403
+    // renders the wrong copy in prod.
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny"
+        onConfirm={async () => {}}
+        mutationError={{ message: "Something broke", status: 500 }}
+      />,
+    );
+    const calls = consoleWarnSpy.mock.calls;
+    const warned = calls.some((args) =>
+      String(args[0] ?? "").includes("`mutationError` supplied without `feature`"),
+    );
+    expect(warned).toBe(true);
+  });
+
+  test("does not warn when both mutationError and feature are supplied", () => {
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny"
+        onConfirm={async () => {}}
+        feature="Approval Workflows"
+        mutationError={{ message: "Something broke", status: 500 }}
+      />,
+    );
+    const calls = consoleWarnSpy.mock.calls;
+    const warned = calls.some((args) =>
+      String(args[0] ?? "").includes("`mutationError` supplied without `feature`"),
+    );
+    expect(warned).toBe(false);
+  });
+
+  test("renders friendlyError in alert chrome when mutationError is set but feature is omitted", () => {
+    // When a caller passes `mutationError` but forgets `feature`, the dialog
+    // can't route through `<MutationErrorSurface>` (which requires a
+    // `FeatureName`). Fallback: render the friendly message in the same
+    // `role="alert"` chrome as the string `error` branch so the failure is
+    // still announced to screen readers.
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny"
+        onConfirm={async () => {}}
+        mutationError={{ message: "Something broke", status: 500 }}
+      />,
+    );
+    const text = errorText() ?? "";
+    expect(text).toContain("Something broke");
+    // No EnterpriseUpsell chrome — the "requires an enterprise plan" copy
+    // only reaches the user via `<MutationErrorSurface>` with a feature.
+    expect(text).not.toContain("enterprise");
+  });
+
+  test("friendlyError's 403 mapping still applies in the feature-less fallback", () => {
+    // A 403 arriving without a feature still gets `friendlyError`'s
+    // admin-role translation — proof the structured status survives the
+    // fallback path even though we lose the EnterpriseUpsell routing.
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny"
+        onConfirm={async () => {}}
+        mutationError={{ message: "Forbidden", status: 403 }}
+      />,
+    );
+    const text = errorText() ?? "";
+    expect(text).toContain("Access denied");
+  });
+});
+
 // Suppress unused-import warning: `screen` is kept available for future tests.
 void screen;

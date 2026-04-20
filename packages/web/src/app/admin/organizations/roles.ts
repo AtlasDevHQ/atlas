@@ -45,12 +45,12 @@ interface RoleBadge {
 // Cleared on full page reload (fine — drift is a "once you see it, you
 // investigate" signal, not a rate-limited alert). Tests that assert
 // multiple unknown-role branches in the same file MUST call
-// `__resetWarnSets()` in `beforeEach` — Bun's isolated runner resets
+// `_resetWarnSets()` in `beforeEach` — Bun's isolated runner resets
 // module state between files, not between tests.
 const warnedUnknownRoles = new Set<string>();
 
 /** Test hook: clear dedup set so each test starts from a known state. */
-export function __resetWarnSets(): void {
+export function _resetWarnSets(): void {
   warnedUnknownRoles.clear();
 }
 

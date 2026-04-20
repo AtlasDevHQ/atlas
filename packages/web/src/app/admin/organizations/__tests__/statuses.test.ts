@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { CheckCircle2, CreditCard, Pause, Trash2 } from "lucide-react";
-import { __resetWarnSets, planBadge, statusBadge } from "../statuses";
+import { _resetWarnSets, planBadge, statusBadge } from "../statuses";
 
 describe("statusBadge", () => {
   let warnSpy: ReturnType<typeof spyOn<Console, "warn">>;
 
   beforeEach(() => {
-    __resetWarnSets();
+    _resetWarnSets();
   });
 
   afterEach(() => {
@@ -74,7 +74,7 @@ describe("planBadge", () => {
   let warnSpy: ReturnType<typeof spyOn<Console, "warn">>;
 
   beforeEach(() => {
-    __resetWarnSets();
+    _resetWarnSets();
   });
 
   afterEach(() => {

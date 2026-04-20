@@ -82,13 +82,13 @@ const NEUTRAL_BADGE: BadgeDescriptor = {
 
 // Module-scoped so repeated renders of the same unknown value only warn
 // once per session. Tests that assert multiple unknown-value branches in a
-// single file MUST call `__resetWarnSets()` in `beforeEach` — Bun's
+// single file MUST call `_resetWarnSets()` in `beforeEach` — Bun's
 // isolated runner resets module state between files, not between tests.
 const warnedUnknownStatuses = new Set<string>();
 const warnedUnknownPlans = new Set<string>();
 
 /** Test hook: clear dedup sets so each test starts from a known state. */
-export function __resetWarnSets(): void {
+export function _resetWarnSets(): void {
   warnedUnknownStatuses.clear();
   warnedUnknownPlans.clear();
 }

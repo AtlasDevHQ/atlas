@@ -185,4 +185,29 @@ describe("3-way verification invariant", () => {
     };
     expect(CustomDomainSchema.safeParse(drifted).success).toBe(false);
   });
+
+  test("rejects domainVerificationStatus='verified' with domainVerifiedAt=null", () => {
+    // Transitively covered by the two `domainVerified` pairings, but if a
+    // future refactor removes just one of those refines this direct pairing
+    // would catch the remaining drift.
+    const drifted = {
+      ...verifiedDomain,
+      domainVerified: false,
+      domainVerifiedAt: null,
+    };
+    expect(CustomDomainSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("accepts status='failed' with verifiedAt set (one-way Railway check)", () => {
+    // `verifyDomain` preserves `verified_at` when status regresses away
+    // from 'verified', so a previously-verified-then-failed row must
+    // still parse. Guards against a future "tighten to biconditional"
+    // refactor.
+    const regressed = {
+      ...validDomain,
+      status: "failed" as const,
+      verifiedAt: "2026-04-19T12:30:00.000Z",
+    };
+    expect(CustomDomainSchema.safeParse(regressed).success).toBe(true);
+  });
 });

@@ -33,6 +33,16 @@
  * in another. A half-reconciled row would parse cleanly against the
  * plain object shape and leak UI inconsistency; the refine turns it
  * into a `schema_mismatch` banner at `useAdminFetch` time.
+ *
+ * The DNS TXT trio is decomposed as two pairwise checks
+ * (`domainVerified ↔ domainVerifiedAt!=null` and
+ * `domainVerified ↔ domainVerificationStatus==='verified'`); the third
+ * edge follows by transitivity. A `discriminatedUnion` would express
+ * this structurally but splinters every `CustomDomain` response into
+ * multiple OpenAPI schemas, which tips the extractor into the same
+ * `ZodCatch`-style limitation documented around #1653. The pairwise
+ * refine also emits per-field `path` errors so `useAdminFetch`'s
+ * `schema_mismatch` banner can point at the exact broken field.
  */
 import { z } from "zod";
 import {

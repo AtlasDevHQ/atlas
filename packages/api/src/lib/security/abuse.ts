@@ -18,7 +18,6 @@ import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
   asRatio,
-  percentageToRatio,
   type AbuseLevel,
   type AbuseTrigger,
   type AbuseEvent,

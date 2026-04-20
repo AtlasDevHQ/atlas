@@ -894,3 +894,99 @@ Also extracted `errorRatePct(errorCount, totalCount): number` as a pure counter 
 - **Wire-format change: 2-decimal rounding.** `errorRatePct` now rounds to 2 decimals where it was unrounded before. The UI card in `detail-panel.tsx` displays via `.toFixed(0)` so the visible integer is unchanged, but a sibling usage in the same file computes a derived "over threshold" flag via `counters.errorRatePct / 100 > thresholds.errorRateThreshold`. Rounding to 1 decimal (the initial implementation) would have silently flipped that flag off within ±0.05% of the threshold while the engine itself still escalated on the unrounded fraction — so the UI and engine would have disagreed at boundary values. 2 decimals matches the SLA surface convention and keeps the boundary comparison faithful to 0.01%, which is well below any meaningful display resolution.
 
 **Category:** Module-deepening refactor that promotes an internal helper to a narrowed public factory. The factory pattern fits the "deep module with small interface" mold: callers pass one argument (the events array), the factory derives everything else. The caveat — and the follow-up — is that without a branded or nominal type, the factory is a convention, not a boundary. Generalizes: whenever a type has N derived fields that must agree, a single constructor function beats N scattered call sites hand-assembling the object, but the real enforcement wants a brand, a discriminated union, or a class-with-private-constructor on top.
+
+---
+
+## 35. Nominally-branded `AbuseInstance` — closes the factory's enforcement gap
+
+**Date:** 2026-04-19
+**Issue:** #1684
+**PR:** refactor/abuse-hardening-bundle
+
+**Problem:** Win #34 promoted `createAbuseInstance` to a narrowed exported factory that encodes the `AbuseInstance` invariants (peakLevel ≡ max of event levels, endedAt non-null iff last event is a manual "none" reinstatement, startedAt ≡ events[0].createdAt). The factory docstring already flagged the caveat: "`AbuseInstance` is still a structurally-typed interface, so the factory is an advisory boundary — tests and wire-format parsers can still produce the shape directly." Route-layer test fixtures in `admin-abuse.test.ts` did exactly that (lines 268–273, 295, 333 in the pre-bundle state), hand-rolling the object inline and compiling fine. A fresh call site inside `packages/api/src/lib/security/**` could produce a `peakLevel: "warning"` literal over events containing `"suspended"` and the compiler would let it through.
+
+Type-design-analyzer rated the factory at encapsulation 1/5, invariant-expression 2/5, enforcement 2/5. The factory was advisory, not nominal — exactly the shape-vs-identity distinction this codebase keeps running into.
+
+**Solution:** Added a phantom `unique symbol` brand to `AbuseInstance` in `@useatlas/types/abuse.ts`:
+
+```ts
+declare const abuseInstanceBrand: unique symbol;
+export interface AbuseInstance {
+  readonly [abuseInstanceBrand]: never;
+  startedAt: string;
+  endedAt: string | null;
+  peakLevel: AbuseLevel;
+  events: readonly AbuseEvent[];
+}
+```
+
+The required `[brand]: never` key is impossible to satisfy with a plain object literal — the key type is a module-private `unique symbol` no external caller can reference, and its value type is `never`. Only two escape hatches remain:
+
+1. `createAbuseInstance` in `abuse-instances.ts` localizes the `as unknown as AbuseInstance` cast inside the factory. The factory's documented contract (the invariants in #34) is what grants the cast its authority.
+2. `AbuseInstanceSchema` in `@useatlas/schemas/abuse.ts` adds a `.transform((v) => v as unknown as AbuseInstance)` so the wire-boundary Zod parser can mint a branded value. `satisfies z.ZodType<AbuseInstance, unknown>` (widened input) keeps the structural drift guard — a field rename in `@useatlas/types` still breaks the schema file at compile time.
+
+Also: `events: readonly AbuseEvent[]` (was mutable `AbuseEvent[]`). Mutating the array post-construction would silently invalidate the cached `peakLevel` and `endedAt` invariants — `readonly` is free and forces such mutations through an explicit copy.
+
+Migrated four hand-rolled `currentInstance: {...}` fixtures in `admin-abuse.test.ts` to `createAbuseInstance([])` and tightened the mock signature from `Promise<unknown | null>` to `Promise<AbuseDetail | null>` so inline literals now fail typecheck immediately. A new `@ts-expect-error` regression test pins that hand-rolling an `AbuseInstance` literal fails — if a future refactor relaxes the brand, the directive stops being "expected" and the build fails, flagging the regression.
+
+**Impact:**
+- The factory is now the *only* call site that can produce an `AbuseInstance` — the compiler enforces that, not a convention. Type-design rating moves from 1–2/5 → 5/5 on encapsulation + enforcement.
+- Zero runtime cost. The brand is a phantom type; emitted JS is a plain object.
+- Closes the exact enforcement gap #34 identified. The follow-up on #34 is retired.
+- Incidentally fixed an aliasing smell: `events: readonly AbuseEvent[]` — callers can't accidentally mutate the array after construction.
+
+**Category:** Type-level encapsulation. Brand-via-unique-symbol is a zero-runtime way to convert structural types into nominal ones. Generalizes: any time a factory encodes invariants that a plain object literal can bypass, brand the resulting type. The factory + schema then become the two privileged mint sites; every other path through the type system is a compile-time error.
+
+---
+
+## 36. `Percentage` / `Ratio` branded numerics — `errorRatePct` convention collision resolved at the type layer
+
+**Date:** 2026-04-19
+**Issue:** #1685
+**PR:** refactor/abuse-hardening-bundle
+
+**Problem:** `errorRatePct` appeared in four positions across the codebase with two incompatible scale conventions and nothing in the type system distinguishing them:
+
+- `AbuseCounters.errorRatePct` on 0–100 (percentage).
+- `AbuseThresholdConfig.errorRateThreshold` on 0–1 (ratio).
+- `WorkspaceSLASummary.errorRatePct` / `SLAThresholds.errorRatePct` on 0–100 (opposite scale from the abuse threshold but same field name as the abuse counter).
+- `ee/src/sla/metrics.ts` and `alerting.ts` computed / compared these with a mix of `Math.round(… / … * 10000) / 100`, raw `/ 100`, and direct comparisons.
+
+Plain `number` was identical at every position. Type-design-analyzer flagged this as the classic "same name, two scales" pattern that the type system is supposed to catch — and PR #1681 nearly shipped exactly the regression the analyzer warned about: 1-decimal rounding of a 50.04% rate silently flipped `counters.errorRatePct / 100 > thresholds.errorRateThreshold` off while `checkThresholds` kept escalating on the unrounded fraction.
+
+The specific failure mode was a boundary bug in the admin detail panel: `counters.errorRatePct / 100 > thresholds.errorRateThreshold`. Drop the `/ 100` and you're comparing a 50.04 to a 0.5 — wrong in either direction depending on the scale assumed. Nothing in the types told you which scale either side was on.
+
+**Solution:** New `packages/types/src/percentage.ts` introduces two nominally-branded numeric types via phantom `unique symbol`:
+
+```ts
+declare const percentageBrand: unique symbol;
+declare const ratioBrand: unique symbol;
+export type Percentage = number & { readonly [percentageBrand]: never };
+export type Ratio = number & { readonly [ratioBrand]: never };
+export function asPercentage(n: number): Percentage { return n as Percentage; }
+export function asRatio(n: number): Ratio { return n as Ratio; }
+export function percentageToRatio(p: Percentage): Ratio { return (p / 100) as Ratio; }
+export function ratioToPercentage(r: Ratio): Percentage { return (r * 100) as Percentage; }
+```
+
+The brands are zero-runtime — emitted JS is plain `number`. Only the four constructors can mint branded values; any plain-number expression fails typecheck in a branded position. Cross-scale comparison (`Percentage > Ratio`) fails typecheck without an explicit `percentageToRatio` / `ratioToPercentage` call.
+
+Applied the brands through the entire stack:
+- `@useatlas/types`: `AbuseCounters.errorRatePct: Percentage | null`, `AbuseThresholdConfig.errorRateThreshold: Ratio`, `WorkspaceSLASummary.errorRatePct / uptimePct: Percentage`, `SLAThresholds.errorRatePct: Percentage`.
+- `errorRatePct()` helper (from win #34) returns `Percentage`.
+- `getAbuseConfig()` wraps `envFloat("ATLAS_ABUSE_ERROR_RATE")` in `asRatio` at the env-var boundary.
+- `detail-panel.tsx` uses `percentageToRatio(counters.errorRatePct) > thresholds.errorRateThreshold` instead of raw `/ 100`. Threshold display uses `ratioToPercentage`.
+- Zod schemas transform-cast at the wire boundary: `z.number().transform((n): Percentage => asPercentage(n))` and similar for `Ratio`. `satisfies z.ZodType<…, unknown>` widens input so the schema stays drift-guarded while accepting plain-number input.
+- SLA surfaces (ee/src/sla/{metrics,alerting}.ts) wrap DB-aggregated values in `asPercentage` at the point of construction.
+- Platform SLA route brands the Zod-validated request body before calling the service layer.
+- Web admin SLA dialog brands `parseFloat(e.target.value)` on the user-input side so `editThresholds: SLAThresholds` stays typed.
+
+Tests cover both layers: runtime conversions (asPercentage / asRatio identity, percentageToRatio / ratioToPercentage math, round-trip precision at the 50.04% boundary that nearly regressed PR #1681) and compile-time invariants via `@ts-expect-error` directives for every cross-assignment that should fail (plain number → Percentage, plain number → Ratio, Percentage → Ratio without conversion, Ratio → Percentage without conversion). Any future refactor that erases the brand makes the directives stop being "expected" and the build fails.
+
+**Impact:**
+- The `errorRatePct / 100` footgun is now a compile-time error. A caller who forgets the conversion or applies it twice fails typecheck at the expression, not at runtime boundary rounding.
+- Zero runtime cost. JS output is pure `number`; the brand erases.
+- Abuse and SLA surfaces now share one vocabulary (`Percentage` = 0–100, `Ratio` = 0–1) — future code can't accidentally compare a Percentage to a Ratio the way PR #1681 nearly did.
+- One new module (`percentage.ts`) with two types + four constructors. Ten production sites updated. The convention-collision problem is resolved at the type layer, not by adding comments ("this is 0–100" vs "this is 0–1") that rot.
+
+**Category:** Type-level boundary enforcement for numeric units. Brand-via-unique-symbol converts structural `number` into nominal scale-specific types without runtime overhead. Generalizes to *any* unit-mixup risk: milliseconds vs seconds, bytes vs KB, basis points vs percentage, UTC vs local timestamps. Whenever the same primitive type means two incompatible things in different positions and the compiler silently lets you mix them, brand them. The explicit conversion call is the feature — it's where the bug would have been.

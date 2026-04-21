@@ -2,6 +2,10 @@ import { describe, it, expect, mock } from "bun:test";
 import {
   resolveAuthRateLimitConfig,
   resolveRequireEmailVerification,
+  resolveSessionCookieCacheMaxAge,
+  SESSION_COOKIE_CACHE_DEFAULT_SEC,
+  SESSION_COOKIE_CACHE_MIN_SEC,
+  SESSION_COOKIE_CACHE_MAX_SEC,
   buildEmailAndPasswordConfig,
   buildAdvancedConfig,
   _sendVerificationEmail,
@@ -317,5 +321,109 @@ describe("_sendVerificationEmail", () => {
         url: "https://example.com/verify?token=abc123",
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * Regression tests for #1733 (F-07).
+ *
+ * The earlier `cookieCache: { maxAge: 5 * 60 }` meant banned or
+ * compromised users stayed authenticated for up to 5 minutes after
+ * `auth.api.banUser(...)` or `revokeSession(...)` because the signed
+ * cookie short-circuited the DB lookup that surfaces the revocation.
+ * These tests pin the resolver so the default can't silently drift back
+ * and env-overrides can't restore a multi-minute revocation blind spot.
+ */
+describe("resolveSessionCookieCacheMaxAge", () => {
+  it("defaults to 30 seconds when the env var is unset", () => {
+    expect(resolveSessionCookieCacheMaxAge({} as NodeJS.ProcessEnv)).toBe(30);
+    expect(SESSION_COOKIE_CACHE_DEFAULT_SEC).toBe(30);
+  });
+
+  it("defaults when the env var is an empty string", () => {
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_DEFAULT_SEC);
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "   ",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_DEFAULT_SEC);
+  });
+
+  it("accepts valid values within the [5, 300] bound", () => {
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "5",
+      } as NodeJS.ProcessEnv),
+    ).toBe(5);
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "60",
+      } as NodeJS.ProcessEnv),
+    ).toBe(60);
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "300",
+      } as NodeJS.ProcessEnv),
+    ).toBe(300);
+  });
+
+  it("floors fractional values", () => {
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "30.9",
+      } as NodeJS.ProcessEnv),
+    ).toBe(30);
+  });
+
+  it("clamps below-minimum values up to 5 — never disables the cache silently", () => {
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_MIN_SEC);
+    expect(SESSION_COOKIE_CACHE_MIN_SEC).toBe(5);
+  });
+
+  it("clamps above-maximum values down to 300 — F-07 never opens a multi-minute revocation window", () => {
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "3600",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_MAX_SEC);
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "3000000",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_MAX_SEC);
+    expect(SESSION_COOKIE_CACHE_MAX_SEC).toBe(300);
+  });
+
+  it("falls back to the default on non-numeric or non-positive values", () => {
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "not-a-number",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_DEFAULT_SEC);
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_DEFAULT_SEC);
+    expect(
+      resolveSessionCookieCacheMaxAge({
+        ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC: "-10",
+      } as NodeJS.ProcessEnv),
+    ).toBe(SESSION_COOKIE_CACHE_DEFAULT_SEC);
+  });
+
+  it("F-07 invariant: default is materially shorter than the prior 5-minute value", () => {
+    // If someone edits SESSION_COOKIE_CACHE_DEFAULT_SEC back up to 300+,
+    // this test flips red — which is the whole point of pinning F-07.
+    expect(SESSION_COOKIE_CACHE_DEFAULT_SEC).toBeLessThan(5 * 60);
+    expect(SESSION_COOKIE_CACHE_DEFAULT_SEC).toBeLessThanOrEqual(30);
   });
 });

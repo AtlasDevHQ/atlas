@@ -333,14 +333,18 @@ See [Abuse Prevention](/platform-ops/abuse-prevention) for details on graduated 
 |----------|---------|-------------|
 | `ATLAS_SESSION_IDLE_TIMEOUT` | `0` (disabled) | Seconds of inactivity before a session is invalidated |
 | `ATLAS_SESSION_ABSOLUTE_TIMEOUT` | `0` (disabled) | Maximum session lifetime in seconds from creation |
+| `ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC` | `30` | Max age (seconds) of Better Auth's signed session cookie cache. Bounds how long a banned or revoked session keeps hitting authenticated routes before Atlas re-checks the DB. Clamped to `[5, 300]` — values outside the bound are logged and adjusted. Raising this trades revocation speed for fewer DB lookups per request |
 
 ```bash
 # 1 hour idle timeout, 24 hour absolute timeout
 ATLAS_SESSION_IDLE_TIMEOUT=3600
 ATLAS_SESSION_ABSOLUTE_TIMEOUT=86400
+
+# Tighten revocation to ~10 seconds (default is 30)
+ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC=10
 ```
 
-These can also be configured via [`atlas.config.ts`](/reference/config#session-timeouts) or changed at runtime via Admin > Settings.
+Idle and absolute timeouts can also be configured via [`atlas.config.ts`](/reference/config#session-timeouts) or changed at runtime via Admin > Settings. The cookie cache max age is env-only so it takes effect at Better Auth init.
 
 ---
 

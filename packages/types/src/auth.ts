@@ -10,7 +10,34 @@
 export const AUTH_MODES = ["none", "simple-key", "managed", "byot"] as const;
 export type AuthMode = (typeof AUTH_MODES)[number];
 
-export const ATLAS_ROLES = ["member", "admin", "owner", "platform_admin"] as const;
+/**
+ * Org-level roles — the assignable subset at workspace boundaries.
+ *
+ * These are the only roles a workspace admin may grant through routes like
+ * `PATCH /api/v1/admin/users/:id/role` and `POST /api/v1/admin/invitations`.
+ * Adding a role here means "workspace admins may hand this out." See F-10 in
+ * .claude/research/security-audit-1-2-3.md.
+ */
+export const ORG_ROLES = ["member", "admin", "owner"] as const;
+export type OrgRole = (typeof ORG_ROLES)[number];
+
+/**
+ * Platform-level roles — cross-org privileges.
+ *
+ * Granting one of these must go through a platform-admin-gated endpoint, never
+ * the per-workspace admin surface. Adding a role here means "only platform
+ * admins may hand this out." Keep this tuple and ORG_ROLES disjoint.
+ */
+export const PLATFORM_ROLES = ["platform_admin"] as const;
+export type PlatformRole = (typeof PLATFORM_ROLES)[number];
+
+/**
+ * All Atlas role values — union of ORG_ROLES ∪ PLATFORM_ROLES. Derived so
+ * that adding a new role forces a conscious bucket choice (org-assignable
+ * vs platform-only). The user.role column may legitimately hold any of
+ * these values.
+ */
+export const ATLAS_ROLES = [...ORG_ROLES, ...PLATFORM_ROLES] as const;
 export type AtlasRole = (typeof ATLAS_ROLES)[number];
 
 export const ATLAS_MODES = ["developer", "published"] as const;

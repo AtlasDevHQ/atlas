@@ -352,6 +352,26 @@ describe("CRUD operations", () => {
       ).rejects.toThrow("reserved role name");
     });
 
+    // Regression test for F-10 (#1752): workspace admin cannot create a
+    // custom role named `platform_admin`, which — combined with assignRole
+    // — would otherwise promote any org member to cross-org governance.
+    it("rejects platform_admin as a reserved role name", async () => {
+      await expect(
+        run(createRole("org-1", { name: "platform_admin", permissions: ["query"] })),
+      ).rejects.toThrow("reserved role name");
+    });
+
+    it("rejects every ATLAS_ROLES built-in name (case-insensitive)", async () => {
+      const { ATLAS_ROLES } = await import("@atlas/api/lib/auth/types");
+      for (const builtin of ATLAS_ROLES) {
+        // Lower-cased by the validator before matching, so any case of the
+        // reserved name is rejected.
+        await expect(
+          run(createRole("org-1", { name: builtin.toUpperCase(), permissions: ["query"] })),
+        ).rejects.toThrow("reserved role name");
+      }
+    });
+
     it("rejects duplicate names", async () => {
       ee.queueMockRows([{ id: "existing" }]); // uniqueness check finds existing
 
@@ -498,6 +518,22 @@ describe("Role assignment", () => {
       await expect(
         run(assignRole("org-1", "user-1", "analyst")),
       ).rejects.toThrow("not a member");
+    });
+
+    // Regression test for F-10 (#1752): belt-and-suspenders against a legacy
+    // custom_roles row named `platform_admin`. Even if createRole's reservation
+    // check was bypassed historically, assignRole refuses to write a built-in
+    // role name into member.role from the custom-role path.
+    it("rejects any ATLAS_ROLES built-in name as a custom role assignment (case-insensitive)", async () => {
+      const { ATLAS_ROLES } = await import("@atlas/api/lib/auth/types");
+      for (const builtin of ATLAS_ROLES) {
+        await expect(
+          run(assignRole("org-1", "user-1", builtin)),
+        ).rejects.toThrow("built-in Atlas role");
+        await expect(
+          run(assignRole("org-1", "user-1", builtin.toUpperCase())),
+        ).rejects.toThrow("built-in Atlas role");
+      }
     });
   });
 });

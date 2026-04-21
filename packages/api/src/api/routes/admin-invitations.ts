@@ -12,11 +12,9 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
-import type { AtlasRole } from "@atlas/api/lib/auth/types";
-import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, OrgRoleSchema, ORG_ROLE_ERROR_MESSAGE } from "./shared-schemas";
 
 const log = createLogger("admin-invitations");
 
@@ -28,10 +26,6 @@ const INVITE_EXPIRY_DAYS = 7;
 
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function isValidRole(role: unknown): role is AtlasRole {
-  return typeof role === "string" && (ATLAS_ROLES as readonly string[]).includes(role);
 }
 
 function resolveBaseUrl(req: Request): string {
@@ -146,15 +140,20 @@ export function registerInvitationRoutes(
     }
 
     const email = typeof body.email === "string" ? body.email.toLowerCase().trim() : "";
-    const role = body.role;
 
     if (!email || !isValidEmail(email)) {
       return c.json({ error: "invalid_request", message: "A valid email address is required.", requestId }, 400);
     }
 
-    if (!isValidRole(role)) {
-      return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}`, requestId }, 400);
+    // Invitations may only grant org-level roles. platform_admin must be
+    // granted through a platform-admin-gated endpoint — otherwise any workspace
+    // admin could invite a user and have them auto-promoted to cross-org
+    // governance on accept. See F-10 in .claude/research/security-audit-1-2-3.md.
+    const roleParse = OrgRoleSchema.safeParse(body.role);
+    if (!roleParse.success) {
+      return c.json({ error: "invalid_request", message: ORG_ROLE_ERROR_MESSAGE, requestId }, 400);
     }
+    const role = roleParse.data;
 
     // Enforce plan member limit before proceeding.
     // Count includes current members + pending invitations to prevent over-provisioning.

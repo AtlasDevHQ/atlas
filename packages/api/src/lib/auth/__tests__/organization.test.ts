@@ -88,13 +88,16 @@ describe("org-permissions access control", () => {
 // ---------------------------------------------------------------------------
 
 describe("ATLAS_ROLES", () => {
-  it("contains member, admin, owner (not viewer/analyst)", () => {
+  it("contains member, admin, owner, platform_admin", () => {
     expect(ATLAS_ROLES).toEqual(["member", "admin", "owner", "platform_admin"]);
   });
 
-  it("OrgRole is derived from AtlasRole (same values)", async () => {
+  // ORG_ROLES is the subset of ATLAS_ROLES that can be assigned through
+  // workspace admin endpoints (role change, invitations). `platform_admin` is
+  // intentionally excluded — see F-10 in security-audit-1-2-3.md.
+  it("ORG_ROLES is ATLAS_ROLES minus platform_admin", async () => {
     const { ORG_ROLES } = await import("@useatlas/types");
-    // ORG_ROLES is descending privilege, ATLAS_ROLES is ascending — same set
-    expect(new Set(ORG_ROLES)).toEqual(new Set(ATLAS_ROLES));
+    expect([...ORG_ROLES].sort()).toEqual(["admin", "member", "owner"]);
+    expect(new Set(ORG_ROLES)).toEqual(new Set(ATLAS_ROLES.filter((r) => r !== "platform_admin")));
   });
 });

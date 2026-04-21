@@ -6,8 +6,8 @@
  * AtlasUser represents a verified identity attached to a request.
  */
 
-export { AUTH_MODES, ATLAS_ROLES } from "@useatlas/types/auth";
-export type { AuthMode, AtlasRole, AtlasUser } from "@useatlas/types/auth";
+export { AUTH_MODES, ATLAS_ROLES, ORG_ROLES, PLATFORM_ROLES } from "@useatlas/types/auth";
+export type { AuthMode, AtlasRole, OrgRole, PlatformRole, AtlasUser } from "@useatlas/types/auth";
 
 import type { AuthMode, AtlasRole, AtlasUser } from "@useatlas/types/auth";
 

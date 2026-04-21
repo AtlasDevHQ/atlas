@@ -7,7 +7,11 @@
  */
 
 import type { AtlasRole } from "./auth";
-import { ATLAS_ROLES } from "./auth";
+
+// Re-export the canonical ORG_ROLES tuple from auth.ts so consumers can keep
+// importing `OrgRole` / `ORG_ROLES` from the organization module.
+export { ORG_ROLES } from "./auth";
+export type { OrgRole } from "./auth";
 
 export interface Organization {
   id: string;
@@ -18,11 +22,21 @@ export interface Organization {
   createdAt: string;
 }
 
+/**
+ * A member row's wire shape. The DB column stores any AtlasRole value —
+ * including `platform_admin` for cross-org administrators — so this field is
+ * typed as AtlasRole rather than the narrower OrgRole (the *assignable* subset).
+ *
+ * Narrowing `role` back to `OrgRole` here will break member-list rendering for
+ * platform admins and any consumer that relies on reading the stored role
+ * verbatim. The *assignable* constraint belongs at the write boundary
+ * (`OrgRoleSchema` in shared-schemas.ts), not the read type.
+ */
 export interface OrgMember {
   id: string;
   organizationId: string;
   userId: string;
-  role: OrgRole;
+  role: AtlasRole;
   createdAt: string;
   user?: {
     id: string;
@@ -36,7 +50,7 @@ export interface OrgInvitation {
   id: string;
   organizationId: string;
   email: string;
-  role: OrgRole;
+  role: AtlasRole;
   status: "pending" | "accepted" | "rejected" | "canceled";
   inviterId: string;
   expiresAt: string;
@@ -47,11 +61,3 @@ export interface OrgInvitation {
     slug: string;
   };
 }
-
-/**
- * Org roles in descending privilege order. Same values as AtlasRole,
- * listed high-to-low for display. Single source of truth is ATLAS_ROLES
- * in auth.ts — this is a reversed view for convenience.
- */
-export const ORG_ROLES: readonly AtlasRole[] = [...ATLAS_ROLES].reverse();
-export type OrgRole = AtlasRole;

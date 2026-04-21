@@ -5,11 +5,16 @@
     "dockerfilePath": "deploy/api/Dockerfile",
     "dockerfileContext": "../..",
     "watchPatterns": [
+      "bun.lock",
+      "package.json",
       "packages/api/**",
       "packages/react/**",
+      "packages/types/**",
+      "packages/schemas/**",
       "packages/cli/data/**",
       "packages/plugin-sdk/**",
       "plugins/**",
+      "ee/**",
       "semantic/**",
       "deploy/api/**",
       "deploy/api-apac/**"

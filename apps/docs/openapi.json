@@ -7100,7 +7100,7 @@
           "Onboarding Emails"
         ],
         "summary": "Unsubscribe from onboarding emails",
-        "description": "SaaS only. Unsubscribe a user from onboarding emails via the link in emails.",
+        "description": "SaaS only. Unsubscribes a user from onboarding emails. Requires a signed token bound to the userId (the link in every onboarding email already carries one).",
         "parameters": [
           {
             "schema": {
@@ -7111,11 +7111,21 @@
             "description": "User ID to unsubscribe",
             "name": "userId",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "HMAC-signed token bound to userId"
+            },
+            "required": false,
+            "description": "HMAC-signed token bound to userId",
+            "name": "token",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "Unsubscribed successfully",
+            "description": "Acknowledgement page. Returned even on token failure to avoid exposing whether the userId exists.",
             "content": {
               "text/html": {
                 "schema": {
@@ -7148,6 +7158,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "operationId": "getOnboardingEmailsUnsubscribe"
@@ -7159,7 +7179,7 @@
           "Onboarding Emails"
         ],
         "summary": "Resubscribe to onboarding emails",
-        "description": "SaaS only. Re-enable onboarding emails for a user.",
+        "description": "SaaS only. Re-enable onboarding emails for a user. Requires a signed token bound to the userId — this is a consent grant, so a missing or invalid token returns 403.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -7169,6 +7189,10 @@
                   "userId": {
                     "type": "string",
                     "description": "User ID to resubscribe"
+                  },
+                  "token": {
+                    "type": "string",
+                    "description": "HMAC-signed token bound to userId"
                   }
                 },
                 "required": [
@@ -7199,6 +7223,31 @@
           },
           "400": {
             "description": "Missing userId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid token",
             "content": {
               "application/json": {
                 "schema": {

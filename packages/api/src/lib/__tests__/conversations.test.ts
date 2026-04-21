@@ -916,13 +916,14 @@ describe("conversations module", () => {
       }
     });
 
-    it("returns org shareMode when set", async () => {
+    it("returns org shareMode and orgId when set", async () => {
       enableInternalDB();
       setResults(
         {
           rows: [{
             id: "c1",
             user_id: "u1",
+            org_id: "org-A",
             title: "Org conv",
             surface: "web",
             connection_id: null,
@@ -940,6 +941,36 @@ describe("conversations module", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.data.shareMode).toBe("org");
+        // orgId is required for the route layer's membership check (#1727)
+        expect(result.data.orgId).toBe("org-A");
+      }
+    });
+
+    it("returns orgId=null when org_id column is null (public / legacy conversations)", async () => {
+      enableInternalDB();
+      setResults(
+        {
+          rows: [{
+            id: "c1",
+            user_id: "u1",
+            org_id: null,
+            title: "Public conv",
+            surface: "web",
+            connection_id: null,
+            starred: false,
+            share_expires_at: null,
+            share_mode: "public",
+            created_at: "2024-01-01T00:00:00Z",
+            updated_at: "2024-01-01T00:00:00Z",
+          }],
+        },
+        { rows: [] },
+      );
+
+      const result = await getSharedConversation("public-token");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.orgId).toBeNull();
       }
     });
 

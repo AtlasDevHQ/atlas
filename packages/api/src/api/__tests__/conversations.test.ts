@@ -930,6 +930,7 @@ describe("conversations routes", () => {
           connectionId: null,
           starred: false,
           shareMode: "public" as const,
+          orgId: null,
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [
@@ -970,6 +971,7 @@ describe("conversations routes", () => {
           connectionId: null,
           starred: false,
           shareMode: "public" as const,
+          orgId: null,
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [],
@@ -1026,6 +1028,7 @@ describe("conversations routes", () => {
           connectionId: null,
           starred: false,
           shareMode: "org" as const,
+          orgId: "org-A",
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [],
@@ -1047,7 +1050,7 @@ describe("conversations routes", () => {
       expect(body.error).toBe("auth_required");
     });
 
-    it("returns 200 for org-scoped shares when authenticated", async () => {
+    it("returns 200 for org-scoped shares when requester belongs to the conversation's org", async () => {
       mockGetSharedConversation.mockResolvedValueOnce({
         ok: true,
         data: {
@@ -1058,6 +1061,7 @@ describe("conversations routes", () => {
           connectionId: null,
           starred: false,
           shareMode: "org" as const,
+          orgId: "org-A",
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [],
@@ -1066,7 +1070,12 @@ describe("conversations routes", () => {
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
-        user: { id: "u2", label: "org-user@test.com", mode: "simple-key" as const },
+        user: {
+          id: "u2",
+          label: "org-a-member@test.com",
+          mode: "simple-key" as const,
+          activeOrganizationId: "org-A",
+        },
       });
 
       const response = await app.fetch(
@@ -1077,6 +1086,130 @@ describe("conversations routes", () => {
       const body = await response.json() as Record<string, unknown>;
       expect(body.title).toBe("Org share");
       expect(body.shareMode).toBe("org");
+    });
+
+    // Regression for #1727 (F-01): before the fix, any authenticated caller
+    // could read an org-scoped share regardless of which org they belonged to.
+    it("returns 403 for org-scoped shares when requester belongs to a different org (#1727)", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org A secret",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          orgId: "org-A",
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [
+            { id: "m1", conversationId: VALID_ID, role: "user", content: "confidential", createdAt: "2024-01-01" },
+          ],
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-other",
+          label: "other-org-user@test.com",
+          mode: "simple-key" as const,
+          activeOrganizationId: "org-B",
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+      // Confirm content did not leak into the response
+      expect(body).not.toHaveProperty("messages");
+      expect(body).not.toHaveProperty("title");
+    });
+
+    // Fail-closed regression for #1727 — the schema allows share_mode='org'
+    // with org_id=NULL (createShareLink does not stamp orgId). Without a
+    // fail-closed check, any authenticated caller could read such a row.
+    it("returns 403 for org-scoped shares when the conversation has no orgId (#1727)", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Legacy org share",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          orgId: null,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [
+            { id: "m1", conversationId: VALID_ID, role: "user", content: "confidential", createdAt: "2024-01-01" },
+          ],
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-any",
+          label: "any-user@test.com",
+          mode: "simple-key" as const,
+          activeOrganizationId: "org-A",
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+      expect(body).not.toHaveProperty("messages");
+    });
+
+    it("returns 403 for org-scoped shares when requester has no active org (#1727)", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org A secret",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          orgId: "org-A",
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-orphan",
+          label: "no-org@test.com",
+          mode: "simple-key" as const,
+          // No activeOrganizationId — freshly signed-up user with zero memberships
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
     });
 
     it("returns 500 for org-scoped shares when authenticateRequest throws", async () => {
@@ -1090,6 +1223,7 @@ describe("conversations routes", () => {
           connectionId: null,
           starred: false,
           shareMode: "org" as const,
+          orgId: "org-A",
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [],
@@ -1151,6 +1285,7 @@ describe("conversations routes", () => {
           connectionId: null,
           starred: false,
           shareMode: "public" as const,
+          orgId: null,
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [

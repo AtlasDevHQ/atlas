@@ -448,7 +448,7 @@ Total routes audited: ~55 top-level paths across 70+ files.
 Every handler accepts `:id` from the path as `orgId` and operates on that
 target org with no check that the caller is an admin of it (or even a member).
 
-Reproduction outline (needs managed auth + two orgs):
+Reproduction outline (needs internal DB + two orgs; no other preconditions):
 1. Alice is admin in orgA (effective role = `admin`). Bob's orgB exists with
    id `org_bob`.
 2. `GET /api/v1/admin/organizations/` → lists *all* orgs platform-wide, including orgB.
@@ -467,7 +467,8 @@ sub-routers.
 
 `admin-abuse.ts` uses `createAdminRouter()` *without* `requireOrgContext()`.
 
-Reproduction outline (SaaS with abuse module):
+Reproduction outline (any deployment with abuse events recorded — routes
+are mounted unconditionally, not EE-gated):
 1. Acme (orgA) is a paying customer; BadGuy (orgB) was auto-suspended by the
    abuse module for unusual query patterns.
 2. Alice (workspace admin in orgA) calls `GET /api/v1/admin/abuse/` → list

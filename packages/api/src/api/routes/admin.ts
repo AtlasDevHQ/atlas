@@ -30,7 +30,7 @@ import {
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { getConfig } from "@atlas/api/lib/config";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
-import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
+import { ATLAS_ROLES, ORG_ROLES } from "@atlas/api/lib/auth/types";
 import {
   getSemanticRoot,
   isValidEntityName,
@@ -474,10 +474,18 @@ async function getAdminApi(): Promise<AdminApi | null> {
   return getAuthInstance().api as unknown as AdminApi;
 }
 
-/** Validate that a role string is a valid Atlas role. */
+/** Validate that a role string is a valid Atlas role (includes `platform_admin`). */
 function isValidRole(role: unknown): role is AtlasRole {
   return typeof role === "string" && (ATLAS_ROLES as readonly string[]).includes(role);
 }
+
+/**
+ * Schema for roles that workspace admins are allowed to assign through the
+ * admin surface (role change, invitations). Excludes `platform_admin`, which
+ * must only be granted through a platform-admin-gated endpoint. See F-10 /
+ * issue #1752 in .claude/research/security-audit-1-2-3.md.
+ */
+const OrgRoleSchema = z.enum(ORG_ROLES);
 
 
 // ---------------------------------------------------------------------------
@@ -1803,11 +1811,21 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
     return null;
   });
-  const newRole = body?.role;
 
-  if (!isValidRole(newRole)) {
-    return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
+  // Reject platform_admin here. Granting cross-org privilege must go through a
+  // platform-admin-gated endpoint, not this per-workspace role change. See F-10.
+  const roleParse = OrgRoleSchema.safeParse(body?.role);
+  if (!roleParse.success) {
+    return c.json(
+      {
+        error: "invalid_request",
+        message: `Invalid role. Must be one of: ${ORG_ROLES.join(", ")}. platform_admin must be granted through platform-admin endpoints.`,
+        requestId,
+      },
+      400,
+    );
   }
+  const newRole = roleParse.data;
 
   // Self-protection: cannot change own role
   if (authResult.user?.id === userId) {

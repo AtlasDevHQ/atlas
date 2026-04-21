@@ -313,6 +313,41 @@ describe("Admin routes — user invitations", () => {
       expect(body.message).toContain("role");
     });
 
+    // Regression test for F-10 (#1752): invitations cannot grant platform_admin.
+    // The invitee would otherwise become platform_admin on accept.
+    it("rejects platform_admin role in invitation body", async () => {
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/users/invite", "POST", {
+          email: "new@example.com",
+          role: "platform_admin",
+        }),
+      );
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toMatch(/platform_admin/);
+    });
+
+    for (const role of ["member", "admin", "owner"] as const) {
+      it(`accepts invitation with org role "${role}"`, async () => {
+        mockInternalQuery
+          .mockResolvedValueOnce([{ count: 0 }]) // member count for resource limit
+          .mockResolvedValueOnce([]) // user check
+          .mockResolvedValueOnce([]) // pending check
+          .mockResolvedValueOnce([{ id: `inv-${role}`, created_at: "2026-01-01T00:00:00Z" }]); // INSERT
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/users/invite", "POST", {
+            email: `${role}@example.com`,
+            role,
+          }),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.role).toBe(role);
+      });
+    }
+
     it("rejects invitation when user already exists", async () => {
       // Route order: member count → user check → pending check (Promise.all for user+pending)
       mockInternalQuery

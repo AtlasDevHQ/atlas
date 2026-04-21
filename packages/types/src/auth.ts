@@ -13,6 +13,15 @@ export type AuthMode = (typeof AUTH_MODES)[number];
 export const ATLAS_ROLES = ["member", "admin", "owner", "platform_admin"] as const;
 export type AtlasRole = (typeof ATLAS_ROLES)[number];
 
+/**
+ * Org-level roles that may be assigned through workspace admin endpoints
+ * (role changes, invitations). Derived from ATLAS_ROLES minus `platform_admin`:
+ * `platform_admin` is a cross-org privilege and must only be granted through
+ * platform-admin-gated endpoints, never the per-workspace admin surface.
+ */
+export const ORG_ROLES = ["member", "admin", "owner"] as const;
+export type OrgRole = (typeof ORG_ROLES)[number];
+
 export const ATLAS_MODES = ["developer", "published"] as const;
 export type AtlasMode = (typeof ATLAS_MODES)[number];
 

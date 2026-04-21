@@ -214,9 +214,13 @@ export function createApiTestMocks(
 
   // ── Auth types ────────────────────────────────────────────────
 
+  // Keep ATLAS_ROLES / ORG_ROLES aligned with the real tuples in
+  // packages/types/src/auth.ts — drift here masks role-escalation bugs
+  // like F-10 (#1752) in tests.
   mock.module("@atlas/api/lib/auth/types", () => ({
     AUTH_MODES: ["none", "simple-key", "byot", "managed"],
-    ATLAS_ROLES: ["member", "admin", "owner"],
+    ATLAS_ROLES: ["member", "admin", "owner", "platform_admin"],
+    ORG_ROLES: ["member", "admin", "owner"],
     createAtlasUser: (
       id: string,
       mode: string,

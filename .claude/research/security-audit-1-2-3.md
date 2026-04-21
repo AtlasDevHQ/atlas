@@ -517,6 +517,13 @@ platform-admin-gated endpoint. Two options:
     && authResult.user?.role !== "platform_admin") return 403`.
 Option (a) is preferred because it also closes the invitation path.
 
+**Status: fixed (PR #1758).** Option (a) implemented: new `ORG_ROLES` tuple in
+`@useatlas/types/auth` (`["member", "admin", "owner"]`), an `OrgRoleSchema =
+z.enum(ORG_ROLES)` parsed at both `changeUserRoleRoute` and the invitation POST.
+The test-fixture `ATLAS_ROLES` mock (which was masking the bug by omitting
+`platform_admin`) was realigned with the production tuple and now includes
+`ORG_ROLES`. Regression tests cover both routes.
+
 **F-11 — Conversation CRUD by `:id` filters by `user_id` only, not by the caller's active `org_id`** — P2
 
 `packages/api/src/lib/conversations.ts` `getConversation`, `starConversation`,
@@ -657,7 +664,7 @@ No new consumers since 1.2.2.
 |---|---|---|---|---|
 | F-08 | P0 | Cross-tenant admin | `/api/v1/admin/organizations/**` | #1750 |
 | F-09 | P0 | Cross-tenant admin | `/api/v1/admin/abuse/**` | #1751 |
-| F-10 | P0 | Privilege escalation | `/api/v1/admin/users/:id/role`, `/api/v1/admin/invitations` | #1752 |
+| F-10 | P0 | Privilege escalation | `/api/v1/admin/users/:id/role`, `/api/v1/admin/invitations` | #1752 — fixed (PR #1758) |
 | F-11 | P2 | Retention / scope | Conversation CRUD | #1753 |
 | F-12 | P2 | Retention / scope | Pending-action CRUD | #1754 |
 | F-13 | P2 | Cross-tenant write | `/api/v1/admin/approval/expire` | #1755 |

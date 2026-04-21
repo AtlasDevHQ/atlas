@@ -156,6 +156,47 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(200);
       expect(mockSetRole).toHaveBeenCalled();
     });
+
+    // Regression test for F-10 (#1752): workspace admin cannot escalate an org
+    // member to platform_admin via the role-change endpoint. The endpoint now
+    // accepts only org-level roles; platform_admin must be granted through a
+    // platform-admin-gated endpoint.
+    it("rejects platform_admin role (workspace admin cannot escalate to platform admin)", async () => {
+      setWorkspaceAdmin("org-1");
+      mockMembershipFor("user-in-org-1");
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: "platform_admin" }),
+      );
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string; message: string };
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toMatch(/platform_admin/);
+      expect(mockSetRole).not.toHaveBeenCalled();
+    });
+
+    it("rejects platform_admin even when caller is already platform admin (must use platform endpoint)", async () => {
+      setPlatformAdmin();
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "platform_admin" }),
+      );
+      expect(res.status).toBe(400);
+      expect(mockSetRole).not.toHaveBeenCalled();
+    });
+
+    for (const role of ["member", "admin", "owner"] as const) {
+      it(`accepts org role "${role}"`, async () => {
+        setWorkspaceAdmin("org-1");
+        mockMembershipFor("user-in-org-1");
+
+        const res = await app.fetch(
+          adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetRole).toHaveBeenCalled();
+      });
+    }
   });
 
   describe("POST /api/v1/admin/users/:id/ban", () => {

@@ -139,9 +139,19 @@ const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs
   ({ allowed: true }),
 );
 
+// Mutable auth mock so install tests can swap between authenticated admin / unauth / non-admin.
+let authResultForTests: { authenticated: boolean; mode: string; status?: number; error?: string; user?: unknown } = {
+  authenticated: true,
+  mode: "none",
+  user: null,
+};
+const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(() =>
+  Promise.resolve(authResultForTests),
+);
+
 mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mockCheckRateLimit,
-  authenticateRequest: mock(() => Promise.resolve({ mode: "none" as const, user: null })),
+  authenticateRequest: mockAuthenticateRequest,
   getClientIP: mock(() => "127.0.0.1"),
   rateLimitCleanupTick: mock(() => {}),
 }));
@@ -175,6 +185,9 @@ describe("/api/v1/slack", () => {
 
   beforeEach(() => {
     process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
+    // Default: implicit-admin (mode "none") so existing install tests behave as before.
+    authResultForTests = { authenticated: true, mode: "none", user: null };
+    mockAuthenticateRequest.mockClear();
     mockRunAgent.mockClear();
     mockPostMessage.mockClear();
     mockUpdateMessage.mockClear();
@@ -743,6 +756,46 @@ describe("/api/v1/slack", () => {
       const resp = await app.request("/api/v1/slack/install", { method: "GET" });
       expect(resp.status).toBe(501);
     });
+
+    // F-04 (security): /install must require authenticated admin so the OAuth state
+    // binds the resulting installation to a real org. See packages/api/src/api/routes/slack.ts.
+    it("returns 401 when caller is unauthenticated (managed mode)", async () => {
+      process.env.SLACK_CLIENT_ID = "test_client_id";
+      authResultForTests = {
+        authenticated: false,
+        mode: "managed",
+        status: 401,
+        error: "Authentication required",
+      };
+      const app = await getApp();
+
+      const resp = await app.request("/api/v1/slack/install", {
+        method: "GET",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(401);
+      const body = (await resp.json()) as Record<string, unknown>;
+      expect(body.requestId).toBeDefined();
+    });
+
+    it("returns 403 when caller is authenticated but not an admin", async () => {
+      process.env.SLACK_CLIENT_ID = "test_client_id";
+      authResultForTests = {
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-1", mode: "managed", label: "User", role: "member", activeOrganizationId: "org-test" },
+      };
+      const app = await getApp();
+
+      const resp = await app.request("/api/v1/slack/install", {
+        method: "GET",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(403);
+      const body = (await resp.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden_role");
+      expect(body.requestId).toBeDefined();
+    });
   });
 
   describe("GET /api/v1/slack/callback", () => {
@@ -852,6 +905,41 @@ describe("/api/v1/slack", () => {
         method: "GET",
       });
       expect(resp.status).toBe(501);
+    });
+
+    // F-04 (security): in SaaS mode, an OAuth state with orgId=undefined
+    // means /install was reached without a valid admin session — the
+    // callback must refuse to bind the workspace to a NULL org.
+    it("returns 400 in SaaS mode when oauth state has no orgId", async () => {
+      process.env.SLACK_CLIENT_ID = "test_client_id";
+      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
+
+      // Mint a state row with orgId=undefined (simulates pre-fix data or
+      // a state row tampered with). Default fallback store is in-memory.
+      const { saveOAuthState, _resetMemoryFallback } = await import("@atlas/api/lib/auth/oauth-state");
+      _resetMemoryFallback();
+      await saveOAuthState("orphan-state", { provider: "slack" });
+
+      // Flip deploy mode to saas. Cast through the test setter to avoid
+      // building a full ResolvedConfig — only deployMode is read in this path.
+      const config = await import("@atlas/api/lib/config");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+      config._setConfigForTest({ deployMode: "saas" } as any);
+
+      try {
+        const app = await getApp();
+        const resp = await app.request(
+          "/api/v1/slack/callback?code=test_code&state=orphan-state",
+          { method: "GET" },
+        );
+        expect(resp.status).toBe(400);
+        const body = (await resp.json()) as Record<string, unknown>;
+        expect(body.error).toBe("missing_org_binding");
+        // Ensure we never reached the saveInstallation path
+        expect(mockSaveInstallation).not.toHaveBeenCalled();
+      } finally {
+        config._setConfigForTest(null);
+      }
     });
   });
 });

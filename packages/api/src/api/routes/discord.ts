@@ -16,8 +16,10 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { saveDiscordInstallation } from "@atlas/api/lib/discord/store";
 import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
-import { ErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
+import { adminAuthPreamble } from "./admin-auth";
+import { getConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("discord");
 
@@ -33,10 +35,28 @@ const installRoute = createRoute({
   tags: ["Discord"],
   summary: "Discord OAuth install redirect",
   description:
-    "Redirects to the Discord OAuth2 authorize page. Requires DISCORD_CLIENT_ID to be configured.",
+    "Redirects to the Discord OAuth2 authorize page. Requires DISCORD_CLIENT_ID to be configured. " +
+    "Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting " +
+    "guild authorization to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
   responses: {
     302: {
       description: "Redirect to Discord OAuth2 authorize page",
+    },
+    401: {
+      description: "Not authenticated",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Caller is not an admin/owner of the workspace",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limited",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Failed to save OAuth state",
+      content: { "application/json": { schema: ErrorSchema } },
     },
     501: {
       description: "Discord not configured",
@@ -94,19 +114,16 @@ discord.openapi(installRoute, async (c) => {
     return c.json({ error: "discord_not_configured", message: "Discord not configured" }, 501);
   }
 
-  // Extract orgId from session if available (admin clicking "Connect to Discord")
-  let orgId: string | undefined;
-  try {
-    const authResult = c.get("authResult" as never) as
-      | { user?: { activeOrganizationId?: string } }
-      | undefined;
-    orgId = authResult?.user?.activeOrganizationId ?? undefined;
-  } catch (err) {
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err) },
-      "authResult not available on Discord install route",
-    );
+  // F-04 (security): require authenticated admin so the OAuth state binds the
+  // resulting guild authorization to a real org. Anonymous /install was an
+  // install-hijack vector — an attacker could trigger the redirect and have
+  // the guild bound to org_id = NULL, then later be claimed by another tenant.
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers);
   }
+  const orgId = preamble.authResult.user?.activeOrganizationId ?? undefined;
 
   const nonce = crypto.randomUUID();
   try {
@@ -175,6 +192,19 @@ discord.openapi(callbackRoute, async (c) => {
   if (oauthState.provider !== "discord") {
     log.warn({ expected: "discord", got: oauthState.provider, requestId }, "OAuth state provider mismatch");
     return c.json({ error: "invalid_state", message: "Invalid state parameter." }, 400);
+  }
+
+  // F-04 (security): in SaaS mode, every install must bind to an org. A
+  // missing orgId here means /install was reached without a valid admin
+  // session (or the row was tampered with) — refuse to bind the guild.
+  // Self-hosted is allowed to keep platform-wide installs (orgId may be
+  // undefined when there is no internal DB / no org concept).
+  if (oauthState.orgId === undefined && getConfig()?.deployMode === "saas") {
+    log.warn({ requestId }, "Rejecting Discord install: SaaS mode requires orgId on OAuth state");
+    return c.json(
+      { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin." },
+      400,
+    );
   }
 
   // Check for error from Discord (user denied authorization)

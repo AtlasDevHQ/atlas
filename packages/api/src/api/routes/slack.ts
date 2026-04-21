@@ -26,7 +26,9 @@ import { getBotToken, saveInstallation } from "@atlas/api/lib/slack/store";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import { createConversation, addMessage, getConversation, generateTitle } from "@atlas/api/lib/conversations";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
-import { ErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuthPreamble } from "./admin-auth";
+import { getConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("slack");
 
@@ -154,10 +156,24 @@ const installRoute = createRoute({
   tags: ["Slack"],
   summary: "Slack OAuth install redirect",
   description:
-    "Redirects to the Slack OAuth authorization page. Requires SLACK_CLIENT_ID to be configured.",
+    "Redirects to the Slack OAuth authorization page. Requires SLACK_CLIENT_ID to be configured. " +
+    "Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting " +
+    "installation to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
   responses: {
     302: {
       description: "Redirect to Slack OAuth authorization page",
+    },
+    401: {
+      description: "Not authenticated",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Caller is not an admin/owner of the workspace",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limited",
+      content: { "application/json": { schema: AuthErrorSchema } },
     },
     501: {
       description: "OAuth not configured",
@@ -684,19 +700,16 @@ slack.openapi(installRoute, async (c) => {
     return c.json({ error: "oauth_not_configured", message: "OAuth not configured" }, 501);
   }
 
-  // Extract orgId from session if available
-  let orgId: string | undefined;
-  try {
-    const authResult = c.get("authResult" as never) as
-      | { user?: { activeOrganizationId?: string } }
-      | undefined;
-    orgId = authResult?.user?.activeOrganizationId ?? undefined;
-  } catch (err) {
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err) },
-      "authResult not available on Slack install route",
-    );
+  // F-04 (security): require authenticated admin so the OAuth state binds the
+  // resulting installation to a real org. Anonymous /install was an install-hijack
+  // vector — an attacker could trigger the redirect and have the third-party
+  // workspace bound to org_id = NULL, then later be claimed by another tenant.
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers);
   }
+  const orgId = preamble.authResult.user?.activeOrganizationId ?? undefined;
 
   const state = crypto.randomUUID();
   await saveOAuthState(state, { orgId, provider: "slack" });
@@ -720,6 +733,19 @@ slack.openapi(callbackRoute, async (c) => {
   const oauthState = state ? await consumeOAuthState(state) : null;
   if (!oauthState) {
     return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
+  }
+
+  // F-04 (security): in SaaS mode, every install must bind to an org. A
+  // missing orgId here means /install was reached without a valid admin
+  // session (or the row was tampered with) — refuse to bind the workspace.
+  // Self-hosted is allowed to keep platform-wide installs (orgId may be
+  // undefined when there is no internal DB / no org concept).
+  if (oauthState.orgId === undefined && getConfig()?.deployMode === "saas") {
+    log.warn({ state }, "Rejecting Slack install: SaaS mode requires orgId on OAuth state");
+    return c.json(
+      { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin." },
+      400,
+    );
   }
 
   const code = c.req.query("code");

@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(34);
+    expect(count).toBe(35);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -142,6 +142,7 @@ describe("runMigrations", () => {
         "0031_abuse_events_enum_checks.sql",
         "0032_backups_status_check.sql",
         "0033_custom_domains_dns_verification.sql",
+        "0034_share_mode_org_requires_org_id.sql",
       ],
     });
 
@@ -451,6 +452,85 @@ describe("0032_backups_status_check.sql", () => {
       /DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi,
     ) ?? [];
     expect(idempotentBlocks.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0034_share_mode_org_requires_org_id.sql
+// ---------------------------------------------------------------------------
+
+describe("0034_share_mode_org_requires_org_id.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0034_share_mode_org_requires_org_id.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("remediates bad rows on both tables before adding the CHECK constraint", () => {
+    // Ordering is load-bearing: a pre-drifted row with share_mode='org' and
+    // org_id IS NULL would block the ADD CONSTRAINT if the remediation ran
+    // second. See 0031 / 0032 for the same pattern.
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    const updateConvIdx = sql.search(/UPDATE\s+conversations[\s\S]*?share_mode\s*=\s*'public'/i);
+    const updateDashIdx = sql.search(/UPDATE\s+dashboards[\s\S]*?share_mode\s*=\s*'public'/i);
+    const checkConvIdx = sql.search(/ALTER\s+TABLE\s+conversations[\s\S]*?CONSTRAINT\s+chk_org_scoped_share/i);
+    const checkDashIdx = sql.search(/ALTER\s+TABLE\s+dashboards[\s\S]*?CONSTRAINT\s+chk_org_scoped_share/i);
+
+    expect(updateConvIdx).toBeGreaterThan(-1);
+    expect(updateDashIdx).toBeGreaterThan(-1);
+    expect(checkConvIdx).toBeGreaterThan(-1);
+    expect(checkDashIdx).toBeGreaterThan(-1);
+
+    expect(updateConvIdx).toBeLessThan(checkConvIdx);
+    expect(updateDashIdx).toBeLessThan(checkDashIdx);
+  });
+
+  it("targets exactly the share_mode='org' AND org_id IS NULL predicate in both remediations", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    const convPredicate = /UPDATE\s+conversations\s+SET\s+share_mode\s*=\s*'public'\s+WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
+    const dashPredicate = /UPDATE\s+dashboards\s+SET\s+share_mode\s*=\s*'public'\s+WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
+
+    expect(sql).toMatch(convPredicate);
+    expect(sql).toMatch(dashPredicate);
+  });
+
+  it("encodes the CHECK as `share_mode <> 'org' OR org_id IS NOT NULL` on both tables", () => {
+    // This is the invariant from #1737 — any deviation (e.g. swapping the
+    // operator) would silently drop enforcement for rows with share_mode
+    // <> 'org', which is fine, but an equality check would block valid
+    // 'public' rows. Pin the exact shape.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    const convCheck = /ALTER\s+TABLE\s+conversations\s+ADD\s+CONSTRAINT\s+chk_org_scoped_share\s+CHECK\s*\(\s*share_mode\s*<>\s*'org'\s+OR\s+org_id\s+IS\s+NOT\s+NULL\s*\)/i;
+    const dashCheck = /ALTER\s+TABLE\s+dashboards\s+ADD\s+CONSTRAINT\s+chk_org_scoped_share\s+CHECK\s*\(\s*share_mode\s*<>\s*'org'\s+OR\s+org_id\s+IS\s+NOT\s+NULL\s*\)/i;
+
+    expect(sql).toMatch(convCheck);
+    expect(sql).toMatch(dashCheck);
+  });
+
+  it("emits a RAISE NOTICE for each table when drift rows are coerced", () => {
+    // Operators need to see "we just flipped N shares back to public" —
+    // silent rewrites are the failure mode 0031 shipped with.
+    // Strip comment lines before matching so the header's prose
+    // reference to RAISE NOTICE doesn't inflate the count.
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const sql = raw.split("\n").filter((line) => !line.trim().startsWith("--")).join("\n");
+    const notices = sql.match(/RAISE\s+NOTICE\s+'[^']*coerced/gi) ?? [];
+    expect(notices.length).toBe(2);
+
+    const diagnostics = sql.match(/GET\s+DIAGNOSTICS[^;]*ROW_COUNT/gi) ?? [];
+    expect(diagnostics.length).toBe(2);
+  });
+
+  it("wraps both ADD CONSTRAINTs in idempotent DO $$ … duplicate_object guards", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+    // Two idempotency guards — one per constraint. The RAISE NOTICE
+    // blocks are separate DO $$ without an EXCEPTION clause.
+    const idempotentBlocks = sql.match(
+      /DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi,
+    ) ?? [];
+    expect(idempotentBlocks.length).toBe(2);
   });
 });
 

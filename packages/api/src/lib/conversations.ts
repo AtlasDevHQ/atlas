@@ -666,17 +666,58 @@ function computeExpiresAt(expiresIn?: ShareExpiryKey | null): string | null {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-/** Enable sharing for a conversation. Returns the share token. Auth-scoped when userId is provided. */
+/** Failure reason for shareConversation — extends CrudFailReason with the invariant violation. */
+export type ShareConversationFailReason = CrudFailReason | "invalid_org_scope";
+
+/** Result type for shareConversation — carries the broader failure enum. */
+export type ShareConversationResult =
+  | { ok: true; data: { token: string; expiresAt: string | null; shareMode: ShareMode } }
+  | { ok: false; reason: ShareConversationFailReason };
+
+/**
+ * Enable sharing for a conversation. Returns the share token. Auth-scoped
+ * when userId is provided.
+ *
+ * Rejects `share_mode='org'` requests when the target conversation has no
+ * `org_id`. This is the same invariant the DB CHECK constraint
+ * (`chk_org_scoped_share`, 0034) enforces — raising it at the application
+ * layer surfaces a structured `invalid_org_scope` reason instead of the
+ * caller having to match on a Postgres error string. See #1737.
+ */
 export async function shareConversation(
   id: string,
   userId?: string | null,
   opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode },
-): Promise<CrudDataResult<{ token: string; expiresAt: string | null; shareMode: ShareMode }>> {
+): Promise<ShareConversationResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const token = generateShareToken();
     const expiresAt = computeExpiresAt(opts?.expiresIn);
     const shareMode: ShareMode = opts?.shareMode ?? "public";
+
+    // Belt-and-suspenders for the DB CHECK (#1737): if the caller asks for
+    // org-scoped sharing, the target conversation must already have an
+    // org_id, otherwise the share is meaningless and opens F-01.
+    if (shareMode === "org") {
+      const orgRows = userId
+        ? await internalQuery<{ org_id: string | null }>(
+            `SELECT org_id FROM conversations WHERE id = $1 AND user_id = $2`,
+            [id, userId],
+          )
+        : await internalQuery<{ org_id: string | null }>(
+            `SELECT org_id FROM conversations WHERE id = $1`,
+            [id],
+          );
+      if (orgRows.length === 0) return { ok: false, reason: "not_found" };
+      if (!orgRows[0].org_id) {
+        log.warn(
+          { conversationId: id },
+          "Refusing to create org-scoped share: conversation has no org_id (#1737)",
+        );
+        return { ok: false, reason: "invalid_org_scope" };
+      }
+    }
+
     const rows = userId
       ? await internalQuery<{ share_token: string }>(
           `UPDATE conversations SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()

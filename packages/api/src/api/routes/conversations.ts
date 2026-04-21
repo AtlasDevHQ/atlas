@@ -1105,6 +1105,12 @@ conversations.openapi(shareConversationRoute, async (c) => {
       shareMode: opts?.shareMode,
     }));
     if (!shareResult.ok) {
+      if (shareResult.reason === "invalid_org_scope") {
+        return c.json({
+          error: "invalid_request",
+          message: "Cannot create an org-scoped share for a conversation with no organization.",
+        }, 400);
+      }
       const fail = crudFailResponse(shareResult.reason, requestId);
       return c.json(fail.body, fail.status);
     }

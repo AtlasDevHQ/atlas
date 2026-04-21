@@ -96,6 +96,8 @@ export const conversations = pgTable(
     index("idx_conversations_starred").on(t.userId, t.starred).where(sql`starred = true`),
     uniqueIndex("idx_conversations_share_token").on(t.shareToken).where(sql`share_token IS NOT NULL`),
     check("chk_share_mode", sql`share_mode IN ('public', 'org')`),
+    // share_mode='org' without an org_id is the F-01 bug class — see #1737 / 0034.
+    check("chk_org_scoped_share", sql`share_mode <> 'org' OR org_id IS NOT NULL`),
     index("idx_conversations_org").on(t.orgId),
   ],
 );
@@ -1299,6 +1301,8 @@ export const dashboards = pgTable(
     index("idx_dashboards_owner").on(t.ownerId),
     uniqueIndex("idx_dashboards_share_token").on(t.shareToken).where(sql`share_token IS NOT NULL`),
     check("chk_dashboard_share_mode", sql`share_mode IN ('public', 'org')`),
+    // share_mode='org' without an org_id is the F-01 bug class — see #1737 / 0034.
+    check("chk_org_scoped_share", sql`share_mode <> 'org' OR org_id IS NOT NULL`),
     index("idx_dashboards_next_refresh").on(t.nextRefreshAt).where(sql`refresh_schedule IS NOT NULL AND deleted_at IS NULL`),
   ],
 );

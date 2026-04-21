@@ -906,6 +906,12 @@ authed.openapi(
       }));
 
       if (!result.ok) {
+        if (result.reason === "invalid_org_scope") {
+          return c.json({
+            error: "invalid_request",
+            message: "Cannot create an org-scoped share for a dashboard with no organization.",
+          }, 400);
+        }
         const fail = crudFailResponse(result.reason, requestId);
         return c.json(fail.body, fail.status);
       }

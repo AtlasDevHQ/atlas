@@ -14,12 +14,13 @@ import {
   type Mock,
 } from "bun:test";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
-import type { CrudResult, CrudDataResult } from "@atlas/api/lib/conversations";
+import type { CrudResult, CrudDataResult, ShareConversationResult } from "@atlas/api/lib/conversations";
 import type { ConversationWithMessages } from "@atlas/api/lib/conversation-types";
 
-import type { ShareMode } from "@useatlas/types/share";
-
-type ShareResult = CrudDataResult<{ token: string; expiresAt: string | null; shareMode: ShareMode }>;
+// ShareConversationResult is a superset of CrudDataResult with an extra
+// `invalid_org_scope` reason (#1737). Use the canonical type so fake
+// results can exercise the new failure mode.
+type ShareResult = ShareConversationResult;
 
 // --- Mocks ---
 
@@ -792,6 +793,26 @@ describe("conversations routes", () => {
 
       const body = await response.json() as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
+    });
+
+    // Regression for #1737 — the DB CHECK (chk_org_scoped_share, 0034)
+    // forbids share_mode='org' with org_id=NULL, but the route should
+    // surface a structured 400 instead of a Postgres error when
+    // shareConversation reports `invalid_org_scope`.
+    it("returns 400 when shareConversation reports invalid_org_scope (#1737)", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: false, reason: "invalid_org_scope" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "org" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+      expect((body.message as string).toLowerCase()).toContain("organization");
     });
 
     it("returns 400 for malformed JSON body", async () => {

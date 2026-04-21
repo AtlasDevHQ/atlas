@@ -674,17 +674,50 @@ describe("conversations module", () => {
       }
     });
 
-    it("sets shareMode to org when specified", async () => {
+    it("sets shareMode to org when specified (conversation has org_id)", async () => {
       enableInternalDB();
-      setResults({ rows: [{ share_token: "tok" }] });
+      // First query: preflight org_id lookup (#1737 invariant).
+      // Second query: the UPDATE that writes the share token.
+      setResults(
+        { rows: [{ org_id: "org-A" }] },
+        { rows: [{ share_token: "tok" }] },
+      );
 
       const result = await shareConversation("c1", null, { shareMode: "org" });
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.data.shareMode).toBe("org");
       }
-      // Verify the SQL includes share_mode param
-      expect(queryCalls[0].params?.[2]).toBe("org");
+      // First call is the preflight SELECT, second is the UPDATE.
+      expect(queryCalls[0].sql).toContain("SELECT org_id FROM conversations");
+      expect(queryCalls[1].sql).toContain("UPDATE conversations");
+      expect(queryCalls[1].params?.[2]).toBe("org");
+    });
+
+    // Regression guard for #1737. share_mode='org' on a conversation with
+    // org_id=NULL is the F-01 bug-class — the DB CHECK constraint
+    // (chk_org_scoped_share, 0034) enforces this at the schema level; this
+    // test pins the same rejection at the application layer so the route
+    // can surface a structured 400 instead of relying on a Postgres error.
+    it("rejects shareMode='org' with invalid_org_scope when conversation has no org_id (#1737)", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ org_id: null }] });
+
+      const result = await shareConversation("c1", "u1", { shareMode: "org" });
+      expect(result).toEqual({ ok: false, reason: "invalid_org_scope" });
+      // Ensure the UPDATE never ran — we short-circuited on the preflight.
+      expect(queryCalls).toHaveLength(1);
+      expect(queryCalls[0].sql).toContain("SELECT org_id FROM conversations");
+    });
+
+    it("returns not_found for shareMode='org' preflight when conversation does not exist (#1737)", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await shareConversation("missing", "u1", { shareMode: "org" });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      // Preflight ran but no UPDATE.
+      expect(queryCalls).toHaveLength(1);
     });
 
     it("returns null expiresAt for 'never'", async () => {

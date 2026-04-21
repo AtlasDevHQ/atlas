@@ -461,16 +461,64 @@ export async function getCard(
 // Sharing
 // ---------------------------------------------------------------------------
 
+/** Failure reason for shareDashboard — extends CrudFailReason with the invariant violation. */
+export type ShareDashboardFailReason = CrudFailReason | "invalid_org_scope";
+
+/** Result type for shareDashboard — carries the broader failure enum. */
+export type ShareDashboardResult =
+  | { ok: true; data: { token: string; expiresAt: string | null; shareMode: ShareMode } }
+  | { ok: false; reason: ShareDashboardFailReason };
+
+/**
+ * Create or refresh a dashboard share link. Scope-bound to the caller's
+ * org via `orgScopeClause`.
+ *
+ * Rejects `share_mode='org'` when the caller's scope has no orgId or the
+ * dashboard row has no org_id. Mirrors the conversations check — same
+ * DB-level CHECK (`chk_org_scoped_share`, 0034) enforces the invariant,
+ * but surfacing it as `invalid_org_scope` lets the route layer respond
+ * with a friendly 400 instead of relying on a Postgres error string. See
+ * #1737.
+ */
 export async function shareDashboard(
   id: string,
   scope: { orgId?: string | null },
   opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode },
-): Promise<CrudDataResult<{ token: string; expiresAt: string | null; shareMode: ShareMode }>> {
+): Promise<ShareDashboardResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const token = generateShareToken();
     const expiresAt = computeExpiresAt(opts?.expiresIn);
     const shareMode: ShareMode = opts?.shareMode ?? "public";
+
+    // Belt-and-suspenders for the DB CHECK (#1737): refuse org-scoped
+    // shares without a concrete orgId, either from scope or the row.
+    if (shareMode === "org") {
+      if (!scope.orgId) {
+        log.warn(
+          { dashboardId: id },
+          "Refusing to create org-scoped dashboard share: caller has no orgId (#1737)",
+        );
+        return { ok: false, reason: "invalid_org_scope" };
+      }
+      // Verify the dashboard row itself has an org_id. orgScopeClause
+      // already filters to matching rows, but a callsite that relaxes
+      // scope in the future should still hit this guard.
+      const params: unknown[] = [id];
+      const lookupOrg = orgScopeClause(scope.orgId, params, 2);
+      const orgRows = await internalQuery<{ org_id: string | null }>(
+        `SELECT org_id FROM dashboards WHERE id = $1 AND ${lookupOrg.clause} AND deleted_at IS NULL`,
+        params,
+      );
+      if (orgRows.length === 0) return { ok: false, reason: "not_found" };
+      if (!orgRows[0].org_id) {
+        log.warn(
+          { dashboardId: id },
+          "Refusing to create org-scoped dashboard share: dashboard has no org_id (#1737)",
+        );
+        return { ok: false, reason: "invalid_org_scope" };
+      }
+    }
 
     const params: unknown[] = [token, expiresAt, shareMode, id];
     const org = orgScopeClause(scope.orgId, params, 5);

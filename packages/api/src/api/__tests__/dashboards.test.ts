@@ -609,6 +609,28 @@ describe("dashboard routes", () => {
       const body = (await response.json()) as { token: string };
       expect(body.token).toBe("share-token-123");
     });
+
+    // Regression for #1737 — the DB CHECK (chk_org_scoped_share, 0034)
+    // forbids share_mode='org' with org_id=NULL, but the route should
+    // return a structured 400 instead of surfacing a Postgres error when
+    // shareDashboard reports `invalid_org_scope`.
+    it("returns 400 when shareDashboard reports invalid_org_scope (#1737)", async () => {
+      mockShareDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "invalid_org_scope",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "org" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string; message: string };
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toContain("no organization");
+    });
   });
 
   describe("DELETE /api/v1/dashboards/:id/share", () => {

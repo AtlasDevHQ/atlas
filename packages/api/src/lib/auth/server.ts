@@ -64,6 +64,239 @@ const log = createLogger("auth:server");
 const billingLog = createLogger("billing");
 
 /**
+ * Built-in rate-limit ceilings for Better Auth endpoints. Chosen to slow
+ * online brute force and email-verification abuse while tolerating
+ * legitimate retry patterns (user fat-fingers password 2–3 times, clicks
+ * "resend" a couple of times). Global `max` is the fallback for endpoints
+ * without a custom rule; specific surfaces below are tighter.
+ *
+ * Windows are in seconds. Env vars can override the global window/max at
+ * boot — see {@link resolveAuthRateLimitConfig} — but the per-endpoint
+ * rules below are constants because relaxing them is almost always a
+ * misconfiguration (signup at 100/min eliminates enumeration protection).
+ */
+const AUTH_RATE_LIMIT_DEFAULTS = {
+  window: 60,
+  max: 100,
+  signInEmail: { window: 60, max: 10 },
+  signUpEmail: { window: 60, max: 5 },
+  forgetPassword: { window: 60, max: 5 },
+  resetPassword: { window: 60, max: 5 },
+  sendVerificationEmail: { window: 60, max: 5 },
+  verifyEmail: { window: 60, max: 10 },
+} as const;
+
+export interface ResolvedAuthRateLimitConfig {
+  enabled: boolean;
+  window: number;
+  max: number;
+  storage: "memory" | "database";
+  modelName: string;
+  customRules: Record<string, { window: number; max: number }>;
+}
+
+/**
+ * Resolve Better Auth rate-limit configuration from the environment.
+ *
+ * Better Auth's built-in default is `enabled: true in production, false
+ * in development`, and its in-memory store does not share state across
+ * processes (Railway autoscale, Vercel serverless, multi-replica Docker).
+ * Atlas's threat model (signin brute-force, signup enumeration, password-
+ * reset spam) does not line up with either default, so this function:
+ *
+ * 1. Defaults `enabled: true` regardless of NODE_ENV. Test envs can opt
+ *    out with `ATLAS_AUTH_RATE_LIMIT_ENABLED=false`.
+ * 2. Uses the DB-backed store when the internal DB is available — shared
+ *    counters across replicas. Falls back to `memory` for single-node
+ *    self-hosted deployments without an internal DB.
+ * 3. Sets tight per-endpoint rules on the surfaces an attacker actually
+ *    targets (signin, signup, password-reset, verification-email resend).
+ *    The global window/max is the fallback ceiling for other auth paths.
+ */
+export function resolveAuthRateLimitConfig(
+  env: NodeJS.ProcessEnv,
+  internalDbAvailable: boolean,
+): ResolvedAuthRateLimitConfig {
+  const enabled = env.ATLAS_AUTH_RATE_LIMIT_ENABLED?.trim().toLowerCase() !== "false";
+
+  // Surface invalid env values at boot. Operators who set
+  // ATLAS_AUTH_RATE_LIMIT_MAX=0 (expecting "disable") or =100x (typo)
+  // silently fell back to the default before this warn — a
+  // misconfiguration that's easy to miss because it fails toward the
+  // safer value. Name the var so grep and log aggregation surface it.
+  const parsePositiveInt = (raw: string | undefined, fallback: number, varName: string): number => {
+    if (raw === undefined) return fallback;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+    log.warn(
+      { var: varName, value: raw, fallback },
+      "Invalid env value — not a positive number. Falling back to the default.",
+    );
+    return fallback;
+  };
+
+  return {
+    enabled,
+    window: parsePositiveInt(
+      env.ATLAS_AUTH_RATE_LIMIT_WINDOW,
+      AUTH_RATE_LIMIT_DEFAULTS.window,
+      "ATLAS_AUTH_RATE_LIMIT_WINDOW",
+    ),
+    max: parsePositiveInt(
+      env.ATLAS_AUTH_RATE_LIMIT_MAX,
+      AUTH_RATE_LIMIT_DEFAULTS.max,
+      "ATLAS_AUTH_RATE_LIMIT_MAX",
+    ),
+    storage: internalDbAvailable ? "database" : "memory",
+    modelName: "rateLimit",
+    customRules: {
+      "/sign-in/email": { ...AUTH_RATE_LIMIT_DEFAULTS.signInEmail },
+      "/sign-up/email": { ...AUTH_RATE_LIMIT_DEFAULTS.signUpEmail },
+      "/forget-password": { ...AUTH_RATE_LIMIT_DEFAULTS.forgetPassword },
+      "/reset-password": { ...AUTH_RATE_LIMIT_DEFAULTS.resetPassword },
+      "/send-verification-email": { ...AUTH_RATE_LIMIT_DEFAULTS.sendVerificationEmail },
+      "/verify-email": { ...AUTH_RATE_LIMIT_DEFAULTS.verifyEmail },
+    },
+  };
+}
+
+/**
+ * Build the Better Auth `emailAndPassword` config block.
+ *
+ * Pins the F-05 invariant: whenever `requireEmailVerification` is true,
+ * `autoSignIn` MUST be false. Sign-in is blocked until the user clicks
+ * the verification link anyway, but an accidental `autoSignIn: true` in
+ * a future refactor would silently turn signup into a login oracle
+ * (attacker signs up with a victim's email → gets a session regardless
+ * of whether the account existed). The unit tests pin this exactly.
+ */
+export function buildEmailAndPasswordConfig(requireEmailVerification: boolean): {
+  enabled: true;
+  requireEmailVerification: boolean;
+  autoSignIn: boolean;
+} {
+  return {
+    enabled: true,
+    requireEmailVerification,
+    autoSignIn: !requireEmailVerification,
+  };
+}
+
+/**
+ * Build the Better Auth `advanced` config block.
+ *
+ * Pins `ipAddress.ipAddressHeaders = ["x-atlas-client-ip"]` — this is
+ * the single knob the rate limiter reads. Adding `x-forwarded-for` to
+ * the list would make every request's IP client-spoofable and silently
+ * reopens F-06. The tests assert this list is exactly the one custom
+ * header we set in `withClientIpHeader`.
+ *
+ * `cookieDomain` is optional; when present the returned block also sets
+ * the shared-subdomain cookie attribute for SaaS deployments.
+ */
+export function buildAdvancedConfig(cookieDomain: string | undefined): {
+  ipAddress: { ipAddressHeaders: string[] };
+  defaultCookieAttributes?: { domain: string };
+} {
+  return {
+    ipAddress: {
+      ipAddressHeaders: ["x-atlas-client-ip"],
+    },
+    ...(cookieDomain
+      ? { defaultCookieAttributes: { domain: `.${cookieDomain}` } }
+      : {}),
+  };
+}
+
+/**
+ * Resolve whether email verification is required from the environment.
+ *
+ * Defaults to `true` for security hardening. Multi-tenant deployments
+ * must leave it on — verification closes the signup-enumeration oracle
+ * (OWASP A07 authentication failures) and prevents unverified accounts
+ * from triggering email-keyed workflows (SSO domain auto-provision,
+ * invitation claim, bootstrap admin race).
+ *
+ * Self-hosted single-tenant deployments that run without an email
+ * provider can opt out with `ATLAS_REQUIRE_EMAIL_VERIFICATION=false`.
+ * Accepts `false`, `0`, `no`, `off` (case-insensitive) as opt-out.
+ */
+export function resolveRequireEmailVerification(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.ATLAS_REQUIRE_EMAIL_VERIFICATION?.trim().toLowerCase();
+  if (raw === undefined) return true;
+  return !["false", "0", "no", "off"].includes(raw);
+}
+
+/**
+ * Send the email verification message via Atlas's email delivery layer.
+ *
+ * Kept thin so the Better Auth `sendVerificationEmail` callback stays
+ * simple and tests can mock this single function without standing up
+ * the whole provider chain.
+ *
+ * Delivery failures are logged but never thrown — blocking the signup
+ * or signin handler on a transient SMTP outage is worse UX than letting
+ * the user retry via `/send-verification-email`, and Better Auth already
+ * returns the same 200 response for new and existing emails regardless
+ * of whether send succeeds (OWASP enumeration protection hinges on
+ * response parity, not delivery).
+ *
+ * @internal — exported for testing.
+ */
+export async function _sendVerificationEmail(opts: { to: string; url: string }): Promise<void> {
+  // All failure paths (dynamic import rejection, provider SDK throwing,
+  // template assembly) must be caught here. The Better Auth callback
+  // fires this function as fire-and-forget (with an outer `.catch(...)`
+  // for belt-and-suspenders) for timing-attack mitigation, and a
+  // floating rejection would either print to stderr with no correlation
+  // or, on `--unhandled-rejections=strict`, terminate the process —
+  // re-introducing the enumeration oracle through a 500 side channel.
+  try {
+    const { sendEmail } = await import("@atlas/api/lib/email/delivery");
+    const result = await sendEmail({
+      to: opts.to,
+      subject: "Verify your Atlas email address",
+      html: `<!doctype html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #222;">
+    <p>Welcome to Atlas. Click the link below to verify your email address:</p>
+    <p><a href="${encodeAttributeValue(opts.url)}" style="color:#0ea5e9;">Verify email</a></p>
+    <p style="color:#666; font-size:13px;">If you did not try to create an account, you can safely ignore this message.</p>
+    <p>— Atlas</p>
+  </body>
+</html>`,
+    });
+    if (!result.success) {
+      log.warn(
+        { to: opts.to, provider: result.provider, error: result.error },
+        "Email verification delivery did not complete — user may need to retry via /send-verification-email",
+      );
+    }
+  } catch (err) {
+    log.warn(
+      { to: opts.to, err: err instanceof Error ? err.message : String(err) },
+      "Email verification dispatch crashed — signup response is still 200 to preserve enumeration protection; user may need to retry via /send-verification-email",
+    );
+  }
+}
+
+/**
+ * Minimal HTML attribute-value escape for the verification URL. Better
+ * Auth URLs are well-formed, but a `"` in the token would break the
+ * `<a href="...">` attribute and — absent this — could produce a
+ * malformed email that some clients render inert. Replaces the five
+ * XML-special characters; anything else passes through as-is.
+ */
+function encodeAttributeValue(raw: string): string {
+  return raw
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+/**
  * Build the Better Auth plugins array.
  *
  * Stripe plugin is conditionally included when STRIPE_SECRET_KEY is set.
@@ -561,16 +794,64 @@ export function getAuthInstance(): AuthInstance {
     log.info({ providers: Object.keys(socialProviders) }, "Social login providers configured");
   }
 
+  // F-05 + F-06 — resolve security-sensitive auth config at boot so the
+  // values are visible in the singleton's memory and, on failure, the
+  // server fails at startup rather than on the first attacker request.
+  const internalDbAvailable = hasInternalDB();
+  const requireEmailVerification = resolveRequireEmailVerification(process.env);
+  const rateLimitConfig = resolveAuthRateLimitConfig(process.env, internalDbAvailable);
+
+  if (!requireEmailVerification) {
+    log.warn(
+      "ATLAS_REQUIRE_EMAIL_VERIFICATION is disabled — signups do not require email confirmation and "
+        + "Better Auth's signup-enumeration protection is off (existing emails return a distinct "
+        + "USER_ALREADY_EXISTS error). Leave this enabled for any multi-tenant deployment.",
+    );
+  }
+  if (!rateLimitConfig.enabled) {
+    log.warn(
+      "ATLAS_AUTH_RATE_LIMIT_ENABLED=false — /api/auth/* endpoints are not rate-limited. "
+        + "Only use this in isolated test environments.",
+    );
+  } else {
+    log.info(
+      { storage: rateLimitConfig.storage, window: rateLimitConfig.window, max: rateLimitConfig.max },
+      "Better Auth rate limiting enabled",
+    );
+  }
+
   const instance = betterAuth({
     // getInternalDB() returns a pg.Pool typed as InternalPool.
     // Cast needed because Better Auth expects its own pool/adapter type.
     database: getInternalDB() as unknown as Parameters<typeof betterAuth>[0]["database"],
     secret,
     baseURL,
-    emailAndPassword: {
-      enabled: true,
-      requireEmailVerification: false,
-      autoSignIn: true,
+    // F-05: closes the signup-enumeration oracle and blocks unverified
+    // accounts from claiming SSO auto-provision / invitation workflows.
+    // See `buildEmailAndPasswordConfig` for the `autoSignIn` invariant.
+    emailAndPassword: buildEmailAndPasswordConfig(requireEmailVerification),
+    emailVerification: {
+      sendVerificationEmail: async ({ user, url }) => {
+        // Do not await. Better Auth's enumeration protection depends on
+        // the signup/signin handler returning the same 200 response in
+        // the same time window regardless of whether the email exists;
+        // awaiting SMTP would extend the attacker's timing oracle and
+        // create a DoS vector (email provider outage => signup blocked).
+        //
+        // `.catch()` is belt-and-suspenders — `_sendVerificationEmail`
+        // already wraps everything in try/catch, but an unhandled
+        // rejection from any future refactor would either spam stderr
+        // with no correlation or (with --unhandled-rejections=strict)
+        // crash the process and reintroduce the enumeration oracle as
+        // a 500-vs-200 side channel.
+        _sendVerificationEmail({ to: user.email, url }).catch((err) => {
+          log.warn(
+            { to: user.email, err: err instanceof Error ? err.message : String(err) },
+            "Verification email dispatch threw — signup response is still 200 to preserve enumeration protection",
+          );
+        });
+      },
+      autoSignInAfterVerification: true,
     },
     socialProviders,
     session: {
@@ -583,11 +864,13 @@ export function getAuthInstance(): AuthInstance {
       process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
         .map((s) => s.trim())
         .filter(Boolean) || [],
-    advanced: cookieDomain ? {
-      defaultCookieAttributes: {
-        domain: `.${cookieDomain}`,
-      },
-    } : undefined,
+    // F-06 — explicit rate limits on /api/auth/*. Built-in defaults are
+    // NODE_ENV-gated and in-memory-only; see resolveAuthRateLimitConfig.
+    rateLimit: rateLimitConfig,
+    // F-06: the `advanced` block wires Better Auth's rate limiter to
+    // read only the trusted `x-atlas-client-ip` header that our
+    // middleware injects. See `buildAdvancedConfig` for the invariant.
+    advanced: buildAdvancedConfig(cookieDomain),
     databaseHooks: {
       member: {
         create: {

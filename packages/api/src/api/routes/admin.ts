@@ -264,7 +264,10 @@ admin.route("/cache", adminCache);
 admin.route("/cache/", adminCache);
 admin.route("/admin-actions", adminActions);
 admin.route("/admin-actions/", adminActions);
-// Plugin marketplace — lazy import to avoid crashing all admin routes if marketplace module fails
+// Plugin marketplace — dynamic import defers loading the marketplace module
+// (and its dependency graph) until admin routes register. Import failure is a
+// build/test bug, not a runtime-recoverable condition: log then re-throw so it
+// fails loudly instead of serving silent 404s on marketplace endpoints.
 try {
   const { workspaceMarketplace } = await import("./admin-marketplace");
   admin.route("/plugins/marketplace", workspaceMarketplace);
@@ -272,12 +275,14 @@ try {
 } catch (err) {
   log.error(
     { err: err instanceof Error ? err : new Error(String(err)) },
-    "Failed to load marketplace routes — plugin marketplace will be unavailable",
+    "Failed to load marketplace routes",
   );
+  throw err;
 }
 
-// Semantic improve routes — lazy import to avoid loading expert agent tools
-// (and their deep dependency graph) at admin module init time.
+// Semantic improve routes — dynamic import defers loading the expert agent tool
+// graph until admin routes register. Import failure fails loud for the same
+// reason as the marketplace import above.
 try {
   const { adminSemanticImprove } = await import("./admin-semantic-improve");
   admin.route("/semantic-improve", adminSemanticImprove);
@@ -285,8 +290,9 @@ try {
 } catch (err) {
   log.error(
     { err: err instanceof Error ? err : new Error(String(err)) },
-    "Failed to load semantic improve routes — semantic improvement will be unavailable",
+    "Failed to load semantic improve routes",
   );
+  throw err;
 }
 
 // Semantic entity editor routes — registered directly (not subrouter) to avoid

@@ -5,10 +5,14 @@
     "dockerfilePath": "deploy/web/Dockerfile",
     "dockerfileContext": "../..",
     "watchPatterns": [
+      "bun.lock",
+      "package.json",
       "packages/web/**",
       "packages/api/**",
       "packages/react/**",
       "packages/types/**",
+      "packages/schemas/**",
+      "ee/**",
       "deploy/web/**"
     ]
   },

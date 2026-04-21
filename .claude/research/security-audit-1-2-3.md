@@ -348,3 +348,323 @@ Regression tests at `packages/api/src/lib/auth/__tests__/rate-limit.test.ts` pin
 | F-07 | P2 | P2 | not re-tested this pass |
 
 **New totals:** P0 = 1 (F-02), P1 = 2 (F-01, F-06), P2 = 4 (F-03, F-04, F-05, F-07), P3 = 4.
+
+---
+
+## Phase 2 — Org-scoping audit
+
+**Status:** complete (2026-04-21)
+**Scope:** every route under `packages/api/src/api/routes/` — verify `orgId`
+filtering on reads and writes, that the trust anchor is `AuthContext.user.activeOrganizationId`
+(session-derived, never request-derived), and that admin vs platform-admin
+boundaries are enforced consistently.
+**Issue:** #1721
+**Branch:** `security/1.2.3-phase-2-org-scoping`
+
+Methodology:
+1. Enumerate all routes + mount points in `packages/api/src/api/index.ts`.
+2. Categorize each router by auth middleware: `standardAuth`,
+   `adminAuth`/`createAdminRouter`, `platformAdminAuth`/`createPlatformRouter`,
+   inline preamble, or unauthenticated.
+3. For each handler, identify the org-scoping pattern: `requireOrgContext` →
+   `orgContext.orgId`, direct `AuthContext.orgId`, or per-handler check.
+4. Flag any handler that accepts `orgId`/`workspaceId` from a body / query /
+   path parameter without an accompanying trust check.
+5. Cross-reference against the user-level vs org-level role model in
+   `packages/api/src/lib/auth/managed.ts` (effective role = MAX(user.role,
+   member.role)).
+
+### Auth middleware inventory
+
+| Middleware / factory | Role gate | Trust anchor for orgId |
+|---|---|---|
+| `standardAuth` | authenticated (any role) | `AuthContext.user.activeOrganizationId` |
+| `adminAuth` / `createAdminRouter` | `admin` ∨ `owner` ∨ `platform_admin` (effective role) | `AuthContext.user.activeOrganizationId` |
+| `platformAdminAuth` / `createPlatformRouter` | `platform_admin` only | cross-org; handler-supplied `orgId` explicit |
+| `withRequestId` | none (auth must be handled inline) | handler-supplied |
+| `adminAuthPreamble` (inline) | same as `adminAuth` | `authResult.user.activeOrganizationId` |
+| Bearer-token `X-Atlas-Internal-Token` (`/api/v1/internal/migrate`) | service-to-service | body `orgId`, trusted via shared secret |
+
+Critical observation: `adminAuth` accepts any user whose **effective role** is
+`admin` / `owner` / `platform_admin`. Effective role = MAX(user-table role,
+org-member role). A workspace owner/admin has `role = "owner"` / `role = "admin"`
+at their active org — but the gate itself does NOT verify that the caller is an
+admin *of the workspace being manipulated*. Any sub-route that treats `adminAuth`
+as "admin-of-this-resource" without an additional same-org check is a
+cross-tenant privilege escalation.
+
+### Route coverage table
+
+Legend: ✅ = org-scoped correctly via `requireOrgContext` / `AuthContext.orgId`,
+🟡 = org-scoped with caveats (see notes), ❌ = cross-tenant exposure,
+N/A = legitimately cross-org (platform admin or public).
+
+| Path | File | Auth | Org-scope status | Notes |
+|---|---|---|---|---|
+| POST `/api/v1/chat` | `chat.ts` | inline | ✅ | `authResult.user.activeOrganizationId` used throughout |
+| POST `/api/v1/query` | `query.ts` | inline (`authPreamble`) | ✅ | same pattern as chat |
+| GET/POST `/api/v1/conversations` | `conversations.ts` | `standardAuth` | 🟡 | List uses userId+orgId; GET/PATCH/DELETE by :id filter by **userId only** — see F-11 |
+| GET/POST `/api/public/conversations/:token` | `conversations.ts` | none | ✅ | `getSharedConversation(token)`; org-scoped share check added in F-01 (PR #1738) |
+| GET/POST `/api/v1/dashboards` | `dashboards.ts` | `adminAuth`+`requireOrgContext` | ✅ | All queries pass `{ orgId }` |
+| GET `/api/public/dashboards/:token` | `dashboards.ts` | none | ✅ | F-01 fix verified org-scoped share (PR #1742) |
+| `/api/v1/tables` | `tables.ts` | `standardAuth` | 🟡 | Reads disk-based `semantic/` only; per-org draft entities live in DB and are NOT exposed here — OK but ambiguous in SaaS — see F-16 |
+| `/api/v1/validate-sql` | `validate-sql.ts` | `standardAuth` | 🟡 | Accepts body `connectionId`; `connections.getDBType(id)` has no org check — minor info leak if IDs are guessable |
+| `/api/v1/semantic` | `semantic.ts` | `standardAuth` | 🟡 | Disk-only reads; same note as /tables |
+| `/api/v1/prompts` | `prompts.ts` | `standardAuth` | ✅ | `resolvePromptScope({ orgId, mode })` |
+| `/api/v1/suggestions` | `suggestions.ts` | `standardAuth` | ✅ | Lib helpers always include `org_id = $1` clause |
+| `/api/v1/sessions` | `sessions.ts` | `standardAuth` | ✅ | Sessions are user-level, correctly scoped by `userId` |
+| `/api/v1/actions` | `actions.ts` | `standardAuth` | 🟡 | User-scoped via `requested_by = user.id`; no org filter — users who switched orgs can still approve old-org actions — see F-12 |
+| `/api/v1/wizard` | `wizard.ts` | `adminAuth` | ✅ | `resolveConnectionUrl(connectionId, orgId)` trust-anchors to session org |
+| `/api/v1/billing` | `billing.ts` | `adminAuth` | ✅ | All queries parameterized on `orgId` |
+| `/api/v1/starter-prompts` | `starter-prompts.ts` | `standardAuth` | ✅ | `user.id` + `orgId` from session |
+| `/api/v1/mode` | `mode.ts` | `standardAuth` | ✅ | `ContentModeRegistry.countAllDrafts(orgId)` |
+| `/api/v1/branding` | `public-branding.ts` | best-effort | ✅ | Null branding if no session; no cross-tenant read |
+| `/api/v1/onboarding-emails` | `onboarding-emails.ts` | none, HMAC token | ✅ | Phase-1 fix F-03 (PR #1744) |
+| `/api/v1/onboarding` | `onboarding.ts` | `standardAuth` | ✅ | New-org creation; orgId returned from creation |
+| `/widget`, `/widget.js` | `widget*.ts` | none | N/A | Static HTML; auth happens client-side via postMessage + API key |
+| `/api/v1/internal/migrate` | `admin-migrate.ts` (`internalMigrate`) | `X-Atlas-Internal-Token` (HMAC timingSafeCompare) | ✅ | Service-to-service only; `orgId` from body is trusted via shared secret |
+| `/api/v1/admin/**` (workspace admin pool) | 29 sub-routers via `createAdminRouter` + `requireOrgContext` | `adminAuth` + `requireOrgContext` | ✅ (most) | See per-file rows below |
+| `/api/v1/admin/organizations/**` | `admin-orgs.ts` | `createAdminRouter` (no `requireOrgContext`) | ❌ **F-08** | Workspace admin can CRUD any org |
+| `/api/v1/admin/abuse/**` | `admin-abuse.ts` | `createAdminRouter` (no `requireOrgContext`) | ❌ **F-09** | Workspace admin can reinstate any workspace |
+| PATCH `/api/v1/admin/users/:id/role` | `admin.ts` | `adminAuth`+`verifyOrgMembership` | ❌ **F-10** | Accepts `role: "platform_admin"` — workspace admin can escalate any org member to platform admin |
+| POST `/api/v1/admin/invitations` | `admin-invitations.ts` | `adminAuth`+`requireOrgContext` | ❌ **F-10** (same class) | Accepts `role: "platform_admin"` in invite body |
+| POST `/api/v1/admin/users/:id/ban` | `admin.ts` | `adminAuth`+`verifyOrgMembership` | 🟡 **F-14** | Ban is user-level in Better Auth; workspace admin bans affect all orgs the user belongs to |
+| POST `/api/v1/admin/approval/expire` | `admin-approval.ts` | `createAdminRouter` (no `requireOrgContext`) | 🟡 **F-13** | `expireStaleRequests()` likely runs globally; verified as design (TTL sweep) but workspace admin can trigger it across orgs |
+| `/api/v1/admin/onboarding-emails` | `admin-onboarding-emails.ts` | `createAdminRouter` (no `requireOrgContext`) | ✅ | Reads `AuthContext.orgId` directly; scoped to caller's org |
+| `/api/v1/admin/model-config` | `admin-model-config.ts` | `createAdminRouter` (no `requireOrgContext`) | ✅ | Uses `AuthContext.orgId` with 400 if missing |
+| `/api/v1/admin/audit` | `admin-audit.ts` | `adminAuth`+`requireOrgContext` | ✅ | All queries parameterized on `orgId` |
+| `/api/v1/admin/publish` | `admin-publish.ts` | `adminAuth`+`requireOrgContext` | ✅ | Transaction-scoped; atomic per-org |
+| `/api/v1/admin/connections` | `admin-connections.ts` | `adminAuth`+`requireOrgContext` | ✅ | Platform-admin can query any org via `?orgId=` on specific metric routes; workspace admins locked to own org |
+| `/api/v1/admin/sso,scim,ip-allowlist,roles,…` | each sub-router | `adminAuth`+`requireOrgContext` | ✅ | Sampled: consistent pattern |
+| `/api/v1/platform/**` | `platform-*.ts` | `platformAdminAuth` / `createPlatformRouter` | ✅ | Cross-org is the point; `platform_admin` gate enforced |
+
+Total routes audited: ~55 top-level paths across 70+ files.
+
+### Findings
+
+**F-08 — Workspace admin can read / suspend / delete / re-plan any workspace via `/api/v1/admin/organizations/**`** — P0
+
+`admin-orgs.ts` uses `createAdminRouter()` *without* `requireOrgContext()`.
+Every handler accepts `:id` from the path as `orgId` and operates on that
+target org with no check that the caller is an admin of it (or even a member).
+
+Reproduction outline (needs internal DB + two orgs; no other preconditions):
+1. Alice is admin in orgA (effective role = `admin`). Bob's orgB exists with
+   id `org_bob`.
+2. `GET /api/v1/admin/organizations/` → lists *all* orgs platform-wide, including orgB.
+3. `GET /api/v1/admin/organizations/org_bob` → Alice reads every member of orgB (ids + names + emails).
+4. `PATCH /api/v1/admin/organizations/org_bob/suspend` → orgB immediately blocked from querying.
+5. `DELETE /api/v1/admin/organizations/org_bob` → cascade soft-delete of orgB's conversations, settings, schedules, etc.
+6. `PATCH /api/v1/admin/organizations/org_bob/plan { planTier: "free" }` → downgrade.
+
+Fix: replace `createAdminRouter` with `createPlatformRouter` for every handler in
+`admin-orgs.ts`. These are cross-tenant management operations that belong
+strictly to platform admins. The workspace-scoped equivalent (view/manage your
+own org's members) is already covered by `adminUsers` + `adminInvitations`
+sub-routers.
+
+**F-09 — Workspace admin can reinstate / read detail of any flagged workspace via `/api/v1/admin/abuse/**`** — P0
+
+`admin-abuse.ts` uses `createAdminRouter()` *without* `requireOrgContext()`.
+
+Reproduction outline (any deployment with abuse events recorded — routes
+are mounted unconditionally, not EE-gated):
+1. Acme (orgA) is a paying customer; BadGuy (orgB) was auto-suspended by the
+   abuse module for unusual query patterns.
+2. Alice (workspace admin in orgA) calls `GET /api/v1/admin/abuse/` → list
+   includes orgB with status `suspended`.
+3. `POST /api/v1/admin/abuse/org_badguy/reinstate` → BadGuy is unblocked; all
+   abuse counters reset; orgB resumes hitting paid model APIs on Atlas's bill.
+
+Fix: same remedy as F-08 — `createPlatformRouter` for all handlers. Abuse
+moderation is platform-level by design; the audit log reference in
+`reinstateWorkspace(workspaceId, actorId)` already assumes the actor is a
+platform actor.
+
+**F-10 — Workspace admin can escalate any org member to `platform_admin` via PATCH `/api/v1/admin/users/:id/role` and POST `/api/v1/admin/invitations`** — P0
+
+`admin.ts` `changeUserRoleRoute` validates the target user is a member of the
+caller's active org (`verifyOrgMembership`) and that the role is a valid
+`AtlasRole`. `ATLAS_ROLES` is `["member", "admin", "owner", "platform_admin"]`.
+The handler passes the body role straight to Better Auth's
+`adminApi.setRole({ userId, role })`, which updates the **user-level** `role`
+column.
+
+Combined with `resolveEffectiveRole` = MAX(user-table role, member-table role):
+a user whose user-table role is `platform_admin` passes the
+`platformAdminAuth` gate on every `/api/v1/platform/**` endpoint regardless of
+which org they have active. Workspace admin in orgA can therefore grant
+platform-admin to any orgA member, who now has cross-org governance power.
+
+The same class of bug lives in `admin-invitations.ts` create-invite (accepts
+`role: "platform_admin"` in body; the invitee becomes platform admin on
+accept).
+
+Reproduction outline:
+1. Alice is admin in orgA; Chuck is a member of orgA (role=`member`).
+2. `PATCH /api/v1/admin/users/chuck/role` body `{ role: "platform_admin" }`
+   → Chuck's `user.role` = `platform_admin`.
+3. Chuck now has full access to `/api/v1/platform/**` — list all workspaces,
+   suspend/delete any workspace, impersonate billing operations, etc.
+
+Fix: restrict the role whitelist at the route layer to the org-level role set
+(`member`, `admin`, `owner`). `platform_admin` must only be settable via a
+platform-admin-gated endpoint. Two options:
+(a) Introduce a dedicated schema (e.g. `OrgRoleSchema`) derived from `ATLAS_ROLES`
+    minus `platform_admin` and parse against it in both `changeUserRoleRoute`
+    and `admin-invitations.ts`.
+(b) Keep `isValidRole` as is but add a guard: `if (newRole === "platform_admin"
+    && authResult.user?.role !== "platform_admin") return 403`.
+Option (a) is preferred because it also closes the invitation path.
+
+**F-11 — Conversation CRUD by `:id` filters by `user_id` only, not by the caller's active `org_id`** — P2
+
+`packages/api/src/lib/conversations.ts` `getConversation`, `starConversation`,
+`updateNotebookState`, `deleteConversation`, `shareConversation`,
+`unshareConversation`, and `getShareStatus` all use
+`WHERE id = $1 AND user_id = $2`. `listConversations` does filter on both
+`user_id` and `org_id`, so the *visible* surface is scoped — but any caller who
+knows the conversation UUID can CRUD it regardless of their currently active
+organization.
+
+Impact: a user who was a member of orgA, created conversations there, then
+switched to orgB (or was removed from orgA and joined orgB), retains
+read/modify/share access to their old-org conversations. Old-org conversations
+may carry SQL results, row-level data, and semantic references that were
+sensitive to orgA's datasource. This is a retention / data-leak-on-membership-
+change issue, not a direct cross-user leak — but it's a durable loophole
+inconsistent with F-01 which just locked down the *share* read path.
+
+Fix: thread the caller's active `org_id` from `AuthContext` through each CRUD
+helper and tack `AND (org_id = $N OR org_id IS NULL)` to every WHERE clause
+(the `IS NULL` branch preserves self-hosted compatibility where conversations
+pre-date the org column). Same class of fix applies to `chat.ts`'s ownership
+verification (`getConversation(conversationId, authResult.user?.id)`) and
+`query.ts`'s reuse check.
+
+**F-12 — Actions CRUD by `:id` filters by `requested_by` only, not by the caller's active org** — P2
+
+`actions.ts` `getAction`, `approveAction`, `denyAction` all look up actions by
+id and then compare `action.requested_by` against `user.id`. No check that the
+caller's current `AuthContext.orgId` matches the org where the action was
+created. An action that executes against orgA's datasource (e.g. a bulk update)
+could be approved by the same user after they've switched to orgB, triggering
+a mutation on orgA's DB from a different workspace session — confusing audit
+trails and bypassing the workspace-active-at-approval invariant.
+
+Fix: store `org_id` on the `pending_actions` table and filter on it in every
+action-scoped handler; reject approval if action's org_id ≠ current active
+org.
+
+**F-13 — `POST /api/v1/admin/approval/expire` is callable by any workspace admin and likely runs a global sweep** — P2 → verify
+
+`admin-approval.ts` registers `expireRoute` **before** `requireOrgContext()`,
+meaning any admin-gated caller can hit it without an active org. The handler
+calls `expireStaleRequests()` with no arguments; the helper name suggests a
+TTL sweep that acts on every approval_request row regardless of org.
+
+If `expireStaleRequests()` deletes/updates pending requests across orgs, a
+workspace admin can force-expire another workspace's pending approvals — not
+as damaging as F-08/F-09 but still cross-tenant write.
+
+Action: verify the SQL of `expireStaleRequests()`. If global, either
+(a) scope it to `orgId` from AuthContext and run per-call only on the caller's
+    org, or
+(b) convert to a scheduler-only entry point and remove the route, or
+(c) move to a platform-admin endpoint.
+
+**F-14 — Workspace-admin user ban is user-level (affects all orgs the target belongs to)** — P2
+
+`banUserRoute` in `admin.ts` calls Better Auth's `adminApi.banUser({ userId })`
+which sets `user.banned = true` globally. `verifyOrgMembership` ensures the
+target is a member of the caller's org, but doesn't restrict the *scope* of
+the ban. A user who is a member of orgA + orgB — e.g. a consultant — can be
+banned by orgA's admin and lose orgB access too.
+
+Fix: workspace admins should "remove-from-org" (delete member row), not "ban
+user". Reserve `adminApi.banUser` for platform-admin calls. Adding a
+platform-gated variant at `/api/v1/platform/users/:id/ban` and replacing the
+workspace-admin endpoint with a membership-removal flow fixes both concerns.
+
+**F-15 — `validateSqlRoute` accepts body `connectionId` with no org check** — P3
+
+`POST /api/v1/validate-sql` reads `connectionId` from body and passes it to
+`connections.getDBType(connectionId)` which resolves against the global
+connection registry. A member of orgA could probe `connectionId = "<orgB-conn-id>"`
+and learn the DB type and whether the id exists. Low severity because (a)
+connection IDs are org-scoped strings that are not normally discoverable, (b)
+the validator does not execute anything, (c) output is just a boolean + DB
+type. Still worth adding a
+`if (connectionId && !visibleToOrg(connectionId, orgId)) return 404` check for
+consistency.
+
+**F-16 — `GET /api/v1/tables` and `/api/v1/semantic/entities` read disk-only, bypassing per-org DB semantic layer** — P3 / design
+
+In SaaS, semantic entities can live in the `semantic_entities` table and be
+scoped to an org (draft/published via ContentModeRegistry). The user-facing
+`tables.ts` and `semantic.ts` only read the disk-based semantic layer, which
+is platform-global. Effects:
+- Each workspace sees the platform's global schema, not its org's custom
+  entities.
+- A workspace that drafted custom entities via the admin editor won't see
+  them exposed through the user-facing `/api/v1/tables` endpoint.
+Not a cross-tenant leak (disk content is platform-global; every workspace
+sees the same subset), but it may be an intentional design (the SaaS product
+relies on a common schema) or a latent gap (the admin editor's drafts never
+reach the user-facing tables API). Flag for product/architecture review.
+
+### Direct `internal.ts` consumers — sample review
+
+`lib/db/internal.ts` exposes `internalQuery`, `internalExecute`, `queryEffect`,
+plus typed helpers (`getSuggestionsByTables`, `incrementSuggestionClick`,
+`getPopularSuggestions`, `getWorkspaceDetails`, …). 106 files import it. The
+helpers themselves were sampled:
+
+- `getSuggestionsByTables(orgId, …)` — builds `orgId IS NULL` OR `org_id = $1`
+  clause. OK.
+- `incrementSuggestionClick(id, orgId, userId)` — scopes UPDATE by
+  `org_id = $1 AND id = $2`. OK.
+- `getWorkspaceDetails(orgId)` / `updateWorkspaceStatus(orgId, …)` — scoped
+  to the orgId arg. Callers must pass the correct orgId; admin-orgs.ts passes
+  the path param (see F-08).
+- `cascadeWorkspaceDelete(orgId)` — scoped to the arg; relies on callers to
+  pass the correct orgId.
+
+The common thread: the helpers themselves do what they're told. Enforcement
+lives in the route handler. F-08 / F-09 / F-10 are the concrete consequences
+of handlers passing a user-controlled orgId to these helpers without a
+cross-tenant authorization check.
+
+### ContentModeRegistry consumers — verified
+
+All 4 documented consumers pass `AuthContext.orgId` only — no request-derived
+orgId:
+
+- `mode.ts` — `ContentModeRegistry.countAllDrafts(orgId)` where `orgId` comes
+  from `AuthContext`. ✅
+- `prompts/scoping.ts` — `resolvePromptScope({ orgId, mode })` called from
+  `prompts.ts` with `AuthContext.orgId`. ✅
+- `admin-connections.ts` — filter mode via `ContentModeRegistry.readFilter`
+  with `AuthContext.orgId`. ✅
+- `admin-publish.ts` — `runPublishPhases(client, orgId)` inside the admin-
+  publish transaction, `orgId` from `requireOrgContext`. ✅
+
+No new consumers since 1.2.2.
+
+### Severity summary
+
+| ID | Severity | Type | Path | Issue |
+|---|---|---|---|---|
+| F-08 | P0 | Cross-tenant admin | `/api/v1/admin/organizations/**` | #1750 |
+| F-09 | P0 | Cross-tenant admin | `/api/v1/admin/abuse/**` | #1751 |
+| F-10 | P0 | Privilege escalation | `/api/v1/admin/users/:id/role`, `/api/v1/admin/invitations` | #1752 |
+| F-11 | P2 | Retention / scope | Conversation CRUD | #1753 |
+| F-12 | P2 | Retention / scope | Pending-action CRUD | #1754 |
+| F-13 | P2 | Cross-tenant write | `/api/v1/admin/approval/expire` | #1755 |
+| F-14 | P2 | Scope overreach | User ban | #1756 |
+| F-15 | P3 | Info leak | `/api/v1/validate-sql` connectionId | — (P3, stays in doc) |
+| F-16 | P3 | Design gap | Disk-only semantic reads | — (P3, stays in doc) |
+
+**Totals:** P0 = 3, P1 = 0, P2 = 4, P3 = 2.
+
+All P0/P1/P2 findings filed as separate issues (#1750–#1756). Phase 2 checkbox on #1718 flipped.

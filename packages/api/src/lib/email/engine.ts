@@ -12,6 +12,7 @@ import type { OnboardingEmailStep, OnboardingMilestone, OnboardingEmailTrigger, 
 import { ONBOARDING_SEQUENCE, MILESTONE_TO_STEP } from "./sequence";
 import { renderOnboardingEmail } from "./templates";
 import { sendEmail } from "./delivery";
+import { signUnsubscribeToken, getUnsubscribeTokenTtlMs } from "./unsubscribe-token";
 import { Effect, Duration } from "effect";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
 
@@ -95,7 +96,19 @@ function getBaseUrl(): string {
 
 function buildUnsubscribeUrl(userId: string): string {
   const base = getBaseUrl();
-  return `${base}/api/v1/onboarding-emails/unsubscribe?userId=${encodeURIComponent(userId)}`;
+  const expiresAt = Date.now() + getUnsubscribeTokenTtlMs();
+  const token = signUnsubscribeToken(userId, expiresAt);
+  const params = new URLSearchParams({ userId });
+  if (token) {
+    params.set("token", token);
+  } else {
+    // BETTER_AUTH_SECRET unset — startup.ts should have already rejected boot,
+    // so emitting a bare userId here means a misconfigured test or ops env.
+    // Log loudly but still emit the URL so the email sends; the routes will
+    // reject unsigned tokens, which is the correct fail-closed behavior.
+    log.error({ userId }, "Building unsubscribe URL without signature: BETTER_AUTH_SECRET missing");
+  }
+  return `${base}/api/v1/onboarding-emails/unsubscribe?${params.toString()}`;
 }
 
 /**

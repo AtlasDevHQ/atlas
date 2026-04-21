@@ -70,10 +70,12 @@ See the [API Reference](/api-reference/admin-onboarding-emails/getAdminOnboardin
 
 Every onboarding email includes an unsubscribe link. Users can:
 
-- **Unsubscribe** — click the link in any onboarding email (`GET /api/v1/onboarding-emails/unsubscribe?userId=...`)
-- **Resubscribe** — `POST /api/v1/onboarding-emails/resubscribe` with `{ userId }` in the body
+- **Unsubscribe** — click the link in any onboarding email (`GET /api/v1/onboarding-emails/unsubscribe?userId=...&token=...`)
+- **Resubscribe** — `POST /api/v1/onboarding-emails/resubscribe` with `{ userId, token }` in the body
 
 Unsubscribed users will not receive any further onboarding emails. Resubscribing resumes the sequence from the next unsent step.
+
+Both endpoints require a signed `token` bound to the `userId` (HMAC-SHA256 over `userId:expiresAtMs` using `BETTER_AUTH_SECRET`). The unsubscribe links embedded in outbound emails carry valid tokens automatically. Default token TTL is 30 days; override with `ATLAS_UNSUBSCRIBE_TOKEN_TTL_MS`.
 
 ---
 

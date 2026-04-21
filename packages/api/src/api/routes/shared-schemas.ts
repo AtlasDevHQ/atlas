@@ -1,5 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import type { Context } from "hono";
+import { ORG_ROLES, ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 
 /**
  * Standard error response schema used across all API routes.
@@ -10,6 +11,37 @@ export const ErrorSchema = z.object({
   message: z.string(),
   requestId: z.string().optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Role validation
+// ---------------------------------------------------------------------------
+
+/**
+ * The canonical schema for any request body field that assigns a workspace-
+ * level role. Accepts only `member`, `admin`, `owner` — rejects `platform_admin`
+ * because cross-org privilege must only be granted through a platform-admin-
+ * gated endpoint, never a workspace admin surface.
+ *
+ * Every write path that accepts a `role` from untrusted input (body, query,
+ * SCIM attribute mapping, etc.) should parse through this schema. See F-10 in
+ * .claude/research/security-audit-1-2-3.md for the threat model.
+ */
+export const OrgRoleSchema = z.enum(ORG_ROLES);
+
+/** Human-readable error phrase used in 400 responses when an off-tuple role is rejected. */
+export const ORG_ROLE_ERROR_MESSAGE =
+  `Invalid role. Must be one of: ${ORG_ROLES.join(", ")}. ` +
+  `platform_admin must be granted through platform-admin endpoints.`;
+
+/**
+ * Case-insensitive reserved set of all Atlas built-in role names. Used by the
+ * custom-role surface (@atlas/ee/auth/roles) to prevent a tenant admin from
+ * creating a custom role that shadows `platform_admin` (or any other built-in)
+ * and then assigning it via the looser custom-role assignment path. See F-10.
+ */
+export const RESERVED_ATLAS_ROLE_NAMES: ReadonlySet<string> = new Set(
+  ATLAS_ROLES.map((r) => r.toLowerCase()),
+);
 
 /**
  * Auth error schema for Better Auth responses.

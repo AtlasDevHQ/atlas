@@ -30,7 +30,7 @@ import {
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { getConfig } from "@atlas/api/lib/config";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
-import { ATLAS_ROLES, ORG_ROLES } from "@atlas/api/lib/auth/types";
+import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import {
   getSemanticRoot,
   isValidEntityName,
@@ -73,7 +73,7 @@ import { adminActions } from "./admin-actions";
 import { adminPublish } from "./admin-publish";
 import { adminArchive, adminRestore } from "./admin-archive";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
-import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, OrgRoleSchema, ORG_ROLE_ERROR_MESSAGE } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 
 const log = createLogger("admin-routes");
@@ -474,18 +474,22 @@ async function getAdminApi(): Promise<AdminApi | null> {
   return getAuthInstance().api as unknown as AdminApi;
 }
 
-/** Validate that a role string is a valid Atlas role (includes `platform_admin`). */
-function isValidRole(role: unknown): role is AtlasRole {
+/**
+ * Type guard for *any* AtlasRole — includes `platform_admin`.
+ *
+ * DANGER: Do NOT use this for authorization decisions about roles that are
+ * being assigned from request bodies. A workspace admin accepting
+ * `platform_admin` here would re-introduce F-10. Parse body role fields
+ * through `OrgRoleSchema` in `shared-schemas.ts` instead.
+ *
+ * Use cases this is appropriate for: read-only filter params on list endpoints
+ * (e.g. `GET /users?role=platform_admin` — listing platform admins is safe),
+ * and validating session-user role strings that already come from the auth
+ * layer (not untrusted input).
+ */
+function isAtlasRole(role: unknown): role is AtlasRole {
   return typeof role === "string" && (ATLAS_ROLES as readonly string[]).includes(role);
 }
-
-/**
- * Schema for roles that workspace admins are allowed to assign through the
- * admin surface (role change, invitations). Excludes `platform_admin`, which
- * must only be granted through a platform-admin-gated endpoint. See F-10 /
- * issue #1752 in .claude/research/security-audit-1-2-3.md.
- */
-const OrgRoleSchema = z.enum(ORG_ROLES);
 
 
 // ---------------------------------------------------------------------------
@@ -1653,7 +1657,7 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
       params.push(`%${search}%`);
       paramIndex++;
     }
-    if (role && isValidRole(role)) {
+    if (role && isAtlasRole(role)) {
       // Use org-level role from the member table
       conditions.push(`m.role = $${paramIndex}`);
       params.push(role);
@@ -1710,7 +1714,7 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
       limit,
       offset,
       ...(search ? { searchField: "email", searchValue: search, searchOperator: "contains" } : {}),
-      ...(role && isValidRole(role) ? { filterField: "role", filterValue: role, filterOperator: "eq" } : {}),
+      ...(role && isAtlasRole(role) ? { filterField: "role", filterValue: role, filterOperator: "eq" } : {}),
       sortBy: "createdAt",
       sortDirection: "desc",
     },
@@ -1812,18 +1816,12 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     return null;
   });
 
-  // Reject platform_admin here. Granting cross-org privilege must go through a
-  // platform-admin-gated endpoint, not this per-workspace role change. See F-10.
+  // Reject platform_admin and any off-tuple value. Granting cross-org privilege
+  // must go through a platform-admin-gated endpoint, not this per-workspace
+  // role change. See F-10 in .claude/research/security-audit-1-2-3.md.
   const roleParse = OrgRoleSchema.safeParse(body?.role);
   if (!roleParse.success) {
-    return c.json(
-      {
-        error: "invalid_request",
-        message: `Invalid role. Must be one of: ${ORG_ROLES.join(", ")}. platform_admin must be granted through platform-admin endpoints.`,
-        requestId,
-      },
-      400,
-    );
+    return c.json({ error: "invalid_request", message: ORG_ROLE_ERROR_MESSAGE, requestId }, 400);
   }
   const newRole = roleParse.data;
 

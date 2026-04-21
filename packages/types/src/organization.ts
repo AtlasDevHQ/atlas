@@ -23,9 +23,14 @@ export interface Organization {
 }
 
 /**
- * A member row's wire shape. The DB column stores any AtlasRole value — including
- * `platform_admin` for cross-org administrators — so this field is typed as
- * AtlasRole rather than the narrower OrgRole (which is the *assignable* subset).
+ * A member row's wire shape. The DB column stores any AtlasRole value —
+ * including `platform_admin` for cross-org administrators — so this field is
+ * typed as AtlasRole rather than the narrower OrgRole (the *assignable* subset).
+ *
+ * Narrowing `role` back to `OrgRole` here will break member-list rendering for
+ * platform admins and any consumer that relies on reading the stored role
+ * verbatim. The *assignable* constraint belongs at the write boundary
+ * (`OrgRoleSchema` in shared-schemas.ts), not the read type.
  */
 export interface OrgMember {
   id: string;

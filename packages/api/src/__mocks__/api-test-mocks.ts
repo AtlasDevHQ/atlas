@@ -214,13 +214,16 @@ export function createApiTestMocks(
 
   // ── Auth types ────────────────────────────────────────────────
 
-  // Keep ATLAS_ROLES / ORG_ROLES aligned with the real tuples in
-  // packages/types/src/auth.ts — drift here masks role-escalation bugs
-  // like F-10 (#1752) in tests.
+  // Keep ATLAS_ROLES / ORG_ROLES / PLATFORM_ROLES aligned with the real tuples
+  // in packages/types/src/auth.ts — drift masks role-escalation bugs like F-10
+  // (#1752) in tests. The invariant is enforced by the tuple assertions in
+  // packages/api/src/lib/auth/__tests__/organization.test.ts — do not trim
+  // these arrays to make a test pass.
   mock.module("@atlas/api/lib/auth/types", () => ({
     AUTH_MODES: ["none", "simple-key", "byot", "managed"],
     ATLAS_ROLES: ["member", "admin", "owner", "platform_admin"],
     ORG_ROLES: ["member", "admin", "owner"],
+    PLATFORM_ROLES: ["platform_admin"],
     createAtlasUser: (
       id: string,
       mode: string,

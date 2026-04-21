@@ -348,6 +348,33 @@ describe("Admin routes — user invitations", () => {
       });
     }
 
+    for (const badRole of ["PLATFORM_ADMIN", "Platform_Admin", " platform_admin ", "ADMIN", "Member"]) {
+      it(`rejects off-tuple role string ${JSON.stringify(badRole)} in invite`, async () => {
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/users/invite", "POST", {
+            email: "x@example.com",
+            role: badRole,
+          }),
+        );
+        expect(res.status).toBe(400);
+      });
+    }
+
+    for (const badPayload of [
+      { email: "x@example.com" },
+      { email: "x@example.com", role: null },
+      { email: "x@example.com", role: 42 },
+      { email: "x@example.com", role: ["admin"] },
+      { email: "x@example.com", role: { nested: "admin" } },
+    ]) {
+      it(`rejects non-string / missing role payload ${JSON.stringify(badPayload)} in invite`, async () => {
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/users/invite", "POST", badPayload),
+        );
+        expect(res.status).toBe(400);
+      });
+    }
+
     it("rejects invitation when user already exists", async () => {
       // Route order: member count → user check → pending check (Promise.all for user+pending)
       mockInternalQuery

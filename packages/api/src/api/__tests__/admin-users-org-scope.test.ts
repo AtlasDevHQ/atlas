@@ -197,6 +197,36 @@ describe("Org-scoped user write operations (#983)", () => {
         expect(mockSetRole).toHaveBeenCalled();
       });
     }
+
+    // Case-sensitivity and off-tuple fuzz — z.enum is case-sensitive, so any
+    // casing other than the literal tuple members is rejected. If someone
+    // "helpfully" lowercases the input before validation in the future, these
+    // tests fail and surface the regression.
+    for (const badRole of ["PLATFORM_ADMIN", "Platform_Admin", " platform_admin ", "superadmin", "ADMIN", "Member"]) {
+      it(`rejects off-tuple role string ${JSON.stringify(badRole)}`, async () => {
+        setWorkspaceAdmin("org-1");
+        mockMembershipFor("user-in-org-1");
+
+        const res = await app.fetch(
+          adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: badRole }),
+        );
+        expect(res.status).toBe(400);
+        expect(mockSetRole).not.toHaveBeenCalled();
+      });
+    }
+
+    for (const badPayload of [{}, { role: null }, { role: 42 }, { role: ["admin"] }, { role: { nested: "admin" } }]) {
+      it(`rejects non-string / missing role payload ${JSON.stringify(badPayload)}`, async () => {
+        setWorkspaceAdmin("org-1");
+        mockMembershipFor("user-in-org-1");
+
+        const res = await app.fetch(
+          adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", badPayload),
+        );
+        expect(res.status).toBe(400);
+        expect(mockSetRole).not.toHaveBeenCalled();
+      });
+    }
   });
 
   describe("POST /api/v1/admin/users/:id/ban", () => {

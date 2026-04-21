@@ -20,6 +20,22 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
+
+/**
+ * Lower-cased set of every built-in Atlas role name. Kept in lockstep with
+ * `ATLAS_ROLES` (single source of truth in `@useatlas/types/auth`) so that
+ * adding a platform-level role in the future automatically widens what the
+ * custom-role surface refuses to shadow. See F-10 in
+ * .claude/research/security-audit-1-2-3.md — a workspace admin could
+ * previously create a custom role literally named `platform_admin`, then
+ * assign it via this same module's `assignRole` path, which writes the name
+ * into `member.role`; `resolveEffectiveRole` would then promote the target
+ * user to cross-org governance.
+ */
+const RESERVED_ATLAS_ROLE_NAMES: ReadonlySet<string> = new Set(
+  ATLAS_ROLES.map((r) => r.toLowerCase()),
+);
 
 const log = createLogger("ee:roles");
 
@@ -320,9 +336,12 @@ export const createRole = (
       return yield* Effect.fail(new RoleError({ message: `Invalid role name: "${input.name}". Must start with a letter, contain only lowercase letters, numbers, hyphens, or underscores, and be 1-63 characters.`, code: "validation" }));
     }
 
-    // Reject reserved legacy role names that would shadow built-in behavior
-    const RESERVED_ROLE_NAMES = new Set(["member", "owner"]);
-    if (RESERVED_ROLE_NAMES.has(name)) {
+    // Reject any name that shadows a built-in Atlas role. Matching on the
+    // full ATLAS_ROLES set (not just the legacy ["member","owner"] pair)
+    // prevents a tenant admin from creating a custom role named
+    // `platform_admin` and then promoting any org member to cross-org
+    // governance via assignRole. See F-10.
+    if (RESERVED_ATLAS_ROLE_NAMES.has(name)) {
       return yield* Effect.fail(new RoleError({ message: `"${name}" is a reserved role name.`, code: "validation" }));
     }
 
@@ -500,6 +519,18 @@ export const assignRole = (
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("roles");
     yield* requireInternalDBEffect("role assignment");
+
+    // Belt-and-suspenders: refuse to write a built-in Atlas role name into
+    // `member.role` from the custom-role assignment path. createRole already
+    // blocks these names, but a legacy row could exist from before the guard
+    // tightened; this check also defends against future callers passing a
+    // roleName they've computed rather than looked up. See F-10.
+    if (RESERVED_ATLAS_ROLE_NAMES.has(roleName.toLowerCase())) {
+      return yield* Effect.fail(new RoleError({
+        message: `"${roleName}" is a built-in Atlas role and cannot be assigned through the custom-role endpoint.`,
+        code: "validation",
+      }));
+    }
 
     // Verify the role exists in this org
     const roleRows = yield* Effect.promise(() => internalQuery<{ id: string }>(

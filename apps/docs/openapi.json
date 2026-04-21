@@ -59970,10 +59970,43 @@
           "Slack"
         ],
         "summary": "Slack OAuth install redirect",
-        "description": "Redirects to the Slack OAuth authorization page. Requires SLACK_CLIENT_ID to be configured.",
+        "description": "Redirects to the Slack OAuth authorization page. Requires SLACK_CLIENT_ID to be configured. Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting installation to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
         "responses": {
           "302": {
             "description": "Redirect to Slack OAuth authorization page"
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin/owner of the workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
           },
           "501": {
             "description": "OAuth not configured",
@@ -60114,10 +60147,68 @@
           "Teams"
         ],
         "summary": "Teams OAuth install redirect",
-        "description": "Redirects to the Azure AD admin consent page. Requires TEAMS_APP_ID to be configured.",
+        "description": "Redirects to the Azure AD admin consent page. Requires TEAMS_APP_ID to be configured. Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting tenant authorization to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
         "responses": {
           "302": {
             "description": "Redirect to Azure AD admin consent page"
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin/owner of the workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to save OAuth state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
           },
           "501": {
             "description": "Teams not configured",
@@ -60288,10 +60379,68 @@
           "Discord"
         ],
         "summary": "Discord OAuth install redirect",
-        "description": "Redirects to the Discord OAuth2 authorize page. Requires DISCORD_CLIENT_ID to be configured.",
+        "description": "Redirects to the Discord OAuth2 authorize page. Requires DISCORD_CLIENT_ID to be configured. Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting guild authorization to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
         "responses": {
           "302": {
             "description": "Redirect to Discord OAuth2 authorize page"
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin/owner of the workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to save OAuth state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
           },
           "501": {
             "description": "Discord not configured",

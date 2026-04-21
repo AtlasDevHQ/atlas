@@ -489,11 +489,24 @@ describe("0034_share_mode_org_requires_org_id.sql", () => {
   it("targets exactly the share_mode='org' AND org_id IS NULL predicate in both remediations", () => {
     const sql = fs.readFileSync(filePath, "utf-8");
 
-    const convPredicate = /UPDATE\s+conversations\s+SET\s+share_mode\s*=\s*'public'\s+WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
-    const dashPredicate = /UPDATE\s+dashboards\s+SET\s+share_mode\s*=\s*'public'\s+WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
+    const convPredicate = /UPDATE\s+conversations\s+SET\s+share_mode\s*=\s*'public'[\s\S]*?WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
+    const dashPredicate = /UPDATE\s+dashboards\s+SET\s+share_mode\s*=\s*'public'[\s\S]*?WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
 
     expect(sql).toMatch(convPredicate);
     expect(sql).toMatch(dashPredicate);
+  });
+
+  it("revokes share_token and share_expires_at on coerced rows so drifted org-shares don't become live-as-public", () => {
+    // Without this, post-migration rows with share_mode='public' + live
+    // share_token would silently flip from F-01 fail-closed 403 to a
+    // publicly-viewable link. See #1737 PR review.
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    const convRevoke = /UPDATE\s+conversations\s+SET[\s\S]*?share_token\s*=\s*NULL[\s\S]*?share_expires_at\s*=\s*NULL[\s\S]*?WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
+    const dashRevoke = /UPDATE\s+dashboards\s+SET[\s\S]*?share_token\s*=\s*NULL[\s\S]*?share_expires_at\s*=\s*NULL[\s\S]*?WHERE\s+share_mode\s*=\s*'org'\s+AND\s+org_id\s+IS\s+NULL/i;
+
+    expect(sql).toMatch(convRevoke);
+    expect(sql).toMatch(dashRevoke);
   });
 
   it("encodes the CHECK as `share_mode <> 'org' OR org_id IS NOT NULL` on both tables", () => {

@@ -15,14 +15,20 @@
 -- migration from applying. Matches the pattern used in 0031 / 0032.
 --
 -- Remediation policy: flip offending rows back to share_mode='public'
--- (the column default). The share was already broken-by-construction —
--- the route layer was rejecting it — so reverting to 'public' is
--- strictly less dangerous than trying to derive org_id from user_id,
--- which would risk assigning the share to the wrong org.
+-- (the column default) AND null share_token + share_expires_at on the
+-- same pass. Pre-migration, the F-01 route-layer fix returned 403 on
+-- reads of these rows (org scope with no org → fail-closed). If we only
+-- changed share_mode, the still-live share_token would start resolving
+-- as a public link — anyone holding the URL would suddenly see the
+-- content. Revoking the token forces a deliberate re-share.
+--
+-- Deriving org_id from user_id was considered and rejected: assigning
+-- the share to a guessed org could leak content into the wrong tenant.
 --
 -- The RAISE NOTICE gives operators a post-mortem breadcrumb (same pattern
--- as 0032). On a clean dev DB these UPDATEs touch 0 rows and emit no
--- notice.
+-- as 0032) and explicitly mentions token revocation so the behavior
+-- change is visible in migration logs. On a clean dev DB these UPDATEs
+-- touch 0 rows and emit no notice.
 
 -- ── 1. Remediate bad conversation rows ──────────────────────────────
 DO $$
@@ -30,11 +36,13 @@ DECLARE
   coerced_count INTEGER;
 BEGIN
   UPDATE conversations
-  SET share_mode = 'public'
+  SET share_mode = 'public',
+      share_token = NULL,
+      share_expires_at = NULL
   WHERE share_mode = 'org' AND org_id IS NULL;
   GET DIAGNOSTICS coerced_count = ROW_COUNT;
   IF coerced_count > 0 THEN
-    RAISE NOTICE 'conversations.share_mode drift: coerced % row(s) from ''org'' back to ''public'' (org_id was NULL)', coerced_count;
+    RAISE NOTICE 'conversations.share_mode drift: coerced % row(s) from ''org'' back to ''public'' and revoked their share_token (org_id was NULL)', coerced_count;
   END IF;
 END $$;
 
@@ -44,11 +52,13 @@ DECLARE
   coerced_count INTEGER;
 BEGIN
   UPDATE dashboards
-  SET share_mode = 'public'
+  SET share_mode = 'public',
+      share_token = NULL,
+      share_expires_at = NULL
   WHERE share_mode = 'org' AND org_id IS NULL;
   GET DIAGNOSTICS coerced_count = ROW_COUNT;
   IF coerced_count > 0 THEN
-    RAISE NOTICE 'dashboards.share_mode drift: coerced % row(s) from ''org'' back to ''public'' (org_id was NULL)', coerced_count;
+    RAISE NOTICE 'dashboards.share_mode drift: coerced % row(s) from ''org'' back to ''public'' and revoked their share_token (org_id was NULL)', coerced_count;
   END IF;
 END $$;
 

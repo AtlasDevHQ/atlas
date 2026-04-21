@@ -330,6 +330,83 @@ type AuthInstance = ReturnType<typeof betterAuth>;
 let _instance: AuthInstance | null = null;
 
 /**
+ * Decision returned by {@link computeBootstrapRole} describing whether the
+ * signing-up user should be promoted to `platform_admin` during the
+ * Better Auth `user.create.before` hook.
+ */
+export type BootstrapRoleDecision =
+  | { promote: false; reason: string }
+  | { promote: true; role: "platform_admin"; reason: string };
+
+/**
+ * Inputs to {@link computeBootstrapRole}. Split out so tests can drive every
+ * branch without a live database.
+ *
+ * - `adminEmail` — normalized (lowercased + trimmed) value of `ATLAS_ADMIN_EMAIL`
+ *   or `undefined` when unset.
+ * - `allowFirstSignupAdmin` — `true` when `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN=true`.
+ *   Required for the no-admin-exists fallback to fire.
+ * - `internalDbAvailable` — `true` when the internal DB is configured; the
+ *   fallback is a no-op without it (we can't query the user table).
+ * - `countExistingAdmins` — lazy probe that runs only when the fallback is
+ *   otherwise allowed.
+ */
+export interface BootstrapRoleEnv {
+  adminEmail: string | undefined;
+  allowFirstSignupAdmin: boolean;
+  internalDbAvailable: boolean;
+  countExistingAdmins: () => Promise<number>;
+}
+
+/**
+ * Decide whether to promote a signing-up user to `platform_admin`.
+ *
+ * Two paths promote:
+ *   1. The user's email (case-insensitive, trimmed) matches `ATLAS_ADMIN_EMAIL`.
+ *   2. `ATLAS_ADMIN_EMAIL` is unset, `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN=true`, the
+ *      internal DB is available, and no admin user exists yet.
+ *
+ * Path 2 is gated behind the explicit opt-in because before 1.2.3 it could be
+ * weaponized into a one-request platform takeover on any fresh deployment that
+ * hadn't set `ATLAS_ADMIN_EMAIL` yet (see #1728 / F-02).
+ */
+export async function computeBootstrapRole(
+  user: { email: string | null | undefined },
+  env: BootstrapRoleEnv,
+): Promise<BootstrapRoleDecision> {
+  const userEmail = user.email?.toLowerCase().trim();
+
+  if (env.adminEmail && userEmail && userEmail === env.adminEmail) {
+    return {
+      promote: true,
+      role: "platform_admin",
+      reason: "ATLAS_ADMIN_EMAIL match",
+    };
+  }
+
+  if (!env.adminEmail && env.allowFirstSignupAdmin && env.internalDbAvailable) {
+    const existing = await env.countExistingAdmins();
+    if (existing === 0) {
+      return {
+        promote: true,
+        role: "platform_admin",
+        reason: "first-signup fallback (ATLAS_ALLOW_FIRST_SIGNUP_ADMIN=true, no admin exists)",
+      };
+    }
+    return { promote: false, reason: "an admin already exists — fallback skipped" };
+  }
+
+  if (!env.adminEmail) {
+    return {
+      promote: false,
+      reason: "ATLAS_ADMIN_EMAIL is unset and ATLAS_ALLOW_FIRST_SIGNUP_ADMIN is not enabled",
+    };
+  }
+
+  return { promote: false, reason: "email does not match ATLAS_ADMIN_EMAIL" };
+}
+
+/**
  * SSO domain-based auto-provisioning: if the user's email domain matches an
  * enabled SSO provider, auto-add them to that org (respecting the member seat
  * limit, failing open on billing infrastructure errors).
@@ -433,6 +510,24 @@ export function getAuthInstance(): AuthInstance {
   }
 
   const adminEmail = process.env.ATLAS_ADMIN_EMAIL?.toLowerCase().trim();
+
+  // Resolve ATLAS_ALLOW_FIRST_SIGNUP_ADMIN once at boot. Accept the common
+  // truthy spellings (true/1/yes/on, case-insensitive, trimmed) — operators
+  // who type "TRUE" or "1" should not silently get the off path. Warn on
+  // non-empty values we don't recognize so misconfiguration is visible.
+  const rawAllowFlag = process.env.ATLAS_ALLOW_FIRST_SIGNUP_ADMIN?.trim();
+  const allowFirstSignupAdmin =
+    rawAllowFlag !== undefined && ["true", "1", "yes", "on"].includes(rawAllowFlag.toLowerCase());
+  if (rawAllowFlag && !allowFirstSignupAdmin) {
+    log.warn(
+      { value: rawAllowFlag },
+      "ATLAS_ALLOW_FIRST_SIGNUP_ADMIN is set to an unrecognized value — treating as off. Valid: true, 1, yes, on (case-insensitive).",
+    );
+  } else if (allowFirstSignupAdmin) {
+    log.warn(
+      "ATLAS_ALLOW_FIRST_SIGNUP_ADMIN is enabled — the first signup when no admin exists will be promoted to platform_admin. Set ATLAS_ADMIN_EMAIL for production deployments.",
+    );
+  }
 
   // Derive parent domain for cross-subdomain cookies (e.g. "useatlas.dev" from
   // BETTER_AUTH_URL="https://api.useatlas.dev"). Only enabled when CORS origin
@@ -605,25 +700,48 @@ export function getAuthInstance(): AuthInstance {
       user: {
         create: {
           before: async (user) => {
+            const internalDbAvailable = hasInternalDB();
             try {
-              if (adminEmail && user.email?.toLowerCase().trim() === adminEmail) {
-                log.info({ email: user.email }, "Bootstrap: promoting signup to platform_admin (ATLAS_ADMIN_EMAIL match)");
-                return { data: { ...user, role: "platform_admin" } };
-              }
+              const decision = await computeBootstrapRole(user, {
+                adminEmail,
+                allowFirstSignupAdmin,
+                internalDbAvailable,
+                countExistingAdmins: async () => {
+                  const rows = await internalQuery<{ id: string }>(
+                    `SELECT id FROM "user" WHERE role IN ('admin', 'platform_admin') LIMIT 1`,
+                  );
+                  return rows.length;
+                },
+              });
 
-              if (!adminEmail) {
-                if (!hasInternalDB()) return;
-                const rows = await internalQuery<{ id: string }>(
-                  `SELECT id FROM "user" WHERE role IN ('admin', 'platform_admin') LIMIT 1`,
+              if (decision.promote) {
+                // Fallback path uses warn so operators running with the opt-in
+                // flag see a nudge toward the safer ATLAS_ADMIN_EMAIL config.
+                const logFn = decision.reason.startsWith("first-signup fallback") ? log.warn : log.info;
+                logFn.call(
+                  log,
+                  { email: user.email, reason: decision.reason },
+                  "Bootstrap: promoting signup to platform_admin",
                 );
-                if (rows.length === 0) {
-                  log.info({ email: user.email }, "Bootstrap: no admin exists — promoting first signup to platform_admin");
-                  return { data: { ...user, role: "platform_admin" } };
-                }
+                return { data: { ...user, role: decision.role } };
               }
 
             } catch (err) {
-              log.error({ err: err instanceof Error ? err.message : String(err) }, "Bootstrap admin check failed — defaulting to normal role assignment");
+              // Include the full env state in the log so operators who expected
+              // their signup to be promoted (ATLAS_ADMIN_EMAIL match or opt-in
+              // fallback) can see WHY it fell through. Without this context, a
+              // DB outage or schema drift during legitimate bootstrap would
+              // silently lock out the operator with one opaque log line.
+              log.error(
+                {
+                  err: err instanceof Error ? err.message : String(err),
+                  email: user.email,
+                  hasAdminEmail: !!adminEmail,
+                  allowFirstSignupAdmin,
+                  internalDbAvailable,
+                },
+                "Bootstrap admin check failed — defaulting to normal role assignment. Check DB connectivity and env configuration.",
+              );
             }
           },
           after: async (user) => {

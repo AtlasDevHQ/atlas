@@ -163,7 +163,7 @@ undefined` and the callback saves an installation bound to no org.
 |---|---|---|---|---|
 | F-01 | P1 | `publicConversations` org-scoped share missing org-membership check (cross-tenant leak) | #1727 | fixed (PR #1738) |
 | F-02 | P1 | First-signup bootstrap platform_admin race (email unverified, auto-signin) | #1728 | open |
-| F-03 | P2 | Onboarding-email `/unsubscribe` + `/resubscribe` accept arbitrary `userId` without signature | #1729 | open |
+| F-03 | P2 | Onboarding-email `/unsubscribe` + `/resubscribe` accept arbitrary `userId` without signature | #1729 | fixed (PR [[TBD-1729]]) |
 | F-04 | P2 | Slack/Teams/Discord `/install` + `/callback` are unauthenticated — org binding + admin role not enforced | #1730 | open |
 | F-05 | P2 | `emailAndPassword.requireEmailVerification: false` — compounds F-02 and allows unverified signups to trigger workflows | #1731 | fixed (bundled into PR for #1732) |
 | F-06 | P1 | Better Auth signin/signup rate limiting not explicitly configured; signup enumeration oracle | #1732 | fixed |
@@ -246,6 +246,42 @@ GET /api/v1/admin/overview → HTTP 200
 ```
 
 Single unauthenticated HTTP request → platform_admin role, valid session cookie, full admin console access. Email is unverified (fake `.invalid` TLD). Matches the P0 criterion: "exploitable today with minimal skill (auth bypass, privilege escalation)". Severity upgrades from P1 → **P0**.
+
+### F-03 — onboarding-email unsubscribe bearer 🔒 FIXED
+
+**Fix:** The unsubscribe URL embedded in every onboarding email now carries a
+signed token. `packages/api/src/lib/email/unsubscribe-token.ts` signs
+`HMAC-SHA256(userId:expiresAtMs)` using a key derived from
+`BETTER_AUTH_SECRET` with a `:unsubscribe` suffix (key-isolation from demo
+tokens). Token format: `${expiresAtMs}.${base64urlHmac}`. Default TTL 30 days,
+configurable via `ATLAS_UNSUBSCRIBE_TOKEN_TTL_MS`.
+
+Route semantics differ by endpoint:
+
+- `/api/v1/onboarding-emails/unsubscribe` returns the same neutral 200 HTML
+  on verification failure as on success — but skips the DB write. Rationale:
+  if the response differed (400 vs 200), an attacker could enumerate valid
+  `userId`s via status-code timing; the fail-closed behavior (flag never
+  flips without a valid signature) is what matters.
+- `/api/v1/onboarding-emails/resubscribe` returns 403 `forbidden` on
+  verification failure. Resubscribe is a consent grant; a missing/invalid
+  token must not silently re-enable emails, and a leaked unsubscribe URL
+  must not be weaponizable to undo a revocation.
+
+Backwards compat: fail-closed. Emails sent before the fix carry unsigned URLs;
+clicking those now shows the neutral "Unsubscribed" page but no DB row is
+written. Low user impact — the only effect is "unsubscribe didn't appear to
+take; the next email still arrives, use that link instead."
+
+Tests at `packages/api/src/lib/email/__tests__/unsubscribe-token.test.ts`
+(18 unit cases: sign/verify roundtrip, cross-user rejection, different-secret
+rejection, namespacing pin via raw-secret HMAC, expired/tampered/malformed
+rejects, length-mismatch branch, TTL bounds) and
+`packages/api/src/api/__tests__/onboarding-emails.test.ts` (14 route cases:
+valid/missing/tampered/expired/cross-user tokens on both endpoints, DB
+failure paths, Zod validation). The `mockUnsubscribe`/`mockResubscribe`
+assertions pin the load-bearing invariant that the flag can never flip
+without a valid signature.
 
 ### F-04 — install route auth gap ✅ confirmed at P2
 

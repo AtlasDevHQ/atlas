@@ -209,6 +209,71 @@ export function buildAdvancedConfig(cookieDomain: string | undefined): {
 }
 
 /**
+ * Default Better Auth `session.cookieCache.maxAge`, in seconds.
+ *
+ * F-07 — the earlier value of 5 minutes meant `auth.api.banUser(...)` and
+ * `revokeSession(...)` took up to 5 minutes to kick a compromised or
+ * banned user out of authenticated routes, because the cookie cache
+ * short-circuited the DB lookup that surfaces the ban/revocation. 30s
+ * preserves the perf win of cookie cache (one DB read per 30s per
+ * session, not per request) while bounding the revocation window to
+ * seconds rather than minutes.
+ *
+ * Operators with measurably hot session lookups can raise this via
+ * `ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC` — the resolver clamps the
+ * value to `[SESSION_COOKIE_CACHE_MIN_SEC, SESSION_COOKIE_CACHE_MAX_SEC]`
+ * so a typo like `=3000000` can't silently restore a multi-hour
+ * revocation blind spot.
+ */
+export const SESSION_COOKIE_CACHE_DEFAULT_SEC = 30;
+export const SESSION_COOKIE_CACHE_MIN_SEC = 5;
+export const SESSION_COOKIE_CACHE_MAX_SEC = 300;
+
+/**
+ * Resolve Better Auth `session.cookieCache.maxAge` (seconds) from env.
+ *
+ * Defaults to {@link SESSION_COOKIE_CACHE_DEFAULT_SEC} (30s). Values
+ * outside `[SESSION_COOKIE_CACHE_MIN_SEC, SESSION_COOKIE_CACHE_MAX_SEC]`
+ * are logged and clamped — we never silently fall back to the old
+ * 5-minute value, and we never allow a zero/negative value that would
+ * effectively disable cookie cache (a perf footgun that looks innocuous
+ * in an env file).
+ *
+ * Returning a plain number keeps the call site in `betterAuth({ session })`
+ * trivial and test-pinnable without mocking Better Auth internals.
+ */
+export function resolveSessionCookieCacheMaxAge(env: NodeJS.ProcessEnv): number {
+  const raw = env.ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC;
+  if (raw === undefined || raw.trim() === "") return SESSION_COOKIE_CACHE_DEFAULT_SEC;
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    log.warn(
+      { var: "ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC", value: raw, fallback: SESSION_COOKIE_CACHE_DEFAULT_SEC },
+      "Invalid env value — not a positive number. Falling back to the default.",
+    );
+    return SESSION_COOKIE_CACHE_DEFAULT_SEC;
+  }
+
+  const floored = Math.floor(parsed);
+  if (floored < SESSION_COOKIE_CACHE_MIN_SEC) {
+    log.warn(
+      { var: "ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC", value: raw, min: SESSION_COOKIE_CACHE_MIN_SEC },
+      "Value below minimum — clamping up. Cookie cache below 5s gives up most of its perf benefit.",
+    );
+    return SESSION_COOKIE_CACHE_MIN_SEC;
+  }
+  if (floored > SESSION_COOKIE_CACHE_MAX_SEC) {
+    log.warn(
+      { var: "ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC", value: raw, max: SESSION_COOKIE_CACHE_MAX_SEC },
+      "Value above maximum — clamping down. F-07: cookie cache beyond 5 minutes delays ban/revoke beyond acceptable bounds.",
+    );
+    return SESSION_COOKIE_CACHE_MAX_SEC;
+  }
+  return floored;
+}
+
+/**
  * Resolve whether email verification is required from the environment.
  *
  * Defaults to `true` for security hardening. Multi-tenant deployments
@@ -854,10 +919,15 @@ export function getAuthInstance(): AuthInstance {
       autoSignInAfterVerification: true,
     },
     socialProviders,
+    // F-07 — cookieCache.maxAge bounds the revocation window. Previously
+    // 5 * 60 (5 minutes), which meant `auth.api.banUser(...)` and
+    // `revokeSession(...)` didn't take effect for up to 5 minutes because
+    // the signed cookie short-circuited the DB lookup. Default is now 30s,
+    // overridable within [5, 300] via ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC.
     session: {
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
-      cookieCache: { enabled: true, maxAge: 5 * 60 },
+      cookieCache: { enabled: true, maxAge: resolveSessionCookieCacheMaxAge(process.env) },
     },
     plugins: buildPlugins(),
     trustedOrigins:

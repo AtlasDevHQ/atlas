@@ -1167,8 +1167,16 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     if (!authResult.authenticated) {
       return c.json({ error: "auth_required", message: "This shared dashboard requires authentication.", requestId }, 403);
     }
-    // Verify authenticated user belongs to the dashboard's org
-    if (result.data.orgId && authResult.user?.activeOrganizationId !== result.data.orgId) {
+    // Verify authenticated user belongs to the dashboard's org. Fail closed
+    // when the dashboard row has no orgId: the schema allows NULL org_id with
+    // share_mode='org' (createShareLink does not stamp orgId), so a truthy-check
+    // here would silently fall through and leak the dashboard cross-tenant —
+    // same class of bug as #1727 (conversations). See #1736.
+    if (!result.data.orgId || authResult.user?.activeOrganizationId !== result.data.orgId) {
+      log.warn(
+        { requestId, token, hasOrgId: Boolean(result.data.orgId) },
+        "Org-scoped dashboard share access denied — requester is not a member of the dashboard's org",
+      );
       return c.json({ error: "forbidden", message: "You do not have access to this dashboard.", requestId }, 403);
     }
   }

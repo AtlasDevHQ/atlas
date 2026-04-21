@@ -677,5 +677,173 @@ describe("dashboard routes", () => {
       );
       expect(response.status).toBe(404);
     });
+
+    // -----------------------------------------------------------------------
+    // Org-scoped share regression tests (#1736 — F-01 class fail-open)
+    //
+    // Mirror the conversations.ts regression set from PR #1738: before the
+    // fix, the route used a truthy-check (`result.data.orgId && ...`) that
+    // short-circuited when the row had `orgId=null`, letting any authenticated
+    // caller from any org read org-scoped dashboards. These pin the four
+    // attack cases plus the positive control.
+    // -----------------------------------------------------------------------
+
+    it("returns 403 auth_required for org-scoped shares when unauthenticated (#1736)", async () => {
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: "org-A",
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401,
+        error: "no_credentials",
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("auth_required");
+      expect(body).not.toHaveProperty("cards");
+      expect(body).not.toHaveProperty("title");
+    });
+
+    it("returns 403 forbidden for org-scoped shares when requester has no active org (#1736)", async () => {
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: "org-A",
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        // No activeOrganizationId — freshly signed-up user with zero memberships
+        user: { id: "u-orphan", label: "no-org@test.com", mode: "simple-key" as const, role: "member" as const },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+      expect(body).not.toHaveProperty("cards");
+      expect(body).not.toHaveProperty("title");
+    });
+
+    it("returns 403 forbidden for org-scoped shares when requester belongs to a different org (#1736)", async () => {
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: "org-A",
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-other",
+          label: "other-org-user@test.com",
+          mode: "simple-key" as const,
+          role: "member" as const,
+          activeOrganizationId: "org-B",
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+      expect(body).not.toHaveProperty("cards");
+      expect(body).not.toHaveProperty("title");
+    });
+
+    it("returns 200 for org-scoped shares when requester belongs to the dashboard's org (#1736)", async () => {
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: "org-A",
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-member",
+          label: "org-a-member@test.com",
+          mode: "simple-key" as const,
+          role: "member" as const,
+          activeOrganizationId: "org-A",
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl"),
+      );
+      expect(response.status).toBe(200);
+
+      const body = (await response.json()) as { title: string; cards: unknown[]; shareMode: string };
+      expect(body.shareMode).toBe("org");
+      expect(body.title).toBe("Revenue Dashboard");
+      expect(body.cards).toHaveLength(1);
+    });
+
+    // Fail-closed regression for #1736 — the schema allows share_mode='org'
+    // with org_id=NULL (createShareLink does not stamp orgId). Without a
+    // fail-closed check, any authenticated caller could read such a row.
+    it("returns 403 for org-scoped shares when the dashboard has no orgId (#1736)", async () => {
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: null,
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-any",
+          label: "any-user@test.com",
+          mode: "simple-key" as const,
+          role: "member" as const,
+          activeOrganizationId: "org-A",
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+      expect(body).not.toHaveProperty("cards");
+      expect(body).not.toHaveProperty("title");
+    });
   });
 });

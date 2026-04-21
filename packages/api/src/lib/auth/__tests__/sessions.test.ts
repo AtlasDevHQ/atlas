@@ -207,6 +207,10 @@ mock.module("@atlas/api/lib/settings", () => ({
 
 mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (_url: string) => "***",
+  // Must mirror every named export from lib/security.ts — partial mocks
+  // cause SyntaxError when admin.ts dynamically imports routes that
+  // transitively pull SENSITIVE_PATTERNS (e.g. admin-semantic-improve → sql tool).
+  SENSITIVE_PATTERNS: /__never_matches__/,
 }));
 
 mock.module("@atlas/api/lib/auth/server", () => ({

@@ -253,6 +253,36 @@ describe("_sendVerificationEmail", () => {
     expect(calls[0].html).toContain("&quot;");
   });
 
+  // Each XML-special character must round-trip through the href
+  // attribute as its HTML entity. Dropping any of these would either
+  // break attribute parsing in email clients (rendering the link
+  // inert) or, worst case, create an XSS vector if a future Better
+  // Auth URL carried user-controlled data.
+  it.each([
+    { char: "'", entity: "&#39;", fragment: "?x='y" },
+    { char: "<", entity: "&lt;", fragment: "?x=<y" },
+    { char: ">", entity: "&gt;", fragment: "?x=>y" },
+  ] as const)("escapes $char to $entity inside the href attribute", async ({ char, entity, fragment }: { char: string; entity: string; fragment: string }) => {
+    const calls: Array<{ html: string }> = [];
+    installDeliveryMock(async (msg) => {
+      calls.push({ html: msg.html });
+      return { success: true, provider: "resend" };
+    });
+
+    await _sendVerificationEmail({
+      to: "verify@example.com",
+      url: `https://example.com/verify${fragment}`,
+    });
+
+    // Extract the href="..." attribute value and assert on it only —
+    // the surrounding template legitimately contains <, >, and '.
+    const hrefMatch = calls[0].html.match(/href="([^"]+)"/);
+    expect(hrefMatch).not.toBeNull();
+    const hrefValue = hrefMatch![1];
+    expect(hrefValue).not.toContain(char);
+    expect(hrefValue).toContain(entity);
+  });
+
   it("does not throw when delivery returns success: false (preserves enumeration protection)", async () => {
     installDeliveryMock(async () => ({
       success: false,

@@ -7,7 +7,6 @@
  */
 
 import { Hono, type Context } from "hono";
-import { getConnInfo } from "hono/bun";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -20,10 +19,10 @@ const log = createLogger("auth-route");
  * X-Forwarded-For when ATLAS_TRUST_PROXY=true). Any inbound value on the
  * header is stripped first so end users can't spoof the IP bucket.
  *
- * Paired with `advanced.ipAddress.ipAddressHeaders: ["x-atlas-client-ip"]`
- * in `getAuthInstance()` — Better Auth will skip rate limiting (log warn)
- * whenever this header is missing, which protects us if the middleware
- * chain is ever bypassed.
+ * The other half of the pairing lives in `buildAdvancedConfig` in
+ * `packages/api/src/lib/auth/server.ts`, which tells Better Auth to
+ * read ONLY this header for client IPs — without that pin, Better
+ * Auth would also accept X-Forwarded-For directly and reopen F-06.
  */
 const CLIENT_IP_HEADER = "x-atlas-client-ip";
 
@@ -123,21 +122,24 @@ export function withClientIpHeader(c: Context): Request {
     }
   }
   if (!clientIp) {
-    // `hono/bun`'s getConnInfo reads server.requestIP() via c.env.
-    // It expects c.env to be the Bun server (or an object with a
-    // `server` property). When the auth catch-all runs without a
-    // server context — Next.js standalone on Vercel, the Hono test
-    // harness calling app.fetch(req) with no 2nd arg — c.env is
-    // undefined and `"server" in c.env` would throw a TypeError.
-    // The pre-check avoids spamming the warn log for that expected
-    // case; `getConnInfo` throwing for any other reason still
-    // surfaces as a warn so a future adapter swap doesn't silently
-    // disable rate limiting.
-    const hasServerContext = typeof c.env === "object" && c.env !== null;
-    if (hasServerContext) {
+    // Resolve the Bun socket IP via `server.requestIP(req)`. We
+    // replicate `hono/bun`'s getConnInfo inline rather than importing
+    // it — that module references the `Bun` global at evaluation
+    // time, which breaks the Next.js standalone example's build
+    // (Next tries to collect page data under a Node runtime where
+    // Bun is not defined). The inline version has zero Bun-global
+    // dependency and runs as a no-op in non-Bun environments.
+    //
+    // When the auth catch-all runs without a server context
+    // (Next.js standalone on Vercel, the Hono test harness calling
+    // app.fetch(req) with no 2nd arg), `c.env` is undefined or lacks
+    // `requestIP`, and we leave `clientIp` unset so Better Auth
+    // skips rate limiting for that request.
+    const server = resolveBunServer(c.env);
+    if (server) {
       try {
-        const info = getConnInfo(c);
-        if (info.remote?.address) clientIp = info.remote.address;
+        const info = server.requestIP(c.req.raw);
+        if (info?.address) clientIp = info.address;
       } catch (err) {
         log.warn(
           { err: err instanceof Error ? err.message : String(err) },
@@ -159,6 +161,37 @@ export function withClientIpHeader(c: Context): Request {
 }
 
 /**
+ * Platform-neutral Bun server resolver. Mirrors `hono/bun`'s
+ * `getBunServer` / `getConnInfo` without importing the Bun adapter —
+ * the adapter's top-level code references the `Bun` global, which
+ * throws `ReferenceError: Bun is not defined` during Next.js
+ * standalone build when Next collects page data under a Node runtime.
+ *
+ * Returns `null` when `env` isn't a plausible Bun server (test
+ * harness with no 2nd fetch arg, Next.js route handlers, Node-only
+ * deploys). Returns a minimal interface otherwise so the caller can
+ * extract `.address` without pulling in Bun-specific types.
+ */
+interface BunLikeServer {
+  requestIP: (req: Request) => { address?: string; family?: string; port?: number } | null;
+}
+function resolveBunServer(env: unknown): BunLikeServer | null {
+  if (typeof env !== "object" || env === null) return null;
+  const candidate =
+    "server" in env && typeof (env as Record<string, unknown>).server === "object"
+      ? (env as Record<string, unknown>).server
+      : env;
+  if (
+    candidate !== null
+    && typeof candidate === "object"
+    && typeof (candidate as { requestIP?: unknown }).requestIP === "function"
+  ) {
+    return candidate as BunLikeServer;
+  }
+  return null;
+}
+
+/**
  * Determine whether to trust proxy-set headers (X-Forwarded-For /
  * X-Real-IP) for the client IP.
  *
@@ -177,10 +210,21 @@ export function shouldTrustProxyHeaders(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
- * Strip a trailing `:<port>` from an IP literal. Handles bracketed
- * IPv6 (`[::1]:5678` → `::1`) and IPv4-with-port (`1.2.3.4:5678` →
- * `1.2.3.4`). A bare IPv6 address containing colons (e.g. `::1`) is
- * left untouched because it has no trailing port.
+ * Strip a trailing `:<port>` from an IP literal.
+ *
+ * Handled cases:
+ *   - Bracketed IPv6 with port: `[::1]:5678`          → `::1`
+ *   - IPv4 with numeric port:   `1.2.3.4:5678`        → `1.2.3.4`
+ *
+ * Left untouched:
+ *   - Bare IPv6 (multiple colons): `::1`, `fe80::1%eth0`, `::ffff:1.2.3.4`
+ *   - Non-numeric trailing segments: `host:something`, `1.2.3.4:abc`
+ *     (these are not port suffixes and silently dropping them would
+ *     hide a misconfiguration AND place the request in an unexpected
+ *     rate-limit bucket).
+ *
+ * Only the exactly-one-colon-with-digits-after signature counts as
+ * IPv4:port; anything else passes through unchanged.
  *
  * Exported for testing.
  */
@@ -195,13 +239,13 @@ export function stripPortSuffix(raw: string): string {
     return trimmed;
   }
 
-  // IPv4 with port: 1.2.3.4:54321 → 1.2.3.4. A single colon with digits
-  // after is the signature; IPv6 addresses have multiple colons so this
-  // check leaves them intact.
+  // IPv4 with port: exactly one colon AND the suffix is all digits.
+  // Any multi-colon form (bare IPv6, zone-id, IPv4-mapped IPv6) has
+  // colonCount > 1 so the heuristic leaves it alone.
   const colonCount = (trimmed.match(/:/g) ?? []).length;
   if (colonCount === 1) {
-    const [host] = trimmed.split(":");
-    return host;
+    const [host, portSuffix] = trimmed.split(":");
+    if (portSuffix !== undefined && /^\d+$/.test(portSuffix)) return host;
   }
 
   return trimmed;

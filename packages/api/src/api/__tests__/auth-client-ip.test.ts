@@ -91,6 +91,23 @@ describe("stripPortSuffix", () => {
     expect(stripPortSuffix("2001:db8::1")).toBe("2001:db8::1");
   });
 
+  it("leaves IPv6 with zone identifier untouched", () => {
+    // Link-local IPv6 (fe80::1%eth0) has multiple colons so the IPv4
+    // port-strip heuristic doesn't fire. A future refactor that
+    // simplifies to split-on-first-colon would silently mangle this.
+    expect(stripPortSuffix("fe80::1%eth0")).toBe("fe80::1%eth0");
+  });
+
+  it("leaves non-numeric trailing segments untouched", () => {
+    // Docstring promises "port suffix" not "anything after a colon".
+    // A misconfigured proxy forwarding `host:something` or a malformed
+    // `1.2.3.4:abc` must pass through — silently lopping off `:abc`
+    // would hide a misconfiguration AND put the request in a bucket
+    // the operator didn't expect.
+    expect(stripPortSuffix("host:something")).toBe("host:something");
+    expect(stripPortSuffix("1.2.3.4:abc")).toBe("1.2.3.4:abc");
+  });
+
   it("leaves bare IPv4 untouched", () => {
     expect(stripPortSuffix("1.2.3.4")).toBe("1.2.3.4");
   });

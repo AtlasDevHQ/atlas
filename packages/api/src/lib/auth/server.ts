@@ -246,11 +246,11 @@ export function resolveRequireEmailVerification(env: NodeJS.ProcessEnv): boolean
 export async function _sendVerificationEmail(opts: { to: string; url: string }): Promise<void> {
   // All failure paths (dynamic import rejection, provider SDK throwing,
   // template assembly) must be caught here. The Better Auth callback
-  // uses `void _sendVerificationEmail(...)` for timing-attack mitigation
-  // and a floating rejection would either print to stderr with no
-  // correlation or, on `--unhandled-rejections=strict`, terminate the
-  // process — re-introducing the enumeration oracle through a 500 side
-  // channel.
+  // fires this function as fire-and-forget (with an outer `.catch(...)`
+  // for belt-and-suspenders) for timing-attack mitigation, and a
+  // floating rejection would either print to stderr with no correlation
+  // or, on `--unhandled-rejections=strict`, terminate the process —
+  // re-introducing the enumeration oracle through a 500 side channel.
   try {
     const { sendEmail } = await import("@atlas/api/lib/email/delivery");
     const result = await sendEmail({

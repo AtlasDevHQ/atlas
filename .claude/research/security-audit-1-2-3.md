@@ -161,7 +161,7 @@ undefined` and the callback saves an installation bound to no org.
 
 | ID | P | Summary | GH issue | Status |
 |---|---|---|---|---|
-| F-01 | P1 | `publicConversations` org-scoped share missing org-membership check (cross-tenant leak) | #1727 | open |
+| F-01 | P1 | `publicConversations` org-scoped share missing org-membership check (cross-tenant leak) | #1727 | fixed (PR [[TBD]]) |
 | F-02 | P1 | First-signup bootstrap platform_admin race (email unverified, auto-signin) | #1728 | open |
 | F-03 | P2 | Onboarding-email `/unsubscribe` + `/resubscribe` accept arbitrary `userId` without signature | #1729 | open |
 | F-04 | P2 | Slack/Teams/Discord `/install` + `/callback` are unauthenticated — org binding + admin role not enforced | #1730 | open |
@@ -185,7 +185,7 @@ P3: 4 (F-08..F-11) — held here for the cleanup tail.
 **Status:** complete (2026-04-20)
 **Scope:** Live repro of P1 + select P2 findings against a locally-running Atlas stack (`bun run db:up` + API on :3001). The static audit scored each finding based on code reading alone; this phase attacks the actual endpoints to confirm severity.
 
-### F-01 — cross-tenant conversation leak ✅ confirmed
+### F-01 — cross-tenant conversation leak ✅ confirmed → 🔒 FIXED
 
 Repro (after inserting a conversation into Org A with `share_mode='org'`):
 
@@ -206,6 +206,19 @@ HTTP 200
 ```
 
 User B was **not** a member of Org A, had `orgs=0` in the member table, and still received the full conversation body including the sensitive message content. Severity stays **P1**. Dashboard equivalent was not tested but already has the org-membership check in code.
+
+**Fix:** `publicConversations.openapi(getSharedConversationRoute, ...)` now performs a fail-closed org-membership check after the auth check — `if (!result.data.orgId || authResult.user?.activeOrganizationId !== result.data.orgId) → 403 forbidden`. The lib layer `getSharedConversation` was extended to return `orgId` (SELECT `org_id`) so the route can enforce membership. Fail-closed rather than truthy-check because the schema allows `share_mode='org'` with `org_id IS NULL` and `createShareLink` never stamps `org_id` — see follow-ups #1736 (dashboards has the same truthy-check bug) and #1737 (add `share_mode='org' → org_id IS NOT NULL` CHECK constraint).
+
+Post-fix smoke test on live stack (`/api/public/conversations/<org-scoped-token>`):
+
+| Case | Status |
+|---|---|
+| Unauthenticated | HTTP 403 `auth_required` |
+| User B, no active org | HTTP 403 `forbidden` |
+| User B, active org = `org-B-smoke` (different org) | HTTP 403 `forbidden` |
+| User B, active org = `org-A-smoke` (conversation's org) | HTTP 200 (positive control) |
+
+Regression tests at `packages/api/src/api/__tests__/conversations.test.ts` pin all four cases plus the `orgId=null` fail-closed branch.
 
 ### F-02 — bootstrap platform_admin race ⬆ upgraded to **P0**
 

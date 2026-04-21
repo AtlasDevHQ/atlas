@@ -1341,7 +1341,9 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
     return c.json(fail.body, fail.status);
   }
 
-  // Org-scoped shares require the requester to be authenticated
+  // Org-scoped shares require the requester to be authenticated AND a member
+  // of the conversation's owning workspace. Without this membership check an
+  // authenticated caller from any other org could read the share — see #1727.
   if (result.data.shareMode === "org") {
     let authResult: AuthResult;
     try {
@@ -1355,6 +1357,17 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
     }
     if (!authResult.authenticated) {
       return c.json({ error: "auth_required", message: "This shared conversation requires authentication.", requestId }, 403);
+    }
+    // Verify authenticated user belongs to the conversation's org. Fail closed
+    // when the conversation row has no orgId: the schema allows NULL org_id with
+    // share_mode='org' (createShareLink does not stamp orgId), so a truthy-check
+    // here would silently fall through and reintroduce the #1727 leak.
+    if (!result.data.orgId || authResult.user?.activeOrganizationId !== result.data.orgId) {
+      log.warn(
+        { requestId, token, hasOrgId: Boolean(result.data.orgId) },
+        "Org-scoped share access denied — requester is not a member of the conversation's org",
+      );
+      return c.json({ error: "forbidden", message: "You do not have access to this conversation.", requestId }, 403);
     }
   }
 

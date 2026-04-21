@@ -785,15 +785,22 @@ export async function cleanupExpiredShares(): Promise<number> {
 /** Failure reason for shared conversation access (extends CrudFailReason). */
 export type SharedConversationFailReason = CrudFailReason | "expired";
 
-/** Result type for shared conversation access. */
+/**
+ * Result type for shared conversation access.
+ *
+ * `orgId` is the owning workspace for org-scoped shares. The route layer
+ * must verify the caller belongs to this org before returning content; it
+ * is NOT part of the public wire type and must be stripped from responses.
+ */
 export type SharedConversationResult =
-  | { ok: true; data: ConversationWithMessages & { shareMode: ShareMode } }
+  | { ok: true; data: ConversationWithMessages & { shareMode: ShareMode; orgId: string | null } }
   | { ok: false; reason: SharedConversationFailReason };
 
 /**
  * Fetch a shared conversation by token. Returns `expired` if the share link
  * has passed its expiry time (distinct from `not_found` for missing tokens).
- * Returns `shareMode` so the route layer can enforce org-scoped access.
+ * Returns `shareMode` and `orgId` so the route layer can enforce org-scoped
+ * access against the caller's active organization.
  */
 export async function getSharedConversation(
   token: string,
@@ -801,7 +808,7 @@ export async function getSharedConversation(
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
+      `SELECT id, user_id, org_id, title, surface, connection_id, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
        FROM conversations
        WHERE share_token = $1`,
       [token],
@@ -815,6 +822,7 @@ export async function getSharedConversation(
     }
 
     const shareMode = (convRows[0].share_mode as ShareMode) ?? "public";
+    const orgId = (convRows[0].org_id as string | null) ?? null;
     const convId = convRows[0].id as string;
     const msgRows = await internalQuery<Record<string, unknown>>(
       `SELECT id, conversation_id, role, content, created_at
@@ -827,6 +835,7 @@ export async function getSharedConversation(
       data: {
         ...rowToConversation(convRows[0]),
         shareMode,
+        orgId,
         messages: msgRows.map((m) => ({
           id: m.id as string,
           conversationId: m.conversation_id as string,

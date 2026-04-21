@@ -1410,7 +1410,7 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 
 Full security audit with in-milestone remediation. Audit-and-fix shape: P0/P1/P2 findings fixed in-milestone, P3s punted to a cleanup tail. Findings captured in `.claude/research/security-audit-1-2-3.md`. Tracking issue #1718. Ships before 1.3.0.
 
-- [ ] Phase 1 — Audit Better Auth config + middleware coverage (#1720)
+- [x] Phase 1 — Audit Better Auth config + middleware coverage (#1720, PR #1734). All P0/P1/P2 findings fixed: F-01 → PR #1738 (+ #1742 for dashboards twin #1736, + #1749 for DB invariant #1737 which also revokes drifted share_tokens); F-02 → PR #1735; F-03 → PR #1744; F-04 → PR #1748; F-05 bundled into F-06; F-06 → PR #1739; F-07 → PR #1747
 - [ ] Phase 2 — Audit org-scoping on every route + ContentMode consumers (#1721)
 - [ ] Phase 3 — Audit SQL validation edges + fuzz the 4-layer validator (#1722)
 - [ ] Phase 4 — Audit audit-log coverage on write routes (#1723)

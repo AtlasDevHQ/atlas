@@ -452,10 +452,12 @@ function persistAbuseEvent(event: AbuseEvent): void {
       ],
     );
   } catch (err) {
-    // Include workspaceId + eventId so on-call can correlate the lost
-    // write with the workspace it was for, rather than blind-grepping the
-    // audit trail.
-    log.warn(
+    // A lost audit row is always an error, not a warning — manual reinstate
+    // is a billing-affecting cross-tenant action and compliance reviewers
+    // need the trail. Include workspaceId + eventId so on-call can
+    // correlate the lost write with the workspace rather than grepping
+    // the whole audit table.
+    log.error(
       {
         err: err instanceof Error ? err.message : String(err),
         workspaceId: event.workspaceId,

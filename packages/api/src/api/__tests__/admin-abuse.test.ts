@@ -180,7 +180,7 @@ describe("Admin Abuse API", () => {
       expect(body.workspaces.map((w) => w.workspaceId)).toEqual(["org-1", "org-2"]);
     });
 
-    it("falls back to null when name resolution rejects (#1640)", async () => {
+    it("falls back to null AND surfaces a warning when name resolution rejects (#1640, #1751)", async () => {
       mockListFlagged.mockImplementation(() => [
         {
           workspaceId: "org-1",
@@ -199,8 +199,16 @@ describe("Admin Abuse API", () => {
       // Must still 200 — name resolution is advisory. The page renders the
       // opaque id rather than 500'ing the admin.
       expect(res.status).toBe(200);
-      const body = await res.json() as { workspaces: Array<{ workspaceId: string; workspaceName: string | null }> };
+      const body = await res.json() as {
+        workspaces: Array<{ workspaceId: string; workspaceName: string | null }>;
+        warnings?: string[];
+      };
       expect(body.workspaces[0]?.workspaceName).toBeNull();
+      // F-09 follow-up: without a warnings[] channel, a platform admin can't
+      // tell "all names are genuinely null" from "DB couldn't answer" — an
+      // active wrong-row-selection hazard when reinstating by row click.
+      expect(body.warnings).toBeDefined();
+      expect(body.warnings?.[0]).toMatch(/^name_resolution_failed:/);
     });
 
     it("returns 403 for non-admin", async () => {
@@ -235,6 +243,45 @@ describe("Admin Abuse API", () => {
         adminRequest("POST", "/api/v1/admin/abuse/org-clean/reinstate"),
       );
       expect(res.status).toBe(400);
+    });
+
+    it("surfaces audit_persist_skipped warning when no internal DB (#1751)", async () => {
+      // Reinstate mutates in-memory state; the audit row goes to the
+      // internal DB via fire-and-forget `internalExecute`. When no
+      // internal DB is configured, the audit row can't exist at all —
+      // the admin needs an explicit warning rather than a successful
+      // 200 that hides a compliance gap.
+      mocks.hasInternalDB = false;
+      try {
+        const res = await app.fetch(
+          adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json() as {
+          success: boolean;
+          message: string;
+          warnings?: string[];
+        };
+        expect(body.success).toBe(true);
+        expect(body.warnings).toBeDefined();
+        expect(body.warnings?.[0]).toMatch(/^audit_persist_skipped:/);
+        expect(body.message).toMatch(/audit trail could not be written/i);
+      } finally {
+        mocks.hasInternalDB = true;
+      }
+    });
+
+    it("returns a clean success response when the internal DB is available", async () => {
+      // Counterpart to the no-DB test: when the DB is available, the
+      // response must not carry warnings — otherwise the UI shows the
+      // destructive banner for every routine reinstate.
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json() as { warnings?: string[]; message: string };
+      expect(body.warnings).toBeUndefined();
+      expect(body.message).toBe("Workspace reinstated successfully.");
     });
 
     it("returns 403 for non-admin", async () => {
@@ -291,7 +338,7 @@ describe("Admin Abuse API", () => {
       expect(body.eventsStatus).toBe("ok");
     });
 
-    it("detail route falls back to null workspaceName when resolution rejects (#1640)", async () => {
+    it("detail falls back to null AND surfaces a warning when name resolution rejects (#1640, #1751)", async () => {
       mockGetAbuseDetail.mockImplementation(async () => ({
         workspaceId: "org-1",
         workspaceName: null,
@@ -312,10 +359,14 @@ describe("Admin Abuse API", () => {
         adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
       );
       // Must still 200 — name resolution is advisory for the detail panel
-      // just as it is for the list (regression guard for #1640 follow-up).
+      // just as it is for the list. F-09 follow-up adds a warnings[]
+      // entry so the admin knows the identity header is degraded before
+      // clicking Reinstate.
       expect(res.status).toBe(200);
-      const body = await res.json() as { workspaceName: string | null };
+      const body = await res.json() as { workspaceName: string | null; warnings?: string[] };
       expect(body.workspaceName).toBeNull();
+      expect(body.warnings).toBeDefined();
+      expect(body.warnings?.[0]).toMatch(/^name_resolution_failed:/);
     });
 
     it("resolves workspaceName on the detail route (#1640)", async () => {

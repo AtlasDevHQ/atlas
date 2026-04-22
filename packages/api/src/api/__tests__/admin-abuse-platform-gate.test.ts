@@ -7,9 +7,7 @@
  * router without a platform gate would surface here immediately.
  *
  * F-09 (#1751): pre-fix, the subtree was mounted on createAdminRouter(),
- * letting any workspace admin list flagged workspaces, pull investigation
- * detail on any target org, reinstate any suspended workspace, and read
- * platform-wide threshold config.
+ * letting any workspace admin reach every cross-tenant handler in it.
  */
 
 import {
@@ -23,7 +21,7 @@ import {
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-// --- Unified mocks ---
+// --- Mocks ---
 //
 // Handler-level correctness is covered in admin-abuse.test.ts. This suite
 // only asserts the auth gate, so the abuse lib mocks are intentionally
@@ -134,9 +132,7 @@ function setPlatformAdmin(): void {
   mocks.setPlatformAdmin();
 }
 
-// Every route under the admin-abuse subtree. Parametrising here means a
-// future router addition without a platform gate surfaces immediately — the
-// F-09 fix's job is to keep this surface uniformly platform-gated.
+// Keep in sync with adminAbuse.openapi(...) calls in admin-abuse.ts.
 type RouteSpec = {
   readonly method: "GET" | "POST";
   readonly path: string;

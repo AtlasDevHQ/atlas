@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { usersSearchParams } from "./search-params";
-import { ROLES, isDemotion, type Role } from "./roles";
+import { ROLES, isDemotion, removeEndpointForRole, type Role } from "./roles";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
@@ -192,18 +192,23 @@ export default function UsersPage() {
                   </DropdownMenuItem>
                 );
               })}
-              <DropdownMenuSeparator />
+              {/* Workspace admins can't unban (re-invite flow handles re-onboarding),
+                  so skip both the separator and the unban row for them when the user
+                  is banned — avoids an orphan separator directly under the role items. */}
+              {(!user.banned || isPlatformAdmin) && <DropdownMenuSeparator />}
               {user.banned ? (
-                <DropdownMenuItem onClick={() => handleUnban(user.id)}>
-                  <ShieldOff className="mr-2 size-4" />
-                  Unban
-                </DropdownMenuItem>
+                isPlatformAdmin ? (
+                  <DropdownMenuItem onClick={() => handleUnban(user.id)}>
+                    <ShieldOff className="mr-2 size-4" />
+                    Unban
+                  </DropdownMenuItem>
+                ) : null
               ) : (
                 <DropdownMenuItem
                   onClick={() => setConfirmAction({ type: "ban", user })}
                 >
                   <Ban className="mr-2 size-4" />
-                  Ban user
+                  {removeEndpointForRole(isPlatformAdmin).label}
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem
@@ -371,9 +376,13 @@ export default function UsersPage() {
   }
 
   async function handleBan(user: User): Promise<boolean> {
+    // Platform admins get the global ban; workspace admins get workspace
+    // membership removal — see F-14 in security audit 1.2.3. The branch
+    // lives in `removeEndpointForRole` so the contract is unit-testable.
+    const endpoint = removeEndpointForRole(isPlatformAdmin);
     const result = await adminAction.mutate({
-      path: `/api/v1/admin/users/${user.id}/ban`,
-      method: "POST",
+      path: endpoint.path(user.id),
+      method: endpoint.method,
       itemId: user.id,
     });
     return result.ok;
@@ -715,17 +724,26 @@ export default function UsersPage() {
         </FormDialog>
       )}
 
-      {/* Ban confirmation dialog */}
+      {/* Ban / remove-from-workspace confirmation dialog */}
       <AlertDialog
         open={confirmAction?.type === "ban"}
         onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Ban user</AlertDialogTitle>
+            <AlertDialogTitle>{isPlatformAdmin ? "Ban user" : "Remove from workspace"}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will prevent <strong>{confirmAction?.type === "ban" ? confirmAction.user.email : ""}</strong> from
-              signing in and revoke all active sessions. You can unban them later.
+              {isPlatformAdmin ? (
+                <>
+                  This will prevent <strong>{confirmAction?.type === "ban" ? confirmAction.user.email : ""}</strong> from
+                  signing in to <em>any</em> workspace and revoke all active sessions. You can unban them later.
+                </>
+              ) : (
+                <>
+                  This will remove <strong>{confirmAction?.type === "ban" ? confirmAction.user.email : ""}</strong> from
+                  this workspace. Other workspaces they belong to are unaffected. Re-invite them if you want them back.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -737,7 +755,7 @@ export default function UsersPage() {
                 if (ok) setConfirmAction(null);
               }}
             >
-              Ban user
+              {isPlatformAdmin ? "Ban user" : "Remove from workspace"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

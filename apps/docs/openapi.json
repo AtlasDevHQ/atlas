@@ -29511,83 +29511,6 @@
         "operationId": "postAdminEmailProviderTest"
       }
     },
-    "/api/v1/admin/approval/expire": {
-      "post": {
-        "tags": [
-          "Admin — Approval Workflows"
-        ],
-        "summary": "Expire stale requests",
-        "description": "Manually expire all pending approval requests past their expiry time.",
-        "responses": {
-          "200": {
-            "description": "Expiry result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "expired": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "expired"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "operationId": "postAdminApprovalExpire"
-      }
-    },
     "/api/v1/admin/approval/pending-count": {
       "get": {
         "tags": [
@@ -29688,6 +29611,83 @@
           }
         },
         "operationId": "getAdminApprovalPendingCount"
+      }
+    },
+    "/api/v1/admin/approval/expire": {
+      "post": {
+        "tags": [
+          "Admin — Approval Workflows"
+        ],
+        "summary": "Expire stale requests",
+        "description": "Manually expire all pending approval requests past their expiry time.",
+        "responses": {
+          "200": {
+            "description": "Expiry result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "expired": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "expired"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminApprovalExpire"
       }
     },
     "/api/v1/admin/approval/rules": {
@@ -51793,8 +51793,8 @@
         "tags": [
           "Admin — Users"
         ],
-        "summary": "Ban user",
-        "description": "Bans a user with optional reason and expiry.",
+        "summary": "Ban user (platform admins only)",
+        "description": "Globally bans a user across every workspace they belong to. Requires `platform_admin` role — workspace admins cannot perform a cross-tenant ban because the effect propagates past their workspace boundary. Workspace admins should use `DELETE /users/{id}/membership` to remove a member from their own workspace only (F-14, 1.2.3 phase 2).",
         "parameters": [
           {
             "schema": {
@@ -51838,7 +51838,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden — platform_admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -51932,8 +51932,8 @@
         "tags": [
           "Admin — Users"
         ],
-        "summary": "Unban user",
-        "description": "Removes a ban from a user.",
+        "summary": "Unban user (platform admins only)",
+        "description": "Removes a global ban from a user. Symmetric with `POST /users/{id}/ban` — requires `platform_admin` role. Workspace admins re-onboard users via the invite flow rather than unbanning (F-14, 1.2.3 phase 2).",
         "parameters": [
           {
             "schema": {
@@ -51977,7 +51977,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform_admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -52050,6 +52050,156 @@
           }
         },
         "operationId": "postAdminUsersByIdUnban"
+      }
+    },
+    "/api/v1/admin/users/{id}/membership": {
+      "delete": {
+        "tags": [
+          "Admin — Users"
+        ],
+        "summary": "Remove user from workspace",
+        "description": "Removes the target user from the caller's active workspace only. Other workspaces the user belongs to are unaffected. This is the workspace-admin analogue of `POST /users/{id}/ban` — see F-14 in security audit 1.2.3 for why cross-tenant ban is restricted to platform admins.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "user_abc123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User removed from workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required / cannot self-remove",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User is not a member of this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminUsersByIdMembership"
       }
     },
     "/api/v1/admin/users/{id}": {

@@ -686,13 +686,13 @@ No new consumers since 1.2.2.
 | F-08 | P0 | Cross-tenant admin | `/api/v1/admin/organizations/**` | #1750 — fixed (PR #1762) |
 | F-09 | P0 | Cross-tenant admin | `/api/v1/admin/abuse/**` | #1751 — fixed (PR #1763) |
 | F-10 | P0 | Privilege escalation | `/api/v1/admin/users/:id/role`, `/api/v1/admin/invitations` | #1752 — fixed (PR #1758) |
-| F-11 | P2 | Retention / scope | Conversation CRUD | #1753 — fixed (this PR) |
-| F-12 | P2 | Retention / scope | Pending-action CRUD | #1754 — fixed (this PR) |
-| F-13 | P2 | Cross-tenant write | `/api/v1/admin/approval/expire` | #1755 |
-| F-14 | P2 | Scope overreach | User ban | #1756 |
+| F-11 | P2 | Retention / scope | Conversation CRUD | #1753 — fixed (PR #1769) |
+| F-12 | P2 | Retention / scope | Pending-action CRUD | #1754 — fixed (PR #1769) |
+| F-13 | P2 | Cross-tenant write | `/api/v1/admin/approval/expire` | #1755 — fixed (this PR) |
+| F-14 | P2 | Scope overreach | User ban | #1756 — fixed (this PR) |
 | F-15 | P3 | Info leak | `/api/v1/validate-sql` connectionId | — (P3, stays in doc) |
 | F-16 | P3 | Design gap | Disk-only semantic reads | — (P3, stays in doc) |
 
 **Totals:** P0 = 3, P1 = 0, P2 = 4, P3 = 2.
 
-All P0/P1/P2 findings filed as separate issues (#1750–#1756). Phase 2 checkbox on #1718 flipped.
+All P0/P1/P2 findings filed as separate issues (#1750–#1756) and shipped. Phase 2 complete.

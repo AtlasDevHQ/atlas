@@ -52,6 +52,18 @@ mock.module("@atlas/api/lib/auth/server", () => ({
   }),
 }));
 
+// --- Audit mock — capture logAdminAction calls to verify the compliance path ---
+const mockLogAdminAction: Mock<(entry: unknown) => void> = mock(() => {});
+
+mock.module("@atlas/api/lib/audit", async () => {
+  // Pass the real ADMIN_ACTIONS enum through so route handlers get correct constants.
+  const actual = await import("@atlas/api/lib/audit/actions");
+  return {
+    logAdminAction: mockLogAdminAction,
+    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+  };
+});
+
 // --- Import app after mocks ---
 
 const { app } = await import("../index");
@@ -119,6 +131,7 @@ describe("Org-scoped user write operations (#983)", () => {
     mockUnbanUser.mockClear();
     mockRemoveUser.mockClear();
     mockRevokeSessions.mockClear();
+    mockLogAdminAction.mockClear();
     mocks.hasInternalDB = true;
   });
 
@@ -229,29 +242,19 @@ describe("Org-scoped user write operations (#983)", () => {
     }
   });
 
-  describe("POST /api/v1/admin/users/:id/ban", () => {
-    it("returns 404 when target user is not in caller's org", async () => {
-      setWorkspaceAdmin("org-1");
-      mockMembershipFor("user-in-org-1");
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/users/user-in-org-2/ban", {}),
-      );
-      expect(res.status).toBe(404);
-      const body = await res.json() as { error: string };
-      expect(body.error).toBe("not_found");
-      expect(mockBanUser).not.toHaveBeenCalled();
-    });
-
-    it("allows ban when target user is in caller's org", async () => {
+  describe("POST /api/v1/admin/users/:id/ban (F-14: platform_admin only)", () => {
+    it("returns 403 for workspace admin — ban is now platform-admin only", async () => {
       setWorkspaceAdmin("org-1");
       mockMembershipFor("user-in-org-1");
 
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-org-1/ban", {}),
       );
-      expect(res.status).toBe(200);
-      expect(mockBanUser).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      const body = await res.json() as { error: string; message: string };
+      expect(body.error).toBe("forbidden");
+      expect(body.message).toContain("/membership");
+      expect(mockBanUser).not.toHaveBeenCalled();
     });
 
     it("platform admin can ban any user", async () => {
@@ -263,31 +266,136 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(200);
       expect(mockBanUser).toHaveBeenCalled();
     });
+
+    it("platform admin ban emits logAdminAction with user.ban", async () => {
+      setPlatformAdmin();
+
+      await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", {}),
+      );
+
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0] as { actionType: string; targetId: string };
+      expect(entry.actionType).toBe("user.ban");
+      expect(entry.targetId).toBe("user-in-any-org");
+    });
   });
 
-  describe("POST /api/v1/admin/users/:id/unban", () => {
-    it("returns 404 when target user is not in caller's org", async () => {
+  describe("DELETE /api/v1/admin/users/:id/membership (F-14: workspace-scoped removal)", () => {
+    it("workspace admin removes member from their own org only", async () => {
       setWorkspaceAdmin("org-1");
-      mockMembershipFor("user-in-org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+        if (sql.includes("DELETE FROM member")) {
+          expect(params).toEqual(["user-in-org-1", "org-1"]);
+          return [{ id: "mem-1" }];
+        }
+        return [];
+      });
 
       const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/users/user-in-org-2/unban", {}),
+        adminRequest("DELETE", "/api/v1/admin/users/user-in-org-1/membership"),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+    });
+
+    it("returns 404 when the target is not a member of the caller's org", async () => {
+      setWorkspaceAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("DELETE FROM member")) return [];
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/user-in-org-2/membership"),
       );
       expect(res.status).toBe(404);
       const body = await res.json() as { error: string };
       expect(body.error).toBe("not_found");
-      expect(mockUnbanUser).not.toHaveBeenCalled();
     });
 
-    it("allows unban when target user is in caller's org", async () => {
+    it("rejects self-removal (400/403)", async () => {
+      setWorkspaceAdmin("org-1");
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/admin-1/membership"),
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("refuses to remove the last admin/owner of the workspace", async () => {
+      setWorkspaceAdmin("org-1");
+      // Target is the only admin. The last-admin guard queries member role
+      // then counts remaining admins excluding the target.
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "admin" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "0" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/only-admin/membership"),
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json() as { error: string; message: string };
+      expect(body.error).toBe("forbidden");
+      expect(body.message).toContain("last admin");
+    });
+
+    it("allows removing an admin when at least one other admin remains", async () => {
+      setWorkspaceAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "admin" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "1" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/co-admin/membership"),
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it("emits logAdminAction with user.remove_from_workspace action type", async () => {
+      setWorkspaceAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "member" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/user-in-org-1/membership"),
+      );
+
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0] as {
+        actionType: string;
+        targetType: string;
+        targetId: string;
+        metadata: Record<string, unknown>;
+      };
+      expect(entry.actionType).toBe("user.remove_from_workspace");
+      expect(entry.targetType).toBe("user");
+      expect(entry.targetId).toBe("user-in-org-1");
+      expect(entry.metadata.orgId).toBe("org-1");
+      expect(entry.metadata.previousRole).toBe("member");
+    });
+  });
+
+  describe("POST /api/v1/admin/users/:id/unban (F-14: platform_admin only)", () => {
+    it("returns 403 for workspace admin — unban is now platform-admin only", async () => {
       setWorkspaceAdmin("org-1");
       mockMembershipFor("user-in-org-1");
 
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-org-1/unban", {}),
       );
-      expect(res.status).toBe(200);
-      expect(mockUnbanUser).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(mockUnbanUser).not.toHaveBeenCalled();
     });
 
     it("platform admin can unban any user", async () => {

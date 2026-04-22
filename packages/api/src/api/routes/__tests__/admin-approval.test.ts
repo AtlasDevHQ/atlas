@@ -87,6 +87,10 @@ const mockListApprovalRequests: Mock<(orgId: string, status?: string) => ReturnT
   () => Effect.succeed([]),
 );
 
+const mockExpireStaleRequests: Mock<(orgId: string) => ReturnType<typeof Effect.succeed>> = mock(
+  () => Effect.succeed(0),
+);
+
 mock.module("@atlas/ee/governance/approval", () => {
   return {
     ApprovalError: MockApprovalError,
@@ -97,7 +101,7 @@ mock.module("@atlas/ee/governance/approval", () => {
     listApprovalRequests: mockListApprovalRequests,
     getApprovalRequest: () => Effect.succeed(null),
     reviewApprovalRequest: () => Effect.succeed({}),
-    expireStaleRequests: () => Effect.succeed(0),
+    expireStaleRequests: mockExpireStaleRequests,
     getPendingCount: () => Effect.succeed(0),
   };
 });
@@ -167,5 +171,47 @@ describe("GET /queue — ?status= query validation", () => {
     const [orgId, status] = mockListApprovalRequests.mock.calls[0]!;
     expect(orgId).toBe("org-test");
     expect(status).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /expire — org scope (F-13, 1.2.3 phase 2)
+//
+// Regression guard: before F-13 the /expire route was registered BEFORE
+// `requireOrgContext` + called `expireStaleRequests()` with no args, so any
+// workspace admin could trigger a cross-tenant UPDATE that expired every
+// pending row. The fix moves the route below `requireOrgContext` and
+// threads the caller's active orgId into the scoped UPDATE.
+// ---------------------------------------------------------------------------
+
+describe("POST /expire — org scope (F-13)", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockAuthenticateRequest.mockReset();
+    mockAuthenticateRequest.mockImplementation(defaultAuthResponse);
+    mockExpireStaleRequests.mockClear();
+    mockExpireStaleRequests.mockImplementation(() => Effect.succeed(0));
+  });
+
+  it("forwards the caller's active orgId to expireStaleRequests", async () => {
+    const res = await adminApproval.request("/expire", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(mockExpireStaleRequests).toHaveBeenCalledTimes(1);
+    const [orgId] = mockExpireStaleRequests.mock.calls[0]!;
+    expect(orgId).toBe("org-test");
+  });
+
+  it("rejects callers without an active org (requireOrgContext)", async () => {
+    mockAuthenticateRequest.mockImplementationOnce(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "admin-1", mode: "managed", label: "admin@test.dev", role: "admin" },
+      }),
+    );
+
+    const res = await adminApproval.request("/expire", { method: "POST" });
+    expect(res.status).toBe(400);
+    expect(mockExpireStaleRequests).not.toHaveBeenCalled();
   });
 });

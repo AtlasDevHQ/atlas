@@ -294,14 +294,7 @@ const adminApproval = createAdminRouter();
 
 // ── Handlers WITHOUT requireOrgContext ────────────────────────────────
 // Registered before requireOrgContext() so the middleware does not apply.
-
-// POST /expire — manually expire stale requests (global, no org/DB needed)
-adminApproval.openapi(expireRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    const expired = yield* expireStaleRequests();
-    return c.json({ expired }, 200);
-  }), { label: "expire stale requests", domainErrors: [approvalDomainError] });
-});
+// Only endpoints that are intentionally org-less should live here.
 
 // GET /pending-count — count of pending requests (needs orgId, not hasInternalDB)
 adminApproval.openapi(pendingCountRoute, async (c) => {
@@ -320,6 +313,17 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
 
 // ── Handlers WITH requireOrgContext ───────────────────────────────────
 adminApproval.use(requireOrgContext());
+
+// POST /expire — expire stale requests for the caller's active org. Scoped
+// via requireOrgContext + `orgId` arg so workspace admins can only clear
+// their own queue (F-13, 1.2.3 phase 2).
+adminApproval.openapi(expireRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const expired = yield* expireStaleRequests(orgId!);
+    return c.json({ expired }, 200);
+  }), { label: "expire stale requests", domainErrors: [approvalDomainError] });
+});
 
 // GET /rules — list approval rules
 adminApproval.openapi(listRulesRoute, async (c) => {

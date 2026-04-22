@@ -463,6 +463,16 @@ strictly to platform admins. The workspace-scoped equivalent (view/manage your
 own org's members) is already covered by `adminUsers` + `adminInvitations`
 sub-routers.
 
+**Status: fixed (PR #1761).** `admin-orgs.ts` now constructs its router via
+`createPlatformRouter()`; the `platformAdminAuth` middleware returns 403
+`forbidden_role` for any caller whose effective role is not `platform_admin`.
+Regression tests in `packages/api/src/api/__tests__/admin-orgs.test.ts`
+parametrise over every route (list, read, stats, status, suspend, activate,
+plan, delete) so a future endpoint added to the subtree without a platform
+gate fails CI immediately. The pre-existing lifecycle tests in
+`admin-workspace.test.ts` were implicitly asserting the bug (role `admin`
+succeeded cross-tenant) and are now authed as `platform_admin`.
+
 **F-09 — Workspace admin can reinstate / read detail of any flagged workspace via `/api/v1/admin/abuse/**`** — P0
 
 `admin-abuse.ts` uses `createAdminRouter()` *without* `requireOrgContext()`.
@@ -662,7 +672,7 @@ No new consumers since 1.2.2.
 
 | ID | Severity | Type | Path | Issue |
 |---|---|---|---|---|
-| F-08 | P0 | Cross-tenant admin | `/api/v1/admin/organizations/**` | #1750 |
+| F-08 | P0 | Cross-tenant admin | `/api/v1/admin/organizations/**` | #1750 — fixed (PR #1761) |
 | F-09 | P0 | Cross-tenant admin | `/api/v1/admin/abuse/**` | #1751 |
 | F-10 | P0 | Privilege escalation | `/api/v1/admin/users/:id/role`, `/api/v1/admin/invitations` | #1752 — fixed (PR #1758) |
 | F-11 | P2 | Retention / scope | Conversation CRUD | #1753 |

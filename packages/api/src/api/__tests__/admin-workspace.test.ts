@@ -22,12 +22,19 @@ import {
 
 // --- Mocks (before any import that touches the modules) ---
 
+// Platform admin — admin-orgs.ts was tightened to createPlatformRouter()
+// after F-08 (#1750); workspace-level lifecycle management is platform-only.
 const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
   () =>
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
+      user: {
+        id: "platform-admin-1",
+        mode: "simple-key",
+        label: "Platform Admin",
+        role: "platform_admin",
+      },
     }),
 );
 

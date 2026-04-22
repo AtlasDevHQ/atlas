@@ -25,7 +25,7 @@ import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("admin-orgs");
 
@@ -162,7 +162,7 @@ const listOrgsRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -212,7 +212,7 @@ const getOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -254,7 +254,7 @@ const getOrgStatsRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -296,7 +296,7 @@ const suspendOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -342,7 +342,7 @@ const activateOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -388,7 +388,7 @@ const deleteOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -434,7 +434,7 @@ const getOrgStatusRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -483,7 +483,7 @@ const updatePlanRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -509,7 +509,7 @@ const updatePlanRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminOrgs = createAdminRouter();
+const adminOrgs = createPlatformRouter();
 
 // GET / — list all organizations
 adminOrgs.openapi(listOrgsRoute, async (c) => {

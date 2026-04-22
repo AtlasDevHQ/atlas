@@ -491,6 +491,17 @@ moderation is platform-level by design; the audit log reference in
 `reinstateWorkspace(workspaceId, actorId)` already assumes the actor is a
 platform actor.
 
+**Status: fixed (PR #1763).** `admin-abuse.ts` now constructs its router via
+`createPlatformRouter()`; the `platformAdminAuth` middleware returns 403
+`forbidden_role` for any caller whose effective role is not `platform_admin`.
+Regression tests in
+`packages/api/src/api/__tests__/admin-abuse-platform-gate.test.ts`
+parametrise over every route (list flagged, detail, reinstate, config) so a
+future endpoint added to the subtree without a platform gate fails CI
+immediately. The pre-existing handler tests in `admin-abuse.test.ts` were
+implicitly asserting the bug (role `admin` succeeded cross-tenant) and are
+now authed as `platform_admin`.
+
 **F-10 — Workspace admin can escalate any org member to `platform_admin` via PATCH `/api/v1/admin/users/:id/role` and POST `/api/v1/admin/invitations`** — P0
 
 `admin.ts` `changeUserRoleRoute` validates the target user is a member of the
@@ -673,7 +684,7 @@ No new consumers since 1.2.2.
 | ID | Severity | Type | Path | Issue |
 |---|---|---|---|---|
 | F-08 | P0 | Cross-tenant admin | `/api/v1/admin/organizations/**` | #1750 — fixed (PR #1762) |
-| F-09 | P0 | Cross-tenant admin | `/api/v1/admin/abuse/**` | #1751 |
+| F-09 | P0 | Cross-tenant admin | `/api/v1/admin/abuse/**` | #1751 — fixed (PR #1763) |
 | F-10 | P0 | Privilege escalation | `/api/v1/admin/users/:id/role`, `/api/v1/admin/invitations` | #1752 — fixed (PR #1758) |
 | F-11 | P2 | Retention / scope | Conversation CRUD | #1753 |
 | F-12 | P2 | Retention / scope | Pending-action CRUD | #1754 |

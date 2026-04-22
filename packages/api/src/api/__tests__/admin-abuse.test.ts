@@ -2,6 +2,10 @@
  * Tests for admin abuse prevention API endpoints.
  *
  * Covers: GET /admin/abuse, POST /admin/abuse/:id/reinstate, GET /admin/abuse/config.
+ *
+ * These routes are platform-admin-only; workspace admins/owners are rejected
+ * at the auth gate. See admin-abuse-platform-gate.test.ts for the rejection
+ * matrix and security-audit-1-2-3.md F-09 for rationale.
  */
 
 import {
@@ -92,7 +96,7 @@ describe("Admin Abuse API", () => {
       Promise.resolve({
         authenticated: true,
         mode: "simple-key",
-        user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
+        user: { id: "platform-admin-1", mode: "simple-key", label: "Platform Admin", role: "platform_admin", activeOrganizationId: "org-1" },
       }),
     );
     mockListFlagged.mockImplementation(() => []);

@@ -1,7 +1,9 @@
 /**
  * Admin abuse prevention routes.
  *
- * Mounted under /api/v1/admin/abuse. All routes require admin role.
+ * Mounted under /api/v1/admin/abuse. Platform-admin only (see
+ * createPlatformRouter): every route takes a :workspaceId path param and acts
+ * cross-tenant, so workspace-scoped admins must not reach these handlers.
  * Provides listing of flagged workspaces, reinstatement, and threshold config.
  */
 
@@ -26,7 +28,7 @@ import {
   AbuseThresholdConfigSchema,
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createPlatformRouter } from "./admin-router";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -66,7 +68,7 @@ const listFlaggedRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -105,7 +107,7 @@ const reinstateRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -145,7 +147,7 @@ const getDetailRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -175,7 +177,7 @@ const getConfigRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -193,7 +195,7 @@ const getConfigRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminAbuse = createAdminRouter();
+const adminAbuse = createPlatformRouter();
 
 // GET / — list flagged workspaces
 adminAbuse.openapi(listFlaggedRoute, async (c) => {

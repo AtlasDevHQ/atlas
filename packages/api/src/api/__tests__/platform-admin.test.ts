@@ -23,6 +23,7 @@ import {
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
+import { createHash } from "node:crypto";
 
 // --- Mock setup ---
 
@@ -65,6 +66,8 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => undefined,
   redactPaths: [] as string[],
+  hashShareToken: (token: string) =>
+    createHash("sha256").update(token).digest("hex").slice(0, 16),
 }));
 
 const { app } = await import("../index");

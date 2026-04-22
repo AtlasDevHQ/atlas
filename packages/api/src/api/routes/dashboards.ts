@@ -10,7 +10,7 @@ import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { z } from "zod";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, hashShareToken } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   createDashboard,
@@ -1152,9 +1152,13 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     return c.json({ error: "not_found", message: "Dashboard not found." }, 404);
   }
 
+  const tokenHash = hashShareToken(token);
   const result = await getSharedDashboard(token);
   if (!result.ok) {
     const fail = sharedDashboardFailResponse(result.reason);
+    if (result.reason === "error") {
+      log.error({ requestId, tokenHash }, "Public dashboard fetch failed due to DB error");
+    }
     return c.json(fail.body, fail.status);
   }
 
@@ -1165,7 +1169,7 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
       authResult = await authenticateRequest(c.req.raw);
     } catch (err) {
       log.error(
-        { err: err instanceof Error ? err.message : String(err), requestId, token },
+        { err: err instanceof Error ? err.message : String(err), requestId, tokenHash },
         "Auth check failed for org-scoped dashboard share",
       );
       return c.json({ error: "internal_error", message: "Authentication check failed. Please try again.", requestId }, 500);
@@ -1180,7 +1184,13 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     // same class of bug as #1727 (conversations). See #1736.
     if (!result.data.orgId || authResult.user?.activeOrganizationId !== result.data.orgId) {
       log.warn(
-        { requestId, token, hasOrgId: Boolean(result.data.orgId) },
+        {
+          requestId,
+          tokenHash,
+          hasOrgId: Boolean(result.data.orgId),
+          actorUserId: authResult.user?.id,
+          actorOrgId: authResult.user?.activeOrganizationId,
+        },
         "Org-scoped dashboard share access denied — requester is not a member of the dashboard's org",
       );
       return c.json({ error: "forbidden", message: "You do not have access to this dashboard.", requestId }, 403);

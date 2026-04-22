@@ -7,6 +7,7 @@ import {
   withRequestContext,
   getRequestContext,
   redactPaths,
+  hashShareToken,
 } from "../logger";
 
 describe("logger", () => {
@@ -181,6 +182,40 @@ describe("logger", () => {
     expect(setLogLevel("")).toBe(false);
     expect(setLogLevel("INFO")).toBe(false);
     expect(setLogLevel("critical")).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // hashShareToken — share-token log redaction (#1743)
+  // ---------------------------------------------------------------------------
+
+  test("hashShareToken returns 16 lowercase hex chars", () => {
+    const hash = hashShareToken("abc123def456ghi789jk");
+    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(hash).toHaveLength(16);
+  });
+
+  test("hashShareToken is deterministic for the same input", () => {
+    const token = "abc123def456ghi789jk";
+    expect(hashShareToken(token)).toBe(hashShareToken(token));
+  });
+
+  test("hashShareToken produces different output for different inputs", () => {
+    const a = hashShareToken("abc123def456ghi789jk");
+    const b = hashShareToken("zzz999def456ghi789jk");
+    expect(a).not.toBe(b);
+  });
+
+  test("hashShareToken does not return the input token", () => {
+    const token = "abc123def456ghi789jk";
+    const hash = hashShareToken(token);
+    expect(hash).not.toBe(token);
+    expect(hash).not.toContain(token.slice(0, 8));
+  });
+
+  test("hashShareToken throws on non-string input", () => {
+    expect(() => hashShareToken(undefined as unknown as string)).toThrow(TypeError);
+    expect(() => hashShareToken(null as unknown as string)).toThrow(TypeError);
+    expect(() => hashShareToken(123 as unknown as string)).toThrow(TypeError);
   });
 
   test("redaction works for nested fields", () => {

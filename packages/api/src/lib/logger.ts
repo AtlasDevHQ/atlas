@@ -9,6 +9,7 @@
 
 import pino from "pino";
 import { AsyncLocalStorage } from "async_hooks";
+import { createHash } from "node:crypto";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 
 // --- Request context ---
@@ -115,6 +116,26 @@ export function createLogger(component: string): pino.Logger {
 }
 
 const VALID_LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal"]);
+
+/**
+ * Redact a share token for logging. Returns the first 16 hex chars of SHA-256.
+ *
+ * Share tokens are bearer credentials — anyone with log access to a plaintext
+ * token can read the share. A truncated hash preserves cross-log correlation
+ * (same token → same hash) without exposing a usable credential.
+ *
+ * Throws on non-string input rather than coercing. `String(undefined)` would
+ * produce a stable hash of the literal "undefined", silently poisoning
+ * cross-log correlation during triage.
+ */
+export function hashShareToken(token: string): string {
+  if (typeof token !== "string") {
+    throw new TypeError(
+      `hashShareToken: expected string, got ${typeof token}`,
+    );
+  }
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
 
 /**
  * Update the root logger level at runtime.

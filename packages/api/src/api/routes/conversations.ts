@@ -12,7 +12,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, hashShareToken } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
@@ -1341,11 +1341,12 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
     return c.json({ error: "not_found", message: "Conversation not found." }, 404);
   }
 
+  const tokenHash = hashShareToken(token);
   const result = await getSharedConversation(token);
   if (!result.ok) {
     const fail = sharedConversationFailResponse(result.reason);
     if (result.reason === "error") {
-      log.error({ requestId, token }, "Public conversation fetch failed due to DB error");
+      log.error({ requestId, tokenHash }, "Public conversation fetch failed due to DB error");
     }
     return c.json(fail.body, fail.status);
   }
@@ -1359,7 +1360,7 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
       authResult = await authenticateRequest(c.req.raw);
     } catch (err) {
       log.error(
-        { err: err instanceof Error ? err.message : String(err), requestId, token },
+        { err: err instanceof Error ? err.message : String(err), requestId, tokenHash },
         "Auth check failed for org-scoped share",
       );
       return c.json({ error: "internal_error", message: "Authentication check failed. Please try again.", requestId }, 500);
@@ -1373,7 +1374,13 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
     // here would silently fall through and reintroduce the #1727 leak.
     if (!result.data.orgId || authResult.user?.activeOrganizationId !== result.data.orgId) {
       log.warn(
-        { requestId, token, hasOrgId: Boolean(result.data.orgId) },
+        {
+          requestId,
+          tokenHash,
+          hasOrgId: Boolean(result.data.orgId),
+          actorUserId: authResult.user?.id,
+          actorOrgId: authResult.user?.activeOrganizationId,
+        },
         "Org-scoped share access denied — requester is not a member of the conversation's org",
       );
       return c.json({ error: "forbidden", message: "You do not have access to this conversation.", requestId }, 403);

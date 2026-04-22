@@ -1,7 +1,9 @@
 /**
  * Admin abuse prevention routes.
  *
- * Mounted under /api/v1/admin/abuse. All routes require admin role.
+ * Mounted under /api/v1/admin/abuse. Platform-admin only (see
+ * createPlatformRouter): every route takes a :workspaceId path param and acts
+ * cross-tenant, so workspace-scoped admins must not reach these handlers.
  * Provides listing of flagged workspaces, reinstatement, and threshold config.
  */
 
@@ -14,7 +16,7 @@ import {
   getAbuseConfig,
   getAbuseDetail,
 } from "@atlas/api/lib/security/abuse";
-import { getWorkspaceNamesByIds } from "@atlas/api/lib/db/internal";
+import { getWorkspaceNamesByIds, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("admin-abuse");
@@ -26,7 +28,7 @@ import {
   AbuseThresholdConfigSchema,
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createPlatformRouter } from "./admin-router";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -38,12 +40,26 @@ import { createAdminRouter } from "./admin-router";
 // schemas below are the ones that wrap the shared shapes (list envelope)
 // or describe route-only responses (reinstate).
 
-const ListResponseSchema = createListResponseSchema("workspaces", AbuseStatusSchema);
+// List/detail responses carry an optional `warnings[]` channel so the admin
+// UI can surface partial-failure state (e.g. workspace-name resolution fell
+// back to opaque ids because the internal DB hiccuped). Without it, a
+// platform admin reinstating a flagged workspace off the list can't tell
+// "the real name is missing" from "this row is just an id we can't render,"
+// which is an active wrong-row-selection hazard for a cross-tenant action.
+// Same shape as admin-orgs.ts DELETE /:id (PR #1762 follow-up commit).
+const ListResponseSchema = createListResponseSchema("workspaces", AbuseStatusSchema).extend({
+  warnings: z.array(z.string()).optional(),
+});
+
+const DetailResponseSchema = AbuseDetailSchema.extend({
+  warnings: z.array(z.string()).optional(),
+});
 
 const ReinstateResponseSchema = z.object({
   success: z.boolean(),
   workspaceId: z.string(),
   message: z.string(),
+  warnings: z.array(z.string()).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -66,7 +82,7 @@ const listFlaggedRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -105,7 +121,7 @@ const reinstateRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -134,7 +150,7 @@ const getDetailRoute = createRoute({
   responses: {
     200: {
       description: "Investigation detail",
-      content: { "application/json": { schema: AbuseDetailSchema } },
+      content: { "application/json": { schema: DetailResponseSchema } },
     },
     404: {
       description: "Workspace not flagged",
@@ -145,7 +161,7 @@ const getDetailRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -175,7 +191,7 @@ const getConfigRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     429: {
@@ -193,24 +209,29 @@ const getConfigRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminAbuse = createAdminRouter();
+const adminAbuse = createPlatformRouter();
 
 // GET / — list flagged workspaces
 adminAbuse.openapi(listFlaggedRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
     const workspaces = listFlaggedWorkspaces();
 
     // Enrich with recent events from DB + resolve workspace names so the
     // admin table shows "Acme Corp" instead of "org_01K...". Names are a
     // batch fetch to avoid N+1; missing/deleted orgs fall back to null.
+    // If the name lookup itself fails, we still render the page (opaque
+    // ids beat a 500) but push a `warnings[]` entry so the UI can show a
+    // banner — without it a platform admin could mis-identify a row and
+    // reinstate the wrong tenant.
+    const warnings: string[] = [];
     const enriched = yield* Effect.promise(async () => {
       const orgIds = workspaces.map((ws) => ws.workspaceId);
       const [eventResults, names] = await Promise.all([
         Promise.all(workspaces.map((ws) => getAbuseEvents(ws.workspaceId, 10))),
         getWorkspaceNamesByIds(orgIds).catch((err) => {
-          // Name resolution is advisory — if the DB hiccups, fall back to
-          // null so the page still renders with opaque ids rather than 500.
-          log.warn(
+          const message = err instanceof Error ? err.message : String(err);
+          log.error(
             {
               err: err instanceof Error
                 ? { message: err.message, stack: err.stack }
@@ -218,9 +239,11 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
               orgIdCount: orgIds.length,
               // First 5 ids for on-call correlation without flooding logs.
               sampleOrgIds: orgIds.slice(0, 5),
+              requestId,
             },
             "abuse list: workspace name resolution failed",
           );
+          warnings.push(`name_resolution_failed: ${message}`);
           return new Map<string, string | null>();
         }),
       ]);
@@ -244,7 +267,11 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
       });
     });
 
-    return c.json({ workspaces: enriched, total: enriched.length }, 200);
+    return c.json({
+      workspaces: enriched,
+      total: enriched.length,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }, 200);
   }), { label: "list flagged workspaces" });
 });
 
@@ -264,10 +291,33 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
       );
     }
 
+    // In-memory throttling is lifted by this point — customer queries are
+    // already flowing. If we can't also persist an audit row, the operator
+    // needs to know before they move on. `internalExecute` is
+    // fire-and-forget by design (it returns before the write completes),
+    // so the only silent failure we can catch *synchronously* is "there's
+    // no internal DB to persist to" — which reduces to certainty that no
+    // audit row will ever exist for this reinstate. Async persist
+    // failures are caught by `persistAbuseEvent` (now logged at error)
+    // and by `internalExecute`'s circuit breaker.
+    const warnings: string[] = [];
+    if (!hasInternalDB()) {
+      log.error(
+        { workspaceId, actorId, requestId },
+        "reinstate: audit row not persisted — no internal DB configured",
+      );
+      warnings.push(
+        "audit_persist_skipped: no internal DB configured; reinstate has no audit trail",
+      );
+    }
+
     return c.json({
       success: true,
       workspaceId,
-      message: "Workspace reinstated successfully.",
+      message: warnings.length > 0
+        ? "Workspace reinstated, but audit trail could not be written — see warnings."
+        : "Workspace reinstated successfully.",
+      ...(warnings.length > 0 ? { warnings } : {}),
     }, 200);
   }), { label: "reinstate workspace" });
 });
@@ -291,21 +341,31 @@ adminAbuse.openapi(getDetailRoute, async (c) => {
     }
 
     // Resolve the workspace display name. Advisory — see list route above.
+    // Surface a `warnings[]` entry on failure so the admin isn't flying
+    // blind on identity when about to reinstate a cross-tenant workspace.
+    const warnings: string[] = [];
     const nameMap = yield* Effect.promise(() =>
       getWorkspaceNamesByIds([workspaceId]).catch((err) => {
-        log.warn(
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(
           {
             err: err instanceof Error
               ? { message: err.message, stack: err.stack }
               : String(err),
             workspaceId,
+            requestId,
           },
           "abuse detail: workspace name resolution failed",
         );
+        warnings.push(`name_resolution_failed: ${message}`);
         return new Map<string, string | null>();
       }),
     );
-    const enriched = { ...detail, workspaceName: nameMap.get(workspaceId) ?? null };
+    const enriched = {
+      ...detail,
+      workspaceName: nameMap.get(workspaceId) ?? null,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
 
     return c.json(enriched, 200);
   }), { label: "read abuse detail" });

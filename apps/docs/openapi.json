@@ -14207,7 +14207,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -14512,7 +14512,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -14619,6 +14619,12 @@
                     "cascade": {
                       "type": "object",
                       "additionalProperties": {}
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -14666,7 +14672,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -14847,7 +14853,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -14999,7 +15005,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -15173,7 +15179,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -15394,7 +15400,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -15564,7 +15570,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -35943,6 +35949,12 @@
                     "total": {
                       "type": "number",
                       "description": "Total count"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -35965,7 +35977,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -36048,6 +36060,12 @@
                     },
                     "message": {
                       "type": "string"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -36096,7 +36114,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -36450,6 +36468,12 @@
                           "events"
                         ]
                       }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -36481,7 +36505,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -36612,7 +36636,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — platform admin role required",
             "content": {
               "application/json": {
                 "schema": {

@@ -222,6 +222,8 @@ Post-fix smoke test on live stack (`/api/public/conversations/<org-scoped-token>
 
 Regression tests at `packages/api/src/api/__tests__/conversations.test.ts` pin all four cases plus the `orgId=null` fail-closed branch.
 
+**Log redaction follow-up (#1743):** During the PR #1742 review, `silent-failure-hunter` flagged that both public share routes logged the raw share token in plaintext at the auth-failure `log.error` and cross-org-denial `log.warn` sites. Share tokens are bearer credentials — anyone with log access (SRE / Sentry / log pipeline) effectively held read capability on every share touched. Fixed: `hashShareToken()` helper in `packages/api/src/lib/logger.ts` returns the first 16 hex chars of SHA-256, and both `conversations.ts` + `dashboards.ts` public share routes now log `tokenHash` instead of `token` across all three log sites (auth-failure, cross-org denial, DB-error). Denial log additionally carries `actorUserId` + `actorOrgId` for abuse triage. Unit-tested in `packages/api/src/lib/__tests__/logger.test.ts`, route-level redacted-log-shape assertions in both route test files.
+
 ### F-02 — bootstrap platform_admin race ⬆ upgraded to **P0**
 
 Repro against a fresh deployment (DB wiped; `.env` temporarily stripped of `ATLAS_ADMIN_EMAIL`):

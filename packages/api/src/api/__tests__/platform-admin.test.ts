@@ -65,6 +65,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => undefined,
   redactPaths: [] as string[],
+  hashShareToken: (token: string) => token.slice(0, 16),
 }));
 
 const { app } = await import("../index");

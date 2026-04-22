@@ -14,6 +14,54 @@ import {
   type Mock,
 } from "bun:test";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import { createHash } from "node:crypto";
+
+// --- Logger mock (captures calls for #1743 redaction assertions) ---
+
+type CapturedLog = { level: string; obj: Record<string, unknown>; msg: string };
+const capturedLogs: CapturedLog[] = [];
+
+function makeCapturingFn(level: string) {
+  return (...args: unknown[]) => {
+    const [first, second] = args;
+    if (typeof first === "object" && first !== null) {
+      capturedLogs.push({
+        level,
+        obj: first as Record<string, unknown>,
+        msg: typeof second === "string" ? second : "",
+      });
+    } else {
+      capturedLogs.push({
+        level,
+        obj: {},
+        msg: typeof first === "string" ? first : "",
+      });
+    }
+  };
+}
+
+const capturingLogger = {
+  info: makeCapturingFn("info"),
+  warn: makeCapturingFn("warn"),
+  error: makeCapturingFn("error"),
+  debug: makeCapturingFn("debug"),
+  trace: makeCapturingFn("trace"),
+  fatal: makeCapturingFn("fatal"),
+  child: () => capturingLogger,
+  level: "info",
+  bindings: () => ({}),
+};
+
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => capturingLogger,
+  getLogger: () => capturingLogger,
+  withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [] as string[],
+  setLogLevel: () => true,
+  hashShareToken: (token: string) =>
+    createHash("sha256").update(token).digest("hex").slice(0, 16),
+}));
 
 // --- Auth mocks ---
 
@@ -240,6 +288,7 @@ describe("dashboard routes", () => {
 
   beforeEach(() => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    capturedLogs.length = 0;
     mockAuthenticateRequest.mockReset();
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true as const,
@@ -866,6 +915,83 @@ describe("dashboard routes", () => {
       expect(body.error).toBe("forbidden");
       expect(body).not.toHaveProperty("cards");
       expect(body).not.toHaveProperty("title");
+    });
+
+    // -----------------------------------------------------------------------
+    // Share token log redaction (#1743)
+    //
+    // Share tokens are bearer credentials. Logs on the public share route
+    // must carry `tokenHash` (first 16 hex of SHA-256), never the raw token.
+    // -----------------------------------------------------------------------
+
+    it("redacts share token in auth-failure log (#1743)", async () => {
+      const rawToken = "abc123def456ghi789jkl";
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: "org-A",
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.reject(new Error("session store unavailable")),
+      );
+
+      await app.fetch(
+        new Request(`http://localhost/api/public/dashboards/${rawToken}`),
+      );
+
+      const authFailLog = capturedLogs.find(
+        (l) =>
+          l.level === "error" &&
+          l.msg === "Auth check failed for org-scoped dashboard share",
+      );
+      expect(authFailLog).toBeDefined();
+      expect(authFailLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(authFailLog!.obj.token).toBeUndefined();
+      expect(JSON.stringify(authFailLog!.obj)).not.toContain(rawToken);
+    });
+
+    it("redacts share token and records actor in denial log (#1743)", async () => {
+      const rawToken = "abc123def456ghi789jkl";
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: "org-A",
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-other",
+          label: "other-org-user@test.com",
+          mode: "simple-key" as const,
+          role: "member" as const,
+          activeOrganizationId: "org-B",
+        },
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/public/dashboards/${rawToken}`),
+      );
+
+      const denialLog = capturedLogs.find(
+        (l) =>
+          l.level === "warn" &&
+          l.msg.startsWith("Org-scoped dashboard share access denied"),
+      );
+      expect(denialLog).toBeDefined();
+      expect(denialLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(denialLog!.obj.token).toBeUndefined();
+      expect(denialLog!.obj.actorUserId).toBe("u-other");
+      expect(denialLog!.obj.actorOrgId).toBe("org-B");
+      expect(JSON.stringify(denialLog!.obj)).not.toContain(rawToken);
     });
   });
 });

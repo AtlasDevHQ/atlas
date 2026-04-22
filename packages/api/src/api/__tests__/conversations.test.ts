@@ -16,11 +16,59 @@ import {
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import type { CrudResult, CrudDataResult, ShareConversationResult } from "@atlas/api/lib/conversations";
 import type { ConversationWithMessages } from "@atlas/api/lib/conversation-types";
+import { createHash } from "node:crypto";
 
 // ShareConversationResult is a superset of CrudDataResult with an extra
 // `invalid_org_scope` reason (#1737). Use the canonical type so fake
 // results can exercise the new failure mode.
 type ShareResult = ShareConversationResult;
+
+// --- Logger mock (captures calls for #1743 redaction assertions) ---
+
+type CapturedLog = { level: string; obj: Record<string, unknown>; msg: string };
+const capturedLogs: CapturedLog[] = [];
+
+function makeCapturingFn(level: string) {
+  return (...args: unknown[]) => {
+    const [first, second] = args;
+    if (typeof first === "object" && first !== null) {
+      capturedLogs.push({
+        level,
+        obj: first as Record<string, unknown>,
+        msg: typeof second === "string" ? second : "",
+      });
+    } else {
+      capturedLogs.push({
+        level,
+        obj: {},
+        msg: typeof first === "string" ? first : "",
+      });
+    }
+  };
+}
+
+const capturingLogger = {
+  info: makeCapturingFn("info"),
+  warn: makeCapturingFn("warn"),
+  error: makeCapturingFn("error"),
+  debug: makeCapturingFn("debug"),
+  trace: makeCapturingFn("trace"),
+  fatal: makeCapturingFn("fatal"),
+  child: () => capturingLogger,
+  level: "info",
+  bindings: () => ({}),
+};
+
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => capturingLogger,
+  getLogger: () => capturingLogger,
+  withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [] as string[],
+  setLogLevel: () => true,
+  hashShareToken: (token: string) =>
+    createHash("sha256").update(token).digest("hex").slice(0, 16),
+}));
 
 // --- Mocks ---
 
@@ -149,6 +197,7 @@ describe("conversations routes", () => {
   beforeEach(() => {
     // Enable hasInternalDB() by setting DATABASE_URL
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    capturedLogs.length = 0;
     mockAuthenticateRequest.mockReset();
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true as const,
@@ -1326,6 +1375,113 @@ describe("conversations routes", () => {
 
       const body = await response.json() as Record<string, unknown>;
       expect(body.error).toBe("rate_limited");
+    });
+
+    // -----------------------------------------------------------------------
+    // Share token log redaction (#1743)
+    //
+    // Share tokens are bearer credentials. Logs on the public share route
+    // must carry `tokenHash` (first 16 hex of SHA-256), never the raw token.
+    // -----------------------------------------------------------------------
+
+    it("redacts share token in auth-failure log (#1743)", async () => {
+      const rawToken = "abcdefghij1234567890x";
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org share",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          orgId: "org-A",
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+      mockAuthenticateRequest.mockRejectedValueOnce(new Error("session store unavailable"));
+
+      await app.fetch(
+        new Request(`http://localhost/api/public/conversations/${rawToken}`),
+      );
+
+      const authFailLog = capturedLogs.find(
+        (l) =>
+          l.level === "error" &&
+          l.msg === "Auth check failed for org-scoped share",
+      );
+      expect(authFailLog).toBeDefined();
+      expect(authFailLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(authFailLog!.obj.token).toBeUndefined();
+      expect(JSON.stringify(authFailLog!.obj)).not.toContain(rawToken);
+    });
+
+    it("redacts share token and records actor in denial log (#1743)", async () => {
+      const rawToken = "abcdefghij1234567890x";
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org A secret",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          orgId: "org-A",
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: {
+          id: "u-other",
+          label: "other-org-user@test.com",
+          mode: "simple-key" as const,
+          activeOrganizationId: "org-B",
+        },
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/public/conversations/${rawToken}`),
+      );
+
+      const denialLog = capturedLogs.find(
+        (l) =>
+          l.level === "warn" &&
+          l.msg.startsWith("Org-scoped share access denied"),
+      );
+      expect(denialLog).toBeDefined();
+      expect(denialLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(denialLog!.obj.token).toBeUndefined();
+      expect(denialLog!.obj.actorUserId).toBe("u-other");
+      expect(denialLog!.obj.actorOrgId).toBe("org-B");
+      expect(JSON.stringify(denialLog!.obj)).not.toContain(rawToken);
+    });
+
+    it("redacts share token in DB-error log (#1743)", async () => {
+      const rawToken = "abcdefghij1234567890x";
+      mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      await app.fetch(
+        new Request(`http://localhost/api/public/conversations/${rawToken}`),
+      );
+
+      const dbErrorLog = capturedLogs.find(
+        (l) =>
+          l.level === "error" &&
+          l.msg === "Public conversation fetch failed due to DB error",
+      );
+      expect(dbErrorLog).toBeDefined();
+      expect(dbErrorLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(dbErrorLog!.obj.token).toBeUndefined();
+      expect(JSON.stringify(dbErrorLog!.obj)).not.toContain(rawToken);
     });
 
     it("strips message IDs from public response", async () => {

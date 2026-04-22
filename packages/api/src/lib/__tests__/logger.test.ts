@@ -212,6 +212,12 @@ describe("logger", () => {
     expect(hash).not.toContain(token.slice(0, 8));
   });
 
+  test("hashShareToken throws on non-string input", () => {
+    expect(() => hashShareToken(undefined as unknown as string)).toThrow(TypeError);
+    expect(() => hashShareToken(null as unknown as string)).toThrow(TypeError);
+    expect(() => hashShareToken(123 as unknown as string)).toThrow(TypeError);
+  });
+
   test("redaction works for nested fields", () => {
     const chunks: Buffer[] = [];
     const stream = new Writable({

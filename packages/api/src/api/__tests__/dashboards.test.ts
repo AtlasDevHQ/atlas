@@ -924,6 +924,17 @@ describe("dashboard routes", () => {
     // must carry `tokenHash` (first 16 hex of SHA-256), never the raw token.
     // -----------------------------------------------------------------------
 
+    // Global check: no log line emitted during this request carries the raw
+    // token in its object payload or message string. Catches future log sites
+    // that might log the token under a different msg string — the targeted
+    // `.find()` assertions would silently miss those regressions.
+    function assertNoRawTokenInAnyLog(rawToken: string) {
+      for (const entry of capturedLogs) {
+        expect(JSON.stringify(entry.obj)).not.toContain(rawToken);
+        expect(entry.msg).not.toContain(rawToken);
+      }
+    }
+
     it("redacts share token in auth-failure log (#1743)", async () => {
       const rawToken = "abc123def456ghi789jkl";
       mockGetSharedDashboard.mockResolvedValueOnce({
@@ -951,7 +962,7 @@ describe("dashboard routes", () => {
       expect(authFailLog).toBeDefined();
       expect(authFailLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
       expect(authFailLog!.obj.token).toBeUndefined();
-      expect(JSON.stringify(authFailLog!.obj)).not.toContain(rawToken);
+      assertNoRawTokenInAnyLog(rawToken);
     });
 
     it("redacts share token and records actor in denial log (#1743)", async () => {
@@ -991,7 +1002,65 @@ describe("dashboard routes", () => {
       expect(denialLog!.obj.token).toBeUndefined();
       expect(denialLog!.obj.actorUserId).toBe("u-other");
       expect(denialLog!.obj.actorOrgId).toBe("org-B");
-      expect(JSON.stringify(denialLog!.obj)).not.toContain(rawToken);
+      assertNoRawTokenInAnyLog(rawToken);
+    });
+
+    it("redacts share token in DB-error log (#1743)", async () => {
+      const rawToken = "abc123def456ghi789jkl";
+      mockGetSharedDashboard.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      await app.fetch(
+        new Request(`http://localhost/api/public/dashboards/${rawToken}`),
+      );
+
+      const dbErrorLog = capturedLogs.find(
+        (l) =>
+          l.level === "error" &&
+          l.msg === "Public dashboard fetch failed due to DB error",
+      );
+      expect(dbErrorLog).toBeDefined();
+      expect(dbErrorLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(dbErrorLog!.obj.token).toBeUndefined();
+      assertNoRawTokenInAnyLog(rawToken);
+    });
+
+    it("redacts share token in denial log when actor has no active org (#1743)", async () => {
+      const rawToken = "abc123def456ghi789jkl";
+      mockGetSharedDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          ...mockDashboardData,
+          orgId: "org-A",
+          cards: [mockCardData],
+          shareMode: "org",
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        // No activeOrganizationId — freshly signed-up user with zero memberships
+        user: {
+          id: "u-orphan",
+          label: "no-org@test.com",
+          mode: "simple-key" as const,
+          role: "member" as const,
+        },
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/public/dashboards/${rawToken}`),
+      );
+
+      const denialLog = capturedLogs.find(
+        (l) =>
+          l.level === "warn" &&
+          l.msg.startsWith("Org-scoped dashboard share access denied"),
+      );
+      expect(denialLog).toBeDefined();
+      expect(denialLog!.obj.tokenHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(denialLog!.obj.actorUserId).toBe("u-orphan");
+      expect(denialLog!.obj.actorOrgId).toBeUndefined();
+      assertNoRawTokenInAnyLog(rawToken);
     });
   });
 });

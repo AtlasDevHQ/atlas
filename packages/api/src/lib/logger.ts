@@ -123,8 +123,17 @@ const VALID_LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fa
  * Share tokens are bearer credentials — anyone with log access to a plaintext
  * token can read the share. A truncated hash preserves cross-log correlation
  * (same token → same hash) without exposing a usable credential.
+ *
+ * Throws on non-string input rather than coercing. `String(undefined)` would
+ * produce a stable hash of the literal "undefined", silently poisoning
+ * cross-log correlation during triage.
  */
 export function hashShareToken(token: string): string {
+  if (typeof token !== "string") {
+    throw new TypeError(
+      `hashShareToken: expected string, got ${typeof token}`,
+    );
+  }
   return createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 

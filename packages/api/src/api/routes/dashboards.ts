@@ -1156,6 +1156,9 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
   const result = await getSharedDashboard(token);
   if (!result.ok) {
     const fail = sharedDashboardFailResponse(result.reason);
+    if (result.reason === "error") {
+      log.error({ requestId, tokenHash }, "Public dashboard fetch failed due to DB error");
+    }
     return c.json(fail.body, fail.status);
   }
 

@@ -22,6 +22,8 @@ import {
   cleanupExpiredShares,
   deleteBranch,
   renameBranch,
+  forkConversation,
+  convertToNotebook,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -1397,6 +1399,38 @@ describe("conversations module", () => {
       expect(queryCalls[0].params).toEqual(["r1", "u1", "org-B"]);
     });
 
+    it("forkConversation scopes the source lookup by orgId", async () => {
+      enableInternalDB();
+      // Source row lookup returns empty because org filter rejects cross-org row.
+      setResults({ rows: [] });
+
+      const result = await forkConversation({
+        sourceId: "src-c1",
+        forkPointMessageId: "m1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, org_id");
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
+    });
+
+    it("convertToNotebook scopes the source lookup by orgId", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await convertToNotebook({
+        sourceId: "src-c1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, org_id");
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
+    });
+
     it("org_id IS NULL branch allows access to legacy rows (self-hosted back-compat)", async () => {
       enableInternalDB();
       // Row has NULL org_id (pre-1.2.0 legacy) but matches on user_id.
@@ -1420,6 +1454,19 @@ describe("conversations module", () => {
       const result = await getConversation("legacy-c1", "u1", "org-B");
       // Legacy row has NULL org_id — the OR clause allows the match.
       expect(result.ok).toBe(true);
+    });
+
+    it("legacy-row back-compat covers mutation path (deleteConversation)", async () => {
+      // Regression guard: a helper that inlined scopeClause but dropped
+      // `OR org_id IS NULL` would leave self-hosted / pre-1.2.0 users
+      // unable to delete their legacy conversations. This test pins the
+      // NULL-safe branch for a representative mutation helper.
+      enableInternalDB();
+      setResults({ rows: [{ id: "legacy-c1" }] });
+
+      const result = await deleteConversation("legacy-c1", "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
     });
   });
 });

@@ -124,7 +124,12 @@ export interface ActionLogEntry {
    * Owning workspace for the action. Rows written before org-scoping was
    * added to persistAction have NULL org_id; the CRUD filter is NULL-safe
    * so legacy rows remain accessible to their original requester.
-   * See F-12 in security audit 1.2.3.
+   *
+   * @security F-12 (security audit 1.2.3). Every CRUD path through
+   * `packages/api/src/lib/tools/actions/handler.ts` must filter by this
+   * column against the caller's active organization. See
+   * `.claude/research/security-audit-1-2-3.md` and `orgScopeClause` in
+   * handler.ts for the NULL-safe filter shape.
    */
   org_id: string | null;
 }

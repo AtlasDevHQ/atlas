@@ -161,6 +161,14 @@ mock.module("@atlas/api/lib/startup", () => ({
   getStartupWarnings: () => [],
 }));
 
+// EE IP-allowlist middleware runs when auth mock sets `activeOrganizationId`.
+// Stub with `{ allowed: true }` so route tests can assert orgId propagation
+// without hitting a real postgres.
+import { Effect as _EffectForAllowlistMock } from "effect";
+mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+  checkIPAllowlist: () => _EffectForAllowlistMock.succeed({ allowed: true as const }),
+}));
+
 // Enable actions route before importing the app — the route mounts conditionally
 process.env.ATLAS_ACTIONS_ENABLED = "true";
 
@@ -204,7 +212,12 @@ describe("actions routes", () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true as const,
       mode: "simple-key" as const,
-      user: { id: "u1", label: "test@test.com", mode: "simple-key" as const },
+      user: {
+        id: "u1",
+        label: "test@test.com",
+        mode: "simple-key" as const,
+        activeOrganizationId: "org-u1",
+      },
     });
     mockCheckRateLimit.mockReset();
     mockCheckRateLimit.mockReturnValue({ allowed: true });
@@ -1125,6 +1138,79 @@ describe("actions routes", () => {
 
       const call = mockBulkApproveActions.mock.calls[0] as unknown as [{ orgId?: string | null }];
       expect(call[0].orgId).toBe("org-42");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Route-layer orgId scoping (F-12) — regression guard for the single-action
+  // endpoints. A refactor that drops `user?.activeOrganizationId` at any call
+  // site silently regresses the security invariant; these tests catch it.
+  // -----------------------------------------------------------------------
+
+  describe("route-layer orgId scoping (F-12)", () => {
+    it("GET / forwards orgId to listPendingActions", async () => {
+      await app.fetch(new Request("http://localhost/api/v1/actions?status=pending"));
+      const call = mockListPendingActions.mock.calls[0] as unknown as [{ orgId?: string | null }];
+      expect(call[0].orgId).toBe("org-u1");
+    });
+
+    it("GET /:id forwards orgId to getAction", async () => {
+      mockGetAction.mockResolvedValueOnce(makeAction({ requested_by: "u1" }));
+      await app.fetch(new Request(`http://localhost/api/v1/actions/${VALID_ID}`));
+      const call = mockGetAction.mock.calls[0] as unknown as [string, string | undefined];
+      expect(call[0]).toBe(VALID_ID);
+      expect(call[1]).toBe("org-u1");
+    });
+
+    it("POST /:id/approve forwards orgId to getAction and approveAction", async () => {
+      mockGetAction.mockResolvedValueOnce(makeAction({ requested_by: "other-user" }));
+      mockApproveAction.mockResolvedValueOnce(makeAction({ status: "executed" }));
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
+          method: "POST",
+        }),
+      );
+      const getCall = mockGetAction.mock.calls[0] as unknown as [string, string | undefined];
+      expect(getCall[1]).toBe("org-u1");
+      const approveCall = mockApproveAction.mock.calls[0] as unknown as [string, string, unknown, string | undefined];
+      expect(approveCall[3]).toBe("org-u1");
+    });
+
+    it("POST /:id/deny forwards orgId to getAction and denyAction", async () => {
+      mockGetAction.mockResolvedValueOnce(makeAction({ requested_by: "other-user" }));
+      mockDenyAction.mockResolvedValueOnce(makeAction({ status: "denied" }));
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
+          method: "POST",
+        }),
+      );
+      const getCall = mockGetAction.mock.calls[0] as unknown as [string, string | undefined];
+      expect(getCall[1]).toBe("org-u1");
+      const denyCall = mockDenyAction.mock.calls[0] as unknown as [string, string, string | undefined, string | undefined];
+      expect(denyCall[3]).toBe("org-u1");
+    });
+
+    it("POST /:id/rollback forwards orgId to getAction and rollbackAction", async () => {
+      mockGetAction.mockResolvedValueOnce(
+        makeAction({
+          status: "executed",
+          rollback_info: { method: "test", params: {} },
+          requested_by: "other-user",
+        }),
+      );
+      mockRollbackAction.mockResolvedValueOnce(makeAction({ status: "rolled_back" }));
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      const getCall = mockGetAction.mock.calls[0] as unknown as [string, string | undefined];
+      expect(getCall[1]).toBe("org-u1");
+      const rollbackCall = mockRollbackAction.mock.calls[0] as unknown as [string, string, string | undefined];
+      expect(rollbackCall[2]).toBe("org-u1");
     });
   });
 });

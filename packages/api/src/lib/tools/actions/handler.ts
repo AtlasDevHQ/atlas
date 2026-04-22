@@ -175,7 +175,14 @@ async function persistAction(entry: ActionLogEntry): Promise<void> {
         ],
       );
     } catch (err) {
-      log.error({ err, actionId: entry.id }, "Failed to persist action to DB — stored in memory only");
+      // Surface the failure: a silent DB INSERT error leaves the memoryStore
+      // entry divergent from the DB (caller thinks "pending" exists, admin
+      // console can't find it). Drop the orphan memory entry and propagate so
+      // auto-approve flows fail loudly and manual flows never register a
+      // phantom pending action.
+      memoryStore.delete(entry.id);
+      log.error({ err, actionId: entry.id }, "Failed to persist action to DB");
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 }
@@ -184,6 +191,13 @@ async function persistAction(entry: ActionLogEntry): Promise<void> {
  * Build a parameterized `AND (org_id = $N OR org_id IS NULL)` clause for
  * action_log CRUD queries. NULL-safe so rows written before org-stamping
  * existed remain accessible. See F-12 in security audit 1.2.3.
+ *
+ * @security Every CRUD helper in this file (`getAction`, `approveAction`,
+ * `denyAction`, `rollbackAction`, `listPendingActions`) takes `orgId` as
+ * an optional trailing param. Authenticated routes **must** forward
+ * `user?.activeOrganizationId` — omitting it silently drops the workspace
+ * scope filter. Route-layer tests in `packages/api/src/api/__tests__/`
+ * assert orgId is threaded through at every call site.
  */
 function orgScopeClause(
   startIdx: number,
@@ -629,7 +643,9 @@ export interface ListActionsOptions {
  * Defaults to "pending" when no status filter is provided.
  *
  * When `orgId` is provided, restricts to rows matching that org (or legacy
- * rows with NULL org_id). Matches the bulk.ts cross-org convention.
+ * rows with NULL org_id). Uses the same NULL-safe shape as `orgScopeClause`
+ * above — not the helper itself, because `listPendingActions` builds the
+ * whole WHERE clause dynamically with multiple optional conditions.
  */
 export async function listPendingActions(opts?: ListActionsOptions): Promise<ActionLogEntry[]> {
   const limit = Math.min(opts?.limit ?? 50, 100);

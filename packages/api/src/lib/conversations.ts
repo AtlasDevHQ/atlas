@@ -39,9 +39,15 @@ function toISOTimestamp(value: unknown): string {
  *   (self-hosted / legacy conversations) — matches the back-compat convention
  *   established for bulk actions in `tools/actions/bulk.ts`.
  *
- * See F-11 in `.claude/research/security-audit-1-2-3.md`. The shape mirrors
- * `listConversations`'s dynamic WHERE so callers can stack filters without
- * branching on every combination.
+ * Note: `listConversations` below uses a stricter `org_id = $N` (no NULL
+ * fallback) for the list view — legacy rows stay reachable by direct id but
+ * are filtered out of workspace-scoped lists. Divergence is intentional.
+ *
+ * @security Every CRUD helper in this file takes `orgId` as an optional
+ * trailing param. Routes that serve authenticated users **must** forward
+ * `user?.activeOrganizationId` — omitting it silently drops the workspace
+ * scope filter. Route-layer tests in `packages/api/src/api/__tests__/`
+ * assert orgId is threaded through at every call site (F-11, 1.2.3).
  */
 function scopeClause(
   startIdx: number,

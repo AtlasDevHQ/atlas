@@ -472,7 +472,7 @@ describe("expireStaleRequests", () => {
 
   it("returns 0 when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
-    const result = await run(expireStaleRequests());
+    const result = await run(expireStaleRequests("org-1"));
     expect(result).toBe(0);
   });
 
@@ -480,7 +480,7 @@ describe("expireStaleRequests", () => {
     const original = new Error("Config service unavailable");
     mockGetConfigError = original;
     try {
-      await run(expireStaleRequests());
+      await run(expireStaleRequests("org-1"));
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBe(original);

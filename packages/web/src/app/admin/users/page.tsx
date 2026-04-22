@@ -194,16 +194,18 @@ export default function UsersPage() {
               })}
               <DropdownMenuSeparator />
               {user.banned ? (
-                <DropdownMenuItem onClick={() => handleUnban(user.id)}>
-                  <ShieldOff className="mr-2 size-4" />
-                  Unban
-                </DropdownMenuItem>
+                isPlatformAdmin ? (
+                  <DropdownMenuItem onClick={() => handleUnban(user.id)}>
+                    <ShieldOff className="mr-2 size-4" />
+                    Unban
+                  </DropdownMenuItem>
+                ) : null /* workspace admins can't unban — re-invite flow handles re-onboarding */
               ) : (
                 <DropdownMenuItem
                   onClick={() => setConfirmAction({ type: "ban", user })}
                 >
                   <Ban className="mr-2 size-4" />
-                  Ban user
+                  {isPlatformAdmin ? "Ban user" : "Remove from workspace"}
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem
@@ -371,11 +373,19 @@ export default function UsersPage() {
   }
 
   async function handleBan(user: User): Promise<boolean> {
-    const result = await adminAction.mutate({
-      path: `/api/v1/admin/users/${user.id}/ban`,
-      method: "POST",
-      itemId: user.id,
-    });
+    // Platform admins get the global ban; workspace admins get workspace
+    // membership removal — see F-14 in security audit 1.2.3.
+    const result = isPlatformAdmin
+      ? await adminAction.mutate({
+          path: `/api/v1/admin/users/${user.id}/ban`,
+          method: "POST",
+          itemId: user.id,
+        })
+      : await adminAction.mutate({
+          path: `/api/v1/admin/users/${user.id}/membership`,
+          method: "DELETE",
+          itemId: user.id,
+        });
     return result.ok;
   }
 
@@ -715,17 +725,26 @@ export default function UsersPage() {
         </FormDialog>
       )}
 
-      {/* Ban confirmation dialog */}
+      {/* Ban / remove-from-workspace confirmation dialog */}
       <AlertDialog
         open={confirmAction?.type === "ban"}
         onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Ban user</AlertDialogTitle>
+            <AlertDialogTitle>{isPlatformAdmin ? "Ban user" : "Remove from workspace"}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will prevent <strong>{confirmAction?.type === "ban" ? confirmAction.user.email : ""}</strong> from
-              signing in and revoke all active sessions. You can unban them later.
+              {isPlatformAdmin ? (
+                <>
+                  This will prevent <strong>{confirmAction?.type === "ban" ? confirmAction.user.email : ""}</strong> from
+                  signing in to <em>any</em> workspace and revoke all active sessions. You can unban them later.
+                </>
+              ) : (
+                <>
+                  This will remove <strong>{confirmAction?.type === "ban" ? confirmAction.user.email : ""}</strong> from
+                  this workspace. Other workspaces they belong to are unaffected. Re-invite them if you want them back.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -737,7 +756,7 @@ export default function UsersPage() {
                 if (ok) setConfirmAction(null);
               }}
             >
-              Ban user
+              {isPlatformAdmin ? "Ban user" : "Remove from workspace"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

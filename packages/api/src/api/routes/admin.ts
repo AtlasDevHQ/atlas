@@ -936,8 +936,13 @@ const banUserRoute = createRoute({
   method: "post",
   path: "/users/{id}/ban",
   tags: ["Admin — Users"],
-  summary: "Ban user",
-  description: "Bans a user with optional reason and expiry.",
+  summary: "Ban user (platform admins only)",
+  description:
+    "Globally bans a user across every workspace they belong to. Requires " +
+    "`platform_admin` role — workspace admins cannot perform a cross-tenant " +
+    "ban because the effect propagates past their workspace boundary. Workspace " +
+    "admins should use `DELETE /users/{id}/membership` to remove a member from " +
+    "their own workspace only (F-14, 1.2.3 phase 2).",
   request: {
     params: z.object({
       id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
@@ -949,8 +954,37 @@ const banUserRoute = createRoute({
       content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Forbidden — platform_admin role required", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const removeMembershipRoute = createRoute({
+  method: "delete",
+  path: "/users/{id}/membership",
+  tags: ["Admin — Users"],
+  summary: "Remove user from workspace",
+  description:
+    "Removes the target user from the caller's active workspace only. Other " +
+    "workspaces the user belongs to are unaffected. This is the workspace-admin " +
+    "analogue of `POST /users/{id}/ban` — see F-14 in security audit 1.2.3 for " +
+    "why cross-tenant ban is restricted to platform admins.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "User removed from workspace",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    400: { description: "No active workspace", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required / cannot self-remove", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "User is not a member of this workspace", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -960,8 +994,11 @@ const unbanUserRoute = createRoute({
   method: "post",
   path: "/users/{id}/unban",
   tags: ["Admin — Users"],
-  summary: "Unban user",
-  description: "Removes a ban from a user.",
+  summary: "Unban user (platform admins only)",
+  description:
+    "Removes a global ban from a user. Symmetric with `POST /users/{id}/ban` " +
+    "— requires `platform_admin` role. Workspace admins re-onboard users via " +
+    "the invite flow rather than unbanning (F-14, 1.2.3 phase 2).",
   request: {
     params: z.object({
       id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
@@ -973,7 +1010,7 @@ const unbanUserRoute = createRoute({
       content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — platform_admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
@@ -1893,14 +1930,24 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
 
   const { authResult, requestId } = await adminAuthAndContext(c);
 
+  // Ban is a global state change — user.banned = true across every workspace
+  // the target belongs to. Workspace admins must not be able to degrade
+  // service for orgs they're not members of. See F-14 in security audit
+  // 1.2.3. Workspace admins should use DELETE /users/:id/membership instead.
+  if (authResult.user?.role !== "platform_admin") {
+    return c.json(
+      {
+        error: "forbidden",
+        message: "Banning a user is a global action restricted to platform admins. To remove a user from your workspace only, use DELETE /api/v1/admin/users/{id}/membership.",
+        requestId,
+      },
+      403,
+    );
+  }
+
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
-  }
-
-  // Org-scoping: workspace admins can only ban users in their own org
-  if (!(await verifyOrgMembership(authResult, userId))) {
-    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
   if (authResult.user?.id === userId) {
@@ -1930,14 +1977,21 @@ admin.openapi(unbanUserRoute, async (c) => runHandler(c, "unban user", async () 
 
   const { authResult, requestId } = await adminAuthAndContext(c);
 
+  // Symmetric with banUserRoute — unban is a global state change, platform-only.
+  if (authResult.user?.role !== "platform_admin") {
+    return c.json(
+      {
+        error: "forbidden",
+        message: "Unbanning a user is a global action restricted to platform admins.",
+        requestId,
+      },
+      403,
+    );
+  }
+
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
-  }
-
-  // Org-scoping: workspace admins can only unban users in their own org
-  if (!(await verifyOrgMembership(authResult, userId))) {
-    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
   await adminApi.unbanUser({
@@ -1945,6 +1999,38 @@ admin.openapi(unbanUserRoute, async (c) => runHandler(c, "unban user", async () 
     headers: c.req.raw.headers,
   });
   log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User unbanned");
+  return c.json({ success: true }, 200);
+}));
+
+admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user from workspace", async () => {
+  const { id: userId } = c.req.valid("param");
+
+  const { authResult, requestId } = await adminAuthAndContext(c);
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active workspace. Set an active org first.", requestId }, 400);
+  }
+
+  // Self-protection
+  if (authResult.user?.id === userId) {
+    return c.json({ error: "forbidden", message: "Cannot remove yourself from the workspace.", requestId }, 403);
+  }
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Workspace membership requires an internal database.", requestId }, 404);
+  }
+
+  // Scope the DELETE to the caller's active workspace — the `organizationId`
+  // filter is what makes this workspace-admin-safe (no cross-tenant state change).
+  const deleted = await internalQuery<{ id: string }>(
+    `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = $2 RETURNING id`,
+    [userId, orgId],
+  );
+  if (deleted.length === 0) {
+    return c.json({ error: "not_found", message: "User is not a member of this workspace.", requestId }, 404);
+  }
+
+  log.info({ requestId, targetUserId: userId, orgId, actorId: authResult.user?.id }, "User removed from workspace");
   return c.json({ success: true }, 200);
 }));
 

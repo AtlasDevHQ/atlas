@@ -642,8 +642,17 @@ export const reviewApprovalRequest = (
     return request;
   });
 
-/** Expire all stale pending requests across all orgs. Returns count of expired. */
-export const expireStaleRequests = (): Effect.Effect<number, never> =>
+/**
+ * Expire stale pending approval requests for the given org. Returns count of
+ * expired rows.
+ *
+ * @security F-13 (security audit 1.2.3). Previously this helper swept every
+ * pending row across all orgs, and the admin route that called it ran
+ * BEFORE `requireOrgContext` — so any workspace admin could trigger a
+ * cross-tenant state change. `orgId` is now required and the UPDATE is
+ * scoped to that workspace's queue.
+ */
+export const expireStaleRequests = (orgId: string): Effect.Effect<number, never> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return 0;
 
@@ -652,12 +661,13 @@ export const expireStaleRequests = (): Effect.Effect<number, never> =>
     const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
       `UPDATE approval_queue
        SET status = 'expired'
-       WHERE status = 'pending' AND expires_at < now()
+       WHERE status = 'pending' AND expires_at < now() AND org_id = $1
        RETURNING id`,
+      [orgId],
     ));
 
     if (rows.length > 0) {
-      log.info({ count: rows.length }, "Expired stale approval requests");
+      log.info({ orgId, count: rows.length }, "Expired stale approval requests");
     }
     return rows.length;
   }).pipe(

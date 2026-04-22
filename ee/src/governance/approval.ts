@@ -23,6 +23,7 @@ import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
+  queryEffect,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
@@ -646,25 +647,25 @@ export const reviewApprovalRequest = (
  * Expire stale pending approval requests for the given org. Returns count of
  * expired rows.
  *
- * @security F-13 (security audit 1.2.3). Previously this helper swept every
- * pending row across all orgs, and the admin route that called it ran
- * BEFORE `requireOrgContext` — so any workspace admin could trigger a
- * cross-tenant state change. `orgId` is now required and the UPDATE is
- * scoped to that workspace's queue.
+ * @security F-13 (security audit 1.2.3). `orgId` is required and the UPDATE
+ * is scoped to that workspace's queue — removing either the parameter or
+ * the `AND org_id = $1` clause reopens the cross-tenant-state-change bug.
  */
-export const expireStaleRequests = (orgId: string): Effect.Effect<number, never> =>
+export const expireStaleRequests = (orgId: string): Effect.Effect<number, Error> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return 0;
 
     yield* requireEnterpriseEffect("approval-workflows");
 
-    const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+    // queryEffect (not Effect.promise) so DB rejections surface in the typed
+    // error channel — see `lib/db/internal.ts` for the rationale.
+    const rows = yield* queryEffect<{ id: string }>(
       `UPDATE approval_queue
        SET status = 'expired'
        WHERE status = 'pending' AND expires_at < now() AND org_id = $1
        RETURNING id`,
       [orgId],
-    ));
+    );
 
     if (rows.length > 0) {
       log.info({ orgId, count: rows.length }, "Expired stale approval requests");

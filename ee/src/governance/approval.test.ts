@@ -486,6 +486,28 @@ describe("expireStaleRequests", () => {
       expect(err).toBe(original);
     }
   });
+
+  // Regression guard for F-13 (security audit 1.2.3). Before the fix, the
+  // UPDATE had no org filter and the admin route ran it without
+  // `requireOrgContext`, so any workspace admin could force-expire every
+  // pending row across every workspace. If a future refactor drops the
+  // `AND org_id = $1` clause OR the orgId parameter, this test fails —
+  // the SQL shape and param ordering are both pinned.
+  it("scopes UPDATE by org_id and binds orgId as $1", async () => {
+    ee.queueMockRows([{ id: "req-1" }, { id: "req-2" }]);
+
+    const result = await run(expireStaleRequests("org-A"));
+    expect(result).toBe(2);
+
+    expect(ee.capturedQueries.length).toBe(1);
+    const { sql, params } = ee.capturedQueries[0];
+    expect(sql).toContain("UPDATE approval_queue");
+    expect(sql).toContain("SET status = 'expired'");
+    expect(sql).toContain("status = 'pending'");
+    expect(sql).toContain("expires_at < now()");
+    expect(sql).toContain("org_id = $1");
+    expect(params).toEqual(["org-A"]);
+  });
 });
 
 describe("getPendingCount", () => {

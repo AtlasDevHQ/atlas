@@ -28,3 +28,32 @@ export function isDemotion(from: string, to: Role): boolean {
   if (fromRank === undefined) return true;
   return ROLE_RANK[to] < fromRank;
 }
+
+/**
+ * Pick the endpoint for the destructive "remove user from list" action
+ * based on the caller's role. Extracted from `page.tsx` so the branch is
+ * unit-testable — the contract here is load-bearing for F-14 (security
+ * audit 1.2.3): workspace admins must NEVER hit `POST /ban` (which is
+ * platform-admin-only and returns 403), and platform admins must route
+ * through `POST /ban` for the global ban, not `/membership`.
+ */
+export interface RemoveEndpoint {
+  readonly path: (userId: string) => string;
+  readonly method: "POST" | "DELETE";
+  readonly label: string;
+}
+
+export function removeEndpointForRole(isPlatformAdmin: boolean): RemoveEndpoint {
+  if (isPlatformAdmin) {
+    return {
+      path: (userId) => `/api/v1/admin/users/${userId}/ban`,
+      method: "POST",
+      label: "Ban user",
+    };
+  }
+  return {
+    path: (userId) => `/api/v1/admin/users/${userId}/membership`,
+    method: "DELETE",
+    label: "Remove from workspace",
+  };
+}

@@ -118,6 +118,12 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     internalQuery: async (sql: string, params?: unknown[]) => {
       return handleQuery(sql, params);
     },
+    queryEffect: <T>(sql: string, params?: unknown[]) => {
+      return Effect.tryPromise({
+        try: async () => handleQuery(sql, params) as T[],
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+    },
     internalExecute: () => {},
     encryptUrl: (v: string) => `encrypted:${v}`,
     decryptUrl: (v: string) => (v.startsWith("encrypted:") ? v.slice(10) : v),

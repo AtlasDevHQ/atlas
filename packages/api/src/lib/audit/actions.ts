@@ -47,6 +47,9 @@ export const ADMIN_ACTIONS = {
     invite: "user.invite",
     remove: "user.remove",
     changeRole: "user.change_role",
+    ban: "user.ban",
+    unban: "user.unban",
+    removeFromWorkspace: "user.remove_from_workspace",
   },
   sso: {
     configure: "sso.configure",

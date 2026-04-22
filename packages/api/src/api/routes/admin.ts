@@ -1968,6 +1968,15 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     headers: c.req.raw.headers,
   });
   log.info({ requestId, targetUserId: userId, reason: body.reason, actorId: authResult.user?.id }, "User banned");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.user.ban,
+    targetType: "user",
+    targetId: userId,
+    metadata: { reason: body.reason, expiresIn: body.expiresIn },
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+  });
+
   return c.json({ success: true }, 200);
 }));
 
@@ -1999,6 +2008,14 @@ admin.openapi(unbanUserRoute, async (c) => runHandler(c, "unban user", async () 
     headers: c.req.raw.headers,
   });
   log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User unbanned");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.user.unban,
+    targetType: "user",
+    targetId: userId,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+  });
+
   return c.json({ success: true }, 200);
 }));
 
@@ -2020,6 +2037,35 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
     return c.json({ error: "not_available", message: "Workspace membership requires an internal database.", requestId }, 404);
   }
 
+  // Last-admin guard: if the target is an admin/owner of this workspace,
+  // removing them must leave at least one admin/owner behind. Without this,
+  // a workspace admin could strand the workspace with no remaining admins
+  // (either by removing their co-admin and getting stuck, or via a two-admin
+  // race where each removes the other). The role-change and delete-user paths
+  // have analogous guards; this mirrors them at the workspace scope.
+  const targetMembership = await internalQuery<{ role: string }>(
+    `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2`,
+    [userId, orgId],
+  );
+  const targetRole = targetMembership[0]?.role;
+  if (targetRole === "admin" || targetRole === "owner") {
+    const remainingAdmins = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM member
+       WHERE "organizationId" = $1 AND role IN ('admin', 'owner') AND "userId" != $2`,
+      [orgId, userId],
+    );
+    if (parseInt(String(remainingAdmins[0]?.count ?? "0"), 10) === 0) {
+      return c.json(
+        {
+          error: "forbidden",
+          message: "Cannot remove the last admin of this workspace. Promote another member first.",
+          requestId,
+        },
+        403,
+      );
+    }
+  }
+
   // Scope the DELETE to the caller's active workspace — the `organizationId`
   // filter is what makes this workspace-admin-safe (no cross-tenant state change).
   const deleted = await internalQuery<{ id: string }>(
@@ -2031,6 +2077,15 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
   }
 
   log.info({ requestId, targetUserId: userId, orgId, actorId: authResult.user?.id }, "User removed from workspace");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.user.removeFromWorkspace,
+    targetType: "user",
+    targetId: userId,
+    metadata: { orgId, previousRole: targetRole },
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+  });
+
   return c.json({ success: true }, 200);
 }));
 

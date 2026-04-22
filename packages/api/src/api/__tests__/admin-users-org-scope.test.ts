@@ -52,6 +52,18 @@ mock.module("@atlas/api/lib/auth/server", () => ({
   }),
 }));
 
+// --- Audit mock — capture logAdminAction calls to verify the compliance path ---
+const mockLogAdminAction: Mock<(entry: unknown) => void> = mock(() => {});
+
+mock.module("@atlas/api/lib/audit", async () => {
+  // Pass the real ADMIN_ACTIONS enum through so route handlers get correct constants.
+  const actual = await import("@atlas/api/lib/audit/actions");
+  return {
+    logAdminAction: mockLogAdminAction,
+    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+  };
+});
+
 // --- Import app after mocks ---
 
 const { app } = await import("../index");
@@ -119,6 +131,7 @@ describe("Org-scoped user write operations (#983)", () => {
     mockUnbanUser.mockClear();
     mockRemoveUser.mockClear();
     mockRevokeSessions.mockClear();
+    mockLogAdminAction.mockClear();
     mocks.hasInternalDB = true;
   });
 
@@ -253,6 +266,19 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(200);
       expect(mockBanUser).toHaveBeenCalled();
     });
+
+    it("platform admin ban emits logAdminAction with user.ban", async () => {
+      setPlatformAdmin();
+
+      await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", {}),
+      );
+
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0] as { actionType: string; targetId: string };
+      expect(entry.actionType).toBe("user.ban");
+      expect(entry.targetId).toBe("user-in-any-org");
+    });
   });
 
   describe("DELETE /api/v1/admin/users/:id/membership (F-14: workspace-scoped removal)", () => {
@@ -296,6 +322,67 @@ describe("Org-scoped user write operations (#983)", () => {
         adminRequest("DELETE", "/api/v1/admin/users/admin-1/membership"),
       );
       expect(res.status).toBe(403);
+    });
+
+    it("refuses to remove the last admin/owner of the workspace", async () => {
+      setWorkspaceAdmin("org-1");
+      // Target is the only admin. The last-admin guard queries member role
+      // then counts remaining admins excluding the target.
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "admin" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "0" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/only-admin/membership"),
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json() as { error: string; message: string };
+      expect(body.error).toBe("forbidden");
+      expect(body.message).toContain("last admin");
+    });
+
+    it("allows removing an admin when at least one other admin remains", async () => {
+      setWorkspaceAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "admin" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "1" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/co-admin/membership"),
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it("emits logAdminAction with user.remove_from_workspace action type", async () => {
+      setWorkspaceAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "member" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/user-in-org-1/membership"),
+      );
+
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0] as {
+        actionType: string;
+        targetType: string;
+        targetId: string;
+        metadata: Record<string, unknown>;
+      };
+      expect(entry.actionType).toBe("user.remove_from_workspace");
+      expect(entry.targetType).toBe("user");
+      expect(entry.targetId).toBe("user-in-org-1");
+      expect(entry.metadata.orgId).toBe("org-1");
+      expect(entry.metadata.previousRole).toBe("member");
     });
   });
 

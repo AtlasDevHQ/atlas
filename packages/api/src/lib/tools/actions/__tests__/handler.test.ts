@@ -1135,3 +1135,122 @@ describe("rollbackAction()", () => {
     expect(result!.error).toContain("No rollback handler registered for method: unregistered:method");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-org scoping (F-12 security invariant, 1.2.3 phase 2)
+// ---------------------------------------------------------------------------
+//
+// Pending actions must be isolated by org_id. A user who approves / denies /
+// rollbacks / views an action from a session active in a different workspace
+// must see the action as not-found, never as an actionable row. The filter is
+// NULL-safe so rows written before org-stamping existed remain accessible.
+
+describe("cross-org scoping (F-12)", () => {
+  async function seedOrgScoped(actionType: string, orgId: string, userId = "alice") {
+    const request = buildActionRequest({
+      actionType,
+      target: `t-${Math.random()}`,
+      summary: "Test action",
+      payload: {},
+      reversible: false,
+    });
+    await withRequestContext(
+      {
+        requestId: "req-seed",
+        user: {
+          id: userId,
+          label: `${userId}@test.com`,
+          mode: "simple-key",
+          activeOrganizationId: orgId,
+        },
+      },
+      () => handleAction(request, async () => "done"),
+    );
+    return request.id;
+  }
+
+  it("handleAction stamps org_id from request context", async () => {
+    const id = await seedOrgScoped("test:stamped", "org-A");
+    // Read back without orgId filter — the row itself carries the stamp.
+    const entry = await getAction(id);
+    expect(entry).not.toBeNull();
+    expect(entry!.org_id).toBe("org-A");
+  });
+
+  it("getAction returns null for cross-org caller", async () => {
+    const id = await seedOrgScoped("test:xorg", "org-A");
+    const fromOtherOrg = await getAction(id, "org-B");
+    expect(fromOtherOrg).toBeNull();
+    const fromOwnOrg = await getAction(id, "org-A");
+    expect(fromOwnOrg).not.toBeNull();
+  });
+
+  it("getAction returns legacy (org_id=null) rows to any org (back-compat)", async () => {
+    // Seed a row then null out org_id to simulate pre-F-12 data.
+    const id = await seedOrgScoped("test:legacy", "org-A");
+    const row = await getAction(id);
+    row!.org_id = null;
+    const fromAnyOrg = await getAction(id, "org-Z");
+    expect(fromAnyOrg).not.toBeNull();
+  });
+
+  it("approveAction loses CAS for cross-org caller (returns null)", async () => {
+    const id = await seedOrgScoped("test:xapprove", "org-A");
+    const result = await approveAction(id, "admin-1", async () => "ok", "org-B");
+    expect(result).toBeNull();
+    // Row is still pending — the cross-org approve didn't touch it.
+    const row = await getAction(id, "org-A");
+    expect(row!.status).toBe("pending");
+  });
+
+  it("approveAction succeeds for same-org caller", async () => {
+    const id = await seedOrgScoped("test:approve-ok", "org-A");
+    const result = await approveAction(id, "admin-1", async () => "ok", "org-A");
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("executed");
+  });
+
+  it("denyAction loses CAS for cross-org caller (returns null)", async () => {
+    const id = await seedOrgScoped("test:xdeny", "org-A");
+    const result = await denyAction(id, "admin-1", "no", "org-B");
+    expect(result).toBeNull();
+    const row = await getAction(id, "org-A");
+    expect(row!.status).toBe("pending");
+  });
+
+  it("rollbackAction returns null for cross-org caller", async () => {
+    const id = await seedOrgScoped("test:xrollback", "org-A");
+    // Approve in-org so the action becomes executed with rollback info.
+    await approveAction(
+      id,
+      "admin-1",
+      async () => ({
+        key: "Z-1",
+        rollbackInfo: { method: "m", params: {} },
+      }),
+      "org-A",
+    );
+
+    const xorg = await rollbackAction(id, "admin-1", "org-B");
+    expect(xorg).toBeNull();
+
+    const same = await rollbackAction(id, "admin-1", "org-A");
+    expect(same).not.toBeNull();
+    expect(same!.status).toBe("rolled_back");
+  });
+
+  it("listPendingActions filters out cross-org rows", async () => {
+    const idA = await seedOrgScoped("test:list-a", "org-A", "alice");
+    const idB = await seedOrgScoped("test:list-b", "org-B", "bob");
+
+    const fromA = await listPendingActions({ orgId: "org-A" });
+    const fromAIds = fromA.map((e) => e.id);
+    expect(fromAIds).toContain(idA);
+    expect(fromAIds).not.toContain(idB);
+
+    const fromB = await listPendingActions({ orgId: "org-B" });
+    const fromBIds = fromB.map((e) => e.id);
+    expect(fromBIds).toContain(idB);
+    expect(fromBIds).not.toContain(idA);
+  });
+});

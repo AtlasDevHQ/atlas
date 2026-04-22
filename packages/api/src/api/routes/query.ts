@@ -299,7 +299,7 @@ query.openapi(
             try {
               if (conversationId) {
                 // Verify ownership before appending to existing conversation
-                const existing = await getConversation(conversationId, authResult.user?.id);
+                const existing = await getConversation(conversationId, authResult.user?.id, authResult.user?.activeOrganizationId);
                 if (!existing.ok) {
                   log.warn({ conversationId, userId: authResult.user?.id }, "Conversation not found or not owned — skipping persistence");
                   conversationId = undefined;

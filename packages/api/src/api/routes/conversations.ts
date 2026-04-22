@@ -765,7 +765,7 @@ conversations.openapi(getConversationRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
     }
 
-    const conv = yield* Effect.promise(() => getConversation(id, user?.id));
+    const conv = yield* Effect.promise(() => getConversation(id, user?.id, user?.activeOrganizationId));
     if (!conv.ok) {
       const fail = crudFailResponse(conv.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -794,7 +794,7 @@ conversations.openapi(starConversationRoute, async (c) => {
 
     const parsed = c.req.valid("json");
 
-    const starResult = yield* Effect.promise(() => starConversation(id, parsed.starred, user?.id));
+    const starResult = yield* Effect.promise(() => starConversation(id, parsed.starred, user?.id, user?.activeOrganizationId));
     if (!starResult.ok) {
       const fail = crudFailResponse(starResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -823,7 +823,7 @@ conversations.openapi(notebookStateRoute, async (c) => {
 
     const parsed = c.req.valid("json");
 
-    const nbResult = yield* Effect.promise(() => updateNotebookState(id, parsed, user?.id));
+    const nbResult = yield* Effect.promise(() => updateNotebookState(id, parsed, user?.id, user?.activeOrganizationId));
     if (!nbResult.ok) {
       const fail = crudFailResponse(nbResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -873,7 +873,7 @@ conversations.openapi(forkConversationRoute, async (c) => {
     };
 
     // Read current notebook_state from source to preserve existing data
-    const sourceConv = yield* Effect.promise(() => getConversation(id, user?.id));
+    const sourceConv = yield* Effect.promise(() => getConversation(id, user?.id, user?.activeOrganizationId));
     if (!sourceConv.ok) {
       log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
       return c.json({
@@ -902,8 +902,8 @@ conversations.openapi(forkConversationRoute, async (c) => {
 
     // Write both notebook_state updates in parallel
     const [sourceResult, forkMetaResult] = yield* Effect.promise(() => Promise.all([
-      updateNotebookState(id, updatedSourceState, user?.id),
-      updateNotebookState(forkResult.data.id, forkChildState, user?.id),
+      updateNotebookState(id, updatedSourceState, user?.id, user?.activeOrganizationId),
+      updateNotebookState(forkResult.data.id, forkChildState, user?.id, user?.activeOrganizationId),
     ]));
 
     let metadataWarning: string | undefined;
@@ -980,6 +980,7 @@ conversations.openapi(deleteBranchRoute, async (c) => {
       rootId: id,
       branchId,
       userId: user?.id,
+      orgId: user?.activeOrganizationId,
     }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
@@ -1014,6 +1015,7 @@ conversations.openapi(renameBranchRoute, async (c) => {
       branchId,
       label: parsed.label,
       userId: user?.id,
+      orgId: user?.activeOrganizationId,
     }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
@@ -1041,7 +1043,7 @@ conversations.openapi(getShareStatusRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
     }
 
-    const shareResult = yield* Effect.promise(() => getShareStatus(id, user?.id));
+    const shareResult = yield* Effect.promise(() => getShareStatus(id, user?.id, user?.activeOrganizationId));
     if (!shareResult.ok) {
       if (shareResult.reason === "error") {
         log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
@@ -1101,6 +1103,7 @@ conversations.openapi(shareConversationRoute, async (c) => {
 
     const opts = parsed.data;
     const shareResult = yield* Effect.promise(() => shareConversation(id, user?.id, {
+      orgId: user?.activeOrganizationId,
       expiresIn: opts?.expiresIn,
       shareMode: opts?.shareMode,
     }));
@@ -1142,7 +1145,7 @@ conversations.openapi(unshareConversationRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
     }
 
-    const unshareResult = yield* Effect.promise(() => unshareConversation(id, user?.id));
+    const unshareResult = yield* Effect.promise(() => unshareConversation(id, user?.id, user?.activeOrganizationId));
     if (!unshareResult.ok) {
       const fail = crudFailResponse(unshareResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1169,7 +1172,7 @@ conversations.openapi(deleteConversationRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
     }
 
-    const delResult = yield* Effect.promise(() => deleteConversation(id, user?.id));
+    const delResult = yield* Effect.promise(() => deleteConversation(id, user?.id, user?.activeOrganizationId));
     if (!delResult.ok) {
       const fail = crudFailResponse(delResult.reason, requestId);
       return c.json(fail.body, fail.status);

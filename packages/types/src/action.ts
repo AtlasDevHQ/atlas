@@ -120,6 +120,13 @@ export interface ActionLogEntry {
   rollback_info: RollbackInfo | null;
   conversation_id: string | null;
   request_id: string | null;
+  /**
+   * Owning workspace for the action. Rows written before org-scoping was
+   * added to persistAction have NULL org_id; the CRUD filter is NULL-safe
+   * so legacy rows remain accessible to their original requester.
+   * See F-12 in security audit 1.2.3.
+   */
+  org_id: string | null;
 }
 
 /** All valid ActionDisplayStatus values (derived from ALL_STATUSES). */

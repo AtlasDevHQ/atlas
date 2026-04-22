@@ -154,8 +154,8 @@ async function persistAction(entry: ActionLogEntry): Promise<void> {
   if (hasInternalDB()) {
     try {
       await internalQuery(
-        `INSERT INTO action_log (id, requested_by, approved_by, auth_mode, action_type, target, summary, payload, status, result, error, rollback_info, conversation_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        `INSERT INTO action_log (id, requested_by, approved_by, auth_mode, action_type, target, summary, payload, status, result, error, rollback_info, conversation_id, request_id, org_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           entry.id,
           entry.requested_by,
@@ -171,12 +171,36 @@ async function persistAction(entry: ActionLogEntry): Promise<void> {
           entry.rollback_info ? JSON.stringify(entry.rollback_info) : null,
           entry.conversation_id,
           entry.request_id,
+          entry.org_id,
         ],
       );
     } catch (err) {
       log.error({ err, actionId: entry.id }, "Failed to persist action to DB — stored in memory only");
     }
   }
+}
+
+/**
+ * Build a parameterized `AND (org_id = $N OR org_id IS NULL)` clause for
+ * action_log CRUD queries. NULL-safe so rows written before org-stamping
+ * existed remain accessible. See F-12 in security audit 1.2.3.
+ */
+function orgScopeClause(
+  startIdx: number,
+  orgId: string | null | undefined,
+): { sql: string; params: unknown[] } {
+  if (!orgId) return { sql: "", params: [] };
+  return {
+    sql: ` AND (org_id = $${startIdx} OR org_id IS NULL)`,
+    params: [orgId],
+  };
+}
+
+/** In-memory equivalent of `orgScopeClause` — NULL-safe match. */
+function inMemoryOrgMatch(rowOrgId: unknown, callerOrgId: string | null | undefined): boolean {
+  if (!callerOrgId) return true;
+  if (rowOrgId === null || rowOrgId === undefined) return true;
+  return rowOrgId === callerOrgId;
 }
 
 const COLUMN_MAP: Record<string, string> = {
@@ -248,6 +272,9 @@ export async function handleAction(
   const userId = ctx?.user?.id;
   const authMode = ctx?.user?.mode ?? "none";
   const requestId = ctx?.requestId ?? null;
+  // Stamp the caller's active workspace so cross-org CRUD filters can work.
+  // See F-12 in security audit 1.2.3.
+  const orgId = ctx?.user?.activeOrganizationId ?? null;
   const now = new Date().toISOString();
 
   const entry: ActionLogEntry = {
@@ -268,6 +295,7 @@ export async function handleAction(
     rollback_info: null,
     conversation_id: opts?.conversationId ?? null,
     request_id: requestId,
+    org_id: orgId,
   };
 
   await persistAction(entry);
@@ -435,22 +463,29 @@ async function executeApprovedAction(
 /**
  * Approve a pending action. Returns the updated entry, or null if CAS failed
  * (action already resolved — 409 scenario).
+ *
+ * When `orgId` is provided, the CAS filter also requires the row's org_id
+ * to match (NULL-safe for legacy rows). A cross-org caller sees the same
+ * null return as a CAS race, consistent with the "don't leak existence"
+ * convention established in bulk.ts.
  */
 export async function approveAction(
   actionId: string,
   approverId: string,
   executeFn?: ActionExecutor,
+  orgId?: string | null,
 ): Promise<ActionLogEntry | null> {
   const resolveFn = executeFn ?? getActionExecutor(actionId);
 
   // CAS in DB (atomic via WHERE status = 'pending' RETURNING *)
   if (hasInternalDB()) {
+    const scope = orgScopeClause(3, orgId);
     const rows = await internalQuery(
       `UPDATE action_log
        SET status = 'approved', resolved_at = now(), approved_by = $1
-       WHERE id = $2 AND status = 'pending'
+       WHERE id = $2 AND status = 'pending'${scope.sql}
        RETURNING *`,
-      [approverId, actionId],
+      [approverId, actionId, ...scope.params],
     ) as unknown as ActionLogEntry[];
     if (rows.length === 0) return null;
 
@@ -475,6 +510,7 @@ export async function approveAction(
   // Memory-only fallback
   const entry = memoryStore.get(actionId);
   if (!entry || entry.status !== "pending") return null;
+  if (!inMemoryOrgMatch(entry.org_id, orgId)) return null;
 
   const approved: ActionLogEntry = {
     ...entry,
@@ -501,20 +537,23 @@ export async function approveAction(
 
 /**
  * Deny a pending action. Returns the updated entry, or null if CAS failed.
+ * Cross-org semantics mirror `approveAction` — see that doc.
  */
 export async function denyAction(
   actionId: string,
   denierId: string,
   reason?: string,
+  orgId?: string | null,
 ): Promise<ActionLogEntry | null> {
   if (hasInternalDB()) {
+    const scope = orgScopeClause(4, orgId);
     const rows = await internalQuery(
       `UPDATE action_log
        -- approved_by is overloaded: stores approver for approved actions, denier for denied actions
        SET status = 'denied', resolved_at = now(), approved_by = $1, error = $2
-       WHERE id = $3 AND status = 'pending'
+       WHERE id = $3 AND status = 'pending'${scope.sql}
        RETURNING *`,
-      [denierId, reason ?? null, actionId],
+      [denierId, reason ?? null, actionId, ...scope.params],
     ) as unknown as ActionLogEntry[];
     if (rows.length === 0) return null;
 
@@ -534,6 +573,7 @@ export async function denyAction(
   // Memory-only fallback
   const entry = memoryStore.get(actionId);
   if (!entry || entry.status !== "pending") return null;
+  if (!inMemoryOrgMatch(entry.org_id, orgId)) return null;
 
   const denied: ActionLogEntry = {
     ...entry,
@@ -558,27 +598,38 @@ export async function denyAction(
 // Read operations
 // ---------------------------------------------------------------------------
 
-export async function getAction(actionId: string): Promise<ActionLogEntry | null> {
+export async function getAction(
+  actionId: string,
+  orgId?: string | null,
+): Promise<ActionLogEntry | null> {
   if (hasInternalDB()) {
+    const scope = orgScopeClause(2, orgId);
     const rows = await internalQuery(
-      `SELECT * FROM action_log WHERE id = $1`,
-      [actionId],
+      `SELECT * FROM action_log WHERE id = $1${scope.sql}`,
+      [actionId, ...scope.params],
     ) as unknown as ActionLogEntry[];
     return rows[0] ?? null;
   }
-  return memoryStore.get(actionId) ?? null;
+  const entry = memoryStore.get(actionId);
+  if (!entry) return null;
+  if (!inMemoryOrgMatch(entry.org_id, orgId)) return null;
+  return entry;
 }
 
 export interface ListActionsOptions {
   status?: ActionStatus;
   userId?: string;
   conversationId?: string;
+  orgId?: string | null;
   limit?: number;
 }
 
 /**
  * Despite the name, supports filtering by any ActionStatus via opts.status.
  * Defaults to "pending" when no status filter is provided.
+ *
+ * When `orgId` is provided, restricts to rows matching that org (or legacy
+ * rows with NULL org_id). Matches the bulk.ts cross-org convention.
  */
 export async function listPendingActions(opts?: ListActionsOptions): Promise<ActionLogEntry[]> {
   const limit = Math.min(opts?.limit ?? 50, 100);
@@ -606,6 +657,11 @@ export async function listPendingActions(opts?: ListActionsOptions): Promise<Act
       params.push(opts.conversationId);
     }
 
+    if (opts?.orgId) {
+      conditions.push(`(org_id = $${paramIdx++} OR org_id IS NULL)`);
+      params.push(opts.orgId);
+    }
+
     params.push(limit);
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const rows = await internalQuery(
@@ -625,6 +681,9 @@ export async function listPendingActions(opts?: ListActionsOptions): Promise<Act
   }
   if (opts?.conversationId) {
     results = results.filter((e) => e.conversation_id === opts.conversationId);
+  }
+  if (opts?.orgId) {
+    results = results.filter((e) => inMemoryOrgMatch(e.org_id, opts.orgId));
   }
 
   return results
@@ -698,8 +757,9 @@ async function dispatchRollback(
 export async function rollbackAction(
   actionId: string,
   userId: string,
+  orgId?: string | null,
 ): Promise<ActionLogEntry | null> {
-  const action = await getAction(actionId);
+  const action = await getAction(actionId, orgId);
   if (!action) return null;
 
   if (!ROLLBACKABLE_STATUSES.has(action.status)) {
@@ -714,12 +774,13 @@ export async function rollbackAction(
 
   // CAS: transition to rolled_back
   if (hasInternalDB()) {
+    const scope = orgScopeClause(2, orgId);
     const rows = await internalQuery(
       `UPDATE action_log
        SET status = 'rolled_back', resolved_at = now()
-       WHERE id = $1 AND status IN ('executed', 'auto_approved')
+       WHERE id = $1 AND status IN ('executed', 'auto_approved')${scope.sql}
        RETURNING *`,
-      [actionId],
+      [actionId, ...scope.params],
     ) as unknown as ActionLogEntry[];
     if (rows.length === 0) return null;
 
@@ -740,6 +801,7 @@ export async function rollbackAction(
   // Memory-only fallback
   const entry = memoryStore.get(actionId);
   if (!entry || !ROLLBACKABLE_STATUSES.has(entry.status)) return null;
+  if (!inMemoryOrgMatch(entry.org_id, orgId)) return null;
 
   const rolledBack: ActionLogEntry = {
     ...entry,

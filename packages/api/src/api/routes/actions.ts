@@ -408,6 +408,7 @@ actions.openapi(listActionsRoute, async (c) => {
     const items = yield* Effect.promise(() => listPendingActions({
       status,
       userId: user?.id,
+      orgId: user?.activeOrganizationId,
       limit,
     }));
     return c.json({ actions: items }, 200);
@@ -432,7 +433,7 @@ actions.openapi(getActionRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
     }
 
-    const action = yield* Effect.promise(() => getAction(id));
+    const action = yield* Effect.promise(() => getAction(id, user?.activeOrganizationId));
     if (!action || action.requested_by !== user?.id) {
       return c.json({ error: "not_found", message: "Action not found." }, 404);
     }
@@ -459,9 +460,11 @@ actions.openapi(approveActionRoute, async (c) => {
     }
 
     const approverId = user?.id ?? "anonymous";
+    const orgId = user?.activeOrganizationId;
 
-    // Look up action and executor
-    const action = yield* Effect.promise(() => getAction(id));
+    // Look up action and executor — scoped to caller's active org so cross-org
+    // access surfaces as 404 rather than 403 (don't leak existence).
+    const action = yield* Effect.promise(() => getAction(id, orgId));
     if (!action) {
       return c.json({ error: "not_found", message: "Action not found." }, 404);
     }
@@ -479,7 +482,7 @@ actions.openapi(approveActionRoute, async (c) => {
 
     const executor = getActionExecutor(id);
 
-    const approveResult = yield* Effect.promise(() => approveAction(id, approverId, executor));
+    const approveResult = yield* Effect.promise(() => approveAction(id, approverId, executor, orgId));
     if (!approveResult) {
       return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
     }
@@ -508,9 +511,10 @@ actions.openapi(
       }
 
       const denierId = user?.id ?? "anonymous";
+      const orgId = user?.activeOrganizationId;
 
-      // Look up action for permission enforcement
-      const action = yield* Effect.promise(() => getAction(id));
+      // Look up action for permission enforcement — org-scoped (cross-org → 404).
+      const action = yield* Effect.promise(() => getAction(id, orgId));
       if (!action) {
         return c.json({ error: "not_found", message: "Action not found." }, 404);
       }
@@ -546,7 +550,7 @@ actions.openapi(
         }
       }
 
-      const denyResult = yield* Effect.promise(() => denyAction(id, denierId, reason));
+      const denyResult = yield* Effect.promise(() => denyAction(id, denierId, reason, orgId));
       if (!denyResult) {
         return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
       }
@@ -633,7 +637,8 @@ actions.openapi(rollbackActionRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
     }
 
-    const action = yield* Effect.promise(() => getAction(id));
+    const orgId = user?.activeOrganizationId;
+    const action = yield* Effect.promise(() => getAction(id, orgId));
     if (!action) {
       return c.json({ error: "not_found", message: "Action not found." }, 404);
     }
@@ -649,7 +654,7 @@ actions.openapi(rollbackActionRoute, async (c) => {
     }
 
     const rollbackerId = user?.id ?? "anonymous";
-    const rollbackResult = yield* Effect.promise(() => rollbackAction(id, rollbackerId));
+    const rollbackResult = yield* Effect.promise(() => rollbackAction(id, rollbackerId, orgId));
     if (!rollbackResult) {
       return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
     }

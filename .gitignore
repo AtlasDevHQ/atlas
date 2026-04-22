@@ -13,6 +13,7 @@ tsconfig.tsbuildinfo
 .expert-cache/
 create-atlas/templates/*/semantic/
 create-atlas/templates/*/bin/
+create-atlas/templates/*/lib/
 create-atlas/templates/*/data/
 create-atlas/templates/*/docs/
 create-atlas/templates/*/src/

@@ -22,12 +22,20 @@ import {
 
 // --- Mocks (before any import that touches the modules) ---
 
+// These lifecycle routes are platform-admin-only; workspace admins/owners
+// are rejected at the auth gate. See `.claude/research/security-audit-1-2-3.md`
+// for rationale.
 const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
   () =>
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
+      user: {
+        id: "platform-admin-1",
+        mode: "simple-key",
+        label: "Platform Admin",
+        role: "platform_admin",
+      },
     }),
 );
 

@@ -1,8 +1,9 @@
 /**
  * Admin organization management routes.
  *
- * Mounted under /api/v1/admin/organizations. All routes require admin role.
- * Provides CRUD for organizations and their members (platform admin view).
+ * Mounted under /api/v1/admin/organizations. Platform-admin only (see
+ * createPlatformRouter). Provides cross-tenant workspace lifecycle CRUD —
+ * list, get, stats, status, suspend/activate, plan tier, soft-delete.
  */
 
 import { Effect } from "effect";
@@ -25,7 +26,7 @@ import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("admin-orgs");
 
@@ -102,6 +103,7 @@ const WorkspaceActionResponseSchema = z.object({
 const DeleteCascadeSchema = z.object({
   message: z.string(),
   cascade: z.record(z.string(), z.unknown()),
+  warnings: z.array(z.string()).optional(),
 });
 
 const WorkspaceHealthSchema = z.object({
@@ -162,7 +164,7 @@ const listOrgsRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -212,7 +214,7 @@ const getOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -254,7 +256,7 @@ const getOrgStatsRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -296,7 +298,7 @@ const suspendOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -342,7 +344,7 @@ const activateOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -388,7 +390,7 @@ const deleteOrgRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -434,7 +436,7 @@ const getOrgStatusRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -483,7 +485,7 @@ const updatePlanRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description: "Forbidden — platform admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -509,7 +511,7 @@ const updatePlanRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminOrgs = createAdminRouter();
+const adminOrgs = createPlatformRouter();
 
 // GET / — list all organizations
 adminOrgs.openapi(listOrgsRoute, async (c) => {
@@ -635,6 +637,12 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     if (!workspace) return c.json({ error: "not_found", message: "Organization not found." }, 404);
     if (workspace.workspace_status === "deleted") return c.json({ error: "conflict", message: "Workspace is already deleted." }, 409);
 
+    // Asymmetry with PATCH /:id/suspend (fail-closed on drain) is intentional:
+    // delete is a one-shot destructive cascade; failing the entire operation
+    // on a transient drain error would leave the workspace in an unclear
+    // half-dirty state. Instead we surface the failure on the response and
+    // log at `error` so it's visible in Sentry rather than buried in `warn`.
+    const warnings: string[] = [];
     let poolsDrained = 0;
     if (connections.isOrgPoolingEnabled()) {
       const drainResult = yield* Effect.tryPromise({
@@ -644,7 +652,8 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
       if (drainResult._tag === "Right") {
         poolsDrained = drainResult.right.drained;
       } else {
-        log.warn({ orgId, err: drainResult.left.message }, "Failed to drain org pools during delete — continuing with cascade");
+        log.error({ orgId, requestId, err: drainResult.left.message }, "Failed to drain org pools during delete — continuing with cascade");
+        warnings.push(`pool_drain_failed: ${drainResult.left.message}`);
       }
     }
     flushCache();
@@ -658,8 +667,14 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
-    log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained }, "Workspace soft-deleted with cascading cleanup");
-    return c.json({ message: "Workspace deleted. All associated data has been cleaned up.", cascade: { poolsDrained, ...cascade } }, 200);
+    log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings }, "Workspace soft-deleted with cascading cleanup");
+    return c.json({
+      message: warnings.length > 0
+        ? "Workspace deleted, but cleanup was partial — see warnings."
+        : "Workspace deleted. All associated data has been cleaned up.",
+      cascade: { poolsDrained, ...cascade },
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }, 200);
   }), { label: "delete workspace" });
 });
 

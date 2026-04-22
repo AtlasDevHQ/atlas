@@ -114,12 +114,9 @@ async function preClassify(
       notFound.push(id);
       continue;
     }
-    // `org_id` is present on the action_log row (schema.ts) but not yet
-    // surfaced on `ActionLogEntry`; read defensively via record access.
     // Missing / null org_id disables the filter — matches the single-action
-    // endpoints' behavior for rows written before org-scoping existed.
-    const rowOrgId = (action as unknown as Record<string, unknown>).org_id;
-    if (orgId && typeof rowOrgId === "string" && rowOrgId !== orgId) {
+    // endpoints' behavior for rows written before org-stamping existed.
+    if (orgId && typeof action.org_id === "string" && action.org_id !== orgId) {
       notFound.push(id);
       continue;
     }
@@ -158,7 +155,9 @@ export async function bulkApproveActions(
   for (const id of eligible) {
     try {
       const executor = getActionExecutor(id);
-      const result = await approveAction(id, approverId, executor);
+      // Pass orgId to the CAS so the UPDATE carries the same org-scope guard
+      // as preClassify — defense in depth against TOCTOU between the two steps.
+      const result = await approveAction(id, approverId, executor, orgId);
       if (result === null) {
         log.warn(
           { actionId: id, orgId, userId: user?.id, requestId },
@@ -199,7 +198,7 @@ export async function bulkDenyActions(
 
   for (const id of eligible) {
     try {
-      const result = await denyAction(id, denierId, reason);
+      const result = await denyAction(id, denierId, reason, orgId);
       if (result === null) {
         log.warn(
           { actionId: id, orgId, userId: user?.id, requestId },

@@ -192,6 +192,7 @@ function makeAction(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
     rollback_info: null,
     conversation_id: null,
     request_id: null,
+    org_id: null,
     ...overrides,
   };
 }

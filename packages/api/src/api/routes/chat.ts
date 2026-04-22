@@ -380,7 +380,7 @@ chat.openapi(chatRoute, async (c) => {
         if (hasInternalDB()) {
           if (conversationId) {
             // Ownership verification — NOT best-effort, this is a security check
-            const existing = await getConversation(conversationId, authResult.user?.id);
+            const existing = await getConversation(conversationId, authResult.user?.id, authResult.user?.activeOrganizationId);
             if (!existing.ok) {
               return c.json({ error: "not_found", message: "Conversation not found.", retryable: false, requestId }, 404);
             }

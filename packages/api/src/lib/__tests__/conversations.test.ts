@@ -14,6 +14,7 @@ import {
   listConversations,
   deleteConversation,
   starConversation,
+  updateNotebookState,
   shareConversation,
   unshareConversation,
   getShareStatus,
@@ -21,6 +22,8 @@ import {
   cleanupExpiredShares,
   deleteBranch,
   renameBranch,
+  forkConversation,
+  convertToNotebook,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -1245,6 +1248,225 @@ describe("conversations module", () => {
 
       const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New" });
       expect(result).toEqual({ ok: false, reason: "error" });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Cross-org scoping (F-11 security invariant, 1.2.3 phase 2)
+  // -------------------------------------------------------------------------
+  //
+  // Every helper that accepts a conversation id must filter on the caller's
+  // active org_id. Without this, a user who switches workspaces retains
+  // access to conversations they created in a previous org. The NULL-safe
+  // form `(org_id = $N OR org_id IS NULL)` preserves access to legacy rows
+  // written before the column was stamped.
+  //
+  // Each test sets up an empty result set (the DB would reject the row for
+  // org mismatch) and asserts two things:
+  //   1. the SQL contains the org_id filter,
+  //   2. the orgId param is forwarded to the query.
+
+  describe("cross-org scoping (F-11)", () => {
+    it("getConversation scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await getConversation("c1", "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("user_id = $2");
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["c1", "u1", "org-B"]);
+    });
+
+    it("getConversation does not add org_id filter when orgId is undefined", async () => {
+      enableInternalDB();
+      setResults({ rows: [] }, { rows: [] });
+
+      await getConversation("c1", "u1");
+      expect(queryCalls[0].sql).not.toContain("org_id");
+    });
+
+    it("deleteConversation scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await deleteConversation("c1", "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["c1", "u1", "org-B"]);
+    });
+
+    it("starConversation scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await starConversation("c1", true, "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual([true, "c1", "u1", "org-B"]);
+    });
+
+    it("updateNotebookState scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await updateNotebookState("c1", { version: 3 }, "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
+      expect(queryCalls[0].params?.[2]).toBe("u1");
+      expect(queryCalls[0].params?.[3]).toBe("org-B");
+    });
+
+    it("shareConversation scopes the preflight SELECT by orgId (shareMode='org')", async () => {
+      enableInternalDB();
+      // Preflight sees no matching row because of cross-org filter.
+      setResults({ rows: [] });
+
+      const result = await shareConversation("c1", "u1", {
+        orgId: "org-B",
+        shareMode: "org",
+      });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("SELECT org_id FROM conversations");
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["c1", "u1", "org-B"]);
+    });
+
+    it("shareConversation scopes the UPDATE by orgId (public shareMode)", async () => {
+      enableInternalDB();
+      // No preflight for public shares — UPDATE runs directly.
+      setResults({ rows: [] });
+
+      const result = await shareConversation("c1", "u1", { orgId: "org-B" });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("UPDATE conversations");
+      expect(queryCalls[0].sql).toContain("(org_id = $6 OR org_id IS NULL)");
+      // params = [token, expiresAt, shareMode, id, userId, orgId]
+      expect(queryCalls[0].params?.[3]).toBe("c1");
+      expect(queryCalls[0].params?.[4]).toBe("u1");
+      expect(queryCalls[0].params?.[5]).toBe("org-B");
+    });
+
+    it("unshareConversation scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await unshareConversation("c1", "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["c1", "u1", "org-B"]);
+    });
+
+    it("getShareStatus scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await getShareStatus("c1", "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["c1", "u1", "org-B"]);
+    });
+
+    it("deleteBranch scopes the root lookup by orgId", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await deleteBranch({
+        rootId: "r1",
+        branchId: "b1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("SELECT id, notebook_state");
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["r1", "u1", "org-B"]);
+    });
+
+    it("renameBranch scopes the root lookup by orgId", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await renameBranch({
+        rootId: "r1",
+        branchId: "b1",
+        label: "New",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["r1", "u1", "org-B"]);
+    });
+
+    it("forkConversation scopes the source lookup by orgId", async () => {
+      enableInternalDB();
+      // Source row lookup returns empty because org filter rejects cross-org row.
+      setResults({ rows: [] });
+
+      const result = await forkConversation({
+        sourceId: "src-c1",
+        forkPointMessageId: "m1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, org_id");
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
+    });
+
+    it("convertToNotebook scopes the source lookup by orgId", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await convertToNotebook({
+        sourceId: "src-c1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, org_id");
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
+    });
+
+    it("org_id IS NULL branch allows access to legacy rows (self-hosted back-compat)", async () => {
+      enableInternalDB();
+      // Row has NULL org_id (pre-1.2.0 legacy) but matches on user_id.
+      setResults(
+        {
+          rows: [{
+            id: "legacy-c1",
+            user_id: "u1",
+            title: "Legacy",
+            surface: "web",
+            connection_id: null,
+            starred: false,
+            notebook_state: null,
+            created_at: "2024-01-01T00:00:00Z",
+            updated_at: "2024-01-01T00:00:00Z",
+          }],
+        },
+        { rows: [] },
+      );
+
+      const result = await getConversation("legacy-c1", "u1", "org-B");
+      // Legacy row has NULL org_id — the OR clause allows the match.
+      expect(result.ok).toBe(true);
+    });
+
+    it("legacy-row back-compat covers mutation path (deleteConversation)", async () => {
+      // Regression guard: a helper that inlined scopeClause but dropped
+      // `OR org_id IS NULL` would leave self-hosted / pre-1.2.0 users
+      // unable to delete their legacy conversations. This test pins the
+      // NULL-safe branch for a representative mutation helper.
+      enableInternalDB();
+      setResults({ rows: [{ id: "legacy-c1" }] });
+
+      const result = await deleteConversation("legacy-c1", "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
     });
   });
 });

@@ -62,6 +62,10 @@ const mockUnshareConversation = mock((): Promise<CrudResult> => Promise.resolve(
 const mockGetShareStatus = mock((): Promise<CrudDataResult<import("@atlas/api/lib/conversations").ShareStatusData>> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetSharedConversation = mock((): Promise<import("@atlas/api/lib/conversations").SharedConversationResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockConvertToNotebook = mock((): Promise<CrudDataResult<{ id: string; messageCount: number }>> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockUpdateNotebookState = mock((): Promise<CrudResult> => Promise.resolve({ ok: true }));
+const mockForkConversation = mock((): Promise<CrudDataResult<{ id: string; messageCount: number }>> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockDeleteBranch = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockRenameBranch = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 
 mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mockListConversations,
@@ -77,11 +81,11 @@ mock.module("@atlas/api/lib/conversations", () => ({
   addMessage: mockAddMessage,
   generateTitle: mockGenerateTitle,
   persistAssistantSteps: mock(() => {}),
-  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
-  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  updateNotebookState: mockUpdateNotebookState,
+  forkConversation: mockForkConversation,
   convertToNotebook: mockConvertToNotebook,
-  deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  deleteBranch: mockDeleteBranch,
+  renameBranch: mockRenameBranch,
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)
 }));
 
@@ -124,6 +128,15 @@ mock.module("@atlas/api/lib/startup", () => ({
   getStartupWarnings: () => [],
 }));
 
+// EE IP-allowlist middleware is triggered whenever the auth mock sets
+// `activeOrganizationId`. Stub it with `{ allowed: true }` so tests can
+// assert the user + orgId are forwarded to lib helpers without hitting a
+// real postgres. The same stub unblocks F-11 route-layer assertions.
+import { Effect as _EffectForAllowlistMock } from "effect";
+mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+  checkIPAllowlist: () => _EffectForAllowlistMock.succeed({ allowed: true as const }),
+}));
+
 // Import after mocks
 const { app } = await import("../index");
 
@@ -140,7 +153,12 @@ describe("conversations routes", () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true as const,
       mode: "simple-key" as const,
-      user: { id: "u1", label: "test@test.com", mode: "simple-key" as const },
+      user: {
+        id: "u1",
+        label: "test@test.com",
+        mode: "simple-key" as const,
+        activeOrganizationId: "org-u1",
+      },
     });
     mockCheckRateLimit.mockReset();
     mockCheckRateLimit.mockReturnValue({ allowed: true });
@@ -164,6 +182,14 @@ describe("conversations routes", () => {
     mockGetSharedConversation.mockResolvedValue({ ok: false, reason: "not_found" });
     mockConvertToNotebook.mockReset();
     mockConvertToNotebook.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockUpdateNotebookState.mockReset();
+    mockUpdateNotebookState.mockResolvedValue({ ok: true });
+    mockForkConversation.mockReset();
+    mockForkConversation.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockDeleteBranch.mockReset();
+    mockDeleteBranch.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockRenameBranch.mockReset();
+    mockRenameBranch.mockResolvedValue({ ok: false, reason: "not_found" });
   });
 
   afterEach(() => {
@@ -325,15 +351,16 @@ describe("conversations routes", () => {
       expect(response.status).toBe(404);
     });
 
-    it("passes userId for auth scoping", async () => {
+    it("passes userId + orgId for auth scoping", async () => {
       mockGetConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
 
       await app.fetch(
         new Request(`http://localhost/api/v1/conversations/${VALID_ID}`),
       );
-      const call = mockGetConversation.mock.calls[0] as unknown as [string, string | undefined];
+      const call = mockGetConversation.mock.calls[0] as unknown as [string, string | undefined, string | undefined];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe("u1");
+      expect(call[2]).toBe("org-u1");
     });
 
     it("returns 400 for invalid conversation ID format", async () => {
@@ -399,7 +426,7 @@ describe("conversations routes", () => {
       expect(response.status).toBe(404);
     });
 
-    it("passes userId for auth scoping", async () => {
+    it("passes userId + orgId for auth scoping", async () => {
       mockDeleteConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
 
       await app.fetch(
@@ -407,9 +434,10 @@ describe("conversations routes", () => {
           method: "DELETE",
         }),
       );
-      const call = mockDeleteConversation.mock.calls[0] as unknown as [string, string | undefined];
+      const call = mockDeleteConversation.mock.calls[0] as unknown as [string, string | undefined, string | undefined];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe("u1");
+      expect(call[2]).toBe("org-u1");
     });
 
     it("returns 400 for invalid conversation ID format", async () => {
@@ -574,7 +602,7 @@ describe("conversations routes", () => {
       expect(response.status).toBe(404);
     });
 
-    it("passes userId for auth scoping", async () => {
+    it("passes userId + orgId for auth scoping", async () => {
       mockStarConversation.mockResolvedValueOnce({ ok: true });
 
       await app.fetch(
@@ -584,10 +612,11 @@ describe("conversations routes", () => {
           body: JSON.stringify({ starred: true }),
         }),
       );
-      const call = mockStarConversation.mock.calls[0] as unknown as [string, boolean, string | undefined];
+      const call = mockStarConversation.mock.calls[0] as unknown as [string, boolean, string | undefined, string | undefined];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe(true);
       expect(call[2]).toBe("u1");
+      expect(call[3]).toBe("org-u1");
     });
   });
 
@@ -649,7 +678,7 @@ describe("conversations routes", () => {
       expect(response.status).toBe(400);
     });
 
-    it("passes userId for auth scoping", async () => {
+    it("passes userId + orgId for auth scoping", async () => {
       mockGetShareStatus.mockResolvedValueOnce({
         ok: true,
         data: { shared: false as const, token: null, expiresAt: null, shareMode: null },
@@ -658,9 +687,10 @@ describe("conversations routes", () => {
       await app.fetch(
         new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
       );
-      const call = mockGetShareStatus.mock.calls[0] as unknown as [string, string | undefined];
+      const call = mockGetShareStatus.mock.calls[0] as unknown as [string, string | undefined, string | undefined];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe("u1");
+      expect(call[2]).toBe("org-u1");
     });
 
     it("returns 404 when no internal DB", async () => {
@@ -733,8 +763,8 @@ describe("conversations routes", () => {
         }),
       );
       expect(response.status).toBe(200);
-      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined, { expiresIn?: string; shareMode?: string }];
-      expect(call[2]).toEqual({ expiresIn: "7d", shareMode: "org" });
+      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined, { orgId?: string | null; expiresIn?: string; shareMode?: string }];
+      expect(call[2]).toEqual({ orgId: "org-u1", expiresIn: "7d", shareMode: "org" });
     });
 
     it("returns 404 when conversation not found", async () => {
@@ -757,7 +787,7 @@ describe("conversations routes", () => {
       expect(response.status).toBe(400);
     });
 
-    it("passes userId for auth scoping", async () => {
+    it("passes userId + orgId for auth scoping", async () => {
       mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "tok", expiresAt: null, shareMode: "public" } });
 
       await app.fetch(
@@ -765,9 +795,11 @@ describe("conversations routes", () => {
           method: "POST",
         }),
       );
-      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined, unknown];
+      // shareConversation stores orgId inside opts rather than as a positional arg.
+      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined, { orgId?: string | null }];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe("u1");
+      expect(call[2]?.orgId).toBe("org-u1");
     });
 
     it("returns 404 when no internal DB", async () => {
@@ -896,7 +928,7 @@ describe("conversations routes", () => {
       expect(response.status).toBe(400);
     });
 
-    it("passes userId for auth scoping", async () => {
+    it("passes userId + orgId for auth scoping", async () => {
       mockUnshareConversation.mockResolvedValueOnce({ ok: true });
 
       await app.fetch(
@@ -904,9 +936,10 @@ describe("conversations routes", () => {
           method: "DELETE",
         }),
       );
-      const call = mockUnshareConversation.mock.calls[0] as unknown as [string, string | undefined];
+      const call = mockUnshareConversation.mock.calls[0] as unknown as [string, string | undefined, string | undefined];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe("u1");
+      expect(call[2]).toBe("org-u1");
     });
 
     it("returns 500 on database error", async () => {
@@ -1419,9 +1452,98 @@ describe("conversations routes", () => {
         }),
       );
 
-      // simple-key auth has no activeOrganizationId, so orgId is undefined
       expect(mockConvertToNotebook).toHaveBeenCalledWith(
-        expect.objectContaining({ sourceId: VALID_ID, userId: "u1", orgId: undefined }),
+        expect.objectContaining({ sourceId: VALID_ID, userId: "u1", orgId: "org-u1" }),
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Route-layer orgId scoping (F-11) — regression guard for the 5 routes
+  // below which previously had no route test. A refactor that drops
+  // `user?.activeOrganizationId` at any call site silently regresses the
+  // security invariant; these tests catch it.
+  // -----------------------------------------------------------------------
+
+  describe("route-layer orgId scoping (F-11)", () => {
+    it("PATCH /:id/notebook-state forwards orgId", async () => {
+      mockUpdateNotebookState.mockResolvedValueOnce({ ok: true });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/notebook-state`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: 3 }),
+        }),
+      );
+      const call = mockUpdateNotebookState.mock.calls[0] as unknown as [string, unknown, string | undefined, string | undefined];
+      expect(call[0]).toBe(VALID_ID);
+      expect(call[2]).toBe("u1");
+      expect(call[3]).toBe("org-u1");
+    });
+
+    it("POST /:id/fork forwards orgId via opts", async () => {
+      // Fork returns a new conversation id for the source update paths to proceed.
+      mockForkConversation.mockResolvedValueOnce({
+        ok: true,
+        data: { id: "b1b2c3d4-e5f6-7890-abcd-ef1234567890", messageCount: 1 },
+      });
+      // The fork handler also re-reads the source conversation for branch metadata.
+      mockGetConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: null,
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          notebookState: null,
+          createdAt: "2024-01-01T00:00:00Z",
+          updatedAt: "2024-01-01T00:00:00Z",
+          messages: [],
+        },
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/fork`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ forkPointMessageId: "m1" }),
+        }),
+      );
+      expect(mockForkConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceId: VALID_ID, userId: "u1", orgId: "org-u1" }),
+      );
+    });
+
+    it("DELETE /:id/branches/:branchId forwards orgId via opts", async () => {
+      mockDeleteBranch.mockResolvedValueOnce({ ok: true });
+      const BRANCH_ID = "b1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/branches/${BRANCH_ID}`, {
+          method: "DELETE",
+        }),
+      );
+      expect(mockDeleteBranch).toHaveBeenCalledWith(
+        expect.objectContaining({ rootId: VALID_ID, branchId: BRANCH_ID, userId: "u1", orgId: "org-u1" }),
+      );
+    });
+
+    it("PATCH /:id/branches/:branchId forwards orgId via opts", async () => {
+      mockRenameBranch.mockResolvedValueOnce({ ok: true });
+      const BRANCH_ID = "b1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/branches/${BRANCH_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label: "renamed" }),
+        }),
+      );
+      expect(mockRenameBranch).toHaveBeenCalledWith(
+        expect.objectContaining({ rootId: VALID_ID, branchId: BRANCH_ID, label: "renamed", userId: "u1", orgId: "org-u1" }),
       );
     });
   });

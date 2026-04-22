@@ -29,6 +29,49 @@ function toISOTimestamp(value: unknown): string {
   return String(value);
 }
 
+/**
+ * Build a parameterized WHERE-suffix that scopes a conversation query to the
+ * caller's auth context.
+ *
+ * - `user_id = $N` when a userId is provided.
+ * - `(org_id = $N OR org_id IS NULL)` when an orgId is provided. The NULL
+ *   branch preserves access to rows written before `org_id` was stamped
+ *   (self-hosted / legacy conversations) — matches the back-compat convention
+ *   established for bulk actions in `tools/actions/bulk.ts`.
+ *
+ * Note: `listConversations` below uses a stricter `org_id = $N` (no NULL
+ * fallback) for the list view — legacy rows stay reachable by direct id but
+ * are filtered out of workspace-scoped lists. Divergence is intentional.
+ *
+ * @security Every CRUD helper in this file takes `orgId` as an optional
+ * trailing param. Routes that serve authenticated users **must** forward
+ * `user?.activeOrganizationId` — omitting it silently drops the workspace
+ * scope filter. Route-layer tests in `packages/api/src/api/__tests__/`
+ * assert orgId is threaded through at every call site (F-11, 1.2.3).
+ */
+function scopeClause(
+  startIdx: number,
+  userId?: string | null,
+  orgId?: string | null,
+): { sql: string; params: unknown[]; nextIdx: number } {
+  const parts: string[] = [];
+  const params: unknown[] = [];
+  let idx = startIdx;
+  if (userId) {
+    parts.push(`user_id = $${idx++}`);
+    params.push(userId);
+  }
+  if (orgId) {
+    parts.push(`(org_id = $${idx++} OR org_id IS NULL)`);
+    params.push(orgId);
+  }
+  return {
+    sql: parts.length > 0 ? ` AND ${parts.join(" AND ")}` : "",
+    params,
+    nextIdx: idx,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -201,24 +244,25 @@ export function addMessage(opts: {
   );
 }
 
-/** Fetches a conversation with its messages. When userId is provided, enforces ownership (AND user_id = $2); when omitted, fetches without ownership check. */
+/**
+ * Fetches a conversation with its messages. Scope filters are composed via
+ * `scopeClause()` — `userId` enforces ownership, `orgId` restricts access to
+ * the caller's active workspace (or legacy rows with NULL org_id). Omitting
+ * both fetches without scoping.
+ */
 export async function getConversation(
   id: string,
   userId?: string | null,
+  orgId?: string | null,
 ): Promise<CrudDataResult<ConversationWithMessages>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const convRows = userId
-      ? await internalQuery<Record<string, unknown>>(
-          `SELECT id, user_id, title, surface, connection_id, starred, notebook_state, created_at, updated_at
-           FROM conversations WHERE id = $1 AND user_id = $2`,
-          [id, userId],
-        )
-      : await internalQuery<Record<string, unknown>>(
-          `SELECT id, user_id, title, surface, connection_id, starred, notebook_state, created_at, updated_at
-           FROM conversations WHERE id = $1`,
-          [id],
-        );
+    const scope = scopeClause(2, userId, orgId);
+    const convRows = await internalQuery<Record<string, unknown>>(
+      `SELECT id, user_id, title, surface, connection_id, starred, notebook_state, created_at, updated_at
+       FROM conversations WHERE id = $1${scope.sql}`,
+      [id, ...scope.params],
+    );
 
     if (convRows.length === 0) return { ok: false, reason: "not_found" };
 
@@ -305,25 +349,21 @@ export async function listConversations(opts?: {
   }
 }
 
-/** Set the starred flag on a conversation. Auth-scoped when userId is provided. */
+/** Set the starred flag on a conversation. Scoped via userId + orgId (see `scopeClause`). */
 export async function starConversation(
   id: string,
   starred: boolean,
   userId?: string | null,
+  orgId?: string | null,
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const rows = userId
-      ? await internalQuery<{ id: string }>(
-          `UPDATE conversations SET starred = $1, updated_at = now()
-           WHERE id = $2 AND user_id = $3 RETURNING id`,
-          [starred, id, userId],
-        )
-      : await internalQuery<{ id: string }>(
-          `UPDATE conversations SET starred = $1, updated_at = now()
-           WHERE id = $2 RETURNING id`,
-          [starred, id],
-        );
+    const scope = scopeClause(3, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations SET starred = $1, updated_at = now()
+       WHERE id = $2${scope.sql} RETURNING id`,
+      [starred, id, ...scope.params],
+    );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "starConversation failed");
@@ -331,25 +371,21 @@ export async function starConversation(
   }
 }
 
-/** Update notebook state on a conversation. Auth-scoped when userId is provided. */
+/** Update notebook state on a conversation. Scoped via userId + orgId (see `scopeClause`). */
 export async function updateNotebookState(
   id: string,
   notebookState: NotebookStateWire,
   userId?: string | null,
+  orgId?: string | null,
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const rows = userId
-      ? await internalQuery<{ id: string }>(
-          `UPDATE conversations SET notebook_state = $1, updated_at = now()
-           WHERE id = $2 AND user_id = $3 RETURNING id`,
-          [JSON.stringify(notebookState), id, userId],
-        )
-      : await internalQuery<{ id: string }>(
-          `UPDATE conversations SET notebook_state = $1, updated_at = now()
-           WHERE id = $2 RETURNING id`,
-          [JSON.stringify(notebookState), id],
-        );
+    const scope = scopeClause(3, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations SET notebook_state = $1, updated_at = now()
+       WHERE id = $2${scope.sql} RETURNING id`,
+      [JSON.stringify(notebookState), id, ...scope.params],
+    );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "updateNotebookState failed");
@@ -367,16 +403,14 @@ export async function forkConversation(opts: {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   let newId: string | null = null;
   try {
-    // Verify source exists and user owns it
-    const sourceRows = opts.userId
-      ? await internalQuery<Record<string, unknown>>(
-          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1 AND user_id = $2`,
-          [opts.sourceId, opts.userId],
-        )
-      : await internalQuery<Record<string, unknown>>(
-          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1`,
-          [opts.sourceId],
-        );
+    // Verify source exists and caller has access in both the user + org dimensions.
+    // orgId from opts is the caller's *active* org — may or may not match the
+    // source row's org_id; scopeClause rejects mismatches (NULL-safe for legacy rows).
+    const sourceScope = scopeClause(2, opts.userId, opts.orgId);
+    const sourceRows = await internalQuery<Record<string, unknown>>(
+      `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      [opts.sourceId, ...sourceScope.params],
+    );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
 
     const source = sourceRows[0];
@@ -456,19 +490,16 @@ export async function deleteBranch(opts: {
   rootId: string;
   branchId: string;
   userId?: string | null;
+  orgId?: string | null;
 }): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    // Read root conversation's notebook_state
-    const rootRows = opts.userId
-      ? await internalQuery<Record<string, unknown>>(
-          `SELECT id, notebook_state FROM conversations WHERE id = $1 AND user_id = $2`,
-          [opts.rootId, opts.userId],
-        )
-      : await internalQuery<Record<string, unknown>>(
-          `SELECT id, notebook_state FROM conversations WHERE id = $1`,
-          [opts.rootId],
-        );
+    // Read root conversation's notebook_state — scoped to caller's auth context.
+    const rootScope = scopeClause(2, opts.userId, opts.orgId);
+    const rootRows = await internalQuery<Record<string, unknown>>(
+      `SELECT id, notebook_state FROM conversations WHERE id = $1${rootScope.sql}`,
+      [opts.rootId, ...rootScope.params],
+    );
     if (rootRows.length === 0) return { ok: false, reason: "not_found" };
 
     const state = (rootRows[0].notebook_state ?? {}) as NotebookStateWire;
@@ -483,16 +514,12 @@ export async function deleteBranch(opts: {
       branches: updatedBranches.length > 0 ? updatedBranches : undefined,
     };
 
-    // Delete the branch conversation (CASCADE deletes messages)
-    const delRows = opts.userId
-      ? await internalQuery<{ id: string }>(
-          `DELETE FROM conversations WHERE id = $1 AND user_id = $2 RETURNING id`,
-          [opts.branchId, opts.userId],
-        )
-      : await internalQuery<{ id: string }>(
-          `DELETE FROM conversations WHERE id = $1 RETURNING id`,
-          [opts.branchId],
-        );
+    // Delete the branch conversation (CASCADE deletes messages) — scoped to the same auth context.
+    const branchScope = scopeClause(2, opts.userId, opts.orgId);
+    const delRows = await internalQuery<{ id: string }>(
+      `DELETE FROM conversations WHERE id = $1${branchScope.sql} RETURNING id`,
+      [opts.branchId, ...branchScope.params],
+    );
     if (delRows.length === 0) {
       log.warn({ rootId: opts.rootId, branchId: opts.branchId }, "Branch conversation not found during delete — removing from root state anyway");
     }
@@ -517,19 +544,16 @@ export async function renameBranch(opts: {
   branchId: string;
   label: string;
   userId?: string | null;
+  orgId?: string | null;
 }): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    // Read root conversation's notebook_state
-    const rootRows = opts.userId
-      ? await internalQuery<Record<string, unknown>>(
-          `SELECT id, notebook_state FROM conversations WHERE id = $1 AND user_id = $2`,
-          [opts.rootId, opts.userId],
-        )
-      : await internalQuery<Record<string, unknown>>(
-          `SELECT id, notebook_state FROM conversations WHERE id = $1`,
-          [opts.rootId],
-        );
+    // Read root conversation's notebook_state — scoped to caller's auth context.
+    const scope = scopeClause(2, opts.userId, opts.orgId);
+    const rootRows = await internalQuery<Record<string, unknown>>(
+      `SELECT id, notebook_state FROM conversations WHERE id = $1${scope.sql}`,
+      [opts.rootId, ...scope.params],
+    );
     if (rootRows.length === 0) return { ok: false, reason: "not_found" };
 
     const state = (rootRows[0].notebook_state ?? {}) as NotebookStateWire;
@@ -565,16 +589,12 @@ export async function convertToNotebook(opts: {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   let newId: string | null = null;
   try {
-    // Verify source exists and user owns it
-    const sourceRows = opts.userId
-      ? await internalQuery<Record<string, unknown>>(
-          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1 AND user_id = $2`,
-          [opts.sourceId, opts.userId],
-        )
-      : await internalQuery<Record<string, unknown>>(
-          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1`,
-          [opts.sourceId],
-        );
+    // Verify source exists and caller has access in both the user + org dimensions.
+    const sourceScope = scopeClause(2, opts.userId, opts.orgId);
+    const sourceRows = await internalQuery<Record<string, unknown>>(
+      `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      [opts.sourceId, ...sourceScope.params],
+    );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
 
     const source = sourceRows[0];
@@ -626,22 +646,19 @@ export async function convertToNotebook(opts: {
   }
 }
 
-/** Delete a conversation (CASCADE deletes messages). Auth-scoped when userId is provided. */
+/** Delete a conversation (CASCADE deletes messages). Scoped via userId + orgId (see `scopeClause`). */
 export async function deleteConversation(
   id: string,
   userId?: string | null,
+  orgId?: string | null,
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const rows = userId
-      ? await internalQuery<{ id: string }>(
-          `DELETE FROM conversations WHERE id = $1 AND user_id = $2 RETURNING id`,
-          [id, userId],
-        )
-      : await internalQuery<{ id: string }>(
-          `DELETE FROM conversations WHERE id = $1 RETURNING id`,
-          [id],
-        );
+    const scope = scopeClause(2, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `DELETE FROM conversations WHERE id = $1${scope.sql} RETURNING id`,
+      [id, ...scope.params],
+    );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "deleteConversation failed");
@@ -687,27 +704,24 @@ export type ShareConversationResult =
 export async function shareConversation(
   id: string,
   userId?: string | null,
-  opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode },
+  opts?: { orgId?: string | null; expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode },
 ): Promise<ShareConversationResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const token = generateShareToken();
     const expiresAt = computeExpiresAt(opts?.expiresIn);
     const shareMode: ShareMode = opts?.shareMode ?? "public";
+    const orgId = opts?.orgId;
 
     // Belt-and-suspenders for the DB CHECK (#1737): if the caller asks for
     // org-scoped sharing, the target conversation must already have an
     // org_id, otherwise the share is meaningless and opens F-01.
     if (shareMode === "org") {
-      const orgRows = userId
-        ? await internalQuery<{ org_id: string | null }>(
-            `SELECT org_id FROM conversations WHERE id = $1 AND user_id = $2`,
-            [id, userId],
-          )
-        : await internalQuery<{ org_id: string | null }>(
-            `SELECT org_id FROM conversations WHERE id = $1`,
-            [id],
-          );
+      const preflightScope = scopeClause(2, userId, orgId);
+      const orgRows = await internalQuery<{ org_id: string | null }>(
+        `SELECT org_id FROM conversations WHERE id = $1${preflightScope.sql}`,
+        [id, ...preflightScope.params],
+      );
       if (orgRows.length === 0) return { ok: false, reason: "not_found" };
       if (!orgRows[0].org_id) {
         log.warn(
@@ -718,17 +732,12 @@ export async function shareConversation(
       }
     }
 
-    const rows = userId
-      ? await internalQuery<{ share_token: string }>(
-          `UPDATE conversations SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
-           WHERE id = $4 AND user_id = $5 RETURNING share_token`,
-          [token, expiresAt, shareMode, id, userId],
-        )
-      : await internalQuery<{ share_token: string }>(
-          `UPDATE conversations SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
-           WHERE id = $4 RETURNING share_token`,
-          [token, expiresAt, shareMode, id],
-        );
+    const scope = scopeClause(5, userId, orgId);
+    const rows = await internalQuery<{ share_token: string }>(
+      `UPDATE conversations SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
+       WHERE id = $4${scope.sql} RETURNING share_token`,
+      [token, expiresAt, shareMode, id, ...scope.params],
+    );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     return { ok: true, data: { token: rows[0].share_token, expiresAt, shareMode } };
   } catch (err) {
@@ -737,24 +746,20 @@ export async function shareConversation(
   }
 }
 
-/** Revoke sharing for a conversation. Auth-scoped when userId is provided. */
+/** Revoke sharing for a conversation. Scoped via userId + orgId (see `scopeClause`). */
 export async function unshareConversation(
   id: string,
   userId?: string | null,
+  orgId?: string | null,
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const rows = userId
-      ? await internalQuery<{ id: string }>(
-          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, share_mode = 'public', updated_at = now()
-           WHERE id = $1 AND user_id = $2 RETURNING id`,
-          [id, userId],
-        )
-      : await internalQuery<{ id: string }>(
-          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, share_mode = 'public', updated_at = now()
-           WHERE id = $1 RETURNING id`,
-          [id],
-        );
+    const scope = scopeClause(2, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, share_mode = 'public', updated_at = now()
+       WHERE id = $1${scope.sql} RETURNING id`,
+      [id, ...scope.params],
+    );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "unshareConversation failed");
@@ -767,22 +772,19 @@ export type ShareStatusData =
   | { shared: false; token: null; expiresAt: null; shareMode: null }
   | { shared: true; token: string; expiresAt: string | null; shareMode: ShareMode };
 
-/** Fetch the share status of a conversation. Auth-scoped when userId is provided. Expired tokens are treated as not shared. */
+/** Fetch the share status of a conversation. Scoped via userId + orgId (see `scopeClause`). Expired tokens are treated as not shared. */
 export async function getShareStatus(
   id: string,
   userId?: string | null,
+  orgId?: string | null,
 ): Promise<CrudDataResult<ShareStatusData>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const rows = userId
-      ? await internalQuery<Record<string, unknown>>(
-          `SELECT share_token, share_expires_at, share_mode FROM conversations WHERE id = $1 AND user_id = $2`,
-          [id, userId],
-        )
-      : await internalQuery<Record<string, unknown>>(
-          `SELECT share_token, share_expires_at, share_mode FROM conversations WHERE id = $1`,
-          [id],
-        );
+    const scope = scopeClause(2, userId, orgId);
+    const rows = await internalQuery<Record<string, unknown>>(
+      `SELECT share_token, share_expires_at, share_mode FROM conversations WHERE id = $1${scope.sql}`,
+      [id, ...scope.params],
+    );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     const token = (rows[0].share_token as string) ?? null;
     const expiresAt = token && rows[0].share_expires_at ? String(rows[0].share_expires_at) : null;

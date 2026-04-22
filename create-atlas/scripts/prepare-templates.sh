@@ -11,6 +11,7 @@ MONOREPO="$ROOT/.."            # repo root
 
 TEMPLATES="$ROOT/templates"
 CLI_BIN="$MONOREPO/packages/cli/bin"
+CLI_LIB="$MONOREPO/packages/cli/lib"
 CLI_DATA="$MONOREPO/packages/cli/data"
 API_SRC="$MONOREPO/packages/api/src"
 WEB_SRC="$MONOREPO/packages/web/src"
@@ -31,14 +32,18 @@ for seed in simple cybersec ecommerce; do
 done
 
 # ── Step 1: Copy shared assets into ALL templates ─────────────────────
-# Every template gets: cli/bin, cli/data (seeds + init SQL), and docs/deploy.md
+# Every template gets: cli/bin, cli/lib, cli/data (seeds + init SQL), and docs/deploy.md
+# bin/atlas.ts imports from "../lib/help"; without lib/ the scaffolded
+# `bun run atlas` exits with "Cannot find module" at scaffold smoke-test time.
 for tpl in docker nextjs-standalone; do
   echo ":: Syncing shared assets → $tpl"
   rm -rf "$TEMPLATES/$tpl/bin" \
+         "$TEMPLATES/$tpl/lib" \
          "$TEMPLATES/$tpl/data" \
          "$TEMPLATES/$tpl/docs"
 
   cp -r "$CLI_BIN"      "$TEMPLATES/$tpl/bin"
+  cp -r "$CLI_LIB"      "$TEMPLATES/$tpl/lib"
   # Copy seed data (structured layout + backward-compat symlinks)
   mkdir -p "$TEMPLATES/$tpl/data/seeds"
   cp -r "$CLI_DATA"/seeds/* "$TEMPLATES/$tpl/data/seeds/"

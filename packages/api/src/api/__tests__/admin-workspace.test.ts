@@ -22,8 +22,9 @@ import {
 
 // --- Mocks (before any import that touches the modules) ---
 
-// Platform admin — admin-orgs.ts was tightened to createPlatformRouter()
-// after F-08 (#1750); workspace-level lifecycle management is platform-only.
+// These lifecycle routes are platform-admin-only; workspace admins/owners
+// are rejected at the auth gate. See `.claude/research/security-audit-1-2-3.md`
+// for rationale.
 const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
   () =>
     Promise.resolve({

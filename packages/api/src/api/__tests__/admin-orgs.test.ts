@@ -1,15 +1,13 @@
 /**
- * Tests for /api/v1/admin/organizations/** — F-08 regression (#1750).
+ * Tests for /api/v1/admin/organizations/** — the subtree provides cross-tenant
+ * workspace lifecycle CRUD (list / get / stats / status / suspend / activate /
+ * plan / delete) and is platform-admin-only.
  *
- * `admin-orgs.ts` provides cross-tenant CRUD for every workspace: list, read,
- * stats, suspend, activate, plan-change, and cascading soft-delete. It
- * previously used `createAdminRouter()` without `requireOrgContext()`, so any
- * workspace admin on the platform could CRUD any other workspace by path id.
- * The fix swapped it to `createPlatformRouter()`, restricting the subtree to
- * `platform_admin` callers.
+ * These tests parametrize over every route so adding a new endpoint to the
+ * router without a platform gate would surface here immediately.
  *
- * These tests parametrize over every affected route so adding a new endpoint
- * to the router without a platform gate would surface here immediately.
+ * F-08 (#1750): pre-fix, the subtree was mounted on createAdminRouter(),
+ * letting any workspace admin CRUD any workspace by id.
  */
 
 import {
@@ -146,8 +144,7 @@ describe("/api/v1/admin/organizations/** — F-08 platform-admin gate (#1750)", 
 
   describe("workspace owner (role: owner) is rejected", () => {
     // Owner is still a workspace-scoped role — must not be able to reach
-    // platform-admin endpoints. Covers the pre-fix gap where `adminAuth`
-    // accepted admin/owner alike and both leaked into cross-tenant CRUD.
+    // platform-admin endpoints.
     for (const route of ROUTES) {
       it(`${route.method} ${route.path} → 403 forbidden_role`, async () => {
         setWorkspaceOwner("org-1");
@@ -182,6 +179,11 @@ describe("/api/v1/admin/organizations/** — F-08 platform-admin gate (#1750)", 
         // gate"; behavioural correctness of each handler is covered
         // elsewhere.
         expect(res.status).not.toBe(403);
+        // Hono's default notFound returns text/plain — asserting JSON proves
+        // the handler, not a routing miss, produced the response. Without
+        // this a typo in ROUTES would let the "not 403" assertion pass
+        // vacuously on 404 text.
+        expect(res.headers.get("content-type") ?? "").toContain("application/json");
         if (res.status >= 400) {
           const body = (await res.json()) as { error?: string };
           expect(body.error).not.toBe("forbidden_role");
@@ -198,6 +200,26 @@ describe("/api/v1/admin/organizations/** — F-08 platform-admin gate (#1750)", 
       expect(body.organizations).toEqual([]);
       expect(body.total).toBe(0);
     });
+  });
+
+  describe("self-hosted (mode: none) bypasses the platform gate", () => {
+    // platformAdminAuth has a documented carve-out: when authResult.mode is
+    // "none" (self-hosted / local dev with no auth configured), the caller
+    // is treated as an implicit admin regardless of role. This is
+    // load-bearing for self-hosted deploys — removing the carve-out would
+    // break every self-hosted installation's access to org lifecycle
+    // routes. Lock it in so a future "tighten the gate" refactor surfaces
+    // the self-hosted implication.
+    for (const route of ROUTES) {
+      it(`${route.method} ${route.path} → not 403 when mode="none"`, async () => {
+        mocks.mockAuthenticateRequest.mockResolvedValue({
+          authenticated: true,
+          mode: "none",
+        });
+        const res = await app.fetch(orgsRequest(route.method, route.path, route.body));
+        expect(res.status).not.toBe(403);
+      });
+    }
   });
 
   describe("unauthenticated requests are rejected", () => {

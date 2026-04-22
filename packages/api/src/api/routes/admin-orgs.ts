@@ -1,8 +1,9 @@
 /**
  * Admin organization management routes.
  *
- * Mounted under /api/v1/admin/organizations. All routes require admin role.
- * Provides CRUD for organizations and their members (platform admin view).
+ * Mounted under /api/v1/admin/organizations. Platform-admin only (see
+ * createPlatformRouter). Provides cross-tenant workspace lifecycle CRUD —
+ * list, get, stats, status, suspend/activate, plan tier, soft-delete.
  */
 
 import { Effect } from "effect";

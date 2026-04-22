@@ -1411,7 +1411,7 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 Full security audit with in-milestone remediation. Audit-and-fix shape: P0/P1/P2 findings fixed in-milestone, P3s punted to a cleanup tail. Findings captured in `.claude/research/security-audit-1-2-3.md`. Tracking issue #1718. Ships before 1.3.0.
 
 - [x] Phase 1 — Audit Better Auth config + middleware coverage (#1720, PR #1734). All P0/P1/P2 findings fixed: F-01 → PR #1738 (+ #1742 for dashboards twin #1736, + #1749 for DB invariant #1737 which also revokes drifted share_tokens); F-02 → PR #1735; F-03 → PR #1744; F-04 → PR #1748; F-05 bundled into F-06; F-06 → PR #1739; F-07 → PR #1747
-- [ ] Phase 2 — Audit org-scoping on every route + ContentMode consumers (#1721)
+- [x] Phase 2 audit — org-scoping on every route + ContentMode consumers (#1721, PR #1757). Findings F-08..F-16. All phase-2 P0s fixed in-milestone: F-08 `/admin/organizations/**` → PR #1762 (#1750); F-09 `/admin/abuse/**` → PR #1763 (#1751); F-10 `platform_admin` escalation via role + invite routes → PR #1758 (#1752). Infra: bun.lock / Railway watchPatterns drift addressed by PR #1759 + #1760; scaffold publish-race + missing cli/lib sync unblocked by PR #1764 (types@0.0.15 + template ref bump). Phase-2 P2s still open: F-11 #1753, F-12 #1754, F-13 #1755, F-14 #1756; share-token redaction #1743; Better Auth rate-limit integration test #1741
 - [ ] Phase 3 — Audit SQL validation edges + fuzz the 4-layer validator (#1722)
 - [ ] Phase 4 — Audit audit-log coverage on write routes (#1723)
 - [ ] Phase 5 — Audit secret/error surfaces + plugin credential storage (#1724)

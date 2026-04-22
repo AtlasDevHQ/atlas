@@ -103,6 +103,7 @@ const WorkspaceActionResponseSchema = z.object({
 const DeleteCascadeSchema = z.object({
   message: z.string(),
   cascade: z.record(z.string(), z.unknown()),
+  warnings: z.array(z.string()).optional(),
 });
 
 const WorkspaceHealthSchema = z.object({
@@ -636,6 +637,12 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     if (!workspace) return c.json({ error: "not_found", message: "Organization not found." }, 404);
     if (workspace.workspace_status === "deleted") return c.json({ error: "conflict", message: "Workspace is already deleted." }, 409);
 
+    // Asymmetry with PATCH /:id/suspend (fail-closed on drain) is intentional:
+    // delete is a one-shot destructive cascade; failing the entire operation
+    // on a transient drain error would leave the workspace in an unclear
+    // half-dirty state. Instead we surface the failure on the response and
+    // log at `error` so it's visible in Sentry rather than buried in `warn`.
+    const warnings: string[] = [];
     let poolsDrained = 0;
     if (connections.isOrgPoolingEnabled()) {
       const drainResult = yield* Effect.tryPromise({
@@ -645,7 +652,8 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
       if (drainResult._tag === "Right") {
         poolsDrained = drainResult.right.drained;
       } else {
-        log.warn({ orgId, err: drainResult.left.message }, "Failed to drain org pools during delete — continuing with cascade");
+        log.error({ orgId, requestId, err: drainResult.left.message }, "Failed to drain org pools during delete — continuing with cascade");
+        warnings.push(`pool_drain_failed: ${drainResult.left.message}`);
       }
     }
     flushCache();
@@ -659,8 +667,14 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
-    log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained }, "Workspace soft-deleted with cascading cleanup");
-    return c.json({ message: "Workspace deleted. All associated data has been cleaned up.", cascade: { poolsDrained, ...cascade } }, 200);
+    log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings }, "Workspace soft-deleted with cascading cleanup");
+    return c.json({
+      message: warnings.length > 0
+        ? "Workspace deleted, but cleanup was partial — see warnings."
+        : "Workspace deleted. All associated data has been cleaned up.",
+      cascade: { poolsDrained, ...cascade },
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }, 200);
   }), { label: "delete workspace" });
 });
 

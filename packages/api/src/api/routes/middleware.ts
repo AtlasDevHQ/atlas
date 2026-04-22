@@ -46,6 +46,24 @@ function authErrorCode(error: string): "session_expired" | "auth_error" {
   return EXPIRED_AUTH_ERRORS.has(error) ? "session_expired" : "auth_error";
 }
 
+/**
+ * Whether the current deploy mode is SaaS. Lazy-imported to avoid fighting
+ * the module graph; getConfig() is a cheap singleton read after boot and
+ * returning false if config isn't ready yet is the safe default (the gate
+ * is only *stricter* in SaaS; self-hosted behaviour is unchanged).
+ */
+function isSaasDeployMode(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getConfig } = require("@atlas/api/lib/config") as {
+      getConfig: () => { deployMode?: string } | null;
+    };
+    return getConfig()?.deployMode === "saas";
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Env type — declares context variables set by middleware
 // ---------------------------------------------------------------------------
@@ -277,7 +295,19 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   }
   const { authResult } = auth;
 
-  // Enforce platform_admin role — auth mode "none" (local dev) is an implicit admin
+  // Defense-in-depth: `mode: "none"` is the no-auth local-dev carve-out and
+  // must never reach a platform gate in SaaS. If deploy mode is saas and we
+  // somehow produced mode:"none" at the auth layer (misconfigured env,
+  // regressed detect logic), fail closed — refusing is always safer than
+  // granting implicit cross-tenant admin.
+  if (authResult.mode === "none" && isSaasDeployMode()) {
+    log.error({ requestId }, "mode:\"none\" reached platformAdminAuth under SaaS deploy — rejecting");
+    return c.json({ error: "auth_misconfigured", message: "Platform auth is not configured.", requestId }, 500);
+  }
+
+  // Enforce platform_admin role — auth mode "none" (local dev / self-hosted
+  // no-auth) is an implicit admin. The SaaS guard above prevents this branch
+  // from ever being the cross-tenant escape hatch in managed deploys.
   if (authResult.mode !== "none" && (!authResult.user || authResult.user.role !== "platform_admin")) {
     log.warn({ requestId, userId: authResult.user?.id, role: authResult.user?.role }, "Non-platform-admin access attempt");
     return c.json({ error: "forbidden_role", message: "Platform admin role required.", requestId }, 403);

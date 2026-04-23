@@ -956,9 +956,9 @@ function blocklist keyed by dialect.
 
 | ID | Severity | Type | Surface | Issue | Status |
 |---|---|---|---|---|---|
-| F-17 | P1 | Validator bypass | MySQL `/*!NNNNN */` executable comments | #1772 | Fixed in phase-3-followup PR |
-| F-18 | P2 | Validator bypass | PG `SELECT INTO` | #1773 | Fixed in phase-3-followup PR |
-| F-19 | P2 | Validator bypass | MySQL `INTO DUMPFILE` | #1774 | Fixed in phase-3-followup PR |
+| F-17 | P1 | Validator bypass | MySQL `/*!NNNNN */` executable comments | #1772 | Fixed in PR #1776 |
+| F-18 | P2 | Validator bypass | PG `SELECT INTO` | #1773 | Fixed in PR #1776 |
+| F-19 | P2 | Validator bypass | MySQL `INTO DUMPFILE` | #1774 | Fixed in PR #1776 |
 | F-20 | P3 | Normalization | Case-sensitive quoted identifier | — (stays in doc) | Deferred |
 | F-21 | P3 | Known limitation | Dangerous dialect functions | — (stays in doc) | Deferred |
 
@@ -999,7 +999,7 @@ function blocklist keyed by dialect.
   match.
 - **This audit section.**
 
-Fixes for F-17/F-18/F-19 shipped in a single follow-up PR (branch
+Fixes for F-17/F-18/F-19 shipped in PR #1776 (branch
 `security/1.2.3-phase-3-validator-fixes`, closes #1772 / #1773 / #1774)
 — intentional separation from the audit PR so findings land with dedicated
 review + regression coverage, following the phase-1/phase-2 pattern. The

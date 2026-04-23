@@ -14,6 +14,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -205,11 +206,26 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
     }
 
     const ee = yield* Effect.promise(loadEE);
+    const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
     const entry = yield* Effect.tryPromise({
       try: () => Effect.runPromise(ee.addIPAllowlistEntry(orgId!, body.cidr, body.description ?? null, user?.id ?? null)),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.catchAll((err) => {
+      // F-24: emit audit row on failure so an attacker using stolen creds
+      // cannot silently exercise the endpoint without leaving a record.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.ip_allowlist.add,
+        targetType: "ip_allowlist",
+        targetId: "unknown",
+        status: "failure",
+        ipAddress,
+        metadata: {
+          cidr: body.cidr,
+          description: body.description ?? null,
+          error: err.message,
+        },
+      });
       const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
       const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
       return Effect.succeed(c.json(
@@ -219,6 +235,19 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
     }));
 
     if (entry instanceof Response) return entry;
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.ip_allowlist.add,
+      targetType: "ip_allowlist",
+      targetId: entry.id,
+      ipAddress,
+      metadata: {
+        id: entry.id,
+        cidr: entry.cidr,
+        description: entry.description,
+      },
+    });
+
     return c.json({ entry }, 201);
   }), { label: "add IP allowlist entry" });
 });
@@ -234,11 +263,34 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
     }
 
     const ee = yield* Effect.promise(loadEE);
+    const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+
+    // F-24: fetch the CIDR before deleting so the audit row captures the
+    // actual range that was removed, not just its opaque ID. Listing is
+    // cheap (bounded per org) and the existing EE API doesn't expose a
+    // by-id getter.
+    const priorEntries = yield* Effect.tryPromise({
+      try: () => Effect.runPromise(ee.listIPAllowlistEntries(orgId!)),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll(() => Effect.succeed([] as Array<{ id: string; cidr: string }>)));
+    const priorCidr = priorEntries.find((e) => e.id === entryId)?.cidr ?? null;
 
     const deleted = yield* Effect.tryPromise({
       try: () => Effect.runPromise(ee.removeIPAllowlistEntry(orgId!, entryId)),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.catchAll((err) => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.ip_allowlist.remove,
+        targetType: "ip_allowlist",
+        targetId: entryId,
+        status: "failure",
+        ipAddress,
+        metadata: {
+          id: entryId,
+          ...(priorCidr !== null && { cidr: priorCidr }),
+          error: err.message,
+        },
+      });
       const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
       const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
       return Effect.succeed(c.json(
@@ -248,6 +300,21 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
     }));
 
     if (deleted instanceof Response) return deleted;
+
+    // Emit audit for both found and not-found cases so forensic
+    // reconstruction still sees the attempt even if the row never existed.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.ip_allowlist.remove,
+      targetType: "ip_allowlist",
+      targetId: entryId,
+      ipAddress,
+      metadata: {
+        id: entryId,
+        ...(priorCidr !== null && { cidr: priorCidr }),
+        found: Boolean(deleted),
+      },
+    });
+
     if (!deleted) {
       return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
     }

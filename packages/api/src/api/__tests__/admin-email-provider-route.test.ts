@@ -307,6 +307,7 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
+  logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: new Proxy({}, { get: () => new Proxy({}, { get: () => "noop" }) }),
   _resetAuditLog: () => {},
 }));

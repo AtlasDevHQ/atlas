@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import { logAdminAction } from "../admin";
+import { logAdminAction, logAdminActionAwait } from "../admin";
 import { ADMIN_ACTIONS } from "../actions";
 
 /**
@@ -212,5 +212,72 @@ describe("logAdminAction()", () => {
 
     expect(queryCalls).toHaveLength(1);
     expect(queryCalls[0].params![9]).toBeNull(); // ip_address
+  });
+});
+
+describe("logAdminActionAwait()", () => {
+  const origDbUrl = process.env.DATABASE_URL;
+
+  beforeEach(() => {
+    queryCalls = [];
+    queryThrow = null;
+  });
+
+  afterEach(() => {
+    if (origDbUrl) {
+      process.env.DATABASE_URL = origDbUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+    _resetPool(null);
+  });
+
+  function enableInternalDB() {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+  }
+
+  it("awaits the DB insert and resolves on success", async () => {
+    enableInternalDB();
+
+    await logAdminActionAwait({
+      actionType: ADMIN_ACTIONS.audit_retention.policyUpdate,
+      targetType: "audit_retention",
+      targetId: "org-1",
+      metadata: { retentionDays: 90 },
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    expect(queryCalls[0].sql).toContain("INSERT INTO admin_action_log");
+    expect(queryCalls[0].params![4]).toBe("audit_retention.policy_update");
+    expect(queryCalls[0].params![6]).toBe("org-1");
+  });
+
+  it("rejects when the DB insert throws — caller must surface the failure", async () => {
+    enableInternalDB();
+    queryThrow = new Error("connection lost");
+
+    await expect(
+      logAdminActionAwait({
+        actionType: ADMIN_ACTIONS.audit_retention.manualHardDelete,
+        targetType: "audit_retention",
+        targetId: "org-1",
+      }),
+    ).rejects.toThrow("connection lost");
+  });
+
+  it("resolves without inserting when no internal DB is configured", async () => {
+    delete process.env.DATABASE_URL;
+    _resetPool(null);
+
+    await expect(
+      logAdminActionAwait({
+        actionType: ADMIN_ACTIONS.audit_retention.export,
+        targetType: "audit_retention",
+        targetId: "org-1",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(queryCalls).toHaveLength(0);
   });
 });

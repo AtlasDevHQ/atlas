@@ -109,6 +109,16 @@ export const ADMIN_ACTIONS = {
     groupMappingCreate: "scim.group_mapping_create",
     groupMappingDelete: "scim.group_mapping_delete",
   },
+  /**
+   * Without these entries a compromised admin could shrink retentionDays
+   * and hard-delete the audit trail leaving zero forensic record.
+   */
+  audit_retention: {
+    policyUpdate: "audit_retention.policy_update",
+    export: "audit_retention.export",
+    manualPurge: "audit_retention.manual_purge",
+    manualHardDelete: "audit_retention.manual_hard_delete",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

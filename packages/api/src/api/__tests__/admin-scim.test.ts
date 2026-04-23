@@ -46,6 +46,7 @@ const mockLogAdminAction: Mock<(entry: Record<string, unknown>) => void> = mock(
 
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
+  logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
 }));
 

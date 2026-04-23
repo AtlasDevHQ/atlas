@@ -1071,7 +1071,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-abuse.ts` | 1 | 0 | 🟡 | Writes to `abuse_events` via lib — split trail (F-33) |
 | `admin-approval.ts` | 5 | 1 | 🟡 | Approve/deny audited; **rule CRUD + expire unaudited** (F-30) |
 | `admin-archive.ts` | 2 | 2 | ✅ | `mode.archive` / `mode.archive_reconcile` / `mode.restore` |
-| `admin-audit-retention.ts` | 4 | 0 | ❌ | **Meta-audit tamper vector** (F-26) — PUT /, POST /export, POST /purge, POST /hard-delete all silent |
+| `admin-audit-retention.ts` | 4 | 4 | ✅ | F-26 fixed (PR for #1781) — `audit_retention.policy_update` / `export` / `manual_purge` / `manual_hard_delete` emitted with success + failure paths; policy_update captures previous values |
 | `admin-branding.ts` | 2 | 0 | ❌ | PUT / DELETE (F-32) |
 | `admin-cache.ts` | 1 | 0 | ❌ | DELETE purge (F-37) |
 | `admin-compliance.ts` | 2 | 0 | ❌ | PUT retention policy + DELETE PII config (F-32) |
@@ -1550,27 +1550,27 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 
 ### Findings summary
 
-| ID | Severity | Type | Surface | Issue |
-|---|---|---|---|---|
-| F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 |
-| F-23 | P0 | Audit gap | SCIM management (`admin-scim.ts`) | #1778 |
-| F-24 | P0 | Audit gap | IP allowlist (`admin-ip-allowlist.ts`) | #1779 — **Fixed in PR #1797** |
-| F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 |
-| F-26 | P0 | Meta-audit | Audit retention config + manual purge / hard-delete / export (`admin-audit-retention.ts`) | #1781 |
-| F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 |
-| F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 |
-| F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 |
-| F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 |
-| F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 |
-| F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 |
-| F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 |
-| F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 |
-| F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 |
-| F-36 | P2 | Retention | `admin_action_log` unbounded, no purge, no GDPR erasure path | #1791 |
-| F-37 | P3 | Audit gap | Low-signal admin writes (cache / migrate / suggestions / sandbox / onboarding) | — (stays in doc) |
-| F-38 | P3 | Audit gap | OAuth-callback install path not mirrored in `admin_action_log` | — (stays in doc) |
-| F-39 | — | unused | (reserved; gap in numbering avoided) | — |
-| F-40 | P3 | Defense-in-depth | No DB-level grant revocation on `admin_action_log` | — (stays in doc) |
+| ID | Severity | Type | Surface | Issue | Status |
+|---|---|---|---|---|---|
+| F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 | open |
+| F-23 | P0 | Audit gap | SCIM management (`admin-scim.ts`) | #1778 | open |
+| F-24 | P0 | Audit gap | IP allowlist (`admin-ip-allowlist.ts`) | #1779 | fixed (PR #1797) |
+| F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 | open |
+| F-26 | P0 | Meta-audit | Audit retention config + manual purge / hard-delete / export (`admin-audit-retention.ts`) | #1781 | fixed (PR #1799) |
+| F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 | open |
+| F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | open |
+| F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 | open |
+| F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | open |
+| F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | open |
+| F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | open |
+| F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | open |
+| F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 | open |
+| F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 | open |
+| F-36 | P2 | Retention | `admin_action_log` unbounded, no purge, no GDPR erasure path | #1791 | open |
+| F-37 | P3 | Audit gap | Low-signal admin writes (cache / migrate / suggestions / sandbox / onboarding) | — (stays in doc) | deferred |
+| F-38 | P3 | Audit gap | OAuth-callback install path not mirrored in `admin_action_log` | — (stays in doc) | deferred |
+| F-39 | — | unused | (reserved; gap in numbering avoided) | — | — |
+| F-40 | P3 | Defense-in-depth | No DB-level grant revocation on `admin_action_log` | — (stays in doc) | deferred |
 
 **Totals:** P0 = 5 (F-22, F-23, F-24, F-25, F-26), P1 = 5 (F-27, F-28, F-30, F-31, F-32), P2 = 5 (F-29, F-33, F-34, F-35, F-36), P3 = 3 (F-37, F-38, F-40). No F-39 — skipped to preserve the per-finding numbering discipline from phases 1–3 after the P3 regroup.
 

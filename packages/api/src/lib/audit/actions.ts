@@ -88,6 +88,10 @@ export const ADMIN_ACTIONS = {
     approve: "approval.approve",
     deny: "approval.deny",
   },
+  ip_allowlist: {
+    add: "ip_allowlist.add",
+    remove: "ip_allowlist.remove",
+  },
   mode: {
     publish: "mode.publish",
     archive: "mode.archive",

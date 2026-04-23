@@ -1552,7 +1552,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 |---|---|---|---|---|
 | F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 |
 | F-23 | P0 | Audit gap | SCIM management (`admin-scim.ts`) | #1778 |
-| F-24 | P0 | Audit gap | IP allowlist (`admin-ip-allowlist.ts`) | #1779 |
+| F-24 | P0 | Audit gap | IP allowlist (`admin-ip-allowlist.ts`) | #1779 — **Fixed in PR #1797** |
 | F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 |
 | F-26 | P0 | Meta-audit | Audit retention config + manual purge / hard-delete / export (`admin-audit-retention.ts`) | #1781 |
 | F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 |

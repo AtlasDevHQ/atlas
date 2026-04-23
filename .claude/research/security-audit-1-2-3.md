@@ -698,3 +698,260 @@ No new consumers since 1.2.2.
 **Totals:** P0 = 3, P1 = 0, P2 = 4, P3 = 2.
 
 All P0/P1/P2 findings filed as separate issues (#1750–#1756) and shipped. Phase 2 complete.
+
+---
+
+## Phase 3 — SQL validator audit + fuzz
+
+**Status:** audit complete (2026-04-23); fixes tracked per-finding.
+**Scope:** attack the 4-layer SQL validator (`packages/api/src/lib/tools/sql.ts`)
+— regex mutation guard, AST parse + SELECT-only gate, table whitelist — plus
+the runtime guards applied in `packages/api/src/lib/db/connection.ts`
+(statement_timeout, read-only session, auto-LIMIT).
+**Issue:** #1722
+**Branch:** `security/1.2.3-phase-3-sql-validator-audit`
+
+### Methodology
+
+1. Read every layer of `validateSQL()` + the two driver factories
+   (`createPostgresDB`, `createMySQLDB`).
+2. Enumerate attack categories: mutation-keyword obfuscation, CTE/real-table
+   collisions, UNION + subquery + lateral + array-subquery edges,
+   schema-qualified + quoted-identifier whitelist collisions, LIMIT handling,
+   dialect escape hatches (PG + MySQL), comment smuggling, multi-statement
+   injection.
+3. Build concrete reproductions for each category and run them through
+   `validateSQL()` using the production mock-shape from
+   `packages/api/src/lib/tools/__tests__/sql.test.ts`.
+4. Where `validateSQL()` accepted a crafted input, classify as finding with
+   severity, fix sketch, and a separate GH issue.
+5. Encode findings + generator-based combinatorial cases in
+   `packages/api/src/lib/__tests__/sql-validator-fuzz.test.ts` (≥200 cases,
+   actual count 341 — exceeds the issue's threshold).
+6. Pin driver-layer runtime guards in
+   `packages/api/src/lib/db/__tests__/connection-runtime-guards.test.ts` so a
+   refactor that drops `SET statement_timeout` / `SET default_transaction_read_only`
+   / `SET SESSION TRANSACTION READ ONLY` / `SET SESSION MAX_EXECUTION_TIME`
+   fails CI immediately.
+
+### Layers — current behavior
+
+| Layer | File | Enforcement |
+|---|---|---|
+| 0. Empty check | `sql.ts:229-233` | Rejects empty/whitespace-only input |
+| 1. Regex mutation guard | `sql.ts:129-141, 236-249` | `INSERT\|UPDATE\|DELETE\|DROP\|CREATE\|ALTER\|TRUNCATE` + privilege/admin + `\bINTO\s+OUTFILE\b`. MySQL adds `HANDLER\|SHOW\|DESCRIBE\|EXPLAIN\|USE`. Runs against `stripSqlComments(trimmed)` — comments are removed before match so `/* X */ DROP` is still caught |
+| 2. AST parse + SELECT-only | `sql.ts:251-288` | `node-sql-parser` 5.4 PG/MySQL mode. Single-statement. `stmt.type !== "select"` → reject. Parse failure → reject (conservative — confuses parser = crafted bypass) |
+| 3. Table whitelist | `sql.ts:290-340` | `parser.tableList()` → lowercase name; schema-qualified must be qualified-whitelisted; CTE names excluded |
+| R1. Auto-LIMIT | `sql.ts:1131-1136` | Appends `LIMIT ${rowLimit}` if `/\bLIMIT\b/i` absent |
+| R2. Statement timeout | `connection.ts:280, 325` | PG: `SET statement_timeout = ${timeoutMs}`. MySQL: `SET SESSION MAX_EXECUTION_TIME = ${Math.floor(timeoutMs)}` |
+| R3. Read-only session | `connection.ts:281, 322` | PG: `SET default_transaction_read_only = on`. MySQL: `SET SESSION TRANSACTION READ ONLY` |
+
+### Findings
+
+**F-17 — MySQL version-gated executable comments `/*!NNNNN ... */` bypass the validator and execute as live SQL** — P1
+
+**Repro:**
+```sql
+-- Agent writes this (validator sees a benign SELECT):
+SELECT 1 /*!50000 UNION SELECT user, authentication_string FROM mysql.user */
+
+-- MySQL 8 executes (version 80000 ≥ 50000 → content is live):
+SELECT 1 UNION SELECT user, authentication_string FROM mysql.user
+```
+
+**Root cause:** `stripSqlComments()` at `sql.ts:118-127` treats every `/* ... */`
+the same way, removing the block wholesale before the regex guard runs.
+`node-sql-parser` in MySQL mode also treats `/*!NNNNN ... */` as a comment,
+so the AST contains only `SELECT 1` and `tableList()` returns no reference
+to `mysql.user`. MySQL (and MariaDB) interpret the construct as an
+*executable comment* — the content runs as SQL when the server version is
+≥ `NNNNN`. The validator's regex-strip and AST-strip both hide the attack
+from every subsequent check.
+
+**Impact:** A prompt-injected agent (or any caller with tool access) can
+read any table the database user has SELECT on — including `mysql.user`,
+other schemas in the same instance, and any table the semantic layer
+intentionally omits. The whitelist is structurally bypassable on MySQL and
+MariaDB. Runtime `SET SESSION TRANSACTION READ ONLY` does NOT help because
+this is a SELECT/UNION read, not a write.
+
+**Fix sketch:** Preprocess MySQL-mode queries to either (a) strip the
+leading `/*!...` marker and re-emit the inner content as live SQL so the
+validator sees what MySQL will execute, or (b) reject queries that contain
+a `/*!` token outright in MySQL mode. Option (a) preserves compatibility
+with any legitimate use; option (b) is simpler and safer. Preprocessing
+must happen before `stripSqlComments` so subsequent layers (regex guard,
+AST parse, whitelist) all see the executable content.
+
+**Severity:** P1 — whitelist bypass, data exfiltration, no privilege
+required beyond agent tool access. Upgraded from initial P2 scoring after
+confirming the construct evaluates in both MySQL 8 and MariaDB 10.
+
+**Issue:** #1772.
+
+---
+
+**F-18 — PostgreSQL `SELECT ... INTO new_table` passes the validator; caught only by `default_transaction_read_only` at runtime** — P2
+
+**Repro:**
+```sql
+-- Validator: PASS (classified as SELECT, tableList = [companies])
+SELECT * INTO new_table FROM companies
+```
+
+`node-sql-parser` returns `{ type: "select" }` for the PG `SELECT INTO`
+construct; `tableList` surfaces only the source (`companies`) not the new
+target (`new_table`). Because the regex guard does not match `INTO` alone
+(only `INTO\s+OUTFILE`), nothing before the driver layer blocks it. The
+query reaches `createPostgresDB`'s `SET default_transaction_read_only = on`
+which rejects at execution time with `ERROR: cannot execute SELECT INTO in
+a read-only transaction`.
+
+**Impact:** Defense-in-depth only — the validator has a gap that the
+runtime closes. If a plugin, config, or misapplied RLS rewrite caused the
+read-only session to be skipped, the bypass would result in silent table
+creation (a DDL-equivalent) on the analytics DB. Audit logs would record
+this as a legitimate SELECT.
+
+**Fix sketch:** The AST parser's `select_into` variant is the `into` field
+on the SELECT node — check for presence of a non-null `into` target in the
+parsed AST and reject. Alternatively, extend `FORBIDDEN_PATTERNS` with a
+PG-mode-specific `\bINTO\s+(?!OUTFILE\b)[A-Za-z_]\w*` pattern. AST check
+is preferred because it avoids regex false positives against column
+references named "into".
+
+**Severity:** P2 — runtime catches it, but validator should not pass
+DDL-equivalent queries. Gap is structural, not deployment-specific.
+
+**Issue:** #1773.
+
+---
+
+**F-19 — MySQL `SELECT ... INTO DUMPFILE` passes the validator; `INTO OUTFILE` blocked but `INTO DUMPFILE` is not** — P2
+
+**Repro:**
+```sql
+-- Validator: PASS (regex only checks INTO OUTFILE)
+SELECT * FROM companies INTO DUMPFILE '/tmp/x'
+
+-- Validator: REJECT (INTO OUTFILE matched by regex)
+SELECT * FROM companies INTO OUTFILE '/tmp/x'
+```
+
+The current `FORBIDDEN_PATTERNS` entry is `/\bINTO\s+OUTFILE\b/i`. MySQL
+supports two filesystem-writing variants — `INTO OUTFILE` (formatted rows,
+one per line) and `INTO DUMPFILE` (single blob, used for dumping binary
+data like BLOB column contents to disk). Same attack vector, same
+privilege requirement (`FILE`), same regex class — only `OUTFILE` was
+enumerated.
+
+**Impact:** If the MySQL user has `FILE` privilege (should not be granted
+to Atlas in production, but is a common dev-env default), a crafted query
+writes arbitrary bytes to disk. Combined with a world-readable MySQL data
+directory, this is trivial privilege escalation. Runtime
+`SET SESSION TRANSACTION READ ONLY` does NOT block filesystem writes in
+MySQL — read-only transactions prevent table writes, not filesystem
+writes.
+
+**Fix sketch:** Change the pattern to `/\bINTO\s+(?:OUTFILE|DUMPFILE)\b/i`.
+One-line change, covered by the fuzz suite, trivially safe.
+
+**Severity:** P2 — requires FILE privilege at runtime, but the validator
+layer must enumerate both variants consistently.
+
+**Issue:** #1774.
+
+---
+
+**F-20 — Case-sensitive quoted identifier whitelist collision** — P3
+
+**Repro:**
+```sql
+-- Validator: PASS (lowercased to "companies" which is whitelisted)
+SELECT * FROM "COMPANIES"
+
+-- PostgreSQL: "COMPANIES" is a distinct table from "companies" because
+-- quoted identifiers are case-preserving in PG.
+```
+
+`sql.ts:306` lowercases the parsed table name before whitelist lookup.
+Unquoted PG identifiers are case-insensitive (folded to lowercase), so
+`companies` and `COMPANIES` are the same table. Quoted identifiers
+(`"COMPANIES"`) are case-preserving — they are a distinct object in the
+catalog. The validator's normalization collapses both into one whitelist
+entry.
+
+**Impact:** Low. Requires an unusual schema where case-sensitive table
+names carry sensitive data not intended for agent access, AND the
+lowercase form is whitelisted. Most Atlas deployments have a single
+canonical casing for table names. The MySQL equivalent (`"..."` in
+`ANSI_QUOTES` mode) has the same property.
+
+**Fix sketch:** When the parsed reference is quoted (detectable via
+`node-sql-parser`'s table-ref structure; `tableList` flattens this), use
+the quoted name verbatim for whitelist lookup instead of lowercasing. This
+changes behavior for the rare case of mixed-case quoted identifiers; the
+whitelist itself should also preserve the original casing as stored in
+the entity YAML.
+
+**Severity:** P3 — stays in this doc for the cleanup tail.
+
+---
+
+**F-21 — Dangerous MySQL + PostgreSQL functions pass the validator (known limitation)** — P3
+
+Existing behavior pinned in `sql.test.ts` ("does not block dangerous
+PostgreSQL functions") and confirmed for MySQL. Functions that pass:
+
+- PostgreSQL: `pg_read_file`, `pg_ls_dir`, `pg_terminate_backend`,
+  `pg_sleep`, `pg_cancel_backend`, `current_setting`, `generate_series`,
+  any function call in SELECT that doesn't touch a real table.
+- MySQL: `LOAD_FILE`, `SLEEP`, `BENCHMARK`, `GET_LOCK`, `RELEASE_LOCK`,
+  `UUID_SHORT` (if session-scoped disambiguation matters).
+
+**Mitigations in place:**
+- `statement_timeout` (PG) / `MAX_EXECUTION_TIME` (MySQL) bounds
+  long-running functions at 30 s default.
+- `pg_read_file` / `pg_ls_dir` require superuser in PG 14+; correct
+  production practice is to run Atlas as a non-superuser with limited
+  grants.
+- `LOAD_FILE` requires `FILE` privilege.
+- Connection-pool rate limiting bounds concurrent expensive queries.
+
+**Severity:** P3 — documented limitation; mitigated by DB-level controls.
+Worth tracking for a future hardening pass that adds an explicit
+function blocklist keyed by dialect.
+
+### Severity summary
+
+| ID | Severity | Type | Surface | Issue |
+|---|---|---|---|---|
+| F-17 | P1 | Validator bypass | MySQL `/*!NNNNN */` executable comments | #1772 |
+| F-18 | P2 | Validator bypass | PG `SELECT INTO` | #1773 |
+| F-19 | P2 | Validator bypass | MySQL `INTO DUMPFILE` | #1774 |
+| F-20 | P3 | Normalization | Case-sensitive quoted identifier | — (stays in doc) |
+| F-21 | P3 | Known limitation | Dangerous dialect functions | — (stays in doc) |
+
+**Totals:** P0 = 0, P1 = 1 (F-17), P2 = 2 (F-18, F-19), P3 = 2 (F-20, F-21).
+
+### Deliverables this PR
+
+- **Audit corpus + property-based fuzz tests** at
+  `packages/api/src/lib/__tests__/sql-validator-fuzz.test.ts`:
+  341 cases across mutation obfuscation (30+), CTE collisions (13),
+  UNION/subquery/lateral (14), schema-qualified + quoted identifier (13),
+  LIMIT handling (8), PG dialect escapes (29), MySQL dialect escapes (18),
+  comment smuggling + multi-statement (11), generator-based
+  combinatorial (203), and known-bypass pins for F-17/F-18/F-19.
+- **Runtime guard source-level pins** at
+  `packages/api/src/lib/db/__tests__/connection-runtime-guards.test.ts`:
+  asserts `SET statement_timeout`, `SET default_transaction_read_only`,
+  `SET SESSION TRANSACTION READ ONLY`, `SET SESSION MAX_EXECUTION_TIME`
+  remain in the driver source and fire before the user query.
+- **This audit section.**
+
+Fixes for F-17/F-18/F-19 are follow-up PRs — intentional separation so
+each finding lands with dedicated review + regression coverage, following
+the phase-1/phase-2 pattern. The fuzz suite's known-bypass section
+documents the current-behavior assertions that flip to rejection when
+each fix ships.

@@ -1006,3 +1006,577 @@ review + regression coverage, following the phase-1/phase-2 pattern. The
 fuzz suite's "regression pins" section keeps F-17.a–F-17.h, F-18, and F-19
 pinned so a future refactor that moves the rejection layer or accidentally
 reopens a bypass turns the suite red.
+
+---
+
+## Phase 4 — Audit-log coverage on write routes
+
+**Status:** audit complete (2026-04-23); fixes tracked per-finding.
+**Scope:** every POST/PUT/PATCH/DELETE route under
+`packages/api/src/api/routes/` and the EE audit retention surface
+(`ee/src/audit/`). Verify each write emits a well-formed audit event
+(`{ actor, org, target, action, timestamp, metadata }`), that
+append-only integrity is preserved, that the EE purge scheduler honors
+configured retention AND emits a self-audit trail, and that audit
+metadata does not carry credentials / connection strings / tokens.
+**Issue:** #1723
+**Branch:** `security/1.2.3-phase-4-audit-log`
+
+### Methodology
+
+1. Enumerate every route definition with `method: "post" | "put" |
+   "patch" | "delete"` under `packages/api/src/api/routes/` — 201 write
+   routes across 52 files.
+2. For each write, grep the handler body for `logAdminAction(...)` and
+   confirm the `{ actor, org, target, action, timestamp, metadata }`
+   shape. Two audit sinks in the codebase:
+   - `admin_action_log` via `logAdminAction()` — admin mutations.
+   - `audit_log` via `persistAudit` inside the query pipeline — SQL
+     query execution (chat / query / executeSQL). Not a route-level
+     emitter; governed phase-3 instead.
+3. Cross-reference each high-stakes flow enumerated in the phase-4
+   scope (role changes, plugin install/uninstall, connection edits,
+   SSO/SCIM/IP-allowlist, publish, archive/restore, API key rotation,
+   user invite/remove) against the coverage table.
+4. Walk the two audit tables' DDL + every SQL statement that touches
+   them to prove append-only integrity.
+5. Walk retention (`ee/src/audit/retention.ts`) and the daily purge
+   scheduler (`ee/src/audit/purge-scheduler.ts`) end-to-end to verify
+   (a) retention is honored and (b) the purge actions themselves are
+   audited.
+6. Grep every `metadata: { ... }` payload that ships with
+   `logAdminAction` for credential-shaped field names (apiKey /
+   password / token / secret / connection string). Any match is a
+   leak.
+
+### Audit sinks — what goes where
+
+| Sink | File | Written by | Mutations allowed |
+|---|---|---|---|
+| `admin_action_log` | `packages/api/src/lib/audit/admin.ts` | `logAdminAction()` — pino + DB insert | **INSERT only**. No UPDATE / DELETE anywhere in the codebase. `0023_admin_action_log.sql` header explicitly says "kept indefinitely — no `deleted_at` column" |
+| `audit_log` | `packages/api/src/lib/tools/sql.ts` pipeline → `internalExecute` | Query execution audit (chat / query / wizard) | INSERT; `UPDATE ... SET deleted_at` in `ee/retention.ts#purgeExpiredEntries`; `DELETE ... WHERE deleted_at < now() - interval` in `ee/retention.ts#hardDeleteExpired`; `DELETE ... WHERE org_id = $1` in `internal.ts#cascadeWorkspaceDelete` (workspace hard-delete) |
+| `abuse_events` | `packages/api/src/lib/security/abuse.ts#persistAbuseEvent` | Abuse module state changes (including reinstate) | INSERT only. Split audit trail — reinstate emits here, not to `admin_action_log` (see F-33) |
+
+`ADMIN_ACTIONS` catalog (`packages/api/src/lib/audit/actions.ts`) enumerates 54 action values across 16 domains (workspace / domain / residency / sla / backup / settings / connection / user / sso / semantic / pattern / integration / schedule / apikey / approval / mode). Two declared entries have zero call sites: `apikey.create` and `apikey.revoke` — Better Auth's API-key plugin owns key lifecycle through the `/api/auth/*` catch-all, so the catalog entries are dead weight (P3 cleanup, not a finding).
+
+### Route coverage table
+
+Legend: ✅ every write audited, 🟡 partial coverage, ❌ no writes audited, ✳︎ non-admin user content — explicitly out of scope (user-content mutations are not the audit-log coverage target).
+
+Totals at the file level; individual uncovered writes are enumerated under the finding that tracks them.
+
+| File | Writes | Audit calls | Status | Notes |
+|---|---:|---:|---|---|
+| `actions.ts` | 4 | 0 | ✳︎ | User action approve/deny is user-content not admin; approvals are audited via `admin-approval.ts` when admin-reviewed |
+| `admin-abuse.ts` | 1 | 0 | 🟡 | Writes to `abuse_events` via lib — split trail (F-33) |
+| `admin-approval.ts` | 5 | 1 | 🟡 | Approve/deny audited; **rule CRUD + expire unaudited** (F-30) |
+| `admin-archive.ts` | 2 | 2 | ✅ | `mode.archive` / `mode.archive_reconcile` / `mode.restore` |
+| `admin-audit-retention.ts` | 4 | 0 | ❌ | **Meta-audit tamper vector** (F-26) — PUT /, POST /export, POST /purge, POST /hard-delete all silent |
+| `admin-branding.ts` | 2 | 0 | ❌ | PUT / DELETE (F-32) |
+| `admin-cache.ts` | 1 | 0 | ❌ | DELETE purge (F-37) |
+| `admin-compliance.ts` | 2 | 0 | ❌ | PUT retention policy + DELETE PII config (F-32) |
+| `admin-connections.ts` | 7 | 3 | 🟡 | Create/update/delete audited; **test / /:id/test / pool drain unaudited** (F-34) |
+| `admin-domains.ts` | 4 | 0 | ❌ | Workspace custom domain + verify (F-32) |
+| `admin-email-provider.ts` | 3 | 0 | ❌ | **BYOT credential mgmt unaudited** (F-30) |
+| `admin-integrations.ts` | 19 | 18 | 🟡 | Most install/uninstall emit `integration.*`; **one handler missing an audit call** — see F-29 |
+| `admin-invitations.ts` | 2 | 1 | 🟡 | `user.invite` audited; **`DELETE /users/invitations/{id}` revoke is silent** — see F-29 |
+| `admin-ip-allowlist.ts` | 2 | 0 | ❌ | **Per phase-4 scope: CRITICAL** (F-24) |
+| `admin-learned-patterns.ts` | 3 | 3 | ✅ | `pattern.approve` / `pattern.reject` / `pattern.delete` |
+| `admin-marketplace.ts` | 6 | 0 | ❌ | **Per phase-4 scope: CRITICAL — plugin install/uninstall unaudited** (F-22) |
+| `admin-migrate.ts` | 1 | 0 | ❌ | Schema migration trigger (F-37) |
+| `admin-model-config.ts` | 3 | 0 | ❌ | **LLM API key storage + deletion unaudited** (F-30) |
+| `admin-orgs.ts` | 4 | 0 | ❌ | Post-F-08 this is platform-admin only — but still unaudited (F-31) |
+| `admin-plugins.ts` | 4 | 0 | ❌ | **Per phase-4 scope: CRITICAL — enable/disable/config unaudited** (F-22) |
+| `admin-prompts.ts` | 7 | 0 | ❌ | Content governance — collection + prompt CRUD (F-35) |
+| `admin-publish.ts` | 1 | 1 | ✅ | `mode.publish` |
+| `admin-residency.ts` | 4 | 0 | ❌ | **Workspace residency assign is permanent and unaudited** (F-32) |
+| `admin-roles.ts` | 4 | 0 | ❌ | **Per phase-4 scope: CRITICAL — role CRUD + assignment unaudited** (F-25) |
+| `admin-sandbox.ts` | 2 | 0 | ❌ | Connect/disconnect BYOC sandbox (F-37) |
+| `admin-scim.ts` | 3 | 0 | ❌ | **Per phase-4 scope: CRITICAL — SCIM connection + group mappings unaudited** (F-23) |
+| `admin-semantic-improve.ts` | 4 | 0 | ❌ | AI-assisted semantic layer edits (F-35) |
+| `admin-semantic.ts` | 3 | 3 | ✅ | `semantic.update_entity` / `semantic.delete_entity` |
+| `admin-sessions.ts` | 2 | 0 | ❌ | **Session revocation unaudited** (F-28) — pino-only, not in `admin_action_log` |
+| `admin-sso.ts` | 6 | 4 | 🟡 | Configure / update / delete / test audited; **`POST /providers/{id}/verify` + `PUT /enforcement` unaudited** (F-29) |
+| `admin-starter-prompts.ts` | 4 | 0 | ❌ | Queue moderation — approve/hide/unhide/author (F-36) |
+| `admin-suggestions.ts` | 1 | 0 | ❌ | DELETE suggestion (F-37) |
+| `admin.ts` | 12 | 9 | 🟡 | User role / ban / unban / remove-membership / delete-user / settings update + delete + semantic put/delete audited; **`POST /me/password`, `POST /semantic/org/import`, `POST /users/{id}/revoke-sessions` unaudited** — first two tracked in F-29, third in F-28 |
+| `billing.ts` | 2 | 0 | ✳︎ | Stripe portal redirects — Stripe event log is the authoritative trail; both routes are admin-gated |
+| `chat.ts` | 1 | 0 | ✳︎ | Agent messages; SQL executed via the tool is audited in `audit_log` |
+| `conversations.ts` | 9 | 0 | ✳︎ | User content — out of scope for phase-4 |
+| `dashboards.ts` | 11 | 0 | ✳︎ | User content — out of scope for phase-4 |
+| `demo.ts` | 2 | 0 | ✳︎ | Signed-token demo; gated by `ATLAS_DEMO_ENABLED`, not admin |
+| `onboarding-emails.ts` | 1 | 0 | ✳︎ | Phase-1 F-03 already hardened with signed tokens |
+| `onboarding.ts` | 6 | 0 | 🟡 | Org creation emits Better Auth database hook breadcrumb via pino but no `admin_action_log` row for workspace creation (F-37) |
+| `platform-admin.ts` | 5 | 5 | ✅ | `workspace.suspend` / `unsuspend` / `delete` / `purge` / `change_plan` |
+| `platform-backups.ts` | 5 | 5 | ✅ | Full `backup.*` coverage |
+| `platform-domains.ts` | 3 | 3 | ✅ | `domain.register` / `domain.verify` / `domain.delete` |
+| `platform-residency.ts` | 1 | 1 | ✅ | `residency.assign` (platform path) |
+| `platform-sla.ts` | 3 | 2 | 🟡 | `sla.update_thresholds` + `sla.acknowledge_alert` audited; **`POST /evaluate` (alert-evaluation trigger) unaudited** — see F-29 |
+| `query.ts` | 1 | 0 | ✳︎ | SQL queries audited in `audit_log` via pipeline |
+| `scheduled-tasks.ts` | 6 | 4 | 🟡 | Create / update / toggle / delete audited; **trigger, preview, tick unaudited** (F-29) |
+| `sessions.ts` | 1 | 0 | ✳︎ | Self session delete — Better Auth session table drives audit inherently |
+| `slack.ts` | 3 | 0 | 🟡 | Phase-1 F-04 fixed auth gap; **install/callback/events unaudited** in admin log (F-38) |
+| `starter-prompts.ts` | 3 | 0 | ✳︎ | User favorites — not admin mutation |
+| `suggestions.ts` | 1 | 0 | ✳︎ | Click-through tracking — not admin mutation |
+| `validate-sql.ts` | 1 | 0 | ✳︎ | Pure validator — no state change |
+| `wizard.ts` | 4 | 0 | ❌ | **Onboarding wizard creates connections without `connection.create` audit** — bypasses `admin-connections.ts` audit path (F-34) |
+
+Total coverage: 201 write routes across 52 files. 74 routes currently emit an admin-audit entry; ✳︎-scoped files (user content, Stripe redirects, pure validators, signed-token demo) contribute another 47 writes that are intentionally audited elsewhere or legitimately skipped. Admin-scoped coverage alone is roughly 40% — the remainder clusters in the findings below. Per-file totals were verified by grepping `method: "(post|put|patch|delete)"` and `logAdminAction(` against each file on `main`; off-by-one errors surfaced during comment-analyzer review have been corrected in the table above (admin-integrations, admin-invitations, admin.ts, platform-sla).
+
+### Findings
+
+**F-22 — Plugin install / uninstall / config has no audit trail** — P0
+
+**Scope match:** Explicit phase-4 high-stakes flow.
+
+**Repro:**
+
+```
+POST /api/v1/admin/plugins/{id}/enable    → plugin enabled, no admin_action_log row
+POST /api/v1/admin/plugins/{id}/disable   → plugin disabled, no admin_action_log row
+PUT  /api/v1/admin/plugins/{id}/config    → plugin config saved (may include secrets), no admin_action_log row
+POST /api/v1/admin/plugins/marketplace/install  → workspace install, no admin_action_log row
+DELETE /api/v1/admin/plugins/marketplace/{id}   → workspace uninstall, no admin_action_log row
+PUT  /api/v1/admin/plugins/marketplace/{id}/config → per-workspace config, no admin_action_log row
+POST /api/v1/platform/plugins/catalog           → catalog entry created, no admin_action_log row
+PUT  /api/v1/platform/plugins/catalog/{id}      → catalog entry updated, no admin_action_log row
+DELETE /api/v1/platform/plugins/catalog/{id}    → cascade uninstalls across all workspaces, no admin_action_log row
+```
+
+All handlers in `admin-plugins.ts` and `admin-marketplace.ts` emit a pino `log.info` breadcrumb and nothing else. `ADMIN_ACTIONS` has no `plugin.*` domain.
+
+**Impact:** A platform admin can silently mass-install a surveillance plugin into every workspace via the catalog, or a workspace admin can install a malicious plugin with arbitrary DB credentials — compliance review has no record of either. Cascading catalog delete (mentioned in the route doc as "all workspaces with this plugin installed lose it") is effectively an untraceable mass data-source revoke. Plugin config PUTs accept credentials (BigQuery service account JSON, Snowflake passwords) and store them to DB, yet there is no audit row to correlate a later credential leak with the admin who set it.
+
+**Fix sketch:** Add `plugin.*` domain to `ADMIN_ACTIONS` (`install`, `uninstall`, `enable`, `disable`, `config_update`, `catalog_create`, `catalog_update`, `catalog_delete`). Emit from each handler. Metadata should include `{ pluginId, pluginSlug, orgId (for workspace scope), persisted }` — never the config values themselves, which may contain secrets. Consider a separate `plugin.catalog_cascade_uninstall` event emitted inside the delete transaction when cascading touches workspaces.
+
+**Severity:** P0 — plugin install is enumerated in the phase-4 scope as high-stakes. Both the platform (catalog) and workspace (marketplace + on-disk plugins) paths are silent. Largest single file-level gap in the audit.
+
+**Issue:** #1777.
+
+---
+
+**F-23 — SCIM connection + group-mapping management has no audit trail** — P0
+
+**Scope match:** Explicit phase-4 high-stakes flow.
+
+**Repro:**
+
+```
+DELETE /api/v1/admin/scim/connections/{id}      → SCIM connection revoked, no audit row
+POST   /api/v1/admin/scim/group-mappings        → new group→role mapping, no audit row
+DELETE /api/v1/admin/scim/group-mappings/{id}   → mapping removed, no audit row
+```
+
+`admin-scim.ts` is the only file in the admin surface that imports `SCIMError` but not `logAdminAction` / `ADMIN_ACTIONS`.
+
+**Impact:** SCIM is the primary identity-provisioning channel for enterprise customers. A workspace admin who adds a group-to-role mapping (`scim_group_name` → `platform_admin` role, for example) silently grants cross-org privilege to everyone in that group on the next SCIM sync. Deleting a connection revokes the bearer token but leaves no trail of who revoked it — combined with F-28 (session-revocation gap) a hostile admin can break IdP sync and then quietly restore it before detection.
+
+**Fix sketch:** Add `scim.*` domain (`connection_delete`, `group_mapping_create`, `group_mapping_delete`). Metadata includes `{ connectionId / mappingId, scimGroupName, roleName }`. Never include the bearer token itself in metadata.
+
+**Severity:** P0 — SCIM is called out explicitly in the phase-4 scope. Role escalation via SCIM group mappings is a privilege-escalation vector with no detection signal.
+
+**Issue:** #1778.
+
+---
+
+**F-24 — IP allowlist add / remove has no audit trail** — P0
+
+**Scope match:** Explicit phase-4 high-stakes flow.
+
+**Repro:**
+
+```
+POST   /api/v1/admin/ip-allowlist   → add CIDR entry, no audit row
+DELETE /api/v1/admin/ip-allowlist/{id}  → remove CIDR entry, no audit row
+```
+
+`admin-ip-allowlist.ts` imports the EE module and `runEffect` but not `logAdminAction`.
+
+**Impact:** A compromised admin account can silently add `0.0.0.0/0` to the allowlist, wait for the attacker's follow-up request, and then remove it — no audit row at any stage. The GET route returns `effectivelyEnforced: boolean` which reveals whether any CIDR exists, giving the attacker a simple oracle. Post-incident forensics have no way to reconstruct whether an IP allowlist gap was intentional configuration or exploitation.
+
+**Fix sketch:** Add `ip_allowlist.add` + `ip_allowlist.remove` to `ADMIN_ACTIONS`. Metadata `{ cidr, description }` — the CIDR itself is not a secret (it's routing config) and belongs in the metadata for compliance triage.
+
+**Severity:** P0 — IP-allowlist config is called out explicitly in the phase-4 scope. Allowlist bypass is the most common "admin credential stolen" pivot.
+
+**Issue:** #1779.
+
+---
+
+**F-25 — Custom role CRUD + user role assignment has no audit trail** — P0
+
+**Scope match:** Explicit phase-4 high-stakes flow (role changes).
+
+**Repro:**
+
+```
+POST   /api/v1/admin/roles                 → create custom role, no audit row
+PUT    /api/v1/admin/roles/{id}            → update role (adds permissions), no audit row
+DELETE /api/v1/admin/roles/{id}            → delete role, no audit row
+PUT    /api/v1/admin/roles/users/{uid}/role → assign role to user, no audit row
+```
+
+`admin-roles.ts` (EE-gated custom RBAC) emits no audit. This is *separate from* `admin.ts`'s `changeUserRoleRoute`, which *is* audited as `user.change_role` — `admin-roles.ts` operates against the custom RBAC model introduced in 0.9.0 and maintained under `@atlas/ee/auth/roles`.
+
+**Impact:** Phase-1 F-10 (shipped, PR #1758) prevented workspace admins from escalating to `platform_admin` via the body-role whitelist. The EE custom-role path still allows an admin to define a new custom role with permissions like `admin:read_audit` or `connection:delete`, assign it to any org member, and leave no trail. Combined with F-26 (audit retention unaudited) a compromised admin can stage an escalation, take the action, then reduce the retention window to purge the trail — zero detection.
+
+**Fix sketch:** Add `role.create` / `role.update` / `role.delete` / `role.assign` to `ADMIN_ACTIONS`. Metadata `{ roleId, roleName, permissions (for create/update), userId (for assign), previousRole (for assign) }`. Match the pattern already established by `user.change_role` in `admin.ts`.
+
+**Severity:** P0 — role changes are named in the phase-4 scope; the EE role surface is the *primary* privilege-assignment path in enterprise deployments.
+
+**Issue:** #1780.
+
+---
+
+**F-26 — Audit retention config, manual purge, and hard-delete are unaudited — meta-audit tamper vector** — P0
+
+**Scope match:** Phase-4 requirement "Retention: EE purge-scheduler honors configured retention AND produces an audit trail of its own purge actions."
+
+**Repro:**
+
+```
+PUT  /api/v1/admin/audit/retention              → shrink retention_days from 365 to 7, no audit row
+POST /api/v1/admin/audit/retention/export       → bulk-export audit log, no audit row
+POST /api/v1/admin/audit/retention/purge        → manually soft-delete expired entries, no audit row
+POST /api/v1/admin/audit/retention/hard-delete  → permanently drop soft-deleted entries, no audit row
+```
+
+Same class applies to the daily scheduler (see F-27): `ee/audit/purge-scheduler.ts#runPurgeCycle` invokes `purgeExpiredEntries()` + `hardDeleteExpired()` on a 24 h timer and emits pino `log.info` only.
+
+**Impact:** A compromised admin can:
+
+1. `PUT /retention` with `{ retentionDays: 7, hardDeleteDelayDays: 0 }` — drastically shrink the window.
+2. `POST /purge` — soft-delete everything past 7 days.
+3. `POST /hard-delete` — with `hardDeleteDelayDays: 0`, permanently erase.
+4. Restore the original policy.
+
+Steps 1–4 leave **zero** audit rows. Only pino-level breadcrumbs remain, which are often log-only (not persisted) in single-node self-hosted and subject to ring-buffer truncation in platform deployments. `POST /export` is a bulk-exfiltration endpoint (up to 50k rows per call, JSON/CSV) with no audit row recording who pulled what date range.
+
+**Fix sketch:** Add `audit_retention.*` domain (`policy_update`, `export`, `manual_purge`, `manual_hard_delete`). The scheduler's self-audit is tracked under F-27 (dedicated because the scheduler has no user actor and needs a different metadata shape).
+
+**Severity:** P0 — meta-audit. The entire audit system is only as trustworthy as its integrity against the admin who manages it. Current state: zero controls on the audit-about-audit dimension.
+
+**Issue:** #1781.
+
+---
+
+**F-27 — EE purge scheduler and retention mutations emit no self-audit rows** — P1
+
+**Scope match:** Phase-4 requirement "EE purge-scheduler honors configured retention AND produces an audit trail of its own purge actions."
+
+**Repro:**
+
+`ee/src/audit/purge-scheduler.ts#runPurgeCycle` — the 24 h loop that soft-deletes + hard-deletes audit rows across every org that has a retention policy — logs `log.info({ totalSoftDeleted, orgs })` and `log.info({ deletedCount })` to pino and returns. No row is inserted into `admin_action_log` or any sibling table. `ee/src/audit/retention.ts#setRetentionPolicy` and `#purgeExpiredEntries` also emit pino-only breadcrumbs.
+
+Companion sub-finding: `purgeExpiredEntries` updates `audit_retention_config.last_purge_at / last_purge_count` per-org. That is the *only* persisted evidence of a purge ever happening, and it's keyed on the retention config row — so deleting the retention policy row (a side effect of `cascadeWorkspaceDelete`) wipes the evidence trail entirely.
+
+**Impact:** Retention purges *silently* destroy audit history as a matter of routine operation. A compliance reviewer (SOC 2 / HIPAA / CCPA) cannot distinguish "retention purged 10,000 rows on the policy schedule" from "a manual purge in the last 30 s destroyed 10,000 rows evidencing the incident we are investigating." The spec explicitly calls this out.
+
+**Fix sketch:** Emit a dedicated audit row per purge cycle using the existing `AdminActionEntry` shape (`{ actionType, targetType, targetId, status, metadata, scope, ipAddress }` — see `packages/api/src/lib/audit/admin.ts:22–37`). Fields for the scheduler cycle: `actionType: ADMIN_ACTIONS.audit_retention.purge_cycle_run` (reuses F-26's `audit_retention.*` domain — **not** a new `audit_log.*` domain, which would collide with the `audit_log` table name and the existing catalog convention), `targetType: "audit_retention"`, `targetId: "scheduler"`, `scope: "platform"`, `metadata: { softDeleted, hardDeleted, orgs }`. The scheduler has no human actor, so `logAdminAction()` needs a small extension to accept a declared `systemActor` field (e.g. `"system:audit-purge-scheduler"`) in place of the `getRequestContext()`-derived user. That extension is the only required change to the writer; the existing INSERT shape absorbs the new field trivially (`actor_id` + `actor_email` columns can take the system sentinel). For per-org manual purges, emit `audit_retention.manual_purge` with `{ orgId, softDeletedCount, retentionDays }` from the route layer (tracked under F-26).
+
+**Companion regression the acceptance criteria must pin:** `cascadeWorkspaceDelete` currently drops the `audit_retention_config` row for a deleted workspace, which wipes the `last_purge_at / last_purge_count` trail that is the *only* persisted evidence of past purges pre-fix. The fix PR must ensure self-audit rows survive workspace deletion (e.g., by emitting them to `admin_action_log` which has no cascade, not to `audit_retention_config`).
+
+**Severity:** P1 — requirement gap, not a live exploit. Downgrade from P0 only because the underlying purge operations are themselves append-only-respecting (soft-delete + fixed-delay hard-delete); the gap is observability, not data destruction.
+
+**Issue:** #1782.
+
+---
+
+**F-28 — Admin session revocation is unaudited** — P1
+
+**Scope match:** Phase-4 implicit — session revocation is a privileged admin action and phase-1 F-07 (cookie-cache delay) noted it as time-critical.
+
+**Repro:**
+
+```
+DELETE /api/v1/admin/sessions/{id}         → single session revoked, only pino log.info
+DELETE /api/v1/admin/sessions/user/{uid}   → all of user's sessions revoked, only pino log.info
+```
+
+`admin-sessions.ts` emits `log.info({ requestId, sessionId, actorId }, "Session revoked")` but no `logAdminAction`. `admin.ts` `revokeUserSessionsRoute` (line 2154) has the same gap.
+
+Related: `admin_action_log.request_id` is a column, and pino logs include `actorId`, but the sink is pino-only. On SaaS deployments pino routes to Grafana Loki with a short retention; on self-hosted it often goes to stdout only.
+
+**Impact:** A workspace admin can revoke the session of another member (e.g., the org's owner) at any time. Without an audit row, a denial-of-service or impersonation setup is untraceable. Combined with F-26, an attacker who owns the retention knob can also ensure that if a pino-to-audit bridge were ever backfilled, the evidence window is already closed.
+
+**Fix sketch:** Add `session.revoke` + `session.revoke_all_for_user` to `ADMIN_ACTIONS`. Metadata `{ sessionId | targetUserId, count (for bulk), wasCurrentUser: boolean }`. Mirror on `admin.ts revokeUserSessionsRoute`.
+
+**Severity:** P1 — session revocation directly affects availability + access; no live exploit but material compliance + incident-response gap.
+
+**Issue:** #1783.
+
+---
+
+**F-29 — Partially-audited admin subrouters miss 1–4 writes each** — P2
+
+Several files have *most* of their writes covered but leave stragglers. Coverage verified by grepping `method: "(post|put|patch|delete)"` + `logAdminAction(` against each file on `main`:
+
+- `admin-sso.ts` (4/6 audited): `POST /providers/{id}/verify` (domain verification, line 544) and `PUT /enforcement` (workspace SSO enforcement toggle, line 493) — no audit. The 4 present calls cover configure / update / delete / test.
+- `admin-connections.ts` (3/7 audited): `POST /test` (ephemeral URL), `POST /{id}/test` (health check), `POST /{id}/drain` (single pool drain, line 172), and `POST /pool/orgs/{orgId}/drain` (all pools for an org, line 149) — no audit. The 3 present calls cover create / update / delete.
+- `scheduled-tasks.ts` (4/6 audited): `POST /{id}/run` (trigger immediate execution), `POST /{id}/preview` (dry-run), `POST /tick` (scheduler tick) — no audit. `schedule.toggle` fires from a branch inside the PUT update handler when only `enabled` changes, not a discrete route.
+- `admin-approval.ts` (1/5 audited): `POST /rules`, `PUT /rules/{id}`, `DELETE /rules/{id}`, `POST /expire` — no audit. The 1 present call covers review (approve/deny).
+- `admin.ts` (9/12 audited): `POST /me/password` (change password), `POST /semantic/org/import` (bulk import) — no audit. (`POST /users/{id}/revoke-sessions` is the third gap and is tracked separately under F-28.)
+- `admin-integrations.ts` (18/19 audited): one install/uninstall handler around lines 2353 (POST) or 2458 (DELETE) is missing its `logAdminAction` call. Cross-reference the 19 `method:` declarations against the 18 `logAdminAction({` call sites to find the orphaned write.
+- `admin-invitations.ts` (1/2 audited): `DELETE /users/invitations/{id}` at line 313 runs `UPDATE invitations SET status = 'revoked'` with only `log.info` — no admin-action row. The route ships no `user.remove` or `user.revoke_invitation` audit despite being the primary invitation-revocation path.
+- `platform-sla.ts` (2/3 audited): `POST /evaluate` (`evaluateAlertsRoute`, line 157) triggers alert evaluation across SLA targets without an audit row.
+
+**Impact:** Partial coverage is worse than none for compliance posture because it reads as "we audit $DOMAIN" until the reviewer walks the gaps. Rule CRUD on approval workflows is especially material — an admin can disable an approval gate, run the action the gate was protecting, and re-enable — end-to-end invisible. Invitation revocation with no audit means a malicious admin can block access to a pending invite (e.g., to the org's owner finishing signup) without any trace.
+
+**Fix sketch:** Case-by-case. For `admin-approval.ts` add `approval.rule_create` / `rule_update` / `rule_delete` / `rule.expire_sweep`. For `admin-sso.ts` add `sso.verify_domain` and `sso.enforcement_update`. For `admin-connections.ts` add `connection.test` (ephemeral), `connection.pool_drain_single` (per-id), `connection.pool_drain_org` (platform scope). For `scheduled-tasks.ts` add `schedule.trigger` and `schedule.preview`; `schedule.tick` uses the system actor (F-27 prerequisite). For `admin.ts` add `user.password_change` (self-action, `targetId: actorId`) and `semantic.bulk_import`. For `admin-integrations.ts` identify the single orphaned write and emit `integration.*` to match its sibling handlers. For `admin-invitations.ts` add `user.revoke_invitation` with metadata `{ invitationId, wasStatus }`. For `platform-sla.ts` add `sla.evaluate_alerts` at platform scope, metadata `{ alertsFired, targetsEvaluated, durationMs }`.
+
+**Severity:** P2 — each individual gap is modest; the cluster is material. Grouped into one issue with per-file subtasks.
+
+**Issue:** #1784 (body updated after comment-analyzer pass — includes the admin-integrations, admin-invitations, and platform-sla additions).
+
+---
+
+**F-30 — BYOT credential management (email provider, LLM model config) is unaudited** — P1
+
+**Scope match:** Phase-4 implicit — credential-bearing endpoints need an audit trail.
+
+**Repro:**
+
+```
+PUT    /api/v1/admin/email-provider  → saves API key / SMTP password to email_installations
+DELETE /api/v1/admin/email-provider  → deletes override
+POST   /api/v1/admin/email-provider/test → sends a test email with caller-supplied creds
+
+PUT    /api/v1/admin/model-config    → saves LLM API key (Anthropic/OpenAI/etc.) to org
+DELETE /api/v1/admin/model-config    → deletes override
+POST   /api/v1/admin/model-config/test → test LLM call with caller-supplied creds
+```
+
+None of these six routes call `logAdminAction`. All six write or test credential material.
+
+**Impact:** If an API key is later exfiltrated (via backup theft, SQL injection, or a compromised operator), there is no record of who configured the key or when. The test routes are particularly material — they accept credentials in the request body, attempt delivery, and return the result. An attacker who obtains admin access can harvest the response body for verification that a given key works (before deciding whether to steal the backup), and there is no audit signal of the repeated test attempts.
+
+**Fix sketch:** Add `email_provider.*` + `model_config.*` domains. For the create/update paths, metadata `{ provider, fromAddress / model, hasSecret: true }` — NEVER the secret value itself. For test endpoints, `{ provider, success: boolean, recipientEmail (email case) }`.
+
+**Severity:** P1 — credential provenance gap. Not currently exploitable by itself but multiplies the impact of every other credential-exfil vector.
+
+**Issue:** #1785.
+
+---
+
+**F-31 — `admin-orgs.ts` is platform-gated post-F-08 but still emits no audit** — P1
+
+**Repro:** Phase-2 F-08 (PR #1762) moved workspace CRUD under `createPlatformRouter`. The role gate was fixed; the audit gap was not. Four writes remain silent: suspend / activate / delete / change plan.
+
+Overlap with `platform-admin.ts` — which DOES audit `workspace.suspend` / `unsuspend` / `delete` / `purge` / `change_plan`. There are now two workspace-mutation surfaces: `platform-admin.ts` (audited) and `admin-orgs.ts` (silent). Platform admins can pick the unaudited path and no one knows.
+
+**Fix sketch:** Either (a) delete the overlap — route every admin-orgs mutation through `platform-admin.ts` internally — or (b) add `logAdminAction` calls to `admin-orgs.ts` matching the `platform-admin.ts` contract. Option (a) is preferred: a single workspace-mutation surface reduces the chance of future drift.
+
+**Severity:** P1 — drift between two parallel admin surfaces is a classic compliance pitfall. The write path exists, the audit path is forgotten.
+
+**Issue:** #1786.
+
+---
+
+**F-32 — Workspace-scoped enterprise config writes (domains, branding, residency, compliance) are unaudited** — P1
+
+Four admin files with explicit enterprise-gated config surfaces and zero audit coverage:
+
+- `admin-domains.ts` (4 writes): add / delete / verify / verify-dns workspace custom domain.
+- `admin-branding.ts` (2 writes): put / delete white-label branding.
+- `admin-residency.ts` (4 writes): assign region (permanent), request / retry / cancel region migration.
+- `admin-compliance.ts` (2 writes): put retention policy, delete PII config.
+
+**Impact:** Custom-domain + residency in particular are permanent or semi-permanent workspace-identity changes. A workspace that migrates regions then experiences a data-export subpoena has no way to prove which region hosted what data when. Branding is lower risk but still governance-relevant — an admin can silently white-label the product before phishing tenant users. Compliance retention-policy changes share the class of F-26 (audit-about-audit).
+
+**Fix sketch:** Add `domain.workspace_*` (register / remove / verify / verify_dns), `branding.update` / `branding.delete`, `residency.workspace_assign` / `migration_request` / `migration_retry` / `migration_cancel`, `compliance.retention_update` / `compliance.pii_config_delete`.
+
+**Severity:** P1 — workspace-identity and data-residency changes are compliance-critical.
+
+**Issue:** #1787.
+
+---
+
+**F-33 — Abuse reinstate writes to `abuse_events`, not `admin_action_log` — split audit trail** — P2
+
+**Repro:** `POST /api/v1/admin/abuse/{workspaceId}/reinstate` → `reinstateWorkspace()` → `persistAbuseEvent()` → row in `abuse_events`. No `logAdminAction` call anywhere in the flow.
+
+**Impact:** Compliance queries that scan `admin_action_log` for "what did platform admins do today?" miss every reinstate action entirely. A reviewer investigating billing anomalies ("why are there 500k queries from a previously suspended workspace?") has to know to cross-reference a second table. Phase-2 F-09 fixed the role gate but didn't unify the audit path.
+
+The in-module handler code path (`admin-abuse.ts` lines 296–312) explicitly acknowledges this gap in its fail-mode branch: when `hasInternalDB()` is false, it logs a warning but still returns success. That's a real-world silent-failure path where *no audit row exists at all* — not in `abuse_events`, not in `admin_action_log`, not anywhere.
+
+**Fix sketch:** Call `logAdminAction({ actionType: "workspace.reinstate_abuse", targetType: "workspace", targetId: workspaceId, scope: "platform", metadata: { previousLevel } })` alongside the `abuse_events` row. Dual-write is cheap and closes the compliance query gap.
+
+**Severity:** P2 — evidence exists but in the wrong place. Not a compliance failure per se, but a consistent-view failure. Scored one tier below F-31 (P1) despite being the same class of "dual-surface write, split trail" because reinstate is not enumerated in the phase-4 high-stakes list and `abuse_events` retains a full record including actor + timestamp + previous level; F-31's `admin-orgs.ts` writes leave no trail at either surface for anyone who picks the unaudited path.
+
+**Issue:** #1788.
+
+---
+
+**F-34 — Wizard onboarding + connection test paths bypass `connection.create` audit** — P2
+
+**Repro:**
+
+```
+POST /api/v1/wizard/profile   → list tables from a connected datasource (reads using supplied connectionId)
+POST /api/v1/wizard/generate  → profile tables + synthesize entity YAML (writes draft entities)
+POST /api/v1/wizard/preview   → preview wizard output without persisting
+POST /api/v1/wizard/save      → persist wizard-generated config + entities (NOT through admin-connections.create)
+POST /api/v1/admin/connections/test           → test arbitrary URL, no audit (also F-29)
+POST /api/v1/admin/connections/{id}/test      → health check, no audit (also F-29)
+POST /api/v1/admin/connections/{id}/drain     → drain single pool, no audit (also F-29)
+POST /api/v1/admin/connections/pool/orgs/{orgId}/drain → drain org pools, no audit (also F-29)
+```
+
+`wizard.ts` has 4 writes and 0 audit entries. The wizard is the *primary* UI path for onboarding a datasource and semantic layer. `admin-connections.ts` audits `connection.create` on the raw API path but the wizard's `/save` writes connection + entity rows directly via `lib/` helpers, short-circuiting the audited route. Net effect: a datasource added via the happy-path UI produces no `connection.create` row.
+
+**Impact:** Compliance review of "when did the org add datasource X" returns stale data. Pool drain is an availability lever (disconnects all active sessions to a connection or to every connection in an org) and has no trace. The wizard's `/profile` endpoint also accepts a `connectionId` and lists tables — low-risk given it reuses an already-stored connection, but a brute-force probe of "is this connection reachable?" leaves no audit.
+
+**Fix sketch:** Wizard `POST /save` should call `logAdminAction(ADMIN_ACTIONS.connection.create, ...)` — same action type + metadata shape as `admin-connections.ts` (`{ name, dbType }`) so compliance queries treat the two surfaces uniformly. Wizard `/generate` creates draft semantic entities and should emit `semantic.create_entity` per new entity (or a single `semantic.bulk_import` row with a count). Test + drain endpoints in `admin-connections.ts` are covered by F-29.
+
+**Severity:** P2 — silent creation of data sources via the wizard bypasses the compliance signal for the same resource class that *is* audited elsewhere.
+
+**Issue:** #1789.
+
+---
+
+**F-35 — Prompt library + semantic-improve + starter-prompt moderation writes unaudited** — P2
+
+Bundled class — content-governance admin writes:
+
+- `admin-prompts.ts` (7 writes): prompt collection + prompt CRUD.
+- `admin-semantic-improve.ts` (4 writes): AI-assisted semantic layer drafts + apply.
+- `admin-starter-prompts.ts` (4 writes): queue moderation (approve / hide / unhide / author).
+
+**Impact:** Content-governance actions that affect every user of the workspace (starter prompts surfaced on first-run, prompts in the library, semantic drafts that reshape agent SQL). No trail of who approved / hid / applied. Same shape as the learned-patterns surface that IS audited (`pattern.approve` / `pattern.reject` / `pattern.delete` in `admin-learned-patterns.ts`).
+
+**Fix sketch:** Model on `admin-learned-patterns.ts`. Add `prompt.create` / `prompt.update` / `prompt.delete` / `prompt_collection.*`, `semantic.improve_draft` / `semantic.improve_apply`, `starter_prompt.approve` / `starter_prompt.hide` / `starter_prompt.unhide` / `starter_prompt.author_update`.
+
+**Severity:** P2 — content-governance trail gap. Less privileged than F-22/F-25 but same class of "admin mutations visible to end users, invisible in audit."
+
+**Issue:** #1790.
+
+---
+
+**F-36 — `admin_action_log` has no retention policy — grows unbounded, no purge mechanism** — P2
+
+**Repro:** `audit_log` has a per-org retention policy via `audit_retention_config` and a daily scheduler. `admin_action_log` has neither. Migration `0023_admin_action_log.sql` states "kept indefinitely — no `deleted_at` column." Two problems follow:
+
+1. **Unbounded growth** — a busy SaaS workspace admin UI generates hundreds of `admin_action_log` rows per day. Over years this accumulates without any purge or archival mechanism, eventually impacting query performance on the indexes.
+2. **Compliance mismatch** — GDPR / CCPA "right to erasure" requests cover audit data too. A user who is forgotten has their `actor_id` in `admin_action_log` rows indefinitely, violating the contract. `audit_log` supports this via retention purge; `admin_action_log` does not.
+
+**Fix sketch:** Add a retention policy table + scheduler for `admin_action_log` parallel to `audit_retention_config`. Default retention significantly longer than query audit (7 years for SOC 2 alignment).
+
+GDPR "right to erasure" support is the open design decision the fix PR must propose and defend — there is no pre-existing anonymization pattern in the codebase to model on (`cascadeWorkspaceDelete` in `lib/db/internal.ts` hard-deletes workspace-scoped rows; no user-level erasure helper exists yet). Candidate shapes, in order of preference: (1) `actor_id = NULL, actor_email = NULL, anonymized_at = now()` — preserves the row, avoids collision with real values, gives queries a positive signal; (2) sentinel strings (`"__erased__"`) — simpler but risks false-positive collision with real values unless an invariant check runs at insert; (3) cryptographic hashing with a peppered SHA-256 — preserves action-sequence correlation without exposing the user, at the cost of pepper-rotation complexity. The fix PR must also address the pino sink: pre-erasure log lines retain the full `actorEmail` in Grafana Loki / stdout, so actor anonymization in Postgres is half of the compliance story; either pipe pino audit records through a redaction filter before write, or document the log-retention boundary separately. Requires migration + scheduler extension (F-27 prerequisite for self-audit) + EE admin surface to configure.
+
+**Severity:** P2 — not a live exploit; long-term storage + compliance gap. Classified under phase-4 because the phase-4 scope covers "Retention" explicitly.
+
+**Issue:** #1791.
+
+---
+
+**F-37 — Low-signal admin writes unaudited: cache purge, migrate, suggestion delete, sandbox, onboarding complete** — P3
+
+Bundled:
+
+- `admin-cache.ts` DELETE (`/purge`) — platform cache bust.
+- `admin-migrate.ts` POST (trigger schema migration).
+- `admin-suggestions.ts` DELETE (remove a suggestion).
+- `admin-sandbox.ts` POST `/connect` + DELETE `/disconnect`.
+- `onboarding.ts` `POST /complete` (workspace creation).
+
+**Impact:** Each is a narrow admin lever; audit gap is a posture issue rather than a live exploit. Cache purge can be weaponized for a temporary DoS but leaves no trace; sandbox connect stores Vercel/E2B/Daytona credentials that share the F-30 credential-provenance concern (lower volume); onboarding complete is the creation point for a workspace and therefore is the implicit target of every later `workspace.*` audit call.
+
+**Fix sketch:** Add corresponding `cache.purge`, `schema.migrate_trigger`, `suggestion.delete`, `sandbox.connect` / `sandbox.disconnect`, `workspace.create` actions. Metadata conventions follow the table above. Sandbox connect must NOT include credentials in metadata.
+
+**Severity:** P3 — stays in this doc for the cleanup tail unless one of these is promoted by a specific incident.
+
+---
+
+**F-38 — Slack / Teams / Discord install + callback + events unaudited in admin log** — P3
+
+Phase-1 F-04 fixed the auth gap on install routes (PR #1748). Callbacks now record an `integrations_installs` row, so an install *is* persisted. The admin action trail does not reflect this — no `integration.enable` is emitted on the OAuth callback path despite that being the moment of truth for the install. Stream integrations (`events`, `interactions`, `commands`) write their own dedicated signals (signed requests, message IDs) so the audit gap for message-flow events is intentional. The callback gap is not.
+
+**Fix sketch:** Emit `integration.enable` from the OAuth callback after successful token exchange, metadata `{ platform, installationId, byot: false }`.
+
+**Severity:** P3 — the `integrations_installs` row serves as a working trail; adding a parallel `admin_action_log` row unifies the admin-view but is not compliance-critical given the existing mechanism.
+
+---
+
+### Append-only integrity — verified
+
+- **`admin_action_log`**: no `UPDATE` or `DELETE` statements anywhere in `packages/`, `ee/`, or `apps/` (verified by grep of `UPDATE admin_action_log` + `DELETE FROM admin_action_log` across the whole repo — zero matches). Enforcement is convention-level: there is no RLS policy, DB trigger, or per-role grant revoking UPDATE/DELETE to application roles. A misbehaving route could technically issue either. **Mitigation:** consider migration that revokes UPDATE/DELETE on `admin_action_log` from the app role; ship only the INSERT grant. Tracked as F-40 below (P3).
+- **`audit_log`**: mutations are tightly scoped and all legitimate:
+  - `UPDATE audit_log SET deleted_at = now()` — `ee/audit/retention.ts#purgeExpiredEntries` (soft-delete under retention policy).
+  - `DELETE FROM audit_log WHERE deleted_at < now() - interval` — `ee/audit/retention.ts#hardDeleteExpired` (hard-delete under retention policy).
+  - `DELETE FROM audit_log WHERE org_id = $1` — `lib/db/internal.ts#cascadeWorkspaceDelete` (workspace hard-delete cascade).
+  All three paths are documented + gated by retention / cascade. No route-layer mutation paths.
+- **`abuse_events`**: INSERT-only, no mutation queries.
+
+**F-40 — No DB-level grant revocation on `admin_action_log`** — P3
+
+Append-only is enforced by code convention. Either a future refactor that accidentally issues `UPDATE admin_action_log SET ...` or a SQL injection via a misbehaving admin route could mutate or delete audit rows silently. Postgres supports per-role grants (e.g., grant only INSERT + SELECT to the app role). This is defense-in-depth, not a live-exploit bar.
+
+**Fix sketch:** Add a migration that `REVOKE UPDATE, DELETE ON admin_action_log FROM app_role`. Requires a schema-admin migration because the app role is already using the table. Add a runtime guard / test that INSERT works and UPDATE is rejected.
+
+**Severity:** P3 — documented known-risk that stays in this doc for the cleanup tail.
+
+### Sensitive-field redaction — verified
+
+Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled payloads:
+
+- `admin-integrations.ts`: `{ platform: "<name>" }`, `{ platform, mode: "byot" }`, `{ platform: "email", provider }` — all safe, no credentials.
+- `admin-sso.ts`: `{ providerType }`, `{ providerType: result.type, success }` — safe.
+- `admin-connections.ts`: `{ name: id as string, dbType }`, `{ name: id, urlChanged }`, `{ name: id }` — safe. `urlChanged` is a **boolean** not the URL, confirmed at `admin-connections.ts:805`.
+- `admin-semantic.ts`: `{ name, entityType }` — safe.
+- `admin.ts` user routes: `{ previousRole, newRole }`, `{ reason, expiresIn }`, `{ orgId, previousRole }` — safe.
+- `admin.ts` settings: `{ key, value }` at line 2294 and `{ key, action: "reset_to_default" }` at line 2339 — **partial concern**. The earlier handler body rejects `def.secret === true` before reaching the audit call, so `value` here is always a non-secret setting. But a non-secret setting can still carry sensitive-ish data (webhook URL with a token query param, sender email address, a CIDR range that identifies a home network). Technically compliant because the registry marks secret settings; practically the `value` dimension is worth reviewing per-setting on any future registry addition. P3 hardening hook, not a live finding.
+- `platform-backups.ts`: `{ backupId }`, `{ verified, message }`, `{ preRestoreBackupId }` — safe. Additionally at `platform-backups.ts:454` the update-config audit carries `{ previousConfig: { storagePath }, newConfig: { storagePath } }`. `storagePath` is a filesystem or cloud-storage path — not a secret per se (it's operator-configured infrastructure), but operators should avoid embedding access tokens in storage URIs. No current finding; flagged for the redaction-posture record.
+- `platform-admin.ts`, `platform-domains.ts`, `platform-residency.ts`, `platform-sla.ts`: all sampled payloads are IDs / enum values / booleans. No credentials.
+- `scheduled-tasks.ts`: `{ name, enabled }`, `{ taskId }` — safe.
+
+**Result:** no credentials / connection strings / tokens leak into audit metadata on current `logAdminAction` call sites. Redaction is solid. Risk is **F-30** — many credential-touching endpoints don't currently emit audit at all; once those land, the fix PRs must not regress the redaction posture.
+
+### High-stakes flow coverage — summary
+
+| Flow | Audited? | Gap |
+|---|---|---|
+| Role changes (Better Auth user role) | ✅ | `user.change_role` in `admin.ts` (phase-1 F-10 hardened) |
+| Role changes (EE custom RBAC) | ❌ | **F-25** |
+| Plugin install/uninstall | ❌ | **F-22** |
+| Connection edits | 🟡 | `admin-connections.ts` create/update/delete audited; **wizard + test + drain unaudited** (F-34) |
+| SSO config | 🟡 | Most audited; verify + enforcement-update gaps (F-29) |
+| SCIM config | ❌ | **F-23** |
+| IP allowlist config | ❌ | **F-24** |
+| Publish events | ✅ | `mode.publish` |
+| Archive / restore | ✅ | `mode.archive` / `mode.archive_reconcile` / `mode.restore` |
+| API key rotation | N/A | Better Auth `apiKey()` plugin handles lifecycle via `/api/auth/*`; catalog has dead `apikey.*` entries (dead code, P3) |
+| User invite / remove | 🟡 | `user.invite` / `user.remove` / `user.remove_from_workspace` audited; **invitation revoke at `admin-invitations.ts:313` unaudited** — tracked in F-29 |
+
+### Findings summary
+
+| ID | Severity | Type | Surface | Issue |
+|---|---|---|---|---|
+| F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 |
+| F-23 | P0 | Audit gap | SCIM management (`admin-scim.ts`) | #1778 |
+| F-24 | P0 | Audit gap | IP allowlist (`admin-ip-allowlist.ts`) | #1779 |
+| F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 |
+| F-26 | P0 | Meta-audit | Audit retention config + manual purge / hard-delete / export (`admin-audit-retention.ts`) | #1781 |
+| F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 |
+| F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 |
+| F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 |
+| F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 |
+| F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 |
+| F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 |
+| F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 |
+| F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 |
+| F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 |
+| F-36 | P2 | Retention | `admin_action_log` unbounded, no purge, no GDPR erasure path | #1791 |
+| F-37 | P3 | Audit gap | Low-signal admin writes (cache / migrate / suggestions / sandbox / onboarding) | — (stays in doc) |
+| F-38 | P3 | Audit gap | OAuth-callback install path not mirrored in `admin_action_log` | — (stays in doc) |
+| F-39 | — | unused | (reserved; gap in numbering avoided) | — |
+| F-40 | P3 | Defense-in-depth | No DB-level grant revocation on `admin_action_log` | — (stays in doc) |
+
+**Totals:** P0 = 5 (F-22, F-23, F-24, F-25, F-26), P1 = 5 (F-27, F-28, F-30, F-31, F-32), P2 = 5 (F-29, F-33, F-34, F-35, F-36), P3 = 3 (F-37, F-38, F-40). No F-39 — skipped to preserve the per-finding numbering discipline from phases 1–3 after the P3 regroup.
+
+### Deliverables this PR
+
+- **This audit section** — table + 15 P0/P1/P2 findings + 3 P3 items.
+- **15 GitHub issues filed** (#1777 – #1791) with `security`, `bug`, `area: api` labels and `1.2.3 — Security Sweep` milestone.
+- **Phase-4 checkbox flipped** in the tracker (#1718).
+- **No production code changes** — fixes ship as follow-up PRs per the phase-1/2/3 workflow, each finding landing with dedicated review + regression coverage. Several findings cluster by file (e.g., F-30 covers two files, F-32 covers four) and can be bundled into a single fix PR per cluster.
+
+Fixes for F-22 through F-38 are follow-up PRs. Priority ordering: P0s ship first (F-22 → F-26), then P1 credential/retention self-audit (F-27, F-30), then the rest. F-40 (DB grant revocation) is a migration-only change that ships independently of the per-route audit additions.

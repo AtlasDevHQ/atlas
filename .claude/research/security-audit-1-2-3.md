@@ -980,9 +980,14 @@ function blocklist keyed by dialect.
   fragments (`"forbidden"` for mutation-guard cases, `"not in the allowed
   list"` for whitelist cases) so a parser upgrade that incidentally
   rejects a payload cannot silently bypass the layer under test.
-  Known-bypass cases use a dedicated `expectCurrentBypass(sql, findingId,
-  expectedPostFixReason)` helper that fails loudly with flip instructions
-  when a future fix closes the bypass.
+  Known-bypass cases were originally pinned with an `expectCurrentBypass`
+  helper that failed loudly with flip instructions when a fix closed the
+  bypass; after the phase-3-followup PR shipped all F-17/F-18/F-19 fixes
+  every call site became an `expectInvalid` (or `expectValid` for positive
+  regressions) and the helper was removed. Future findings that land
+  documented-but-unfixed should reintroduce the same pattern: inline
+  `// BYPASS — see F-NN` comment next to an assertion that passes today
+  and is designed to flip to `expectInvalid` when the fix ships.
 - **Runtime guard source-level pins** at
   `packages/api/src/lib/db/__tests__/connection-runtime-guards.test.ts`:
   asserts `SET statement_timeout`, `SET default_transaction_read_only`,

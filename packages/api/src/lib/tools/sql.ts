@@ -123,8 +123,9 @@ export function extractClassification(
 // sees the literal DML keyword after `stripSqlComments` refuses to strip
 // an unclosed block, so mutation detection still fires.
 //
-// No-op for non-MySQL dialects: PostgreSQL and other engines have no
-// equivalent syntax.
+// Gated on `dbType === "mysql"` at the call site — other dialects (PG and
+// any plugin-registered dialect) skip this step and treat `/*!...*/` as an
+// ordinary block comment.
 function unwrapMysqlExecutableComments(sql: string): string {
   let current = sql;
   let prev: string;
@@ -271,8 +272,20 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
   // downstream layers see the SQL MySQL will actually execute. PG has no
   // equivalent syntax; leave its queries untouched.
   if (dbType === "mysql") {
+    const preUnwrap = trimmed;
     trimmed = unwrapMysqlExecutableComments(trimmed);
     if (!trimmed.trim()) {
+      if (preUnwrap !== trimmed) {
+        // Input collapsed to whitespace only AFTER executable-comment unwrap —
+        // the caller sent something whose only non-empty content lived inside
+        // a `/*!NNNNN ... */` wrapper. Benign on its own (we reject as "Empty
+        // query"), but the shape is a probe signature worth surfacing to
+        // security telemetry.
+        log.warn(
+          { connectionId, sqlPrefix: preUnwrap.slice(0, 200) },
+          "F-17 guard: MySQL query collapsed to empty after executable-comment unwrap — possible probe",
+        );
+      }
       return { valid: false, error: "Empty query" };
     }
   }
@@ -316,12 +329,16 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
           error: `Only SELECT statements are allowed, got: ${stmt.type}`,
         };
       }
-      // F-18: reject `SELECT ... INTO <table>` (PG creates a new table) and
-      // `SELECT ... INTO OUTFILE|DUMPFILE` (MySQL filesystem write).
+      // F-18: reject `SELECT ... INTO <table>` (PG creates a new table).
       // node-sql-parser surfaces these as `stmt.into.type === "into"`; plain
       // SELECTs come back with `stmt.into = { position: null }` and no `type`.
       // MySQL `SELECT ... INTO @var` uses `keyword === "var"` (session-local
       // variable assignment) — explicitly allowed.
+      //
+      // MySQL `INTO OUTFILE|DUMPFILE` is already rejected upstream by the
+      // F-19 `FORBIDDEN_PATTERNS` regex; this guard is the AST-level safety
+      // net if that regex is ever loosened or a new filesystem-write syntax
+      // is added that the regex misses.
       const into = (stmt as { into?: { type?: string; keyword?: string | null } }).into;
       if (into?.type === "into" && into.keyword !== "var") {
         return {

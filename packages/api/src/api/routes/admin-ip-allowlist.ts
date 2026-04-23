@@ -9,6 +9,7 @@
  */
 
 import { Effect } from "effect";
+import { createLogger } from "@atlas/api/lib/logger";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
@@ -29,12 +30,32 @@ async function loadEnterpriseGate() {
   return import("@atlas/ee/index");
 }
 
+const log = createLogger("admin-ip-allowlist");
+
 /** Map IPAllowlistError codes to HTTP responses. */
 const IP_ALLOWLIST_STATUS_MAP: Record<string, number> = {
   validation: 400,
   conflict: 409,
   not_found: 404,
 };
+
+/**
+ * Extract a clean message + optional code from the catch'd error. EE effects
+ * that fail with `IPAllowlistError` surface `{ _tag: "IPAllowlistError",
+ * code, message }` directly when composed via `yield*`; everything else is
+ * a generic Error. Using FiberFailure unwrapping is *not* needed here — the
+ * previous `Effect.runPromise(...)` + `Effect.tryPromise` nesting was what
+ * flattened tagged errors into opaque Fiber wrappers.
+ */
+function describeIPAllowlistError(err: unknown): { message: string; code: string | null } {
+  if (err instanceof Error) {
+    const code = "code" in err && typeof (err as Record<string, unknown>).code === "string"
+      ? ((err as Record<string, unknown>).code as string)
+      : null;
+    return { message: err.message, code };
+  }
+  return { message: String(err), code: null };
+}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -208,12 +229,16 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
     const ee = yield* Effect.promise(loadEE);
     const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
-    const entry = yield* Effect.tryPromise({
-      try: () => Effect.runPromise(ee.addIPAllowlistEntry(orgId!, body.cidr, body.description ?? null, user?.id ?? null)),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      // F-24: emit audit row on failure so an attacker using stolen creds
-      // cannot silently exercise the endpoint without leaving a record.
+    const entry = yield* ee.addIPAllowlistEntry(
+      orgId!,
+      body.cidr,
+      body.description ?? null,
+      user?.id ?? null,
+    ).pipe(Effect.catchAll((err) => {
+      // Emit audit on failure so an attacker using stolen creds leaves a
+      // forensic record. targetId stays as the CIDR since no row id exists
+      // yet; the real row id lives in metadata on the success path below.
+      const { message, code } = describeIPAllowlistError(err);
       logAdminAction({
         actionType: ADMIN_ACTIONS.ip_allowlist.add,
         targetType: "ip_allowlist",
@@ -223,13 +248,12 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
         metadata: {
           cidr: body.cidr,
           description: body.description ?? null,
-          error: err.message,
+          error: message,
         },
       });
-      const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
-      const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
+      const status = (code && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
       return Effect.succeed(c.json(
-        { error: "ip_allowlist_error", message: err.message },
+        { error: "ip_allowlist_error", message },
         status as 400,
       ));
     }));
@@ -265,44 +289,55 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
     const ee = yield* Effect.promise(loadEE);
     const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
-    // F-24: fetch the CIDR before deleting so the audit row captures the
-    // actual range that was removed, not just its opaque ID. Listing is
-    // cheap (bounded per org) and the existing EE API doesn't expose a
-    // by-id getter.
-    const priorEntries = yield* Effect.tryPromise({
-      try: () => Effect.runPromise(ee.listIPAllowlistEntries(orgId!)),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll(() => Effect.succeed([] as Array<{ id: string; cidr: string }>)));
-    const priorCidr = priorEntries.find((e) => e.id === entryId)?.cidr ?? null;
+    // Fetch the CIDR before deleting so the audit row records the actual
+    // range that was removed, not just the opaque id. Listing is cheap
+    // (bounded per org) and the EE API doesn't expose a by-id getter.
+    // Pre-lookup failure is intentionally non-fatal: we'd rather audit
+    // without the CIDR than 500 the delete and leave no forensic trace.
+    // `priorListFailed` distinguishes "list failed" from "id didn't exist"
+    // when reconstructing.
+    const priorLookup = yield* ee.listIPAllowlistEntries(orgId!).pipe(
+      Effect.map((entries) => ({
+        cidr: entries.find((e) => e.id === entryId)?.cidr ?? null,
+        failed: false,
+      })),
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), orgId, entryId },
+          "ip-allowlist pre-delete lookup failed; audit row will lack CIDR",
+        );
+        return Effect.succeed({ cidr: null, failed: true });
+      }),
+    );
 
-    const deleted = yield* Effect.tryPromise({
-      try: () => Effect.runPromise(ee.removeIPAllowlistEntry(orgId!, entryId)),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.ip_allowlist.remove,
-        targetType: "ip_allowlist",
-        targetId: entryId,
-        status: "failure",
-        ipAddress,
-        metadata: {
-          id: entryId,
-          ...(priorCidr !== null && { cidr: priorCidr }),
-          error: err.message,
-        },
-      });
-      const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
-      const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
-      return Effect.succeed(c.json(
-        { error: "ip_allowlist_error", message: err.message },
-        status as 400,
-      ));
-    }));
+    const deleted = yield* ee.removeIPAllowlistEntry(orgId!, entryId).pipe(
+      Effect.catchAll((err) => {
+        const { message, code } = describeIPAllowlistError(err);
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.ip_allowlist.remove,
+          targetType: "ip_allowlist",
+          targetId: entryId,
+          status: "failure",
+          ipAddress,
+          metadata: {
+            id: entryId,
+            ...(priorLookup.cidr !== null && { cidr: priorLookup.cidr }),
+            ...(priorLookup.failed && { priorListFailed: true }),
+            error: message,
+          },
+        });
+        const status = (code && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
+        return Effect.succeed(c.json(
+          { error: "ip_allowlist_error", message },
+          status as 400,
+        ));
+      }),
+    );
 
     if (deleted instanceof Response) return deleted;
 
-    // Emit audit for both found and not-found cases so forensic
-    // reconstruction still sees the attempt even if the row never existed.
+    // Emit even when the id never existed — forensic reconstruction still
+    // needs to see the attempt.
     logAdminAction({
       actionType: ADMIN_ACTIONS.ip_allowlist.remove,
       targetType: "ip_allowlist",
@@ -310,7 +345,8 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
       ipAddress,
       metadata: {
         id: entryId,
-        ...(priorCidr !== null && { cidr: priorCidr }),
+        ...(priorLookup.cidr !== null && { cidr: priorLookup.cidr }),
+        ...(priorLookup.failed && { priorListFailed: true }),
         found: Boolean(deleted),
       },
     });

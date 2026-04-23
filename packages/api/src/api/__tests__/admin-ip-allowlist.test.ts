@@ -111,10 +111,19 @@ afterAll(() => mocks.cleanup());
 
 // --- Helpers ---
 
-function adminRequest(method: string, path: string, body?: unknown): Request {
+function adminRequest(
+  method: string,
+  path: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>,
+): Request {
   const opts: RequestInit = {
     method,
-    headers: { "Content-Type": "application/json", Authorization: "Bearer test-key" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer test-key",
+      ...extraHeaders,
+    },
   };
   if (body) opts.body = JSON.stringify(body);
   return new Request(`http://localhost${path}`, opts);
@@ -125,6 +134,7 @@ interface AuditEntry {
   targetType: string;
   targetId: string;
   status?: "success" | "failure";
+  ipAddress?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -194,9 +204,6 @@ describe("admin IP allowlist audit emission (F-24)", () => {
     });
 
     it("emits logAdminAction with status: failure when EE add throws", async () => {
-      // FiberFailure surfaces .message but not .code (see route's catchAll),
-      // so conflict maps to 500 today — tracked as an incidental status-mapping
-      // bug outside F-24. What F-24 requires is the audit row; that's what we pin.
       mockAddEntry.mockImplementation(() =>
         Effect.fail(new MockIPAllowlistError("CIDR already in allowlist", "conflict")),
       );
@@ -208,7 +215,7 @@ describe("admin IP allowlist audit emission (F-24)", () => {
         }),
       );
 
-      expect([409, 500]).toContain(res.status);
+      expect(res.status).toBe(409);
       expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
 
       const entry = lastAuditCall();
@@ -219,13 +226,54 @@ describe("admin IP allowlist audit emission (F-24)", () => {
         description: "Office",
         error: "CIDR already in allowlist",
       });
-      // No stack traces / credential-shaped data leak into audit metadata.
+      // Audit message must be the clean IPAllowlistError.message — regression
+      // guard against FiberFailure unwrapping leaking Cause formatting or
+      // stack frames into the audit column.
+      expect(entry.metadata?.error).toBe("CIDR already in allowlist");
       expect(JSON.stringify(entry.metadata ?? {})).not.toContain("at ");
+      expect(JSON.stringify(entry.metadata ?? {})).not.toContain("FiberFailure");
+    });
+
+    it("threads client IP into the audit row from x-forwarded-for", async () => {
+      const res = await app.fetch(
+        adminRequest(
+          "POST",
+          "/api/v1/admin/ip-allowlist",
+          { cidr: "10.0.0.0/8", description: "Office" },
+          { "X-Forwarded-For": "203.0.113.9" },
+        ),
+      );
+
+      expect(res.status).toBe(201);
+      const entry = lastAuditCall();
+      // The attacker's source IP is the load-bearing forensic field for
+      // F-24. A refactor that drops the header plumbing must fail here.
+      expect(entry.ipAddress).toBe("203.0.113.9");
     });
   });
 
   describe("DELETE /api/v1/admin/ip-allowlist/:id", () => {
-    it("emits logAdminAction with ip_allowlist.remove on success, capturing CIDR", async () => {
+    it("captures the pre-deletion CIDR in the audit row (forensic anti-cover-up)", async () => {
+      // Use a distinctive CIDR that appears ONLY in the pre-delete list
+      // response — nothing in the request or delete response references it.
+      // If the audit handler reads from the wrong source (request body, a
+      // post-delete re-query, or the delete return value) the `cidr` here
+      // will not be `192.0.2.0/24` and this test fails. This is the
+      // anti-cover-up mechanism at the heart of F-24: the CIDR must be
+      // captured BEFORE the row is gone.
+      mockListEntries.mockImplementation(() =>
+        Effect.succeed([
+          {
+            id: "entry-1",
+            orgId: "org-1",
+            cidr: "192.0.2.0/24",
+            description: "Pre-delete witness",
+            createdAt: "2026-04-23T00:00:00Z",
+            createdBy: "admin-1",
+          },
+        ]),
+      );
+
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/ip-allowlist/entry-1"),
       );
@@ -240,7 +288,7 @@ describe("admin IP allowlist audit emission (F-24)", () => {
       expect(entry.status ?? "success").toBe("success");
       expect(entry.metadata).toMatchObject({
         id: "entry-1",
-        cidr: "10.0.0.0/8",
+        cidr: "192.0.2.0/24",
         found: true,
       });
     });

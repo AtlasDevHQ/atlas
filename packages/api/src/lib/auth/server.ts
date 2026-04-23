@@ -11,7 +11,7 @@
  * subpackage out of the bundle for non-managed deployments.
  */
 
-import { betterAuth } from "better-auth";
+import { betterAuth, type Session, type User } from "better-auth";
 import { bearer, admin, organization } from "better-auth/plugins";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
@@ -19,7 +19,7 @@ import { apiKey } from "@better-auth/api-key";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import Stripe from "stripe";
-import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
@@ -290,6 +290,60 @@ export function resolveRequireEmailVerification(env: NodeJS.ProcessEnv): boolean
   const raw = env.ATLAS_REQUIRE_EMAIL_VERIFICATION?.trim().toLowerCase();
   if (raw === undefined) return true;
   return !["false", "0", "no", "off"].includes(raw);
+}
+
+/**
+ * Brand for a validated Better Auth secret. The only way to produce one is
+ * via {@link parseAuthSecret}, which enforces the length floor. This keeps
+ * the "secret must be ≥32 characters" invariant in one place — passing a
+ * raw `string` to {@link buildAuthOptions} is a compile error, so a future
+ * code path that forgot to validate the env var can't silently ship a
+ * short secret.
+ */
+export type AuthSecret = string & { readonly __brand: "AuthSecret" };
+
+/**
+ * Validate and brand the value of `BETTER_AUTH_SECRET`. Throws on missing
+ * or short input — neither is recoverable at runtime, so failing early
+ * beats a cryptographic weakness masquerading as a config quirk.
+ */
+export function parseAuthSecret(raw: string | undefined): AuthSecret {
+  if (!raw) {
+    throw new Error(
+      "BETTER_AUTH_SECRET is not set. Managed auth mode requires this environment variable.",
+    );
+  }
+  if (raw.length < 32) {
+    throw new Error(
+      `BETTER_AUTH_SECRET must be at least 32 characters (got ${raw.length}). Use a cryptographically random string.`,
+    );
+  }
+  return raw as AuthSecret;
+}
+
+/**
+ * Bootstrap-admin policy for the `user.create.before` hook. Encoded as a
+ * tagged union so the three mutually-exclusive modes can't be silently
+ * combined (prior flat `adminEmail` + `allowFirstSignupAdmin` pair allowed
+ * nonsensical states like both-set or neither-set-but-flag-on).
+ */
+export type BootstrapAdminConfig =
+  | { mode: "email"; email: string }
+  | { mode: "first-signup" }
+  | { mode: "none" };
+
+/**
+ * Resolve {@link BootstrapAdminConfig} from the raw env values. Centralizes
+ * the precedence rules so {@link getAuthInstance} doesn't need to juggle
+ * two flags.
+ */
+export function resolveBootstrapAdminConfig(
+  adminEmail: string | undefined,
+  allowFirstSignupAdmin: boolean,
+): BootstrapAdminConfig {
+  if (adminEmail) return { mode: "email", email: adminEmail };
+  if (allowFirstSignupAdmin) return { mode: "first-signup" };
+  return { mode: "none" };
 }
 
 /**
@@ -799,31 +853,52 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
  * builder — and so tests can drive the builder without standing up Better
  * Auth's full plugin graph or an internal Postgres.
  *
+ * Design notes:
+ * - `internalDbAvailable` is derived from `database !== undefined` inside
+ *   the builder; passing both would admit a mismatched pair (e.g.
+ *   `database: undefined, internalDbAvailable: true` → the rate limiter
+ *   picks "database" storage against a memory adapter).
+ * - `bootstrapAdmin` replaces the earlier `adminEmail` + `allowFirstSignupAdmin`
+ *   pair so the three mutually-exclusive modes are statically enforced.
+ * - `testOverrides` is an explicit @internal escape hatch; the field's
+ *   existence and naming make it obvious that production callers should
+ *   leave it unset.
+ *
  * @internal — exported for testing.
  */
 export interface BuildAuthOptionsDeps {
   env: NodeJS.ProcessEnv;
-  secret: string;
+  secret: AuthSecret;
   baseURL: string | undefined;
   /**
-   * Better Auth database adapter or config. Pass `undefined` in tests to
-   * have Better Auth fall back to its built-in in-memory adapter.
+   * The internal Postgres pool that backs auth storage. Pass `undefined`
+   * in tests to have Better Auth fall back to its built-in in-memory
+   * adapter — the builder uses the presence of this field to also select
+   * "memory" vs "database" rate-limit storage, so the two knobs stay in
+   * lockstep.
    */
-  database: unknown;
-  internalDbAvailable: boolean;
+  database: InternalPool | undefined;
   cookieDomain: string | undefined;
   socialProviders: ReturnType<typeof buildSocialProviders>;
   plugins: ReturnType<typeof buildPlugins>;
   trustedOrigins: string[];
-  adminEmail: string | undefined;
-  allowFirstSignupAdmin: boolean;
+  bootstrapAdmin: BootstrapAdminConfig;
   /**
-   * Override the verification email dispatcher. Lets tests exercise the
-   * outer `.catch()` fallback on the Better Auth `sendVerificationEmail`
-   * callback without having to rebind module-local references. Defaults
-   * to the real {@link _sendVerificationEmail}.
+   * Test-only overrides. Keeping these in a nested object rather than at
+   * the top level makes the seam visible in call sites and prevents
+   * accidental production use (e.g. a refactor that reaches for the
+   * shape via `deps.sendVerificationEmail`).
+   *
+   * @internal
    */
-  sendVerificationEmail?: typeof _sendVerificationEmail;
+  testOverrides?: {
+    /**
+     * Replace the verification-email dispatcher. Tests use this to
+     * exercise the outer `.catch()` fallback on the Better Auth callback
+     * without rebinding module-local references.
+     */
+    sendVerificationEmail?: typeof _sendVerificationEmail;
+  };
 }
 
 /**
@@ -840,20 +915,29 @@ export interface BuildAuthOptionsDeps {
  * @internal — exported for testing.
  */
 export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof betterAuth>[0] {
+  const internalDbAvailable = deps.database !== undefined;
   const requireEmailVerification = resolveRequireEmailVerification(deps.env);
-  const rateLimitConfig = resolveAuthRateLimitConfig(deps.env, deps.internalDbAvailable);
-  const sendVerification = deps.sendVerificationEmail ?? _sendVerificationEmail;
-  const { adminEmail, allowFirstSignupAdmin, internalDbAvailable } = deps;
+  const rateLimitConfig = resolveAuthRateLimitConfig(deps.env, internalDbAvailable);
+  const sendVerification = deps.testOverrides?.sendVerificationEmail ?? _sendVerificationEmail;
 
-  // Cast: the organization plugin widens `databaseHooks` to include
-  // `member`, but `Parameters<typeof betterAuth>[0]` resolves to the base
-  // shape without plugin-extended keys. The literal below is structurally
-  // valid against the plugin-widened type Better Auth uses at runtime;
-  // the cast preserves that shape at the function boundary without
-  // leaking plugin generics into BuildAuthOptionsDeps.
+  // Unfold the tagged bootstrap-admin config into the flat args
+  // `computeBootstrapRole` expects. Keeping the flat pair confined to
+  // this function means the hook body still reads naturally while the
+  // deps struct exposes the tagged union to callers.
+  const adminEmail = deps.bootstrapAdmin.mode === "email" ? deps.bootstrapAdmin.email : undefined;
+  const allowFirstSignupAdmin = deps.bootstrapAdmin.mode === "first-signup";
+
+  // Cast at the return point: `databaseHooks.member` is contributed by the
+  // organization plugin at runtime and is not part of Better Auth's base
+  // options shape. `Parameters<typeof betterAuth>[0]` resolves to that
+  // base shape because the function is generic over the plugin tuple,
+  // which we intentionally erase from `BuildAuthOptionsDeps`. The cast
+  // pays the cost of that erasure at the single boundary rather than
+  // forcing every caller through plugin generics.
   const options = {
-    // getInternalDB() returns a pg.Pool typed as InternalPool.
-    // Cast needed because Better Auth expects its own pool/adapter type.
+    // InternalPool is pg.Pool-shaped via a local alias; Better Auth
+    // expects its own pool/adapter surface type. The cast is a one-way
+    // assertion that the pool we hand it is compatible.
     database: deps.database as Parameters<typeof betterAuth>[0]["database"],
     secret: deps.secret,
     baseURL: deps.baseURL,
@@ -862,7 +946,8 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
     // See `buildEmailAndPasswordConfig` for the `autoSignIn` invariant.
     emailAndPassword: buildEmailAndPasswordConfig(requireEmailVerification),
     emailVerification: {
-      sendVerificationEmail: async ({ user, url }: { user: { email: string }; url: string }) => {
+      sendVerificationEmail: async (data: { user: User; url: string; token: string }) => {
+        const { user, url } = data;
         // Do not await. Better Auth's enumeration protection depends on
         // the signup/signin handler returning the same 200 response in
         // the same time window regardless of whether the email exists;
@@ -943,7 +1028,13 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       },
       session: {
         create: {
-          before: async (session: { userId: string; activeOrganizationId?: string | null } & Record<string, unknown>) => {
+          // Better Auth's hook input for `session.create.before/after` is
+          // the base `Session` plus the organization plugin's
+          // `activeOrganizationId` extension, plus an unsafe index
+          // signature upstream uses to allow further plugin fields.
+          // Naming the org extension explicitly keeps `.activeOrganizationId`
+          // typed where other fields go through `unknown`.
+          before: async (session: Session & { activeOrganizationId?: string | null } & Record<string, unknown>) => {
             // Auto-set the active org on login when the user has exactly one
             // org and the session doesn't already have one. Uses the `before`
             // hook so Better Auth writes the activeOrganizationId directly
@@ -975,7 +1066,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
               );
             }
           },
-          after: async (session: { userId: string; activeOrganizationId?: string | null }) => {
+          after: async (session: Session & { activeOrganizationId?: string | null }) => {
             // Emit a login usage event for active-user tracking.
             // Fire-and-forget — never blocks or fails sign-in.
             try {
@@ -1015,7 +1106,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       },
       user: {
         create: {
-          before: async (user: { id: string; email: string | null | undefined } & Record<string, unknown>) => {
+          before: async (user: User & Record<string, unknown>) => {
             try {
               const decision = await computeBootstrapRole(user, {
                 adminEmail,
@@ -1059,7 +1150,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
               );
             }
           },
-          after: async (user: { id: string; email: string | null }) => {
+          after: async (user: User) => {
             // Onboarding welcome email — fire-and-forget after signup.
             // Deferred with setTimeout to allow Better Auth to create the org/membership first.
             if (user.email) {
@@ -1100,17 +1191,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
 export function getAuthInstance(): AuthInstance {
   if (_instance) return _instance;
 
-  const secret = process.env.BETTER_AUTH_SECRET;
-  if (!secret) {
-    throw new Error(
-      "BETTER_AUTH_SECRET is not set. Managed auth mode requires this environment variable.",
-    );
-  }
-  if (secret.length < 32) {
-    throw new Error(
-      `BETTER_AUTH_SECRET must be at least 32 characters (got ${secret.length}). Use a cryptographically random string.`,
-    );
-  }
+  const secret = parseAuthSecret(process.env.BETTER_AUTH_SECRET);
 
   const adminEmail = process.env.ATLAS_ADMIN_EMAIL?.toLowerCase().trim();
 
@@ -1194,8 +1275,7 @@ export function getAuthInstance(): AuthInstance {
     env: process.env,
     secret,
     baseURL,
-    database: getInternalDB(),
-    internalDbAvailable,
+    database: internalDbAvailable ? getInternalDB() : undefined,
     cookieDomain,
     socialProviders,
     plugins: buildPlugins(),
@@ -1203,8 +1283,7 @@ export function getAuthInstance(): AuthInstance {
       process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
         .map((s) => s.trim())
         .filter(Boolean) || [],
-    adminEmail,
-    allowFirstSignupAdmin,
+    bootstrapAdmin: resolveBootstrapAdminConfig(adminEmail, allowFirstSignupAdmin),
   });
 
   const instance = betterAuth(options) as unknown as AuthInstance;

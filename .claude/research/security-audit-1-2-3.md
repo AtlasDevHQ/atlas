@@ -1092,7 +1092,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-residency.ts` | 4 | 0 | ❌ | **Workspace residency assign is permanent and unaudited** (F-32) |
 | `admin-roles.ts` | 4 | 0 | ❌ | **Per phase-4 scope: CRITICAL — role CRUD + assignment unaudited** (F-25) |
 | `admin-sandbox.ts` | 2 | 0 | ❌ | Connect/disconnect BYOC sandbox (F-37) |
-| `admin-scim.ts` | 3 | 0 | ❌ | **Per phase-4 scope: CRITICAL — SCIM connection + group mappings unaudited** (F-23) |
+| `admin-scim.ts` | 3 | 3 | ✅ | `scim.connection_delete` / `scim.group_mapping_create` / `scim.group_mapping_delete` — F-23 fixed |
 | `admin-semantic-improve.ts` | 4 | 0 | ❌ | AI-assisted semantic layer edits (F-35) |
 | `admin-semantic.ts` | 3 | 3 | ✅ | `semantic.update_entity` / `semantic.delete_entity` |
 | `admin-sessions.ts` | 2 | 0 | ❌ | **Session revocation unaudited** (F-28) — pino-only, not in `admin_action_log` |
@@ -1121,7 +1121,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `validate-sql.ts` | 1 | 0 | ✳︎ | Pure validator — no state change |
 | `wizard.ts` | 4 | 0 | ❌ | **Onboarding wizard creates connections without `connection.create` audit** — bypasses `admin-connections.ts` audit path (F-34) |
 
-Total coverage: 201 write routes across 52 files. 74 routes currently emit an admin-audit entry; ✳︎-scoped files (user content, Stripe redirects, pure validators, signed-token demo) contribute another 47 writes that are intentionally audited elsewhere or legitimately skipped. Admin-scoped coverage alone is roughly 40% — the remainder clusters in the findings below. Per-file totals were verified by grepping `method: "(post|put|patch|delete)"` and `logAdminAction(` against each file on `main`; off-by-one errors surfaced during comment-analyzer review have been corrected in the table above (admin-integrations, admin-invitations, admin.ts, platform-sla).
+Total coverage: 201 write routes across 52 files. 77 routes currently emit an admin-audit entry (74 at scoreboard baseline + 3 added by F-23 fix); ✳︎-scoped files (user content, Stripe redirects, pure validators, signed-token demo) contribute another 47 writes that are intentionally audited elsewhere or legitimately skipped. Admin-scoped coverage alone is roughly 40% — the remainder clusters in the findings below. Per-file totals were verified by grepping `method: "(post|put|patch|delete)"` and `logAdminAction(` against each file on `main`; off-by-one errors surfaced during comment-analyzer review have been corrected in the table above (admin-integrations, admin-invitations, admin.ts, platform-sla).
 
 ### Findings
 
@@ -1176,6 +1176,8 @@ DELETE /api/v1/admin/scim/group-mappings/{id}   → mapping removed, no audit ro
 **Severity:** P0 — SCIM is called out explicitly in the phase-4 scope. Role escalation via SCIM group mappings is a privilege-escalation vector with no detection signal.
 
 **Issue:** #1778.
+
+**Status:** fixed (PR #1796, closes #1778). `ADMIN_ACTIONS.scim.{connectionDelete, groupMappingCreate, groupMappingDelete}` added; all three write handlers in `admin-scim.ts` emit success + failure audit rows. The group-mapping delete handler pre-fetches the row via `listGroupMappings` so the audit metadata preserves `{ scimGroupName, roleName }` — without this the deletion trail would reduce to `{ mappingId }` and compliance queries couldn't reconstruct *which* grant was revoked. Bearer tokens are never written to metadata (asserted by test: bearer-token sentinel absent from audit payload). Failure-path emission uses `Effect.tapErrorCause` so DB-layer defects (rejected `Effect.promise`, `Effect.die`) also produce a failure row — an early iteration used `Effect.tapError` which only catches typed failures and would have left DB outages / pool exhaustion silently unrecorded. The pre-fetch → delete race (list returns row, delete returns false) emits with `status: "failure"` + `reason: "race_deleted_between_fetch_and_delete"` rather than claiming a successful revoke that didn't happen. Error-message hygiene: `errorMessage()` helper strips credential-bearing URI userinfo (`postgres://user:pass@host/db` → `postgres://***@host/db`) and truncates to 512 chars so pg/mysql error text that leaks a connection string can't reach `admin_action_log.metadata`.
 
 ---
 

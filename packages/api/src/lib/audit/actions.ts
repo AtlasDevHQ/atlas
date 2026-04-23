@@ -104,6 +104,11 @@ export const ADMIN_ACTIONS = {
     archiveReconcile: "mode.archive_reconcile",
     restore: "mode.restore",
   },
+  scim: {
+    connectionDelete: "scim.connection_delete",
+    groupMappingCreate: "scim.group_mapping_create",
+    groupMappingDelete: "scim.group_mapping_delete",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

@@ -703,13 +703,16 @@ All P0/P1/P2 findings filed as separate issues (#1750–#1756) and shipped. Phas
 
 ## Phase 3 — SQL validator audit + fuzz
 
-**Status:** audit complete (2026-04-23); fixes tracked per-finding.
+**Status:** audit complete (2026-04-23); fixes shipped in phase-3-followup PR
+for F-17 / F-18 / F-19 (2026-04-23). F-20 and F-21 remain documented-only
+(P3 tail items).
 **Scope:** attack the 4-layer SQL validator (`packages/api/src/lib/tools/sql.ts`)
 — regex mutation guard, AST parse + SELECT-only gate, table whitelist — plus
 the runtime guards applied in `packages/api/src/lib/db/connection.ts`
 (statement_timeout, read-only session, auto-LIMIT).
 **Issue:** #1722
-**Branch:** `security/1.2.3-phase-3-sql-validator-audit`
+**Branch:** `security/1.2.3-phase-3-sql-validator-audit` (audit),
+`security/1.2.3-phase-3-validator-fixes` (F-17/F-18/F-19 fixes).
 
 ### Methodology
 
@@ -793,7 +796,13 @@ AST parse, whitelist) all see the executable content.
 required beyond agent tool access. Upgraded from initial P2 scoring after
 confirming the construct evaluates in both MySQL 8 and MariaDB 10.
 
-**Issue:** #1772.
+**Issue:** #1772. **Fix shipped:** phase-3-followup PR. Option A applied —
+`unwrapMysqlExecutableComments()` peels the `/*!NNNNN ... */` wrapper before
+`stripSqlComments`, the regex guard, the AST parser, and the whitelist all
+run. Loop-until-stable handles stacked wrappers; string-literal alternation
+prevents false unwraps inside quoted strings; unclosed forms fall through to
+the existing regex mutation guard. Fuzz pins F-17.a–F-17.h cover the
+variant matrix.
 
 ---
 
@@ -835,7 +844,13 @@ because it avoids regex false positives against column references named
 **Severity:** P2 — runtime catches it, but validator should not pass
 DDL-equivalent queries. Gap is structural, not deployment-specific.
 
-**Issue:** #1773.
+**Issue:** #1773. **Fix shipped:** phase-3-followup PR. AST-layer guard in
+`validateSQL` rejects when `stmt.into?.type === "into"` and
+`stmt.into.keyword !== "var"`. Plain SELECT's `{ position: null }` shape
+passes through, MySQL `SELECT ... INTO @var` (`keyword === "var"`) stays
+allowed as session-local variable assignment, and PG `SELECT INTO <table>`
+plus MySQL `SELECT INTO OUTFILE`/`DUMPFILE` (which already fail the F-19
+regex first) all reject.
 
 ---
 
@@ -871,7 +886,10 @@ One-line change, covered by the fuzz suite, trivially safe.
 **Severity:** P2 — requires FILE privilege at runtime, but the validator
 layer must enumerate both variants consistently.
 
-**Issue:** #1774.
+**Issue:** #1774. **Fix shipped:** phase-3-followup PR. `FORBIDDEN_PATTERNS`
+extended from `/\bINTO\s+OUTFILE\b/i` to
+`/\bINTO\s+(?:OUTFILE|DUMPFILE)\b/i`. A column named `dumpfile` (no leading
+`INTO`) is unaffected — regression pin covers that case.
 
 ---
 
@@ -936,13 +954,13 @@ function blocklist keyed by dialect.
 
 ### Severity summary
 
-| ID | Severity | Type | Surface | Issue |
-|---|---|---|---|---|
-| F-17 | P1 | Validator bypass | MySQL `/*!NNNNN */` executable comments | #1772 |
-| F-18 | P2 | Validator bypass | PG `SELECT INTO` | #1773 |
-| F-19 | P2 | Validator bypass | MySQL `INTO DUMPFILE` | #1774 |
-| F-20 | P3 | Normalization | Case-sensitive quoted identifier | — (stays in doc) |
-| F-21 | P3 | Known limitation | Dangerous dialect functions | — (stays in doc) |
+| ID | Severity | Type | Surface | Issue | Status |
+|---|---|---|---|---|---|
+| F-17 | P1 | Validator bypass | MySQL `/*!NNNNN */` executable comments | #1772 | Fixed in phase-3-followup PR |
+| F-18 | P2 | Validator bypass | PG `SELECT INTO` | #1773 | Fixed in phase-3-followup PR |
+| F-19 | P2 | Validator bypass | MySQL `INTO DUMPFILE` | #1774 | Fixed in phase-3-followup PR |
+| F-20 | P3 | Normalization | Case-sensitive quoted identifier | — (stays in doc) | Deferred |
+| F-21 | P3 | Known limitation | Dangerous dialect functions | — (stays in doc) | Deferred |
 
 **Totals:** P0 = 0, P1 = 1 (F-17), P2 = 2 (F-18, F-19), P3 = 2 (F-20, F-21).
 
@@ -976,8 +994,10 @@ function blocklist keyed by dialect.
   match.
 - **This audit section.**
 
-Fixes for F-17/F-18/F-19 are follow-up PRs — intentional separation so
-each finding lands with dedicated review + regression coverage, following
-the phase-1/phase-2 pattern. The fuzz suite's known-bypass section
-documents the current-behavior assertions that flip to rejection when
-each fix ships.
+Fixes for F-17/F-18/F-19 shipped in a single follow-up PR (branch
+`security/1.2.3-phase-3-validator-fixes`, closes #1772 / #1773 / #1774)
+— intentional separation from the audit PR so findings land with dedicated
+review + regression coverage, following the phase-1/phase-2 pattern. The
+fuzz suite's "regression pins" section keeps F-17.a–F-17.h, F-18, and F-19
+pinned so a future refactor that moves the rejection layer or accidentally
+reopens a bypass turns the suite red.

@@ -9,7 +9,7 @@
  * These admin routes manage SCIM connections, tokens, and group→role mappings.
  */
 
-import { Effect } from "effect";
+import { Array as Arr, Cause, Effect, Option } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
@@ -24,15 +24,38 @@ import {
   deleteGroupMapping,
   SCIMError,
 } from "@atlas/ee/auth/scim";
-import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 }
 
+const ERROR_MESSAGE_MAX = 512;
+
+// Strip credential-bearing URI userinfo (`postgres://user:pass@host/db`)
+// so pg/mysql error text that leaks a connection string can't land in
+// `admin_action_log.metadata`. Truncates to a bounded length for JSONB hygiene.
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  const raw = err instanceof Error ? err.message : String(err);
+  const scrubbed = raw.replace(
+    /\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi,
+    "$1://***@",
+  );
+  return scrubbed.length > ERROR_MESSAGE_MAX
+    ? `${scrubbed.slice(0, ERROR_MESSAGE_MAX - 3)}...`
+    : scrubbed;
+}
+
+// Extract the primary error from an Effect Cause — covers typed failures
+// AND defects (rejected `Effect.promise`, `Effect.die`). Returns undefined
+// on pure interrupts (no error to report).
+function causeToError(cause: Cause.Cause<unknown>): unknown | undefined {
+  if (Cause.isInterruptedOnly(cause)) return undefined;
+  const failure = Cause.failureOption(cause);
+  if (Option.isSome(failure)) return failure.value;
+  const defects = Arr.fromIterable(Cause.defects(cause));
+  return defects[0];
 }
 
 const scimDomainError = domainError(SCIMError, { not_found: 404, conflict: 409, validation: 400 });
@@ -211,16 +234,12 @@ adminScim.openapi(getStatusRoute, async (c) => {
 // DELETE /connections/:id — revoke a SCIM connection
 adminScim.openapi(deleteConnectionRoute, async (c) => {
   const ipAddress = clientIP(c);
-  // Raw value so the failure-path audit still fires when validation rejects the id.
-  const rawConnectionId = c.req.param("id") ?? "unknown";
+  // `createIdParamSchema` (z.string().min(1).max(128)) validates at the
+  // OpenAPI boundary; a malformed id returns 422 before this runs.
+  const { id: connectionId } = c.req.valid("param");
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const { id: connectionId } = c.req.valid("param");
-
-    if (!isValidId(connectionId)) {
-      return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
-    }
 
     const deleted = yield* deleteConnection(orgId!, connectionId);
     if (!deleted) {
@@ -237,21 +256,26 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
 
     return c.json({ message: "SCIM connection deleted." }, 200);
   }).pipe(
-    Effect.tapError((err) =>
-      Effect.sync(() =>
+    Effect.tapErrorCause((cause) => {
+      // `tapErrorCause` sees both typed failures and defects — the EE
+      // service uses `Effect.promise` for DB calls, so pool exhaustion /
+      // connection drops surface here as defects.
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
         logAdminAction({
           actionType: ADMIN_ACTIONS.scim.connectionDelete,
           targetType: "scim",
-          targetId: rawConnectionId,
+          targetId: connectionId,
           status: "failure",
           ipAddress,
           metadata: {
-            connectionId: rawConnectionId,
+            connectionId,
             error: errorMessage(err),
           },
         }),
-      ),
-    ),
+      );
+    }),
   ), { label: "delete SCIM connection", domainErrors: [scimDomainError] });
 });
 
@@ -268,14 +292,11 @@ adminScim.openapi(listGroupMappingsRoute, async (c) => {
 // POST /group-mappings — create a group→role mapping
 adminScim.openapi(createGroupMappingRoute, async (c) => {
   const ipAddress = clientIP(c);
+  // Zod body schema (min(1) / regex) has already validated these.
   const { scimGroupName, roleName } = c.req.valid("json");
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-
-    if (!scimGroupName || !roleName) {
-      return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
-    }
 
     const mapping = yield* createGroupMapping(orgId!, scimGroupName, roleName);
 
@@ -294,8 +315,10 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
 
     return c.json({ mapping }, 201);
   }).pipe(
-    Effect.tapError((err) =>
-      Effect.sync(() =>
+    Effect.tapErrorCause((cause) => {
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
         logAdminAction({
           actionType: ADMIN_ACTIONS.scim.groupMappingCreate,
           // No mapping id on failure — key the row by the group name the
@@ -310,23 +333,18 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
             error: errorMessage(err),
           },
         }),
-      ),
-    ),
+      );
+    }),
   ), { label: "create SCIM group mapping", domainErrors: [scimDomainError] });
 });
 
 // DELETE /group-mappings/:id — delete a group mapping
 adminScim.openapi(deleteGroupMappingRoute, async (c) => {
   const ipAddress = clientIP(c);
-  const rawMappingId = c.req.param("id") ?? "unknown";
+  const { id: mappingId } = c.req.valid("param");
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const { id: mappingId } = c.req.valid("param");
-
-    if (!isValidId(mappingId)) {
-      return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
-    }
 
     // Fetch the mapping before delete so the audit row captures the
     // group→role grant that was revoked — without this, a deletion leaves
@@ -347,6 +365,28 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
 
     const deleted = yield* deleteGroupMapping(orgId!, mappingId);
 
+    if (!deleted) {
+      // Race: another admin / SCIM sync deleted the row between the
+      // listGroupMappings pre-fetch and this call. Record as failure so
+      // the audit trail doesn't claim a successful revoke that didn't
+      // actually happen (the previous "success then 404" ordering could
+      // mislead forensic reconstruction).
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.scim.groupMappingDelete,
+        targetType: "scim",
+        targetId: mappingId,
+        status: "failure",
+        ipAddress,
+        metadata: {
+          mappingId,
+          scimGroupName: existing.scimGroupName,
+          roleName: existing.roleName,
+          reason: "race_deleted_between_fetch_and_delete",
+        },
+      });
+      return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
+    }
+
     logAdminAction({
       actionType: ADMIN_ACTIONS.scim.groupMappingDelete,
       targetType: "scim",
@@ -359,26 +399,25 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
       },
     });
 
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
-    }
     return c.json({ message: "SCIM group mapping deleted." }, 200);
   }).pipe(
-    Effect.tapError((err) =>
-      Effect.sync(() =>
+    Effect.tapErrorCause((cause) => {
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
         logAdminAction({
           actionType: ADMIN_ACTIONS.scim.groupMappingDelete,
           targetType: "scim",
-          targetId: rawMappingId,
+          targetId: mappingId,
           status: "failure",
           ipAddress,
           metadata: {
-            mappingId: rawMappingId,
+            mappingId,
             error: errorMessage(err),
           },
         }),
-      ),
-    ),
+      );
+    }),
   ), { label: "delete SCIM group mapping", domainErrors: [scimDomainError] });
 });
 

@@ -106,6 +106,39 @@ export function extractClassification(
   }
 }
 
+// Unwrap MySQL version-gated executable comments. F-17: MySQL treats
+// `/*!NNNNN body */` (and the MariaDB `/*! body */` form with no version) as
+// live SQL whenever the server version is ≥ NNNNN. node-sql-parser treats the
+// whole block as an ordinary comment, hiding the payload from the AST parser
+// and the table whitelist — so an attacker could smuggle
+// `/*!50000 UNION SELECT ... FROM mysql.user */` past every validation layer.
+//
+// Fix (Option A): in MySQL mode, replace the executable-comment wrapper with
+// its body so downstream layers see the SQL MySQL will actually execute.
+// String-literal alternation prevents the regex from firing on the token
+// inside a quoted string. The loop runs until stable so stacked wrappers
+// (nested `/*!NNNNN ... */` pairs) peel in both levels.
+//
+// Unclosed forms (no closing `*/`) are left intact — the regex guard still
+// sees the literal DML keyword after `stripSqlComments` refuses to strip
+// an unclosed block, so mutation detection still fires.
+//
+// Gated on `dbType === "mysql"` at the call site — other dialects (PG and
+// any plugin-registered dialect) skip this step and treat `/*!...*/` as an
+// ordinary block comment.
+function unwrapMysqlExecutableComments(sql: string): string {
+  let current = sql;
+  let prev: string;
+  do {
+    prev = current;
+    current = current.replace(
+      /'(?:[^']|'')*'|\/\*!(?:\d{0,5})([\s\S]*?)\*\//g,
+      (match, body) => (match.startsWith("'") ? match : ` ${body ?? ""} `),
+    );
+  } while (current !== prev);
+  return current;
+}
+
 /**
  * Strip SQL comments for regex guard testing.
  *
@@ -130,7 +163,10 @@ const FORBIDDEN_PATTERNS = [
   /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE)\b/i,
   /\b(GRANT|REVOKE|EXEC|EXECUTE|CALL|KILL)\b/i,
   /\b(COPY|LOAD|VACUUM|REINDEX|OPTIMIZE)\b/i,
-  /\bINTO\s+OUTFILE\b/i,
+  // Both MySQL filesystem-writing variants must be enumerated: OUTFILE
+  // (formatted rows) and DUMPFILE (single binary blob). Same FILE privilege
+  // required, same attack class — a regex that lists only one is a gap (F-19).
+  /\bINTO\s+(?:OUTFILE|DUMPFILE)\b/i,
 ];
 
 // MySQL-specific patterns — only applied when dbType === "mysql"
@@ -227,9 +263,31 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
   }
 
   // 0. Reject empty / whitespace-only input
-  const trimmed = sql.trim().replace(/;\s*$/, "");
+  let trimmed = sql.trim().replace(/;\s*$/, "");
   if (!trimmed) {
     return { valid: false, error: "Empty query" };
+  }
+
+  // F-17: In MySQL mode, unwrap /*!NNNNN ... */ executable comments so all
+  // downstream layers see the SQL MySQL will actually execute. PG has no
+  // equivalent syntax; leave its queries untouched.
+  if (dbType === "mysql") {
+    const preUnwrap = trimmed;
+    trimmed = unwrapMysqlExecutableComments(trimmed);
+    if (!trimmed.trim()) {
+      if (preUnwrap !== trimmed) {
+        // Input collapsed to whitespace only AFTER executable-comment unwrap —
+        // the caller sent something whose only non-empty content lived inside
+        // a `/*!NNNNN ... */` wrapper. Benign on its own (we reject as "Empty
+        // query"), but the shape is a probe signature worth surfacing to
+        // security telemetry.
+        log.warn(
+          { connectionId, sqlPrefix: preUnwrap.slice(0, 200) },
+          "F-17 guard: MySQL query collapsed to empty after executable-comment unwrap — possible probe",
+        );
+      }
+      return { valid: false, error: "Empty query" };
+    }
   }
 
   // 1. Regex guard against mutation keywords
@@ -269,6 +327,23 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
         return {
           valid: false,
           error: `Only SELECT statements are allowed, got: ${stmt.type}`,
+        };
+      }
+      // F-18: reject `SELECT ... INTO <table>` (PG creates a new table).
+      // node-sql-parser surfaces these as `stmt.into.type === "into"`; plain
+      // SELECTs come back with `stmt.into = { position: null }` and no `type`.
+      // MySQL `SELECT ... INTO @var` uses `keyword === "var"` (session-local
+      // variable assignment) — explicitly allowed.
+      //
+      // MySQL `INTO OUTFILE|DUMPFILE` is already rejected upstream by the
+      // F-19 `FORBIDDEN_PATTERNS` regex; this guard is the AST-level safety
+      // net if that regex is ever loosened or a new filesystem-write syntax
+      // is added that the regex misses.
+      const into = (stmt as { into?: { type?: string; keyword?: string | null } }).into;
+      if (into?.type === "into" && into.keyword !== "var") {
+        return {
+          valid: false,
+          error: "SELECT ... INTO is a forbidden operation — only plain read-only SELECT is allowed.",
         };
       }
       // Extract CTE names so they can be excluded from the table whitelist check

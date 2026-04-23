@@ -9,12 +9,13 @@
  *   2. Generator-based combinatorial property tests (~60+ generated cases)
  *      that cross-cut the categories — each generated SQL is asserted
  *      against the expected rejection property.
- *   3. "Known bypass" section with explicit xfail-style cases that pass
- *      validation today but must reject after the findings are fixed
- *      (F-17, F-18, F-19). Those are implemented as explicit assertions
- *      with inline `// BYPASS — see F-NN` annotations, so the suite will
- *      flip red when the underlying fix is applied and the assertion is
- *      inverted to `expectInvalid()`.
+ *   3. Regression pins for the three validator bypasses discovered in
+ *      phase-3 audit (F-17, F-18, F-19). Each asserts the fix stays in
+ *      place; each pin's reason fragment is aligned with the layer that
+ *      closes the bypass (`"not in the allowed list"` for whitelist,
+ *      `"forbidden"` for regex / AST-type guard) so a refactor that
+ *      starts rejecting via a different layer surfaces here before
+ *      shipping.
  *
  * Total case count: ≥200 across explicit corpus + generator output.
  *
@@ -102,44 +103,6 @@ function useDialect(url: string): void {
   beforeEach(() => {
     process.env.ATLAS_DATASOURCE_URL = url;
   });
-}
-
-/**
- * Pin a case that currently bypasses the validator pending a tracked fix.
- *
- * Asserts: `valid === true`, no error, classification populated. The last
- * two are redundant with the first under the current `SQLValidationResult`
- * type, but asserting them explicitly means that:
- *   - A partial fix that rejects via a different path (e.g. parser instead
- *     of a new guard) causes `classification` to become undefined and the
- *     test fails, forcing review of which bypass path the fix actually
- *     closed.
- *   - A type-shape change (e.g. adding a neutral third state) surfaces here
- *     before silently passing real attacks.
- *
- * @param findingId - Audit identifier (F-NN) so log output points to the
- *   row in `.claude/research/security-audit-1-2-3.md`.
- * @param expectedPostFixReason - Lowercase fragment expected in
- *   `r.error` once the fix lands. When flipping to `expectInvalid`, use
- *   this fragment as the second argument.
- */
-function expectCurrentBypass(
-  sql: string,
-  findingId: string,
-  expectedPostFixReason: string,
-): void {
-  const r = validateSQL(sql);
-  if (!r.valid) {
-    // The bypass has been closed — flip the call site to
-    // `expectInvalid(sql, expectedPostFixReason)` to pin the fix.
-    throw new Error(
-      `${findingId}: bypass appears closed (validator rejected with "${r.error}"). ` +
-      `Flip the call site from expectCurrentBypass to expectInvalid(sql, ${JSON.stringify(expectedPostFixReason)}).`,
-    );
-  }
-  expect(r.valid).toBe(true);
-  expect(r.error).toBeUndefined();
-  expect(r.classification).toBeDefined();
 }
 
 // ---------------------------------------------------------------------------
@@ -804,15 +767,6 @@ describe("fuzz: comment smuggling + multi-statement", () => {
     expectValid("-- banner\nSELECT * FROM companies");
   });
 
-  it("strips hash comment from regex guard (MySQL dialect where # is a valid comment)", () => {
-    // `#` is a MySQL comment, not PG. stripSqlComments uses a single regex
-    // that removes `#` lines unconditionally — safe because the AST parser
-    // then sees the original SQL and will reject in PG mode (parser does
-    // not accept `#` as comment or operator) while accepting it in MySQL.
-    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
-    expectValid("SELECT 1 # trailing comment\nFROM companies");
-  });
-
   it("rejects `#` in PostgreSQL mode — AST parser does not accept it", () => {
     // Property: if stripSqlComments normalises something away for regex
     // purposes, the AST parser must still see the original; if it fails
@@ -828,6 +782,22 @@ describe("fuzz: comment smuggling + multi-statement", () => {
 
   it("allows literal semicolon inside a string", () => {
     expectValid("SELECT ';' FROM companies");
+  });
+});
+
+describe("fuzz: comment smuggling — MySQL dialect slice", () => {
+  // Split out so the `useDialect(MYSQL_URL)` beforeEach owns this describe
+  // cleanly. Previously an inline `process.env.ATLAS_DATASOURCE_URL = MYSQL_URL`
+  // lived inside the PG-dialect describe above — safe under the existing
+  // per-test `beforeEach` reset but fragile for future tests added between.
+  useDialect(MYSQL_URL);
+
+  it("strips hash comment from regex guard (MySQL dialect where # is a valid comment)", () => {
+    // `#` is a MySQL comment, not PG. stripSqlComments uses a single regex
+    // that removes `#` lines unconditionally — safe because the AST parser
+    // then sees the original SQL and will reject in PG mode (parser does
+    // not accept `#` as comment or operator) while accepting it in MySQL.
+    expectValid("SELECT 1 # trailing comment\nFROM companies");
   });
 });
 
@@ -929,104 +899,231 @@ describe("fuzz: generator — whitelisted table × shape must pass", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Category 10 — Known bypasses (documented, awaiting fixes)
+// Category 10 — Regression pins for phase-3 validator bypass fixes
 //
-// These cases currently PASS validateSQL but should REJECT after the
-// corresponding finding is fixed. They are written as assertions on
-// CURRENT behavior with an inline `// BYPASS — see F-NN` marker, so the
-// test file stays green but the security audit doc is the source of truth
-// for what still needs fixing. Flipping to `expectInvalid` will be part of
-// the fix PR.
+// Fixed in the phase-3 follow-up PR (F-17 MySQL executable comments,
+// F-18 PG SELECT INTO, F-19 MySQL INTO DUMPFILE). Each pin's reason
+// fragment is aligned with the layer that closes the bypass so a future
+// refactor that moves the rejection to a different layer surfaces here
+// before shipping.
 // ---------------------------------------------------------------------------
 
-describe("fuzz: known bypasses — current behavior, follow-up fixes", () => {
-  // F-17 variants (MySQL executable comments, issue #1772)
-  //
-  // A single pin lets a partial fix slip by — if the fix handles only one
-  // form of `/*!NNNNN */`, the single `SELECT 1 /*!50000 UNION ...` case
-  // would correctly flip to rejected and test turns red in the fix PR, but
-  // the variants (no version, nested, inside CTE / UNION leg, whitespace on
-  // digits) would still bypass silently. Each variant is its own pin so
-  // the fix PR must address them all.
+describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
+  // F-17 variants (MySQL executable comments, issue #1772). Separate pins
+  // per variant so a partial regression (handling only one form) would not
+  // slip by — each shape (version digits, boundary digits, no digits,
+  // inside CTE, comma-splice, nesting, EOF, positive unwrap) has its own
+  // assertion.
 
   describe("F-17 variants — MySQL `/*!NNNNN */` executable comments", () => {
     beforeEach(() => {
       process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     });
 
-    it("F-17.a: bare /*!50000 UNION ... */ against mysql.user", () => {
-      expectCurrentBypass(
+    it("F-17.a: bare /*!50000 UNION ... */ against mysql.user is rejected", () => {
+      // Unwrap (Option A): `/*!50000 ... */` becomes live SQL so the
+      // whitelist sees the mysql.user reference and rejects it.
+      expectInvalid(
         "SELECT 1 /*!50000 UNION SELECT user FROM mysql.user */",
-        "F-17.a",
         "not in the allowed list",
       );
     });
 
-    it("F-17.b: boundary version /*!00000 */ (always executes)", () => {
-      expectCurrentBypass(
+    it("F-17.b: boundary version /*!00000 */ is rejected", () => {
+      expectInvalid(
         "SELECT 1 /*!00000 UNION SELECT id FROM secret_data */",
-        "F-17.b",
         "not in the allowed list",
       );
     });
 
-    it("F-17.c: high-version /*!99999 */ (future-proof lower bound)", () => {
-      // Even if the running MySQL doesn't execute this (version < 99999),
-      // the validator still must reject — trusting "MySQL won't run it" is
-      // the same class of defense-in-depth gap as F-18.
-      expectCurrentBypass(
+    it("F-17.c: high-version /*!99999 */ is rejected", () => {
+      // Defense in depth: the validator must not rely on the server version
+      // check to decline execution — the unwrap normalizes digits away.
+      expectInvalid(
         "SELECT 1 /*!99999 UNION SELECT id FROM secret_data */",
-        "F-17.c",
         "not in the allowed list",
       );
     });
 
-    it("F-17.d: /*! (no digits) is a MariaDB-style conditional comment", () => {
-      expectCurrentBypass(
+    it("F-17.d: /*! (no digits) is rejected", () => {
+      // MariaDB-style conditional comment with no version gate. Regex
+      // tolerates `\d{0,5}` so the unwrap still fires.
+      expectInvalid(
         "SELECT 1 /*! UNION SELECT id FROM secret_data */",
-        "F-17.d",
         "not in the allowed list",
       );
     });
 
-    it("F-17.e: /*! inside a CTE body", () => {
-      expectCurrentBypass(
+    it("F-17.e: /*! inside a CTE body is rejected", () => {
+      expectInvalid(
         "WITH x AS (SELECT 1 /*!50000 UNION SELECT id FROM secret_data */) SELECT * FROM x",
-        "F-17.e",
         "not in the allowed list",
       );
     });
 
-    it("F-17.f: /*! smuggling the comma-separator position into a SELECT list", () => {
-      // MySQL evaluates the content inline, so this becomes
-      // `SELECT 1 , secret FROM companies` — a column smuggle.
-      expectCurrentBypass(
+    it("F-17.f: /*! smuggling a column into the SELECT list is rejected", () => {
+      expectInvalid(
         "SELECT 1 /*!50000 , (SELECT id FROM secret_data LIMIT 1) AS leaked */ FROM companies",
-        "F-17.f",
         "not in the allowed list",
+      );
+    });
+
+    it("F-17.g: nested /*!50000 /*!80000 ... */ */ unwrap exposes the DML keyword", () => {
+      // Loop-until-stable unwrap peels both levels. Inner content `DROP`
+      // reaches the regex guard as live SQL and fires a mutation match.
+      expectInvalid(
+        "SELECT 1 /*!50000 /*!80000 DROP companies */ */",
+        "forbidden",
+      );
+    });
+
+    it("F-17.h: unclosed /*!NNNNN ... (EOF, no closing */) still rejected", () => {
+      // No `*/` means the unwrap regex doesn't fire. The unclosed comment
+      // stays intact so the regex guard sees the literal `DROP` inside the
+      // prefix and rejects it as a mutation keyword.
+      expectInvalid("SELECT 1 /*!50000 DROP", "forbidden");
+    });
+
+    it("F-17.i: /*! with whitespace before digits still rejects (MariaDB zero-digit form)", () => {
+      // Pin the `\d{0,5}` tolerance. MySQL's grammar requires digits to
+      // immediately follow `/*!` — a space means this is the MariaDB no-digit
+      // form with body ` 50000 UNION ...`, which unwraps to live SQL whose
+      // stray `50000` token node-sql-parser then rejects at parse layer.
+      // Guards against a future tighten-to-`\d{1,5}` regression that would
+      // leave the MariaDB form unwrapped-but-executable by the server.
+      expectInvalid(
+        "SELECT 1 /*! 50000 UNION SELECT id FROM secret_data */",
+        "could not be parsed",
+      );
+    });
+
+    it("F-17.j: /*!NNNNNN (over-spec six digits) still rejects", () => {
+      // `\d{0,5}` consumes five digits and leaves the trailing `0` in the
+      // body, producing `SELECT 1 0 UNION SELECT ...` which fails parse.
+      // If the regex were relaxed to `\d+`, MySQL would simply treat this
+      // as MariaDB-form (`/*!` + body starting with `500000 ...`) and still
+      // execute — this pin locks in the rejection either way.
+      expectInvalid(
+        "SELECT 1 /*!500000 UNION SELECT id FROM secret_data */",
+        "could not be parsed",
+      );
+    });
+
+    it("F-17.k: nested /*! /*! ... */ */ (no digits at either level) still rejects", () => {
+      // Stacked MariaDB-form wrappers — separate branch through the regex's
+      // `\d{0,5}` alternation from the digits+digits nest covered by F-17.g.
+      expectInvalid(
+        "WITH x AS (SELECT 1 /*! /*! , (SELECT id FROM secret_data) */ */) SELECT * FROM x",
+        "not in the allowed list",
+      );
+    });
+
+    it("F-17 positive regression: unwrapped /*! against a whitelisted table is accepted", () => {
+      // Option A must not over-reject — a `/*!` wrapper around a UNION that
+      // only references whitelisted tables unwraps to valid SQL and passes.
+      expectValid("SELECT 1 /*!50000 UNION SELECT id FROM companies */");
+    });
+
+    it("F-17 string-literal protection: /*! inside a string must not be unwrapped", () => {
+      // The unwrap regex alternates with a string-literal arm so a literal
+      // `'/*!50000 ...'` stays as a plain string and the query validates
+      // against the outer whitelisted table.
+      expectValid("SELECT '/*!50000 ignore' FROM companies");
+    });
+  });
+
+  describe("F-17 PG-mode regression — unwrap must not activate for PostgreSQL", () => {
+    beforeEach(() => {
+      process.env.ATLAS_DATASOURCE_URL = PG_URL;
+    });
+
+    it("PG treats /*!...*/ as a plain comment — payload that WOULD reject if unwrapped stays valid", () => {
+      // Strong property: the comment body references `mysql.user` (not in the
+      // whitelist). If unwrap fired in PG mode, the whitelist would see
+      // `mysql.user` and reject. It stays valid because PG skips the unwrap
+      // entirely and treats `/*!50000 ... */` as an ordinary block comment.
+      expectValid(
+        "SELECT * FROM companies WHERE id = 1 /*!50000 OR 1=1 UNION SELECT user FROM mysql.user */",
       );
     });
   });
 
-  it("F-18 (P2, PostgreSQL, #1773): SELECT INTO new_table bypasses validator", () => {
+  it("F-18 (P2, PostgreSQL, #1773): SELECT INTO new_table is blocked", () => {
     process.env.ATLAS_DATASOURCE_URL = PG_URL;
     // PG's `SELECT ... INTO new_table FROM source` creates a table (DDL
-    // equivalent). Caught only by runtime `SET default_transaction_read_only`.
-    expectCurrentBypass(
-      "SELECT * INTO new_table FROM companies",
-      "F-18",
-      "forbidden",
-    );
+    // equivalent). AST-layer guard rejects on `stmt.into.type === "into"`
+    // with a non-"var" keyword (excludes MySQL variable assignment).
+    expectInvalid("SELECT * INTO new_table FROM companies", "forbidden");
   });
 
-  it("F-19 (P2, MySQL, #1774): INTO DUMPFILE bypasses validator", () => {
+  it("F-18 regression: plain SELECT still accepted", () => {
+    process.env.ATLAS_DATASOURCE_URL = PG_URL;
+    expectValid("SELECT * FROM companies");
+  });
+
+  it("F-18 regression: MySQL SELECT INTO @var (session variable) still accepted", () => {
+    // `INTO @var` is session-local variable assignment — not a table write.
+    // AST keyword is "var" so the guard skips it.
     process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
-    // Regex currently blocks only `INTO OUTFILE`. `INTO DUMPFILE` writes to
-    // filesystem — same class of attack, requires FILE privilege at runtime.
-    expectCurrentBypass(
-      "SELECT * FROM companies INTO DUMPFILE '/tmp/x'",
-      "F-19",
-      "forbidden",
+    expectValid("SELECT id INTO @my_var FROM companies LIMIT 1");
+  });
+
+  it("F-18 regression: MySQL multi-variable INTO @a, @b still accepted", () => {
+    // Multiple variable targets share the same `keyword === "var"` shape.
+    // Pin exercises the `var`-carve-out against a richer AST payload.
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    expectValid("SELECT id, id INTO @a, @b FROM companies LIMIT 1");
+  });
+
+  it("F-18 regression: PG SELECT INTO TEMP ... is rejected (parser-layer today, AST-guard if parser adds support)", () => {
+    // node-sql-parser 5.4 does not recognise PG's `SELECT INTO TEMP t` form,
+    // so today this rejects at parse layer. If a future parser release adds
+    // support, the AST guard would catch it via `keyword === "temp"` (not
+    // `"var"`) — the layer-fragment expectation flips naturally in that case.
+    process.env.ATLAS_DATASOURCE_URL = PG_URL;
+    expectInvalid("SELECT * INTO TEMP t FROM companies", "could not be parsed");
+  });
+
+  it("F-19 (P2, MySQL, #1774): INTO DUMPFILE is blocked", () => {
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    // Regex `INTO\s+(?:OUTFILE|DUMPFILE)` now enumerates both filesystem
+    // writing variants. Requires FILE privilege at runtime but the
+    // validator layer must catch both consistently.
+    expectInvalid("SELECT * FROM companies INTO DUMPFILE '/tmp/x'", "forbidden");
+  });
+
+  it("F-19 regression: INTO OUTFILE still rejected after DUMPFILE extension", () => {
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    expectInvalid("SELECT * FROM companies INTO OUTFILE '/tmp/x'", "forbidden");
+  });
+
+  it("F-19 regression: column named 'dumpfile' is not falsely rejected", () => {
+    // The regex requires `INTO\s+DUMPFILE` — a column named `dumpfile` with
+    // no leading `INTO` must parse and evaluate normally. Table is whitelisted
+    // so this is a positive case.
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    expectValid("SELECT dumpfile FROM companies");
+  });
+
+  it("F-19 regression: INTO<TAB>DUMPFILE still rejected (whitespace class, not literal space)", () => {
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    expectInvalid("SELECT * FROM companies INTO\tDUMPFILE '/tmp/x'", "forbidden");
+  });
+
+  it("F-19 regression: INTO<NEWLINE>DUMPFILE still rejected", () => {
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    expectInvalid("SELECT * FROM companies INTO\nDUMPFILE '/tmp/x'", "forbidden");
+  });
+
+  it("F-19 regression: backtick-quoted `DUMPFILE` still rejected by parse layer", () => {
+    // MySQL does not accept `` INTO `DUMPFILE` `` as filesystem-write syntax
+    // (the keyword must be a bare identifier), so node-sql-parser rejects.
+    // Pin documents the layered defence — regex deliberately does NOT match
+    // backticks; the parser catches this shape.
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    expectInvalid(
+      "SELECT * FROM companies INTO `DUMPFILE` '/tmp/x'",
+      "could not be parsed",
     );
   });
 });

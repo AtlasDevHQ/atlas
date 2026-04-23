@@ -1177,7 +1177,7 @@ DELETE /api/v1/admin/scim/group-mappings/{id}   → mapping removed, no audit ro
 
 **Issue:** #1778.
 
-**Status:** fixed (phase-4 F-23 PR, closes #1778). `ADMIN_ACTIONS.scim.{connectionDelete, groupMappingCreate, groupMappingDelete}` added; all three write handlers in `admin-scim.ts` emit success + failure audit rows. The group-mapping delete handler pre-fetches the row via `listGroupMappings` so the audit metadata preserves `{ scimGroupName, roleName }` — without this the deletion trail would reduce to `{ mappingId }` and compliance queries couldn't reconstruct *which* grant was revoked. Bearer tokens are never written to metadata (asserted by test: bearer-token sentinel absent from audit payload).
+**Status:** fixed (PR #1796, closes #1778). `ADMIN_ACTIONS.scim.{connectionDelete, groupMappingCreate, groupMappingDelete}` added; all three write handlers in `admin-scim.ts` emit success + failure audit rows. The group-mapping delete handler pre-fetches the row via `listGroupMappings` so the audit metadata preserves `{ scimGroupName, roleName }` — without this the deletion trail would reduce to `{ mappingId }` and compliance queries couldn't reconstruct *which* grant was revoked. Bearer tokens are never written to metadata (asserted by test: bearer-token sentinel absent from audit payload).
 
 ---
 

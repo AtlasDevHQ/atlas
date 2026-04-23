@@ -100,6 +100,18 @@ export const ADMIN_ACTIONS = {
     archiveReconcile: "mode.archive_reconcile",
     restore: "mode.restore",
   },
+  /**
+   * Admin audit retention surface (F-26 / #1781). Without these entries a
+   * compromised admin could shrink retentionDays to 7 and hard-delete the
+   * trail leaving zero forensic record. Scheduler self-audit is tracked
+   * separately as F-27 (#1782).
+   */
+  audit_retention: {
+    policyUpdate: "audit_retention.policy_update",
+    export: "audit_retention.export",
+    manualPurge: "audit_retention.manual_purge",
+    manualHardDelete: "audit_retention.manual_hard_delete",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

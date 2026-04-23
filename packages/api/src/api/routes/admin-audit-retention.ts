@@ -17,10 +17,21 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { RetentionError } from "@atlas/ee/audit/retention";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const retentionDomainError = domainError(RetentionError, { validation: 400, not_found: 404 });
+
+/** Extract the caller's IP for audit row attribution. */
+function clientIpFrom(headers: { header(name: string): string | undefined }): string | null {
+  return headers.header("x-forwarded-for") ?? headers.header("x-real-ip") ?? null;
+}
+
+/** Render any thrown value to a string suitable for audit metadata. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -318,87 +329,228 @@ adminAuditRetention.openapi(getRetentionRoute, async (c) => {
 
 // PUT / — update retention policy
 adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
+  const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
 
     const body = c.req.valid("json");
 
-    const { setRetentionPolicy } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
-    const policy = yield* setRetentionPolicy(
+    const { setRetentionPolicy, getRetentionPolicy } = yield* Effect.promise(
+      () => import("@atlas/ee/audit/retention"),
+    );
+
+    // Snapshot the prior policy so the audit row captures a shrink
+    // (e.g. 365 → 7 days to enable mass hard-delete). If the read fails
+    // we propagate without auditing — no write was attempted.
+    const previous = yield* getRetentionPolicy(orgId!);
+
+    const baseMeta = {
+      retentionDays: body.retentionDays,
+      hardDeleteDelayDays: body.hardDeleteDelayDays ?? null,
+      previousRetentionDays: previous?.retentionDays ?? null,
+      previousHardDeleteDelayDays: previous?.hardDeleteDelayDays ?? null,
+    };
+
+    return yield* setRetentionPolicy(
       orgId!,
       {
         retentionDays: body.retentionDays,
         hardDeleteDelayDays: body.hardDeleteDelayDays,
       },
       user?.id ?? null,
+    ).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.policyUpdate,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            metadata: baseMeta,
+            ipAddress,
+          });
+        }),
+      ),
+      Effect.tapError((err) =>
+        Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.policyUpdate,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            status: "failure",
+            metadata: { ...baseMeta, error: errorMessage(err) },
+            ipAddress,
+          });
+        }),
+      ),
+      Effect.map((policy) => c.json({ policy }, 200)),
     );
-    return c.json({ policy }, 200);
   }), { label: "update retention policy", domainErrors: [retentionDomainError] });
 });
 
 // POST /export — compliance export
 adminAuditRetention.openapi(exportRoute, async (c) => {
+  const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     const body = c.req.valid("json");
 
+    // Audit metadata records what was requested + how many rows came
+    // back, never the actual exported content (would defeat the point of
+    // export-rate-limit forensics if the trail itself contained the
+    // exported PII / SQL).
+    const baseMeta = {
+      format: body.format,
+      startDate: body.startDate ?? null,
+      endDate: body.endDate ?? null,
+    };
+
     const { exportAuditLog } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
-    const result = yield* exportAuditLog({
+
+    return yield* exportAuditLog({
       orgId: orgId!,
       format: body.format,
       startDate: body.startDate,
       endDate: body.endDate,
-    });
-
-    if (result.format === "csv") {
-      const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-      return new Response(result.content, {
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${filename}"`,
-          ...(result.truncated && {
-            "X-Export-Truncated": "true",
-            "X-Export-Total": String(result.totalAvailable),
-          }),
-        },
-      });
-    }
-
-    // JSON format
-    const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
-    return new Response(result.content, {
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        ...(result.truncated && {
-          "X-Export-Truncated": "true",
-          "X-Export-Total": String(result.totalAvailable),
+    }).pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.export,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            metadata: { ...baseMeta, rowCount: result.rowCount },
+            ipAddress,
+          });
         }),
-      },
-    });
+      ),
+      Effect.tapError((err) =>
+        Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.export,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            status: "failure",
+            metadata: { ...baseMeta, error: errorMessage(err) },
+            ipAddress,
+          });
+        }),
+      ),
+      Effect.map((result) => {
+        if (result.format === "csv") {
+          const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+          return new Response(result.content, {
+            headers: {
+              "Content-Type": "text/csv; charset=utf-8",
+              "Content-Disposition": `attachment; filename="${filename}"`,
+              ...(result.truncated && {
+                "X-Export-Truncated": "true",
+                "X-Export-Total": String(result.totalAvailable),
+              }),
+            },
+          });
+        }
+
+        const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
+        return new Response(result.content, {
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${filename}"`,
+            ...(result.truncated && {
+              "X-Export-Truncated": "true",
+              "X-Export-Total": String(result.totalAvailable),
+            }),
+          },
+        });
+      }),
+    );
   }), { label: "export audit log", domainErrors: [retentionDomainError] });
 });
 
 // POST /purge — manual soft-delete purge
 adminAuditRetention.openapi(purgeRoute, async (c) => {
+  const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const { purgeExpiredEntries } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
-    const results = yield* purgeExpiredEntries(orgId!);
-    return c.json({ results }, 200);
+    const { purgeExpiredEntries, getRetentionPolicy } = yield* Effect.promise(
+      () => import("@atlas/ee/audit/retention"),
+    );
+
+    // Snapshot retentionDays for the audit row — purge results don't
+    // include the window, and we want it on both success and failure
+    // rows so a forensic reader can see what threshold the admin invoked
+    // the purge against.
+    const policy = yield* getRetentionPolicy(orgId!);
+    const retentionDays = policy?.retentionDays ?? null;
+
+    return yield* purgeExpiredEntries(orgId!).pipe(
+      Effect.tap((results) =>
+        Effect.sync(() => {
+          const softDeletedCount = results.reduce(
+            (sum, row) => sum + row.softDeletedCount,
+            0,
+          );
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.manualPurge,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            metadata: { softDeletedCount, retentionDays },
+            ipAddress,
+          });
+        }),
+      ),
+      Effect.tapError((err) =>
+        Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.manualPurge,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            status: "failure",
+            metadata: { retentionDays, error: errorMessage(err) },
+            ipAddress,
+          });
+        }),
+      ),
+      Effect.map((results) => c.json({ results }, 200)),
+    );
   }), { label: "purge audit log entries", domainErrors: [retentionDomainError] });
 });
 
 // POST /hard-delete — manual hard-delete cleanup
 adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
+  const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     const { hardDeleteExpired } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
-    const result = yield* hardDeleteExpired(orgId!);
-    return c.json(result, 200);
+
+    return yield* hardDeleteExpired(orgId!).pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.manualHardDelete,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            metadata: { deletedCount: result.deletedCount },
+            ipAddress,
+          });
+        }),
+      ),
+      Effect.tapError((err) =>
+        Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_retention.manualHardDelete,
+            targetType: "audit_retention",
+            targetId: orgId!,
+            status: "failure",
+            metadata: { error: errorMessage(err) },
+            ipAddress,
+          });
+        }),
+      ),
+      Effect.map((result) => c.json(result, 200)),
+    );
   }), { label: "hard-delete audit log entries", domainErrors: [retentionDomainError] });
 });
 

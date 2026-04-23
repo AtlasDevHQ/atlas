@@ -34,6 +34,7 @@ const mocks = createApiTestMocks();
 import { mock } from "bun:test";
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
+  logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: {
     workspace: {
       suspend: "workspace.suspend",

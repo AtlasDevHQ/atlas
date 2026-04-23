@@ -69,7 +69,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   getRequestContext: () => null,
 }));
 
-// ── Audit logger mock — capture every logAdminAction call ─────────────
+// ── Audit logger mock — capture every audit emission ──────────────────
 
 interface CapturedAuditEntry {
   actionType: string;
@@ -84,11 +84,18 @@ interface CapturedAuditEntry {
 const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
   () => {},
 );
+let mockLogAdminActionAwaitError: Error | null = null;
+const mockLogAdminActionAwait: Mock<(entry: CapturedAuditEntry) => Promise<void>> =
+  mock(async (entry) => {
+    mockLogAdminAction(entry);
+    if (mockLogAdminActionAwaitError) throw mockLogAdminActionAwaitError;
+  });
 
 mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
+    logAdminActionAwait: mockLogAdminActionAwait,
     ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
   };
 });
@@ -123,6 +130,7 @@ let mockPurgeResult: { orgId: string; softDeletedCount: number }[] = [];
 let mockPurgeError: Error | null = null;
 let mockHardDeleteResult: { deletedCount: number } = { deletedCount: 0 };
 let mockHardDeleteError: Error | null = null;
+const mockEeCallOrder: string[] = [];
 
 const { RetentionError: RealRetentionError } = await import(
   "@atlas/ee/audit/retention"
@@ -131,10 +139,12 @@ const { RetentionError: RealRetentionError } = await import(
 mock.module("@atlas/ee/audit/retention", () => ({
   RetentionError: RealRetentionError,
   getRetentionPolicy: () => {
+    mockEeCallOrder.push("getRetentionPolicy");
     if (mockGetPolicyError) return Effect.fail(mockGetPolicyError);
     return Effect.succeed(mockGetPolicyResult);
   },
   setRetentionPolicy: () => {
+    mockEeCallOrder.push("setRetentionPolicy");
     if (mockSetPolicyError) return Effect.fail(mockSetPolicyError);
     return Effect.succeed(mockSetPolicyResult);
   },
@@ -187,7 +197,10 @@ function resetMocks(): void {
   mockPurgeError = null;
   mockHardDeleteResult = { deletedCount: 0 };
   mockHardDeleteError = null;
+  mockLogAdminActionAwaitError = null;
   mockLogAdminAction.mockClear();
+  mockLogAdminActionAwait.mockClear();
+  mockEeCallOrder.length = 0;
   mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
@@ -270,7 +283,7 @@ describe("PUT /api/v1/admin/audit/retention — policy_update audit", () => {
     expect(meta.previousHardDeleteDelayDays).toBeNull();
   });
 
-  it("emits failure audit when setRetentionPolicy throws", async () => {
+  it("emits failure audit when setRetentionPolicy throws — preserves RetentionError discriminator", async () => {
     mockGetPolicyResult = makePolicy({ retentionDays: 365 });
     mockSetPolicyError = new RealRetentionError({
       message: "Retention period must be at least 7 days or null (unlimited). Got: 3.",
@@ -284,8 +297,36 @@ describe("PUT /api/v1/admin/audit/retention — policy_update audit", () => {
     const entry = mockLogAdminAction.mock.calls[0]![0];
     expect(entry.actionType).toBe("audit_retention.policy_update");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata!.error).toContain("at least 7 days");
+    expect(entry.metadata!.message).toContain("at least 7 days");
+    expect(entry.metadata!.code).toBe("validation");
+    expect(entry.metadata!.tag).toBe("RetentionError");
     expect(entry.metadata!.previousRetentionDays).toBe(365);
+  });
+
+  it("reads the prior policy BEFORE writing — order guard against snapshot drift", async () => {
+    // Future refactor risk: moving getRetentionPolicy after setRetentionPolicy
+    // would make `previousRetentionDays` capture the new value, silently
+    // hiding shrinks in the audit row. The order assertion catches that.
+    mockGetPolicyResult = makePolicy({ retentionDays: 365 });
+    mockSetPolicyResult = makePolicy({ retentionDays: 90 });
+
+    await request("PUT", "/", { retentionDays: 90 });
+
+    expect(mockEeCallOrder).toEqual(["getRetentionPolicy", "setRetentionPolicy"]);
+  });
+
+  it("emits stage:policy_read failure audit when getRetentionPolicy throws", async () => {
+    mockGetPolicyError = new Error("transient PG failure during read");
+
+    const res = await request("PUT", "/", { retentionDays: 30 });
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata!.stage).toBe("policy_read");
+    expect(entry.metadata!.message).toContain("transient PG failure");
+    expect(entry.metadata!.previousRetentionDays).toBeNull();
   });
 });
 
@@ -360,7 +401,7 @@ describe("POST /api/v1/admin/audit/retention/export — export audit", () => {
     expect(entry.metadata).not.toHaveProperty("entries");
   });
 
-  it("emits failure audit when exportAuditLog throws", async () => {
+  it("emits failure audit when exportAuditLog throws — preserves discriminator", async () => {
     mockExportError = new RealRetentionError({
       message: 'Invalid start_date format: "not-a-date".',
       code: "validation",
@@ -376,7 +417,9 @@ describe("POST /api/v1/admin/audit/retention/export — export audit", () => {
     const entry = mockLogAdminAction.mock.calls[0]![0];
     expect(entry.actionType).toBe("audit_retention.export");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata!.error).toContain("Invalid start_date");
+    expect(entry.metadata!.message).toContain("Invalid start_date");
+    expect(entry.metadata!.code).toBe("validation");
+    expect(entry.metadata!.tag).toBe("RetentionError");
     expect(entry.metadata!.format).toBe("csv");
   });
 });
@@ -410,6 +453,18 @@ describe("POST /api/v1/admin/audit/retention/purge — manual_purge audit", () =
     expect(meta.retentionDays).toBe(30);
   });
 
+  it("never includes per-row purge results in audit metadata", async () => {
+    mockGetPolicyResult = makePolicy({ retentionDays: 30 });
+    mockPurgeResult = [{ orgId: "org-1", softDeletedCount: 5 }];
+
+    await request("POST", "/purge");
+
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.metadata).not.toHaveProperty("results");
+    expect(entry.metadata).not.toHaveProperty("rows");
+    expect(entry.metadata).not.toHaveProperty("ids");
+  });
+
   it("emits failure audit when purgeExpiredEntries throws", async () => {
     mockGetPolicyResult = makePolicy({ retentionDays: 30 });
     mockPurgeError = new Error("simulated purge failure");
@@ -421,8 +476,22 @@ describe("POST /api/v1/admin/audit/retention/purge — manual_purge audit", () =
     const entry = mockLogAdminAction.mock.calls[0]![0];
     expect(entry.actionType).toBe("audit_retention.manual_purge");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata!.error).toContain("simulated purge failure");
+    expect(entry.metadata!.message).toContain("simulated purge failure");
     expect(entry.metadata!.retentionDays).toBe(30);
+  });
+
+  it("emits stage:policy_read failure when getRetentionPolicy throws before purge", async () => {
+    mockGetPolicyError = new Error("transient PG failure during read");
+
+    const res = await request("POST", "/purge");
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("audit_retention.manual_purge");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata!.stage).toBe("policy_read");
+    expect(entry.metadata!.message).toContain("transient PG failure");
   });
 });
 
@@ -444,6 +513,17 @@ describe("POST /api/v1/admin/audit/retention/hard-delete — manual_hard_delete 
     expect(entry.metadata!.deletedCount).toBe(99);
   });
 
+  it("never includes per-row hard-delete results in audit metadata", async () => {
+    mockHardDeleteResult = { deletedCount: 7 };
+
+    await request("POST", "/hard-delete");
+
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.metadata).not.toHaveProperty("results");
+    expect(entry.metadata).not.toHaveProperty("rows");
+    expect(entry.metadata).not.toHaveProperty("ids");
+  });
+
   it("emits failure audit when hardDeleteExpired throws", async () => {
     mockHardDeleteError = new Error("simulated hard-delete failure");
 
@@ -454,7 +534,26 @@ describe("POST /api/v1/admin/audit/retention/hard-delete — manual_hard_delete 
     const entry = mockLogAdminAction.mock.calls[0]![0];
     expect(entry.actionType).toBe("audit_retention.manual_hard_delete");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata!.error).toContain("simulated hard-delete failure");
+    expect(entry.metadata!.message).toContain("simulated hard-delete failure");
+  });
+});
+
+describe("Synchronous audit-write contract", () => {
+  beforeEach(resetMocks);
+
+  it("PUT / surfaces 500 when audit row fails to commit", async () => {
+    // Defends the F-26 invariant: a 200 with no audit row would leave
+    // the admin thinking their shrink succeeded silently. Forcing a 500
+    // pushes them to retry, which is safe (setRetentionPolicy upserts).
+    mockGetPolicyResult = makePolicy({ retentionDays: 365 });
+    mockSetPolicyResult = makePolicy({ retentionDays: 90 });
+    mockLogAdminActionAwaitError = new Error("admin_action_log INSERT failed");
+
+    const res = await request("PUT", "/", { retentionDays: 90 });
+
+    expect(res.status).toBe(500);
+    // Best-effort still pings pino so the audit miss is observable.
+    expect(mockLogAdminAction).toHaveBeenCalled();
   });
 });
 
@@ -467,6 +566,44 @@ describe("Regression — read endpoints stay quiet", () => {
     const res = await request("GET", "/");
 
     expect(res.status).toBe(200);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("Regression — pre-handler rejections do not emit audit", () => {
+  beforeEach(resetMocks);
+
+  it("missing activeOrganizationId short-circuits before any audit emission", async () => {
+    mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: {
+          id: "admin-1",
+          mode: "managed",
+          label: "Admin",
+          role: "admin",
+          // Intentional: no activeOrganizationId — requireOrgContext should
+          // reject with 400 before the handler runs, so a missing-org probe
+          // can't land an audit row with `targetId: undefined`.
+          activeOrganizationId: undefined,
+        },
+      }),
+    );
+
+    const res = await request("PUT", "/", { retentionDays: 90 });
+
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("422 Zod validation rejection does not emit audit", async () => {
+    // retentionDays: "abc" fails the schema before the handler runs. The
+    // request never reaches the audit-emission code path, so no row.
+    const res = await request("PUT", "/", { retentionDays: "abc" });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
     expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });

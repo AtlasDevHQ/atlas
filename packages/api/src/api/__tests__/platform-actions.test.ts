@@ -23,6 +23,7 @@ const mocks = createApiTestMocks();
 
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
+  logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: {
     workspace: { suspend: "workspace.suspend", unsuspend: "workspace.unsuspend", delete: "workspace.delete", purge: "workspace.purge", changePlan: "workspace.change_plan" },
     domain: { register: "domain.register", verify: "domain.verify", delete: "domain.delete" },
@@ -44,6 +45,7 @@ mock.module("@atlas/api/lib/audit", () => ({
 
 mock.module("@atlas/api/lib/audit/admin", () => ({
   logAdminAction: mock(() => {}),
+  logAdminActionAwait: mock(async () => {}),
 }));
 
 mock.module("@atlas/api/lib/audit/actions", () => ({

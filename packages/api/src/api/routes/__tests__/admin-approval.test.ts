@@ -110,6 +110,7 @@ mock.module("@atlas/ee/governance/approval", () => {
 
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: () => {},
+  logAdminActionAwait: async () => {},
   ADMIN_ACTIONS: {
     approval: { approve: "approval.approve", deny: "approval.deny" },
   },

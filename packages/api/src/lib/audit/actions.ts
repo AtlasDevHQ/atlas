@@ -101,10 +101,8 @@ export const ADMIN_ACTIONS = {
     restore: "mode.restore",
   },
   /**
-   * Admin audit retention surface (F-26 / #1781). Without these entries a
-   * compromised admin could shrink retentionDays to 7 and hard-delete the
-   * trail leaving zero forensic record. Scheduler self-audit is tracked
-   * separately as F-27 (#1782).
+   * Without these entries a compromised admin could shrink retentionDays
+   * and hard-delete the audit trail leaving zero forensic record.
    */
   audit_retention: {
     policyUpdate: "audit_retention.policy_update",

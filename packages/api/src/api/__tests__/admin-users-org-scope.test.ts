@@ -60,6 +60,7 @@ mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
+    logAdminActionAwait: mock(async () => {}),
     ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
   };
 });

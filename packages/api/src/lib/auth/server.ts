@@ -11,7 +11,7 @@
  * subpackage out of the bundle for non-managed deployments.
  */
 
-import { betterAuth } from "better-auth";
+import { betterAuth, type Session, type User } from "better-auth";
 import { bearer, admin, organization } from "better-auth/plugins";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
@@ -19,7 +19,7 @@ import { apiKey } from "@better-auth/api-key";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import Stripe from "stripe";
-import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
@@ -290,6 +290,60 @@ export function resolveRequireEmailVerification(env: NodeJS.ProcessEnv): boolean
   const raw = env.ATLAS_REQUIRE_EMAIL_VERIFICATION?.trim().toLowerCase();
   if (raw === undefined) return true;
   return !["false", "0", "no", "off"].includes(raw);
+}
+
+/**
+ * Brand for a validated Better Auth secret. The only way to produce one is
+ * via {@link parseAuthSecret}, which enforces the length floor. This keeps
+ * the "secret must be ≥32 characters" invariant in one place — passing a
+ * raw `string` to {@link buildAuthOptions} is a compile error, so a future
+ * code path that forgot to validate the env var can't silently ship a
+ * short secret.
+ */
+export type AuthSecret = string & { readonly __brand: "AuthSecret" };
+
+/**
+ * Validate and brand the value of `BETTER_AUTH_SECRET`. Throws on missing
+ * or short input — neither is recoverable at runtime, so failing early
+ * beats a cryptographic weakness masquerading as a config quirk.
+ */
+export function parseAuthSecret(raw: string | undefined): AuthSecret {
+  if (!raw) {
+    throw new Error(
+      "BETTER_AUTH_SECRET is not set. Managed auth mode requires this environment variable.",
+    );
+  }
+  if (raw.length < 32) {
+    throw new Error(
+      `BETTER_AUTH_SECRET must be at least 32 characters (got ${raw.length}). Use a cryptographically random string.`,
+    );
+  }
+  return raw as AuthSecret;
+}
+
+/**
+ * Bootstrap-admin policy for the `user.create.before` hook. Encoded as a
+ * tagged union so the three mutually-exclusive modes can't be silently
+ * combined (prior flat `adminEmail` + `allowFirstSignupAdmin` pair allowed
+ * nonsensical states like both-set or neither-set-but-flag-on).
+ */
+export type BootstrapAdminConfig =
+  | { mode: "email"; email: string }
+  | { mode: "first-signup" }
+  | { mode: "none" };
+
+/**
+ * Resolve {@link BootstrapAdminConfig} from the raw env values. Centralizes
+ * the precedence rules so {@link getAuthInstance} doesn't need to juggle
+ * two flags.
+ */
+export function resolveBootstrapAdminConfig(
+  adminEmail: string | undefined,
+  allowFirstSignupAdmin: boolean,
+): BootstrapAdminConfig {
+  if (adminEmail) return { mode: "email", email: adminEmail };
+  if (allowFirstSignupAdmin) return { mode: "first-signup" };
+  return { mode: "none" };
 }
 
 /**
@@ -792,20 +846,352 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
   }
 }
 
+/**
+ * Inputs to {@link buildAuthOptions}. Split out so `getAuthInstance()` can
+ * resolve all boot-time concerns (env parsing, secret validation, plugin
+ * assembly, cookie-domain derivation) and hand a pure struct to the options
+ * builder — and so tests can drive the builder without standing up Better
+ * Auth's full plugin graph or an internal Postgres.
+ *
+ * Design notes:
+ * - `internalDbAvailable` is derived from `database !== undefined` inside
+ *   the builder; passing both would admit a mismatched pair (e.g.
+ *   `database: undefined, internalDbAvailable: true` → the rate limiter
+ *   picks "database" storage against a memory adapter).
+ * - `bootstrapAdmin` replaces the earlier `adminEmail` + `allowFirstSignupAdmin`
+ *   pair so the three mutually-exclusive modes are statically enforced.
+ * - `testOverrides` is an explicit @internal escape hatch; the field's
+ *   existence and naming make it obvious that production callers should
+ *   leave it unset.
+ *
+ * @internal — exported for testing.
+ */
+export interface BuildAuthOptionsDeps {
+  env: NodeJS.ProcessEnv;
+  secret: AuthSecret;
+  baseURL: string | undefined;
+  /**
+   * The internal Postgres pool that backs auth storage. Pass `undefined`
+   * in tests to have Better Auth fall back to its built-in in-memory
+   * adapter — the builder uses the presence of this field to also select
+   * "memory" vs "database" rate-limit storage, so the two knobs stay in
+   * lockstep.
+   */
+  database: InternalPool | undefined;
+  cookieDomain: string | undefined;
+  socialProviders: ReturnType<typeof buildSocialProviders>;
+  plugins: ReturnType<typeof buildPlugins>;
+  trustedOrigins: string[];
+  bootstrapAdmin: BootstrapAdminConfig;
+  /**
+   * Test-only overrides. Keeping these in a nested object rather than at
+   * the top level makes the seam visible in call sites and prevents
+   * accidental production use (e.g. a refactor that reaches for the
+   * shape via `deps.sendVerificationEmail`).
+   *
+   * @internal
+   */
+  testOverrides?: {
+    /**
+     * Replace the verification-email dispatcher. Tests use this to
+     * exercise the outer `.catch()` fallback on the Better Auth callback
+     * without rebinding module-local references.
+     */
+    sendVerificationEmail?: typeof _sendVerificationEmail;
+  };
+}
+
+/**
+ * Assemble the options object handed to `betterAuth()`.
+ *
+ * Kept thin and pure so the wiring — `advanced` / `rateLimit` /
+ * `emailAndPassword` / the outer `.catch()` on `sendVerificationEmail` —
+ * is an assertable shape rather than a deeply nested literal in the
+ * middle of {@link getAuthInstance}. Regression tests in
+ * `rate-limit-integration.test.ts` pin every one of those surfaces so a
+ * future refactor can't silently swap any of them for `undefined` and
+ * reopen the F-05 / F-06 / F-07 attack paths.
+ *
+ * @internal — exported for testing.
+ */
+export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof betterAuth>[0] {
+  const internalDbAvailable = deps.database !== undefined;
+  const requireEmailVerification = resolveRequireEmailVerification(deps.env);
+  const rateLimitConfig = resolveAuthRateLimitConfig(deps.env, internalDbAvailable);
+  const sendVerification = deps.testOverrides?.sendVerificationEmail ?? _sendVerificationEmail;
+
+  // Unfold the tagged bootstrap-admin config into the flat args
+  // `computeBootstrapRole` expects. Keeping the flat pair confined to
+  // this function means the hook body still reads naturally while the
+  // deps struct exposes the tagged union to callers.
+  const adminEmail = deps.bootstrapAdmin.mode === "email" ? deps.bootstrapAdmin.email : undefined;
+  const allowFirstSignupAdmin = deps.bootstrapAdmin.mode === "first-signup";
+
+  // Cast at the return point: `databaseHooks.member` is contributed by the
+  // organization plugin at runtime and is not part of Better Auth's base
+  // options shape. `Parameters<typeof betterAuth>[0]` resolves to that
+  // base shape because the function is generic over the plugin tuple,
+  // which we intentionally erase from `BuildAuthOptionsDeps`. The cast
+  // pays the cost of that erasure at the single boundary rather than
+  // forcing every caller through plugin generics.
+  const options = {
+    // InternalPool is pg.Pool-shaped via a local alias; Better Auth
+    // expects its own pool/adapter surface type. The cast is a one-way
+    // assertion that the pool we hand it is compatible.
+    database: deps.database as Parameters<typeof betterAuth>[0]["database"],
+    secret: deps.secret,
+    baseURL: deps.baseURL,
+    // F-05: closes the signup-enumeration oracle and blocks unverified
+    // accounts from claiming SSO auto-provision / invitation workflows.
+    // See `buildEmailAndPasswordConfig` for the `autoSignIn` invariant.
+    emailAndPassword: buildEmailAndPasswordConfig(requireEmailVerification),
+    emailVerification: {
+      sendVerificationEmail: async (data: { user: User; url: string; token: string }) => {
+        const { user, url } = data;
+        // Do not await. Better Auth's enumeration protection depends on
+        // the signup/signin handler returning the same 200 response in
+        // the same time window regardless of whether the email exists;
+        // awaiting SMTP would extend the attacker's timing oracle and
+        // create a DoS vector (email provider outage => signup blocked).
+        //
+        // `.catch()` is belt-and-suspenders — `_sendVerificationEmail`
+        // already wraps everything in try/catch, but an unhandled
+        // rejection from any future refactor would either spam stderr
+        // with no correlation or (with --unhandled-rejections=strict)
+        // crash the process and reintroduce the enumeration oracle as
+        // a 500-vs-200 side channel.
+        sendVerification({ to: user.email, url }).catch((err: unknown) => {
+          log.warn(
+            { to: user.email, err: err instanceof Error ? err.message : String(err) },
+            "Verification email dispatch threw — signup response is still 200 to preserve enumeration protection",
+          );
+        });
+      },
+      autoSignInAfterVerification: true,
+    },
+    socialProviders: deps.socialProviders,
+    // F-07 — cookieCache.maxAge bounds the revocation window. Previously
+    // 5 * 60 (5 minutes), which meant `auth.api.banUser(...)` and
+    // `revokeSession(...)` didn't take effect for up to 5 minutes because
+    // the signed cookie short-circuited the DB lookup. Default is now 30s,
+    // overridable within [5, 300] via ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC.
+    session: {
+      expiresIn: 60 * 60 * 24 * 7,
+      updateAge: 60 * 60 * 24,
+      cookieCache: { enabled: true, maxAge: resolveSessionCookieCacheMaxAge(deps.env) },
+    },
+    plugins: deps.plugins,
+    trustedOrigins: deps.trustedOrigins,
+    // F-06 — explicit rate limits on /api/auth/*. Built-in defaults are
+    // NODE_ENV-gated and in-memory-only; see resolveAuthRateLimitConfig.
+    rateLimit: rateLimitConfig,
+    // F-06: the `advanced` block wires Better Auth's rate limiter to
+    // read only the trusted `x-atlas-client-ip` header that our
+    // middleware injects. See `buildAdvancedConfig` for the invariant.
+    advanced: buildAdvancedConfig(deps.cookieDomain),
+    databaseHooks: {
+      member: {
+        create: {
+          after: async (member: { role: string; userId: string; organizationId: string }) => {
+            // When a user becomes org "owner", promote their user-level role
+            // to "admin" so Better Auth's admin plugin APIs (list users,
+            // manage roles, etc.) work. Without this, org owners have
+            // user.role="member" and Better Auth blocks admin operations.
+            try {
+              if (member.role !== "owner") return;
+              if (!hasInternalDB()) return;
+
+              // Don't downgrade platform_admin → admin
+              const rows = await internalQuery<{ role: string | null }>(
+                `SELECT role FROM "user" WHERE id = $1 LIMIT 1`,
+                [member.userId],
+              );
+              const currentRole = rows[0]?.role;
+              if (currentRole === "admin" || currentRole === "platform_admin") return;
+
+              await getInternalDB().query(
+                `UPDATE "user" SET role = 'admin' WHERE id = $1`,
+                [member.userId],
+              );
+              log.info(
+                { userId: member.userId, orgId: member.organizationId },
+                "Promoted org owner to user-level admin",
+              );
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), userId: member.userId },
+                "Failed to promote org owner to admin — Better Auth admin APIs may return 403",
+              );
+            }
+          },
+        },
+      },
+      session: {
+        create: {
+          // Better Auth's hook input for `session.create.before/after` is
+          // the base `Session` plus the organization plugin's
+          // `activeOrganizationId` extension, plus an unsafe index
+          // signature upstream uses to allow further plugin fields.
+          // Naming the org extension explicitly keeps `.activeOrganizationId`
+          // typed where other fields go through `unknown`.
+          before: async (session: Session & { activeOrganizationId?: string | null } & Record<string, unknown>) => {
+            // Auto-set the active org on login when the user has exactly one
+            // org and the session doesn't already have one. Uses the `before`
+            // hook so Better Auth writes the activeOrganizationId directly
+            // into the session row (no post-hoc UPDATE needed).
+            try {
+              if (session.activeOrganizationId) return;
+              if (!hasInternalDB()) return;
+
+              const orgs = await internalQuery<{ organizationId: string }>(
+                `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
+                [session.userId],
+              );
+              if (orgs.length !== 1) return;
+
+              log.info(
+                { userId: session.userId, orgId: orgs[0].organizationId },
+                "Auto-set active organization for new session",
+              );
+              return {
+                data: {
+                  ...session,
+                  activeOrganizationId: orgs[0].organizationId,
+                },
+              };
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
+                "Failed to auto-set active org — user may need to switch manually",
+              );
+            }
+          },
+          after: async (session: Session & { activeOrganizationId?: string | null }) => {
+            // Emit a login usage event for active-user tracking.
+            // Fire-and-forget — never blocks or fails sign-in.
+            try {
+              let orgId = session.activeOrganizationId;
+
+              // The `before` hook may have set activeOrganizationId but
+              // Better Auth may not propagate the mutation to `after`.
+              // Fall back to querying the member table for single-org users.
+              if (!orgId) {
+                try {
+                  const { internalQuery, hasInternalDB } = await import("@atlas/api/lib/db/internal");
+                  if (hasInternalDB()) {
+                    const rows = await internalQuery<{ organizationId: string }>(
+                      `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
+                      [session.userId],
+                    );
+                    if (rows.length === 1) orgId = rows[0].organizationId;
+                  }
+                } catch {
+                  // intentionally best-effort — skip if lookup fails
+                }
+              }
+
+              if (!orgId) return; // No workspace context — skip
+
+              const { emitLoginEvent } = await import("@atlas/api/lib/metering");
+              void emitLoginEvent(String(orgId), String(session.userId));
+            } catch (err) {
+              // intentionally best-effort — never block sign-in on metering
+              log.debug(
+                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
+                "Login event emission skipped",
+              );
+            }
+          },
+        },
+      },
+      user: {
+        create: {
+          before: async (user: User & Record<string, unknown>) => {
+            try {
+              const decision = await computeBootstrapRole(user, {
+                adminEmail,
+                allowFirstSignupAdmin,
+                internalDbAvailable,
+                countExistingAdmins: async () => {
+                  const rows = await internalQuery<{ id: string }>(
+                    `SELECT id FROM "user" WHERE role IN ('admin', 'platform_admin') LIMIT 1`,
+                  );
+                  return rows.length;
+                },
+              });
+
+              if (decision.promote) {
+                // Fallback path uses warn so operators running with the opt-in
+                // flag see a nudge toward the safer ATLAS_ADMIN_EMAIL config.
+                const logFn = decision.reason.startsWith("first-signup fallback") ? log.warn : log.info;
+                logFn.call(
+                  log,
+                  { email: user.email, reason: decision.reason },
+                  "Bootstrap: promoting signup to platform_admin",
+                );
+                return { data: { ...user, role: decision.role } };
+              }
+
+            } catch (err) {
+              // Include the full env state in the log so operators who expected
+              // their signup to be promoted (ATLAS_ADMIN_EMAIL match or opt-in
+              // fallback) can see WHY it fell through. Without this context, a
+              // DB outage or schema drift during legitimate bootstrap would
+              // silently lock out the operator with one opaque log line.
+              log.error(
+                {
+                  err: err instanceof Error ? err.message : String(err),
+                  email: user.email,
+                  hasAdminEmail: !!adminEmail,
+                  allowFirstSignupAdmin,
+                  internalDbAvailable,
+                },
+                "Bootstrap admin check failed — defaulting to normal role assignment. Check DB connectivity and env configuration.",
+              );
+            }
+          },
+          after: async (user: User) => {
+            // Onboarding welcome email — fire-and-forget after signup.
+            // Deferred with setTimeout to allow Better Auth to create the org/membership first.
+            if (user.email) {
+              const userEmail = user.email;
+              setTimeout(async () => {
+                try {
+                  const { onUserSignup } = await import("@atlas/api/lib/email/hooks");
+                  // Look up the user's first org membership
+                  const memberships = await internalQuery<{ organizationId: string }>(
+                    `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 1`,
+                    [user.id],
+                  );
+                  const orgId = memberships[0]?.organizationId;
+                  if (!orgId) {
+                    log.warn({ userId: user.id }, "No org membership found after signup — welcome email deferred to fallback scheduler");
+                    return;
+                  }
+                  onUserSignup({ userId: user.id, email: userEmail, orgId });
+                } catch (err) {
+                  log.warn(
+                    { userId: user.id, err: err instanceof Error ? err.message : String(err) },
+                    "Failed to trigger welcome email — non-blocking",
+                  );
+                }
+              }, 2000);
+            }
+
+            await _autoProvisionSsoMember(user);
+          },
+        },
+      },
+    },
+  };
+
+  return options as unknown as Parameters<typeof betterAuth>[0];
+}
+
 export function getAuthInstance(): AuthInstance {
   if (_instance) return _instance;
 
-  const secret = process.env.BETTER_AUTH_SECRET;
-  if (!secret) {
-    throw new Error(
-      "BETTER_AUTH_SECRET is not set. Managed auth mode requires this environment variable.",
-    );
-  }
-  if (secret.length < 32) {
-    throw new Error(
-      `BETTER_AUTH_SECRET must be at least 32 characters (got ${secret.length}). Use a cryptographically random string.`,
-    );
-  }
+  const secret = parseAuthSecret(process.env.BETTER_AUTH_SECRET);
 
   const adminEmail = process.env.ATLAS_ADMIN_EMAIL?.toLowerCase().trim();
 
@@ -885,252 +1271,22 @@ export function getAuthInstance(): AuthInstance {
     );
   }
 
-  const instance = betterAuth({
-    // getInternalDB() returns a pg.Pool typed as InternalPool.
-    // Cast needed because Better Auth expects its own pool/adapter type.
-    database: getInternalDB() as unknown as Parameters<typeof betterAuth>[0]["database"],
+  const options = buildAuthOptions({
+    env: process.env,
     secret,
     baseURL,
-    // F-05: closes the signup-enumeration oracle and blocks unverified
-    // accounts from claiming SSO auto-provision / invitation workflows.
-    // See `buildEmailAndPasswordConfig` for the `autoSignIn` invariant.
-    emailAndPassword: buildEmailAndPasswordConfig(requireEmailVerification),
-    emailVerification: {
-      sendVerificationEmail: async ({ user, url }) => {
-        // Do not await. Better Auth's enumeration protection depends on
-        // the signup/signin handler returning the same 200 response in
-        // the same time window regardless of whether the email exists;
-        // awaiting SMTP would extend the attacker's timing oracle and
-        // create a DoS vector (email provider outage => signup blocked).
-        //
-        // `.catch()` is belt-and-suspenders — `_sendVerificationEmail`
-        // already wraps everything in try/catch, but an unhandled
-        // rejection from any future refactor would either spam stderr
-        // with no correlation or (with --unhandled-rejections=strict)
-        // crash the process and reintroduce the enumeration oracle as
-        // a 500-vs-200 side channel.
-        _sendVerificationEmail({ to: user.email, url }).catch((err) => {
-          log.warn(
-            { to: user.email, err: err instanceof Error ? err.message : String(err) },
-            "Verification email dispatch threw — signup response is still 200 to preserve enumeration protection",
-          );
-        });
-      },
-      autoSignInAfterVerification: true,
-    },
+    database: internalDbAvailable ? getInternalDB() : undefined,
+    cookieDomain,
     socialProviders,
-    // F-07 — cookieCache.maxAge bounds the revocation window. Previously
-    // 5 * 60 (5 minutes), which meant `auth.api.banUser(...)` and
-    // `revokeSession(...)` didn't take effect for up to 5 minutes because
-    // the signed cookie short-circuited the DB lookup. Default is now 30s,
-    // overridable within [5, 300] via ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC.
-    session: {
-      expiresIn: 60 * 60 * 24 * 7,
-      updateAge: 60 * 60 * 24,
-      cookieCache: { enabled: true, maxAge: resolveSessionCookieCacheMaxAge(process.env) },
-    },
     plugins: buildPlugins(),
     trustedOrigins:
       process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
         .map((s) => s.trim())
         .filter(Boolean) || [],
-    // F-06 — explicit rate limits on /api/auth/*. Built-in defaults are
-    // NODE_ENV-gated and in-memory-only; see resolveAuthRateLimitConfig.
-    rateLimit: rateLimitConfig,
-    // F-06: the `advanced` block wires Better Auth's rate limiter to
-    // read only the trusted `x-atlas-client-ip` header that our
-    // middleware injects. See `buildAdvancedConfig` for the invariant.
-    advanced: buildAdvancedConfig(cookieDomain),
-    databaseHooks: {
-      member: {
-        create: {
-          after: async (member: { role: string; userId: string; organizationId: string }) => {
-            // When a user becomes org "owner", promote their user-level role
-            // to "admin" so Better Auth's admin plugin APIs (list users,
-            // manage roles, etc.) work. Without this, org owners have
-            // user.role="member" and Better Auth blocks admin operations.
-            try {
-              if (member.role !== "owner") return;
-              if (!hasInternalDB()) return;
+    bootstrapAdmin: resolveBootstrapAdminConfig(adminEmail, allowFirstSignupAdmin),
+  });
 
-              // Don't downgrade platform_admin → admin
-              const rows = await internalQuery<{ role: string | null }>(
-                `SELECT role FROM "user" WHERE id = $1 LIMIT 1`,
-                [member.userId],
-              );
-              const currentRole = rows[0]?.role;
-              if (currentRole === "admin" || currentRole === "platform_admin") return;
-
-              await getInternalDB().query(
-                `UPDATE "user" SET role = 'admin' WHERE id = $1`,
-                [member.userId],
-              );
-              log.info(
-                { userId: member.userId, orgId: member.organizationId },
-                "Promoted org owner to user-level admin",
-              );
-            } catch (err) {
-              log.warn(
-                { err: err instanceof Error ? err.message : String(err), userId: member.userId },
-                "Failed to promote org owner to admin — Better Auth admin APIs may return 403",
-              );
-            }
-          },
-        },
-      },
-      session: {
-        create: {
-          before: async (session) => {
-            // Auto-set the active org on login when the user has exactly one
-            // org and the session doesn't already have one. Uses the `before`
-            // hook so Better Auth writes the activeOrganizationId directly
-            // into the session row (no post-hoc UPDATE needed).
-            try {
-              if (session.activeOrganizationId) return;
-              if (!hasInternalDB()) return;
-
-              const orgs = await internalQuery<{ organizationId: string }>(
-                `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
-                [session.userId],
-              );
-              if (orgs.length !== 1) return;
-
-              log.info(
-                { userId: session.userId, orgId: orgs[0].organizationId },
-                "Auto-set active organization for new session",
-              );
-              return {
-                data: {
-                  ...session,
-                  activeOrganizationId: orgs[0].organizationId,
-                },
-              };
-            } catch (err) {
-              log.warn(
-                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
-                "Failed to auto-set active org — user may need to switch manually",
-              );
-            }
-          },
-          after: async (session) => {
-            // Emit a login usage event for active-user tracking.
-            // Fire-and-forget — never blocks or fails sign-in.
-            try {
-              let orgId = session.activeOrganizationId;
-
-              // The `before` hook may have set activeOrganizationId but
-              // Better Auth may not propagate the mutation to `after`.
-              // Fall back to querying the member table for single-org users.
-              if (!orgId) {
-                try {
-                  const { internalQuery, hasInternalDB } = await import("@atlas/api/lib/db/internal");
-                  if (hasInternalDB()) {
-                    const rows = await internalQuery<{ organizationId: string }>(
-                      `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
-                      [session.userId],
-                    );
-                    if (rows.length === 1) orgId = rows[0].organizationId;
-                  }
-                } catch {
-                  // intentionally best-effort — skip if lookup fails
-                }
-              }
-
-              if (!orgId) return; // No workspace context — skip
-
-              const { emitLoginEvent } = await import("@atlas/api/lib/metering");
-              void emitLoginEvent(String(orgId), String(session.userId));
-            } catch (err) {
-              // intentionally best-effort — never block sign-in on metering
-              log.debug(
-                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
-                "Login event emission skipped",
-              );
-            }
-          },
-        },
-      },
-      user: {
-        create: {
-          before: async (user) => {
-            const internalDbAvailable = hasInternalDB();
-            try {
-              const decision = await computeBootstrapRole(user, {
-                adminEmail,
-                allowFirstSignupAdmin,
-                internalDbAvailable,
-                countExistingAdmins: async () => {
-                  const rows = await internalQuery<{ id: string }>(
-                    `SELECT id FROM "user" WHERE role IN ('admin', 'platform_admin') LIMIT 1`,
-                  );
-                  return rows.length;
-                },
-              });
-
-              if (decision.promote) {
-                // Fallback path uses warn so operators running with the opt-in
-                // flag see a nudge toward the safer ATLAS_ADMIN_EMAIL config.
-                const logFn = decision.reason.startsWith("first-signup fallback") ? log.warn : log.info;
-                logFn.call(
-                  log,
-                  { email: user.email, reason: decision.reason },
-                  "Bootstrap: promoting signup to platform_admin",
-                );
-                return { data: { ...user, role: decision.role } };
-              }
-
-            } catch (err) {
-              // Include the full env state in the log so operators who expected
-              // their signup to be promoted (ATLAS_ADMIN_EMAIL match or opt-in
-              // fallback) can see WHY it fell through. Without this context, a
-              // DB outage or schema drift during legitimate bootstrap would
-              // silently lock out the operator with one opaque log line.
-              log.error(
-                {
-                  err: err instanceof Error ? err.message : String(err),
-                  email: user.email,
-                  hasAdminEmail: !!adminEmail,
-                  allowFirstSignupAdmin,
-                  internalDbAvailable,
-                },
-                "Bootstrap admin check failed — defaulting to normal role assignment. Check DB connectivity and env configuration.",
-              );
-            }
-          },
-          after: async (user) => {
-            // Onboarding welcome email — fire-and-forget after signup.
-            // Deferred with setTimeout to allow Better Auth to create the org/membership first.
-            if (user.email) {
-              const userEmail = user.email;
-              setTimeout(async () => {
-                try {
-                  const { onUserSignup } = await import("@atlas/api/lib/email/hooks");
-                  // Look up the user's first org membership
-                  const memberships = await internalQuery<{ organizationId: string }>(
-                    `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 1`,
-                    [user.id],
-                  );
-                  const orgId = memberships[0]?.organizationId;
-                  if (!orgId) {
-                    log.warn({ userId: user.id }, "No org membership found after signup — welcome email deferred to fallback scheduler");
-                    return;
-                  }
-                  onUserSignup({ userId: user.id, email: userEmail, orgId });
-                } catch (err) {
-                  log.warn(
-                    { userId: user.id, err: err instanceof Error ? err.message : String(err) },
-                    "Failed to trigger welcome email — non-blocking",
-                  );
-                }
-              }, 2000);
-            }
-
-            await _autoProvisionSsoMember(user);
-          },
-        },
-      },
-    },
-  }) as unknown as AuthInstance;
+  const instance = betterAuth(options) as unknown as AuthInstance;
 
   _instance = instance;
   return instance;

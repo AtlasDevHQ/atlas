@@ -88,6 +88,10 @@ export const ADMIN_ACTIONS = {
     approve: "approval.approve",
     deny: "approval.deny",
   },
+  ip_allowlist: {
+    add: "ip_allowlist.add",
+    remove: "ip_allowlist.remove",
+  },
   mode: {
     publish: "mode.publish",
     archive: "mode.archive",
@@ -99,6 +103,11 @@ export const ADMIN_ACTIONS = {
      */
     archiveReconcile: "mode.archive_reconcile",
     restore: "mode.restore",
+  },
+  scim: {
+    connectionDelete: "scim.connection_delete",
+    groupMappingCreate: "scim.group_mapping_create",
+    groupMappingDelete: "scim.group_mapping_delete",
   },
   /**
    * Without these entries a compromised admin could shrink retentionDays

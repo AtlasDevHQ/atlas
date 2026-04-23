@@ -726,25 +726,31 @@ the runtime guards applied in `packages/api/src/lib/db/connection.ts`
 4. Where `validateSQL()` accepted a crafted input, classify as finding with
    severity, fix sketch, and a separate GH issue.
 5. Encode findings + generator-based combinatorial cases in
-   `packages/api/src/lib/__tests__/sql-validator-fuzz.test.ts` (≥200 cases,
-   actual count 341 — exceeds the issue's threshold).
+   `packages/api/src/lib/__tests__/sql-validator-fuzz.test.ts` — well over
+   the ≥200 threshold set by issue #1722.
 6. Pin driver-layer runtime guards in
    `packages/api/src/lib/db/__tests__/connection-runtime-guards.test.ts` so a
    refactor that drops `SET statement_timeout` / `SET default_transaction_read_only`
    / `SET SESSION TRANSACTION READ ONLY` / `SET SESSION MAX_EXECUTION_TIME`
-   fails CI immediately.
+   fails CI immediately. Pins anchor to `await client.query(...)` /
+   `await conn.execute(...)` so a commented-out line would not satisfy the
+   match.
 
 ### Layers — current behavior
 
-| Layer | File | Enforcement |
+Anchors are function names rather than line numbers so trivial refactors in
+the source don't silently invalidate this table. Exact positions lived in
+the PR diff when this phase shipped and can be recovered from git blame.
+
+| Layer | File — function | Enforcement |
 |---|---|---|
-| 0. Empty check | `sql.ts:229-233` | Rejects empty/whitespace-only input |
-| 1. Regex mutation guard | `sql.ts:129-141, 236-249` | `INSERT\|UPDATE\|DELETE\|DROP\|CREATE\|ALTER\|TRUNCATE` + privilege/admin + `\bINTO\s+OUTFILE\b`. MySQL adds `HANDLER\|SHOW\|DESCRIBE\|EXPLAIN\|USE`. Runs against `stripSqlComments(trimmed)` — comments are removed before match so `/* X */ DROP` is still caught |
-| 2. AST parse + SELECT-only | `sql.ts:251-288` | `node-sql-parser` 5.4 PG/MySQL mode. Single-statement. `stmt.type !== "select"` → reject. Parse failure → reject (conservative — confuses parser = crafted bypass) |
-| 3. Table whitelist | `sql.ts:290-340` | `parser.tableList()` → lowercase name; schema-qualified must be qualified-whitelisted; CTE names excluded |
-| R1. Auto-LIMIT | `sql.ts:1131-1136` | Appends `LIMIT ${rowLimit}` if `/\bLIMIT\b/i` absent |
-| R2. Statement timeout | `connection.ts:280, 325` | PG: `SET statement_timeout = ${timeoutMs}`. MySQL: `SET SESSION MAX_EXECUTION_TIME = ${Math.floor(timeoutMs)}` |
-| R3. Read-only session | `connection.ts:281, 322` | PG: `SET default_transaction_read_only = on`. MySQL: `SET SESSION TRANSACTION READ ONLY` |
+| 0. Empty check | `sql.ts` — `validateSQL` entry | Rejects empty/whitespace-only input |
+| 1. Regex mutation guard | `sql.ts` — `FORBIDDEN_PATTERNS`, `MYSQL_FORBIDDEN_PATTERNS`, `stripSqlComments` | `INSERT\|UPDATE\|DELETE\|DROP\|CREATE\|ALTER\|TRUNCATE` + privilege/admin + `\bINTO\s+OUTFILE\b`. MySQL adds `HANDLER\|SHOW\|DESCRIBE\|EXPLAIN\|USE`. Runs against `stripSqlComments(trimmed)` — comments are removed before match so `/* X */ DROP` is still caught |
+| 2. AST parse + SELECT-only | `sql.ts` — `validateSQL` layer 2 | `node-sql-parser` 5.4 PG/MySQL mode. Single-statement. `stmt.type !== "select"` → reject. Parse failure → reject (conservative — confuses parser = crafted bypass) |
+| 3. Table whitelist | `sql.ts` — `validateSQL` layer 3, `parser.tableList` | `parser.tableList()` → lowercase name; schema-qualified must be qualified-whitelisted; CTE names excluded |
+| R1. Auto-LIMIT | `sql.ts` — pipeline `Step 5` before `executeAndAuditEffect` | Appends `LIMIT ${rowLimit}` if `/\bLIMIT\b/i` absent |
+| R2. Statement timeout | `connection.ts` — `createPostgresDB.query`, `createMySQLDB.query` | PG: `SET statement_timeout = ${timeoutMs}`. MySQL: `SET SESSION MAX_EXECUTION_TIME = ${Math.floor(timeoutMs)}` |
+| R3. Read-only session | `connection.ts` — `createPostgresDB.query`, `createMySQLDB.query` | PG: `SET default_transaction_read_only = on`. MySQL: `SET SESSION TRANSACTION READ ONLY` |
 
 ### Findings
 
@@ -759,7 +765,7 @@ SELECT 1 /*!50000 UNION SELECT user, authentication_string FROM mysql.user */
 SELECT 1 UNION SELECT user, authentication_string FROM mysql.user
 ```
 
-**Root cause:** `stripSqlComments()` at `sql.ts:118-127` treats every `/* ... */`
+**Root cause:** `stripSqlComments()` in `sql.ts` treats every `/* ... */`
 the same way, removing the block wholesale before the regex guard runs.
 `node-sql-parser` in MySQL mode also treats `/*!NNNNN ... */` as a comment,
 so the AST contains only `SELECT 1` and `tableList()` returns no reference
@@ -813,12 +819,18 @@ read-only session to be skipped, the bypass would result in silent table
 creation (a DDL-equivalent) on the analytics DB. Audit logs would record
 this as a legitimate SELECT.
 
-**Fix sketch:** The AST parser's `select_into` variant is the `into` field
-on the SELECT node — check for presence of a non-null `into` target in the
-parsed AST and reject. Alternatively, extend `FORBIDDEN_PATTERNS` with a
-PG-mode-specific `\bINTO\s+(?!OUTFILE\b)[A-Za-z_]\w*` pattern. AST check
-is preferred because it avoids regex false positives against column
-references named "into".
+**Fix sketch:** The AST parser's `select_into` variant exposes an `into`
+object on the SELECT node. Note: every parsed SELECT carries `into` — on a
+query without `INTO` it comes back as `{ position: null }`, so a naive
+"reject when `stmt.into != null`" guard would reject every SELECT.
+Discriminate on `stmt.into?.expr` (the target table reference) or
+`stmt.into?.position === "after-select"` (the syntactic position marker
+for `SELECT ... INTO t FROM s`). Field shape is not in node-sql-parser's
+public `.d.ts` — confirm with an AST snapshot from the fix PR.
+Alternatively, extend `FORBIDDEN_PATTERNS` with a PG-mode-specific
+`\bINTO\s+(?!OUTFILE\b)[A-Za-z_]\w*` pattern. AST check is preferred
+because it avoids regex false positives against column references named
+"into".
 
 **Severity:** P2 — runtime catches it, but validator should not pass
 DDL-equivalent queries. Gap is structural, not deployment-specific.
@@ -938,16 +950,30 @@ function blocklist keyed by dialect.
 
 - **Audit corpus + property-based fuzz tests** at
   `packages/api/src/lib/__tests__/sql-validator-fuzz.test.ts`:
-  341 cases across mutation obfuscation (30+), CTE collisions (13),
-  UNION/subquery/lateral (14), schema-qualified + quoted identifier (13),
-  LIMIT handling (8), PG dialect escapes (29), MySQL dialect escapes (18),
-  comment smuggling + multi-statement (11), generator-based
-  combinatorial (203), and known-bypass pins for F-17/F-18/F-19.
+  well over the ≥200 threshold required by #1722, spread across mutation
+  obfuscation, CTE collisions, UNION/subquery/lateral, schema-qualified +
+  quoted identifier, LIMIT handling, PG dialect escapes, MySQL dialect
+  escapes, comment smuggling + multi-statement, generator-based
+  combinatorial (verbs × wrappers × case transforms; non-whitelisted
+  tables × query shapes; whitelisted tables × query shapes), and
+  known-bypass pins for F-17 (six variants covering single-form, boundary
+  versions, bare `/*!`, CTE placement, comma-splice), F-18, and F-19.
+  Generator assertions pin the expected rejection layer via reason
+  fragments (`"forbidden"` for mutation-guard cases, `"not in the allowed
+  list"` for whitelist cases) so a parser upgrade that incidentally
+  rejects a payload cannot silently bypass the layer under test.
+  Known-bypass cases use a dedicated `expectCurrentBypass(sql, findingId,
+  expectedPostFixReason)` helper that fails loudly with flip instructions
+  when a future fix closes the bypass.
 - **Runtime guard source-level pins** at
   `packages/api/src/lib/db/__tests__/connection-runtime-guards.test.ts`:
   asserts `SET statement_timeout`, `SET default_transaction_read_only`,
   `SET SESSION TRANSACTION READ ONLY`, `SET SESSION MAX_EXECUTION_TIME`
-  remain in the driver source and fire before the user query.
+  remain in the driver source and fire before the user query. Each pin
+  anchors to the enclosing `await client.query(...)` /
+  `await conn.execute(...)` call, so a refactor that comments out the
+  statement but leaves the literal text in source cannot satisfy the
+  match.
 - **This audit section.**
 
 Fixes for F-17/F-18/F-19 are follow-up PRs — intentional separation so

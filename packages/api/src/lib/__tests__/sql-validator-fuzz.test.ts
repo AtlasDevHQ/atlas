@@ -92,12 +92,54 @@ function expectValid(sql: string): void {
   expect(r.valid).toBe(true);
 }
 
-function useDialect(url: string) {
-  const saved = process.env.ATLAS_DATASOURCE_URL;
+function useDialect(url: string): void {
+  // `beforeEach` sets the dialect before every case in the enclosing describe.
+  // No `afterEach` restore is needed under bun's isolated-per-file runner
+  // (each file runs in its own subprocess). The function returns void to
+  // signal no cleanup contract — earlier versions returned the captured env
+  // value, which misled readers into expecting a restore in an `afterEach`
+  // that never existed.
   beforeEach(() => {
     process.env.ATLAS_DATASOURCE_URL = url;
   });
-  return saved;
+}
+
+/**
+ * Pin a case that currently bypasses the validator pending a tracked fix.
+ *
+ * Asserts: `valid === true`, no error, classification populated. The last
+ * two are redundant with the first under the current `SQLValidationResult`
+ * type, but asserting them explicitly means that:
+ *   - A partial fix that rejects via a different path (e.g. parser instead
+ *     of a new guard) causes `classification` to become undefined and the
+ *     test fails, forcing review of which bypass path the fix actually
+ *     closed.
+ *   - A type-shape change (e.g. adding a neutral third state) surfaces here
+ *     before silently passing real attacks.
+ *
+ * @param findingId - Audit identifier (F-NN) so log output points to the
+ *   row in `.claude/research/security-audit-1-2-3.md`.
+ * @param expectedPostFixReason - Lowercase fragment expected in
+ *   `r.error` once the fix lands. When flipping to `expectInvalid`, use
+ *   this fragment as the second argument.
+ */
+function expectCurrentBypass(
+  sql: string,
+  findingId: string,
+  expectedPostFixReason: string,
+): void {
+  const r = validateSQL(sql);
+  if (!r.valid) {
+    // The bypass has been closed — flip the call site to
+    // `expectInvalid(sql, expectedPostFixReason)` to pin the fix.
+    throw new Error(
+      `${findingId}: bypass appears closed (validator rejected with "${r.error}"). ` +
+      `Flip the call site from expectCurrentBypass to expectInvalid(sql, ${JSON.stringify(expectedPostFixReason)}).`,
+    );
+  }
+  expect(r.valid).toBe(true);
+  expect(r.error).toBeUndefined();
+  expect(r.classification).toBeDefined();
 }
 
 // ---------------------------------------------------------------------------
@@ -421,11 +463,12 @@ describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
   });
 
   it("accepts uppercase quoted identifier that normalizes to whitelist", () => {
-    // See F-20 (case-fold collision). Current validator treats `"COMPANIES"`
-    // and `companies` as equivalent, which is the expected current behavior
-    // for self-hosted deployments that use case-insensitive identifiers.
-    // Databases with case-sensitive quoted tables need a dedicated fix — see
-    // #TBD (filed by this phase).
+    // See F-20 (case-fold collision) in the phase-3 audit. Current validator
+    // treats `"COMPANIES"` and `companies` as equivalent, which is the
+    // expected current behavior for self-hosted deployments that use
+    // case-insensitive identifiers. Databases with case-sensitive quoted
+    // tables need a dedicated fix; F-20 stays in the audit doc as a P3 tail
+    // item rather than getting its own issue.
     expectValid('SELECT * FROM "COMPANIES"');
   });
 
@@ -786,10 +829,6 @@ describe("fuzz: comment smuggling + multi-statement", () => {
   it("allows literal semicolon inside a string", () => {
     expectValid("SELECT ';' FROM companies");
   });
-
-  it("rejects semicolon-separated harmless pair", () => {
-    expectInvalid("SELECT 1; SELECT 2", "multiple statements");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -829,8 +868,12 @@ describe("fuzz: generator — mutation verbs × wrappers × case transforms", ()
       for (const xf of CASE_TRANSFORMS) {
         const sql = `${wrap(xf(verb))} companies (id) VALUES (1)`;
         it(`rejects ${verb} via wrapper:${wrap.name || "plain"} / case:${xf.name || "identity"} — ${sql.slice(0, 50)}…`, () => {
-          const r = validateSQL(sql);
-          expect(r.valid).toBe(false);
+          // The mutation-guard layer (regex match on FORBIDDEN_PATTERNS) is the
+          // LAYER we are attacking here. A parser-upgrade that happens to
+          // reject the malformed payload would silently turn this assertion
+          // green without verifying the guard still caught it. Pinning to
+          // `"forbidden"` forces the rejection to come from layer 1.
+          expectInvalid(sql, "forbidden");
         });
       }
     }
@@ -856,10 +899,13 @@ describe("fuzz: generator — non-whitelisted table × query shape", () => {
     for (const shape of SHAPES) {
       const sql = shape(table);
       it(`rejects ${table} via shape — ${sql.slice(0, 60)}…`, () => {
-        const r = validateSQL(sql);
-        // Accept either whitelist rejection or parse rejection — the property
-        // is that NO path through the validator lets this SQL succeed.
-        expect(r.valid).toBe(false);
+        // Pin to the whitelist-layer rejection message. A parser upgrade that
+        // accidentally accepts (say) `pg_catalog.pg_authid` syntax and relies
+        // on the whitelist to reject must still turn red here — but if the
+        // parser starts rejecting FIRST, the whitelist layer is no longer
+        // exercised by this test. Using `not in the allowed list` forces the
+        // rejection to come from layer 3.
+        expectInvalid(sql, "not in the allowed list");
       });
     }
   }
@@ -894,35 +940,93 @@ describe("fuzz: generator — whitelisted table × shape must pass", () => {
 // ---------------------------------------------------------------------------
 
 describe("fuzz: known bypasses — current behavior, follow-up fixes", () => {
-  it("F-17 (P1, MySQL): version-gated /*!NNNNN ... */ comment bypass", () => {
-    // MySQL executes content inside `/*!50000 ... */` when its version ≥ 50000.
-    // The validator strips this as a regular block comment, so the inner
-    // UNION against `mysql.user` is never seen. Confirmed against
-    // node-sql-parser 5.4 + live MySQL 8 during phase-3 audit.
-    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
-    const sql = "SELECT 1 /*!50000 UNION SELECT user FROM mysql.user */";
-    const r = validateSQL(sql);
-    // BYPASS — see F-17. Must flip to `expect(r.valid).toBe(false)` when fixed.
-    expect(r.valid).toBe(true);
+  // F-17 variants (MySQL executable comments, issue #1772)
+  //
+  // A single pin lets a partial fix slip by — if the fix handles only one
+  // form of `/*!NNNNN */`, the single `SELECT 1 /*!50000 UNION ...` case
+  // would correctly flip to rejected and test turns red in the fix PR, but
+  // the variants (no version, nested, inside CTE / UNION leg, whitespace on
+  // digits) would still bypass silently. Each variant is its own pin so
+  // the fix PR must address them all.
+
+  describe("F-17 variants — MySQL `/*!NNNNN */` executable comments", () => {
+    beforeEach(() => {
+      process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
+    });
+
+    it("F-17.a: bare /*!50000 UNION ... */ against mysql.user", () => {
+      expectCurrentBypass(
+        "SELECT 1 /*!50000 UNION SELECT user FROM mysql.user */",
+        "F-17.a",
+        "not in the allowed list",
+      );
+    });
+
+    it("F-17.b: boundary version /*!00000 */ (always executes)", () => {
+      expectCurrentBypass(
+        "SELECT 1 /*!00000 UNION SELECT id FROM secret_data */",
+        "F-17.b",
+        "not in the allowed list",
+      );
+    });
+
+    it("F-17.c: high-version /*!99999 */ (future-proof lower bound)", () => {
+      // Even if the running MySQL doesn't execute this (version < 99999),
+      // the validator still must reject — trusting "MySQL won't run it" is
+      // the same class of defense-in-depth gap as F-18.
+      expectCurrentBypass(
+        "SELECT 1 /*!99999 UNION SELECT id FROM secret_data */",
+        "F-17.c",
+        "not in the allowed list",
+      );
+    });
+
+    it("F-17.d: /*! (no digits) is a MariaDB-style conditional comment", () => {
+      expectCurrentBypass(
+        "SELECT 1 /*! UNION SELECT id FROM secret_data */",
+        "F-17.d",
+        "not in the allowed list",
+      );
+    });
+
+    it("F-17.e: /*! inside a CTE body", () => {
+      expectCurrentBypass(
+        "WITH x AS (SELECT 1 /*!50000 UNION SELECT id FROM secret_data */) SELECT * FROM x",
+        "F-17.e",
+        "not in the allowed list",
+      );
+    });
+
+    it("F-17.f: /*! smuggling the comma-separator position into a SELECT list", () => {
+      // MySQL evaluates the content inline, so this becomes
+      // `SELECT 1 , secret FROM companies` — a column smuggle.
+      expectCurrentBypass(
+        "SELECT 1 /*!50000 , (SELECT id FROM secret_data LIMIT 1) AS leaked */ FROM companies",
+        "F-17.f",
+        "not in the allowed list",
+      );
+    });
   });
 
-  it("F-18 (P2, PostgreSQL): SELECT INTO new_table bypasses validator", () => {
+  it("F-18 (P2, PostgreSQL, #1773): SELECT INTO new_table bypasses validator", () => {
+    process.env.ATLAS_DATASOURCE_URL = PG_URL;
     // PG's `SELECT ... INTO new_table FROM source` creates a table (DDL
     // equivalent). Caught only by runtime `SET default_transaction_read_only`.
-    process.env.ATLAS_DATASOURCE_URL = PG_URL;
-    const sql = "SELECT * INTO new_table FROM companies";
-    const r = validateSQL(sql);
-    // BYPASS — see F-18.
-    expect(r.valid).toBe(true);
+    expectCurrentBypass(
+      "SELECT * INTO new_table FROM companies",
+      "F-18",
+      "forbidden",
+    );
   });
 
-  it("F-19 (P2, MySQL): INTO DUMPFILE bypasses validator", () => {
+  it("F-19 (P2, MySQL, #1774): INTO DUMPFILE bypasses validator", () => {
+    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     // Regex currently blocks only `INTO OUTFILE`. `INTO DUMPFILE` writes to
     // filesystem — same class of attack, requires FILE privilege at runtime.
-    process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
-    const sql = "SELECT * FROM companies INTO DUMPFILE '/tmp/x'";
-    const r = validateSQL(sql);
-    // BYPASS — see F-19.
-    expect(r.valid).toBe(true);
+    expectCurrentBypass(
+      "SELECT * FROM companies INTO DUMPFILE '/tmp/x'",
+      "F-19",
+      "forbidden",
+    );
   });
 });

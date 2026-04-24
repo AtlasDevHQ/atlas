@@ -57,7 +57,9 @@ Guidance for Claude Code when working in this repository.
 - [ ] **satisfies on service returns** — Always use `satisfies FooShape` on returned service objects for compile-time verification
 
 ### Testing
-- [ ] **`bun run test`, never `bun test`** — Project uses isolated test runner (each file in its own subprocess). Always `bun run test` or `bun test <single-file>`. Never bare `bun test` against a directory
+- [ ] **`bun run test`, never `bun test`** — Project uses isolated test runner (each file in its own subprocess). Always `bun run test` (or `test:api` / `test:others` / `test-isolated.ts --affected`). Single file is OK: `bun test path/to/file.test.ts`. Never bare `bun test` against a directory
+- [ ] **Use `--affected` for local feedback loops** — `cd packages/api && bun run scripts/test-isolated.ts --affected` runs only tests whose source graph your branch touched vs `origin/main`. Use `--since HEAD~3` for last-N-commit windows. Typical PRs drop from 225s to 10–60s. Run the full `bun run test` before opening a PR. The runner throws loudly if the git detector can't resolve the base ref — don't ignore it
+- [ ] **Pre-PR gates via `/ci`** — `/ci` runs lint + type + test + syncpack + template drift + railway-watch. All five must pass before opening a PR. In CI the api suite is sharded 4-way; locally it runs serial
 - [ ] **Mock all exports** — When using `mock.module()`, mock every named export. Partial mocks cause `SyntaxError` in other files
 - [ ] **Use shared mock factory** — Connection mocks use `createConnectionMock()` from `packages/api/src/__mocks__/connection.ts`. Don't create inline connection mocks
 - [ ] **Effect test layers preferred** — For new tests, prefer `createConnectionTestLayer()` / `TestAppLayer` / `buildTestLayer()` from `packages/api/src/__test-utils__/layers.ts` over `mock.module()`. Composable Layers are type-safe and don't leak state between tests
@@ -107,7 +109,12 @@ bun run dev:web          # Standalone Next.js
 bun run build            # Production build
 bun run lint             # ESLint
 bun run type             # TypeScript type-check (tsgo --noEmit)
-bun run test             # Tests (isolated per-file)
+bun run test             # Full suite — @atlas/api then all other packages (isolated per-file)
+bun run test:api         # Just @atlas/api tests (serial, full)
+bun run test:others      # All other workspace test suites
+# Fast local feedback loop — only tests whose source graph your branch touched:
+cd packages/api && bun run scripts/test-isolated.ts --affected
+cd packages/api && bun run scripts/test-isolated.ts --since HEAD~3     # last 3 commits
 bun run db:up            # Start Postgres + sandbox sidecar
 bun run db:down          # Stop containers
 bun run db:reset         # Nuke volume + restart

@@ -1597,3 +1597,690 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 - **No production code changes** — fixes ship as follow-up PRs per the phase-1/2/3 workflow, each finding landing with dedicated review + regression coverage. Several findings cluster by file (e.g., F-30 covers two files, F-32 covers four) and can be bundled into a single fix PR per cluster.
 
 Fixes for F-22 through F-38 are follow-up PRs. Priority ordering: P0s ship first (F-22 → F-26), then P1 credential/retention self-audit (F-27, F-30), then the rest. F-40 (DB grant revocation) is a migration-only change that ships independently of the per-route audit additions.
+
+---
+
+## Phase 5 — Secrets + error surfaces + plugin credentials
+
+**Status:** audit complete (2026-04-24); fixes tracked per-finding.
+**Scope:** static + dynamic audit of every surface where a secret could
+escape Atlas: 500-response bodies, pino logs, Effect-level logs, client
+bundles (`@atlas/web`, `@useatlas/react` widget entry), plugin config
+storage + rotation story, and workspace integration secrets (Slack /
+Teams / Discord / Telegram / GChat / GitHub / Linear / WhatsApp / email
+provider + custom-domain DNS tokens + sandbox BYOC credentials + AI
+provider BYOT). Matches #1724 scope list verbatim.
+**Issue:** #1724
+**Branch:** `security/1-2-3-phase-5-audit`
+
+### Methodology
+
+1. **Tagged-error path sweep.** Walk every variant in the `AtlasError`
+   union (`packages/api/src/lib/effect/errors.ts`) and confirm each has
+   an HTTP mapping in `mapTaggedError()`; grep every message literal for
+   a raw URL / apiKey / password / token substring. `classifyError()`
+   (the function that drives `runHandler` + `runEffect`) lives in
+   `packages/api/src/lib/effect/hono.ts` — the #1724 scope list names
+   `lib/effect/classify.ts`, which does not exist; the code is in
+   `hono.ts` (F-49 doc-fix).
+2. **500-body capture.** Every `return c.json({ error: ..., message: ... }, 500)`
+   site across `packages/api/src/api/routes/*.ts` inspected for message
+   shape. Special focus on connection-test wizard + admin-connections
+   create/update/test/drain because these receive a URL with embedded
+   credentials. Confirmed `err.message` from `detectDBType()` /
+   `connections.healthCheck()` never echoes the URL (`detectDBType` has
+   a fixed message referencing the env var; `healthCheck` catches
+   internally and returns a `HealthCheckResult.message` scrubbed through
+   `matchError()`).
+3. **FiberFailure pattern audit.** Grep every `Effect.runPromise(...)`
+   call site to find the systematic-risk pattern that F-37 / #1798
+   identified on `IPAllowlistError`: an EE function that fails with a
+   tagged error, then `Effect.runPromise` wraps the tagged failure in a
+   `FiberFailure` wrapper, then the outer `.catch` checks `"code" in err`
+   which is now `false`. Cross-reference with where the error surfaces
+   (route response, internal log, transaction rollback).
+4. **Pino redact audit.** Read `packages/api/src/lib/logger.ts` redact
+   path list; confirm every listed secret field (`url`, `apiKey`,
+   `password`, `authorization`, `*.connectionString`, etc.) is covered
+   at top-level, one-deep, and array-of-objects shapes. Cross-check
+   against every `log.warn({ err, ... })` site for messages that could
+   contain an embedded connection-string userinfo (e.g., pg errors echo
+   `postgres://user:pass@host`) where pino redact does not cover
+   substrings inside a string value.
+5. **Effect-level logs.** Grep `Effect.logInfo` / `Effect.logDebug` /
+   `Effect.logWarn` / `Effect.logError` — zero call sites (`grep -r` on
+   `packages/api/src` returns nothing). The codebase uses `createLogger()`
+   (pino wrapper) throughout; F-28's `errorMessage()` scrub helper is
+   the audit-metadata analogue, not a log-sink filter.
+6. **Client-bundle inspection.** Walk every `process.env.*` usage in
+   `packages/web/src/` + `packages/react/src/`. Confirm every
+   `NEXT_PUBLIC_*` reference is intentionally public. Trace every
+   non-`NEXT_PUBLIC_*` env var read to its callsite to confirm it runs
+   only on the server (server components, API handlers, Next.js
+   instrumentation). Build output inspection skipped in favor of
+   source-level proof because (a) all server-only env reads are in
+   files never imported by `"use client"` components and (b) Next.js
+   statically replaces only `NEXT_PUBLIC_*` — other vars resolve to
+   `undefined` in the browser.
+7. **Widget-bundle inspection.** Read `packages/react/src/widget-entry.ts`
+   + `packages/react/tsup.config.ts`. Confirm the widget bundle is
+   `platform: "browser"`, pulls React + AtlasChat + `setTheme`, and
+   reads zero env vars. The widget is loaded unauthenticated from
+   third-party sites — any env access would be a critical leak.
+8. **Plugin credential storage.** Read every `plugin_settings` +
+   `workspace_plugins` write site; trace secret-marked fields through
+   the DB column (plain JSONB), then through the GET-back path to
+   confirm masking. Grep every `plugins/*/src/index.ts` config schema
+   for `secret: true` markers. Compare against the precedent
+   (`workspace_model_config.api_key_encrypted` — AES-256-GCM at rest).
+9. **Workspace integration secrets.** Walk every `packages/api/src/lib/*/store.ts`
+   (`slack`, `teams`, `discord`, `telegram`, `gchat`, `github`, `linear`,
+   `whatsapp`, `email`) and inspect the CREATE TABLE migration for each
+   credential column. Confirm (or contradict) the F-30 `hasSecret: true`
+   audit-metadata coverage across all BYOT paths in
+   `admin-integrations.ts`. Inspect the custom-domain DNS token shape
+   (migration 0033) separately.
+10. **Key rotation story.** Trace `getEncryptionKey()` in
+    `packages/api/src/lib/db/internal.ts` — derived from
+    `ATLAS_ENCRYPTION_KEY ?? BETTER_AUTH_SECRET` via SHA-256. Search the
+    codebase for any re-encryption migration, dual-key transition
+    helper, or operator-facing doc describing how to rotate this key.
+
+### Surfaces walked — fingerprint
+
+| Surface | Files inspected | Outcome |
+|---|---|---|
+| Tagged-error → HTTP mapping | `lib/effect/errors.ts`, `lib/effect/hono.ts` (`mapTaggedError`, `classifyError`, `isEnterpriseError`, domain-error registry) | messages generic, status codes correct — F-49 doc-fix only |
+| 500-body shape | 52 route files under `packages/api/src/api/routes/` | one systematic pattern risk (F-52 FiberFailure) + admin-connections `err.message` paths cleared |
+| Connection-test routes | `admin-connections.ts` lines 442–510 (test), 510–650 (create), 680–790 (update), 800–880 (archive); `wizard.ts` (profile, generate, save); `onboarding.ts` (`/test-connection`) | `detectDBType` never echoes URL; `healthCheck` scrubs via `matchError` internally; `encryptUrl` protects stored URLs |
+| Pino redact paths | `lib/logger.ts:44-78` (27 paths) | covers every canonical top-level + 1-deep + array shape; gap is substring-in-error-message (F-44) |
+| Effect-level logs | whole repo | zero `Effect.logXxx` sites — N/A |
+| Client bundle env | `next.config.ts`, every `packages/web/src/**` tsx/ts with `process.env` | four `NEXT_PUBLIC_*` vars (ATLAS_API_URL, ATLAS_AUTH_MODE, OPENSTATUS_SLUG, STATUS_URL) all public-safe; one hygiene note (F-50) |
+| Widget bundle | `widget-entry.ts`, `tsup.config.ts` (widget target) | 20-line entry, bundles React + AtlasChat + setTheme; no env reads — verified |
+| Plugin config storage | `lib/plugins/settings.ts`, `schema.ts:324-331` (`plugin_settings`), migrations `0014_plugin_marketplace.sql` (`workspace_plugins`), `admin-plugins.ts`, `admin-marketplace.ts` | both tables plaintext JSONB; platform plugin surface masks on GET, marketplace surface does not (F-42 + F-43) |
+| Integration secret storage | `slack_installations.bot_token`, `teams_installations.app_password`, `discord_installations.bot_token`, `telegram_installations.bot_token`, `gchat_installations`, `github_installations`, `linear_installations.api_key`, `whatsapp_installations`, `email_installations.config`, `sandbox_credentials.credentials` | every column plaintext (F-41) |
+| BYOT audit-metadata coverage | 18 `logAdminAction` sites in `admin-integrations.ts` | `{ platform, mode: "byot" }` emitted; `hasSecret: true` missing on every platform vs. F-30 precedent (F-46) |
+| AI provider keys | `settings.ts:393-413` (ANTHROPIC_API_KEY, OPENAI_API_KEY), `admin.ts:2323` (secret settings read-only from UI), `ee/platform/model-routing.ts:216-251` (workspace BYOT — `api_key_encrypted`) | platform keys env-only (never persisted); workspace BYOT keys encrypted via `encryptUrl`; no leakage on test/update/delete paths |
+| Custom domain DNS token | migration `0033_custom_domains_dns_verification.sql` | plaintext `verification_token` — not a credential (F-51) |
+| Key-rotation helper | `internal.ts:40-54` (`getEncryptionKey`), whole-repo grep | no rotation path (F-47) |
+
+### Findings
+
+**F-41 — Workspace integration secrets stored as plaintext columns** — P1
+
+**Repro:**
+
+```sql
+\d slack_installations;                       -- bot_token TEXT
+\d teams_installations;                       -- app_password TEXT (migration 0006)
+\d discord_installations;                     -- bot_token TEXT (migration 0006)
+\d telegram_installations;                    -- bot_token TEXT
+\d gchat_installations;                       -- various credential columns
+\d github_installations;                      -- various credential columns
+\d linear_installations;                      -- api_key TEXT
+\d whatsapp_installations;                    -- various credential columns
+\d email_installations;                       -- config JSONB (carries apiKey / serverToken / password / secretAccessKey depending on provider)
+\d sandbox_credentials;                       -- credentials JSONB (Vercel / E2B / Daytona tokens)
+```
+
+**Impact:** A DB dump (backup, disk image, read-replica snapshot,
+compromised read-only credential) exposes every workspace's chat
+platform bot tokens and email provider API keys verbatim. Both are
+*high-value* credentials: a bot token lets an attacker impersonate the
+Atlas bot in Slack / Teams / Discord / Telegram, read all channels it
+was invited to, and send messages appearing to come from Atlas. Email
+provider keys (Resend, SendGrid, Postmark, SES) let an attacker send
+phishing email from the customer's authenticated sender address. Both
+bypass Atlas authentication because the bearer credential IS the
+secret — no additional challenge step stands between the DB dump and
+the attack.
+
+Precedent: connection URLs are encrypted at rest via `encryptUrl` in
+`internal.ts` (AES-256-GCM with an `iv:authTag:ciphertext` format) —
+same class of bearer credential, different storage policy.
+`workspace_model_config.api_key_encrypted` uses the same encryption
+helper for BYOT AI keys. Integration tables are the odd ones out.
+
+**Compliance lens:** SOC 2 CC6.1 / CC6.7 (data-at-rest encryption for
+sensitive data); GDPR Article 32 ("appropriate technical and
+organisational measures"); ISO 27001 A.10.1 (cryptographic controls).
+A customer signing an MSA with a data-protection addendum will ask
+"are integration tokens encrypted at rest?" — the honest answer today
+is "no."
+
+**Fix sketch:** Extend `encryptUrl`/`decryptUrl` (or add a parallel
+`encryptSecret`/`decryptSecret` pair) to each `*Installations` store
+write + read path. Migration plan: (a) add `_encrypted` columns
+alongside the plaintext, (b) dual-write for a release, (c) one-shot
+migration to encrypt existing rows using current key, (d) flip reads
+to the encrypted column, (e) drop the plaintext column. Same pattern
+the connections table took. `email_installations.config` is JSONB —
+either encrypt the whole blob or split secret vs non-secret fields
+into two columns. `sandbox_credentials.credentials` follows the same
+shape decision.
+
+**Severity:** P1 — not an active exploit (requires DB access), but the
+systematic at-rest encryption gap fails a standard compliance audit
+and the fix is mechanical given the `encryptUrl` precedent.
+
+**Issue:** #1815.
+
+---
+
+**F-42 — Plugin config stored as plaintext JSONB (platform + workspace)** — P1
+
+**Repro:**
+
+```
+plugin_settings.config              JSONB  -- per-plugin (platform-wide); admin-plugins.ts PUT /:id/config
+workspace_plugins.config            JSONB  -- per-workspace; admin-marketplace.ts PUT /:id/config
+```
+
+Multiple plugins declare secret-marked config fields:
+
+- `plugins/slack/src/index.ts`: `signingSecret`, `botToken`, `clientSecret`
+- `plugins/salesforce/src/index.ts`: OAuth client secret + refresh token
+- `plugins/jira/src/index.ts`: API token
+- `plugins/e2b`, `plugins/daytona`, `plugins/vercel-sandbox`: sandbox
+  provider API keys
+- `plugins/chat`, `plugins/email-digest`: provider API keys
+- `plugins/webhook`: HMAC signing secret
+
+All are written verbatim into the `config` JSONB column via
+`savePluginConfig()` / the marketplace `PUT /:id/config` handler.
+
+**Impact:** Same class as F-41. A DB dump exposes every plugin's
+credential material. Higher impact when the plugin talks to a
+customer-owned destination (Slack workspace, Salesforce org, sandbox
+API) because the attacker gets a foothold into the customer's own
+systems, not Atlas.
+
+`admin-plugins.ts` masks secret-marked fields on `GET /:id/schema`
+readback using the `MASKED_PLACEHOLDER = "••••••••"` convention
+(`admin-plugins.ts:346-355`). That masks the API response but not the
+DB column — an operator with DB read access still sees the plaintext.
+
+**Fix sketch:** Encrypt secret-marked fields at write time in
+`savePluginConfig()`. Because the plugin SDK already declares
+`secret: true` on its config schema (`@useatlas/plugin-sdk`), the
+write path has the metadata it needs to selectively encrypt without
+touching non-secret fields. Key rotation story is F-47 — same
+encryption key as connection URLs means rotating the key affects every
+surface at once.
+
+**Severity:** P1 — compliance failure, mechanical fix, precedent
+exists.
+
+**Issue:** #1816.
+
+---
+
+**F-43 — Marketplace `GET /available` returns raw `installedConfig` without masking secrets** — P1
+
+**Repro:** `GET /api/v1/admin/plugins/marketplace/available` (defined
+in `admin-marketplace.ts:682-719`) returns `installedConfig: inst?.config ?? null`
+for each catalog entry the workspace has installed.
+
+`inst.config` is the raw JSONB blob from `workspace_plugins.config`.
+For a plugin whose catalog entry declares `secret: true` fields
+(stored in `plugin_catalog.config_schema`), the secret values land in
+the response body unchanged.
+
+Compare `admin-plugins.ts` (the platform-plugin surface) which uses a
+`MASKED_PLACEHOLDER` for the same field type.
+
+**Impact:** Any workspace admin role (which includes every org owner)
+can read stored credentials by calling the marketplace endpoint.
+Because workspace admin is already the persona authorized to install
+the plugin, the credential disclosure is "rereading what I wrote" —
+but the UX precedent from the platform surface says these values are
+write-only once saved. A lower-role admin added to the workspace
+later *inherits* read access without having typed the credential.
+
+Additionally: `logAdminAction` for `plugin.config_update` emits
+`keysChanged: string[]` only, NOT the values (F-22 precedent). The
+disclosure path is only the GET, not the audit log.
+
+**Fix sketch:** Look up the catalog entry's `config_schema` in the
+same handler, walk the JSONB response, and replace any
+`secret: true` key's value with `MASKED_PLACEHOLDER`. The write path
+already tolerates the placeholder (same pattern as
+`admin-plugins.ts:416-421`). A second fix required at
+`admin-marketplace.ts:711` (`installedConfig: inst?.config`) — that
+line is the single chokepoint.
+
+**Severity:** P1 — live credential disclosure to any workspace admin;
+read-write asymmetry vs. the platform surface; fix is ~20 lines.
+
+**Issue:** #1817.
+
+---
+
+**F-44 — pino error logs don't run through `errorMessage()` scrubber; userinfo survives in logs** — P2
+
+**Repro:** `packages/api/src/lib/logger.ts` redact path list covers
+field names (`url`, `password`, `apiKey`, `*.url`, etc.), not
+substrings inside string values. A pg / mysql driver error that
+echoes `connection to postgres://user:pass@host:5432/db failed` lands
+in pino via `log.warn({ err: err.message }, "...")` where the top-level
+field is `err`, not `url`. `err` is not redacted. Result: the
+connection-string userinfo (username + password) survives into pino
+output, logfiles, stdout, and downstream log aggregation (Grafana
+Loki, Railway log stream, Datadog, etc.).
+
+Precedent: F-28 shipped `errorMessage()` / `causeToError()` in
+`packages/api/src/lib/audit/error-scrub.ts` specifically to scrub
+`scheme://user:pass@host` userinfo from audit metadata. Not applied
+to pino log sinks.
+
+Call sites affected (partial list — every `err: err.message` log emission
+where `err` could carry a DB driver error message):
+
+```
+packages/api/src/api/routes/admin-connections.ts:447, 476, 531, 574, 605, 630, 689, 704, 746, 764, 785
+packages/api/src/api/routes/onboarding.ts:419, 508, 545
+packages/api/src/lib/db/connection.ts:1025 (healthCheck internal log)
+```
+
+**Impact:** Any log aggregator operator (DevOps team, oncall engineer,
+support reviewing a Railway log stream during triage) can read
+admin-provided connection credentials out of the log feed. In a SaaS
+deployment this expands the audience dramatically — Atlas platform
+operators shouldn't see customer datasource credentials, ever.
+
+**Fix sketch:** Add a pino `formatters.log` or `serializers.err`
+hook that runs every string field through `errorMessage()`. Cheaper
+alternative: wrap `createLogger(...)` so the returned logger has
+pre-applied scrubbers on `log.warn`/`log.error`. Even cheaper: replace
+`err: err instanceof Error ? err.message : String(err)` with
+`err: errorMessage(err)` at every flagged call site and lint-enforce it
+(eslint-plugin-no-raw-error-message).
+
+**Severity:** P2 — operationally high-impact (log-feed audience is
+broad in SaaS), no live HTTP-surface leakage so not P1.
+
+**Issue:** #1818.
+
+---
+
+**F-45 — Duplicate `errorMessage` / `causeToError` helpers in 3 routes (drift risk)** — P3 → merged into F-44
+
+`admin-scim.ts:39-59`, `admin-residency.ts:40-72`, `admin-roles.ts:46-72`
+each define a local copy of `errorMessage` + `causeToError` that is
+byte-compatible with `packages/api/src/lib/audit/error-scrub.ts`. This
+predates F-28's shared extraction.
+
+Drift risk: the next scrub-rule added to the shared helper (e.g.,
+JWT body scrubbing, PII masking for error detail strings, UUID
+truncation) is not applied in these three routes unless each file is
+manually kept in sync.
+
+**Fix sketch:** Replace the three local copies with
+`import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub"`.
+Zero behavior change; pure consolidation. **Folded into the F-44 fix
+PR** because the two findings touch the same module set and any
+scrubber enhancement that F-44 introduces should land with the
+duplicates removed.
+
+**Severity:** P3 — hygiene, not live risk. Tracked as a dependency of
+F-44 rather than a standalone issue to keep the PR count honest.
+
+**Status:** no standalone issue; fix alongside F-44.
+
+---
+
+**F-46 — BYOT integration audit metadata lacks `hasSecret: true` marker** — P2
+
+**Repro:** F-30 / PR #1805 landed `hasSecret: true` on email-provider +
+model-config audit metadata as the load-bearing signal for "this admin
+action wrote a credential." Grep `admin-integrations.ts` for
+`hasSecret` — zero matches. Metadata shapes on BYOT paths:
+
+```
+Slack BYOT           — metadata: { platform: "slack", mode: "byot" }           (line 681)
+Teams BYOT           — metadata: { platform: "teams", mode: "byot" }           (line 825)
+Discord BYOT         — metadata: { platform: "discord", mode: "byot" }         (line 974)
+Telegram connect     — metadata: { platform: "telegram" }                      (line 1108)
+GChat connect        — metadata: { platform: "gchat" }                         (line 1344)
+GitHub connect       — metadata: { platform: "github" }                        (line 1587)
+Linear connect       — metadata: { platform: "linear" }                        (line 1847)
+WhatsApp connect     — metadata: { platform: "whatsapp" }                      (line 2097)
+```
+
+All write a credential (bot token / app password / api key) as part of
+the handler but emit no `hasSecret` marker.
+
+**Impact:** Compliance review that relies on `metadata.hasSecret` to
+filter credential-bearing admin actions misses every integration
+install / BYOT connect. "How often did this org rotate integration
+credentials this quarter?" returns zero rows.
+
+**Fix sketch:** Add `hasSecret: true` to every `logAdminAction`
+payload on BYOT / install paths that writes a credential-bearing
+column. No change to downstream consumers required — the field is
+already established. Trivial fix; consolidate with F-41 to land at
+the same time the storage encryption is applied (they touch the same
+handlers).
+
+**Severity:** P2 — compliance-query gap, not live risk.
+
+**Issue:** #1819.
+
+---
+
+**F-47 — No key-rotation path for `ATLAS_ENCRYPTION_KEY`** — P2
+
+**Repro:** `getEncryptionKey()` in `packages/api/src/lib/db/internal.ts:40-54`
+derives the 32-byte AES key from
+`ATLAS_ENCRYPTION_KEY ?? BETTER_AUTH_SECRET` via SHA-256. Every
+ciphertext (`connections.url`, `workspace_model_config.api_key_encrypted`,
+any future encrypted column) is encrypted under this single key.
+
+Grep the repo for re-encryption / dual-key / key-versioning logic —
+zero matches. Rotating `ATLAS_ENCRYPTION_KEY` (or `BETTER_AUTH_SECRET`
+when it's the fallback key) renders every existing ciphertext
+undecryptable. `decryptUrl` throws; every read of a connection URL or
+BYOT API key fails.
+
+**Impact:** SOC 2 CC6.1 (cryptographic key management) typically
+requires a documented rotation schedule and a defined rotation
+procedure. Atlas has neither. Operator incident: a suspected
+key-compromise event forces an immediate rotation; without a dual-key
+window, every workspace's connections + model config must be
+re-entered by the admin because the ciphertext is now unreadable.
+No backwards-compatible rollback either.
+
+Secondary concern: `BETTER_AUTH_SECRET` is the Better Auth session
+signing key, semantically separate from encryption-at-rest. Making
+it the fallback means rotating the session signing key (a common
+Better Auth operational step) silently destroys datastore secrets.
+The fallback is convenient for self-hosted bootstrap but dangerous
+for SaaS.
+
+**Fix sketch:** (a) Add a key-version column to every encrypted table
+(`connections.url_key_version`, `workspace_model_config.api_key_key_version`);
+(b) support a comma-separated `ATLAS_ENCRYPTION_KEYS` list with the
+first entry as the active write key and subsequent entries as read-only
+decrypt-legacy keys; (c) document a rotation runbook: add new key as
+second entry → rolling deploy → re-encrypt migration → promote new
+key to first position → drop old key. Optional phase 2: decouple from
+`BETTER_AUTH_SECRET` entirely (warn on startup if the fallback is in
+use in a deploy where `ATLAS_DEPLOY_MODE=saas`).
+
+**Severity:** P2 — compliance-posture gap with operational risk
+(rotation is a documented SOC 2 control), no live-exploit bar.
+
+**Issue:** #1820.
+
+---
+
+**F-48 — Widget-bundle sanity — verified, no finding** — —
+
+`packages/react/src/widget-entry.ts` is 20 lines. It imports
+`createElement`, `Component` (React), `createRoot` (ReactDOM/client),
+`AtlasChat` (local component), `setTheme` (local hook), and exposes
+them on `globalThis.AtlasWidget`. Zero `process.env` references.
+Zero fetch calls with hard-coded URLs. Zero server module imports.
+`tsup.config.ts` sets `platform: "browser"` for the widget target,
+which forbids node built-ins; `noExternal: /.*/` bundles all React
+deps in-line. Any server-side import would fail the build, not
+silently bundle.
+
+Result: the widget bundle is clean. No finding filed.
+
+---
+
+**F-49 — `#1724` scope references non-existent `lib/effect/classify.ts`** — P3 → doc-only
+
+Issue #1724 scope list names `packages/api/src/lib/effect/classify.ts`
+as a key file. No such file exists on `main` — the classification
+code (`classifyError`, `mapTaggedError`) lives in
+`packages/api/src/lib/effect/hono.ts`. This is a scope-doc typo, not
+a code issue. Noting it so a future audit doesn't waste cycles
+searching for the missing file.
+
+**Severity:** P3 hygiene; doc-fix on the scope list if/when #1724 is
+reopened for commentary.
+
+**Status:** no issue filed; noted here.
+
+---
+
+**F-50 — Non-`NEXT_PUBLIC_*` env read in client-reachable module (`shared/lib.ts`)** — P3
+
+**Repro:** `packages/web/src/app/shared/lib.ts:31-37` defines
+`getApiBaseUrl()` which reads
+`process.env.NEXT_PUBLIC_ATLAS_API_URL || process.env.ATLAS_API_URL || "http://localhost:3001"`.
+The file is imported by `packages/web/src/app/report/[token]/*.tsx`
+(a Next.js server component page + a `"use client"` report-view
+component).
+
+Next.js only statically inlines `NEXT_PUBLIC_*` env vars in client
+bundles; non-public env reads resolve to `undefined` in the browser.
+So `process.env.ATLAS_API_URL` evaluates to `undefined` client-side,
+the `||` falls through to `"http://localhost:3001"`, and no secret
+leaks. Confirmed by reading the import context (report-view.tsx is
+`"use client"` but imports only a *type* from `shared/lib.ts`, so the
+module code never executes in the browser).
+
+**Impact:** zero as currently wired. But the pattern is a foot-gun —
+a future client component that imports `getApiBaseUrl()` would
+silently point at localhost in production instead of the real API.
+Hygiene issue, not a secret leak.
+
+**Fix sketch:** Either (a) remove the `ATLAS_API_URL` fallback and
+rely solely on `NEXT_PUBLIC_ATLAS_API_URL` (the API URL is not a
+secret — a SaaS deployment already advertises it in the auth cookie
+domain), or (b) split the server-only fallback into a separate module
+that `"use client"` components cannot import. Prefer (a) — simpler.
+
+**Severity:** P3 hygiene, not a live risk.
+
+**Status:** no issue filed; low-volume cleanup-tail candidate.
+
+---
+
+**F-51 — Custom-domain `verification_token` stored plaintext** — P3
+
+**Repro:** migration `0033_custom_domains_dns_verification.sql` adds
+`custom_domains.verification_token TEXT`. The token is a random
+string used as the value in the customer's DNS TXT record so Atlas
+can confirm domain ownership.
+
+A verification_token IS NOT a persistent credential. Its only use is
+"does this TXT record match what Atlas generated?" — compromise of
+the token lets an attacker post the same TXT record to a domain they
+already control, which doesn't accomplish anything (they still need
+domain control for the DNS write). Impact is scoped to the single
+one-time verification step. Storage plaintext is therefore
+acceptable; flagged for completeness because the Phase 5 scope asked.
+
+**Severity:** P3 — not a finding; documented for future-audit
+visibility.
+
+**Status:** no issue filed.
+
+---
+
+**F-52 — `Effect.runPromise` + FiberFailure unwrap — systematic risk pattern** — P3
+
+**Repro:** F-37 / #1798 already identified this on `IPAllowlistError`:
+`Effect.runPromise(eeEffect)` flattens a typed `_tag` failure into a
+`FiberFailure` wrapper that does NOT expose the inner `.code`. Any
+caller that checks `"code" in err` after `Effect.runPromise` silently
+degrades to 500 instead of the tagged status.
+
+Other `Effect.runPromise` sites in `packages/api/src`:
+
+```
+server.ts:266                    — runtime bootstrap; defects are fatal, response shape N/A
+admin-publish.ts:226             — runPublishPhases; caught by outer try/catch; response is generic "publish_failed"
+admin-ip-allowlist.ts:190        — list; never fails with a tagged error; pattern intact for list path
+db/internal.ts:269,463,596,1542,1627  — read-layer helpers; caller owns classification
+agent.ts:521,541                 — background work; no route response
+scheduler/executor.ts:83         — scheduler path; separate audit
+scheduler/delivery.ts:314        — scheduler path
+tools/sql.ts:1019,1049,1052,1239 — approval path + validator; errors surface via catchTag earlier, not tagged-to-FiberFailure
+tools/python-sandbox.ts:233,439  — sandbox; errors not tagged
+semantic/entities.ts:419         — admin surface; outer try/catch generic
+auth/middleware.ts:198           — SSO enforcement; failure already handled with generic "fail-closed"
+email/engine.ts:332              — scheduler
+```
+
+Most of these don't expose a tagged error through a FiberFailure to a
+route-level classifier — either the inner effect doesn't fail with a
+tagged type, or the outer catch returns a generic message regardless.
+Two sites on the edge of the pattern:
+
+- `admin-publish.ts:226` — `runPublishPhases` can fail with
+  `PublishPhaseError`; the outer `catch` returns a generic 500 with
+  message "Publish failed — all changes rolled back." The tagged
+  error is logged but not surfaced to the client. This is the
+  correct posture for a transaction-rolled-back surface.
+- `admin-ip-allowlist.ts:190` (list handler) — list never fails with
+  a tagged error; kept for historical context in comments. The
+  add/delete handlers have been migrated to direct `yield*` on the
+  EE effect (correct pattern) per the #1798 fix.
+
+**Impact:** No live-exploit path at the current call graph. Risk is
+that a future contributor copies the `Effect.runPromise` + catch
+pattern into a new route where the inner effect DOES fail with a
+tagged error, and the bug silently ships at 500 instead of the
+intended 400 / 409 / 404.
+
+**Fix sketch:** Lint rule or doc note in `lib/effect/hono.ts` JSDoc
+warning against `Effect.runPromise(eeEffect)` + catch-and-classify in
+route handlers. Prefer composing with `yield* ee.xyz().pipe(Effect.catchTag(...))`
+per the admin-ip-allowlist.ts:232-259 pattern. Alternatively, export
+a helper that unwraps FiberFailure back to the inner tagged error so
+classify logic keeps working on the boundary.
+
+**Severity:** P3 — no live exploit, pattern documentation + optional
+lint.
+
+**Status:** no issue filed; noted here for future contributors. If a
+P2+ instance surfaces during remediation, it gets promoted.
+
+---
+
+### Append: pino `redact` paths audit
+
+Current list (`packages/api/src/lib/logger.ts:44-78`):
+
+```
+connectionString, databaseUrl, apiKey, password, secret, authorization, url,
+*.connectionString, *.databaseUrl, *.apiKey, *.password, *.secret, *.authorization, *.url,
+[*].connectionString, [*].databaseUrl, [*].apiKey, [*].password, [*].secret, [*].authorization, [*].url,
+datasources.*.url, datasources.*.connectionString, datasources.*.password,
+config.datasources.*.url, config.datasources.*.connectionString,
+connection.url, connection.connectionString, connection.password,
+connections.*.url, connections.*.connectionString, connections.*.password
+```
+
+Missing paths worth adding (P3 hygiene — not separate findings
+because the F-44 fix covers the underlying "error-message substring"
+gap):
+
+- `cookie`, `set-cookie`, `[*].cookie`, `*.cookie` — bearer cookies
+- `bearer`, `[*].bearer`, `*.bearer` — Better Auth bearer plugin token shape
+- `refreshToken`, `*.refreshToken`, `[*].refreshToken` — OAuth refresh token shape
+- `botToken`, `*.botToken`, `[*].botToken` — Slack/Discord/Telegram BYOT
+- `signingSecret`, `*.signingSecret` — Slack / webhook plugin
+- `clientSecret`, `*.clientSecret` — OAuth-app-level secret
+- `webhookSecret`, `*.webhookSecret` — webhook plugin
+- `appPassword`, `*.appPassword` — Teams BYOT
+- `serverToken`, `*.serverToken` — Postmark email provider
+
+Add alongside the F-44 fix so the error-substring scrubber and the
+field-name redact rules stay in lockstep.
+
+### Considered, not filed
+
+- **`err.message` in 500 bodies at `admin-connections.ts:463, 479, 594, 736`** —
+  messages originate from `detectDBType()` (fixed string referencing
+  `ATLAS_DATASOURCE_URL`, never echoes the URL) or from
+  `connections.healthCheck()` (catches internally + scrubs via
+  `matchError()`). Confirmed no URL substring can survive into the
+  response.
+- **Plugin readback on platform surface (`admin-plugins.ts` `GET /:id/schema`)** —
+  masks secret-marked fields via `MASKED_PLACEHOLDER`. Correct posture;
+  contrasts with the marketplace surface gap (F-43).
+- **`workspace_model_config.api_key_encrypted`** — already encrypted
+  via `encryptUrl` (EE `ee/platform/model-routing.ts:216-251`). BYOT
+  test path (`testModelConfig`) uses the apiKey in a one-shot HTTP
+  probe and never persists it outside the encrypted column. No
+  finding.
+- **Platform-level `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`** — `settings.ts`
+  marks them `secret: true`; `admin.ts:2323` forbids mutation via the
+  settings UI (`"Secret settings cannot be modified from the UI"`).
+  Env-only, never persisted, never surfaced. No finding.
+- **Public `branding` / `domain` / `residency` audit-metadata field review** —
+  every sampled payload carries IDs / enums / booleans (phase-4
+  F-32 PR #1806 already reviewed the metadata shape). No leakage.
+- **Custom-domain `verification_token` plaintext storage** — not a
+  credential; see F-51 rationale.
+- **Non-`NEXT_PUBLIC_*` env read in `shared/lib.ts`** — runtime-safe
+  (resolves to `undefined` in the browser); see F-50 rationale.
+- **`Effect.runPromise` sites in `db/internal.ts`, `agent.ts`,
+  `scheduler/*`** — none surface tagged errors through a FiberFailure
+  to a route-level classifier; see F-52 rationale.
+
+### Findings summary
+
+| ID | Severity | Type | Surface | Compliance lens | Issue | Status |
+|---|---|---|---|---|---|---|
+| F-41 | P1 | At-rest encryption gap | Workspace integration tokens (Slack/Teams/Discord/Telegram/GChat/GitHub/Linear/WhatsApp/email/sandbox) | SOC 2 CC6.1 / GDPR A32 / ISO A.10.1 | #1815 | open |
+| F-42 | P1 | At-rest encryption gap | `plugin_settings.config` + `workspace_plugins.config` plaintext JSONB | SOC 2 CC6.1 / GDPR A32 | #1816 | open |
+| F-43 | P1 | Live disclosure | Marketplace `GET /available` returns `installedConfig` raw (no secret mask) | SOC 2 CC6.7 (logical access) | #1817 | open |
+| F-44 | P2 | Log redaction | pino `err.message` passes through driver-echoed connection strings | SOC 2 CC7.2 (monitoring) | #1818 | open |
+| F-45 | P3 | Hygiene | Duplicate `errorMessage`/`causeToError` helpers in 3 routes | — | merged into F-44 (#1818) | deferred |
+| F-46 | P2 | Audit-metadata coverage | BYOT integration paths don't emit `hasSecret: true` | SOC 2 CC7.2 | #1819 | open |
+| F-47 | P2 | Operations | No key-rotation path for `ATLAS_ENCRYPTION_KEY`; fallback entangles with Better Auth signing key | SOC 2 CC6.1 (key management) | #1820 | open |
+| F-48 | — | Verified no leak | `@useatlas/react` widget entry | — | n/a | verified |
+| F-49 | P3 | Doc-fix | `#1724` scope list references missing `classify.ts` | — | — | noted |
+| F-50 | P3 | Hygiene | `shared/lib.ts` reads non-`NEXT_PUBLIC_*` env in client-reachable module | — | — | noted |
+| F-51 | P3 | Verified not a credential | `custom_domains.verification_token` plaintext | — | — | noted |
+| F-52 | P3 | Pattern risk | `Effect.runPromise` + FiberFailure unwrap (systematic) | — | — | noted |
+
+**Totals:** P0 = 0, P1 = 3 (F-41, F-42, F-43), P2 = 3 (F-44, F-46, F-47), P3 = 4 (F-45 merged into F-44; F-49 / F-50 / F-51 / F-52 noted without issues); F-48 is an affirmative-verification row, not a finding.
+
+### Deliverables this PR
+
+- **This audit section** — table + 6 P1/P2 issue-bearing findings + 1
+  P3 merged-into-P2 + 4 P3 noted-only + 1 affirmative-verification row.
+- **6 GitHub issues filed** (#1815 – #1820) for every P0/P1/P2 finding
+  (none here are P0). Labels: `bug`, `security`, and one of `area: api`,
+  `area: plugins`, `area: web` per the scope of the handler touched.
+  Milestone `1.2.3 — Security Sweep`.
+- **Phase-5 checkbox flipped** in the tracker (#1718).
+- **ROADMAP update** — Phase 5 bullet annotated per the phase-4 pattern
+  (audit complete, remediation PRs follow).
+- **No production code changes** — fixes ship as follow-up PRs per the
+  phase-1/2/3/4 workflow. F-41 + F-42 + F-43 likely cluster into one
+  "integration + plugin credential encryption + marketplace mask" PR
+  because they touch overlapping module sets; F-44 + F-45 cluster
+  into one "pino error-scrubber + duplicate-helper consolidation" PR;
+  F-46 can bundle with F-41 (same handlers); F-47 ships standalone as
+  migration + runbook.
+
+Fixes for F-41 through F-47 are follow-up PRs. Priority ordering:
+F-43 first (live disclosure, small fix), then F-41 + F-42 + F-46
+(clustered credential encryption + hasSecret marker), then F-44 + F-45
+(pino scrubber), then F-47 (rotation runbook + key-versioning
+migration).
+
+---
+
+## 1.2.3 Phase scorecard
+
+| Phase | Title | Audit status | Findings (P0 / P1 / P2 / P3) | Issues filed | Notes |
+|---|---|---|---|---|---|
+| 1 | Auth config + middleware coverage | complete | 0 / 3 / 4 / 4 (post-Phase 1.5 rescoring) | #1727 – #1733 + deferred #1798 | F-02 upgraded to P0 during Phase 1.5 empirical validation |
+| 2 | Org-scoping on reads + writes | complete | 3 / 0 / 4 / 2 | #1734 – #1737 + extras | 3 P0s fixed in-milestone |
+| 3 | SQL validator edges + fuzz | complete | 0 / 1 / 2 / 2 | #1742 – #1746 | F-17 RLS header-forward fixed |
+| 4 | Audit-log coverage on write routes | complete | 5 / 5 / 5 / 3 | #1777 – #1791 | 15 findings; 9 fixed in-milestone (PR #1797–#1809) |
+| 5 | Secrets + error surfaces + plugin credentials | complete | 0 / 3 / 3 / 4 + 1 verified-clean | 6 P1/P2 issues filed | encryption-at-rest gap is the dominant pattern; no P0 |
+| 6 | Rate limiting + DoS | not started | — | — | #1725 (pending) |
+| 7 | Enterprise governance paths | not started | — | — | #1726 (pending) |
+
+**Cross-phase totals (phases 1–5):** P0 = 8, P1 = 12, P2 = 18, P3 = 15. No current P0 open; remediation for Phase 5 P1/P2 clustered into follow-up PRs after the audit lands.

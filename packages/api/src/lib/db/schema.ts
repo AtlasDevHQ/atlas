@@ -1385,3 +1385,27 @@ export const adminActionLog = pgTable(
     check("chk_admin_action_status", sql`status IN ('success', 'failure')`),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Admin action retention config
+// ---------------------------------------------------------------------------
+// Parallel to `auditRetentionConfig` — retention policy for `adminActionLog`.
+// Key is `org_id` with the reserved literal 'platform' for the platform-scoped
+// policy row. See migration 0035 and `.claude/research/design/admin-action-log-retention.md`.
+
+export const adminActionRetentionConfig = pgTable(
+  "admin_action_retention_config",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id").notNull().unique(),
+    retentionDays: integer("retention_days"),
+    hardDeleteDelayDays: integer("hard_delete_delay_days").notNull().default(30),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: text("updated_by"),
+    lastPurgeAt: timestamp("last_purge_at", { withTimezone: true }),
+    lastPurgeCount: integer("last_purge_count"),
+  },
+  (t) => [
+    index("idx_admin_action_retention_config_org").on(t.orgId),
+  ],
+);

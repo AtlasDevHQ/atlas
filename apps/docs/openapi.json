@@ -45804,10 +45804,16 @@
                             "type": "string"
                           },
                           "actorId": {
-                            "type": "string"
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "actorEmail": {
-                            "type": "string"
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "scope": {
                             "type": "string",
@@ -45853,6 +45859,12 @@
                           },
                           "requestId": {
                             "type": "string"
+                          },
+                          "anonymizedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -45868,7 +45880,8 @@
                           "status",
                           "metadata",
                           "ipAddress",
-                          "requestId"
+                          "requestId",
+                          "anonymizedAt"
                         ]
                       }
                     },
@@ -54583,10 +54596,16 @@
                             "type": "string"
                           },
                           "actorId": {
-                            "type": "string"
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "actorEmail": {
-                            "type": "string"
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "scope": {
                             "type": "string",
@@ -54632,6 +54651,12 @@
                           },
                           "requestId": {
                             "type": "string"
+                          },
+                          "anonymizedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -54647,7 +54672,8 @@
                           "status",
                           "metadata",
                           "ipAddress",
-                          "requestId"
+                          "requestId",
+                          "anonymizedAt"
                         ]
                       }
                     },

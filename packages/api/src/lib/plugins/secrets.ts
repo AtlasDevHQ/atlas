@@ -31,6 +31,9 @@ import {
   encryptSecret,
   decryptSecret,
 } from "@atlas/api/lib/db/secret-encryption";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("plugins:secrets");
 
 /** Placeholder returned in place of secret values in admin config responses. */
 export const MASKED_PLACEHOLDER = "••••••••";
@@ -182,9 +185,11 @@ export function isEncryptedSecret(value: unknown): value is string {
  * `encryptSecret`. Non-secret fields pass through unchanged so JSONB ops
  * stay grep-able. Mirrors `maskSecretFields`' shape for consistency:
  *
- * - `config === null` → returns `null` (propagates "not installed").
- * - `config` is not a plain object → returns `{}` (defensive: the DB
- *   shouldn't produce this but don't crash if a JSONB column drifts).
+ * - `config === null` / not a plain object → returns `{}` (callers persist
+ *   an empty blob rather than crashing if a JSONB column drifts; contrast
+ *   with `maskSecretFields` which uses `null` as the "not installed" signal
+ *   to the UI — this walker runs on the write path where "not installed"
+ *   isn't a reachable state).
  * - `schema.state === "corrupt"` → fail closed by encrypting every
  *   non-empty string value — same reasoning as `maskSecretFields`' corrupt
  *   branch: we'd rather over-encrypt than persist a credential plaintext
@@ -201,15 +206,14 @@ export function isEncryptedSecret(value: unknown): value is string {
 export function encryptSecretFields(
   config: unknown,
   schema: ConfigSchema,
-): Record<string, unknown> | null {
-  if (config == null) return null;
-  if (typeof config !== "object" || Array.isArray(config)) return {};
+): Record<string, unknown> {
+  if (config == null || typeof config !== "object" || Array.isArray(config)) return {};
   const source = config as Record<string, unknown>;
 
   if (schema.state === "corrupt") {
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(source)) {
-      out[key] = shouldEncryptStringValue(value) ? encryptSecret(value as string) : value;
+      out[key] = isEncryptableString(value) ? encryptSecret(value) : value;
     }
     return out;
   }
@@ -219,8 +223,8 @@ export function encryptSecretFields(
   const secretKeys = new Set(schema.fields.filter(isSecretField).map((f) => f.key));
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(source)) {
-    out[key] = secretKeys.has(key) && shouldEncryptStringValue(value)
-      ? encryptSecret(value as string)
+    out[key] = secretKeys.has(key) && isEncryptableString(value)
+      ? encryptSecret(value)
       : value;
   }
   return out;
@@ -233,10 +237,11 @@ export function encryptSecretFields(
  * Decryption failures throw — the plugin runtime has no safe fallback for
  * a missing credential, and a silently-null secret could masquerade as "no
  * credential configured" and turn a rotation bug into a failed-open dispatch.
- * Callers surface the throw as a 500 with `requestId`. `decryptSecret`
- * already scrubs key material from its error message, but any logging at
- * the callsite should still pipe the error through `errorMessage()` from
- * `lib/audit/error-scrub.ts` to strip connection strings.
+ * Callers surface the throw as a 500 with `requestId`. `decryptSecret`'s
+ * thrown error does not include key material (see `secret-encryption.ts`);
+ * callers should still pipe the error through `errorMessage()` from
+ * `lib/audit/error-scrub.ts` to strip connection strings from other parts
+ * of the error chain before logging.
  *
  * Passes un-prefixed plaintext through unchanged — a legacy row not yet
  * touched by the backfill decrypts to itself.
@@ -244,9 +249,8 @@ export function encryptSecretFields(
 export function decryptSecretFields(
   config: unknown,
   schema: ConfigSchema,
-): Record<string, unknown> | null {
-  if (config == null) return null;
-  if (typeof config !== "object" || Array.isArray(config)) return {};
+): Record<string, unknown> {
+  if (config == null || typeof config !== "object" || Array.isArray(config)) return {};
   const source = config as Record<string, unknown>;
 
   if (schema.state === "corrupt") {
@@ -262,20 +266,34 @@ export function decryptSecretFields(
   const secretKeys = new Set(schema.fields.filter(isSecretField).map((f) => f.key));
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(source)) {
-    out[key] = secretKeys.has(key) && typeof value === "string" && value.length > 0
-      ? decryptSecret(value)
-      : value;
+    if (secretKeys.has(key) && typeof value === "string" && value.length > 0) {
+      // Drift breadcrumb: a `secret: true` field that isn't ciphertext is
+      // either a pre-backfill legacy row or plaintext that slipped past the
+      // write path. `decryptSecret` handles both (un-prefixed returns as-is),
+      // but ops needs a signal so operational drift is catchable. The
+      // message is information-only — no row data logged — so it's safe to
+      // emit at `warn` even with high-cardinality plugin configs.
+      if (!isEncryptedSecret(value)) {
+        log.warn(
+          { key },
+          "Plaintext value on a `secret: true` field — legacy pre-backfill row or write-path drift (F-42)",
+        );
+      }
+      out[key] = decryptSecret(value);
+    } else {
+      out[key] = value;
+    }
   }
   return out;
 }
 
 /**
- * A value is eligible for encryption iff it's a non-empty string that
- * isn't already ciphertext. Guards idempotence (already-encrypted values
- * skip a fresh IV and repeated PUTs don't nest `enc:v1:enc:v1:…`) and
- * matches the "distinguish set from unset" semantics of `maskSecretFields`
- * (empty / null / absent values pass through untouched).
+ * Type predicate: the value is a non-empty string that isn't already
+ * ciphertext. Lets the walker do `encryptSecret(value)` without a
+ * downstream `as string` cast and guards idempotence so repeated PUTs
+ * can't nest `enc:v1:enc:v1:…`. Empty / null / absent values pass
+ * through — matches `maskSecretFields`' "distinguish set from unset".
  */
-function shouldEncryptStringValue(value: unknown): boolean {
+function isEncryptableString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !isEncryptedSecret(value);
 }

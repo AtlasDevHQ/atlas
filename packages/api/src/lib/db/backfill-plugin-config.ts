@@ -24,11 +24,15 @@
  *      secret. Corrupt / missing schemas fall through to the same
  *      fail-closed walker the route uses.
  *
- * Idempotent by design: `encryptSecretFields` skips any string value
- * that already begins with `enc:v1:`, so re-running the backfill is a
- * safe no-op on rows previously processed. A session-level advisory
- * lock (same shape as F-41) stops two operators from doing the work
- * concurrently.
+ * Idempotent on secret fields: `encryptSecretFields` skips any string
+ * value that already begins with `enc:v1:`. Re-runs do not re-encrypt
+ * those. Note — a `workspace_plugins` row whose *non-secret* fields are
+ * still plaintext (region, port, debug) will trigger a rewrite on each
+ * run because the row-level short-circuit looks at every string value,
+ * not just `secret:true` ones; the rewrite itself is a no-op on the
+ * secret fields and the operational-string no-op cost is acceptable for
+ * a one-time pass. A session-level advisory lock (same shape as F-41)
+ * stops two operators from doing the work concurrently.
  *
  * Usage:
  *   bun run packages/api/src/lib/db/backfill-plugin-config.ts
@@ -37,10 +41,10 @@
  *   0 — all rows processed, row counts printed
  *   1 — pool init failed or the batch threw with no path forward
  *
- * F-47 (#1820) will re-encrypt under a rotated key — that is a *separate*
- * backfill because it also has to decrypt first. Single-key verification
- * here is all that's needed for F-42; see the "rotation pre-test" comment
- * in `secrets-encryption.test.ts`.
+ * F-47 (#1820) adds a rotation path that re-encrypts under a new key —
+ * a separate backfill because it also has to decrypt first. Single-key
+ * verification here is all that's needed for F-42; see the "rotation
+ * pre-test" comment in `secrets-encryption.test.ts`.
  */
 
 import { Pool } from "pg";
@@ -104,11 +108,16 @@ function asConfigRecord(raw: unknown): Record<string, unknown> | null {
 }
 
 /**
- * True when every string value in `config` is either empty or already
- * `enc:v1:` — i.e. the backfill has nothing to do. Lets us avoid a
- * redundant UPDATE per already-processed row so re-runs stay cheap.
+ * Row-level short-circuit: true when every string value in `config` is
+ * either empty or already `enc:v1:`. Skipping these rows keeps the
+ * re-run cost low on carriers where fail-closed backfill has already
+ * encrypted everything (`plugin_settings`). For `workspace_plugins`
+ * under a parsed catalog schema, non-secret strings stay plaintext by
+ * design, so this short-circuit only fires on rows with no non-secret
+ * string values — a second run on such a row still invokes the walker,
+ * which is a no-op on already-encrypted secret keys.
  */
-function allSecretsAlreadyEncrypted(config: Record<string, unknown>): boolean {
+function allStringsAreCiphertext(config: Record<string, unknown>): boolean {
   for (const value of Object.values(config)) {
     if (typeof value === "string" && value.length > 0 && !isEncryptedSecret(value)) {
       return false;
@@ -148,7 +157,7 @@ export async function backfillPluginSettings(
         skipped += 1;
         continue;
       }
-      if (allSecretsAlreadyEncrypted(config)) {
+      if (allStringsAreCiphertext(config)) {
         alreadyEncrypted += 1;
         continue;
       }
@@ -211,7 +220,7 @@ export async function backfillWorkspacePlugins(
         skipped += 1;
         continue;
       }
-      if (allSecretsAlreadyEncrypted(config)) {
+      if (allStringsAreCiphertext(config)) {
         alreadyEncrypted += 1;
         continue;
       }

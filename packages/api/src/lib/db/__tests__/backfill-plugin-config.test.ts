@@ -9,7 +9,7 @@
  *      `enc:v1:` ciphertext after the first run.
  *   2. The backfill is idempotent — a second run performs zero UPDATEs
  *      because every row's secrets are already ciphertext (the
- *      `allSecretsAlreadyEncrypted` short-circuit).
+ *      `allStringsAreCiphertext` short-circuit).
  *   3. The workspace_plugins walker uses the catalog's `config_schema`
  *      when known and fails-closed (encrypts every non-empty string)
  *      when the schema is missing or malformed — matches the route-
@@ -102,7 +102,7 @@ describe("backfillPluginSettings (F-42)", () => {
 
   it("is idempotent: a second run with already-encrypted rows does zero UPDATEs", async () => {
     // Simulate the "second run" state: every string value in the row
-    // already begins with enc:v1:. allSecretsAlreadyEncrypted short-
+    // already begins with enc:v1:. allStringsAreCiphertext short-
     // circuits before the encrypt walker, so no UPDATE happens.
     const alreadyEncrypted = "enc:v1:aW5pdHZlY3Rvcg==:YXV0aHRhZ2F1dGh0YWc=:Y2lwaGVydGV4dA==";
     const rowsBySql = new Map<string, Array<Record<string, unknown>>>([
@@ -256,7 +256,7 @@ describe("backfillWorkspacePlugins (F-42)", () => {
       ["FROM workspace_plugins wp", [
         {
           id: "inst-3",
-          config: { apiKey: alreadyEncrypted, region: "us-east-1" }, // non-secret region passes shouldEncryptStringValue but allSecretsAlreadyEncrypted sees a plaintext string and re-runs
+          config: { apiKey: alreadyEncrypted, region: "us-east-1" }, // non-secret region passes shouldEncryptStringValue but allStringsAreCiphertext sees a plaintext string and re-runs
           config_schema: [
             { key: "apiKey", type: "string", secret: true },
             { key: "region", type: "string" },
@@ -268,7 +268,7 @@ describe("backfillWorkspacePlugins (F-42)", () => {
     const { pool, captured } = makeMockPool(rowsBySql);
 
     // First config has a plaintext non-secret ("region" = "us-east-1"),
-    // so allSecretsAlreadyEncrypted returns false. Under the known
+    // so allStringsAreCiphertext returns false. Under the known
     // schema, only apiKey gets touched — it's already encrypted so
     // idempotent. The UPDATE still runs once (we walked for non-secret
     // changes), but a second run on the resulting row should be a no-op.
@@ -299,7 +299,7 @@ describe("backfillWorkspacePlugins (F-42)", () => {
     // A plugin that declares no schema has nothing to encrypt — every
     // field is "operational". The absent-schema branch of
     // encryptSecretFields returns the config unchanged. We still UPDATE
-    // because the row didn't satisfy allSecretsAlreadyEncrypted's
+    // because the row didn't satisfy allStringsAreCiphertext's
     // "all strings encrypted" check, but the persisted shape is
     // identical — nothing was ever secret. This is acceptable over-work
     // for the one-time backfill.

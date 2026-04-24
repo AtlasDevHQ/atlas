@@ -35,18 +35,6 @@ import { _resetEncryptionKeyCache } from "../../db/internal";
 const parsed = (fields: ConfigSchemaField[]): ConfigSchema => ({ state: "parsed", fields });
 const absent: ConfigSchema = { state: "absent" };
 
-/**
- * Narrow a walker return to Record<string, unknown>. The walkers return
- * `null` on the "not-installed" branch (input was null); every test here
- * feeds a real object, so the narrowed shape is what we want to assert
- * against. Centralizing this avoids sprinkling non-null assertions at
- * every call site.
- */
-function mustObject(value: Record<string, unknown> | null): Record<string, unknown> {
-  if (value === null) throw new Error("walker returned null unexpectedly");
-  return value;
-}
-
 describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
   const savedKey = process.env.ATLAS_ENCRYPTION_KEY;
   const savedAuth = process.env.BETTER_AUTH_SECRET;
@@ -75,10 +63,10 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
         { key: "debug", type: "boolean" },
       ]);
 
-      const out = mustObject(encryptSecretFields(
+      const out = encryptSecretFields(
         { apiKey: "sk-live-1", apiSecret: "secret-2", region: "us-east-1", port: 5432, debug: true },
         schema,
-      ));
+      );
 
       expect(isEncryptedSecret(out.apiKey)).toBe(true);
       expect(isEncryptedSecret(out.apiSecret)).toBe(true);
@@ -96,16 +84,16 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
         { key: "region", type: "string" },
       ]);
       const original = { apiKey: "sk-live-1", region: "us-east-1" };
-      const encrypted = mustObject(encryptSecretFields(original, schema));
-      const decrypted = mustObject(decryptSecretFields(encrypted, schema));
+      const encrypted = encryptSecretFields(original, schema);
+      const decrypted = decryptSecretFields(encrypted, schema);
       expect(decrypted).toEqual(original);
     });
 
     it("is idempotent — re-encrypting an already-encrypted field is a no-op", () => {
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      const first = mustObject(encryptSecretFields({ apiKey: "sk-live-1" }, schema));
+      const first = encryptSecretFields({ apiKey: "sk-live-1" }, schema);
       const firstCiphertext = first.apiKey;
-      const second = mustObject(encryptSecretFields(first, schema));
+      const second = encryptSecretFields(first, schema);
       // Same ciphertext — no fresh IV. Backfill script relies on this to
       // be safely re-runnable.
       expect(second.apiKey).toBe(firstCiphertext);
@@ -116,14 +104,18 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
       // Matches maskSecretFields' "distinguish set from unset" semantics.
       // An unset secret must stay unset, not become `encryptSecret("")`.
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      expect(mustObject(encryptSecretFields({ apiKey: "" }, schema)).apiKey).toBe("");
-      expect(mustObject(encryptSecretFields({ apiKey: null }, schema)).apiKey).toBeNull();
-      expect(mustObject(encryptSecretFields({}, schema))).not.toHaveProperty("apiKey");
+      expect(encryptSecretFields({ apiKey: "" }, schema).apiKey).toBe("");
+      expect(encryptSecretFields({ apiKey: null }, schema).apiKey).toBeNull();
+      expect(encryptSecretFields({}, schema)).not.toHaveProperty("apiKey");
     });
 
-    it("handles null config (not-installed case)", () => {
+    it("coerces null / non-object config to `{}` (write path runs before persist)", () => {
+      // Unlike maskSecretFields (which uses null as the "not installed"
+      // signal to the UI), the encrypt walker runs on the write path where
+      // "not installed" isn't reachable — callers persist the returned
+      // object verbatim, so an empty JSONB blob is the right shape.
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      expect(encryptSecretFields(null, schema)).toBeNull();
+      expect(encryptSecretFields(null, schema)).toEqual({});
     });
 
     it("returns empty object for non-object configs (defensive — DB drift)", () => {
@@ -134,7 +126,7 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
 
     it("passes every field through unchanged on absent schema (no secret declared)", () => {
       const input = { apiKey: "sk-live-1", region: "us" };
-      const out = mustObject(encryptSecretFields(input, absent));
+      const out = encryptSecretFields(input, absent);
       expect(out).toEqual(input);
     });
 
@@ -142,7 +134,7 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
       const loose = parsed([
         { key: "apiKey", type: "string", secret: "true" as unknown as boolean },
       ]);
-      const out = mustObject(encryptSecretFields({ apiKey: "sk-live-1" }, loose));
+      const out = encryptSecretFields({ apiKey: "sk-live-1" }, loose);
       // secret wasn't strict-true → not encrypted
       expect(out.apiKey).toBe("sk-live-1");
     });
@@ -153,10 +145,10 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
       // closed behavior: we prefer a momentarily-unreadable config over
       // persisting a credential plaintext after a migration typo.
       const corrupt: ConfigSchema = { state: "corrupt", reason: "expected array, got object" };
-      const out = mustObject(encryptSecretFields(
+      const out = encryptSecretFields(
         { apiKey: "sk-live-1", port: 5432, debug: true, region: "us" },
         corrupt,
-      ));
+      );
       expect(isEncryptedSecret(out.apiKey)).toBe(true);
       expect(isEncryptedSecret(out.region)).toBe(true);
       expect(out.port).toBe(5432);      // numbers pass through
@@ -177,11 +169,11 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
         { key: "apiKey", type: "string", secret: true },
         { key: "region", type: "string" },
       ]);
-      const encrypted = mustObject(encryptSecretFields(
+      const encrypted = encryptSecretFields(
         { apiKey: "sk-live-1", region: "us-east-1" },
         schema,
-      ));
-      const out = mustObject(decryptSecretFields(encrypted, schema));
+      );
+      const out = decryptSecretFields(encrypted, schema);
       expect(out).toEqual({ apiKey: "sk-live-1", region: "us-east-1" });
     });
 
@@ -191,7 +183,7 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
       // unchanged; decryptSecretFields must do the same so the plugin
       // runtime keeps working during the backfill window.
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      const out = mustObject(decryptSecretFields({ apiKey: "sk-legacy-plaintext" }, schema));
+      const out = decryptSecretFields({ apiKey: "sk-legacy-plaintext" }, schema);
       expect(out.apiKey).toBe("sk-legacy-plaintext");
     });
 
@@ -205,14 +197,14 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
       ).toThrow(/decrypt/i);
     });
 
-    it("handles null config (not-installed case)", () => {
+    it("coerces null / non-object config to `{}` (callers don't need a null check)", () => {
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      expect(decryptSecretFields(null, schema)).toBeNull();
+      expect(decryptSecretFields(null, schema)).toEqual({});
     });
 
     it("passes every field through unchanged on absent schema", () => {
       const input = { apiKey: "sk-live-1", region: "us" };
-      const out = mustObject(decryptSecretFields(input, absent));
+      const out = decryptSecretFields(input, absent);
       expect(out).toEqual(input);
     });
 
@@ -221,15 +213,15 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
       // every `enc:v1:...` value gets a decrypt attempt. Non-prefixed strings
       // pass through (legacy rows that never got the backfill).
       const corrupt: ConfigSchema = { state: "corrupt", reason: "expected array, got null" };
-      const source = mustObject(encryptSecretFields({ apiKey: "sk-live-1", region: "us-east-1" }, corrupt));
-      const out = mustObject(decryptSecretFields(source, corrupt));
+      const source = encryptSecretFields({ apiKey: "sk-live-1", region: "us-east-1" }, corrupt);
+      const out = decryptSecretFields(source, corrupt);
       expect(out.apiKey).toBe("sk-live-1");
       expect(out.region).toBe("us-east-1");
     });
 
     it("does not mutate the input config", () => {
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      const encrypted = mustObject(encryptSecretFields({ apiKey: "sk-live-1" }, schema));
+      const encrypted = encryptSecretFields({ apiKey: "sk-live-1" }, schema);
       const ciphertext = encrypted.apiKey;
       decryptSecretFields(encrypted, schema);
       expect(encrypted.apiKey).toBe(ciphertext);
@@ -239,7 +231,7 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
   describe("isEncryptedSecret", () => {
     it("recognizes the enc:v1: prefix", () => {
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      const encrypted = mustObject(encryptSecretFields({ apiKey: "sk-live-1" }, schema));
+      const encrypted = encryptSecretFields({ apiKey: "sk-live-1" }, schema);
       expect(isEncryptedSecret(encrypted.apiKey)).toBe(true);
     });
 
@@ -267,14 +259,14 @@ describe("encryptSecretFields / decryptSecretFields (F-42)", () => {
       // with no key, but the walker itself does not diverge from the scalar
       // helper so the contract stays consistent.
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      const out = mustObject(encryptSecretFields({ apiKey: "sk-live-1" }, schema));
+      const out = encryptSecretFields({ apiKey: "sk-live-1" }, schema);
       expect(out.apiKey).toBe("sk-live-1");
       expect(isEncryptedSecret(out.apiKey)).toBe(false);
     });
 
     it("decryptSecretFields round-trips plaintext when no key is set", () => {
       const schema = parsed([{ key: "apiKey", type: "string", secret: true }]);
-      const out = mustObject(decryptSecretFields({ apiKey: "sk-live-1" }, schema));
+      const out = decryptSecretFields({ apiKey: "sk-live-1" }, schema);
       expect(out.apiKey).toBe("sk-live-1");
     });
   });

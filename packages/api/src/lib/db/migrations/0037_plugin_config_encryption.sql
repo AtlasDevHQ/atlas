@@ -10,16 +10,19 @@
 -- secrets talk to customer-owned destinations, so a leak gives an
 -- attacker a foothold into the customer's systems, not just Atlas.
 --
--- Design choice: **selective-field encryption within the JSONB blob**,
--- not an `_encrypted` column split like F-41 / migration 0036. The F-41
--- columns held a single bearer credential per row — column-split was
--- the right shape. Plugin config is a heterogeneous bag: some keys are
--- secret, others (region, port, debug, timeouts) must stay readable as
--- plain JSONB so DB ops can still grep them. Encrypting the full blob
--- would force a decrypt on every admin read and break operational
--- tooling. Instead `plugins/secrets.ts::encryptSecretFields` walks the
--- catalog's `config_schema` and wraps only the `secret: true` values
--- with `encryptSecret` (`enc:v1:iv:authTag:ciphertext` AES-256-GCM).
+-- Design choice: **selective-field encryption within the JSONB value**.
+-- F-41 / migration 0036 shipped two shapes — a split `*_encrypted` TEXT
+-- column for simple bearer tokens (slack bot_token, telegram bot_token,
+-- etc.) and whole-blob ciphertext-as-TEXT for the two JSONB carriers
+-- (email_installations.config, sandbox_credentials.credentials) where
+-- every field in the blob is secret. Plugin config is neither: it's a
+-- heterogeneous bag where some keys are secret and others (region,
+-- port, debug, timeouts) must stay readable as plain JSONB so DB ops
+-- can still grep them. Encrypting the full blob would force a decrypt
+-- on every admin read and break operational tooling. Instead
+-- `plugins/secrets.ts::encryptSecretFields` walks the catalog's
+-- `config_schema` and wraps only the `secret: true` values with
+-- `encryptSecret` (`enc:v1:iv:authTag:ciphertext` AES-256-GCM).
 --
 -- As a result **this migration adds no columns**. The type is still
 -- `jsonb`; the transition from plaintext-strings to `enc:v1:…`-strings

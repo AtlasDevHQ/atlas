@@ -352,12 +352,17 @@ adminPlugins.openapi(getPluginSchemaRoute, async (c) => {
     ? (plugin.config as Record<string, unknown>)
     : {};
   const dbOverridesRaw = await getPluginConfig(id);
-  let dbOverrides: Record<string, unknown> | null;
+  let dbOverrides: Record<string, unknown>;
   try {
     dbOverrides = decryptSecretFields(dbOverridesRaw, configSchema);
   } catch (err) {
     log.error(
-      { pluginId: id, err: errorMessage(err), requestId },
+      {
+        pluginId: id,
+        err: err instanceof Error ? err : new Error(String(err)),
+        scrubbed: errorMessage(err),
+        requestId,
+      },
       "Failed to decrypt plugin config secrets on schema read",
     );
     return c.json({
@@ -366,12 +371,10 @@ adminPlugins.openapi(getPluginSchemaRoute, async (c) => {
       requestId,
     }, 500);
   }
-  const merged = { ...pluginConfig, ...(dbOverrides ?? {}) };
+  const merged = { ...pluginConfig, ...dbOverrides };
 
-  // Mask secret values. MASKED_PLACEHOLDER is shared with every admin
-  // plugin surface via @atlas/api/lib/plugins/secrets — the write paths
-  // there round-trip this exact string on save, so drift here would
-  // corrupt live credentials.
+  // Mask secret values — write paths round-trip the exact MASKED_PLACEHOLDER
+  // string on save, so drift here would corrupt live credentials.
   const maskedValues: Record<string, unknown> = {};
   const secretKeys = new Set(schema.filter((f) => f.secret).map((f) => f.key));
   for (const [key, value] of Object.entries(merged)) {
@@ -440,13 +443,34 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     // Decrypt before building `originals` so the placeholder-restore branch
     // below inlays plaintext (keysChanged can then compare against the
     // submitted body value without a fake "rotation" for every save).
+    // Decrypt failure emits a failure audit row so compliance queries on
+    // `admin_action_log` don't miss attempted PUTs that never reached the
+    // UPDATE — mirroring the marketplace PUT path.
     const dbOverridesRaw = await getPluginConfig(id);
-    let dbOverrides: Record<string, unknown> | null;
+    let dbOverrides: Record<string, unknown>;
     try {
       dbOverrides = decryptSecretFields(dbOverridesRaw, configSchemaForEncrypt);
     } catch (err) {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.configUpdate,
+        targetType: "plugin",
+        targetId: id,
+        scope: "platform",
+        status: "failure",
+        metadata: {
+          pluginId: id,
+          pluginSlug: id,
+          decryptFailure: true,
+          error: errorMessage(err),
+        },
+      });
       log.error(
-        { pluginId: id, err: errorMessage(err), requestId },
+        {
+          pluginId: id,
+          err: err instanceof Error ? err : new Error(String(err)),
+          scrubbed: errorMessage(err),
+          requestId,
+        },
         "Failed to decrypt plugin config secrets on save-read",
       );
       return c.json({
@@ -455,7 +479,7 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
         requestId,
       }, 500);
     }
-    originals = { ...pluginConfig, ...(dbOverrides ?? {}) };
+    originals = { ...pluginConfig, ...dbOverrides };
 
     for (const field of schema) {
       const value = body[field.key];
@@ -519,12 +543,8 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     .toSorted();
 
   // F-42: encrypt `secret: true` fields before persisting. Non-secret fields
-  // pass through as plain JSONB so DB ops stays grep-able. Idempotent on
-  // already-encrypted ciphertext, which matters if restoreMaskedSecrets
-  // ever starts preserving ciphertext originals (today it restores
-  // plaintext via the decrypt above, but keeping the walker idempotent
-  // protects future refactors from double-encrypting).
-  const toPersist = encryptSecretFields(body, configSchemaForEncrypt) ?? {};
+  // pass through as plain JSONB so DB ops stays grep-able.
+  const toPersist = encryptSecretFields(body, configSchemaForEncrypt);
 
   try {
     await savePluginConfig(id, toPersist);

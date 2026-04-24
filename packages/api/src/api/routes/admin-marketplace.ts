@@ -806,6 +806,10 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       // payload before it hits the JSONB column. Catalog schema drives
       // which fields count as secret; a corrupt schema fail-closes by
       // encrypting every non-empty string (same policy as maskSecretFields).
+      // A throw from `encryptSecret` (GCM crash, key derivation failure)
+      // surfaces as 500 with a failure audit so the admin sees the error
+      // and compliance reviewers have a row for the attempted install —
+      // otherwise the generic Effect 500 mapper would swallow the context.
       const installSchema = parseConfigSchema(catalogEntry.config_schema);
       if (installSchema.state === "corrupt") {
         log.warn(
@@ -813,9 +817,41 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
           "plugin_catalog.config_schema unreadable on install — encrypting every string value defensively",
         );
       }
-      const encryptedConfig = encryptSecretFields(body.config ?? {}, installSchema) ?? {};
-
       const id = crypto.randomUUID();
+      let encryptedConfig: Record<string, unknown>;
+      try {
+        encryptedConfig = encryptSecretFields(body.config ?? {}, installSchema);
+      } catch (err) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            pluginSlug: catalogEntry.slug,
+            orgId,
+            encryptFailure: true,
+            error: errorMessage(err),
+          },
+        });
+        log.error(
+          {
+            pluginId: body.catalogId,
+            orgId,
+            err: err instanceof Error ? err : new Error(String(err)),
+            scrubbed: errorMessage(err),
+            requestId,
+          },
+          "Failed to encrypt plugin config on install",
+        );
+        return c.json({
+          error: "internal_error",
+          message: "Failed to install plugin — encryption step failed.",
+          requestId,
+        }, 500);
+      }
       const rows = yield* queryEffect<WorkspacePluginRow>(
         `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, installed_by)
          VALUES ($1, $2, $3, $4, $5)
@@ -992,7 +1028,7 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
       // alternative is a silent secret wipe on the PUT.
       let originalConfig: Record<string, unknown>;
       try {
-        originalConfig = decryptSecretFields(originalConfigRaw, schema) ?? {};
+        originalConfig = decryptSecretFields(originalConfigRaw, schema);
       } catch (err) {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.configUpdate,
@@ -1009,7 +1045,13 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
           },
         });
         log.error(
-          { installationId: id, orgId, requestId, err: errorMessage(err) },
+          {
+            installationId: id,
+            orgId,
+            requestId,
+            err: err instanceof Error ? err : new Error(String(err)),
+            scrubbed: errorMessage(err),
+          },
           "Failed to decrypt plugin config secrets on save-read",
         );
         return c.json({
@@ -1019,7 +1061,7 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
         }, 500);
       }
       const sanitizedConfig = restoreMaskedSecrets(body.config, originalConfig, schema);
-      const encryptedForPersist = encryptSecretFields(sanitizedConfig, schema) ?? {};
+      const encryptedForPersist = encryptSecretFields(sanitizedConfig, schema);
 
       const rows = yield* queryEffect<WorkspacePluginRow>(
         `UPDATE workspace_plugins SET config = $1

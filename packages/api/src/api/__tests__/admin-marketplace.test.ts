@@ -1016,6 +1016,9 @@ describe("Workspace Plugin Marketplace", () => {
       // POST /install path mirrors the PUT path: the catalog's config_schema
       // drives which keys get encrypted. Submitting a plaintext apiKey on
       // first install must land ciphertext in workspace_plugins.config.
+      // The 201 response body must come back masked — symmetric with the
+      // PUT response — so a round-tripping UI never re-submits raw
+      // ciphertext from the install response.
       setQueryResult("SELECT * FROM plugin_catalog WHERE id", [{
         ...sampleCatalogRow,
         config_schema: [{ key: "apiKey", type: "string", secret: true }],
@@ -1026,7 +1029,9 @@ describe("Workspace Plugin Marketplace", () => {
         id: "inst-new",
         workspace_id: "org-1",
         catalog_id: "cat-1",
-        config: {},
+        // Returned row carries the encrypted config the INSERT wrote; the
+        // route must mask before responding.
+        config: { apiKey: "enc:v1:fake:fake:fake" },
         enabled: true,
         installed_at: now,
         installed_by: "admin-1",
@@ -1043,10 +1048,13 @@ describe("Workspace Plugin Marketplace", () => {
       expect(res.status).toBe(201);
       const insertCall = findCapturedQuery("INSERT INTO workspace_plugins");
       expect(insertCall).toBeDefined();
-      // Config is param[3] of the INSERT.
+      // Config is param[3] of the INSERT — ciphertext on the wire to DB.
       const persisted = JSON.parse(insertCall!.params[3] as string) as Record<string, unknown>;
       expect(isEncryptedSecret(persisted.apiKey)).toBe(true);
       expect(decryptSecret(persisted.apiKey as string)).toBe("sk-install-time");
+      // And masked on the 201 response — UI never sees ciphertext.
+      const body = await json(res);
+      expect(body.config.apiKey).toBe("••••••••");
     });
 
     it("decrypts stored ciphertext when the PUT body re-submits MASKED_PLACEHOLDER (F-42 #1816)", async () => {

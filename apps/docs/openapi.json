@@ -27834,6 +27834,880 @@
         "operationId": "postAdminAuditRetentionHardDelete"
       }
     },
+    "/api/v1/admin/audit/admin-action-retention": {
+      "get": {
+        "tags": [
+          "Admin — Admin-Action Retention"
+        ],
+        "summary": "Get admin-action retention policy",
+        "description": "Returns the current admin-action retention policy for the admin's active organization. Returns null policy if no retention is configured (unlimited).",
+        "responses": {
+          "200": {
+            "description": "Current retention policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "policy": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "orgId": {
+                          "type": "string"
+                        },
+                        "retentionDays": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 7
+                        },
+                        "hardDeleteDelayDays": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        },
+                        "updatedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lastPurgeAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lastPurgeCount": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "orgId",
+                        "retentionDays",
+                        "hardDeleteDelayDays",
+                        "updatedAt",
+                        "updatedBy",
+                        "lastPurgeAt",
+                        "lastPurgeCount"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "policy"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminAuditAdminActionRetention"
+      },
+      "put": {
+        "tags": [
+          "Admin — Admin-Action Retention"
+        ],
+        "summary": "Update admin-action retention policy",
+        "description": "Sets or updates the admin-action retention policy. Retention period must be at least 7 days or null (unlimited). Default recommendation is 2555 days (7 years).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "retentionDays": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 7,
+                    "example": 2555,
+                    "description": "Number of days to retain admin-action log entries. null = unlimited. Minimum 7. Recommended default 2555 (7 years)."
+                  },
+                  "hardDeleteDelayDays": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "example": 30,
+                    "description": "Days after soft-delete before permanent deletion. Default 30. (Admin-action purge is direct hard-delete; this column is held for symmetry and future use.)"
+                  }
+                },
+                "required": [
+                  "retentionDays"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated retention policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "policy": {
+                      "type": "object",
+                      "properties": {
+                        "orgId": {
+                          "type": "string"
+                        },
+                        "retentionDays": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 7
+                        },
+                        "hardDeleteDelayDays": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        },
+                        "updatedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lastPurgeAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lastPurgeCount": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "orgId",
+                        "retentionDays",
+                        "hardDeleteDelayDays",
+                        "updatedAt",
+                        "updatedBy",
+                        "lastPurgeAt",
+                        "lastPurgeCount"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "policy"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid retention configuration or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putAdminAuditAdminActionRetention"
+      }
+    },
+    "/api/v1/admin/audit/admin-action-retention/purge": {
+      "post": {
+        "tags": [
+          "Admin — Admin-Action Retention"
+        ],
+        "summary": "Trigger manual admin-action log purge",
+        "description": "Manually hard-deletes admin_action_log entries past the retention window for the admin's active organization. Normally runs automatically on a daily schedule.",
+        "responses": {
+          "200": {
+            "description": "Purge results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "orgId": {
+                            "type": "string"
+                          },
+                          "deletedCount": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "orgId",
+                          "deletedCount"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "results"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminAuditAdminActionRetentionPurge"
+      }
+    },
+    "/api/v1/admin/audit/erase-user/preview": {
+      "get": {
+        "tags": [
+          "Admin — Admin-Action Retention"
+        ],
+        "summary": "Preview admin-action erasure blast radius",
+        "description": "Returns the count of admin_action_log rows that would be scrubbed for the given userId. Read-only — never emits an audit row, never modifies state. Drives the UI confirm dialog.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The internal user id to preview scrub count for."
+            },
+            "required": true,
+            "description": "The internal user id to preview scrub count for.",
+            "in": "query",
+            "name": "userId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Row count preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "anonymizableRowCount": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "anonymizableRowCount"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or empty userId, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminAuditEraseUserPreview"
+      }
+    },
+    "/api/v1/admin/audit/erase-user": {
+      "post": {
+        "tags": [
+          "Admin — Admin-Action Retention"
+        ],
+        "summary": "Erase a user from the admin-action log (GDPR / CCPA right-to-erasure)",
+        "description": "Scrubs actor_id and actor_email to NULL and stamps anonymized_at on every admin_action_log row where actor_id = userId. The row survives so the sequence of actions is preserved without the identifier. Pino / operational logs are controlled by your log-aggregator retention policy.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "example": "user-abc",
+                    "description": "The internal user id whose identifiers should be scrubbed from admin_action_log."
+                  },
+                  "initiatedBy": {
+                    "type": "string",
+                    "enum": [
+                      "self_request",
+                      "dsr_request"
+                    ],
+                    "example": "dsr_request",
+                    "description": "Origination path. 'self_request' = user-initiated self-serve erasure; 'dsr_request' = admin-processed DSR letter."
+                  }
+                },
+                "required": [
+                  "userId",
+                  "initiatedBy"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Erasure result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "anonymizedRowCount": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "anonymizedRowCount"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid userId or initiatedBy, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminAuditEraseUser"
+      }
+    },
     "/api/v1/admin/model-config": {
       "get": {
         "tags": [
@@ -61362,6 +62236,9 @@
     },
     {
       "name": "Admin — Abuse Prevention"
+    },
+    {
+      "name": "Admin — Admin-Action Retention"
     },
     {
       "name": "Admin — Approval Workflows"

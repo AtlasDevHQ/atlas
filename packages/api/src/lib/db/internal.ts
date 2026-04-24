@@ -119,6 +119,11 @@ export function isPlaintextUrl(value: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
 }
 
+// Secret encryption for integration credentials lives in a sibling
+// module — see `secret-encryption.ts`. Keeping those exports out of
+// `internal.ts` avoids forcing every test that partially mocks
+// `db/internal` to declare three extra no-op exports.
+
 /**
  * Typed interface for the internal pg.Pool — avoids importing pg at
  * module level. Passing a truthy `err` to `release` tells node-postgres

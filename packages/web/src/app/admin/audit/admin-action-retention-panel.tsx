@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { AuditRetentionPolicy } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { extractFetchError } from "@/ui/lib/fetch-error";
@@ -41,20 +42,19 @@ import { ShieldAlert, Clock, Trash2, UserX } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
-interface RetentionPolicy {
-  orgId: string;
-  retentionDays: number | null;
-  hardDeleteDelayDays: number;
-  updatedAt: string;
-  updatedBy: string | null;
-  lastPurgeAt: string | null;
-  lastPurgeCount: number | null;
-}
+// Wire shape is the canonical `AuditRetentionPolicy` from `@useatlas/types`
+// — imported rather than re-declared so a column rename in the EE layer
+// breaks the panel at `tsc` time instead of drifting silently.
 
 // Two common compliance windows (7y SOC 2 / HIPAA, 5y NIST) plus unlimited /
 // custom. The 7-year / 2555-day default is the Phase 1 design-doc recommendation
 // (see ee/src/audit/retention.ts + design/admin-action-log-retention.md).
-type RetentionPreset = "2555" | "1825" | "365" | "custom" | "unlimited";
+const RETENTION_PRESETS = ["2555", "1825", "365", "custom", "unlimited"] as const;
+type RetentionPreset = (typeof RETENTION_PRESETS)[number];
+
+function isRetentionPreset(v: string): v is RetentionPreset {
+  return (RETENTION_PRESETS as readonly string[]).includes(v);
+}
 
 function presetFromDays(days: number | null): RetentionPreset {
   if (days === null) return "unlimited";
@@ -72,7 +72,27 @@ function daysFromPreset(preset: RetentionPreset, customDays: number): number | n
   return customDays;
 }
 
-type InitiatedBy = "self_request" | "dsr_request";
+const INITIATED_BY_UI_VALUES = ["self_request", "dsr_request"] as const;
+type InitiatedBy = (typeof INITIATED_BY_UI_VALUES)[number];
+
+function isInitiatedBy(v: string): v is InitiatedBy {
+  return (INITIATED_BY_UI_VALUES as readonly string[]).includes(v);
+}
+
+/**
+ * Parse `res.json()` with a typed fallback. A misconfigured proxy can return
+ * a 2xx with a non-JSON body — `res.json()` throws an unhelpful
+ * "Unexpected token" error that surfaces as a generic banner. Returns
+ * `undefined` on parse failure so the caller decides the fallback message.
+ * Mirrors the starter-prompts fix (PR #1511).
+ */
+async function safeJson<T>(res: Response): Promise<T | undefined> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return undefined;
+  }
+}
 
 // ── Component ─────────────────────────────────────────────────────
 
@@ -80,7 +100,7 @@ export function AdminActionRetentionPanel() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [policy, setPolicy] = useState<RetentionPolicy | null>(null);
+  const [policy, setPolicy] = useState<AuditRetentionPolicy | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -104,7 +124,7 @@ export function AdminActionRetentionPanel() {
 
   // Mutation hooks
   const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
-    useAdminMutation<{ policy: RetentionPolicy }>({
+    useAdminMutation<{ policy: AuditRetentionPolicy }>({
       path: "/api/v1/admin/audit/admin-action-retention",
       method: "PUT",
     });
@@ -138,9 +158,13 @@ export function AdminActionRetentionPanel() {
           if (!cancelled) setError(e.message);
           return;
         }
-        const data = await res.json();
+        const data = await safeJson<{ policy: AuditRetentionPolicy | null }>(res);
+        if (!data) {
+          if (!cancelled) setError("Server returned a non-JSON response. Check your proxy / deploy configuration.");
+          return;
+        }
         if (!cancelled) {
-          const p = data.policy as RetentionPolicy | null;
+          const p = data.policy;
           setPolicy(p);
           if (p) {
             const pr = presetFromDays(p.retentionDays);
@@ -163,6 +187,14 @@ export function AdminActionRetentionPanel() {
     return () => { cancelled = true; };
   }, [apiUrl, credentials]);
 
+  // Clear the transient save-success banner on unmount so a state update
+  // doesn't land on a disposed component if the user navigates away mid-flash.
+  useEffect(() => {
+    if (!saveSuccess) return;
+    const handle = setTimeout(() => setSaveSuccess(false), 3000);
+    return () => clearTimeout(handle);
+  }, [saveSuccess]);
+
   async function handleSave() {
     setSaveSuccess(false);
     clearSaveError();
@@ -172,8 +204,8 @@ export function AdminActionRetentionPanel() {
     });
     if (result.ok && result.data) {
       setPolicy(result.data.policy);
+      // Banner auto-clears via the unmount-safe effect above.
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
     }
   }
 
@@ -215,7 +247,11 @@ export function AdminActionRetentionPanel() {
         setErasePreviewError(e.message);
         return;
       }
-      const data = (await res.json()) as { anonymizableRowCount: number };
+      const data = await safeJson<{ anonymizableRowCount: number }>(res);
+      if (!data || typeof data.anonymizableRowCount !== "number") {
+        setErasePreviewError("Preview response was malformed. Try again, or contact support if this persists.");
+        return;
+      }
       setErasePreviewCount(data.anonymizableRowCount);
       setEraseDialogOpen(true);
     } catch (err) {
@@ -304,7 +340,13 @@ export function AdminActionRetentionPanel() {
               <Label htmlFor="admin-action-retention-preset">Retention period</Label>
               <Select
                 value={preset}
-                onValueChange={(v) => setPreset(v as RetentionPreset)}
+                onValueChange={(v) => {
+                  // Runtime guard — SelectItem `value` strings and the
+                  // `RETENTION_PRESETS` tuple are two sources of truth;
+                  // an invalid value can only mean a future SelectItem
+                  // typo, which we swallow rather than cast-and-pray.
+                  if (isRetentionPreset(v)) setPreset(v);
+                }}
               >
                 <SelectTrigger id="admin-action-retention-preset" className="w-full">
                   <SelectValue />
@@ -327,9 +369,17 @@ export function AdminActionRetentionPanel() {
                   type="number"
                   min={7}
                   value={customDays}
-                  onChange={(e) => setCustomDays(parseInt(e.target.value, 10) || 7)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") return;
+                    const n = Number.parseInt(v, 10);
+                    if (Number.isFinite(n) && n >= 7) setCustomDays(n);
+                  }}
                   className="w-full"
                 />
+                <p className="text-xs text-muted-foreground">
+                  Server rejects values below 7 days. Type a valid integer.
+                </p>
               </div>
             )}
 
@@ -340,7 +390,12 @@ export function AdminActionRetentionPanel() {
                 type="number"
                 min={0}
                 value={hardDeleteDelay}
-                onChange={(e) => setHardDeleteDelay(parseInt(e.target.value, 10) || 0)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") return;
+                  const n = Number.parseInt(v, 10);
+                  if (Number.isFinite(n) && n >= 0) setHardDeleteDelay(n);
+                }}
                 className="w-full"
               />
               <p className="text-xs text-muted-foreground">
@@ -426,7 +481,9 @@ export function AdminActionRetentionPanel() {
               <Label htmlFor="erase-initiated-by">Initiator</Label>
               <Select
                 value={eraseInitiatedBy}
-                onValueChange={(v) => setEraseInitiatedBy(v as InitiatedBy)}
+                onValueChange={(v) => {
+                  if (isInitiatedBy(v)) setEraseInitiatedBy(v);
+                }}
               >
                 <SelectTrigger id="erase-initiated-by" className="w-full">
                   <SelectValue />
@@ -458,6 +515,13 @@ export function AdminActionRetentionPanel() {
                 <AlertDialogHeader>
                   <AlertDialogTitle>Erase user {eraseUserId.trim() || ""}?</AlertDialogTitle>
                   <AlertDialogDescription>
+                    {/*
+                     * `erasePreviewCount === null` is unreachable here — the
+                     * dialog only opens after `handleLoadPreview` sets the
+                     * count. Kept as a defensive branch so a future refactor
+                     * that decouples "load preview" from "open dialog"
+                     * doesn't render a blank body.
+                     */}
                     {erasePreviewCount === null
                       ? "Loading preview..."
                       : erasePreviewCount === 0

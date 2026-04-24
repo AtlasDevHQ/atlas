@@ -263,6 +263,7 @@ Like the query-audit trail, admin-action retention is audited by the same 24-hou
 | `admin_action_log.purge_cycle` | `success` | Every 24 h tick, including zero-row cycles | `{ deletedCount, orgs }` |
 | `admin_action_log.purge_cycle` | `failure` | A cycle that errored | `{ error, deletedCount: 0 }` |
 | `admin_action_retention.hard_delete` | `success` | Only when a cycle actually removes rows (`count > 0`) | `{ deletedCount, orgCount, affectedOrgs }` |
+| `admin_action_retention.hard_delete` | `failure` | Any per-org DELETE errored (emitted even at zero total deletes) | `{ deletedCount, orgCount, affectedOrgs, failedOrgs }` |
 | `admin_action_retention.manual_purge` | `success` / `failure` | Admin-triggered purge via API / UI | `{ deletedCount, retentionDays }` |
 | `admin_action_retention.policy_update` | `success` / `failure` | Admin updated retention settings | `{ retentionDays, hardDeleteDelayDays, previousRetentionDays, previousHardDeleteDelayDays }` |
 | `user.erase` | `success` (library) / `failure` (route) | Every erasure request, including zero-row | `{ targetUserId, anonymizedRowCount, initiatedBy }` |

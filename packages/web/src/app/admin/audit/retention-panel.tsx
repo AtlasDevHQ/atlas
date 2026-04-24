@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { AuditRetentionPolicy } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { extractFetchError } from "@/ui/lib/fetch-error";
@@ -41,15 +42,9 @@ import { Shield, Clock, Trash2, Download } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
-interface RetentionPolicy {
-  orgId: string;
-  retentionDays: number | null;
-  hardDeleteDelayDays: number;
-  updatedAt: string;
-  updatedBy: string | null;
-  lastPurgeAt: string | null;
-  lastPurgeCount: number | null;
-}
+// Wire shape comes from `@useatlas/types` — single source across the EE
+// library, API route schemas, and both retention panels.
+type RetentionPolicy = AuditRetentionPolicy;
 
 type RetentionPreset = "30" | "90" | "365" | "custom" | "unlimited";
 

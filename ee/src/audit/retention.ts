@@ -27,6 +27,11 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { AUDIT_PURGE_SCHEDULER_ACTOR } from "./purge-scheduler";
+import {
+  AUDIT_ANONYMIZE_INITIATED_BY,
+  type AnonymizeInitiatedBy as SharedAnonymizeInitiatedBy,
+  type AuditRetentionPolicy as SharedAuditRetentionPolicy,
+} from "@useatlas/types";
 
 const log = createLogger("ee:audit-retention");
 
@@ -49,17 +54,11 @@ function isHttpContext(): boolean {
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export interface AuditRetentionPolicy {
-  orgId: string;
-  /** Number of days to retain audit entries. null = unlimited. */
-  retentionDays: number | null;
-  /** Days after soft-delete before hard-delete. Default 30. */
-  hardDeleteDelayDays: number;
-  updatedAt: string;
-  updatedBy: string | null;
-  lastPurgeAt: string | null;
-  lastPurgeCount: number | null;
-}
+// Re-export the shared wire type so callsites importing from
+// `@atlas/ee/audit/retention` don't churn. The canonical definition lives
+// in `@useatlas/types` so the web panel and Zod schemas converge on one
+// shape.
+export type AuditRetentionPolicy = SharedAuditRetentionPolicy;
 
 export interface SetRetentionPolicyInput {
   retentionDays: number | null;
@@ -91,10 +90,14 @@ export interface AdminActionPurgeResult {
  * values distinguish the origination path so DSR reporting can split
  * "user hit a self-serve erasure button" from "we processed a formal DSR
  * letter" from "a future automation purged an inactive account." A typo
- * would silently erode the split; `INITIATED_BY_VALUES` pins the set.
+ * would silently erode the split; the runtime allowlist pins the set.
+ *
+ * Canonical source: `@useatlas/types` `AUDIT_ANONYMIZE_INITIATED_BY`. We
+ * re-export under the existing `INITIATED_BY_VALUES` / `AnonymizeInitiatedBy`
+ * names so callsites don't churn.
  */
-export const INITIATED_BY_VALUES = ["self_request", "dsr_request", "scheduled_retention"] as const;
-export type AnonymizeInitiatedBy = typeof INITIATED_BY_VALUES[number];
+export const INITIATED_BY_VALUES = AUDIT_ANONYMIZE_INITIATED_BY;
+export type AnonymizeInitiatedBy = SharedAnonymizeInitiatedBy;
 
 export interface AnonymizeResult {
   /** Count of `admin_action_log` rows scrubbed on this run. */
@@ -688,9 +691,9 @@ export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActi
 
     // Self-audit row. Follows the F-27 convention: suppressed at zero
     // (the outer scheduler cycle row proves liveness), suppressed under
-    // HTTP (route-layer emission is the richer source when the Phase 2
-    // admin UI lands). Emission also fires when any per-org failures
-    // occurred, regardless of totalDeleted — a failure during erasure of
+    // HTTP (route-layer emission in admin-action-retention.ts is the
+    // richer source under HTTP). Emission also fires when any per-org
+    // failures occurred, regardless of totalDeleted — a failure during
     // scheduled retention is itself a forensic signal that must land.
     const shouldEmit = (totalDeleted > 0 || failedOrgs.length > 0) && !isHttpContext();
     if (shouldEmit) {
@@ -730,11 +733,12 @@ export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActi
  * **Emission is unconditional on HTTP context.** Every other library-layer
  * emission in this file (policyUpdate, hardDelete, admin-action hardDelete)
  * gates on `!isHttpContext()` to dedup with a F-26 / Phase-2 route-layer
- * emission. Erasure is different: there is no planned route-layer
- * `user.erase` emission — the Phase 2 "Erase user" admin route MUST call
- * this function and NOT emit its own row. If that contract changes, this
- * call becomes double-audit; the docstring of the function is the contract
- * declaration so a future maintainer doesn't accidentally split the row.
+ * emission. Erasure is different: the Phase 2 route at
+ * `packages/api/src/api/routes/admin-action-retention.ts` emits `user.erase`
+ * ONLY on failure (library throws before the audit write). Success emission
+ * lives here. Splitting that contract — adding a success-path `user.erase`
+ * at the route — would double-audit every erasure; any such change must
+ * land alongside an `!isHttpContext()` gate on this emission in the same PR.
  *
  * **Durability:** unlike the fire-and-forget `logAdminAction` used by
  * `hardDeleteExpired`, erasure uses `logAdminActionAwait` so the compliance
@@ -841,17 +845,25 @@ export const anonymizeUserAdminActions = (
  */
 export const getAdminActionRetentionPolicy = (
   orgId: string,
-): Effect.Effect<AuditRetentionPolicy | null, EnterpriseError> =>
+): Effect.Effect<AuditRetentionPolicy | null, EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("audit-retention");
     if (!hasInternalDB()) return null;
 
-    const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
-      `SELECT id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count
-       FROM admin_action_retention_config
-       WHERE org_id = $1`,
-      [orgId],
-    ));
+    // `Effect.tryPromise` (not `Effect.promise`) — a DB error on read must
+    // route through the typed error channel so the Phase 2 HTTP route's
+    // `Effect.tapError` on this call fires the stage:policy_read failure
+    // audit. `Effect.promise` converts rejections to defects which bypass
+    // `tapError`, silently dropping the forensic trail of a failed probe.
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<RetentionConfigRow>(
+        `SELECT id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count
+         FROM admin_action_retention_config
+         WHERE org_id = $1`,
+        [orgId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     if (rows.length === 0) return null;
     return rowToPolicy(rows[0]);
@@ -897,19 +909,29 @@ export const setAdminActionRetentionPolicy = (
       }));
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
-      `INSERT INTO admin_action_retention_config (org_id, retention_days, hard_delete_delay_days, updated_by)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (org_id) DO UPDATE SET
-         retention_days = EXCLUDED.retention_days,
-         hard_delete_delay_days = EXCLUDED.hard_delete_delay_days,
-         updated_at = now(),
-         updated_by = EXCLUDED.updated_by
-       RETURNING id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count`,
-      [orgId, input.retentionDays, hardDeleteDelay, updatedBy],
-    ));
+    // `Effect.tryPromise` preserves the typed error channel so the route's
+    // `Effect.tapError` on this Effect fires a `stage:write` failure audit
+    // on DB errors — see the same rationale on `getAdminActionRetentionPolicy`.
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<RetentionConfigRow>(
+        `INSERT INTO admin_action_retention_config (org_id, retention_days, hard_delete_delay_days, updated_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (org_id) DO UPDATE SET
+           retention_days = EXCLUDED.retention_days,
+           hard_delete_delay_days = EXCLUDED.hard_delete_delay_days,
+           updated_at = now(),
+           updated_by = EXCLUDED.updated_by
+         RETURNING id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count`,
+        [orgId, input.retentionDays, hardDeleteDelay, updatedBy],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
-    if (!rows[0]) return yield* Effect.die(new Error("Failed to upsert admin_action_retention_config — no row returned."));
+    // `Effect.fail` (not `Effect.die`) — the route's tapError audit path
+    // must see this anomaly in the typed channel so a failed upsert
+    // leaves a forensic row. `Effect.die` would convert it to a defect
+    // that bypasses the audit emission.
+    if (!rows[0]) return yield* Effect.fail(new Error("Failed to upsert admin_action_retention_config — no row returned."));
 
     log.info(
       { orgId, retentionDays: input.retentionDays, hardDeleteDelayDays: hardDeleteDelay },
@@ -973,6 +995,15 @@ export const previewAdminActionErasure = (
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
-    const anonymizableRowCount = Number((rows[0] as Record<string, unknown> | undefined)?.cnt ?? 0);
-    return { anonymizableRowCount };
+    // `COUNT(*)::int` makes `NaN` unreachable in practice — but a future
+    // query refactor (e.g., switching to a string-typed aggregate) could
+    // silently produce `NaN` via `Number("…")` and read as 0 downstream.
+    // `Number.isFinite` is the guard: unexpected shapes die loud instead
+    // of under-reporting the erasure blast radius in the admin UI.
+    const raw = (rows[0] as Record<string, unknown> | undefined)?.cnt;
+    const parsed = typeof raw === "number" ? raw : Number(raw ?? 0);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return yield* Effect.fail(new Error(`previewAdminActionErasure: unexpected count shape — ${typeof raw} ${String(raw)}`));
+    }
+    return { anonymizableRowCount: parsed };
   });

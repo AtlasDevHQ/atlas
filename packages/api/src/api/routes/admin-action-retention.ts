@@ -33,7 +33,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { RetentionError } from "@atlas/ee/audit/retention";
+import { RetentionError, type AnonymizeInitiatedBy } from "@atlas/ee/audit/retention";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
@@ -67,9 +67,14 @@ function errorContext(err: unknown): Record<string, unknown> {
 }
 
 /**
- * Synchronous audit emission for the "success → 200" path. Mirrors
- * `admin-audit-retention.ts`: an audit-write failure promotes to 500 so
- * the admin retries instead of seeing a silent 200 with no audit row.
+ * Synchronous audit emission for the "success → 200" path.
+ *
+ * Invariant: an audit-write failure must promote to a 500 response rather
+ * than a silent 200 with no row. A 200 with no audit row would let an
+ * attacker shrink retention or trigger a purge without leaving a trace —
+ * the F-26 threat model this route exists to defend against. The admin
+ * retries on 500 (library writes are idempotent: `setAdminActionRetentionPolicy`
+ * upserts, `purgeAdminActionExpired` re-scans past-window rows).
  */
 function emitAudit(entry: AdminActionEntry): Effect.Effect<void, Error> {
   return Effect.tryPromise({
@@ -104,26 +109,38 @@ function emitAuditBestEffort(entry: AdminActionEntry): Effect.Effect<void> {
 
 const RetentionPolicySchema = z.object({
   orgId: z.string(),
-  retentionDays: z.number().nullable(),
-  hardDeleteDelayDays: z.number(),
+  retentionDays: z.number().int().min(7).nullable(),
+  hardDeleteDelayDays: z.number().int().min(0),
   updatedAt: z.string(),
   updatedBy: z.string().nullable(),
   lastPurgeAt: z.string().nullable(),
-  lastPurgeCount: z.number().nullable(),
+  lastPurgeCount: z.number().int().min(0).nullable(),
 });
 
+// Zod validation is deliberately tighter than a pass-through `z.number()`
+// so 400s carry a structured parse error and OpenAPI advertises the real
+// contract. The EE library still catches out-of-band values as a last
+// line of defense (see `MIN_RETENTION_DAYS` / hard-delete validation).
 const UpdateRetentionBodySchema = z.object({
-  retentionDays: z.number().nullable().openapi({
+  retentionDays: z.number().int().min(7).nullable().openapi({
     example: 2555,
     description: "Number of days to retain admin-action log entries. null = unlimited. Minimum 7. Recommended default 2555 (7 years).",
   }),
-  hardDeleteDelayDays: z.number().optional().openapi({
+  hardDeleteDelayDays: z.number().int().min(0).optional().openapi({
     example: 30,
     description: "Days after soft-delete before permanent deletion. Default 30. (Admin-action purge is direct hard-delete; this column is held for symmetry and future use.)",
   }),
 });
 
-const INITIATED_BY_VALUES = ["self_request", "dsr_request"] as const;
+// The HTTP surface narrows `AnonymizeInitiatedBy` — `scheduled_retention` is
+// reserved for future background erasure automation and must never be
+// submitted via an admin-triggered HTTP body. `satisfies` is a compile-time
+// guard: if Phase 1 renames a value, the route fails to type-check (instead
+// of silently accepting a string the library no longer understands).
+const INITIATED_BY_VALUES = [
+  "self_request",
+  "dsr_request",
+] as const satisfies readonly AnonymizeInitiatedBy[];
 
 const EraseUserBodySchema = z.object({
   userId: z.string().min(1).openapi({

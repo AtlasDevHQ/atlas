@@ -283,23 +283,52 @@ describe("PUT /api/v1/admin/audit/admin-action-retention — policy_update audit
   });
 
   it("emits failure audit when setAdminActionRetentionPolicy throws — preserves RetentionError discriminator", async () => {
+    // Body passes Zod (retentionDays: 365 >= 7); the simulated RetentionError
+    // comes from a library-only invariant that the route-edge schema can't
+    // catch (e.g., a future constraint only validated after enterprise
+    // entitlement check). Tests the route-layer failure-audit path with the
+    // RetentionError discriminator surfaced via `errorContext`.
     mockGetPolicyResult = makePolicy({ retentionDays: 2555 });
     mockSetPolicyError = new RealRetentionError({
-      message: "Retention period must be at least 7 days or null (unlimited). Got: 3.",
+      message: "Simulated library-side validation failure.",
       code: "validation",
     });
 
-    const res = await request(adminActionRetention, "PUT", "/", { retentionDays: 3 });
+    const res = await request(adminActionRetention, "PUT", "/", { retentionDays: 365 });
 
     expect(res.status).toBe(400);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = mockLogAdminAction.mock.calls[0]![0];
     expect(entry.actionType).toBe("admin_action_retention.policy_update");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata!.message).toContain("at least 7 days");
+    expect(entry.metadata!.message).toContain("Simulated library-side");
     expect(entry.metadata!.code).toBe("validation");
     expect(entry.metadata!.tag).toBe("RetentionError");
     expect(entry.metadata!.previousRetentionDays).toBe(2555);
+  });
+
+  it("Zod edge rejects retentionDays < 7 before the library is called", async () => {
+    // `.int().min(7)` on UpdateRetentionBodySchema.retentionDays shifts
+    // validation left from the library (MIN_RETENTION_DAYS = 7) so 400s
+    // carry a structured Zod error and the library is never reached.
+    const res = await request(adminActionRetention, "PUT", "/", { retentionDays: 3 });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    expect(mockEeCallOrder).not.toContain("setAdminActionRetentionPolicy");
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("Zod edge rejects negative hardDeleteDelayDays", async () => {
+    const res = await request(adminActionRetention, "PUT", "/", {
+      retentionDays: 365,
+      hardDeleteDelayDays: -1,
+    });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    expect(mockEeCallOrder).not.toContain("setAdminActionRetentionPolicy");
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 
   it("reads the prior policy BEFORE writing — order guard against snapshot drift", async () => {
@@ -543,6 +572,83 @@ describe("Synchronous audit-write contract", () => {
 
     expect(res.status).toBe(500);
     expect(mockLogAdminAction).toHaveBeenCalled();
+  });
+
+  it("POST /purge surfaces 500 when audit row fails to commit", async () => {
+    // The purge success path uses `emitAudit` (not best-effort) inside
+    // Effect.tap — a regression that flips it to emitAuditBestEffort
+    // would silently return 200 with no row. This test pins the F-26
+    // invariant on the purge side too.
+    mockGetPolicyResult = makePolicy({ retentionDays: 90 });
+    mockPurgeResult = [{ orgId: "org-1", deletedCount: 3 }];
+    mockLogAdminActionAwaitError = new Error("admin_action_log INSERT failed");
+
+    const res = await request(adminActionRetention, "POST", "/purge");
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).toHaveBeenCalled();
+  });
+});
+
+describe("Forensic plumbing — ipAddress is captured on audit rows", () => {
+  beforeEach(resetMocks);
+
+  async function requestWithIp(
+    router: typeof adminActionRetention,
+    method: string,
+    path: string,
+    ip: string,
+    body?: unknown,
+  ): Promise<Response> {
+    const init: RequestInit = {
+      method,
+      headers: { Authorization: "Bearer test-key", "x-forwarded-for": ip },
+    };
+    if (body !== undefined) {
+      (init.headers as Record<string, string>)["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    return await router.request(`http://localhost${path}`, init);
+  }
+
+  it("PUT / — policy_update success row carries x-forwarded-for", async () => {
+    mockGetPolicyResult = makePolicy({ retentionDays: 2555 });
+    mockSetPolicyResult = makePolicy({ retentionDays: 90 });
+
+    await requestWithIp(adminActionRetention, "PUT", "/", "203.0.113.7", { retentionDays: 90 });
+
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.ipAddress).toBe("203.0.113.7");
+  });
+
+  it("POST /purge — manual_purge success row carries x-forwarded-for (leftmost client)", async () => {
+    mockGetPolicyResult = makePolicy({ retentionDays: 90 });
+    mockPurgeResult = [{ orgId: "org-1", deletedCount: 2 }];
+
+    await requestWithIp(
+      adminActionRetention,
+      "POST",
+      "/purge",
+      "198.51.100.4, 10.0.0.1",
+    );
+
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    // x-forwarded-for is comma-joined under multi-hop proxies; the
+    // leftmost entry is the original client. Regression guard for the
+    // `clientIpFrom` split-and-trim.
+    expect(entry.ipAddress).toBe("198.51.100.4");
+  });
+
+  it("POST /erase-user — failure row carries x-forwarded-for", async () => {
+    mockAnonymizeError = new Error("simulated erasure DB failure");
+
+    await requestWithIp(adminEraseUser, "POST", "/", "203.0.113.42", {
+      userId: "user-42",
+      initiatedBy: "dsr_request",
+    });
+
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.ipAddress).toBe("203.0.113.42");
   });
 });
 

@@ -1099,7 +1099,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-sso.ts` | 6 | 4 | 🟡 | Configure / update / delete / test audited; **`POST /providers/{id}/verify` + `PUT /enforcement` unaudited** (F-29) |
 | `admin-starter-prompts.ts` | 4 | 0 | ❌ | Queue moderation — approve/hide/unhide/author (F-36) |
 | `admin-suggestions.ts` | 1 | 0 | ❌ | DELETE suggestion (F-37) |
-| `admin.ts` | 12 | 10 | 🟡 | User role / ban / unban / remove-membership / delete-user / revoke-sessions / settings update + delete + semantic put/delete audited; **`POST /me/password`, `POST /semantic/org/import` unaudited** — tracked in F-29. `POST /users/{id}/revoke-sessions` now emits `user.session_revoke_all` (F-28 fixed, PR #NNNN) |
+| `admin.ts` | 12 | 10 | 🟡 | User role / ban / unban / remove-membership / delete-user / revoke-sessions / settings update + delete + semantic put/delete audited; **`POST /me/password`, `POST /semantic/org/import` unaudited** — tracked in F-29. `POST /users/{id}/revoke-sessions` now emits `user.session_revoke_all` (F-28 fixed, PR #1801) |
 | `billing.ts` | 2 | 0 | ✳︎ | Stripe portal redirects — Stripe event log is the authoritative trail; both routes are admin-gated |
 | `chat.ts` | 1 | 0 | ✳︎ | Agent messages; SQL executed via the tool is audited in `audit_log` |
 | `conversations.ts` | 9 | 0 | ✳︎ | User content — out of scope for phase-4 |
@@ -1558,7 +1558,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 | open |
 | F-26 | P0 | Meta-audit | Audit retention config + manual purge / hard-delete / export (`admin-audit-retention.ts`) | #1781 | fixed (PR #1799) |
 | F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 | open |
-| F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | fixed (PR #NNNN) |
+| F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | fixed (PR #1801) |
 | F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 | open |
 | F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | open |
 | F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | open |

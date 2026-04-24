@@ -5,7 +5,7 @@
  * Org-scoped: all queries are filtered to members of the caller's active organization.
  */
 
-import { Cause, Effect, Option } from "effect";
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -13,31 +13,16 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-sessions");
 
-// F-28: audit emission helpers. `Effect.tapErrorCause` catches both typed
-// failures (`queryEffect` errors) and defects (rejected promises from pg
-// pool crashes) so no session-revocation attempt escapes without an audit
-// row. `errorMessage` strips URI userinfo and truncates so pg error text
-// that embeds a connection string cannot leak into `admin_action_log.metadata`.
-const ERROR_MESSAGE_MAX = 512;
-function errorMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const scrubbed = raw.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi, "$1://***@");
-  return scrubbed.length > ERROR_MESSAGE_MAX
-    ? `${scrubbed.slice(0, ERROR_MESSAGE_MAX - 3)}...`
-    : scrubbed;
-}
-function causeToError(cause: Cause.Cause<unknown>): unknown | undefined {
-  if (Cause.isInterruptedOnly(cause)) return undefined;
-  const failure = Cause.failureOption(cause);
-  if (Option.isSome(failure)) return failure.value;
-  for (const defect of Cause.defects(cause)) return defect;
-  return undefined;
-}
+// Identifier upper bound for route params — better-auth session / user ids
+// are ~32-64 chars in practice. Capping prevents adversarial inputs from
+// bloating `admin_action_log.metadata` on the `found: false` emission paths.
+const ID_MAX_LEN = 255;
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -95,7 +80,7 @@ const deleteSessionRoute = createRoute({
   description: "Revokes a single session by ID. Must belong to a member of the active organization.",
   request: {
     params: z.object({
-      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "sess_abc123" }),
+      id: z.string().min(1).max(ID_MAX_LEN).openapi({ param: { name: "id", in: "path" }, example: "sess_abc123" }),
     }),
   },
   responses: {
@@ -119,7 +104,7 @@ const deleteUserSessionsRoute = createRoute({
   description: "Revokes all sessions for a specific user. User must be a member of the active organization.",
   request: {
     params: z.object({
-      userId: z.string().min(1).openapi({ param: { name: "userId", in: "path" }, example: "user_abc123" }),
+      userId: z.string().min(1).max(ID_MAX_LEN).openapi({ param: { name: "userId", in: "path" }, example: "user_abc123" }),
     }),
   },
   responses: {
@@ -311,14 +296,15 @@ adminSessions.openapi(deleteSessionRoute, async (c) => {
       [sessionId, orgId],
     );
     if (deleted.length === 0) {
-      // Race: the row vanished between the pre-fetch and the DELETE. Record
-      // the attempt with `found: false`, same shape as the pre-fetch miss.
+      // Race: the row vanished between the pre-fetch and the DELETE. Carry
+      // forward the `targetUserId` we already captured — dropping it would
+      // discard forensic context we paid for.
       logAdminAction({
         actionType: ADMIN_ACTIONS.user.sessionRevoke,
         targetType: "user",
         targetId: sessionId,
         ipAddress,
-        metadata: { sessionId, found: false },
+        metadata: { sessionId, targetUserId, found: false, race: true },
       });
       return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
     }
@@ -333,6 +319,12 @@ adminSessions.openapi(deleteSessionRoute, async (c) => {
     });
     return c.json({ success: true }, 200);
   }).pipe(
+    // Pure-interrupt causes (fiber cancelled — client disconnect, shutdown)
+    // leave the outcome indeterminate and are intentionally not audited, in
+    // line with F-23's SCIM precedent. All other failures (typed + defect)
+    // emit a status:"failure" row. `Effect.ignoreLogged` guards against a
+    // future regression that makes logAdminAction throw — the original 500
+    // still flows through to the caller instead of being masked.
     Effect.tapErrorCause((cause) => {
       const err = causeToError(cause);
       if (err === undefined) return Effect.void;
@@ -345,7 +337,7 @@ adminSessions.openapi(deleteSessionRoute, async (c) => {
           ipAddress,
           metadata: { sessionId, error: errorMessage(err) },
         }),
-      );
+      ).pipe(Effect.ignoreLogged);
     }),
   ), { label: "revoke session" });
 });
@@ -397,6 +389,7 @@ adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
     });
     return c.json({ success: true, count }, 200);
   }).pipe(
+    // Same interrupt / ignoreLogged rationale as the single-session path.
     Effect.tapErrorCause((cause) => {
       const err = causeToError(cause);
       if (err === undefined) return Effect.void;
@@ -409,7 +402,7 @@ adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
           ipAddress,
           metadata: { targetUserId: userId, error: errorMessage(err) },
         }),
-      );
+      ).pipe(Effect.ignoreLogged);
     }),
   ), { label: "revoke user sessions" });
 });

@@ -51,13 +51,10 @@ export const ADMIN_ACTIONS = {
     unban: "user.unban",
     removeFromWorkspace: "user.remove_from_workspace",
     /**
-     * Session revocation (F-28). Two write paths exist:
-     *   - DELETE /api/v1/admin/sessions/:id        → single session
-     *   - DELETE /api/v1/admin/sessions/user/:uid  → all sessions for a user
-     *   - POST   /api/v1/admin/users/:id/revoke    → all sessions for a user
-     * The latter two share `session_revoke_all` intentionally so downstream
-     * queries (`action_type = 'user.session_revoke_all'`) see a single event
-     * shape regardless of which admin surface triggered it.
+     * Bulk revocation (`session_revoke_all`) is emitted by two admin
+     * surfaces — the dedicated session route and the users route — so
+     * downstream queries filtering on `action_type` see one event shape
+     * per admin intent, not two.
      */
     sessionRevoke: "user.session_revoke",
     sessionRevokeAll: "user.session_revoke_all",

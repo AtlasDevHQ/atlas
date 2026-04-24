@@ -1,18 +1,13 @@
 /**
- * Tests for admin session revocation audit emission (F-28 / #1783).
- *
- * Covers the three write routes that revoke sessions:
+ * Admin session revocation audit emission across three write routes:
  *   - DELETE /api/v1/admin/sessions/:id          → user.session_revoke
  *   - DELETE /api/v1/admin/sessions/user/:uid    → user.session_revoke_all
  *   - POST   /api/v1/admin/users/:id/revoke      → user.session_revoke_all
  *
- * Verifies that every handler emits exactly one `logAdminAction` with the
- * correct action type + metadata on success, that the single-session path
- * pre-fetches the row so `targetUserId` is captured, that the bulk paths
- * record the actual revoked count, that `wasCurrentUser` reflects whether
- * the acting admin revoked their own session, that session tokens / cookie
- * bytes never land in audit metadata (asserted by **key absence**, not just
- * empty-string), and that internal failures emit a `status: "failure"` row.
+ * Security-relevant assertion technique: token-leak checks use **key
+ * absence** (plus a recursive walk — any depth), not substring match on
+ * the serialized payload. A `token: ""` or a truncated prefix would slip
+ * past a naïve `.not.toContain` assertion.
  */
 
 import {
@@ -134,13 +129,25 @@ function lastAuditCall(): AuditEntry {
   return calls[calls.length - 1]![0]!;
 }
 
-// Flatten top-level + metadata keys for key-presence assertions.
-function collectKeys(entry: AuditEntry): string[] {
-  const keys = Object.keys(entry);
-  if (entry.metadata && typeof entry.metadata === "object") {
-    keys.push(...Object.keys(entry.metadata));
+// Recursively collect every key name in the audit entry + any nested
+// object under it. Depth-1 walks would miss a regression that nests
+// sensitive data like `metadata.raw.cookie`, so every level is in scope.
+function collectKeys(value: unknown, acc: string[] = []): string[] {
+  if (value === null || typeof value !== "object") return acc;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    acc.push(k);
+    collectKeys(v, acc);
   }
-  return keys;
+  return acc;
+}
+
+// Assert that no key anywhere in the entry matches a token-ish name. Paired
+// with a sentinel-bytes substring check downstream for belt-and-braces.
+function expectNoTokenKeys(entry: AuditEntry): void {
+  const keys = collectKeys(entry);
+  for (const k of keys) {
+    expect(k).not.toMatch(/token|cookie|authorization|bearer|secret/i);
+  }
 }
 
 // `mockMembershipFor` matches the `verifyOrgMembership` query in admin.ts —
@@ -259,15 +266,46 @@ describe("admin sessions — DELETE /sessions/:id", () => {
     const entry = lastAuditCall();
     expect(entry.actionType).toBe("user.session_revoke");
     expect(entry.targetId).toBe("sess_missing");
-    // `found: false` is a success-status forensic record (the admin tried to
-    // revoke something that wasn't there — we want to see that in the trail).
     expect(entry.status ?? "success").toBe("success");
     expect(entry.metadata).toEqual({
       sessionId: "sess_missing",
       found: false,
     });
-    // No targetUserId leaks — we don't know it, so it must be absent.
-    expect(entry.metadata).not.toHaveProperty("targetUserId");
+  });
+
+  it("carries forward targetUserId when the row vanishes between pre-fetch and DELETE", async () => {
+    // Exercises the race branch at admin-sessions.ts where the pre-fetch
+    // sees a row but DELETE returns empty (concurrent revoke / user logout
+    // in-window). `targetUserId` was already captured, so dropping it would
+    // discard forensic context we paid for. `race: true` distinguishes this
+    // from a plain pre-fetch miss in the audit trail.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT") && sql.includes("session")) {
+        return [{ id: "sess_racy", userId: "user_victim" }];
+      }
+      if (sql.includes("DELETE FROM session")) {
+        return [];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      adminRequest("DELETE", "/api/v1/admin/sessions/sess_racy"),
+    );
+
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("user.session_revoke");
+    expect(entry.targetId).toBe("sess_racy");
+    expect(entry.status ?? "success").toBe("success");
+    expect(entry.metadata).toEqual({
+      sessionId: "sess_racy",
+      targetUserId: "user_victim",
+      found: false,
+      race: true,
+    });
   });
 
   it("emits status: failure when the DELETE query throws", async () => {
@@ -300,7 +338,7 @@ describe("admin sessions — DELETE /sessions/:id", () => {
   it("scrubs pg connection-string userinfo from the error message", async () => {
     // Simulate a pg error that echoes the connection string back — the raw
     // message must never land in admin_action_log.metadata since it contains
-    // the DB password. Same hygiene as admin-scim.ts errorMessage.
+    // the DB password.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("SELECT") && sql.includes("session")) {
         throw new Error(
@@ -339,17 +377,7 @@ describe("admin sessions — DELETE /sessions/:id", () => {
     );
 
     const entry = lastAuditCall();
-    const keys = collectKeys(entry);
-
-    // Assert key ABSENCE — a `token: ""` or truncated prefix would both slip
-    // past a substring check on `serializeAudit(entry)`.
-    expect(keys).not.toContain("token");
-    expect(keys).not.toContain("sessionToken");
-    expect(keys).not.toContain("session_token");
-    expect(keys).not.toContain("cookie");
-    expect(keys).not.toContain("authorization");
-    expect(keys).not.toContain("bearer");
-    // Belt-and-braces — the sentinel bytes must not be anywhere in the payload.
+    expectNoTokenKeys(entry);
     expect(JSON.stringify(entry)).not.toContain(SESSION_TOKEN_SENTINEL);
   });
 });
@@ -443,12 +471,7 @@ describe("admin sessions — DELETE /sessions/user/:userId", () => {
     );
 
     const entry = lastAuditCall();
-    const keys = collectKeys(entry);
-    expect(keys).not.toContain("token");
-    expect(keys).not.toContain("sessionToken");
-    expect(keys).not.toContain("session_token");
-    expect(keys).not.toContain("cookie");
-    expect(keys).not.toContain("authorization");
+    expectNoTokenKeys(entry);
     expect(JSON.stringify(entry)).not.toContain(SESSION_TOKEN_SENTINEL);
   });
 });
@@ -499,7 +522,7 @@ describe("admin users — POST /users/:id/revoke", () => {
     });
   });
 
-  it("omits count when the pre-count query fails (never blocks the revoke)", async () => {
+  it("omits count and stamps countLookupFailed when the pre-count query fails", async () => {
     mocks.mockInternalQuery.mockImplementation(
       async (sql: string, params?: unknown[]) => {
         if (
@@ -529,8 +552,29 @@ describe("admin users — POST /users/:id/revoke", () => {
 
     const entry = lastAuditCall();
     expect(entry.status ?? "success").toBe("success");
-    expect(entry.metadata).toMatchObject({ targetUserId: "user_target" });
-    expect(entry.metadata).not.toHaveProperty("count");
+    // Tight assertion: metadata is EXACTLY {targetUserId, countLookupFailed}.
+    // `toEqual` catches a regression that silently adds `count: 0` or
+    // `count: null`, which `toMatchObject` would let slip.
+    expect(entry.metadata).toEqual({
+      targetUserId: "user_target",
+      countLookupFailed: true,
+    });
+  });
+
+  it("stamps countLookupFailed when the internal DB is unavailable", async () => {
+    mocks.hasInternalDB = false;
+    mockMembershipFor("user_target");
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/users/user_target/revoke"),
+    );
+
+    expect(res.status).toBe(200);
+    const entry = lastAuditCall();
+    expect(entry.metadata).toEqual({
+      targetUserId: "user_target",
+      countLookupFailed: true,
+    });
   });
 
   it("emits status: failure when adminApi.revokeSessions throws", async () => {
@@ -563,12 +607,7 @@ describe("admin users — POST /users/:id/revoke", () => {
     );
 
     const entry = lastAuditCall();
-    const keys = collectKeys(entry);
-    expect(keys).not.toContain("token");
-    expect(keys).not.toContain("sessionToken");
-    expect(keys).not.toContain("session_token");
-    expect(keys).not.toContain("cookie");
-    expect(keys).not.toContain("authorization");
+    expectNoTokenKeys(entry);
     expect(JSON.stringify(entry)).not.toContain(SESSION_TOKEN_SENTINEL);
   });
 

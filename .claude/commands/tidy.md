@@ -83,6 +83,53 @@ For each category, build a list of actions needed:
 - Merged PRs or commits that don't reference any issue -> assess whether a new issue should be created or if it's too minor (bug fixes, typos = skip)
 - New issues needed for significant untracked features or infrastructure changes -> create with appropriate labels
 
+### 2e. Stale branch cleanup (local + remote-tracking)
+
+After a burst of PR merges the repo accumulates local branches whose remote has been deleted ("[gone]") plus orphan worktrees from aborted agent sessions. Clean them up.
+
+1. **Prune remote-tracking refs** — safe; only updates local bookkeeping:
+   ```bash
+   git fetch --prune origin
+   ```
+
+2. **List candidates** — anything tagged `[gone]` in `git branch -vv`:
+   ```bash
+   git branch -vv | grep '\[gone\]'
+   ```
+   If nothing matches, skip to Step 3. If the current branch is in the list, first `git checkout main` — you can't delete the branch you're on.
+
+3. **Remove orphan worktrees, then delete branches.** This loop handles both plain branches and ones pinned by worktrees (including locked worktrees whose owning agent PID is dead). The force-unlock is only safe when the PID is not alive — check before using `-f -f`:
+   ```bash
+   git branch -v | grep '\[gone\]' | sed 's/^[+* ]//' | awk '{print $1}' | while read branch; do
+     echo "Processing: $branch"
+     worktree=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
+     if [ -n "$worktree" ] && [ "$worktree" != "$(git rev-parse --show-toplevel)" ]; then
+       # Try a normal remove first; if locked by a dead PID, force.
+       if ! git worktree remove "$worktree" 2>/dev/null; then
+         lock_pid=$(git worktree list --porcelain | awk -v p="$worktree" '$2==p {found=1} found && /^locked/ {print; exit}' | grep -oE 'pid [0-9]+' | awk '{print $2}')
+         if [ -n "$lock_pid" ] && ! ps -p "$lock_pid" > /dev/null 2>&1; then
+           echo "  Lock PID $lock_pid is dead — force-removing worktree"
+           git worktree remove -f -f "$worktree"
+         else
+           echo "  Worktree $worktree still locked by live PID — skipping"
+           continue
+         fi
+       fi
+     fi
+     git branch -D "$branch"
+   done
+   ```
+
+4. **Leftover local-only branches** — not tagged `[gone]` because they never tracked a remote (e.g., agent-workflow branches like `worktree-agent-*`). If clearly stale and their commits are already on `main` (or an open PR), delete with `git branch -D <name>`. Never delete a local branch that has unpushed commits you can't find elsewhere.
+
+5. **Skip branches with open PRs** — before deleting any branch, confirm there's no open PR on it:
+   ```bash
+   gh pr list -R AtlasDevHQ/atlas --state open --head <branch-name>
+   ```
+   If an open PR exists, leave the branch alone — it's likely the user's in-flight work. A `[gone]` status usually means the remote PR was already closed/merged, but double-check for work-in-progress.
+
+**Don't delete remote branches from `tidy`.** That's destructive across machines/collaborators. GitHub auto-deletes merged branches when "Delete branch on merge" is on; anything else (a stale remote with no PR) warrants a user decision, not an automated sweep.
+
 ---
 
 **Step 3: Execute changes**
@@ -121,6 +168,7 @@ Output a summary:
 - Issues updated (labels, milestones, comments, closed)
 - New issues created
 - Label/milestone gaps fixed
+- Stale branches + worktrees removed (counts)
 - Anything that looks off but wasn't auto-fixable
 
 ---

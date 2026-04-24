@@ -402,6 +402,21 @@ adminConnections.openapi(drainOrgPoolRoute, async (c) => runHandler(c, "drain or
   try {
     const result = await connections.drainOrg(targetOrgId);
     log.info({ orgId: targetOrgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
+
+    // Pool drain is an availability lever: it disconnects every active
+    // session to every connection in an org. Emitted on success with
+    // platform scope (the mutation affects pool state, not a workspace row).
+    // See F-29 / F-34. Per-connection drain (`POST /:id/drain`) is out of
+    // scope for this PR and tracked in F-29's remaining backlog.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.poolDrain,
+      targetType: "connection",
+      targetId: targetOrgId,
+      scope: "platform",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { orgId: targetOrgId, drainedConnections: result.drained },
+    });
+
     return c.json(result, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId: targetOrgId, requestId }, "Org pool drain failed");
@@ -464,6 +479,10 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
   }
 
   const tempId = `_test_${Date.now()}`;
+  // Ephemeral probes have no persisted target — use the tempId as the
+  // target so forensic queries can count probes without conflating them
+  // with the existing-connection health-check surface. See F-29 / F-34.
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
   try {
     connections.register(tempId, {
       url,
@@ -471,9 +490,25 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
       schema: typeof schema === "string" ? schema : undefined,
     });
     const result = await connections.healthCheck(tempId);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.probe,
+      targetType: "connection",
+      targetId: tempId,
+      status: result.status === "healthy" ? "success" : "failure",
+      ipAddress,
+      metadata: { success: result.status === "healthy", dbType, latencyMs: result.latencyMs },
+    });
     return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection test failed");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.probe,
+      targetType: "connection",
+      targetId: tempId,
+      status: "failure",
+      ipAddress,
+      metadata: { success: false, dbType },
+    });
     return c.json({
       error: "connection_failed",
       message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
@@ -504,6 +539,27 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
   }
 
   const result = await connections.healthCheck(id);
+
+  // `connection.health_check` is distinct from `connection.probe` (the
+  // ephemeral `POST /test` surface) so forensic queries can separately
+  // count privilege-escalation probes vs. routine health checks against
+  // a persisted datasource. Metadata shape matches probe: same success
+  // / dbType / latencyMs fields so downstream dashboards can union the
+  // two when appropriate. See F-29 / F-34.
+  const registryEntry = connections.describe().find((entry) => entry.id === id);
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.connection.healthCheck,
+    targetType: "connection",
+    targetId: id,
+    status: result.status === "healthy" ? "success" : "failure",
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: {
+      success: result.status === "healthy",
+      dbType: registryEntry?.dbType ?? "unknown",
+      latencyMs: result.latencyMs,
+    },
+  });
+
   return c.json(result, 200);
 }));
 

@@ -71,10 +71,43 @@ export const ADMIN_ACTIONS = {
   settings: {
     update: "settings.update",
   },
+  /**
+   * Connection lifecycle. `create` / `update` / `delete` cover the canonical
+   * admin-connections CRUD surface. `create` is ALSO emitted by the wizard
+   * `/save` onboarding endpoint (F-34) — wizard and admin-connections produce
+   * structurally identical audit rows (`metadata: { name, dbType }`) so a
+   * compliance query filtering `action_type = 'connection.create'` sees
+   * datasource additions regardless of entry path.
+   *
+   * `probe` covers the ephemeral `POST /test` endpoint: caller supplies a
+   * URL, the server registers it transiently, runs a health check, and
+   * tears it down. Audited because the endpoint returns a reachability
+   * verdict — a free oracle for a compromised admin probing internal
+   * network segments. Target id is the temporary `_test_*` id so
+   * forensic queries can count probes without conflating them with
+   * registered-connection health checks.
+   *
+   * `healthCheck` covers `POST /:id/test` on a registered connection —
+   * routine reachability checks against a persisted datasource. Kept
+   * distinct from `probe` so compliance queries can separately filter
+   * the privilege-escalation surface (`probe`) from operational health
+   * signal (`healthCheck`). Matches the `manualHardDelete` vs
+   * `hardDelete` / `archive` vs `archiveReconcile` pattern elsewhere in
+   * the catalog. Metadata for both: `{ success, dbType, latencyMs }`.
+   *
+   * `pool_drain` covers the org-wide pool drain (`POST /pool/orgs/{orgId}/drain`,
+   * platform scope). Metadata: `{ orgId, drainedConnections }`. Pool drain is
+   * an availability lever — without the audit row a platform admin can silently
+   * disconnect every active session in an org. The per-connection drain path
+   * (`POST /:id/drain`) is tracked as an F-29 residual in #1784.
+   */
   connection: {
     create: "connection.create",
     update: "connection.update",
     delete: "connection.delete",
+    probe: "connection.probe",
+    healthCheck: "connection.health_check",
+    poolDrain: "connection.pool_drain",
   },
   user: {
     invite: "user.invite",
@@ -92,6 +125,16 @@ export const ADMIN_ACTIONS = {
     sessionRevoke: "user.session_revoke",
     sessionRevokeAll: "user.session_revoke_all",
     /**
+     * Self-service password change via `POST /me/password`. The actor IS
+     * the target — audit row carries `targetType: "user"` and
+     * `targetId: actorId` so forensic queries can distinguish a user
+     * changing their own password from an admin changing someone else's
+     * (the latter goes through Better Auth's admin API and is covered by
+     * `changeRole` / `ban` / `unban` sibling rows). Metadata never
+     * includes password material. See F-29.
+     */
+    passwordChange: "user.password_change",
+    /**
      * GDPR / CCPA "right to erasure" over `admin_action_log`. Emitted by
      * `anonymizeUserAdminActions()` in `ee/src/audit/retention.ts` on
      * every erasure run regardless of row count — a zero-row erasure is
@@ -104,25 +147,38 @@ export const ADMIN_ACTIONS = {
      */
     erase: "user.erase",
   },
+  /**
+   * SSO provider lifecycle. `configure` / `update` / `delete` / `test` cover
+   * the CRUD + connectivity-test surface. `verify_domain` covers the DNS
+   * TXT-lookup trigger (`POST /providers/:id/verify`) — a silent verify path
+   * lets an admin flip a provider to `verified` with no forensic trace.
+   * `enforcement_update` covers `PUT /enforcement` — toggling the workspace
+   * SSO-required flag blocks or unblocks password login for every member,
+   * an availability-critical action that must never be silent. See F-29.
+   */
   sso: {
     configure: "sso.configure",
     update: "sso.update",
     delete: "sso.delete",
     test: "sso.test",
+    verifyDomain: "sso.verify_domain",
+    enforcementUpdate: "sso.enforcement_update",
   },
   /**
    * Semantic-layer mutations. `createEntity` / `updateEntity` /
    * `deleteEntity` / `updateMetric` / `updateGlossary` cover direct
-   * entity CRUD (`admin-semantic.ts` and the admin bulk import). The
-   * `improve*` variants cover the AI-assisted expert-agent surface
-   * (`admin-semantic-improve.ts`): `improveDraft` marks a new
-   * chat-driven draft session, `improveApply` fires when a DB-backed
-   * amendment review flips a pending row to applied (YAML written to
-   * disk), `improveAccept` / `improveReject` cover the in-memory
-   * session proposal decisions. Note: the DB-backed review route
-   * branches on `decision` — rejection emits `improve_reject` so
-   * forensic queries can filter on a single action_type regardless of
-   * which surface rejected it. See F-35.
+   * entity CRUD (`admin-semantic.ts` and the admin bulk import).
+   * `bulkImport` covers `POST /semantic/org/import` — disk → DB sync of
+   * every entity in the org's semantic directory, emitted once per call
+   * with `{ importedCount, sourceRef }`. The `improve*` variants cover
+   * the AI-assisted expert-agent surface (`admin-semantic-improve.ts`):
+   * `improveDraft` marks a new chat-driven draft session, `improveApply`
+   * fires when a DB-backed amendment review flips a pending row to
+   * applied (YAML written to disk), `improveAccept` / `improveReject`
+   * cover the in-memory session proposal decisions. Note: the DB-backed
+   * review route branches on `decision` — rejection emits
+   * `improve_reject` so forensic queries can filter on a single
+   * action_type regardless of which surface rejected it. See F-35.
    */
   semantic: {
     createEntity: "semantic.create_entity",
@@ -130,6 +186,7 @@ export const ADMIN_ACTIONS = {
     deleteEntity: "semantic.delete_entity",
     updateMetric: "semantic.update_metric",
     updateGlossary: "semantic.update_glossary",
+    bulkImport: "semantic.bulk_import",
     improveDraft: "semantic.improve_draft",
     improveApply: "semantic.improve_apply",
     improveAccept: "semantic.improve_accept",
@@ -145,19 +202,48 @@ export const ADMIN_ACTIONS = {
     disable: "integration.disable",
     configure: "integration.configure",
   },
+  /**
+   * Scheduled-task lifecycle. `create` / `update` / `delete` / `toggle`
+   * cover CRUD + enable/disable flips. `trigger` covers
+   * `POST /:id/run` — an admin manually firing a task outside its cron
+   * cadence; `preview` covers the dry-run delivery preview.
+   *
+   * `tick` is emitted once per scheduler tick by the `POST /tick` endpoint
+   * (Vercel Cron / external scheduler). Uses the reserved `system:scheduler`
+   * actor since the tick has no HTTP-bound admin. Emits even at zero tasks
+   * so the absence of a tick row over a cadence window is the signal that
+   * the scheduler stopped — consistent with the F-27 purge-cycle pattern.
+   * See F-29.
+   */
   schedule: {
     create: "schedule.create",
     update: "schedule.update",
     delete: "schedule.delete",
     toggle: "schedule.toggle",
+    trigger: "schedule.trigger",
+    preview: "schedule.preview",
+    tick: "schedule.tick",
   },
   apikey: {
     create: "apikey.create",
     revoke: "apikey.revoke",
   },
+  /**
+   * Approval-workflow domain. `approve` / `deny` cover the review decision
+   * on a single pending request. `rule_create` / `rule_update` / `rule_delete`
+   * cover rule-catalog CRUD; `expire_sweep` covers the manual
+   * `POST /approval/expire` pass that flips stale pending requests to
+   * `expired`. Without these entries an admin can disable the approval gate,
+   * run the action the gate was protecting, and re-enable — end-to-end
+   * invisible. See F-29.
+   */
   approval: {
     approve: "approval.approve",
     deny: "approval.deny",
+    ruleCreate: "approval.rule_create",
+    ruleUpdate: "approval.rule_update",
+    ruleDelete: "approval.rule_delete",
+    expireSweep: "approval.expire_sweep",
   },
   ip_allowlist: {
     add: "ip_allowlist.add",

@@ -28,6 +28,7 @@ import {
   validateCronExpression,
   type CrudFailReason,
 } from "@atlas/api/lib/scheduled-tasks";
+import type { TickResult } from "@atlas/api/lib/scheduler/engine";
 import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 import { type AuthEnv } from "./middleware";
@@ -352,13 +353,52 @@ scheduledTasks.openapi(tickRoute, async (c) => {
       return Effect.succeed({ error: "internal_error" as const, requestId });
     }));
 
-    if ("error" in tickOutcome && tickOutcome.error === "internal_error") {
-      return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
+    // F-29: emit one `schedule.tick` row per tick — success or failure,
+    // zero tasks or many. The absence of a row over a cadence window is
+    // the signal that the scheduler stopped firing (mirrors F-27's
+    // purge-cycle convention). Uses the reserved `system:scheduler`
+    // actor — validated against `SYSTEM_ACTOR_PATTERN` inside
+    // `logAdminAction`, which logs loudly and drops the row on typos
+    // rather than writing malformed audit data (see `lib/audit/admin.ts`).
+    //
+    // The outer `catchAll` replaces an unexpected throw with
+    // `{ error: "internal_error", requestId }`; engine-reported failures
+    // surface as `TickResult.error`. Both are failure shapes — one
+    // inline `"error" in …` discriminant collapses them into a single
+    // branch so the audit emission runs exactly once either way.
+    if ("error" in tickOutcome && typeof tickOutcome.error === "string") {
+      const errorLabel: string = tickOutcome.error;
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.schedule.tick,
+        targetType: "schedule",
+        targetId: "scheduler",
+        status: "failure",
+        scope: "platform",
+        systemActor: "system:scheduler",
+        metadata: { tasksProcessed: 0, successes: 0, failures: 0, error: errorLabel },
+      });
+      if (errorLabel === "internal_error") {
+        return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
+      }
+      return c.json({ error: "tick_failed", message: errorLabel, requestId }, 500);
     }
-    if (tickOutcome.error) {
-      return c.json({ error: "tick_failed", message: tickOutcome.error, requestId }, 500);
-    }
-    return c.json(tickOutcome, 200);
+
+    // Success path — `tickOutcome` narrowed to `TickResult` with no
+    // error string, so tasks* fields are safe to read.
+    const successOutcome = tickOutcome as TickResult;
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.schedule.tick,
+      targetType: "schedule",
+      targetId: "scheduler",
+      scope: "platform",
+      systemActor: "system:scheduler",
+      metadata: {
+        tasksProcessed: successOutcome.tasksDispatched,
+        successes: successOutcome.tasksCompleted,
+        failures: successOutcome.tasksFailed,
+      },
+    });
+    return c.json(successOutcome, 200);
   }), { label: "scheduler tick" });
 });
 
@@ -539,6 +579,18 @@ authed.openapi(triggerTaskRoute, async (c) => {
 
     const { triggerTask } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/engine"));
     yield* Effect.promise(() => triggerTask(id));
+
+    // Manual out-of-cadence trigger — high-impact (delivers data to recipients
+    // outside the normal cron window). Emitted after the dispatch call so a
+    // rejection short-circuits without a false audit row. See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.schedule.trigger,
+      targetType: "schedule",
+      targetId: id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { taskId: id, taskName: task.data.name },
+    });
+
     return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
   }), { label: "trigger task execution" });
 });
@@ -565,6 +617,19 @@ authed.openapi(previewTaskRoute, async (c) => {
 
     const { generateDeliveryPreview } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/preview"));
     const preview = generateDeliveryPreview(task.data);
+
+    // Dry-run delivery preview — reveals recipient/channel shape to the
+    // caller. Low-impact relative to `trigger`, but the access itself
+    // warrants a forensic trail. `dryRun: true` distinguishes from
+    // `schedule.trigger` when both land in the same log stream. See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.schedule.preview,
+      targetType: "schedule",
+      targetId: id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { taskId: id, dryRun: true },
+    });
+
     return c.json(preview, 200);
   }), { label: "generate delivery preview" });
 });

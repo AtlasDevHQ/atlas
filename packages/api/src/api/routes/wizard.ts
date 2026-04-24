@@ -25,6 +25,7 @@ import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic/sync";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import {
@@ -755,7 +756,7 @@ wizard.openapi(saveRoute, async (c) => {
   
       // Reset semantic whitelist cache so new entities are queryable
       _resetWhitelists();
-  
+
       log.info({
         requestId,
         orgId,
@@ -763,7 +764,27 @@ wizard.openapi(saveRoute, async (c) => {
         entityCount: entities.length,
         fileCount: savedFiles.length,
       }, "Wizard save complete");
-  
+
+      // F-34 (#1789): the wizard is the primary UI onboarding flow for a
+      // datasource. Emit `connection.create` with the canonical
+      // `{ name, dbType }` metadata shape — identical to `admin-connections`
+      // POST — so compliance queries filtering `action_type = 'connection.create'`
+      // see datasource additions regardless of entry path. The row is
+      // emitted AFTER the disk write + whitelist reset so the audit trail
+      // only signals a successful onboarding (failures earlier short-circuit
+      // into the catch branch below without audit). The wizard exposes no
+      // probe endpoint of its own — admin-connections' `POST /test` is the
+      // privileged probe surface and emits `connection.probe` there.
+      const registryEntry = connections.describe().find((conn) => conn.id === connectionId);
+      const resolvedDbType = registryEntry?.dbType ?? "unknown";
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.connection.create,
+        targetType: "connection",
+        targetId: connectionId,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { name: connectionId, dbType: resolvedDbType },
+      });
+
       return c.json({
         saved: true,
         orgId,

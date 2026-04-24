@@ -321,6 +321,19 @@ adminApproval.openapi(expireRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
     const expired = yield* expireStaleRequests(orgId!);
+
+    // Manual sweep that flips pending requests to expired. An admin
+    // invoking this post-hoc on a queue they're about to approve/deny
+    // is a red flag; `expireSweep` sits alongside `approve` / `deny` so
+    // compliance queries see the full decision chain. See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.approval.expireSweep,
+      targetType: "approval",
+      targetId: orgId!,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { expiredCount: expired },
+    });
+
     return c.json({ expired }, 200);
   }), { label: "expire stale requests", domainErrors: [approvalDomainError] });
 });
@@ -348,6 +361,20 @@ adminApproval.openapi(createRuleRoute, async (c) => {
       : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled };
 
     const rule = yield* createApprovalRule(orgId!, input);
+
+    // Rule CRUD is the mechanism behind every approval gate. Silent
+    // rule changes let an admin disable the gate, run the action it
+    // was protecting, and re-enable — end-to-end invisible. Metadata
+    // captures `name` + `ruleType` on create; richer diff-style metadata
+    // lives on `ruleUpdate` where it has a before/after story. See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.approval.ruleCreate,
+      targetType: "approval",
+      targetId: rule.id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { name: body.name, ruleType: body.ruleType },
+    });
+
     return c.json({ rule }, 201);
   }), { label: "create approval rule", domainErrors: [approvalDomainError] });
 });
@@ -360,6 +387,20 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
     const body = c.req.valid("json");
 
     const rule = yield* updateApprovalRule(orgId!, ruleId, body);
+
+    // See `ruleCreate` above for the threat model. `keysChanged` is the
+    // semantic-diff signal — records WHICH fields the admin touched
+    // without recording the values, since pattern/threshold may
+    // themselves be sensitive shape data for a compromised admin
+    // mapping the approval surface.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.approval.ruleUpdate,
+      targetType: "approval",
+      targetId: ruleId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { keysChanged: Object.keys(body) },
+    });
+
     return c.json({ rule }, 200);
   }), { label: "update approval rule", domainErrors: [approvalDomainError] });
 });
@@ -374,6 +415,18 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
     if (!deleted) {
       return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
     }
+
+    // Emitted only when the delete succeeded (404 short-circuits above).
+    // Metadata holds the ruleId alone so compliance reviewers can
+    // cross-reference the prior `ruleCreate` / `ruleUpdate` rows.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.approval.ruleDelete,
+      targetType: "approval",
+      targetId: ruleId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { ruleId },
+    });
+
     return c.json({ message: "Approval rule deleted." }, 200);
   }), { label: "delete approval rule", domainErrors: [approvalDomainError] });
 });

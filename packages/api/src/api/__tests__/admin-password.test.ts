@@ -526,7 +526,15 @@ describe("POST /api/v1/admin/me/password", () => {
     expect(body.error).toBe("auth_error");
   });
 
-  it("returns 500 if flag-clear fails after successful password change", async () => {
+  it("returns 200 when flag-clear fails after successful password change (F-29 silent-failure fix)", async () => {
+    // F-29 silent-failure fix: Better Auth already committed the new
+    // password, so a subsequent failure in the
+    // `UPDATE "user" SET password_change_required = false` query must
+    // NOT roll back the response. The caller sees success, the audit
+    // row lands (pinned in admin-password-semantic-import-audit.test.ts),
+    // and the user just hits the forced-password-change prompt once
+    // more on next login — recoverable. Pre-fix the route returned
+    // 500 here, confusing the user and losing the audit row.
     mockInternalQuery.mockRejectedValue(new Error("disk full"));
 
     const res = await app.fetch(
@@ -535,11 +543,10 @@ describe("POST /api/v1/admin/me/password", () => {
         newPassword: "NewPass456",
       }),
     );
-    // Password was changed in auth system but flag clear failed
     expect(mockChangePassword).toHaveBeenCalledTimes(1);
-    expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe("internal_error");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
   });
 
   it("returns 400 when error contains 'invalid' keyword", async () => {

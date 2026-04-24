@@ -39,8 +39,11 @@ function csvField(val: string | null | undefined): string {
 const AdminActionSchema = z.object({
   id: z.string(),
   timestamp: z.string(),
-  actorId: z.string(),
-  actorEmail: z.string(),
+  // Nullable post-F-36: rows scrubbed by `anonymizeUserAdminActions` set
+  // both columns to NULL. The `anonymizedAt` timestamp is the positive
+  // signal; non-erased rows return the originating actor as before.
+  actorId: z.string().nullable(),
+  actorEmail: z.string().nullable(),
   scope: z.enum(["platform", "workspace"]),
   orgId: z.string().nullable(),
   actionType: z.string(),
@@ -50,6 +53,8 @@ const AdminActionSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).nullable(),
   ipAddress: z.string().nullable(),
   requestId: z.string(),
+  /** ISO-8601 when the row was erased under GDPR / CCPA. Null = not erased. */
+  anonymizedAt: z.string().nullable(),
 });
 
 const ActionFilterQuerySchema = PaginationQuerySchema.extend({
@@ -119,8 +124,10 @@ const exportActionsRoute = createRoute({
 interface ActionRow {
   id: string;
   timestamp: string;
-  actor_id: string;
-  actor_email: string;
+  // Nullable post-F-36 — scrubbed rows have both columns null and
+  // anonymized_at set.
+  actor_id: string | null;
+  actor_email: string | null;
   scope: "platform" | "workspace";
   org_id: string | null;
   action_type: string;
@@ -130,6 +137,7 @@ interface ActionRow {
   metadata: Record<string, unknown> | null;
   ip_address: string | null;
   request_id: string;
+  anonymized_at: string | null;
   [key: string]: unknown;
 }
 
@@ -148,6 +156,7 @@ function mapActionRow(row: ActionRow) {
     metadata: row.metadata,
     ipAddress: row.ip_address,
     requestId: row.request_id,
+    anonymizedAt: row.anonymized_at,
   };
 }
 
@@ -190,7 +199,7 @@ platformActions.openapi(listActionsRoute, async (c) => {
 
     const [rows, countRows] = yield* Effect.promise(() => Promise.all([
       internalQuery<ActionRow>(
-        `SELECT id, timestamp, actor_id, actor_email, scope, org_id, action_type, target_type, target_id, status, metadata, ip_address, request_id
+        `SELECT id, timestamp, actor_id, actor_email, scope, org_id, action_type, target_type, target_id, status, metadata, ip_address, request_id, anonymized_at
          FROM admin_action_log
          ${whereClause}
          ORDER BY timestamp DESC
@@ -238,7 +247,7 @@ platformActions.openapi(exportActionsRoute, async (c) => {
         params,
       ),
       internalQuery<ActionRow>(
-        `SELECT id, timestamp, actor_id, actor_email, scope, org_id, action_type, target_type, target_id, status, metadata, ip_address, request_id
+        `SELECT id, timestamp, actor_id, actor_email, scope, org_id, action_type, target_type, target_id, status, metadata, ip_address, request_id, anonymized_at
          FROM admin_action_log
          ${whereClause}
          ORDER BY timestamp DESC

@@ -30,13 +30,14 @@ gh run view <run_id> -R AtlasDevHQ/atlas --log-failed 2>&1 | tail -30
 
 ### A1. Lint, Type Check, Tests & Dependency Sync
 
-Run all four CI gates locally. If any fail, stop and report — the codebase is broken.
+Run all CI gates locally. If any fail, stop and report — the codebase is broken.
 
 ```bash
 bun run lint           # ESLint (flat config) — 0 warnings
 bun run type           # TypeScript strict mode via tsgo — 0 errors
-bun run test           # bun test across @atlas/api + @atlas/cli + @atlas/mcp
+bun run test           # Full suite — @atlas/api + all other workspace packages (isolated per-file)
 bun x syncpack lint    # Workspace dependency versions consistent
+bash scripts/check-railway-watch.sh  # Railway watchPatterns vs Dockerfile COPY sources
 ```
 
 | Check | What to Look For |

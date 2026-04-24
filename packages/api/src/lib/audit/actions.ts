@@ -134,6 +134,18 @@ export const ADMIN_ACTIONS = {
      * includes password material. See F-29.
      */
     passwordChange: "user.password_change",
+    /**
+     * GDPR / CCPA "right to erasure" over `admin_action_log`. Emitted by
+     * `anonymizeUserAdminActions()` in `ee/src/audit/retention.ts` on
+     * every erasure run regardless of row count — a zero-row erasure is
+     * still forensic evidence that the request was processed. Scope is
+     * always `platform` because the erasure crosses every workspace the
+     * user touched. Metadata carries `{ targetUserId, anonymizedRowCount,
+     * initiatedBy: "self_request" | "dsr_request" | "scheduled_retention" }`.
+     * The fact of erasure must be auditable even when the erasure target
+     * is the audit log itself. See F-36.
+     */
+    erase: "user.erase",
   },
   /**
    * SSO provider lifecycle. `configure` / `update` / `delete` / `test` cover
@@ -309,6 +321,24 @@ export const ADMIN_ACTIONS = {
     hardDelete: "audit_retention.hard_delete",
   },
   /**
+   * Admin-action retention domain (F-36). Parallels `audit_retention.*`
+   * but governs the `admin_action_log` table instead of `audit_log`.
+   * `policyUpdate` is reserved for the Phase 2 admin-UI policy editor
+   * (#1813 — no route emits it yet; the library layer in `ee/src/audit/retention.ts`
+   * would add a `setAdminActionRetentionPolicy` sibling of the existing
+   * `setRetentionPolicy` when that surface lands). `manualPurge` is also
+   * reserved for the Phase 2 admin-UI hard-delete button. `hardDelete`
+   * is live: emitted by the scheduler-driven `purgeAdminActionExpired`
+   * when `count > 0` (consistent with the F-27 zero-row suppression to
+   * keep scheduler health noise out of the admin trail). Design doc:
+   * `.claude/research/design/admin-action-log-retention.md`.
+   */
+  admin_action_retention: {
+    policyUpdate: "admin_action_retention.policy_update",
+    manualPurge: "admin_action_retention.manual_purge",
+    hardDelete: "admin_action_retention.hard_delete",
+  },
+  /**
    * Audit-log self-audit domain (F-27). `purgeCycle` is emitted once per
    * 24 h `runPurgeCycle` tick by the EE purge scheduler — even at zero
    * rows. The absence of a cycle row over a retention window IS the signal
@@ -317,6 +347,18 @@ export const ADMIN_ACTIONS = {
    */
   audit_log: {
     purgeCycle: "audit_log.purge_cycle",
+  },
+  /**
+   * Admin-action-log self-audit domain (F-36). Sibling to
+   * `audit_log.purge_cycle`. Emitted by `runPurgeCycle()` once per tick
+   * regardless of row count: one row for the audit-log side, one for the
+   * admin-action-log side, so an outage on either can be detected
+   * independently by forensic queries. Uses the same reserved
+   * `system:audit-purge-scheduler` actor as the audit-log cycle — the
+   * scheduler is one loop processing two tables.
+   */
+  admin_action_log: {
+    purgeCycle: "admin_action_log.purge_cycle",
   },
   /**
    * BYOT email-provider mutations — workspace admin swaps the outbound

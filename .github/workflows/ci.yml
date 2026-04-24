@@ -46,6 +46,9 @@ jobs:
       - name: Check Dockerfile workspace completeness
         run: bash scripts/check-dockerfile-workspace.sh
 
+      - name: Check Railway watchPatterns coverage
+        run: bash scripts/check-railway-watch.sh
+
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
@@ -75,5 +78,28 @@ jobs:
       - name: Lint
         run: bun run lint
 
-      - name: Test
-        run: bun run test
+      # @atlas/api tests run in the parallel api-tests job (sharded 4-way).
+      # Other workspace test suites are small, stay serial here.
+      - name: Test (non-api packages)
+        run: bun run test:others
+
+  api-tests:
+    name: api-tests (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test @atlas/api (shard ${{ matrix.shard }}/4)
+        working-directory: packages/api
+        run: bun run scripts/test-isolated.ts --shard ${{ matrix.shard }}/4

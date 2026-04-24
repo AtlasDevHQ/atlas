@@ -13,10 +13,15 @@
       "packages/schemas/**",
       "packages/cli/data/**",
       "packages/plugin-sdk/**",
+      "packages/**/package.json",
+      "apps/**/package.json",
+      "examples/**/package.json",
+      "create-atlas-plugin/package.json",
       "plugins/**",
       "ee/**",
       "semantic/**",
-      "deploy/api/**"
+      "deploy/api/**",
+      "examples/docker/scripts/**"
     ]
   },
   "deploy": {

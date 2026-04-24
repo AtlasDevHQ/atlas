@@ -62,6 +62,15 @@ For each category, build a list of actions needed:
 - Any shipped work still showing `- [ ]` -> change to `- [x]` and add issue/PR refs
 - Any new shipped work not listed in ROADMAP -> add as new line items under the appropriate milestone section
 
+**Line-item length cap** — ROADMAP bullets are trackers, not PR retrospectives. Keep each bullet to **≤ 2 sentences or ~240 chars**: one sentence of "what shipped" + optional hook capturing a non-obvious choice. The issue body + PR body + commit message + `architecture-wins.md` (for refactors) are the detail layer — link, don't mirror. If you catch yourself typing file paths, line counts, test counts, or a list of follow-up issue numbers into a ROADMAP bullet, stop and trim. Matching the verbose tone of existing bullets is a trap — older entries predate this rule.
+
+**Active-milestone phase bullets** — don't append a running commentary as PRs land inside a single bullet. Keep the phase bullet to one sentence; track per-finding shipped/open state in the linked audit doc or as sub-bullets, not as an ever-growing inline paragraph.
+
+**Close-out ritual** — when a milestone closes:
+1. Collapse its section in `ROADMAP.md` to one line: `- [x] **X.Y.Z — Name** (#milestone, N issues) — one-sentence hook.`
+2. Move the full detail section to `ROADMAP-archive.md` under the `# Public-semver archive` heading, verbatim.
+3. The goal: `ROADMAP.md` stays small enough that `Edit` tool calls on it are cheap; `ROADMAP-archive.md` is the cold-storage reference for historical context.
+
 ### 2b. Issue hygiene
 - Open issues whose work is fully shipped (all items done, PR merged) -> close with comment
 - **Issues missing labels** -> every issue needs a type label AND area label(s):

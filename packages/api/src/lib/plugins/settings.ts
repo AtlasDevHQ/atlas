@@ -96,6 +96,17 @@ export async function savePluginConfig(
 /**
  * Get plugin config overrides from the internal DB.
  * Returns null if no overrides are saved.
+ *
+ * F-42: returned values carry `secret: true` fields encrypted at rest via
+ * `encryptSecret` (`enc:v1:iv:authTag:ciphertext`). Callers that need the
+ * plaintext — to pass into restoreMaskedSecrets, display in an admin form,
+ * or eventually hand to plugin runtime code — MUST run the result through
+ * `decryptSecretFields` from `@atlas/api/lib/plugins/secrets` using the
+ * plugin's catalog schema. The only caller today is `admin-plugins.ts`
+ * which does this inline at both read sites (GET /:id/schema and PUT
+ * /:id/config). Adding a new caller means adding a decrypt step — if the
+ * plugin runtime ever consumes these overrides (hot-reload, per-request
+ * config swap), this is the chokepoint.
  */
 export async function getPluginConfig(
   pluginId: string,

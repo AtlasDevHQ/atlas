@@ -1,19 +1,36 @@
 /**
- * Secret-masking helpers for plugin config blobs.
+ * Secret-masking and at-rest encryption helpers for plugin config blobs.
  *
- * Admin endpoints that return a plugin's stored config must not leak values
- * whose schema field is marked `secret: true`. The placeholder is echoed back
- * by the admin UI on save when a field wasn't edited, so the write path swaps
- * it for the original value before persisting.
+ * Two concerns share this module because they share the same schema walker:
+ *
+ * 1. **Masking** (F-43, #1817): admin endpoints that return a plugin's stored
+ *    config must not leak values whose schema field is marked `secret: true`.
+ *    The placeholder is echoed back by the admin UI on save when a field
+ *    wasn't edited, so the write path swaps it for the original value before
+ *    persisting.
+ *
+ * 2. **Encryption** (F-42, #1816): the same `secret: true` fields are
+ *    encrypted at rest inside `plugin_settings.config` / `workspace_plugins.config`
+ *    JSONB via `encryptSecret`. Non-secret operational settings stay plaintext
+ *    — DB ops keeps grep-ability, the disclosure surface shrinks to the actual
+ *    credential values. This is selective-field encryption within the JSONB
+ *    rather than the F-41 `*_encrypted` column split because the column is
+ *    schemaless: secret-vs-non-secret is a property of the catalog schema,
+ *    not the table.
  *
  * Schema parsing is three-state on purpose: `absent` (no schema configured —
- * nothing to mask, pass through) vs `parsed` (a real array — mask fields
- * explicitly marked `secret: true`) vs `corrupt` (schema column held something
- * we can't interpret — fail closed by masking every string value, since we'd
- * rather blank the UI than leak a credential through a migration typo).
+ * nothing to mask/encrypt, pass through) vs `parsed` (a real array — act on
+ * fields explicitly marked `secret: true`) vs `corrupt` (schema column held
+ * something we can't interpret — fail closed by masking/encrypting every
+ * string value, since we'd rather blank the UI or over-encrypt than leak a
+ * credential through a migration typo).
  */
 
 import type { ConfigSchemaField } from "./registry";
+import {
+  encryptSecret,
+  decryptSecret,
+} from "@atlas/api/lib/db/secret-encryption";
 
 /** Placeholder returned in place of secret values in admin config responses. */
 export const MASKED_PLACEHOLDER = "••••••••";
@@ -140,4 +157,125 @@ export function restoreMaskedSecrets(
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// F-42: at-rest encryption walkers
+// ---------------------------------------------------------------------------
+
+/** `enc:v1:` — the prefix `encryptSecret` stamps on AES-256-GCM ciphertext. */
+const ENCRYPTED_SECRET_PREFIX = "enc:v1:";
+
+/**
+ * True iff `value` is a string that already carries the `enc:v1:` prefix.
+ * Used both by `encryptSecretFields` for idempotence (the backfill script
+ * and repeated PUTs must not double-encrypt) and by `isEncryptedSecret`
+ * (exported for callers that need to detect ciphertext in a mixed blob,
+ * e.g. the backfill's idempotency check).
+ */
+export function isEncryptedSecret(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(ENCRYPTED_SECRET_PREFIX);
+}
+
+/**
+ * Return a copy of `config` with every `secret: true` field encrypted via
+ * `encryptSecret`. Non-secret fields pass through unchanged so JSONB ops
+ * stay grep-able. Mirrors `maskSecretFields`' shape for consistency:
+ *
+ * - `config === null` → returns `null` (propagates "not installed").
+ * - `config` is not a plain object → returns `{}` (defensive: the DB
+ *   shouldn't produce this but don't crash if a JSONB column drifts).
+ * - `schema.state === "corrupt"` → fail closed by encrypting every
+ *   non-empty string value — same reasoning as `maskSecretFields`' corrupt
+ *   branch: we'd rather over-encrypt than persist a credential plaintext
+ *   because a migration typo corrupted the schema.
+ *
+ * Non-string secret values (null, undefined, "") pass through — matches
+ * `maskSecretFields`' "distinguish set from unset" semantics so an unset
+ * secret doesn't become `encryptSecret("")`.
+ *
+ * Idempotent on already-encrypted values: an `enc:v1:…` string is
+ * recognized and returned as-is. The backfill script and any double-PUT
+ * relies on this to re-run safely.
+ */
+export function encryptSecretFields(
+  config: unknown,
+  schema: ConfigSchema,
+): Record<string, unknown> | null {
+  if (config == null) return null;
+  if (typeof config !== "object" || Array.isArray(config)) return {};
+  const source = config as Record<string, unknown>;
+
+  if (schema.state === "corrupt") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(source)) {
+      out[key] = shouldEncryptStringValue(value) ? encryptSecret(value as string) : value;
+    }
+    return out;
+  }
+
+  if (schema.state === "absent" || schema.fields.length === 0) return { ...source };
+
+  const secretKeys = new Set(schema.fields.filter(isSecretField).map((f) => f.key));
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    out[key] = secretKeys.has(key) && shouldEncryptStringValue(value)
+      ? encryptSecret(value as string)
+      : value;
+  }
+  return out;
+}
+
+/**
+ * Return a copy of `config` with every `secret: true` field decrypted via
+ * `decryptSecret`. Symmetric with `encryptSecretFields`.
+ *
+ * Decryption failures throw — the plugin runtime has no safe fallback for
+ * a missing credential, and a silently-null secret could masquerade as "no
+ * credential configured" and turn a rotation bug into a failed-open dispatch.
+ * Callers surface the throw as a 500 with `requestId`. `decryptSecret`
+ * already scrubs key material from its error message, but any logging at
+ * the callsite should still pipe the error through `errorMessage()` from
+ * `lib/audit/error-scrub.ts` to strip connection strings.
+ *
+ * Passes un-prefixed plaintext through unchanged — a legacy row not yet
+ * touched by the backfill decrypts to itself.
+ */
+export function decryptSecretFields(
+  config: unknown,
+  schema: ConfigSchema,
+): Record<string, unknown> | null {
+  if (config == null) return null;
+  if (typeof config !== "object" || Array.isArray(config)) return {};
+  const source = config as Record<string, unknown>;
+
+  if (schema.state === "corrupt") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(source)) {
+      out[key] = typeof value === "string" && value.length > 0 ? decryptSecret(value) : value;
+    }
+    return out;
+  }
+
+  if (schema.state === "absent" || schema.fields.length === 0) return { ...source };
+
+  const secretKeys = new Set(schema.fields.filter(isSecretField).map((f) => f.key));
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    out[key] = secretKeys.has(key) && typeof value === "string" && value.length > 0
+      ? decryptSecret(value)
+      : value;
+  }
+  return out;
+}
+
+/**
+ * A value is eligible for encryption iff it's a non-empty string that
+ * isn't already ciphertext. Guards idempotence (already-encrypted values
+ * skip a fresh IV and repeated PUTs don't nest `enc:v1:enc:v1:…`) and
+ * matches the "distinguish set from unset" semantics of `maskSecretFields`
+ * (empty / null / absent values pass through untouched).
+ */
+function shouldEncryptStringValue(value: unknown): boolean {
+  return typeof value === "string" && value.length > 0 && !isEncryptedSecret(value);
 }

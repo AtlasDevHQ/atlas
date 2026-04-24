@@ -16,7 +16,14 @@ import { RequestContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { maskSecretFields, parseConfigSchema, restoreMaskedSecrets } from "@atlas/api/lib/plugins/secrets";
+import {
+  maskSecretFields,
+  parseConfigSchema,
+  restoreMaskedSecrets,
+  encryptSecretFields,
+  decryptSecretFields,
+} from "@atlas/api/lib/plugins/secrets";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   ErrorSchema,
@@ -795,6 +802,19 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       const authResult = c.get("authResult");
       const userId = authResult?.user?.id ?? null;
 
+      // F-42: encrypt any `secret: true` field from the initial install
+      // payload before it hits the JSONB column. Catalog schema drives
+      // which fields count as secret; a corrupt schema fail-closes by
+      // encrypting every non-empty string (same policy as maskSecretFields).
+      const installSchema = parseConfigSchema(catalogEntry.config_schema);
+      if (installSchema.state === "corrupt") {
+        log.warn(
+          { pluginId: body.catalogId, slug: catalogEntry.slug, reason: installSchema.reason },
+          "plugin_catalog.config_schema unreadable on install — encrypting every string value defensively",
+        );
+      }
+      const encryptedConfig = encryptSecretFields(body.config ?? {}, installSchema) ?? {};
+
       const id = crypto.randomUUID();
       const rows = yield* queryEffect<WorkspacePluginRow>(
         `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, installed_by)
@@ -803,7 +823,7 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
                      (SELECT slug FROM plugin_catalog WHERE id = $3) AS slug,
                      (SELECT type FROM plugin_catalog WHERE id = $3) AS type,
                      (SELECT description FROM plugin_catalog WHERE id = $3) AS description`,
-        [id, orgId, body.catalogId, JSON.stringify(body.config ?? {}), userId],
+        [id, orgId, body.catalogId, JSON.stringify(encryptedConfig), userId],
       ).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.install,
@@ -835,7 +855,12 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         },
       });
       log.info({ orgId, catalogId: body.catalogId, installationId: id }, "Plugin installed in workspace");
-      return c.json(installRowToJson(rows[0]!), 201);
+      // F-42: the RETURNING clause echoes back the encrypted `config` blob.
+      // Mask before returning — consistent with GET /available behavior and
+      // prevents a round-tripping UI from re-submitting raw ciphertext.
+      const installResponse = installRowToJson(rows[0]!);
+      installResponse.config = maskSecretFields(installResponse.config, installSchema);
+      return c.json(installResponse, 201);
     }),
     { label: "install plugin" },
   );
@@ -950,7 +975,7 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
       if (existing.length === 0) {
         return c.json({ error: "not_found", message: `Installation "${id}" not found in this workspace.`, requestId }, 404);
       }
-      const originalConfig = (existing[0]!.config ?? {}) as Record<string, unknown>;
+      const originalConfigRaw = (existing[0]!.config ?? {}) as Record<string, unknown>;
       const schema = parseConfigSchema(existing[0]!.config_schema);
       if (schema.state === "corrupt") {
         log.warn(
@@ -958,7 +983,43 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
           "plugin_catalog.config_schema unreadable on PUT — restoring every stored key to prevent secret loss",
         );
       }
+      // F-42: the stored JSONB carries `secret: true` fields encrypted.
+      // Decrypt before restoreMaskedSecrets so placeholder-restored values
+      // are plaintext — the re-encrypt step below then refreshes the IV
+      // for every preserved secret (idempotent on ciphertext would keep
+      // the old IV; decrypt-then-reencrypt is the safer default). A
+      // decryption failure is surfaced as 500 with a failure audit — the
+      // alternative is a silent secret wipe on the PUT.
+      let originalConfig: Record<string, unknown>;
+      try {
+        originalConfig = decryptSecretFields(originalConfigRaw, schema) ?? {};
+      } catch (err) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.configUpdate,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: id,
+            orgId,
+            keysChanged,
+            decryptFailure: true,
+            error: errorMessage(err),
+          },
+        });
+        log.error(
+          { installationId: id, orgId, requestId, err: errorMessage(err) },
+          "Failed to decrypt plugin config secrets on save-read",
+        );
+        return c.json({
+          error: "internal_error",
+          message: "Failed to read current plugin configuration — encrypted secret could not be decrypted.",
+          requestId,
+        }, 500);
+      }
       const sanitizedConfig = restoreMaskedSecrets(body.config, originalConfig, schema);
+      const encryptedForPersist = encryptSecretFields(sanitizedConfig, schema) ?? {};
 
       const rows = yield* queryEffect<WorkspacePluginRow>(
         `UPDATE workspace_plugins SET config = $1
@@ -967,7 +1028,7 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
                      (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug,
                      (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
                      (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
-        [JSON.stringify(sanitizedConfig), id, orgId],
+        [JSON.stringify(encryptedForPersist), id, orgId],
       ).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.configUpdate,
@@ -1005,7 +1066,12 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
         },
       });
       log.info({ orgId, installationId: id }, "Plugin config updated");
-      return c.json(installRowToJson(updated), 200);
+      // F-42: the RETURNING clause gives back the freshly-encrypted blob.
+      // Mask the response so the UI never has to know about ciphertext — it
+      // just sees placeholders like it did on GET /available.
+      const updatedResponse = installRowToJson(updated);
+      updatedResponse.config = maskSecretFields(updatedResponse.config, schema);
+      return c.json(updatedResponse, 200);
     }),
     { label: "update plugin config" },
   );

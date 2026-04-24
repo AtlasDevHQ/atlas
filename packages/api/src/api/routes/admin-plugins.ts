@@ -11,7 +11,13 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { plugins } from "@atlas/api/lib/plugins/registry";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api/lib/plugins/settings";
-import { MASKED_PLACEHOLDER } from "@atlas/api/lib/plugins/secrets";
+import {
+  MASKED_PLACEHOLDER,
+  encryptSecretFields,
+  decryptSecretFields,
+  type ConfigSchema,
+} from "@atlas/api/lib/plugins/secrets";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -335,13 +341,32 @@ adminPlugins.openapi(getPluginSchemaRoute, async (c) => {
   const schema: ConfigSchemaField[] = typeof plugin.getConfigSchema === "function"
     ? plugin.getConfigSchema()
     : [];
+  const configSchema: ConfigSchema = { state: "parsed", fields: schema };
 
-  // Build current values from plugin config + DB overrides
+  // Build current values from plugin config + DB overrides. DB overrides are
+  // stored with `secret: true` fields encrypted at rest via F-42 — decrypt
+  // before merging so the inline masker sees plaintext. Failures must not
+  // silently yield null/plaintext: surface as 500 so the admin UI gets a
+  // diagnosable error instead of an empty input field for a live secret.
   const pluginConfig = plugin.config != null && typeof plugin.config === "object"
     ? (plugin.config as Record<string, unknown>)
     : {};
-  const dbOverrides = await getPluginConfig(id);
-  const merged = { ...pluginConfig, ...dbOverrides };
+  const dbOverridesRaw = await getPluginConfig(id);
+  let dbOverrides: Record<string, unknown> | null;
+  try {
+    dbOverrides = decryptSecretFields(dbOverridesRaw, configSchema);
+  } catch (err) {
+    log.error(
+      { pluginId: id, err: errorMessage(err), requestId },
+      "Failed to decrypt plugin config secrets on schema read",
+    );
+    return c.json({
+      error: "internal_error",
+      message: "Failed to read plugin configuration — encrypted secret could not be decrypted.",
+      requestId,
+    }, 500);
+  }
+  const merged = { ...pluginConfig, ...(dbOverrides ?? {}) };
 
   // Mask secret values. MASKED_PLACEHOLDER is shared with every admin
   // plugin surface via @atlas/api/lib/plugins/secrets — the write paths
@@ -401,16 +426,36 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
   // placeholders — otherwise every admin save would report apiKey as
   // rotated even when they only toggled `debug`.
   let originals: Record<string, unknown> = {};
+  let configSchemaForEncrypt: ConfigSchema = { state: "absent" };
   if (typeof plugin.getConfigSchema === "function") {
     const schema = plugin.getConfigSchema();
+    configSchemaForEncrypt = { state: "parsed", fields: schema };
     const schemaKeys = new Set(schema.map((f) => f.key));
     const errors: string[] = [];
 
     const pluginConfig = plugin.config != null && typeof plugin.config === "object"
       ? (plugin.config as Record<string, unknown>)
       : {};
-    const dbOverrides = await getPluginConfig(id);
-    originals = { ...pluginConfig, ...dbOverrides };
+    // F-42: dbOverrides comes back with `secret: true` fields encrypted.
+    // Decrypt before building `originals` so the placeholder-restore branch
+    // below inlays plaintext (keysChanged can then compare against the
+    // submitted body value without a fake "rotation" for every save).
+    const dbOverridesRaw = await getPluginConfig(id);
+    let dbOverrides: Record<string, unknown> | null;
+    try {
+      dbOverrides = decryptSecretFields(dbOverridesRaw, configSchemaForEncrypt);
+    } catch (err) {
+      log.error(
+        { pluginId: id, err: errorMessage(err), requestId },
+        "Failed to decrypt plugin config secrets on save-read",
+      );
+      return c.json({
+        error: "internal_error",
+        message: "Failed to read current plugin configuration — encrypted secret could not be decrypted.",
+        requestId,
+      }, 500);
+    }
+    originals = { ...pluginConfig, ...(dbOverrides ?? {}) };
 
     for (const field of schema) {
       const value = body[field.key];
@@ -467,12 +512,22 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
   // value equals the originals (happens when the admin re-submits the
   // masked placeholder for a secret they didn't rotate). Snapshotted BEFORE
   // persist so a savePluginConfig throw still emits the intended change set.
+  // The comparison happens on plaintext (originals was decrypted above and
+  // body was placeholder-restored above), so equality-check lines up.
   const keysChanged = Object.keys(body)
     .filter((key) => body[key] !== originals[key])
     .toSorted();
 
+  // F-42: encrypt `secret: true` fields before persisting. Non-secret fields
+  // pass through as plain JSONB so DB ops stays grep-able. Idempotent on
+  // already-encrypted ciphertext, which matters if restoreMaskedSecrets
+  // ever starts preserving ciphertext originals (today it restores
+  // plaintext via the decrypt above, but keeping the walker idempotent
+  // protects future refactors from double-encrypting).
+  const toPersist = encryptSecretFields(body, configSchemaForEncrypt) ?? {};
+
   try {
-    await savePluginConfig(id, body);
+    await savePluginConfig(id, toPersist);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logAdminAction({

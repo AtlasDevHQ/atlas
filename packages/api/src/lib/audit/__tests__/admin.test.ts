@@ -281,3 +281,24 @@ describe("logAdminActionAwait()", () => {
     expect(queryCalls).toHaveLength(0);
   });
 });
+
+/**
+ * F-30 catalog — BYOT credential management (email provider + LLM model
+ * config) must audit every write. These entries backstop the route
+ * emissions: if anyone removes an action type from the catalog, the
+ * consuming route file stops compiling, so a silent drift back to the
+ * no-audit baseline is impossible.
+ */
+describe("ADMIN_ACTIONS catalog — F-30 BYOT credential audit", () => {
+  it("defines email_provider.update / delete / test", () => {
+    expect(ADMIN_ACTIONS.email_provider.update).toBe("email_provider.update");
+    expect(ADMIN_ACTIONS.email_provider.delete).toBe("email_provider.delete");
+    expect(ADMIN_ACTIONS.email_provider.test).toBe("email_provider.test");
+  });
+
+  it("defines model_config.update / delete / test", () => {
+    expect(ADMIN_ACTIONS.model_config.update).toBe("model_config.update");
+    expect(ADMIN_ACTIONS.model_config.delete).toBe("model_config.delete");
+    expect(ADMIN_ACTIONS.model_config.test).toBe("model_config.test");
+  });
+});

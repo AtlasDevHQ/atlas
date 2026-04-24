@@ -9,6 +9,7 @@ import {
   resolveRequireEmailVerification,
   type BuildAuthOptionsDeps,
 } from "../server";
+import { normalizeSignupResponseBody } from "../signup-response";
 
 /**
  * End-to-end wiring regressions for #1741.
@@ -112,18 +113,13 @@ function makeAuth(overrides: Partial<BuildAuthOptionsDeps> = {}): ReturnType<typ
  *
  * Scrubs only per-request non-determinism — `id`, `createdAt`,
  * `updatedAt` — replacing each with the literal string `"<scrubbed>"`.
- * On user-like objects (detected by the presence of an `email` key), it
- * also fills `image: null` when absent; Better Auth's synthetic-signup
- * branch always emits `{ image: null }` while the real path omits the
- * key entirely when `image` isn't supplied in the signup body. Tracked
- * upstream as #1792 — normalizing here keeps the parity test focused
- * on Atlas's wiring rather than absorbing that asymmetry as a false
- * negative.
  *
  * Everything else is compared literally — including types, field
  * presence, and nested shape — so a future upstream change that starts
  * leaking, say, `emailVerified: true` on the real path vs `false` on
- * the synthetic would show up red.
+ * the synthetic would show up red. The `image` asymmetry that used to
+ * be normalized here (#1792) is now closed in the Atlas signup handler
+ * itself; the parity test exercises the real diff.
  */
 function scrub(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(scrub);
@@ -136,7 +132,6 @@ function scrub(value: unknown): unknown {
         out[k] = scrub(v);
       }
     }
-    if ("email" in out && !("image" in out)) out.image = null;
     return out;
   }
   return value;
@@ -348,7 +343,7 @@ describe("signup enumeration response parity — /sign-up/email", () => {
       password: "correct horse battery staple",
     }, ip);
     const firstRes = await auth.handler(firstReq);
-    const firstBody = await firstRes.json();
+    const firstBodyRaw = await firstRes.json();
 
     // Second signup with the SAME email. With requireEmailVerification=true,
     // Better Auth returns a synthetic success envelope instead of the
@@ -360,11 +355,34 @@ describe("signup enumeration response parity — /sign-up/email", () => {
       password: "correct horse battery staple",
     }, ip);
     const secondRes = await auth.handler(secondReq);
-    const secondBody = await secondRes.json();
+    const secondBodyRaw = await secondRes.json();
+
+    // Apply the Atlas-side normalization that the Hono handler in
+    // packages/api/src/api/routes/auth.ts wraps around the Better Auth
+    // /sign-up/email response. This closes #1792: Better Auth's real
+    // `parseUserOutput` omits `image` entirely when the signup body
+    // doesn't supply one, while the synthetic existing-email envelope
+    // always includes `image: null`. The Hono layer fills the gap on
+    // the real path before the response leaves the API.
+    const firstBody = normalizeSignupResponseBody(firstBodyRaw);
+    const secondBody = normalizeSignupResponseBody(secondBodyRaw);
 
     // Status parity — no 422/500 leak from the existing-email branch.
     expect(firstRes.status).toBe(200);
     expect(secondRes.status).toBe(200);
+
+    // F-P3 (#1792) — the field the oracle used to leak. Both envelopes
+    // must have `user.image === null` after Atlas normalization, not
+    // just undefined on one side and null on the other. If this fails
+    // on either side, the signup response distinguishes new vs
+    // existing email to a client that inspects key presence.
+    const userOf = (body: unknown): Record<string, unknown> => {
+      if (!body || typeof body !== "object") return {};
+      const user = (body as { user?: unknown }).user;
+      return user && typeof user === "object" ? (user as Record<string, unknown>) : {};
+    };
+    expect(userOf(firstBody)).toHaveProperty("image", null);
+    expect(userOf(secondBody)).toHaveProperty("image", null);
 
     // Shape parity — top-level keys and nested user-object keys must
     // match between branches. Doing this before the value-level scrub
@@ -373,23 +391,15 @@ describe("signup enumeration response parity — /sign-up/email", () => {
     // scrubbed by value-level normalization.
     const topKeys = (body: unknown): string[] =>
       body && typeof body === "object" ? Object.keys(body).toSorted() : [];
-    const userKeys = (body: unknown): string[] => {
-      if (!body || typeof body !== "object") return [];
-      const user = (body as { user?: unknown }).user;
-      if (!user || typeof user !== "object") return [];
-      return Object.keys(user).toSorted();
-    };
+    const userKeys = (body: unknown): string[] => Object.keys(userOf(body)).toSorted();
     expect(topKeys(firstBody)).toEqual(topKeys(secondBody));
-    // Fold in the `image` normalization so it doesn't false-flag
-    // (see scrub() doc for why). Everything else must match exactly.
-    const first = userKeys(firstBody);
-    const second = userKeys(secondBody);
-    const withImage = (ks: string[]) => [...new Set([...ks, "image"])].toSorted();
-    expect(withImage(first)).toEqual(withImage(second));
+    expect(userKeys(firstBody)).toEqual(userKeys(secondBody));
 
     // Value parity — both envelopes serialize byte-for-byte identically
     // modulo `id`/`createdAt`/`updatedAt` (legitimately non-deterministic
-    // per request) and the `image` asymmetry tracked in #1792.
+    // per request). No field-level normalization here: every other key
+    // must match literally, so a future Better Auth change that leaks a
+    // new key on one branch only will show up red.
     const normalize = (body: unknown): string => JSON.stringify(sortKeys(scrub(body)));
     expect(normalize(firstBody)).toBe(normalize(secondBody));
   });

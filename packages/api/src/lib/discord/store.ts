@@ -9,12 +9,15 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 export type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("discord-store");
+
+const SELECT_COLS = "guild_id, org_id, guild_name, bot_token, bot_token_encrypted, application_id, public_key, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -37,7 +40,7 @@ function parseInstallationRow(
     guild_id: guildIdVal,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     guild_name: typeof row.guild_name === "string" ? row.guild_name : null,
-    bot_token: typeof row.bot_token === "string" ? row.bot_token : null,
+    bot_token: pickDecryptedSecret(row.bot_token_encrypted, row.bot_token),
     application_id: typeof row.application_id === "string" ? row.application_id : null,
     public_key: typeof row.public_key === "string" ? row.public_key : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
@@ -58,7 +61,7 @@ export async function getDiscordInstallation(
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
-        "SELECT guild_id, org_id, guild_name, bot_token, application_id, public_key, installed_at::text FROM discord_installations WHERE guild_id = $1",
+        `SELECT ${SELECT_COLS} FROM discord_installations WHERE guild_id = $1`,
         [guildId],
       );
       if (rows.length > 0) {
@@ -104,7 +107,7 @@ export async function getDiscordInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT guild_id, org_id, guild_name, bot_token, application_id, public_key, installed_at::text FROM discord_installations WHERE org_id = $1",
+      `SELECT ${SELECT_COLS} FROM discord_installations WHERE org_id = $1`,
       [orgId],
     );
     if (rows.length > 0) {
@@ -143,6 +146,7 @@ export async function saveDiscordInstallation(
   const orgId = opts?.orgId ?? null;
   const guildName = opts?.guildName ?? null;
   const botToken = opts?.botToken ?? null;
+  const botTokenEncrypted = botToken !== null ? encryptSecret(botToken) : null;
   const applicationId = opts?.applicationId ?? null;
   const publicKey = opts?.publicKey ?? null;
 
@@ -150,18 +154,19 @@ export async function saveDiscordInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ guild_id: string }>(
-      `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token, application_id, public_key)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token, bot_token_encrypted, application_id, public_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (guild_id) DO UPDATE SET
          org_id = COALESCE($2, discord_installations.org_id),
          guild_name = COALESCE($3, discord_installations.guild_name),
          bot_token = COALESCE($4, discord_installations.bot_token),
-         application_id = COALESCE($5, discord_installations.application_id),
-         public_key = COALESCE($6, discord_installations.public_key),
+         bot_token_encrypted = COALESCE($5, discord_installations.bot_token_encrypted),
+         application_id = COALESCE($6, discord_installations.application_id),
+         public_key = COALESCE($7, discord_installations.public_key),
          installed_at = now()
        WHERE discord_installations.org_id IS NULL OR discord_installations.org_id = $2
        RETURNING guild_id`,
-      [guildId, orgId, guildName, botToken, applicationId, publicKey],
+      [guildId, orgId, guildName, botToken, botTokenEncrypted, applicationId, publicKey],
     );
 
     if (rows.length === 0) {

@@ -5,7 +5,12 @@
  * Falls back to SLACK_BOT_TOKEN env var for single-workspace mode.
  */
 
-import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import {
+  hasInternalDB,
+  internalQuery,
+  getInternalDB,
+} from "@atlas/api/lib/db/internal";
+import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -29,9 +34,9 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): SlackInstallationWithSecret | null {
   const teamIdVal = row.team_id;
-  const botToken = row.bot_token;
   const installedAt = row.installed_at;
-  if (typeof teamIdVal !== "string" || typeof botToken !== "string" || !botToken) {
+  const botToken = pickDecryptedSecret(row.bot_token_encrypted, row.bot_token);
+  if (typeof teamIdVal !== "string" || !botToken) {
     log.warn(context, "Invalid installation record in database");
     return null;
   }
@@ -43,6 +48,8 @@ function parseInstallationRow(
     installed_at: typeof installedAt === "string" ? installedAt : new Date().toISOString(),
   };
 }
+
+const SELECT_COLS = "team_id, bot_token, bot_token_encrypted, org_id, workspace_name, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Read operations
@@ -58,7 +65,7 @@ export async function getInstallation(
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
-        "SELECT team_id, bot_token, org_id, workspace_name, installed_at::text FROM slack_installations WHERE team_id = $1",
+        `SELECT ${SELECT_COLS} FROM slack_installations WHERE team_id = $1`,
         [teamId],
       );
       if (rows.length > 0) {
@@ -104,7 +111,7 @@ export async function getInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT team_id, bot_token, org_id, workspace_name, installed_at::text FROM slack_installations WHERE org_id = $1",
+      `SELECT ${SELECT_COLS} FROM slack_installations WHERE org_id = $1`,
       [orgId],
     );
     if (rows.length > 0) {
@@ -143,20 +150,22 @@ export async function saveInstallation(
   const orgId = opts?.orgId ?? null;
   const workspaceName = opts?.workspaceName ?? null;
   const pool = getInternalDB();
+  const botTokenEncrypted = encryptSecret(botToken);
 
   // Atomic upsert with hijack protection — the WHERE clause rejects rows
   // bound to a different org in one statement (no TOCTOU race).
   const result = await pool.query(
-    `INSERT INTO slack_installations (team_id, bot_token, org_id, workspace_name)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO slack_installations (team_id, bot_token, bot_token_encrypted, org_id, workspace_name)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (team_id) DO UPDATE SET
        bot_token = $2,
-       org_id = COALESCE($3, slack_installations.org_id),
-       workspace_name = COALESCE($4, slack_installations.workspace_name),
+       bot_token_encrypted = $3,
+       org_id = COALESCE($4, slack_installations.org_id),
+       workspace_name = COALESCE($5, slack_installations.workspace_name),
        installed_at = now()
-     WHERE slack_installations.org_id IS NULL OR slack_installations.org_id = $3
+     WHERE slack_installations.org_id IS NULL OR slack_installations.org_id = $4
      RETURNING team_id`,
-    [teamId, botToken, orgId, workspaceName],
+    [teamId, botToken, botTokenEncrypted, orgId, workspaceName],
   );
 
   if (result.rows.length === 0) {

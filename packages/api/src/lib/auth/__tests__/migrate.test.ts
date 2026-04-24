@@ -281,6 +281,7 @@ describe("migrateAuthTables", () => {
             { name: "0033_custom_domains_dns_verification.sql" },
             { name: "0034_share_mode_org_requires_org_id.sql" },
             { name: "0035_admin_action_retention.sql" },
+            { name: "0036_integration_credentials_encryption.sql" },
           ],
         };
       }

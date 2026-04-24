@@ -26,6 +26,13 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   }),
 }));
 
+// F-41 secret encryption — deterministic passthrough for test assertions.
+mock.module("@atlas/api/lib/db/secret-encryption", () => ({
+  encryptSecret: (plaintext: string) => `enc:v1:test:${plaintext}`,
+  decryptSecret: (stored: string) =>
+    stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored,
+}));
+
 // --- Capture warn logs so tests can assert corrupt-row breadcrumbs ---
 
 let warnLogs: Array<{ ctx: Record<string, unknown>; msg: string }> = [];
@@ -201,7 +208,7 @@ describe("saveEmailInstallation — strips tag from JSONB", () => {
     });
     const insert = capturedQueries.find((q) => q.sql.includes("INSERT INTO email_installations"));
     expect(insert).toBeDefined();
-    // Third param is the JSON-stringified config.
+    // Third param is the JSON-stringified plaintext config.
     const persistedJson = insert!.params[2];
     expect(typeof persistedJson).toBe("string");
     const persisted = JSON.parse(persistedJson as string);
@@ -209,6 +216,8 @@ describe("saveEmailInstallation — strips tag from JSONB", () => {
     // column so we don't double-store / risk drift.
     expect(persisted.provider).toBeUndefined();
     expect(persisted.apiKey).toBe("re_saved");
+    // F-41 dual-write: fourth param is the encrypted blob.
+    expect(insert!.params[3]).toBe(`enc:v1:test:${persistedJson}`);
   });
 
   it("strips provider from smtp config while preserving other fields", async () => {
@@ -285,6 +294,51 @@ describe("save + load round-trip", () => {
 // ---------------------------------------------------------------------------
 // Delete
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// F-41 — read-path prefers config_encrypted over plaintext JSONB
+// ---------------------------------------------------------------------------
+
+describe("F-41 encrypted-config read priority", () => {
+  it("prefers decrypted config_encrypted over plaintext config", async () => {
+    const freshConfig = { apiKey: "re_fresh_from_encrypted" };
+    mockInternalQueryResult = [
+      {
+        config_id: "cfg-e1",
+        provider: "resend",
+        sender_address: "r@example.com",
+        // Stale plaintext should be ignored once encrypted exists.
+        config: { apiKey: "re_stale" },
+        config_encrypted: `enc:v1:test:${JSON.stringify(freshConfig)}`,
+        org_id: "org-1",
+        installed_at: "2026-04-20T00:00:00Z",
+      },
+    ];
+    const install = await getEmailInstallationByOrg("org-1");
+    expect(install!.config.provider).toBe("resend");
+    if (install!.config.provider === "resend") {
+      expect(install!.config.apiKey).toBe("re_fresh_from_encrypted");
+    }
+  });
+
+  it("falls back to plaintext JSONB when config_encrypted is NULL (legacy row)", async () => {
+    mockInternalQueryResult = [
+      {
+        config_id: "cfg-e2",
+        provider: "sendgrid",
+        sender_address: "sg@example.com",
+        config: { apiKey: "sg_legacy" },
+        config_encrypted: null,
+        org_id: "org-1",
+        installed_at: "2026-04-20T00:00:00Z",
+      },
+    ];
+    const install = await getEmailInstallationByOrg("org-1");
+    if (install!.config.provider === "sendgrid") {
+      expect(install!.config.apiKey).toBe("sg_legacy");
+    }
+  });
+});
 
 describe("deleteEmailInstallationByOrg", () => {
   it("returns true when a row was deleted", async () => {

@@ -7,12 +7,15 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 export type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("whatsapp-store");
+
+const SELECT_COLS = "phone_number_id, access_token, access_token_encrypted, display_phone, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -23,8 +26,8 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): WhatsAppInstallationWithSecret | null {
   const phoneNumberId = row.phone_number_id;
-  const accessToken = row.access_token;
-  if (typeof phoneNumberId !== "string" || !phoneNumberId || typeof accessToken !== "string" || !accessToken) {
+  const accessToken = pickDecryptedSecret(row.access_token_encrypted, row.access_token);
+  if (typeof phoneNumberId !== "string" || !phoneNumberId || !accessToken) {
     log.warn(context, "Invalid WhatsApp installation record in database");
     return null;
   }
@@ -53,7 +56,7 @@ export async function getWhatsAppInstallation(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT phone_number_id, access_token, display_phone, org_id, installed_at::text FROM whatsapp_installations WHERE phone_number_id = $1",
+      `SELECT ${SELECT_COLS} FROM whatsapp_installations WHERE phone_number_id = $1`,
       [phoneNumberId],
     );
     if (rows.length > 0) {
@@ -82,7 +85,7 @@ export async function getWhatsAppInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT phone_number_id, access_token, display_phone, org_id, installed_at::text FROM whatsapp_installations WHERE org_id = $1",
+      `SELECT ${SELECT_COLS} FROM whatsapp_installations WHERE org_id = $1`,
       [orgId],
     );
     if (rows.length > 0) {
@@ -120,21 +123,23 @@ export async function saveWhatsAppInstallation(
 
   const orgId = opts.orgId ?? null;
   const displayPhone = opts.displayPhone ?? null;
+  const accessTokenEncrypted = encryptSecret(opts.accessToken);
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ phone_number_id: string }>(
-      `INSERT INTO whatsapp_installations (phone_number_id, access_token, display_phone, org_id)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO whatsapp_installations (phone_number_id, access_token, access_token_encrypted, display_phone, org_id)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (phone_number_id) DO UPDATE SET
          access_token = $2,
-         display_phone = COALESCE($3, whatsapp_installations.display_phone),
-         org_id = COALESCE($4, whatsapp_installations.org_id),
+         access_token_encrypted = $3,
+         display_phone = COALESCE($4, whatsapp_installations.display_phone),
+         org_id = COALESCE($5, whatsapp_installations.org_id),
          installed_at = now()
-       WHERE whatsapp_installations.org_id IS NULL OR whatsapp_installations.org_id = $4
+       WHERE whatsapp_installations.org_id IS NULL OR whatsapp_installations.org_id = $5
        RETURNING phone_number_id`,
-      [phoneNumberId, opts.accessToken, displayPhone, orgId],
+      [phoneNumberId, opts.accessToken, accessTokenEncrypted, displayPhone, orgId],
     );
 
     if (rows.length === 0) {

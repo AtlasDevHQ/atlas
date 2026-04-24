@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(36);
+    expect(count).toBe(37);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -144,6 +144,7 @@ describe("runMigrations", () => {
         "0033_custom_domains_dns_verification.sql",
         "0034_share_mode_org_requires_org_id.sql",
         "0035_admin_action_retention.sql",
+        "0036_integration_credentials_encryption.sql",
       ],
     });
 

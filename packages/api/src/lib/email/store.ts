@@ -7,6 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   EMAIL_PROVIDERS,
@@ -36,6 +37,49 @@ const log = createLogger("email-store");
 
 function isEmailProvider(value: string): value is EmailProvider {
   return (EMAIL_PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * Decode the provider-config payload. Prefer `config_encrypted` and fall
+ * back to the plaintext `config` JSONB when the encrypted column is
+ * missing *or* fails to decrypt. The decrypt-failure fallback is
+ * load-bearing during the F-41 soak — a single bad ciphertext must not
+ * hide a working plaintext copy (which would cause the admin UI to show
+ * "no provider configured" and invite an overwrite that loses the
+ * working config). Post-#1832 (plaintext drop), decrypt failure becomes
+ * terminal naturally.
+ */
+function pickEncryptedConfig(
+  encrypted: unknown,
+  plaintext: unknown,
+  context: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (typeof encrypted === "string" && encrypted.length > 0) {
+    try {
+      const decoded = decryptSecret(encrypted);
+      const parsed = JSON.parse(decoded) as unknown;
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+      log.warn({ ...context }, "Decrypted email config is not an object — falling back to plaintext");
+    } catch (err) {
+      log.warn(
+        { ...context, parseError: err instanceof Error ? err.message : String(err) },
+        "Failed to decrypt/parse email config — falling back to plaintext (F-41 soak)",
+      );
+    }
+  }
+  if (plaintext && typeof plaintext === "object") {
+    return plaintext as Record<string, unknown>;
+  }
+  if (typeof plaintext === "string") {
+    try {
+      const parsed = JSON.parse(plaintext) as unknown;
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+    } catch {
+      // fall through to the warn log
+    }
+  }
+  log.warn(context, "Email installation config column is missing or unreadable");
+  return null;
 }
 
 /**
@@ -73,12 +117,10 @@ function parseInstallationRow(
   const configId = row.config_id;
   const provider = row.provider;
   const senderAddress = row.sender_address;
-  const rawConfig = row.config;
   if (
     typeof configId !== "string" || !configId ||
     typeof provider !== "string" || !provider ||
-    typeof senderAddress !== "string" || !senderAddress ||
-    !rawConfig || typeof rawConfig !== "object"
+    typeof senderAddress !== "string" || !senderAddress
   ) {
     log.warn(context, "Invalid email installation record in database");
     return null;
@@ -90,7 +132,10 @@ function parseInstallationRow(
     );
     return null;
   }
-  const rawConfigRecord = rawConfig as Record<string, unknown>;
+  // F-41: prefer the encrypted blob when present; fall back to the
+  // plaintext JSONB column for rows not yet migrated by the backfill.
+  const rawConfigRecord = pickEncryptedConfig(row.config_encrypted, row.config, context);
+  if (!rawConfigRecord) return null;
   if (
     typeof rawConfigRecord.provider === "string" &&
     rawConfigRecord.provider !== provider
@@ -133,7 +178,7 @@ export async function getEmailInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT config_id, provider, sender_address, config, org_id, installed_at::text FROM email_installations WHERE org_id = $1",
+      "SELECT config_id, provider, sender_address, config, config_encrypted, org_id, installed_at::text FROM email_installations WHERE org_id = $1",
       [orgId],
     );
     if (rows.length > 0) {
@@ -179,15 +224,20 @@ export async function saveEmailInstallation(
     // would cause round-trip duplication + drift risk if the columns ever
     // diverged.
     const { provider: _provider, ...configJson } = opts.config;
+    const configSerialized = JSON.stringify(configJson);
+    // F-41 dual-write: plaintext JSONB for back-compat readers + encrypted
+    // TEXT blob for at-rest protection. Follow-up PR drops plaintext.
+    const configEncrypted = encryptSecret(configSerialized);
     await internalQuery(
-      `INSERT INTO email_installations (provider, sender_address, config, org_id)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO email_installations (provider, sender_address, config, config_encrypted, org_id)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (org_id) DO UPDATE SET
          provider = $1,
          sender_address = $2,
          config = $3,
+         config_encrypted = $4,
          installed_at = now()`,
-      [opts.provider, opts.senderAddress, JSON.stringify(configJson), orgId],
+      [opts.provider, opts.senderAddress, configSerialized, configEncrypted, orgId],
     );
   } catch (err) {
     log.error(

@@ -20,6 +20,23 @@ const mockGetInternalDB: Mock<() => { query: typeof mockPoolQuery }> = mock(() =
   query: mockPoolQuery,
 }));
 
+// F-41: secret encryption — deterministic prefix lets us match the
+// encrypted values in SQL params without reproducing AES-GCM in the test.
+const mockEncryptSecret = (plaintext: string) => `enc:v1:test:${plaintext}`;
+const mockDecryptSecret = (stored: string) =>
+  stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored;
+const mockPickDecryptedSecret = (encrypted: unknown, plaintext: unknown): string | null => {
+  if (typeof encrypted === "string" && encrypted.length > 0) return mockDecryptSecret(encrypted);
+  if (typeof plaintext === "string" && plaintext.length > 0) return plaintext;
+  return null;
+};
+
+mock.module("@atlas/api/lib/db/secret-encryption", () => ({
+  encryptSecret: mockEncryptSecret,
+  decryptSecret: mockDecryptSecret,
+  pickDecryptedSecret: mockPickDecryptedSecret,
+}));
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
@@ -87,6 +104,53 @@ describe("store", () => {
         installed_at: "2025-01-01T00:00:00Z",
       });
       expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+      // F-41: SELECT must include the new _encrypted column.
+      const [selectSql] = mockInternalQuery.mock.calls[0];
+      expect(selectSql).toContain("bot_token_encrypted");
+    });
+
+    it("prefers the decrypted _encrypted column over plaintext (F-41)", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockInternalQuery.mockResolvedValue([
+        {
+          team_id: "T123",
+          bot_token: "xoxb-stale-plaintext",
+          bot_token_encrypted: "enc:v1:test:xoxb-fresh-from-encrypted",
+          installed_at: "2025-01-01T00:00:00Z",
+        },
+      ]);
+
+      const result = await getInstallation("T123");
+      expect(result?.bot_token).toBe("xoxb-fresh-from-encrypted");
+    });
+
+    it("falls back to plaintext column when _encrypted is NULL (legacy row)", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockInternalQuery.mockResolvedValue([
+        {
+          team_id: "T123",
+          bot_token: "xoxb-legacy",
+          bot_token_encrypted: null,
+          installed_at: "2025-01-01T00:00:00Z",
+        },
+      ]);
+
+      const result = await getInstallation("T123");
+      expect(result?.bot_token).toBe("xoxb-legacy");
+    });
+
+    it("ON CONFLICT DO UPDATE clause writes both plaintext and encrypted columns", async () => {
+      // Guard against a param-renumbering regression that drops the
+      // encrypted column from the UPDATE clause — on dual-write this
+      // would be invisible (plaintext still updates), but would break
+      // every re-save once the plaintext column is dropped in #1832.
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
+
+      await saveInstallation("T123", "xoxb-new");
+      const [sql] = mockPoolQuery.mock.calls[0];
+      expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bbot_token\s*=\s*\$\d/);
+      expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bbot_token_encrypted\s*=\s*\$\d/);
     });
 
     it("returns null when DB has no matching row", async () => {
@@ -201,7 +265,7 @@ describe("store", () => {
   });
 
   describe("saveInstallation", () => {
-    it("resolves when DB write succeeds", async () => {
+    it("resolves when DB write succeeds (F-41: dual-writes plaintext + encrypted)", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
 
@@ -209,8 +273,10 @@ describe("store", () => {
       expect(mockPoolQuery).toHaveBeenCalledTimes(1); // Single atomic upsert
       const [insertSql, insertParams] = mockPoolQuery.mock.calls[0];
       expect(insertSql).toContain("INSERT INTO slack_installations");
+      expect(insertSql).toContain("bot_token_encrypted");
       expect(insertSql).toContain("RETURNING team_id");
-      expect(insertParams).toEqual(["T123", "xoxb-new", null, null]);
+      // F-41: INSERT carries (team_id, plaintext, encrypted, org_id, workspace_name).
+      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", null, null]);
     });
 
     it("passes orgId and workspaceName when provided", async () => {
@@ -219,7 +285,7 @@ describe("store", () => {
 
       await saveInstallation("T123", "xoxb-new", { orgId: "org-1", workspaceName: "My Team" });
       const [, insertParams] = mockPoolQuery.mock.calls[0];
-      expect(insertParams).toEqual(["T123", "xoxb-new", "org-1", "My Team"]);
+      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", "org-1", "My Team"]);
     });
 
     it("rejects when team is bound to a different org", async () => {

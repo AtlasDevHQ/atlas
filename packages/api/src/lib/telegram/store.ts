@@ -7,12 +7,15 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { TelegramInstallation, TelegramInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 export type { TelegramInstallation, TelegramInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("telegram-store");
+
+const SELECT_COLS = "bot_id, bot_token, bot_token_encrypted, bot_username, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -27,14 +30,14 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): TelegramInstallationWithSecret | null {
   const botIdVal = row.bot_id;
-  const botTokenVal = row.bot_token;
-  if (typeof botIdVal !== "string" || !botIdVal || typeof botTokenVal !== "string" || !botTokenVal) {
+  const botToken = pickDecryptedSecret(row.bot_token_encrypted, row.bot_token);
+  if (typeof botIdVal !== "string" || !botIdVal || !botToken) {
     log.warn(context, "Invalid Telegram installation record in database");
     return null;
   }
   return {
     bot_id: botIdVal,
-    bot_token: botTokenVal,
+    bot_token: botToken,
     bot_username: typeof row.bot_username === "string" ? row.bot_username : null,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
@@ -57,7 +60,7 @@ export async function getTelegramInstallation(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT bot_id, bot_token, bot_username, org_id, installed_at::text FROM telegram_installations WHERE bot_id = $1",
+      `SELECT ${SELECT_COLS} FROM telegram_installations WHERE bot_id = $1`,
       [botId],
     );
     if (rows.length > 0) {
@@ -86,7 +89,7 @@ export async function getTelegramInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT bot_id, bot_token, bot_username, org_id, installed_at::text FROM telegram_installations WHERE org_id = $1",
+      `SELECT ${SELECT_COLS} FROM telegram_installations WHERE org_id = $1`,
       [orgId],
     );
     if (rows.length > 0) {
@@ -124,21 +127,23 @@ export async function saveTelegramInstallation(
 
   const orgId = opts.orgId ?? null;
   const botUsername = opts.botUsername ?? null;
+  const botTokenEncrypted = encryptSecret(opts.botToken);
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ bot_id: string }>(
-      `INSERT INTO telegram_installations (bot_id, bot_token, bot_username, org_id)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO telegram_installations (bot_id, bot_token, bot_token_encrypted, bot_username, org_id)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (bot_id) DO UPDATE SET
          bot_token = $2,
-         bot_username = COALESCE($3, telegram_installations.bot_username),
-         org_id = COALESCE($4, telegram_installations.org_id),
+         bot_token_encrypted = $3,
+         bot_username = COALESCE($4, telegram_installations.bot_username),
+         org_id = COALESCE($5, telegram_installations.org_id),
          installed_at = now()
-       WHERE telegram_installations.org_id IS NULL OR telegram_installations.org_id = $4
+       WHERE telegram_installations.org_id IS NULL OR telegram_installations.org_id = $5
        RETURNING bot_id`,
-      [botId, opts.botToken, botUsername, orgId],
+      [botId, opts.botToken, botTokenEncrypted, botUsername, orgId],
     );
 
     if (rows.length === 0) {

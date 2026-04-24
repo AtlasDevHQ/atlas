@@ -6,12 +6,15 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 export type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("linear-store");
+
+const SELECT_COLS = "user_id, api_key, api_key_encrypted, user_name, user_email, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -22,8 +25,8 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): LinearInstallationWithSecret | null {
   const userId = row.user_id;
-  const apiKey = row.api_key;
-  if (typeof userId !== "string" || !userId || typeof apiKey !== "string" || !apiKey) {
+  const apiKey = pickDecryptedSecret(row.api_key_encrypted, row.api_key);
+  if (typeof userId !== "string" || !userId || !apiKey) {
     log.warn(context, "Invalid Linear installation record in database");
     return null;
   }
@@ -53,7 +56,7 @@ export async function getLinearInstallation(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT user_id, api_key, user_name, user_email, org_id, installed_at::text FROM linear_installations WHERE user_id = $1",
+      `SELECT ${SELECT_COLS} FROM linear_installations WHERE user_id = $1`,
       [userId],
     );
     if (rows.length > 0) {
@@ -82,7 +85,7 @@ export async function getLinearInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT user_id, api_key, user_name, user_email, org_id, installed_at::text FROM linear_installations WHERE org_id = $1",
+      `SELECT ${SELECT_COLS} FROM linear_installations WHERE org_id = $1`,
       [orgId],
     );
     if (rows.length > 0) {
@@ -121,22 +124,24 @@ export async function saveLinearInstallation(
   const orgId = opts.orgId ?? null;
   const userName = opts.userName ?? null;
   const userEmail = opts.userEmail ?? null;
+  const apiKeyEncrypted = encryptSecret(opts.apiKey);
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ user_id: string }>(
-      `INSERT INTO linear_installations (user_id, api_key, user_name, user_email, org_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO linear_installations (user_id, api_key, api_key_encrypted, user_name, user_email, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (user_id) DO UPDATE SET
          api_key = $2,
-         user_name = COALESCE($3, linear_installations.user_name),
-         user_email = COALESCE($4, linear_installations.user_email),
-         org_id = COALESCE($5, linear_installations.org_id),
+         api_key_encrypted = $3,
+         user_name = COALESCE($4, linear_installations.user_name),
+         user_email = COALESCE($5, linear_installations.user_email),
+         org_id = COALESCE($6, linear_installations.org_id),
          installed_at = now()
-       WHERE linear_installations.org_id IS NULL OR linear_installations.org_id = $5
+       WHERE linear_installations.org_id IS NULL OR linear_installations.org_id = $6
        RETURNING user_id`,
-      [userId, opts.apiKey, userName, userEmail, orgId],
+      [userId, opts.apiKey, apiKeyEncrypted, userName, userEmail, orgId],
     );
 
     if (rows.length === 0) {

@@ -17,7 +17,9 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
@@ -30,6 +32,10 @@ import {
   customDomainError,
   loadDomains,
 } from "./shared-domains";
+
+function clientIP(c: Context): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+}
 
 const log = createLogger("admin-domains");
 
@@ -319,6 +325,13 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 
     const domain = yield* mod.registerDomain(orgId, body.domain);
     log.info({ orgId, domain: body.domain, requestId }, "Workspace custom domain registered");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.domain.workspaceRegister,
+      targetType: "domain",
+      targetId: domain.id,
+      ipAddress: clientIP(c),
+      metadata: { domain: body.domain },
+    });
     // Return full token on registration so admin can set up the DNS TXT record
     return c.json(mod.redactDomain(domain, true), 201);
   }), { label: "add workspace domain", domainErrors: [customDomainError] });
@@ -346,6 +359,13 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
     }
 
     const domain = yield* mod.verifyDomain(domains[0].id);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.domain.workspaceVerify,
+      targetType: "domain",
+      targetId: domains[0].id,
+      ipAddress: clientIP(c),
+      metadata: { status: domain.status ?? null },
+    });
     return c.json(mod.redactDomain(domain), 200);
   }), { label: "verify workspace domain", domainErrors: [customDomainError] });
 });
@@ -371,6 +391,13 @@ adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
     }
 
     const domain = yield* mod.verifyDomainDnsTxt(domains[0].id);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.domain.workspaceVerifyDns,
+      targetType: "domain",
+      targetId: domains[0].id,
+      ipAddress: clientIP(c),
+      metadata: { status: domain.status ?? null },
+    });
     return c.json(mod.redactDomain(domain), 200);
   }), { label: "verify domain DNS TXT", domainErrors: [customDomainError] });
 });
@@ -423,6 +450,13 @@ adminDomains.openapi(removeDomainRoute, async (c) => {
 
     yield* mod.deleteDomain(domains[0].id);
     log.info({ orgId, domainId: domains[0].id, requestId }, "Workspace custom domain removed");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.domain.workspaceRemove,
+      targetType: "domain",
+      targetId: domains[0].id,
+      ipAddress: clientIP(c),
+      metadata: { domain: domains[0].domain },
+    });
     return c.json({ deleted: true }, 200);
   }), { label: "remove workspace domain", domainErrors: [customDomainError] });
 });

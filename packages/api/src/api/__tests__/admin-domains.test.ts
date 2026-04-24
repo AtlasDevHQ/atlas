@@ -11,6 +11,10 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import { Effect } from "effect";
+
+// Real ADMIN_ACTIONS values so assertions pin to the canonical strings.
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 
 // --- Auth mock ---
 
@@ -50,6 +54,29 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getRequestContext: () => null,
+}));
+
+// --- Audit mock — capture every logAdminAction emission ---
+
+interface CapturedAuditEntry {
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  status?: "success" | "failure";
+  metadata?: Record<string, unknown>;
+  scope?: "platform" | "workspace";
+  ipAddress?: string | null;
+}
+
+const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
+
+mock.module("@atlas/api/lib/audit", () => ({
+  logAdminAction: mockLogAdminAction,
+  logAdminActionAwait: mock(async () => {}),
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: () => undefined,
 }));
 
 // --- EE domains mock: loadDomains returns null to simulate EE-off build ---
@@ -81,11 +108,61 @@ const { adminDomains } = await import("../routes/admin-domains");
 
 function resetMocks() {
   mockLoadDomains.mockImplementation(() => Promise.resolve(null));
+  mockLogAdminAction.mockClear();
   mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
       user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
+    }),
+  );
+}
+
+// --- EE domains stub: load a fake module so POST / DELETE / verify routes
+// reach the audit emission path. The stub returns Effect.succeed(...) for
+// every method so the Effect.gen handlers run to completion.
+
+function makeDomainRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "dom_abc123",
+    workspaceId: "org-1",
+    domain: "data.acme.com",
+    status: "pending",
+    createdAt: "2026-04-23T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function enableEe(
+  opts: {
+    listDomains?: Record<string, unknown>[];
+    registerDomain?: Record<string, unknown> | Error;
+    verifyDomain?: Record<string, unknown> | Error;
+    verifyDomainDnsTxt?: Record<string, unknown> | Error;
+    deleteDomain?: true | Error;
+    checkDomainAvailability?: Record<string, unknown>;
+  } = {},
+): void {
+  mockLoadDomains.mockImplementation(() =>
+    Promise.resolve({
+      listDomains: (_orgId: string) => Effect.succeed(opts.listDomains ?? []),
+      registerDomain: (_orgId: string, _domain: string) =>
+        opts.registerDomain instanceof Error
+          ? Effect.fail(opts.registerDomain)
+          : Effect.succeed(opts.registerDomain ?? makeDomainRecord()),
+      verifyDomain: (_id: string) =>
+        opts.verifyDomain instanceof Error
+          ? Effect.fail(opts.verifyDomain)
+          : Effect.succeed(opts.verifyDomain ?? makeDomainRecord({ status: "verified" })),
+      verifyDomainDnsTxt: (_id: string) =>
+        opts.verifyDomainDnsTxt instanceof Error
+          ? Effect.fail(opts.verifyDomainDnsTxt)
+          : Effect.succeed(opts.verifyDomainDnsTxt ?? makeDomainRecord({ status: "dns_verified" })),
+      deleteDomain: (_id: string) =>
+        opts.deleteDomain instanceof Error ? Effect.fail(opts.deleteDomain) : Effect.succeed(true),
+      checkDomainAvailability: (_domain: string, _orgId: string) =>
+        Effect.succeed(opts.checkDomainAvailability ?? { available: true }),
+      redactDomain: (d: Record<string, unknown>) => d,
     }),
   );
 }
@@ -160,5 +237,99 @@ describe("admin custom domain — EE disabled (loadDomains returns null)", () =>
     expect(res.status).toBe(404);
     const json = (await res.json()) as { error: string };
     expect(json.error).toBe("not_available");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-32 audit-emission regression tests — admin-domains
+//
+// Every write under /api/v1/admin/domain must produce exactly one
+// admin_action_log row on success. The issue tracked four unaudited writes:
+// POST / (register), DELETE / (remove), POST /verify, POST /verify-dns.
+// ---------------------------------------------------------------------------
+
+describe("admin custom domain — F-32 audit emission", () => {
+  beforeEach(resetMocks);
+
+  it("POST / emits domain.workspace_register on success", async () => {
+    enableEe({ registerDomain: makeDomainRecord({ id: "dom_new1", domain: "data.acme.com" }) });
+    const res = await request("/", "POST", { domain: "data.acme.com" });
+    expect(res.status).toBe(201);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("domain.workspace_register");
+    expect(entry.targetType).toBe("domain");
+    expect(entry.targetId).toBe("dom_new1");
+    expect(entry.metadata?.domain).toBe("data.acme.com");
+  });
+
+  it("DELETE / emits domain.workspace_remove with the removed domain id", async () => {
+    enableEe({ listDomains: [makeDomainRecord({ id: "dom_del1" })] });
+    const res = await request("/", "DELETE");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("domain.workspace_remove");
+    expect(entry.targetType).toBe("domain");
+    expect(entry.targetId).toBe("dom_del1");
+  });
+
+  it("POST /verify emits domain.workspace_verify", async () => {
+    enableEe({
+      listDomains: [makeDomainRecord({ id: "dom_v1" })],
+      verifyDomain: makeDomainRecord({ id: "dom_v1", status: "verified" }),
+    });
+    const res = await request("/verify", "POST");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("domain.workspace_verify");
+    expect(entry.targetId).toBe("dom_v1");
+  });
+
+  it("POST /verify-dns emits domain.workspace_verify_dns", async () => {
+    enableEe({
+      listDomains: [makeDomainRecord({ id: "dom_vd1" })],
+      verifyDomainDnsTxt: makeDomainRecord({ id: "dom_vd1", status: "dns_verified" }),
+    });
+    const res = await request("/verify-dns", "POST");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("domain.workspace_verify_dns");
+    expect(entry.targetId).toBe("dom_vd1");
+  });
+
+  it("GET / does not emit an audit row (read endpoint)", async () => {
+    enableEe();
+    const res = await request("/", "GET");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("GET /domain-check does not emit an audit row (read endpoint)", async () => {
+    enableEe({ checkDomainAvailability: { available: true } });
+    const res = await request("/domain-check?domain=test.example.com", "GET");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("POST /verify on an un-configured workspace does not emit (404 short-circuit)", async () => {
+    // The handler 404s before reaching verifyDomain(), so no audit row — the
+    // probe doesn't land a stale `workspace_verify` event against a domain
+    // that doesn't exist.
+    enableEe({ listDomains: [] });
+    const res = await request("/verify", "POST");
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("POST /verify-dns on an un-configured workspace does not emit (404 short-circuit)", async () => {
+    // Symmetric to /verify — verify-dns has the same "no domain configured"
+    // pre-handler guard and must not land a stale `workspace_verify_dns` row.
+    enableEe({ listDomains: [] });
+    const res = await request("/verify-dns", "POST");
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });

@@ -15,8 +15,10 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
+import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import {
   listPIIClassifications,
   updatePIIClassification,
@@ -38,6 +40,10 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const complianceDomainError = domainError(ComplianceError, { validation: 400, not_found: 404, conflict: 409 });
 const reportDomainError = domainError(ReportError, { validation: 400, not_available: 404 });
+
+function clientIP(c: Context): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+}
 
 // `PIIClassificationSchema` is re-exported under its prior local alias from
 // `@useatlas/schemas`. That migration tightens `category` / `confidence` /
@@ -138,10 +144,12 @@ adminCompliance.openapi(listRoute, async (c) => {
 
 // PUT /classifications/:id
 adminCompliance.openapi(updateRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const id = c.req.param("id");
+  const body = c.req.valid("json");
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const id = c.req.param("id");
-    const body = c.req.valid("json");
 
     const updated = yield* updatePIIClassification(orgId!, id, {
       category: body.category as PIICategory | undefined,
@@ -150,18 +158,42 @@ adminCompliance.openapi(updateRoute, async (c) => {
       reviewed: body.reviewed,
     });
     invalidateClassificationCache(orgId!);
+    // Metadata mirrors only the request-body fields that were actually set —
+    // spreading the update result would echo post-state defaults and drown
+    // the admin's *intent* (shrinking mask from `full` to `redact` is the
+    // high-stakes signal compliance review pivots on).
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.compliance.piiConfigUpdate,
+      targetType: "compliance",
+      targetId: id,
+      ipAddress,
+      metadata: {
+        ...(body.category !== undefined && { category: body.category }),
+        ...(body.maskingStrategy !== undefined && { maskingStrategy: body.maskingStrategy }),
+        ...(body.dismissed !== undefined && { dismissed: body.dismissed }),
+        ...(body.reviewed !== undefined && { reviewed: body.reviewed }),
+      },
+    });
     return c.json({ classification: updated }, 200);
   }), { label: "update PII classification", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // DELETE /classifications/:id
 adminCompliance.openapi(deleteRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const id = c.req.param("id");
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const id = c.req.param("id");
 
     yield* deletePIIClassification(orgId!, id);
     invalidateClassificationCache(orgId!);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.compliance.piiConfigDelete,
+      targetType: "compliance",
+      targetId: id,
+      ipAddress,
+    });
     return c.json({ deleted: true }, 200);
   }), { label: "delete PII classification", domainErrors: [complianceDomainError, reportDomainError] });
 });

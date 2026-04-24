@@ -16,13 +16,36 @@ export const ADMIN_ACTIONS = {
     purge: "workspace.purge",
     changePlan: "workspace.change_plan",
   },
+  /**
+   * Custom domain lifecycle. `register` / `verify` / `delete` cover the
+   * platform-admin surface (`platform-domains.ts`). The `workspace*`
+   * variants cover the workspace-self-serve surface (`admin-domains.ts`,
+   * see F-32 in .claude/research/security-audit-1-2-3.md) so forensic
+   * queries can tell a platform-staff domain change from a workspace-admin
+   * one without joining on `scope`.
+   */
   domain: {
     register: "domain.register",
     verify: "domain.verify",
     delete: "domain.delete",
+    workspaceRegister: "domain.workspace_register",
+    workspaceRemove: "domain.workspace_remove",
+    workspaceVerify: "domain.workspace_verify",
+    workspaceVerifyDns: "domain.workspace_verify_dns",
   },
+  /**
+   * Data-residency lifecycle. `assign` covers the platform-admin surface
+   * (`platform-residency.ts`). The `workspace*` variants cover workspace
+   * self-serve (`admin-residency.ts`). Region assignment is permanent —
+   * `workspace_assign` metadata MUST carry `permanent: true` so triage
+   * sees the permanence flag on the audit row. See F-32.
+   */
   residency: {
     assign: "residency.assign",
+    workspaceAssign: "residency.workspace_assign",
+    migrationRequest: "residency.migration_request",
+    migrationRetry: "residency.migration_retry",
+    migrationCancel: "residency.migration_cancel",
   },
   sla: {
     updateThresholds: "sla.update_thresholds",
@@ -188,6 +211,29 @@ export const ADMIN_ACTIONS = {
     update: "model_config.update",
     delete: "model_config.delete",
     test: "model_config.test",
+  },
+  /**
+   * Workspace white-label branding. Enterprise-gated. Without these entries
+   * an admin can silently re-skin the product before phishing tenant users
+   * and the audit trail shows nothing. See F-32.
+   */
+  branding: {
+    update: "branding.update",
+    delete: "branding.delete",
+  },
+  /**
+   * Compliance / PII-classification mutations. `pii_config_update` covers
+   * the PUT /classifications/{id} path (category / masking-strategy /
+   * dismissed / reviewed changes on a single classification row).
+   * `pii_config_delete` covers the DELETE /classifications/{id} path that
+   * drops a classification row and its cache entry. Deliberately distinct
+   * from the `audit_retention.*` domain — these do NOT control retention
+   * windows, only the shape of PII-masking enforcement on query results.
+   * See F-32 in .claude/research/security-audit-1-2-3.md.
+   */
+  compliance: {
+    piiConfigUpdate: "compliance.pii_config_update",
+    piiConfigDelete: "compliance.pii_config_delete",
   },
 } as const;
 

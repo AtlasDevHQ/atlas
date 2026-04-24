@@ -18,7 +18,7 @@ import {
   type Mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
-import type { AbuseDetail } from "@useatlas/types";
+import type { AbuseDetail, AbuseLevel } from "@useatlas/types";
 import { asPercentage, asRatio } from "@useatlas/types";
 import { createAbuseInstance } from "@atlas/api/lib/security/abuse-instances";
 
@@ -40,7 +40,13 @@ const mocks = createApiTestMocks({
 // --- Abuse mock overrides (test-specific) ---
 
 const mockListFlagged: Mock<() => unknown[]> = mock(() => []);
-const mockReinstateWorkspace: Mock<(wsId: string, actorId: string) => boolean> = mock(() => true);
+// F-33: `reinstateWorkspace` returns the previous level on success so the
+// route can emit audit metadata without a second getter call, or `null`
+// when the workspace is not flagged. Default success fixture surfaces
+// "warning" to exercise the most common delta.
+const mockReinstateWorkspace: Mock<
+  (wsId: string, actorId: string) => Exclude<AbuseLevel, "none"> | null
+> = mock(() => "warning");
 const mockGetAbuseEvents: Mock<
   (wsId: string, limit?: number) => Promise<{ events: unknown[]; status: string }>
 > = mock(async () => ({ events: [], status: "ok" }));
@@ -69,6 +75,32 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   abuseCleanupTick: mock(() => {}),
   ABUSE_CLEANUP_INTERVAL_MS: 300_000,
 }));
+
+// --- Audit capture (F-33) ---
+// Intercept `logAdminAction` so tests can assert reinstate dual-writes to
+// `admin_action_log` alongside `abuse_events`. Real `ADMIN_ACTIONS` is
+// re-exported so a typo in the route vs. the catalog breaks the suite.
+
+interface CapturedAuditEntry {
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  status?: "success" | "failure";
+  metadata?: Record<string, unknown>;
+  scope?: "platform" | "workspace";
+  ipAddress?: string | null;
+}
+
+const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
+
+mock.module("@atlas/api/lib/audit", async () => {
+  const actual = await import("@atlas/api/lib/audit/actions");
+  return {
+    logAdminAction: mockLogAdminAction,
+    logAdminActionAwait: mock(async () => {}),
+    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+  };
+});
 
 
 // --- Import app after mocks ---
@@ -100,8 +132,10 @@ describe("Admin Abuse API", () => {
       }),
     );
     mockListFlagged.mockImplementation(() => []);
-    mockReinstateWorkspace.mockImplementation(() => true);
+    mockReinstateWorkspace.mockImplementation(() => "warning");
+    mockReinstateWorkspace.mockClear();
     mockGetAbuseEvents.mockImplementation(async () => ({ events: [], status: "ok" }));
+    mockLogAdminAction.mockClear();
     mockGetWorkspaceNamesByIds.mockClear();
     mockGetWorkspaceNamesByIds.mockImplementation(async (ids) => {
       const m = new Map<string, string | null>();
@@ -238,11 +272,92 @@ describe("Admin Abuse API", () => {
     });
 
     it("returns 400 when workspace not flagged", async () => {
-      mockReinstateWorkspace.mockImplementation(() => false);
+      mockReinstateWorkspace.mockImplementation(() => null);
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/abuse/org-clean/reinstate"),
       );
       expect(res.status).toBe(400);
+    });
+
+    it("dual-writes audit: abuse_events (via reinstateWorkspace) AND admin_action_log (#1788, F-33)", async () => {
+      // The split trail is the compliance gap: pre-fix, reinstate only hit
+      // abuse_events via the lib, so queries against `admin_action_log` for
+      // platform-admin activity missed every reinstate. The fix is a
+      // dual-write — both paths must fire on the happy path.
+      //
+      // `reinstateWorkspace` is the module boundary for the `abuse_events`
+      // insert (calls `persistAbuseEvent` internally), so asserting it was
+      // called pins the abuse_events side; `mockLogAdminAction` pins the
+      // admin_action_log side. It returns the previous level (F-33) so the
+      // route can audit the delta — "suspended" simulates lifting the most
+      // severe state, which is the one compliance reviewers care most about.
+      mockReinstateWorkspace.mockImplementation(() => "suspended");
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
+      );
+      expect(res.status).toBe(200);
+
+      // abuse_events side — `reinstateWorkspace` drives `persistAbuseEvent`
+      // which inserts a row capturing the previous level via the event.
+      expect(mockReinstateWorkspace).toHaveBeenCalledTimes(1);
+      expect(mockReinstateWorkspace.mock.calls[0]?.[0]).toBe("org-1");
+
+      // admin_action_log side — canonical action_type is
+      // `workspace.reinstate_abuse` (domain `workspace`) with platform
+      // scope since this route is platform-admin-gated (F-09). Metadata
+      // carries `previousLevel` so a reviewer can distinguish an un-warn
+      // from lifting a full suspension without joining `abuse_events`.
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]?.[0];
+      expect(entry).toBeDefined();
+      expect(entry?.actionType).toBe("workspace.reinstate_abuse");
+      expect(entry?.targetType).toBe("workspace");
+      expect(entry?.targetId).toBe("org-1");
+      expect(entry?.scope).toBe("platform");
+      expect(entry?.metadata?.previousLevel).toBe("suspended");
+    });
+
+    it("does NOT emit logAdminAction when workspace is not flagged (#1788, F-33)", async () => {
+      // Guard against double-counting: the 400 branch short-circuits before
+      // the dual-write, so a reviewer counting `workspace.reinstate_abuse`
+      // rows matches the count of actual state transitions, not every
+      // attempted click.
+      mockReinstateWorkspace.mockImplementation(() => null);
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/abuse/org-clean/reinstate"),
+      );
+      expect(res.status).toBe(400);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("still attempts logAdminAction when no internal DB (#1788, F-33)", async () => {
+      // Even without an internal DB, `logAdminAction` is called — it's a
+      // noop-safe fire-and-forget per `lib/audit/admin.ts`, so the route
+      // stays consistent with other F-* phase-4 audit sites (F-30, F-31,
+      // F-32) that don't branch on `hasInternalDB()`. The pino side of
+      // `logAdminAction` still emits, which is the only trail available in
+      // this configuration — exactly what the `audit_persist_skipped`
+      // warning flags to the admin.
+      mocks.hasInternalDB = false;
+      try {
+        const res = await app.fetch(
+          adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json() as {
+          success: boolean;
+          warnings?: string[];
+          message: string;
+        };
+        expect(body.success).toBe(true);
+        expect(body.warnings?.[0]).toMatch(/^audit_persist_skipped:/);
+        expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+        expect(mockLogAdminAction.mock.calls[0]?.[0]?.actionType).toBe(
+          "workspace.reinstate_abuse",
+        );
+      } finally {
+        mocks.hasInternalDB = true;
+      }
     });
 
     it("surfaces audit_persist_skipped warning when no internal DB (#1751)", async () => {

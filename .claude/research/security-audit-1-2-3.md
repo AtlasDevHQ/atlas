@@ -1055,7 +1055,7 @@ metadata does not carry credentials / connection strings / tokens.
 |---|---|---|---|
 | `admin_action_log` | `packages/api/src/lib/audit/admin.ts` | `logAdminAction()` — pino + DB insert | **INSERT only**. No UPDATE / DELETE anywhere in the codebase. `0023_admin_action_log.sql` header explicitly says "kept indefinitely — no `deleted_at` column" |
 | `audit_log` | `packages/api/src/lib/tools/sql.ts` pipeline → `internalExecute` | Query execution audit (chat / query / wizard) | INSERT; `UPDATE ... SET deleted_at` in `ee/retention.ts#purgeExpiredEntries`; `DELETE ... WHERE deleted_at < now() - interval` in `ee/retention.ts#hardDeleteExpired`; `DELETE ... WHERE org_id = $1` in `internal.ts#cascadeWorkspaceDelete` (workspace hard-delete) |
-| `abuse_events` | `packages/api/src/lib/security/abuse.ts#persistAbuseEvent` | Abuse module state changes (including reinstate) | INSERT only. Split audit trail — reinstate emits here, not to `admin_action_log` (see F-33) |
+| `abuse_events` | `packages/api/src/lib/security/abuse.ts#persistAbuseEvent` | Abuse module state changes (including reinstate) | INSERT only. Dual-written with `admin_action_log` on reinstate post-F-33 (PR for #1788) — see route-table row for `admin-abuse.ts` |
 
 `ADMIN_ACTIONS` catalog (`packages/api/src/lib/audit/actions.ts`) enumerates 54 action values across 16 domains (workspace / domain / residency / sla / backup / settings / connection / user / sso / semantic / pattern / integration / schedule / apikey / approval / mode). Two declared entries have zero call sites: `apikey.create` and `apikey.revoke` — Better Auth's API-key plugin owns key lifecycle through the `/api/auth/*` catch-all, so the catalog entries are dead weight (P3 cleanup, not a finding).
 
@@ -1068,7 +1068,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | File | Writes | Audit calls | Status | Notes |
 |---|---:|---:|---|---|
 | `actions.ts` | 4 | 0 | ✳︎ | User action approve/deny is user-content not admin; approvals are audited via `admin-approval.ts` when admin-reviewed |
-| `admin-abuse.ts` | 1 | 0 | 🟡 | Writes to `abuse_events` via lib — split trail (F-33) |
+| `admin-abuse.ts` | 1 | 1 | ✅ | F-33 fixed (PR for #1788) — reinstate dual-writes `abuse_events` (via `persistAbuseEvent`) and `admin_action_log` (`workspace.reinstate_abuse`, `scope: "platform"`, `metadata: { previousLevel }`). `reinstateWorkspace()` now returns `Exclude<AbuseLevel, "none"> \| null` so the route feeds `previousLevel` into audit metadata without a second getter call. `!hasInternalDB()` branch calls `logAdminAction` unconditionally (pino-only trail) and still surfaces the `audit_persist_skipped` warning so the operator knows the DB row will not exist |
 | `admin-approval.ts` | 5 | 1 | 🟡 | Approve/deny audited; **rule CRUD + expire unaudited** (F-29) |
 | `admin-archive.ts` | 2 | 2 | ✅ | `mode.archive` / `mode.archive_reconcile` / `mode.restore` |
 | `admin-audit-retention.ts` | 4 | 4 | ✅ | F-26 fixed (PR for #1781) — `audit_retention.policy_update` / `export` / `manual_purge` / `manual_hard_delete` emitted with success + failure paths; policy_update captures previous values |
@@ -1394,7 +1394,7 @@ Four admin files with explicit enterprise-gated config surfaces and zero audit c
 
 ---
 
-**F-33 — Abuse reinstate writes to `abuse_events`, not `admin_action_log` — split audit trail** — P2
+**F-33 — Abuse reinstate writes to `abuse_events`, not `admin_action_log` — split audit trail** — P2 — **FIXED**
 
 **Repro:** `POST /api/v1/admin/abuse/{workspaceId}/reinstate` → `reinstateWorkspace()` → `persistAbuseEvent()` → row in `abuse_events`. No `logAdminAction` call anywhere in the flow.
 
@@ -1405,6 +1405,8 @@ The in-module handler code path (`admin-abuse.ts` lines 296–312) explicitly ac
 **Fix sketch:** Call `logAdminAction({ actionType: "workspace.reinstate_abuse", targetType: "workspace", targetId: workspaceId, scope: "platform", metadata: { previousLevel } })` alongside the `abuse_events` row. Dual-write is cheap and closes the compliance query gap.
 
 **Severity:** P2 — evidence exists but in the wrong place. Not a compliance failure per se, but a consistent-view failure. Scored one tier below F-31 (P1) despite being the same class of "dual-surface write, split trail" because reinstate is not enumerated in the phase-4 high-stakes list and `abuse_events` retains a full record including actor + timestamp + previous level; F-31's `admin-orgs.ts` writes leave no trail at either surface for anyone who picks the unaudited path.
+
+**Status:** fixed (PR for #1788). `ADMIN_ACTIONS.workspace.reinstateAbuse` (`"workspace.reinstate_abuse"`) added to the catalog. `reinstateWorkspace()` now returns `Exclude<AbuseLevel, "none"> | null` — the previous level on success, `null` when the workspace is not flagged — so the route can feed `previousLevel` straight into audit metadata without a second getter call. The route emits `logAdminAction({ actionType: "workspace.reinstate_abuse", targetType: "workspace", targetId: workspaceId, scope: "platform", metadata: { previousLevel } })` alongside the existing `persistAbuseEvent()` call; both writes happen for every successful reinstate. The `!hasInternalDB()` branch no longer short-circuits the audit attempt — `logAdminAction` is called unconditionally (noop-safe when no internal DB, consistent with F-30 / F-31 / F-32 sites) so the pino trail survives, and the response still carries an `audit_persist_skipped` warning so the admin knows the DB row itself will not exist. Regression test (`admin-abuse.test.ts`) pins all three branches: happy path asserts both `mockReinstateWorkspace` (abuse_events write via `persistAbuseEvent`) AND `mockLogAdminAction` fire with matching `previousLevel`; 400 branch asserts `logAdminAction` does NOT fire so compliance row counts match real state transitions, not clicks; no-internal-DB branch asserts the call still happens + the warning still surfaces.
 
 **Issue:** #1788.
 
@@ -1565,7 +1567,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | fixed (PR #1805) |
 | F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | fixed (PR #1804) |
 | F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | fixed (PR #1806) |
-| F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | open |
+| F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | fixed (PR for #1788) |
 | F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 | open |
 | F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 | open |
 | F-36 | P2 | Retention | `admin_action_log` unbounded, no purge, no GDPR erasure path | #1791 | open |

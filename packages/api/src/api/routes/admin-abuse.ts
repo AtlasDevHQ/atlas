@@ -18,6 +18,7 @@ import {
 } from "@atlas/api/lib/security/abuse";
 import { getWorkspaceNamesByIds, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 
 const log = createLogger("admin-abuse");
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -283,23 +284,37 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
     const { workspaceId } = c.req.valid("param");
     const actorId = user?.id ?? "unknown";
 
-    const success = reinstateWorkspace(workspaceId, actorId);
-    if (!success) {
+    const previousLevel = reinstateWorkspace(workspaceId, actorId);
+    if (previousLevel === null) {
       return c.json(
         { error: "not_flagged", message: "Workspace is not currently flagged for abuse.", requestId },
         400,
       );
     }
 
+    // Dual-write the audit trail (F-33). `reinstateWorkspace` persists to
+    // `abuse_events` via `persistAbuseEvent`; `logAdminAction` persists to
+    // `admin_action_log` so compliance queries filtering by
+    // `action_type = 'workspace.reinstate_abuse'` see every reinstate
+    // without joining a second table. `previousLevel` on the metadata
+    // lets reviewers distinguish a low-impact un-warn from lifting a full
+    // suspension at read time.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.reinstateAbuse,
+      targetType: "workspace",
+      targetId: workspaceId,
+      scope: "platform",
+      metadata: { previousLevel },
+    });
+
     // In-memory throttling is lifted by this point — customer queries are
-    // already flowing. If we can't also persist an audit row, the operator
-    // needs to know before they move on. `internalExecute` is
-    // fire-and-forget by design (it returns before the write completes),
-    // so the only silent failure we can catch *synchronously* is "there's
-    // no internal DB to persist to" — which reduces to certainty that no
-    // audit row will ever exist for this reinstate. Async persist
-    // failures are caught by `persistAbuseEvent` (now logged at error)
-    // and by `internalExecute`'s circuit breaker.
+    // already flowing. `logAdminAction` above is noop-safe when there is
+    // no internal DB (it still emits a pino line, which is the only
+    // surviving trail in that config). The warning channel exists so the
+    // admin knows the `admin_action_log` row won't exist, not because we
+    // skip the audit attempt. `persistAbuseEvent` (abuse_events write)
+    // silently drops in the same config; both sides fail the same way,
+    // which is the point of the dual-write symmetry F-33 called for.
     const warnings: string[] = [];
     if (!hasInternalDB()) {
       log.error(

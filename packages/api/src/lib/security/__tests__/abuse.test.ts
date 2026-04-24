@@ -227,13 +227,16 @@ describe("Abuse Prevention Engine", () => {
       expect(checkAbuseStatus("ws-reinstate").level).toBe("warning");
 
       const result = reinstateWorkspace("ws-reinstate", "admin-1");
-      expect(result).toBe(true);
+      // F-33: returns the previous level so the route can audit the delta
+      // without a second getter call. Here the workspace was warning-level
+      // so we get "warning" back (not a boolean).
+      expect(result).toBe("warning");
       expect(checkAbuseStatus("ws-reinstate").level).toBe("none");
     });
 
-    it("returns false for non-flagged workspaces", () => {
+    it("returns null for non-flagged workspaces", () => {
       const result = reinstateWorkspace("ws-nonexistent", "admin-1");
-      expect(result).toBe(false);
+      expect(result).toBeNull();
     });
 
     it("resets abuse counters on reinstate", () => {

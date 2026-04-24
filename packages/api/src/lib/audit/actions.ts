@@ -15,6 +15,16 @@ export const ADMIN_ACTIONS = {
     delete: "workspace.delete",
     purge: "workspace.purge",
     changePlan: "workspace.change_plan",
+    /**
+     * Manual reinstate from an abuse-prevention flag (throttled / suspended →
+     * none). Dual-written alongside the `abuse_events` row so compliance
+     * queries scanning `admin_action_log` for platform-admin actions don't
+     * miss reinstates — see F-33 in .claude/research/security-audit-1-2-3.md.
+     * Metadata carries `previousLevel` (warning / throttled / suspended) so
+     * reviewers can distinguish a low-impact un-warn from lifting a full
+     * suspension without joining on `abuse_events`.
+     */
+    reinstateAbuse: "workspace.reinstate_abuse",
   },
   /**
    * Custom domain lifecycle. `register` / `verify` / `delete` cover the

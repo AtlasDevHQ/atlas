@@ -51,7 +51,11 @@ const mocks = createApiTestMocks({
 
 mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mock(() => []),
-  reinstateWorkspace: mock(() => true),
+  // F-33: returns the previous level on success (or null when not flagged)
+  // so the route can audit the delta. The rejection matrix here doesn't
+  // exercise success paths, but the return shape must match the real one
+  // so mock drift doesn't mask a regression.
+  reinstateWorkspace: mock(() => "warning" as const),
   getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
   getAbuseConfig: mock(() => ({
     queryRateLimit: 200,

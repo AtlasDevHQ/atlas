@@ -641,7 +641,11 @@ export function createApiTestMocks(
 
   mock.module("@atlas/api/lib/security/abuse", () => ({
     listFlaggedWorkspaces: mock(() => []),
-    reinstateWorkspace: mock(() => true),
+    // F-33: returns the previous level on success so the route can emit
+    // audit metadata without a second getter call, or `null` when the
+    // workspace is not flagged. Default success fixture surfaces
+    // "warning" — the most common delta.
+    reinstateWorkspace: mock(() => "warning" as const),
     getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
     // `asRatio` brands the config value (#1685) — the real `getAbuseConfig`
     // does the same at its env-var boundary, so the mock shape matches.

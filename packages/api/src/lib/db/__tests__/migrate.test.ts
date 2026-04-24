@@ -145,6 +145,7 @@ describe("runMigrations", () => {
         "0034_share_mode_org_requires_org_id.sql",
         "0035_admin_action_retention.sql",
         "0036_integration_credentials_encryption.sql",
+        "0037_plugin_config_encryption.sql",
         "0038_encryption_key_versioning.sql",
       ],
     });

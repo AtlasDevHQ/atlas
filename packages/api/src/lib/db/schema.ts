@@ -127,6 +127,8 @@ export const slackInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     botToken: text("bot_token"),
     botTokenEncrypted: text("bot_token_encrypted"),
+    // F-47 key version for `bot_token_encrypted`.
+    botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
     orgId: text("org_id"),
     workspaceName: text("workspace_name"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
@@ -249,6 +251,10 @@ export const connections = pgTable(
   {
     id: text("id").notNull(),
     url: text("url").notNull(),
+    // F-47: encryption key version for `url`. Populated by app code on
+    // write with the active keyset version; read by the rotation script
+    // to identify rows below the active version.
+    urlKeyVersion: integer("url_key_version").notNull().default(1),
     type: text("type").notNull(),
     description: text("description"),
     schemaName: text("schema_name"),
@@ -746,6 +752,8 @@ export const workspaceModelConfig = pgTable(
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     apiKeyEncrypted: text("api_key_encrypted").notNull(),
+    // F-47 key version for `api_key_encrypted`.
+    apiKeyKeyVersion: integer("api_key_key_version").notNull().default(1),
     baseUrl: text("base_url"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1048,6 +1056,8 @@ export const teamsInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     appPassword: text("app_password"),
     appPasswordEncrypted: text("app_password_encrypted"),
+    // F-47 key version for `app_password_encrypted`.
+    appPasswordKeyVersion: integer("app_password_key_version").notNull().default(1),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [
@@ -1068,6 +1078,8 @@ export const discordInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     botToken: text("bot_token"),
     botTokenEncrypted: text("bot_token_encrypted"),
+    // F-47 key version for `bot_token_encrypted`.
+    botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
     applicationId: text("application_id"),
     publicKey: text("public_key"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
@@ -1088,6 +1100,8 @@ export const telegramInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     botToken: text("bot_token"),
     botTokenEncrypted: text("bot_token_encrypted"),
+    // F-47 key version for `bot_token_encrypted`.
+    botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
     botUsername: text("bot_username"),
     orgId: text("org_id"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
@@ -1109,6 +1123,8 @@ export const gchatInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     credentialsJson: text("credentials_json"),
     credentialsJsonEncrypted: text("credentials_json_encrypted"),
+    // F-47 key version for `credentials_json_encrypted`.
+    credentialsJsonKeyVersion: integer("credentials_json_key_version").notNull().default(1),
     orgId: text("org_id"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
   },
@@ -1128,6 +1144,8 @@ export const githubInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     accessToken: text("access_token"),
     accessTokenEncrypted: text("access_token_encrypted"),
+    // F-47 key version for `access_token_encrypted`.
+    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
     username: text("username"),
     orgId: text("org_id"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
@@ -1148,6 +1166,8 @@ export const linearInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     apiKey: text("api_key"),
     apiKeyEncrypted: text("api_key_encrypted"),
+    // F-47 key version for `api_key_encrypted`.
+    apiKeyKeyVersion: integer("api_key_key_version").notNull().default(1),
     userName: text("user_name"),
     userEmail: text("user_email"),
     orgId: text("org_id"),
@@ -1169,6 +1189,8 @@ export const whatsappInstallations = pgTable(
     // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     accessToken: text("access_token"),
     accessTokenEncrypted: text("access_token_encrypted"),
+    // F-47 key version for `access_token_encrypted`.
+    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
     displayPhone: text("display_phone"),
     orgId: text("org_id"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
@@ -1193,6 +1215,8 @@ export const emailInstallations = pgTable(
     // The plaintext JSONB column is dropped in #1832.
     config: jsonb("config").$type<Record<string, unknown>>(),
     configEncrypted: text("config_encrypted"),
+    // F-47 key version for `config_encrypted`.
+    configKeyVersion: integer("config_key_version").notNull().default(1),
     orgId: text("org_id"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
   },
@@ -1360,6 +1384,8 @@ export const sandboxCredentials = pgTable(
     // The plaintext JSONB column is dropped in #1832.
     credentials: jsonb("credentials"),
     credentialsEncrypted: text("credentials_encrypted"),
+    // F-47 key version for `credentials_encrypted`.
+    credentialsKeyVersion: integer("credentials_key_version").notNull().default(1),
     displayName: text("display_name"),
     validatedAt: timestamp("validated_at", { withTimezone: true }),
     connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow(),

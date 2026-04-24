@@ -8,6 +8,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { TelegramInstallation, TelegramInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -128,22 +129,24 @@ export async function saveTelegramInstallation(
   const orgId = opts.orgId ?? null;
   const botUsername = opts.botUsername ?? null;
   const botTokenEncrypted = encryptSecret(opts.botToken);
+  const keyVersion = activeKeyVersion();
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ bot_id: string }>(
-      `INSERT INTO telegram_installations (bot_id, bot_token, bot_token_encrypted, bot_username, org_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO telegram_installations (bot_id, bot_token, bot_token_encrypted, bot_token_key_version, bot_username, org_id)
+       VALUES ($1, $2, $3, $6, $4, $5)
        ON CONFLICT (bot_id) DO UPDATE SET
          bot_token = $2,
          bot_token_encrypted = $3,
+         bot_token_key_version = $6,
          bot_username = COALESCE($4, telegram_installations.bot_username),
          org_id = COALESCE($5, telegram_installations.org_id),
          installed_at = now()
        WHERE telegram_installations.org_id IS NULL OR telegram_installations.org_id = $5
        RETURNING bot_id`,
-      [botId, opts.botToken, botTokenEncrypted, botUsername, orgId],
+      [botId, opts.botToken, botTokenEncrypted, botUsername, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

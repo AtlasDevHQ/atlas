@@ -274,9 +274,10 @@ describe("store", () => {
       const [insertSql, insertParams] = mockPoolQuery.mock.calls[0];
       expect(insertSql).toContain("INSERT INTO slack_installations");
       expect(insertSql).toContain("bot_token_encrypted");
+      expect(insertSql).toContain("bot_token_key_version");
       expect(insertSql).toContain("RETURNING team_id");
-      // F-41: INSERT carries (team_id, plaintext, encrypted, org_id, workspace_name).
-      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", null, null]);
+      // F-41 + F-47: INSERT carries (team_id, plaintext, encrypted, org_id, workspace_name, key_version).
+      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", null, null, 1]);
     });
 
     it("passes orgId and workspaceName when provided", async () => {
@@ -285,7 +286,7 @@ describe("store", () => {
 
       await saveInstallation("T123", "xoxb-new", { orgId: "org-1", workspaceName: "My Team" });
       const [, insertParams] = mockPoolQuery.mock.calls[0];
-      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", "org-1", "My Team"]);
+      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", "org-1", "My Team", 1]);
     });
 
     it("rejects when team is bound to a different org", async () => {

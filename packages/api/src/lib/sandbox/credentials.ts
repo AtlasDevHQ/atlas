@@ -8,6 +8,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("sandbox-credentials");
@@ -202,17 +203,19 @@ export async function saveSandboxCredential(
   // F-41 dual-write: plaintext JSONB for back-compat readers + encrypted
   // TEXT blob for at-rest protection. Follow-up PR drops plaintext.
   const credentialsEncrypted = encryptSecret(credentialsSerialized);
+  const keyVersion = activeKeyVersion();
 
   try {
     await internalQuery(
-      `INSERT INTO sandbox_credentials (org_id, provider, credentials, credentials_encrypted, display_name, validated_at)
-       VALUES ($1, $2, $3, $4, $5, now())
+      `INSERT INTO sandbox_credentials (org_id, provider, credentials, credentials_encrypted, credentials_key_version, display_name, validated_at)
+       VALUES ($1, $2, $3, $4, $6, $5, now())
        ON CONFLICT (org_id, provider) DO UPDATE SET
          credentials = $3,
          credentials_encrypted = $4,
+         credentials_key_version = $6,
          display_name = COALESCE($5, sandbox_credentials.display_name),
          validated_at = now()`,
-      [orgId, provider, credentialsSerialized, credentialsEncrypted, displayName ?? null],
+      [orgId, provider, credentialsSerialized, credentialsEncrypted, displayName ?? null, keyVersion],
     );
   } catch (err) {
     log.error(

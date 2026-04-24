@@ -14,11 +14,13 @@ import {
   encryptSecret,
   decryptSecret,
   pickDecryptedSecret,
+  UnknownKeyVersionError,
 } from "../secret-encryption";
 import { _resetEncryptionKeyCache } from "../internal";
 
 describe("secret encryption helpers", () => {
   const savedKey = process.env.ATLAS_ENCRYPTION_KEY;
+  const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
   const savedAuth = process.env.BETTER_AUTH_SECRET;
 
   beforeEach(() => {
@@ -28,6 +30,8 @@ describe("secret encryption helpers", () => {
   afterEach(() => {
     if (savedKey !== undefined) process.env.ATLAS_ENCRYPTION_KEY = savedKey;
     else delete process.env.ATLAS_ENCRYPTION_KEY;
+    if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
+    else delete process.env.ATLAS_ENCRYPTION_KEYS;
     if (savedAuth !== undefined) process.env.BETTER_AUTH_SECRET = savedAuth;
     else delete process.env.BETTER_AUTH_SECRET;
     _resetEncryptionKeyCache();
@@ -36,6 +40,7 @@ describe("secret encryption helpers", () => {
   describe("with an encryption key configured", () => {
     beforeEach(() => {
       process.env.ATLAS_ENCRYPTION_KEY = "atlas-test-encryption-key";
+      delete process.env.ATLAS_ENCRYPTION_KEYS;
       delete process.env.BETTER_AUTH_SECRET;
       _resetEncryptionKeyCache();
     });
@@ -107,6 +112,7 @@ describe("secret encryption helpers", () => {
     // BETTER_AUTH_SECRET when both are set. A regression that flipped
     // the precedence would invalidate every previously-encrypted row.
     it("ATLAS_ENCRYPTION_KEY takes precedence over BETTER_AUTH_SECRET", () => {
+      delete process.env.ATLAS_ENCRYPTION_KEYS;
       process.env.ATLAS_ENCRYPTION_KEY = "atlas-key";
       process.env.BETTER_AUTH_SECRET = "auth-secret";
       _resetEncryptionKeyCache();
@@ -123,6 +129,7 @@ describe("secret encryption helpers", () => {
   describe("without an encryption key configured", () => {
     beforeEach(() => {
       delete process.env.ATLAS_ENCRYPTION_KEY;
+      delete process.env.ATLAS_ENCRYPTION_KEYS;
       delete process.env.BETTER_AUTH_SECRET;
       _resetEncryptionKeyCache();
     });
@@ -140,9 +147,95 @@ describe("secret encryption helpers", () => {
     });
   });
 
+  describe("F-47 dual-key / rotation (ATLAS_ENCRYPTION_KEYS)", () => {
+    beforeEach(() => {
+      delete process.env.ATLAS_ENCRYPTION_KEY;
+      delete process.env.BETTER_AUTH_SECRET;
+      delete process.env.ATLAS_ENCRYPTION_KEYS;
+      _resetEncryptionKeyCache();
+    });
+
+    it("reads legacy v1 ciphertext after promoting a new v2 active key", () => {
+      // Phase A: v1 key only — write ciphertext.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
+      _resetEncryptionKeyCache();
+      const legacyCiphertext = encryptSecret("rotation-secret");
+      expect(legacyCiphertext.startsWith("enc:v1:")).toBe(true);
+
+      // Phase B: rotate — v2 is active, v1 kept as legacy so old rows decrypt.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
+      _resetEncryptionKeyCache();
+      expect(decryptSecret(legacyCiphertext)).toBe("rotation-secret");
+
+      // New writes stamp v2.
+      const freshCiphertext = encryptSecret("fresh-secret");
+      expect(freshCiphertext.startsWith("enc:v2:")).toBe(true);
+      expect(decryptSecret(freshCiphertext)).toBe("fresh-secret");
+    });
+
+    it("throws a configuration-specific error when the ciphertext version is missing from the keyset", () => {
+      // Write under v2-active keyset.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
+      _resetEncryptionKeyCache();
+      const v2Ciphertext = encryptSecret("orphaned-row");
+      expect(v2Ciphertext.startsWith("enc:v2:")).toBe(true);
+
+      // Operator rolls back to a v1-only config by mistake (dropping the
+      // brand-new active key). v2 ciphertext becomes un-readable — the
+      // error message has to name the missing version so the runbook is
+      // actionable.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
+      _resetEncryptionKeyCache();
+      expect(() => decryptSecret(v2Ciphertext)).toThrow(/v2|not present|missing/i);
+    });
+
+    it("throws UnknownKeyVersionError (not plain Error) so pickDecryptedSecret can escalate the breadcrumb", () => {
+      // The typed error drives the F-47 `pickDecryptedSecret` log.error
+      // path — a generic Error would hide operator misconfig inside the
+      // "F-41 soak" warn stream. This pin makes sure a future refactor
+      // that "simplifies" the throw back to `new Error(...)` can't
+      // silently regress the alerting path.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
+      _resetEncryptionKeyCache();
+      const v2Ciphertext = encryptSecret("orphaned-row");
+
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
+      _resetEncryptionKeyCache();
+      try {
+        decryptSecret(v2Ciphertext);
+        throw new Error("decryptSecret should have thrown UnknownKeyVersionError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnknownKeyVersionError);
+        const e = err as UnknownKeyVersionError;
+        expect(e.version).toBe(2);
+        expect(e.activeVersion).toBe(1);
+        expect(e._tag).toBe("UnknownKeyVersionError");
+      }
+    });
+
+    it("encryptSecret writes with the version label of the active (first) keyset entry, not the highest number", () => {
+      // The keyset can carry a higher-numbered legacy key temporarily
+      // mid-rollback. Active is defined by position 0, not magnitude.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:primary,v2:retired";
+      _resetEncryptionKeyCache();
+      const ciphertext = encryptSecret("pinning-active");
+      expect(ciphertext.startsWith("enc:v1:")).toBe(true);
+    });
+
+    it("bare (unprefixed) ATLAS_ENCRYPTION_KEYS entries get positional versions (count..1)", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "newraw,oldraw";
+      _resetEncryptionKeyCache();
+      const ciphertext = encryptSecret("positional");
+      // Two entries → first gets version 2, last gets version 1.
+      expect(ciphertext.startsWith("enc:v2:")).toBe(true);
+      expect(decryptSecret(ciphertext)).toBe("positional");
+    });
+  });
+
   describe("pickDecryptedSecret", () => {
     beforeEach(() => {
       process.env.ATLAS_ENCRYPTION_KEY = "atlas-test-encryption-key";
+      delete process.env.ATLAS_ENCRYPTION_KEYS;
       delete process.env.BETTER_AUTH_SECRET;
       _resetEncryptionKeyCache();
     });
@@ -182,6 +275,27 @@ describe("secret encryption helpers", () => {
       // Defensive: don't silently return the malformed ciphertext — the
       // caller should treat this as a bad row and move on.
       expect(pickDecryptedSecret("enc:v1:malformed", null)).toBeNull();
+    });
+
+    it("F-47: UnknownKeyVersionError still falls back to plaintext (soak), but the escalated log.error path is exercised", () => {
+      // Write under v2-active keyset, then remove v2 so the ciphertext
+      // becomes un-decryptable with the current keyset. The fallback to
+      // plaintext must still succeed during the F-41 soak — but behind
+      // the scenes the dropped-key breadcrumb goes to `log.error`, not
+      // the generic `log.warn` path, so ops alerting wakes up.
+      delete process.env.ATLAS_ENCRYPTION_KEY;
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
+      _resetEncryptionKeyCache();
+      const v2Ciphertext = encryptSecret("soaked-secret");
+
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
+      _resetEncryptionKeyCache();
+      // Plaintext column still carries the usable value during the F-41
+      // soak. Caller behaviour is "return the plaintext" — the
+      // escalation is a *logging* distinction, not a contract shift.
+      expect(
+        pickDecryptedSecret(v2Ciphertext, "soaked-secret"),
+      ).toBe("soaked-secret");
     });
   });
 });

@@ -7,6 +7,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { GitHubInstallation, GitHubInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -123,22 +124,24 @@ export async function saveGitHubInstallation(
   const orgId = opts.orgId ?? null;
   const username = opts.username ?? null;
   const accessTokenEncrypted = encryptSecret(opts.accessToken);
+  const keyVersion = activeKeyVersion();
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ user_id: string }>(
-      `INSERT INTO github_installations (user_id, access_token, access_token_encrypted, username, org_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO github_installations (user_id, access_token, access_token_encrypted, access_token_key_version, username, org_id)
+       VALUES ($1, $2, $3, $6, $4, $5)
        ON CONFLICT (user_id) DO UPDATE SET
          access_token = $2,
          access_token_encrypted = $3,
+         access_token_key_version = $6,
          username = COALESCE($4, github_installations.username),
          org_id = COALESCE($5, github_installations.org_id),
          installed_at = now()
        WHERE github_installations.org_id IS NULL OR github_installations.org_id = $5
        RETURNING user_id`,
-      [userId, opts.accessToken, accessTokenEncrypted, username, orgId],
+      [userId, opts.accessToken, accessTokenEncrypted, username, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

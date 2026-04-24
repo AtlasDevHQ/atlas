@@ -20,6 +20,7 @@ import {
   decryptUrl,
   getEncryptionKey,
 } from "@atlas/api/lib/db/internal";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   WorkspaceModelConfig,
@@ -230,18 +231,27 @@ export const setWorkspaceModelConfig = (
       encryptedKey = encryptUrl(config.apiKey);
     }
 
-    // When apiKey is omitted, preserve the existing encrypted key via COALESCE
+    // When apiKey is omitted, preserve the existing encrypted key AND its
+    // key version via COALESCE — swapping one without the other would
+    // break decryption after the active version advances.
+    const keyVersion = encryptedKey !== null ? activeKeyVersion() : null;
     const rows = yield* Effect.promise(() => internalQuery<ModelConfigRow>(
-      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, base_url)
-       VALUES ($1, $2, $3, COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)), $5)
+      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url)
+       VALUES (
+         $1, $2, $3,
+         COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)),
+         COALESCE($6, (SELECT api_key_key_version FROM workspace_model_config WHERE org_id = $1), 1),
+         $5
+       )
        ON CONFLICT (org_id) DO UPDATE SET
          provider = EXCLUDED.provider,
          model = EXCLUDED.model,
          api_key_encrypted = COALESCE($4, workspace_model_config.api_key_encrypted),
+         api_key_key_version = COALESCE($6, workspace_model_config.api_key_key_version),
          base_url = EXCLUDED.base_url,
          updated_at = now()
        RETURNING id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at`,
-      [orgId, config.provider, config.model.trim(), encryptedKey, config.baseUrl ?? null],
+      [orgId, config.provider, config.model.trim(), encryptedKey, config.baseUrl ?? null, keyVersion],
     ));
 
     if (!rows[0]) return yield* Effect.die(new Error("Failed to save workspace model config — no row returned."));

@@ -283,6 +283,7 @@ describe("migrateAuthTables", () => {
             { name: "0035_admin_action_retention.sql" },
             { name: "0036_integration_credentials_encryption.sql" },
             { name: "0037_plugin_config_encryption.sql" },
+            { name: "0038_encryption_key_versioning.sql" },
           ],
         };
       }

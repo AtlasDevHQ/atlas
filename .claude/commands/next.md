@@ -60,15 +60,20 @@ The user runs up to 3 Claude Code sessions in parallel (separate checkouts).
 Reference the GH issue number. Include acceptance criteria.
 
 IMPORTANT — CI gates (mandatory before PR):
-- Before creating a PR, run `/ci` which checks: lint, type, test, syncpack, template drift
-- All five gates must pass. If any fail, fix them before pushing.
-- You can also run gates individually during development:
+- Before creating a PR, run `/ci` — checks lint, type, test, syncpack, template drift, railway-watch. All six must pass.
+- Individual gates during development:
   - `bun run lint` — ESLint
   - `bun run type` — TypeScript (tsgo)
-  - `bun run test` — all tests (isolated per-file runner), NEVER bare `bun test`
+  - `bun run test` — FULL suite across all packages (isolated per-file runner). NEVER bare `bun test`.
   - `bun x syncpack lint` — dependency version consistency
   - `SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh` — template drift
-- To run a single test file: `bun test path/to/file.test.ts`
+  - `bash scripts/check-railway-watch.sh` — Railway watchPatterns vs Dockerfile COPY sources
+- **Fast local feedback loop** — during the edit/test cycle, DON'T run the full suite. Use:
+  - `cd packages/api && bun run scripts/test-isolated.ts --affected` — only tests whose source graph your branch touched vs `origin/main` (typical: 10–60s vs 225s full)
+  - `cd packages/api && bun run scripts/test-isolated.ts --since HEAD~3` — last-3-commit window
+  - `bun test path/to/file.test.ts` — single test file
+- Run full `bun run test` once before opening a PR, even if `--affected` has been passing.
+- The isolated runner throws loudly if its git detector can't resolve the base ref — don't ignore it, you've likely got a shallow clone or unfetched ref.
 - When using mock.module(), mock ALL named exports — partial mocks break other test files
 - Use `createConnectionMock()` from `packages/api/src/__mocks__/connection.ts` for connection mocks
 
@@ -90,6 +95,7 @@ IMPORTANT — Incidental findings:
 IMPORTANT — Testing approach:
 - For features and bug fixes, use `/tdd` to drive development with red-green-refactor
 - Write tests alongside code, not after — one test → one implementation → repeat
+- Use `--affected` mode to keep the red→green loop under a minute; reserve the full suite for the pre-PR gate
 - Skip `/tdd` for docs-only, chore, or trivial config changes
 
 IMPORTANT — Docs impact:

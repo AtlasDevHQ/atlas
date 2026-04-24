@@ -36063,6 +36063,9 @@
                     "message": {
                       "type": "string"
                     },
+                    "auditPersisted": {
+                      "type": "boolean"
+                    },
                     "warnings": {
                       "type": "array",
                       "items": {
@@ -36073,7 +36076,8 @@
                   "required": [
                     "success",
                     "workspaceId",
-                    "message"
+                    "message",
+                    "auditPersisted"
                   ]
                 }
               }

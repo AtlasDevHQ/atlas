@@ -18,8 +18,9 @@ import {
   type Mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
-import type { AbuseDetail, AbuseLevel } from "@useatlas/types";
+import type { AbuseDetail } from "@useatlas/types";
 import { asPercentage, asRatio } from "@useatlas/types";
+import type { ReinstatedLevel } from "@atlas/api/lib/security/abuse";
 import { createAbuseInstance } from "@atlas/api/lib/security/abuse-instances";
 
 // --- Unified mocks ---
@@ -45,7 +46,7 @@ const mockListFlagged: Mock<() => unknown[]> = mock(() => []);
 // when the workspace is not flagged. Default success fixture surfaces
 // "warning" to exercise the most common delta.
 const mockReinstateWorkspace: Mock<
-  (wsId: string, actorId: string) => Exclude<AbuseLevel, "none"> | null
+  (wsId: string, actorId: string) => ReinstatedLevel | null
 > = mock(() => "warning");
 const mockGetAbuseEvents: Mock<
   (wsId: string, limit?: number) => Promise<{ events: unknown[]; status: string }>
@@ -269,6 +270,10 @@ describe("Admin Abuse API", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.success).toBe(true);
       expect(body.workspaceId).toBe("org-1");
+      // `auditPersisted` is first-class on every reinstate response (F-33
+      // follow-up) so non-UI clients can branch on a single boolean
+      // without parsing `warnings[]`.
+      expect(body.auditPersisted).toBe(true);
     });
 
     it("returns 400 when workspace not flagged", async () => {
@@ -288,9 +293,9 @@ describe("Admin Abuse API", () => {
       // `reinstateWorkspace` is the module boundary for the `abuse_events`
       // insert (calls `persistAbuseEvent` internally), so asserting it was
       // called pins the abuse_events side; `mockLogAdminAction` pins the
-      // admin_action_log side. It returns the previous level (F-33) so the
-      // route can audit the delta — "suspended" simulates lifting the most
-      // severe state, which is the one compliance reviewers care most about.
+      // admin_action_log side. The parameterized suite below exercises
+      // all three `ReinstatedLevel` values; this case is the happy-path
+      // smoke with a representative (non-default) return.
       mockReinstateWorkspace.mockImplementation(() => "suspended");
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
@@ -317,6 +322,30 @@ describe("Admin Abuse API", () => {
       expect(entry?.metadata?.previousLevel).toBe("suspended");
     });
 
+    it.each([
+      ["warning" as const],
+      ["throttled" as const],
+      ["suspended" as const],
+    ])(
+      "dual-write propagates previousLevel=%s through to audit metadata (#1788, F-33)",
+      async (level) => {
+        // Parametrized over every `ReinstatedLevel` value so a future
+        // refactor that branches by severity (e.g. collapsing throttled +
+        // suspended into a single bucket, or a level-specific audit path)
+        // trips the suite on whichever branch it broke. Pins the identity
+        // pass-through from `reinstateWorkspace` → `metadata.previousLevel`.
+        mockReinstateWorkspace.mockImplementation(() => level);
+        const res = await app.fetch(
+          adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
+        );
+        expect(res.status).toBe(200);
+        expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+        const entry = mockLogAdminAction.mock.calls[0]?.[0];
+        expect(entry?.actionType).toBe("workspace.reinstate_abuse");
+        expect(entry?.metadata?.previousLevel).toBe(level);
+      },
+    );
+
     it("does NOT emit logAdminAction when workspace is not flagged (#1788, F-33)", async () => {
       // Guard against double-counting: the 400 branch short-circuits before
       // the dual-write, so a reviewer counting `workspace.reinstate_abuse`
@@ -336,8 +365,8 @@ describe("Admin Abuse API", () => {
       // stays consistent with other F-* phase-4 audit sites (F-30, F-31,
       // F-32) that don't branch on `hasInternalDB()`. The pino side of
       // `logAdminAction` still emits, which is the only trail available in
-      // this configuration — exactly what the `audit_persist_skipped`
-      // warning flags to the admin.
+      // this configuration — exactly what the `auditPersisted: false` flag
+      // and `audit_persist_skipped` warning flag to the admin.
       mocks.hasInternalDB = false;
       try {
         const res = await app.fetch(
@@ -346,10 +375,12 @@ describe("Admin Abuse API", () => {
         expect(res.status).toBe(200);
         const body = await res.json() as {
           success: boolean;
+          auditPersisted: boolean;
           warnings?: string[];
           message: string;
         };
         expect(body.success).toBe(true);
+        expect(body.auditPersisted).toBe(false);
         expect(body.warnings?.[0]).toMatch(/^audit_persist_skipped:/);
         expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
         expect(mockLogAdminAction.mock.calls[0]?.[0]?.actionType).toBe(
@@ -360,12 +391,14 @@ describe("Admin Abuse API", () => {
       }
     });
 
-    it("surfaces audit_persist_skipped warning when no internal DB (#1751)", async () => {
+    it("surfaces audit_persist_skipped warning + auditPersisted:false when no internal DB (#1751)", async () => {
       // Reinstate mutates in-memory state; the audit row goes to the
       // internal DB via fire-and-forget `internalExecute`. When no
       // internal DB is configured, the audit row can't exist at all —
       // the admin needs an explicit warning rather than a successful
-      // 200 that hides a compliance gap.
+      // 200 that hides a compliance gap. Non-UI clients branch on
+      // `auditPersisted: false`; UI clients render the `warnings[]`
+      // banner. Both channels fire together.
       mocks.hasInternalDB = false;
       try {
         const res = await app.fetch(
@@ -374,10 +407,12 @@ describe("Admin Abuse API", () => {
         expect(res.status).toBe(200);
         const body = await res.json() as {
           success: boolean;
+          auditPersisted: boolean;
           message: string;
           warnings?: string[];
         };
         expect(body.success).toBe(true);
+        expect(body.auditPersisted).toBe(false);
         expect(body.warnings).toBeDefined();
         expect(body.warnings?.[0]).toMatch(/^audit_persist_skipped:/);
         expect(body.message).toMatch(/audit trail could not be written/i);
@@ -386,15 +421,21 @@ describe("Admin Abuse API", () => {
       }
     });
 
-    it("returns a clean success response when the internal DB is available", async () => {
+    it("returns a clean success response with auditPersisted:true when the internal DB is available", async () => {
       // Counterpart to the no-DB test: when the DB is available, the
       // response must not carry warnings — otherwise the UI shows the
-      // destructive banner for every routine reinstate.
+      // destructive banner for every routine reinstate — and the first-class
+      // `auditPersisted` flag signals the positive case to non-UI clients.
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
       );
       expect(res.status).toBe(200);
-      const body = await res.json() as { warnings?: string[]; message: string };
+      const body = await res.json() as {
+        auditPersisted: boolean;
+        warnings?: string[];
+        message: string;
+      };
+      expect(body.auditPersisted).toBe(true);
       expect(body.warnings).toBeUndefined();
       expect(body.message).toBe("Workspace reinstated successfully.");
     });

@@ -60,6 +60,16 @@ const ReinstateResponseSchema = z.object({
   success: z.boolean(),
   workspaceId: z.string(),
   message: z.string(),
+  /**
+   * First-class flag (F-33 follow-up) indicating whether the
+   * `admin_action_log` row was attempted against a real internal DB.
+   * `false` when `!hasInternalDB()` (self-hosted without `DATABASE_URL`) —
+   * `logAdminAction` still emits a pino line but the SQL row is skipped.
+   * Always present in the response so non-UI clients (CLI, integrations,
+   * smoke tests) can trust a single boolean without parsing
+   * `warnings[]` strings.
+   */
+  auditPersisted: z.boolean(),
   warnings: z.array(z.string()).optional(),
 });
 
@@ -285,7 +295,13 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
     const actorId = user?.id ?? "unknown";
 
     const previousLevel = reinstateWorkspace(workspaceId, actorId);
-    if (previousLevel === null) {
+    // `== null` on purpose: the contract is `ReinstatedLevel | null` so only
+    // `null` is reachable today, but `== null` also catches an `undefined`
+    // that would slip in if a future refactor ever returns a bare `return`.
+    // Without this guard a contract drift silently audits with
+    // `previousLevel: undefined` — a ghost `workspace.reinstate_abuse` row
+    // for an org that was never actually flagged.
+    if (previousLevel == null) {
       return c.json(
         { error: "not_flagged", message: "Workspace is not currently flagged for abuse.", requestId },
         400,
@@ -308,15 +324,16 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
     });
 
     // In-memory throttling is lifted by this point — customer queries are
-    // already flowing. `logAdminAction` above is noop-safe when there is
-    // no internal DB (it still emits a pino line, which is the only
-    // surviving trail in that config). The warning channel exists so the
-    // admin knows the `admin_action_log` row won't exist, not because we
-    // skip the audit attempt. `persistAbuseEvent` (abuse_events write)
-    // silently drops in the same config; both sides fail the same way,
-    // which is the point of the dual-write symmetry F-33 called for.
+    // already flowing. On the no-internal-DB path the two sinks degrade
+    // asymmetrically: `logAdminAction` always emits a pino line (that is
+    // the only surviving audit artifact without a DB), while
+    // `persistAbuseEvent` short-circuits with no pino trail at all. Both
+    // DB rows are skipped, so the warning below + the first-class
+    // `auditPersisted: false` flag on the response let machine clients and
+    // UIs alike spot the degradation without having to parse `warnings[]`.
     const warnings: string[] = [];
-    if (!hasInternalDB()) {
+    const auditPersisted = hasInternalDB();
+    if (!auditPersisted) {
       log.error(
         { workspaceId, actorId, requestId },
         "reinstate: audit row not persisted — no internal DB configured",
@@ -329,9 +346,10 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
     return c.json({
       success: true,
       workspaceId,
-      message: warnings.length > 0
-        ? "Workspace reinstated, but audit trail could not be written — see warnings."
-        : "Workspace reinstated successfully.",
+      auditPersisted,
+      message: auditPersisted
+        ? "Workspace reinstated successfully."
+        : "Workspace reinstated, but audit trail could not be written — see warnings.",
       ...(warnings.length > 0 ? { warnings } : {}),
     }, 200);
   }), { label: "reinstate workspace" });

@@ -26,6 +26,17 @@ import {
   type AbuseThresholdConfig,
   type AbuseDetail,
 } from "@useatlas/types";
+
+/**
+ * A non-`"none"` abuse level — exactly the states a reinstate can lift
+ * (`"warning"` / `"throttled"` / `"suspended"`). Named here rather than
+ * inlining `Exclude<AbuseLevel, "none">` everywhere so the F-33 audit
+ * metadata shape (`metadata.previousLevel: ReinstatedLevel`) and the
+ * `reinstateWorkspace` return type stay in lockstep as `ABUSE_LEVELS`
+ * evolves — a new level gets picked up automatically by every
+ * consumer, no drift between mock fixtures and prod code.
+ */
+export type ReinstatedLevel = Exclude<AbuseLevel, "none">;
 import { errorRatePct, splitIntoInstances } from "./abuse-instances";
 
 const log = createLogger("abuse");
@@ -408,7 +419,7 @@ export async function getAbuseDetail(
 export function reinstateWorkspace(
   workspaceId: string,
   actorId: string,
-): Exclude<AbuseLevel, "none"> | null {
+): ReinstatedLevel | null {
   const state = workspaceState.get(workspaceId);
   if (!state || state.level === "none") return null;
 

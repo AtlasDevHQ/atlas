@@ -2325,6 +2325,632 @@ migration).
 
 ---
 
+## Phase 6 — Rate limiting + timeouts + DoS surfaces
+
+**Status:** audit complete (2026-04-24); fixes tracked per-finding.
+**Scope:** every throttle / timeout / pool / queue cap on the public API
+surface — agent loop step + wall-clock caps, SQL validator
+LIMIT/timeout, per-tenant connection pools, per-user/org throttles on
+expensive routes (`/chat`, `/publish`, admin bulk imports, semantic
+sync, plugin install), unauthenticated route inventory, Python sandbox
+execution + memory + queue caps across all backends, and webhook
+signature + replay + rate-limit posture. Matches #1725 scope list
+verbatim.
+**Issue:** #1725
+**Branch:** `security/1-2-3-phase-6-audit`
+
+### Methodology
+
+1. **Route inventory.** Walk every `app.route(...)` registration in
+   `packages/api/src/api/index.ts` and the middleware applied at each
+   mount point (`adminAuth` / `platformAdminAuth` / `standardAuth` /
+   `withRequestId` / unauth). Cross-reference against `routes/*.ts` to
+   confirm `.use(...)` does what the mount comment claims. Same shape
+   Phase 4 used for write routes — three columns this time
+   (auth-required, rate-limited, timeout-bounded) instead of audit
+   coverage.
+2. **Agent + SQL caps.** Trace `runAgent` end-to-end
+   (`packages/api/src/lib/agent.ts`) for the four caps the prompt named
+   — `stepCountIs(getAgentMaxSteps())`, per-tool SQL timeout, total
+   wall-clock budget per request, optional override for demo mode.
+   Confirm `ATLAS_QUERY_TIMEOUT` is applied at the driver layer (not
+   wrapped only in JS) for both PostgreSQL and MySQL paths. Confirm
+   `ATLAS_ROW_LIMIT` is auto-appended by the validator.
+3. **Pool capacity behaviour.** Read `packages/api/src/lib/db/connection.ts`
+   start-to-finish — base + per-org pool config, LRU eviction order,
+   `PoolCapacityExceededError` catch boundary, drain cooldown,
+   consecutive-failure auto-drain threshold. Confirm exhaustion
+   surfaces as a tagged 429 (graceful degrade), not an unhandled
+   exception that kills a fiber.
+4. **Per-route throttles.** Grep every authenticated handler for
+   `checkRateLimit` call sites. Compare per-route weighting (chat = 25
+   LLM steps; admin/audit = 1 DB query) against the single global
+   `ATLAS_RATE_LIMIT_RPM` bucket.
+5. **Unauthenticated route enumeration.** Walk every route file that
+   either has no auth middleware (`new Hono()` constructor) or
+   explicitly registers under `/api/public/*`. For each, confirm
+   whether the handler reaches a paid surface (LLM, sandbox).
+6. **Python + explore sandbox audit.** Read every backend in
+   `packages/api/src/lib/tools/` (`python-nsjail.ts`, `python-sandbox.ts`,
+   `python-sidecar.ts`, `explore-nsjail.ts`, `explore-sandbox.ts`,
+   `explore-sidecar.ts`, `explore.ts` just-bash fallback) for per-call
+   execution timeout, per-call memory cap, sidecar request queue / 429
+   on overflow.
+7. **Webhook signature + replay.** Enumerate every inbound webhook
+   receiver across the codebase. `grep -rn "signature\|webhook\|HMAC"`
+   then walk each — Stripe (Better Auth plugin), Slack
+   (`/api/v1/slack/{commands,events,interactions}`), the webhook
+   plugin (`POST /webhook/:channelId`). Confirm signature verification,
+   timestamp window for replay, and rate limit posture for each.
+   Verify Discord / Teams / Telegram / GChat / GitHub / Linear /
+   WhatsApp don't expose webhook receivers (OAuth-only outbound
+   surfaces).
+
+### Surfaces walked — fingerprint
+
+| Surface | Files inspected | Outcome |
+|---|---|---|
+| Auth-middleware coverage | `routes/middleware.ts`, `routes/admin-router.ts`, every `routes/*.ts` `.use(...)` and module-constructor pattern | every authenticated route runs through `adminAuth` / `platformAdminAuth` / `standardAuth`, all of which call `checkRateLimit` → `IP allowlist` → `misrouting` → `migration write-lock` (write methods only) before the handler. The `withRequestId` middleware is the no-auth context provider used by `/chat` (inline auth), `/query` (inline auth), `/widget*` (no auth needed), `/api/public/*` (no auth) — see route-inventory table |
+| Rate limit | `lib/auth/middleware.ts:80-109` (sliding-window per-key) + `lib/db/source-rate-limit.ts:76-110` (per-source QPM + concurrency) + per-public-route in-memory limiters in `routes/conversations.ts:1191-1252` and `routes/dashboards.ts:124-153` + demo limiter in `lib/demo.ts:46-58` | five distinct limiters in the codebase. The global `ATLAS_RATE_LIMIT_RPM` defaults to 0 (disabled). Per-source DB rate limit defaults 60 QPM / 5 concurrent. Public-share routes default to 60 / 30 per IP / 60s. Demo mode 10 RPM. **No per-route weighting** between chat (25-step) and cheap reads (single query) — F-74 |
+| Agent loop caps | `lib/agent.ts:622-633` | `stepCountIs(maxStepsOverride ?? getAgentMaxSteps())` (default 25, range 1-100, env `ATLAS_AGENT_MAX_STEPS`); `timeout: { totalMs: 180_000, stepMs: 30_000, chunkMs: 5_000 }` — full request budget capped at 180s wall-clock, per step at 30s, per stream chunk at 5s |
+| SQL row LIMIT + timeout | `lib/tools/sql.ts:430-457` (settings reads), `lib/db/connection.ts:281` (PG `SET statement_timeout = ${timeoutMs}`), `lib/db/connection.ts:319-326` (MySQL `SET SESSION TRANSACTION READ ONLY` + `SET SESSION MAX_EXECUTION_TIME`) | `ATLAS_ROW_LIMIT` (default 1000) auto-appended by validator when `LIMIT` not present. `ATLAS_QUERY_TIMEOUT` (default 30000ms) applied at driver layer for both PG and MySQL — defense-in-depth against runaway queries even if the JS wrapper is bypassed |
+| Per-tenant pool caps | `lib/db/connection.ts:399-417` (defaults), `:552-646` (lazy lookup + LRU), `:580-597` (capacity check + `PoolCapacityExceededError`), `:678-710` (close-and-evict path), `:909-931` (consecutive-failure auto-drain), `:1149-1166` (drain cooldown via Effect) | per-org pool: max 5 conns × 50 orgs (default), `maxTotalConnections = 100` global. LRU eviction triggers when capacity hit. `PoolCapacityExceededError` is mapped to `PoolExhaustedError` (`tools/sql.ts:553-559`) → 429 (`lib/effect/hono.ts:169`). Graceful degrade verified |
+| Python sandbox timeouts + memory + queue | `lib/tools/python-nsjail.ts:23-30` (DEFAULT_TIME_LIMIT=30s, MEMORY=512MB, NPROC=16), `lib/tools/python-sandbox.ts:35,265-268` (Vercel: 30s timeout via env, no Atlas-layer memory cap), `lib/tools/python-sidecar.ts:18,46-50` (HTTP timeout = ATLAS_PYTHON_TIMEOUT default 30s + 10s overhead), `packages/sandbox-sidecar/src/server.ts:33-39` (sidecar concurrency cap = 10, MAX_TIMEOUT=120s) | nsjail has explicit time + memory caps; Vercel sandbox delegates memory to platform; sidecar enforces concurrency = 10 with 429 on overflow. Just-bash fallback (dev-only) has no wall-clock cap (F-78 noted) |
+| Explore tool timeouts | `lib/tools/explore.ts:42-81` (just-bash with maxCommandCount=5000, no wall-clock), `lib/tools/explore-nsjail.ts:38-115`, `lib/tools/explore-sidecar.ts:95-141` (DEFAULT_TIMEOUT=10s) | nsjail + sidecar have explicit timeouts; just-bash uses `executionLimits.maxCommandCount = 5000` + `maxLoopIterations = 1000` but no wall-clock guard. Production warning logged when just-bash is the active backend |
+| Stripe webhook signature + replay | `lib/auth/server.ts:498-505` (Better Auth Stripe plugin); upstream `stripe.webhooks.constructEvent` enforces signature + 5-min timestamp tolerance | F-82 verified-clean — replay protection delegated to the official Stripe SDK |
+| Slack webhook signature + replay | `lib/slack/verify.ts:13` (MAX_TIMESTAMP_AGE_SECONDS = 300), `:42-46` (timestamp window check), `:48-67` (HMAC + timing-safe compare) | F-83 verified-clean — 5-min replay window + timing-safe compare |
+| Webhook plugin signature + replay | `plugins/webhook/src/routes.ts:31-60` | HMAC + API-key auth implemented; **no replay protection** (F-75) and **no per-channel rate limit** (F-76). The two together let a captured signed request burn unbounded LLM cost |
+| Other integrations | `routes/discord.ts`, `routes/teams.ts`, `lib/{telegram,gchat,github,linear,whatsapp}/store.ts` | OAuth-only / outbound message senders — no inbound webhook receivers. Verified by listing every `routes/*.ts` constructor and grepping for `webhook` / `signature` |
+| Demo route caps | `lib/demo.ts:24-58` (max steps default 10, RPM default 10), `routes/demo.ts` agent invocation | demo mode enforces a *separate* RPM bucket and a lower `ATLAS_DEMO_MAX_STEPS` (10 vs 25 for the main chat). Token-gated by HMAC-signed email — F-88 verified-clean |
+| Public-share routes | `routes/conversations.ts:1302-1407` (60 / 60s default), `routes/dashboards.ts:1133-1203` (30 / 60s default) | per-IP in-memory limiter exists. **Bypass when `ATLAS_TRUST_PROXY` is unset** because `getClientIP` returns `null` and the fallback `unknown-${requestId}` is per-request (F-73). Org-scoped shares additionally require auth and org-membership match |
+
+### Route inventory
+
+Same convention as Phase 4. Legend:
+
+- **Auth**: `admin` / `plat` (platform_admin) / `std` (any authenticated) / `inline` (handler authenticates explicitly) / `none` (unauthenticated) / `secret` (shared-secret token, e.g. CRON_SECRET)
+- **RL**: `g` (global `ATLAS_RATE_LIMIT_RPM` bucket from `checkRateLimit`), `p` (per-route in-memory limiter), `d` (demo limiter), `s` (per-source DB QPM via `withSourceSlot` for SQL-bearing routes), `n` (none)
+- **Timeout**: `req` (per-request budget), `tool` (per-tool-call SQL timeout / sandbox timeout), `n` (none — handler is a single read or write with no long-running work)
+
+| Mount | Auth | RL | Timeout | Notes |
+|---|---|---|---|---|
+| `POST /api/v1/chat` | inline | g | req + tool | 25-step + 180s + 30s/step + 5s/chunk; SQL via `withSourceSlot` (60 QPM / 5 concurrent default); plan + abuse + workspace status checks; F-74 / F-77 |
+| `GET  /api/health/...` | none | n | n | Static status response; no DB / LLM |
+| `*    /api/auth/*` | inline (Better Auth) | g | n | Catch-all to `getAuthInstance().handler`; signup body rewritten by `normalizeSignupResponseBody` to scrub error messages. Stripe webhook lives at `/api/auth/stripe/webhook` — F-82 verified |
+| `POST /api/v1/query` | inline | g | tool | One-shot SQL through tools/sql.ts; same caps as chat tool path |
+| `*    /api/v1/conversations` | std | g | n | CRUD on conversations (admin-RL bucket) |
+| `GET  /api/public/conversations/:token` | none | p | n | Public share view; **rate limit broken without `ATLAS_TRUST_PROXY` (F-73)** |
+| `*    /api/v1/dashboards` | std | g | n | CRUD on dashboards |
+| `GET  /api/public/dashboards/:token` | none | p | n | Same shape as conversations — F-73 applies |
+| `*    /api/v1/semantic` | std | g | n | Semantic-layer reads + diff |
+| `*    /api/v1/tables` | std | g | n | Table list / metadata |
+| `POST /api/v1/validate-sql` | inline | g | n | Pure validator — no execution |
+| `*    /api/v1/prompts` | std | g | n | Prompt library reads + writes |
+| `GET  /widget` | none | n | n | Static iframe HTML — no DB / LLM |
+| `GET  /widget/atlas-widget.{js,css}` | none | n | n | Static asset bundles loaded once at module init |
+| `GET  /widget.js` | none | n | n | Loader script (templated JS) |
+| `GET  /widget.d.ts` | none | n | n | TypeScript declarations |
+| `GET  /api/v1/branding` | none | n | n | Public branding read; cached + light DB |
+| `GET  /api/v1/onboarding-emails/...` | inline | g | n | Signed-token onboarding email list |
+| `GET  /api/v1/mode` | std | g | n | Returns published vs developer mode + draft counts |
+| `*    /api/v1/starter-prompts` | std | g | n | Adaptive starter prompts surface |
+| `*    /api/v1/onboarding/*` | std (per-route) | g | n | Self-serve signup flow; mixes std + inline |
+| `*    /api/v1/wizard/*` | admin | g | n | Guided semantic-layer setup |
+| `*    /api/v1/suggestions(/)` | std | g | n | Click-through tracking + suggestion list |
+| `*    /api/v1/demo/*` | inline | d | req | Demo mode with separate RPM (10 default) + lower step cap (10) — F-88 |
+| `*    /api/v1/actions/*` | std | g | n | Action approval flow (gated by `ATLAS_ACTIONS_ENABLED`) |
+| `*    /api/v1/scheduled-tasks/*` | admin | g | n | CRUD on scheduled tasks |
+| `POST /api/v1/scheduled-tasks/tick` | secret | n | tool | CRON_SECRET / ATLAS_SCHEDULER_SECRET via Bearer header; runs `runTick()` |
+| `*    /api/v1/sessions/*` | std | g | n | Self session-revoke surface |
+| `*    /api/v1/admin/*` | admin | g | n | Admin console mutations + reads (50+ routes); see Phase 4 audit table for the per-route audit detail. Includes `POST /api/v1/admin/publish` — atomic mode promotion, also `g`-bucketed |
+| `POST /api/v1/internal/migrate/import` | secret | n | n | `ATLAS_INTERNAL_SECRET` via `X-Atlas-Internal-Token`; cross-region import. **No body-size limit / per-call rate limit** (F-80) |
+| `*    /api/v1/platform/*` | plat | g | n | Cross-tenant platform admin |
+| `*    /api/v1/billing/*` | admin | g | n | Subscription status + Stripe portal redirects (Stripe webhook is at `/api/auth/stripe/webhook`) |
+| `POST /api/v1/slack/commands` | inline (Slack signature) | n | n | Acks within 3s, processes async; F-83 verified-clean |
+| `POST /api/v1/slack/events` | inline (Slack signature) | n | n | Same |
+| `POST /api/v1/slack/interactions` | inline (Slack signature) | n | n | Same |
+| `GET  /api/v1/slack/install` | admin | g | n | OAuth install (admin-gated post-Phase-1 F-04) |
+| `GET  /api/v1/slack/callback` | none | n | n | OAuth callback; state nonce single-use via `consumeOAuthState` (Phase 5 verified-clean) |
+| `*    /api/v1/teams/*` | mixed | g | n | OAuth + bot install; admin-gated paths use `adminAuthPreamble` |
+| `*    /api/v1/discord/*` | admin | g | n | OAuth-only outbound; no inbound webhook |
+| `POST /webhook/:channelId` (plugin) | inline (HMAC / API-key) | n | n | Webhook plugin entrypoint — **no replay protection (F-75), no per-channel rate limit (F-76)** |
+
+Total mounted route prefixes: 36 distinct app-level mounts. The `admin` / `platform` mounts each fan out into ~50 / ~25 inner routes respectively — those inherit the parent's auth + RL posture. `withSourceSlot` rate limit applies to every SQL execution path regardless of which route invoked it, so it's a defense-in-depth layer below the table.
+
+### Unauthenticated route inventory
+
+Hitting any of these without credentials:
+
+| Route | Handler | LLM? | Sandbox? | DB? | Risk |
+|---|---|---|---|---|---|
+| `GET /api/health/*` | static / pool stats | no | no | yes (pool counters) | low |
+| `GET /widget` | static HTML | no | no | no | low — static |
+| `GET /widget/atlas-widget.{js,css}` | static asset | no | no | no | low — static |
+| `GET /widget.js` | static loader | no | no | no | low — static |
+| `GET /widget.d.ts` | static .d.ts | no | no | no | low — static |
+| `GET /api/v1/branding` | branding row | no | no | yes | low — single keyed read |
+| `GET /api/public/conversations/:token` | shared conversation | no | no | yes | **F-73 rate-limit bypass** |
+| `GET /api/public/dashboards/:token` | shared dashboard | no | no | yes | **F-73 rate-limit bypass** |
+| `*    /api/auth/*` | Better Auth catch-all | no | no | yes | bounded by Better Auth's own rate limit + signup-email scrubber |
+| `POST /api/v1/onboarding/test-connection` (when ATLAS_AUTH_MODE=none) | DB connectivity test | no | no | yes | gated by managed-auth-or-self-host check inside the handler |
+| `GET /api/v1/slack/callback` | OAuth callback | no | no | yes | state nonce single-use; verified Phase 5 |
+| `POST /api/v1/slack/commands,events,interactions` | Slack signature inline | yes (eventually) | maybe | yes | signature verifies sender; 5-min replay window |
+| `POST /api/v1/scheduled-tasks/tick` | CRON_SECRET | yes (per scheduled task) | maybe | yes | shared-secret guard |
+| `POST /api/v1/internal/migrate/import` | ATLAS_INTERNAL_SECRET | no | no | yes | shared-secret guard; **F-80: no body-size limit** |
+| `POST /webhook/:channelId` (plugin) | HMAC / API-key inline | yes | maybe | yes | **F-75 / F-76** |
+
+**No unauthenticated route hits a paid surface (LLM / sandbox) without an upstream credential check.** The Slack / scheduled-tasks / webhook surfaces all gate on a signature or shared secret. The widget is static. The `*  /api/auth/*` catch-all is signup / login / Stripe webhook — Better Auth owns the cost shape.
+
+The closest call is `POST /webhook/:channelId` — once the channel secret is in the wrong hands, the handler bills the workspace operator for unbounded agent runs (F-75 + F-76). That's a credential-leak follow-on, not a primary unauth vector.
+
+**No P0 from the unauth inventory.**
+
+### Findings
+
+**F-73 — Public-share rate limit silently no-op without `ATLAS_TRUST_PROXY`** — P1
+
+**Location:** `packages/api/src/api/routes/conversations.ts:1329-1337`,
+`packages/api/src/api/routes/dashboards.ts:1140-1148`,
+`packages/api/src/lib/auth/middleware.ts:55-67`.
+
+**Observation:** Both public-share endpoints implement an in-memory
+per-IP rate limit (60 / 60s for conversations, 30 / 60s for
+dashboards). The bucket key is `getClientIP(req) ?? \`unknown-${requestId}\``.
+`getClientIP` only reads `x-forwarded-for` / `x-real-ip` when
+`ATLAS_TRUST_PROXY` is `\"true\"` or `\"1\"`; otherwise it returns
+`null`, and the `unknown-${requestId}` fallback creates a fresh
+`crypto.randomUUID()`-keyed bucket on every request. The bucket count
+starts at 1, never repeats, and the rate limit returns `true`
+indefinitely.
+
+**Attack shape:** Single attacker without `ATLAS_TRUST_PROXY` set runs
+`seq 1 1000 | xargs -P 32 curl ...` against
+`/api/public/conversations/:token` — server processes 32 concurrent
+DB reads / second sustained. Pressure lands directly on the internal
+Postgres (conversation + messages + notebook state for each call).
+The rate limit comment in code says \"rate limited per IP\" but the
+actual behavior depends on a separate operator decision that's easy to
+miss.
+
+**Score:** P1. Live in any deployment without `ATLAS_TRUST_PROXY`.
+Self-hosted operators behind a reverse proxy adding the canonical
+headers are routinely going to miss this env var.
+
+**Suggested fix sketch:** Drop the per-request fallback. Either bucket
+all anonymous traffic into a single `__public_unknown__` key (small
+RPM ceiling, e.g. 10/min, gates the no-IP slow path) or derive a
+stable surrogate from the `x-forwarded-for` header without trusting
+it for IP-allowlist purposes. Option (a) is the smaller diff and
+matches \"safe by default.\"
+
+**Issue:** #1844.
+
+---
+
+**F-74 — Single global RPM bucket conflates chat (25-step LLM) with cheap reads** — P2
+
+**Location:** `packages/api/src/lib/auth/middleware.ts:80-109`. Single
+`windows: Map<string, number[]>` keyed on user ID or IP, single global
+RPM ceiling (`ATLAS_RATE_LIMIT_RPM`).
+
+**Observation:** Every authenticated route increments the same bucket
+regardless of per-call cost. A chat request can fan out to 25 LLM
+calls + same number of tool calls. An audit-log read costs one
+Postgres query. Both subtract 1 from the same allowance. The
+middleware comment at line 76-78 explicitly acknowledges:
+
+> this limits API *requests*, not agent steps. A single chat request
+> may run up to 25 agent steps internally, so effective LLM call
+> volume can be higher than the RPM value implies.
+
+There is no per-route weighting and no per-route override. A SaaS
+deploy targeting cost-per-user budgets has to pick one RPM that
+satisfies both \"fair load on /chat\" and \"don't break /audit/log
+scrolling.\"
+
+**Attack shape:** Compromised user account inside a workspace burns
+the RPM ceiling on `/chat` for the full window, paying full LLM cost.
+Mitigated by per-source DB rate limit (60 QPM / 5 concurrent), agent
+step cap, agent wall-clock cap, plan-limit + abuse-detection — but no
+per-bucket weighting at the chat surface itself.
+
+**Score:** P2 — hardening, not a free-cost exploit. Cost ceiling per
+request is bounded; per-window cost ceiling is not.
+
+**Suggested fix sketch:** Two-tier RPM model — separate
+`ATLAS_RATE_LIMIT_RPM_CHAT` (default `max(5, RPM/4)`) wired into the
+chat handler, leaving the global RPM for cheap reads. Alternative:
+token-bucket weighting where chat counts as N tokens.
+
+**Issue:** #1845.
+
+---
+
+**F-75 — Webhook plugin has no replay-attack protection (no timestamp window)** — P2
+
+**Location:** `plugins/webhook/src/routes.ts:43-60` (`verifyHmac`),
+`:31-41` (`verifyApiKey`).
+
+**Observation:** Atlas's webhook plugin verifies inbound requests via
+HMAC-SHA256 or API-key (timing-safe). Neither verification path
+includes a timestamp / nonce — the signing input is the body alone.
+A captured signed request stays valid forever. Each replay triggers
+`executeQuery(query)` synchronously — full agent loop, full LLM cost,
+full sandbox concurrency consumption.
+
+Compare with Slack (`packages/api/src/lib/slack/verify.ts:42-46`)
+which rejects requests outside `Math.abs(now - ts) > 300` seconds. A
+5-minute timestamp window is the minimum bar for HMAC webhook signing.
+
+**Attack shape:** Attacker captures a signed webhook request from any
+upstream system (log scrape, MITM on a non-TLS internal hop,
+compromised upstream sender). Replays it at line speed — every replay
+invokes the full agent. Cost externality lands on the workspace
+operator.
+
+**Score:** P2. Exploit requires a captured signed request — that's a
+credential-leak follow-on, not a primary vector. But the cost ceiling
+once compromised is unbounded; the protection is the industry
+standard and trivially missing.
+
+**Suggested fix sketch:** Add `X-Webhook-Timestamp` (Unix seconds) to
+the signing input — `${timestamp}:${body}` — and reject when the
+delta is > 300s. Match the Slack pattern. Add a small recent-nonce
+cache for in-window replay.
+
+**Issue:** #1846.
+
+---
+
+**F-76 — Webhook plugin has no per-channel rate limit; one secret leak = unbounded agent invocations** — P2
+
+**Location:** `plugins/webhook/src/routes.ts:115-236`.
+
+**Observation:** Inbound `POST /webhook/:channelId` has no per-channel
+rate limit. After auth (`verifyApiKey` / `verifyHmac`) the handler
+calls `executeQuery(query)` synchronously, or in async mode runs
+`processAsync()` without any in-flight queue cap. A leaked channel
+secret produces unbounded agent runs until the operator notices.
+
+The natural ceiling is `withSourceSlot` (60 QPM / 5 concurrent
+default per datasource) — that bounds DB pressure, but not LLM token
+spend or sandbox concurrency, both of which are paid surfaces.
+
+**Attack shape:** Compromised channel secret → fire `POST
+/webhook/:channelId` at line speed. A small operator monthly LLM
+budget can be drained in minutes.
+
+**Score:** P2. Pairs with F-75; both ship together to make the
+webhook surface safe-by-default.
+
+**Suggested fix sketch:** Per-channel `rateLimitRpm` + `concurrencyLimit`
+on the `WebhookChannel` type. Borrow the `acquireSlot` /
+`withSourceSlot` shape from `lib/db/source-rate-limit.ts` (lift to
+`lib/throttle/` if shared with other plugins). Default to safe values
+(60 RPM, 3 concurrent) so channels configured without overrides still
+get a ceiling.
+
+**Issue:** #1847.
+
+---
+
+**F-77 — No aggregate per-conversation cost ceiling; unbounded agent runs across requests on the same conversationId** — P2
+
+**Location:** `packages/api/src/lib/conversations.ts` (no aggregate
+counter on conversations); `packages/api/src/api/routes/chat.ts:391`
+(`addMessage` appends without bound).
+
+**Observation:** Per-request caps are well-enforced — `stepCountIs(25)`,
+180s wall-clock budget, 30s/step, 5s/chunk. There's no aggregate
+budget across requests on the same conversation. A user can send N
+follow-up messages on the same `conversationId`, each consuming its
+own full budget. The conversation context grows monotonically (each
+follow-up replays the full message history), so per-message LLM cost
+grows roughly linearly with message count.
+
+Mitigations partially in place:
+- `checkAbuseStatus(orgId)` can throttle / suspend a workspace once
+  abuse-detection flags it.
+- `checkPlanLimits(orgId)` enforces SaaS plan ceilings.
+- `getRequestContext().user.id` ties chat to a user for billing.
+
+None of these enforce a per-conversation hard ceiling.
+
+**Attack shape:** Authenticated user with a large open conversation
+runs unbounded marginal cost on each follow-up. A 50-message ×
+25-step × ~3k-tokens conversation = ~3.75M tokens consumed against
+platform budget on one conversation, all within plan / abuse limits if
+the workspace is on a generous tier.
+
+**Score:** P2 — hardening. Not directly exploitable; pattern fragility
+becomes acute when notebook + scheduled-task surfaces lift the
+per-call ceiling further.
+
+**Suggested fix sketch:** Track `total_steps` (or `total_tokens`) on
+the `conversations` row. Reject new messages once the cap is hit; surface a
+`conversation_budget_exceeded` error code so the chat UI renders
+\"start a new conversation.\" Audit the rejection so abuse detection
+gets a signal.
+
+**Issue:** #1848.
+
+---
+
+### P3 noted-only
+
+**F-78 — `just-bash` explore backend has no wall-clock timeout** — P3
+
+`packages/api/src/lib/tools/explore.ts:40-81` builds the just-bash
+backend with `executionLimits: { maxCommandCount: 5000,
+maxLoopIterations: 1000 }`. Both are *count* limits; neither is a
+wall-clock guard. A pathological grep over a huge semantic dir under
+just-bash could run unbounded wall-clock time inside the JS process.
+
+Production warning is logged when just-bash is the active backend
+(\"SECURITY DEGRADATION: Explore tool running without process
+isolation\"). nsjail / sidecar / Vercel sandbox all have explicit
+wall-clock caps. Self-hosted dev fallback only — explicit operator
+intent.
+
+**Severity:** P3. Documented for completeness; no live exploit.
+
+**Status:** No issue filed.
+
+---
+
+**F-79 — Vercel Python sandbox has no Atlas-layer memory cap** — P3
+
+`packages/api/src/lib/tools/python-sandbox.ts:264-268` reads
+`ATLAS_PYTHON_TIMEOUT` for the per-execution timeout but does not
+configure a memory limit. Vercel's runtime applies its own caps; nsjail
+sets `--rlimit_as 512` (default 512MB,
+`packages/api/src/lib/tools/python-nsjail.ts:78`). Operators relying
+on Vercel get whatever Vercel applies (typically 1024MB default for
+the sandbox runtime; not surfaced in `@vercel/sandbox` API).
+
+**Severity:** P3 — platform-managed; documented for parity with the
+nsjail backend.
+
+**Status:** No issue filed.
+
+---
+
+**F-80 — Internal cross-region migrate `/import` has no body-size limit / per-call rate limit** — P3
+
+`packages/api/src/api/routes/admin-migrate.ts:354-410`. The endpoint
+authenticates via `ATLAS_INTERNAL_SECRET` shared secret (timing-safe
+compare). The bundle body has no upstream size limit and the call has
+no rate limit — a large or repeated import floods the internal Postgres.
+
+The shared secret is operator-controlled and never reaches a customer
+surface. A compromised secret would already give the attacker
+unbounded write into the internal DB; the body-size / rate-limit gap
+is a secondary concern after that. P3 hardening.
+
+**Severity:** P3 — hardening for a service-to-service surface.
+
+**Status:** No issue filed.
+
+---
+
+**F-81 — Global `ATLAS_RATE_LIMIT_RPM` defaults to 0 (rate limiting disabled)** — P3
+
+`packages/api/src/lib/auth/middleware.ts:34-46` returns 0 (\"disabled\")
+when the env var is unset. Operator opt-in. SaaS deploys
+(`app.useatlas.dev`) explicitly set this; self-hosted operators
+typically don't. Per-source DB rate limit (60 QPM / 5 concurrent)
+applies regardless and bounds DB pressure even when global RPM is off.
+
+**Severity:** P3 — operator-config gotcha. Documented for visibility.
+The fix lives in F-74 (per-route weighted bucket) — once that lands,
+the default-on conversation can reopen with a sensible ceiling.
+
+**Status:** No issue filed.
+
+---
+
+### Verified-clean rows (no finding)
+
+**F-82 — Stripe webhook signature + replay protection (Better Auth Stripe plugin)**
+
+`packages/api/src/lib/auth/server.ts:498-505` mounts the Better Auth
+Stripe plugin. Inbound `/api/auth/stripe/webhook` verifies signature
++ timestamp tolerance via `stripe.webhooks.constructEvent` —
+upstream Stripe SDK enforces a 5-minute timestamp window by default.
+`STRIPE_WEBHOOK_SECRET` is env-only (Phase 5 F-50 verified). Plugin
+is gated behind `STRIPE_SECRET_KEY` presence; without that the route
+is not mounted. Verified-clean.
+
+---
+
+**F-83 — Slack signature verification + 5-min timestamp window + timing-safe compare**
+
+`packages/api/src/lib/slack/verify.ts:13` (MAX_TIMESTAMP_AGE_SECONDS =
+300), `:42-46` (replay-window check), `:48-67` (HMAC-SHA256 +
+`crypto.timingSafeEqual`). All three Slack receivers
+(`/api/v1/slack/{commands,events,interactions}`) call `verifyRequest`
+before dispatching. Verified-clean.
+
+---
+
+**F-84 — Sandbox sidecar concurrency cap + 429 on overflow**
+
+`packages/sandbox-sidecar/src/server.ts:33-39` — `MAX_CONCURRENT = 10`,
+`activeExecs` counter incremented per request, 429 returned when at
+capacity. Both `/exec` (shell) and `/exec-python` paths share the
+counter. Sidecar request queue is implicit (Bun's HTTP server
+backpressure) but bounded by 10 in-flight × max-timeout (60s shell /
+120s python). Verified-clean.
+
+---
+
+**F-85 — Per-source DB rate limit (60 QPM / 5 concurrent default) on every datasource**
+
+`packages/api/src/lib/db/source-rate-limit.ts:24-27` (`DEFAULT_LIMIT`),
+`:76-110` (`acquireSlot`), `:112-133` (`withSourceSlot` Effect
+helper). Wraps every SQL execution path in
+`packages/api/src/lib/tools/sql.ts`. Failures map to 429 via
+`RateLimitExceededError` / `ConcurrencyLimitError` →
+`hono.ts:159-170`. Defense-in-depth — applies even when the global
+`ATLAS_RATE_LIMIT_RPM` is disabled. Verified-clean.
+
+---
+
+**F-86 — Connection pool LRU + drain cooldown + graceful 429 on capacity exceeded**
+
+`packages/api/src/lib/db/connection.ts:399-417` (defaults: per-org
+maxConnections=5, maxOrgs=50, drainThreshold=5; `maxTotalConnections=100`),
+`:552-646` (lazy create + LRU eviction), `:580-597` (capacity check
+throws `PoolCapacityExceededError`), `:909-931` (consecutive-failure
+auto-drain), `:1149-1166` (drain cooldown via Effect.sleep).
+`PoolCapacityExceededError` is mapped at `tools/sql.ts:553-559` to
+`PoolExhaustedError` → 429 (`hono.ts:169`). Pool exhaustion never
+crashes the process; the worst case is a graceful 429 to the caller.
+Verified-clean.
+
+---
+
+**F-87 — SQL row LIMIT + per-statement timeout enforced at driver layer for both PG and MySQL**
+
+`packages/api/src/lib/tools/sql.ts:1207-1212` auto-appends `LIMIT
+${rowLimit}` when not present (`ATLAS_ROW_LIMIT` default 1000).
+`packages/api/src/lib/db/connection.ts:281` runs `SET
+statement_timeout = ${timeoutMs}` per Postgres connection acquisition;
+`:319-326` runs `SET SESSION TRANSACTION READ ONLY` + `SET SESSION
+MAX_EXECUTION_TIME = ${safeTimeout}` per MySQL connection. Both apply
+the timeout at the *driver* layer — defense-in-depth even if the JS
+wrapper is bypassed. Verified-clean.
+
+---
+
+**F-88 — Demo mode separate rate limit (10 RPM) + lower max steps (10) + signed-token gate**
+
+`packages/api/src/lib/demo.ts:24-58` — `ATLAS_DEMO_RATE_LIMIT_RPM`
+(default 10, separate bucket from main `ATLAS_RATE_LIMIT_RPM`),
+`ATLAS_DEMO_MAX_STEPS` (default 10, range 1-100). Demo route gated
+by HMAC-SHA256-signed email token (`signDemoToken` /
+`verifyDemoToken`) derived from `BETTER_AUTH_SECRET` with `:demo`
+suffix. 24-hour token TTL. Verified-clean — the separate
+limiter + lower step cap are the intentional differential trust
+posture.
+
+---
+
+**F-89 — Agent loop step + wall-clock + per-step + per-chunk caps**
+
+`packages/api/src/lib/agent.ts:622-633` —
+`stopWhen: stepCountIs(maxStepsOverride ?? getAgentMaxSteps())`
+(default 25, env `ATLAS_AGENT_MAX_STEPS`, range 1-100); `timeout:
+{ totalMs: 180_000, stepMs: 30_000, chunkMs: 5_000 }`. The
+`getAgentMaxSteps()` reader (`:59-70`) clamps invalid values to the
+default and warns once per change. Demo override path sets a lower
+cap. Per-tool SQL timeout via `ATLAS_QUERY_TIMEOUT` flows through
+the validator pipeline. Verified-clean.
+
+---
+
+**F-90 — Widget assets unauth but static-only (no LLM, no DB)**
+
+`packages/api/src/api/routes/widget.ts` (3 routes), `widget-loader.ts`
+(2 routes). All four are `GET` with cached static content loaded
+once at module init from `@useatlas/react/dist`. No DB touch, no
+LLM, no per-request work beyond writing the cached body. Phase 5
+F-48 already verified the bundle reads zero env vars. Verified-clean.
+
+---
+
+**F-91 — Internal cross-region migration auth via timing-safe compare**
+
+`packages/api/src/api/routes/admin-migrate.ts:340-369` —
+`timingSafeCompare(token, secret)` over SHA-256 hashes of equal-length
+inputs. Empty token rejected. Missing env var rejected with 503.
+Verified-clean for the *auth* path; the body-size / rate-limit gap
+is tracked as F-80.
+
+---
+
+**F-92 — nsjail Python timeout + memory cap configurable, defaults 30s / 512MB**
+
+`packages/api/src/lib/tools/python-nsjail.ts:23-30` — `DEFAULT_TIME_LIMIT
+= 30`, `DEFAULT_MEMORY_LIMIT = 512MB`, `DEFAULT_NPROC = 16`. Override
+via `ATLAS_NSJAIL_TIME_LIMIT` / `ATLAS_NSJAIL_MEMORY_LIMIT`.
+`--rlimit_fsize 50` (50MB) caps chart output; `--rlimit_nofile 128`.
+nsjail `-u 65534 -g 65534` runs as nobody. Verified-clean.
+
+---
+
+### Considered, not filed
+
+- **Discord / Teams / Telegram / GChat / GitHub / Linear / WhatsApp
+  webhook receivers** — none exist. All seven integrations are
+  outbound-only (Atlas sends messages to those platforms via OAuth
+  bot tokens). No inbound webhook routes mounted in
+  `packages/api/src/api/index.ts`. Verified by listing every
+  `app.route(...)` line and grepping `routes/*.ts` for `webhook` /
+  `signature`.
+- **Public branding read (`GET /api/v1/branding`)** — single keyed
+  read, no per-IP rate limit but also no LLM / sandbox cost. Safe to
+  treat as a static surface.
+- **`POST /api/v1/internal/migrate/import` body-size limit** — see
+  F-80. Rolled into the same finding because the gap is operationally
+  paired (a missing body cap + missing rate limit produces the same
+  attack shape against the same operator-controlled secret).
+- **Better Auth signup rate limit** — Better Auth ships its own
+  rate limit on `/api/auth/sign-up/email`. Phase 1 F-05 already
+  reviewed the signup auth posture. No phase-6 concern.
+- **Plugin tool `runCommand` timeouts** — every datasource plugin
+  inherits the parent SQL pipeline's per-source rate limit + driver
+  timeout (verified F-85 / F-87). No plugin-level escape hatch.
+- **Concurrent agent runs per user** — there's no soft cap on
+  parallel `/chat` calls from the same user. Mitigated by the global
+  RPM bucket (when set), per-source DB limit, and abuse detection.
+  F-74 partially addresses this; revisit if a future incident shows
+  the abuse detector lagging.
+
+### Findings summary
+
+| ID | Severity | Type | Surface | Compliance lens | Issue | Status |
+|---|---|---|---|---|---|---|
+| F-73 | P1 | Live DoS surface | `/api/public/conversations/:token`, `/api/public/dashboards/:token` rate limit broken without `ATLAS_TRUST_PROXY` | SOC 2 CC6.6 / availability | #1844 | open |
+| F-74 | P2 | Hardening | Single global RPM bucket conflates chat (25-step) with cheap reads | — | #1845 | open |
+| F-75 | P2 | Replay protection gap | Webhook plugin has no timestamp-window check | SOC 2 CC6.7 | #1846 | open |
+| F-76 | P2 | Cost ceiling gap | Webhook plugin has no per-channel rate limit | — | #1847 | open |
+| F-77 | P2 | Hardening | No per-conversation aggregate budget cap | — | #1848 | open |
+| F-78 | P3 | Hardening | `just-bash` explore backend has no wall-clock timeout | — | — | noted |
+| F-79 | P3 | Hardening | Vercel python sandbox memory cap delegated to platform | — | — | noted |
+| F-80 | P3 | Hardening | Internal `/migrate/import` no body-size / rate limit | — | — | noted |
+| F-81 | P3 | Operator config | Global `ATLAS_RATE_LIMIT_RPM` defaults to 0 | — | — | noted |
+| F-82 | — | Verified-clean | Stripe webhook signature + replay (Better Auth + stripe SDK) | — | n/a | verified |
+| F-83 | — | Verified-clean | Slack signature + 5-min replay window + timing-safe | — | n/a | verified |
+| F-84 | — | Verified-clean | Sidecar concurrency cap (10) + 429 on overflow | — | n/a | verified |
+| F-85 | — | Verified-clean | Per-source DB rate limit (60 QPM / 5 concurrent) | — | n/a | verified |
+| F-86 | — | Verified-clean | Connection pool LRU + drain cooldown + 429 graceful degrade | — | n/a | verified |
+| F-87 | — | Verified-clean | SQL LIMIT + per-statement timeout at driver layer (PG + MySQL) | — | n/a | verified |
+| F-88 | — | Verified-clean | Demo mode separate RPM + lower max steps + signed-token gate | — | n/a | verified |
+| F-89 | — | Verified-clean | Agent loop step + wall-clock + step + chunk caps | — | n/a | verified |
+| F-90 | — | Verified-clean | Widget assets unauth but static-only | — | n/a | verified |
+| F-91 | — | Verified-clean | Internal migrate timing-safe compare + 503 on missing secret | — | n/a | verified |
+| F-92 | — | Verified-clean | nsjail Python timeout + memory + nproc + fsize + nofile caps | — | n/a | verified |
+
+**Totals:** P0 = 0, P1 = 1 (F-73), P2 = 4 (F-74 / F-75 / F-76 / F-77), P3 = 4 noted-only (F-78 / F-79 / F-80 / F-81), 11 verified-clean rows (F-82 – F-92). Pool-exhaustion behavior verified by code-read (load testing out of scope per the prompt). Numbering note: Phase 7 (parallel session) claimed F-73–F-80 first via tracker #1718; Phase 6 picked up at F-73 to avoid the clash. Phase 5 P3 notes (F-48–F-52) and Phase 7 (F-73–F-80) sit between.
+
+### Deliverables this PR
+
+- **This audit section** — route-inventory table + 5 P1/P2 issue-bearing
+  findings + 4 P3 noted-only + 11 affirmative-verification rows.
+- **5 GitHub issues filed** (#1844 – #1848) for every P0/P1/P2 finding.
+  Labels: `security` + `bug` (live flaw) or `chore` (hardening) + the
+  area label (`area: api` or `area: plugins`). Milestone
+  `1.2.3 — Security Sweep`.
+- **Phase-6 checkbox flipped** in tracker #1718.
+- **No production code changes** — fixes ship as follow-up PRs per the
+  phase-1/2/3/4/5 workflow. Suggested ordering: F-73 first (live DoS),
+  then the F-75 + F-76 webhook-plugin cluster (paired remediation),
+  then F-74 + F-77 (chat-bucket + per-conversation cap, both touch
+  `lib/auth/middleware.ts` + `routes/chat.ts`).
+
+---
+
 ## 1.2.3 Phase scorecard
 
 | Phase | Title | Audit status | Findings (P0 / P1 / P2 / P3) | Issues filed | Notes |
@@ -2334,7 +2960,7 @@ migration).
 | 3 | SQL validator edges + fuzz | complete | 0 / 1 / 2 / 2 | #1742 – #1746 | F-17 RLS header-forward fixed |
 | 4 | Audit-log coverage on write routes | complete | 5 / 5 / 5 / 3 | #1777 – #1791 | 15 findings; 9 fixed in-milestone (PR #1797–#1809) |
 | 5 | Secrets + error surfaces + plugin credentials | complete | 0 / 3 / 3 / 4 + 1 verified-clean | 6 P1/P2 issues filed | encryption-at-rest gap is the dominant pattern; no P0 |
-| 6 | Rate limiting + DoS | not started | — | — | #1725 (pending) |
-| 7 | Enterprise governance paths | not started | — | — | #1726 (pending) |
+| 6 | Rate limiting + DoS | complete | 0 / 1 / 4 / 4 + 11 verified-clean | #1844 – #1848 | F-73 is the only live finding; webhook plugin cluster (F-75 / F-76) is P2 hardening. Numbering jumps to F-73 because Phase 7 (parallel session) claimed F-53–F-60 first |
+| 7 | Enterprise governance paths | parallel session — see #1718 | — | #1849 – #1853 | Parallel-session audit; F-53–F-60 used by Phase 7 |
 
-**Cross-phase totals (phases 1–5):** P0 = 8, P1 = 12, P2 = 18, P3 = 15. No current P0 open; remediation for Phase 5 P1/P2 clustered into follow-up PRs after the audit lands.
+**Cross-phase totals (phases 1–6, plus Phase 7 sibling):** P0 = 8, P1 = 13, P2 = 22, P3 = 19 (Phase 6 alone). Phase 7 totals as reported in tracker #1718. No current P0 open; remediation for Phase 5 P1/P2 + Phase 6 P1/P2 clustered into follow-up PRs after each audit lands.

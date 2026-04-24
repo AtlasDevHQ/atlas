@@ -25,6 +25,8 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Shield } from "lucide-react";
 import { RetentionPanel } from "./retention-panel";
+import { AdminActionRetentionPanel } from "./admin-action-retention-panel";
+import { Separator } from "@/components/ui/separator";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import { AuditStatsSchema, AuditFacetsSchema, AuditConnectionMetaSchema } from "@/ui/lib/admin-schemas";
@@ -486,8 +488,24 @@ export default function AuditPage() {
           </AdminContentWrapper>
         </TabsContent>
 
-        <TabsContent value="retention" className="pt-6">
-          <RetentionPanel />
+        <TabsContent value="retention" className="space-y-8 pt-6">
+          <div>
+            <h2 className="text-lg font-semibold">Query audit log</h2>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Retention policy, compliance export, and manual purge for the <code>audit_log</code> table
+              (query history).
+            </p>
+            <RetentionPanel />
+          </div>
+          <Separator />
+          <div>
+            <h2 className="text-lg font-semibold">Admin action log</h2>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Retention policy, manual purge, and GDPR / CCPA user erasure for the{" "}
+              <code>admin_action_log</code> table (privileged-action audit trail).
+            </p>
+            <AdminActionRetentionPanel />
+          </div>
         </TabsContent>
       </Tabs>
       </ErrorBoundary>

@@ -1,16 +1,5 @@
-/**
- * Audit regression suite for `platform-sla.ts` — F-29 residuals (#1828).
- *
- * Pins the gap closed by this PR:
- *   - `POST /evaluate` → `sla.evaluate` (platform scope)
- *
- * The evaluate route runs the alert-evaluation pipeline on demand. Without
- * the audit row a compromised platform admin can burn SLA worker budget on
- * repeated evaluations (oracle for downstream notifier / webhook side
- * effects) with zero forensic trace. Metadata pins the new-alert count as
- * the shape — NOT the alert payload, which may carry workspace names that
- * are PII-adjacent at the platform scope.
- */
+// Metadata pins `newAlertCount` only — alert payloads carry workspace
+// names that are PII-adjacent at the platform scope.
 
 import {
   describe,
@@ -60,10 +49,6 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
-// Mock the EE SLA module. `evaluateAlerts` is the only path this audit
-// suite exercises; the other platformSLA handlers (thresholds, acknowledge)
-// stay at their default no-ops since admin-connections-audit-style
-// exclusion is covered by the `not.toHaveBeenCalled` assertions.
 const mockEvaluateAlerts: Mock<() => Effect.Effect<Array<Record<string, unknown>>, unknown, never>> =
   mock(() => Effect.succeed([]));
 
@@ -149,9 +134,9 @@ describe("POST /api/v1/platform/sla/evaluate — audit emission (F-29 residuals)
     expect(res.status).toBe(200);
     const entry = lastAuditCall();
     expect(entry.metadata).toMatchObject({ newAlertCount: 3 });
-    // Pinned: audit MUST NOT include the alert payload — the workspace
-    // name / id per alert is platform-scope PII-adjacent. Compliance
-    // queries only need the count.
+    expect(typeof entry.metadata?.newAlertCount).toBe("number");
+    // Alert payload MUST stay out of metadata — workspace names are
+    // platform-scope PII-adjacent.
     expect(entry.metadata).not.toHaveProperty("newAlerts");
     expect(entry.metadata).not.toHaveProperty("alerts");
   });
@@ -173,12 +158,9 @@ describe("POST /api/v1/platform/sla/evaluate — audit emission (F-29 residuals)
     expect(lastAuditCall().ipAddress).toBe("203.0.113.9");
   });
 
-  it("does not emit when evaluateAlerts rejects with a domain error", async () => {
-    // Short-circuit before the audit: consistent with the "don't log
-    // actions that didn't happen" policy. Forensic queries see the
-    // absence of a row — which IS the signal that the pipeline choked.
+  it("emits failure-status sla.evaluate when evaluateAlerts rejects", async () => {
     mockEvaluateAlerts.mockImplementation(() =>
-      Effect.die(new Error("SLA engine offline")),
+      Effect.fail(new Error("SLA engine offline")),
     );
 
     const res = await app.fetch(
@@ -186,6 +168,11 @@ describe("POST /api/v1/platform/sla/evaluate — audit emission (F-29 residuals)
     );
 
     expect(res.status).toBe(500);
-    expect(mockLogAdminAction).not.toHaveBeenCalled();
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("sla.evaluate");
+    expect(entry.scope).toBe("platform");
+    expect(entry.status).toBe("failure");
+    expect(typeof entry.metadata?.error).toBe("string");
   });
 });

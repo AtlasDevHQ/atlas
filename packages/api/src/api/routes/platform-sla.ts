@@ -358,14 +358,23 @@ platformSLA.openapi(evaluateAlertsRoute, async (c) => {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    // Evaluate is a platform-admin side-effect trigger: it runs the
-    // alert-evaluation pipeline against current metrics and may fire
-    // notifier / webhook dispatches. Audited at platform scope so
-    // repeated calls (burning worker budget or probing side effects)
-    // leave a forensic trail. `newAlertCount` is recorded instead of
-    // the alert payload — alert bodies may carry workspace names that
-    // are PII-adjacent at the platform scope. See F-29.
-    const newAlerts = yield* sla.evaluateAlerts();
+    // `newAlertCount` is logged instead of the alert payload — alert bodies
+    // carry workspace names that are PII-adjacent at the platform scope.
+    const newAlerts = yield* sla.evaluateAlerts().pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.sla.evaluate,
+            targetType: "sla",
+            targetId: "default",
+            scope: "platform",
+            status: "failure",
+            metadata: { error: err instanceof Error ? err.message : String(err) },
+            ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          }),
+        ),
+      ),
+    );
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.sla.evaluate,

@@ -404,11 +404,6 @@ adminConnections.openapi(drainOrgPoolRoute, async (c) => runHandler(c, "drain or
     const result = await connections.drainOrg(targetOrgId);
     log.info({ orgId: targetOrgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
 
-    // Pool drain is an availability lever: it disconnects every active
-    // session to every connection in an org. Emitted on success with
-    // platform scope (the mutation affects pool state, not a workspace row).
-    // See F-29 / F-34. Per-connection drain (`POST /:id/drain`) is out of
-    // scope for this PR and tracked in F-29's remaining backlog.
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.poolDrain,
       targetType: "connection",
@@ -449,11 +444,6 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "d
     }
     log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
 
-    // Per-connection pool drain. Uses the same `connection.pool_drain`
-    // action name as the org-wide drain (F-29 shipped with #1823) —
-    // disambiguated by scope: "workspace" vs "platform" and by targetId
-    // (connection id vs org id). Forensic queries filter on action_type
-    // + scope to separate the two blast radii. See F-29 residuals (#1828).
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.poolDrain,
       targetType: "connection",
@@ -466,8 +456,6 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "d
     return c.json({ drained: true, message: result.message }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
-    // Failure-path emission: the drain was attempted and may have
-    // partially taken effect. Forensic evidence beats silent failure.
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.poolDrain,
       targetType: "connection",

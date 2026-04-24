@@ -323,10 +323,8 @@ export function registerInvitationRoutes(
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    // Pre-fetch the invitation row so the audit metadata can carry
-    // invitedEmail + role even after the UPDATE flips status. Without this,
-    // a forensic query after revoke would need to join on the invitations
-    // table — but the table may itself be retention-purged later.
+    // Pre-fetch before UPDATE so audit metadata survives a later
+    // retention-purge of the invitations table.
     const pre = await internalQuery<{ email: string; role: string; status: string }>(
       `SELECT email, role, status FROM invitations WHERE id = $1 AND org_id = $2 LIMIT 1`,
       [invitationId, orgId],

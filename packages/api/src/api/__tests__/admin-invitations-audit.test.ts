@@ -1,20 +1,3 @@
-/**
- * Audit regression suite for `admin-invitations.ts` — F-29 residuals (#1828).
- *
- * Pins the gap closed by this PR:
- *   - `DELETE /users/invitations/:id` → `user.revoke_invitation`
- *
- * Invitation revoke is the last unaudited edge in the
- * `user.invite` / Better-Auth-accept / revoke lifecycle. Without the row a
- * workspace admin can un-invite users silently — compliance queries
- * counting `invite → revoked` transitions would return zero.
- *
- * Pre-fetch pattern: the route reads `email` + `role` + `status` BEFORE the
- * UPDATE so the audit row carries forensic context even if the invitations
- * table itself is later retention-purged. The test asserts the row reflects
- * the pre-fetched values, not whatever the UPDATE returned.
- */
-
 import {
   describe,
   it,

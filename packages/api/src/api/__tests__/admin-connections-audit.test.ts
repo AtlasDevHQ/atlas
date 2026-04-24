@@ -1,20 +1,16 @@
 /**
- * Audit regression suite for `admin-connections.ts` — F-29 (#1784) +
- * F-29 residuals (#1828) + F-34 (#1789).
+ * Audit regression suite for `admin-connections.ts`.
  *
  * Pins:
  *   - `POST /test` (ephemeral URL probe) → `connection.probe`
  *   - `POST /:id/test` (registered health check) → `connection.health_check`
  *   - `POST /pool/orgs/:orgId/drain` → `connection.pool_drain` (platform scope)
- *   - `POST /:id/drain` → `connection.pool_drain` (workspace scope) — F-29 residuals
+ *   - `POST /:id/drain` → `connection.pool_drain` (workspace scope)
  *
- * Per-id drain shares the `connection.pool_drain` action name with the
- * org-wide drain (shipped in #1823); the two are disambiguated by `scope`
- * (workspace vs platform) and by `targetId` (connection id vs org id) on
- * the audit row. Compliance queries that separately count per-connection
- * vs org-wide drain events filter on scope — the action name stays
- * uniform so "all pool drains this quarter" is a single filter. The
- * parity with wizard `/save` is covered in `admin-wizard-save-audit.test.ts`.
+ * Per-id drain shares `connection.pool_drain` with the org-wide drain —
+ * disambiguate on `scope` (workspace vs platform) to separate blast radii.
+ * Wizard parity with admin-connections POST `/` lives in
+ * `admin-wizard-save-audit.test.ts`.
  */
 
 import {
@@ -326,11 +322,8 @@ describe("POST /api/v1/admin/connections/:id/drain — audit emission (F-29 resi
   });
 
   it("does not emit when the drain returns drained:false (409)", async () => {
-    // The underlying pool refused to drain (already draining / in use).
-    // The mutation did not take effect — per the "don't log actions that
-    // didn't happen" policy, no audit row lands. Pinned so a future
-    // behavior change (e.g. logging the 409 as a distinct action) is an
-    // explicit decision, not an accidental regression.
+    // 409 = mutation didn't take effect; "don't log actions that didn't
+    // happen." Pinned so a future change to log 409 is explicit.
     mockConnectionDrain.mockResolvedValueOnce({
       drained: false,
       message: "pool already draining",
@@ -345,9 +338,6 @@ describe("POST /api/v1/admin/connections/:id/drain — audit emission (F-29 resi
   });
 
   it("emits failure-status connection.pool_drain when drain rejects (500)", async () => {
-    // Failure-path emission — the drain was attempted and may have
-    // partially taken effect before the throw. Forensic evidence is
-    // worth a row even when the mutation errored mid-flight.
     mockConnectionDrain.mockRejectedValueOnce(new Error("connection pool exploded"));
 
     const res = await app.fetch(

@@ -1,19 +1,5 @@
-/**
- * Audit regression suite for `admin-integrations.ts` —
- *   - F-29 residuals (#1828): orphan `POST /email/test` → `integration.test`
- *   - F-46 (#1819): BYOT / connect handlers gain `hasSecret: true`
- *
- * Covers the 8 BYOT / OAuth-connect paths listed in the F-46 issue body
- * (Slack/Teams/Discord BYOT + Telegram/GChat/GitHub/Linear/WhatsApp connect)
- * by pinning the `hasSecret: true` marker on the audit metadata. Each
- * handler's response path is mocked at the store layer so the test never
- * talks to the real installation store.
- *
- * Pattern: mock the upstream API validator for each platform so the handler
- * succeeds and reaches the audit emission; the test asserts the emitted
- * row shape (actionType, targetType, metadata keys + values), NOT a full
- * snapshot — adding a future metadata key must not break the suite.
- */
+// Assert audit-row shape (action, target, metadata keys), not full
+// snapshots — future metadata keys must not break this suite.
 
 import {
   describe,
@@ -72,19 +58,16 @@ const mockSaveGChatInstallation = mock(async () => {});
 const mockSaveGitHubInstallation = mock(async () => {});
 const mockSaveLinearInstallation = mock(async () => {});
 const mockSaveWhatsAppInstallation = mock(async () => {});
-// `mock(async () => ({...}))` infers a non-nullable return type from the
-// default fixture, which blocks per-test `mockImplementationOnce(() => null)`
-// for the "no install" branch. Hand-annotate to the nullable union so
-// narrowing tests compile.
-type EmailInstallShape = {
-  provider: "resend" | "sendgrid" | "postmark" | "smtp" | "ses";
-  sender_address: string;
-  config: { provider: string; [k: string]: unknown };
-};
-const mockGetEmailInstallationByOrg: Mock<() => Promise<EmailInstallShape | null>> = mock(async () => ({
-  provider: "resend",
+// Nullable union — per-test `mockImplementationOnce(() => null)` needs the
+// nullable on the signature, which `mock(async () => ({...}))` doesn't infer.
+type EmailInstallShape = import("@atlas/api/lib/email/store").EmailInstallationWithSecret | null;
+const mockGetEmailInstallationByOrg: Mock<() => Promise<EmailInstallShape>> = mock(async () => ({
+  org_id: "org-alpha",
+  installed_at: new Date().toISOString(),
+  config_id: "cfg-test",
+  provider: "resend" as const,
   sender_address: "from@test.com",
-  config: { provider: "resend", apiKey: "re_test" },
+  config: { provider: "resend" as const, apiKey: "re_test" },
 }));
 
 mock.module("@atlas/api/lib/slack/store", () => ({
@@ -127,12 +110,8 @@ mock.module("@atlas/api/lib/whatsapp/store", () => ({
   deleteWhatsAppInstallationByOrg: mock(async () => true),
   getWhatsAppInstallationByOrg: mock(async () => null),
 }));
-// Note: `admin-integrations.ts` imports `EMAIL_PROVIDERS` + the
-// `EmailProvider` / `ProviderConfig` types from this module. The Zod
-// `EmailProviderEnum` schema is built from `EMAIL_PROVIDERS` at module
-// load time — leaving it out here makes the whole router fail to register
-// (try/catch in `api/index.ts` swallows it and every integrations route
-// 404s). Mirror the real export shape precisely.
+// EMAIL_PROVIDERS feeds the Zod enum at module load — omitting it makes
+// the router fail to register and every integrations route 404s.
 mock.module("@atlas/api/lib/email/store", () => ({
   EMAIL_PROVIDERS: ["resend", "sendgrid", "postmark", "smtp", "ses"] as const,
   saveEmailInstallation: mock(async () => {}),
@@ -140,11 +119,8 @@ mock.module("@atlas/api/lib/email/store", () => ({
   getEmailInstallationByOrg: mockGetEmailInstallationByOrg,
 }));
 
-// `fetch` is used by every platform's upstream validation call. Mock it
-// so the handler-side API validation resolves to an "ok" shape for each
-// platform. `typeof fetch` includes a `preconnect` property that the mock
-// doesn't provide — narrow the mock type to the callable signature only
-// (which is all the platform handlers use) and cast once at install time.
+// Narrow `typeof fetch` to the callable signature — the `preconnect`
+// property isn't used by any handler.
 type FetchSignature = (input: Request | URL | string, init?: RequestInit) => Promise<Response>;
 const originalFetch = globalThis.fetch;
 const mockFetch: Mock<FetchSignature> = mock(() =>
@@ -205,8 +181,6 @@ beforeEach(() => {
   mocks.hasInternalDB = true;
   mockLogAdminAction.mockClear();
   mockFetch.mockClear();
-  // Default: generic `ok: true` 200. Individual tests override via
-  // setFetchJson() when the platform's validator needs a specific shape.
   mockFetch.mockImplementation(() =>
     Promise.resolve(
       new Response(JSON.stringify({ ok: true }), {
@@ -398,6 +372,47 @@ describe("admin-integrations BYOT / connect — F-46 hasSecret marker", () => {
       hasSecret: true,
     });
   });
+
+  it("does not emit on invalid upstream credential (400) — represented by Slack", async () => {
+    // Auth.test returns ok:false for bad tokens; handler returns 400 with
+    // no audit emission (no credential was stored). One representative
+    // platform covers the policy across all 8.
+    setFetchJson({ ok: false, error: "invalid_auth" });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/integrations/slack/byot", {
+        botToken: "xoxb-bad-token",
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("emits failure-status integration.enable with hasSecret when save throws — represented by Slack", async () => {
+    setFetchJson({ ok: true, team_id: "T-test", team: "Test WS" });
+    mockSaveSlackInstallation.mockImplementationOnce(() =>
+      Promise.reject(new Error("db write failed")),
+    );
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/integrations/slack/byot", {
+        botToken: "xoxb-test-token",
+      }),
+    );
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("integration.enable");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({
+      platform: "slack",
+      mode: "byot",
+      hasSecret: true,
+    });
+    expect(typeof entry.metadata?.error).toBe("string");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -427,15 +442,12 @@ describe("POST /api/v1/admin/integrations/email/test — audit emission (F-29 re
       provider: "resend",
       success: true,
     });
-    // The test endpoint does NOT carry `hasSecret: true` — the request
-    // body only ships `recipientEmail`; the credential exercised is the
-    // previously-saved one. Pinned so a future over-eager change can't
-    // flip this to match the F-46 install-path pattern by mistake.
+    // Body ships only `recipientEmail`; no new credential in the request,
+    // so no hasSecret marker.
     expect(entry.metadata).not.toHaveProperty("hasSecret");
   });
 
   it("emits integration.test with failure status on upstream 4xx", async () => {
-    // Resend returns 401 for bad API key
     mockFetch.mockImplementationOnce(() =>
       Promise.resolve(
         new Response("Unauthorized", {
@@ -451,12 +463,12 @@ describe("POST /api/v1/admin/integrations/email/test — audit emission (F-29 re
       }),
     );
 
-    // The route returns 200 with success:false in body — the audit row
-    // status is "failure" regardless, so compliance queries filtering
-    // on status catch every delivery failure.
+    // Route returns 200 with success:false; audit row is status:"failure".
     expect(res.status).toBe(200);
     const entry = lastAuditCall();
     expect(entry.actionType).toBe("integration.test");
+    expect(entry.targetType).toBe("integration");
+    expect(entry.targetId).toBe("org-alpha");
     expect(entry.status).toBe("failure");
     expect(entry.metadata).toMatchObject({
       platform: "email",
@@ -464,6 +476,47 @@ describe("POST /api/v1/admin/integrations/email/test — audit emission (F-29 re
       success: false,
     });
     expect(typeof entry.metadata?.error).toBe("string");
+  });
+
+  it("emits integration.test with failure status on provider-returned success:false", async () => {
+    // SMTP path returns `{ success: false, error }` without throwing when
+    // ATLAS_SMTP_URL is unset — distinct from the fetch-4xx throw path.
+    mockGetEmailInstallationByOrg.mockImplementationOnce(async () => ({
+      org_id: "org-alpha",
+      installed_at: new Date().toISOString(),
+      config_id: "cfg-smtp",
+      provider: "smtp" as const,
+      sender_address: "from@test.com",
+      config: {
+        provider: "smtp" as const,
+        host: "smtp.example.com",
+        port: 587,
+        username: "u",
+        password: "p",
+        tls: true,
+      },
+    }));
+    const prevSmtpUrl = process.env.ATLAS_SMTP_URL;
+    delete process.env.ATLAS_SMTP_URL;
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/integrations/email/test", {
+        recipientEmail: "dest@test.com",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("integration.test");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({
+      platform: "email",
+      provider: "smtp",
+      success: false,
+    });
+    expect(typeof entry.metadata?.error).toBe("string");
+
+    if (prevSmtpUrl !== undefined) process.env.ATLAS_SMTP_URL = prevSmtpUrl;
   });
 
   it("does not emit when no email configuration is saved (400)", async () => {
@@ -480,10 +533,7 @@ describe("POST /api/v1/admin/integrations/email/test — audit emission (F-29 re
   });
 
   it("does not emit when internal DB is unavailable (404)", async () => {
-    // The `requireOrgContext` middleware short-circuits with 404 when
-    // `hasInternalDB()` is false — we never reach the handler. Pinned so
-    // a future change that moves the DB check into the handler body (and
-    // swaps the status to 400) is an explicit decision, not a regression.
+    // `requireOrgContext` middleware short-circuits before the handler.
     mocks.hasInternalDB = false;
 
     const res = await app.fetch(

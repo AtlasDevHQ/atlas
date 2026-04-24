@@ -47,8 +47,10 @@ matches_pattern() {
     fi
   fi
 
-  # Build a regex: escape specials, ** → .*, * → [^/]*.
-  # The §§ placeholder prevents collapsing ** into a double [^/]*.
+  # Build a regex: escape specials, then handle glob wildcards.
+  # Sentinels disambiguate pattern classes during substitution so they
+  # don't interact — §§§ for middle /**/ (zero-or-more segments), §§ for
+  # other **, § for single * (single segment).
   local re="$pat"
   re="${re//\\/\\\\}"
   re="${re//./\\.}"
@@ -63,9 +65,15 @@ matches_pattern() {
   re="${re//[/\\[}"
   re="${re//]/\\]}"
   re="${re//|/\\|}"
+  # Middle /**/ must match zero OR more segments between the slashes,
+  # matching micromatch. packages/**/package.json therefore matches
+  # packages/package.json as well as packages/api/package.json.
+  re="${re//\/\*\*\//§§§}"
   re="${re//\*\*/§§}"
-  re="${re//\*/[^/]*}"
+  re="${re//\*/§}"
+  re="${re//§§§/(\/|\/.*\/)}"
   re="${re//§§/.*}"
+  re="${re//§/[^/]*}"
   if [[ "$src" =~ ^${re}$ ]]; then
     return 0
   fi
@@ -117,16 +125,19 @@ extract_sources() {
 extract_watch_patterns() {
   local railway_json="$1"
   # Capture everything between "watchPatterns": [ and the matching ]
-  # then pull out quoted strings.
+  # then pull out every quoted string on each line. Looping on match() —
+  # a single `if (match(...))` only captures the first string per line,
+  # which would silently drop coverage if a formatter collapsed the
+  # array onto one line.
   awk '
     /"watchPatterns"/,/]/ {
-      if (match($0, /"[^"]+"/)) {
-        s = substr($0, RSTART, RLENGTH)
-        # Skip the key itself
-        if (s != "\"watchPatterns\"") {
-          gsub(/"/, "", s)
-          print s
-        }
+      line = $0
+      while (match(line, /"[^"]+"/)) {
+        s = substr(line, RSTART, RLENGTH)
+        line = substr(line, RSTART + RLENGTH)
+        if (s == "\"watchPatterns\"") continue
+        gsub(/"/, "", s)
+        print s
       }
     }
   ' "$railway_json"
@@ -164,6 +175,23 @@ extract_builder() {
   ' "$railway_json"
 }
 
+# Extract dockerfileContext from railway.json. Empty string if absent —
+# callers should default to the railway.json's own directory.
+extract_dockerfile_context() {
+  local railway_json="$1"
+  awk '
+    /"dockerfileContext"/ {
+      if (match($0, /"dockerfileContext"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+        s = substr($0, RSTART, RLENGTH)
+        sub(/^"dockerfileContext"[[:space:]]*:[[:space:]]*"/, "", s)
+        sub(/"$/, "", s)
+        print s
+        exit
+      }
+    }
+  ' "$railway_json"
+}
+
 # --- main ---
 for railway_json in "$ROOT"/deploy/*/railway.json; do
   [ -f "$railway_json" ] || continue
@@ -183,9 +211,29 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
     continue
   fi
 
-  dockerfile_abs="$ROOT/$dockerfile_rel"
-  if [ ! -f "$dockerfile_abs" ]; then
-    echo "::error file=$rel_json::dockerfilePath $dockerfile_rel does not exist"
+  # Railway resolves dockerfilePath relative to dockerfileContext. Resolve
+  # the same way: context (default = railway.json's directory) → Dockerfile.
+  # Fall back to repo-root-relative if the context-relative resolution
+  # doesn't exist, because Atlas's historical configs use both shapes
+  # interchangeably (context="../.." + root-relative dockerfilePath works
+  # either way, but a future service may not).
+  svc_dir="$(dirname "$railway_json")"
+  context_raw=$(extract_dockerfile_context "$railway_json")
+  if [ -n "$context_raw" ]; then
+    context_abs="$(cd "$svc_dir" 2>/dev/null && cd "$context_raw" 2>/dev/null && pwd)" || context_abs=""
+  else
+    context_abs="$svc_dir"
+  fi
+
+  dockerfile_abs=""
+  if [ -n "$context_abs" ] && [ -f "$context_abs/$dockerfile_rel" ]; then
+    dockerfile_abs="$context_abs/$dockerfile_rel"
+  elif [ -f "$ROOT/$dockerfile_rel" ]; then
+    dockerfile_abs="$ROOT/$dockerfile_rel"
+  fi
+
+  if [ -z "$dockerfile_abs" ]; then
+    echo "::error file=$rel_json::dockerfilePath '$dockerfile_rel' not found relative to context '${context_raw:-<default>}' or repo root"
     ERRORS=$((ERRORS + 1))
     continue
   fi

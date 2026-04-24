@@ -20,8 +20,9 @@
 -- TS script (scripts/backfill-integration-credentials.ts) — encryption
 -- happens in app code, not SQL, so the backfill cannot be a raw UPDATE.
 --
--- The follow-up PR (step 4 in the F-41 plan) will drop the plaintext
--- columns and re-tighten NOT NULL on the encrypted columns.
+-- The follow-up PR (step 4 in the F-41 plan, tracked as #1832) will
+-- drop the plaintext columns and re-tighten NOT NULL on the encrypted
+-- columns.
 --
 -- Audit row: .claude/research/security-audit-1-2-3.md F-41
 -- Issue: #1815

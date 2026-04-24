@@ -1,19 +1,21 @@
 /**
  * Symmetric encryption for arbitrary secret payloads (F-41).
  *
- * Lives alongside `internal.ts`'s `encryptUrl` but targets a different
- * contract: where `encryptUrl` assumes its plaintext is a URL and uses a
- * colon-count heuristic to tell plaintext from ciphertext, the helpers
- * here cover integration credentials that *do* contain colons (Telegram
- * bot tokens like "1234:abc…") and JSON blobs (email/sandbox config
- * carriers). The versioned `enc:v1:` prefix makes the ciphertext form
- * unambiguous, leaving room for `enc:v2:` once key rotation lands
- * (F-47 / #1820).
+ * Lives alongside `internal.ts`'s `encryptUrl` but covers payloads
+ * `encryptUrl`'s plaintext detection can't safely handle: `encryptUrl`
+ * gates plaintext detection on a URL-scheme regex (`^<scheme>://`) plus
+ * a 3-colon-count check. Neither works for integration credentials —
+ * Telegram bot tokens like `1234:abc…` aren't URLs and don't split into
+ * three parts (the plaintext would be rejected on read), and JSON blobs
+ * can coincidentally produce three colon-separated parts (triggering a
+ * spurious decrypt attempt). The versioned `enc:v1:` prefix used here
+ * sidesteps both problems and leaves room for `enc:v2:` once key
+ * rotation lands (F-47 / #1820).
  *
  * Kept in a dedicated module so tests that partially-mock `db/internal`
- * (which every admin route test does via `mock.module`) aren't forced to
- * opt into the three new exports to avoid `SyntaxError: Export not
- * found`. Mock `db/secret-encryption` separately when a test needs it.
+ * (common in admin route tests) aren't forced to declare three extra
+ * no-op exports to avoid `SyntaxError: Export not found`. Mock
+ * `db/secret-encryption` separately when a test needs it.
  */
 
 import * as crypto from "crypto";
@@ -26,6 +28,23 @@ const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
 const SECRET_PREFIX = "enc:v1:";
+
+// Boot-time alarm: in production without a key configured, every new
+// credential gets stored plaintext via the passthrough in `encryptSecret`.
+// The audit-level fallback is intentional (dev + self-hosted without a
+// secret should still work), but SaaS deployments are expected to set
+// one and the silent pass-through would otherwise only surface on a
+// read of pre-encrypted data — too late. Fire once at module load.
+(() => {
+  const isProdLike =
+    process.env.NODE_ENV === "production" || process.env.ATLAS_DEPLOY_MODE === "saas";
+  if (isProdLike && !getEncryptionKey()) {
+    log.error(
+      "No encryption key configured (ATLAS_ENCRYPTION_KEY / BETTER_AUTH_SECRET) — " +
+      "integration credentials will be written plaintext. This is a P0 in SaaS mode.",
+    );
+  }
+})();
 
 /**
  * Encrypts an arbitrary secret string using AES-256-GCM, tagged with
@@ -52,6 +71,12 @@ export function encryptSecret(plaintext: string): string {
  * Decrypts a value produced by `encryptSecret`. Values not starting
  * with the `enc:v1:` prefix are returned unchanged — safe on legacy
  * rows that predate dual-write and on deployments with no key set.
+ *
+ * Throws if the value carries `enc:v1:` but the body is malformed, the
+ * key is absent, or AES-GCM auth-tag verification fails. Callers that
+ * have a fallback path (see `pickDecryptedSecret`) should `try/catch`
+ * and use it; callers without a fallback let the throw surface as a
+ * 500 with `requestId`.
  */
 export function decryptSecret(stored: string): string {
   if (!stored.startsWith(SECRET_PREFIX)) return stored;
@@ -88,10 +113,20 @@ export function decryptSecret(stored: string): string {
 }
 
 /**
- * Prefer the encrypted column if present (decrypting via `decryptSecret`);
- * fall back to the plaintext column for rows that have not yet been
- * dual-written. Used by every integration store's `parseInstallationRow`
- * so the read-priority logic stays in lockstep across tables.
+ * Prefer the encrypted column (decrypted via `decryptSecret`) and fall
+ * back to the plaintext column when:
+ *   • the encrypted column is null / empty / not a string, OR
+ *   • the encrypted column decodes unsuccessfully (corrupt ciphertext,
+ *     rotated key, truncated row).
+ *
+ * The decrypt-failure fallback is load-bearing during the F-41 soak: a
+ * single bad encrypted row must not take down an integration when the
+ * plaintext copy is still there. Post-#1832 (plaintext drop), decrypt
+ * failure will naturally become terminal since the fallback disappears.
+ *
+ * A warn breadcrumb is emitted in the fallback cases so ops can see
+ * schema drift (non-string encrypted values) or cipher-format drift
+ * (decrypt failures) without spelunking pg logs.
  *
  * Returns `null` when neither column carries a usable string — the
  * caller treats that as a malformed row.
@@ -100,8 +135,21 @@ export function pickDecryptedSecret(
   encryptedValue: unknown,
   plaintextValue: unknown,
 ): string | null {
+  if (encryptedValue !== null && encryptedValue !== undefined && typeof encryptedValue !== "string") {
+    log.warn(
+      { encryptedType: typeof encryptedValue },
+      "Encrypted column carries non-string value — schema drift, falling back to plaintext",
+    );
+  }
   if (typeof encryptedValue === "string" && encryptedValue.length > 0) {
-    return decryptSecret(encryptedValue);
+    try {
+      return decryptSecret(encryptedValue);
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Encrypted column failed to decrypt — falling back to plaintext column (F-41 soak)",
+      );
+    }
   }
   if (typeof plaintextValue === "string" && plaintextValue.length > 0) {
     return plaintextValue;

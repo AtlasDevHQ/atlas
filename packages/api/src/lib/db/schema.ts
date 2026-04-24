@@ -124,9 +124,7 @@ export const slackInstallations = pgTable(
   "slack_installations",
   {
     teamId: text("team_id").primaryKey(),
-    // Kept nullable for dual-write back-compat — the plaintext column will
-    // be dropped in a follow-up migration once the encrypted column has
-    // soaked (F-41 step 4, tracked as a separate issue).
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     botToken: text("bot_token"),
     botTokenEncrypted: text("bot_token_encrypted"),
     orgId: text("org_id"),
@@ -1047,6 +1045,7 @@ export const teamsInstallations = pgTable(
     tenantId: text("tenant_id").primaryKey(),
     orgId: text("org_id"),
     tenantName: text("tenant_name"),
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     appPassword: text("app_password"),
     appPasswordEncrypted: text("app_password_encrypted"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
@@ -1066,6 +1065,7 @@ export const discordInstallations = pgTable(
     guildId: text("guild_id").primaryKey(),
     orgId: text("org_id"),
     guildName: text("guild_name"),
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     botToken: text("bot_token"),
     botTokenEncrypted: text("bot_token_encrypted"),
     applicationId: text("application_id"),
@@ -1085,8 +1085,7 @@ export const telegramInstallations = pgTable(
   "telegram_installations",
   {
     botId: text("bot_id").primaryKey(),
-    // Nullable for dual-write back-compat; plaintext column is dropped in
-    // a follow-up migration after the encrypted column soaks (F-41).
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     botToken: text("bot_token"),
     botTokenEncrypted: text("bot_token_encrypted"),
     botUsername: text("bot_username"),
@@ -1107,8 +1106,7 @@ export const gchatInstallations = pgTable(
   {
     projectId: text("project_id").primaryKey(),
     serviceAccountEmail: text("service_account_email").notNull(),
-    // Plaintext column relaxed to nullable for dual-write back-compat;
-    // dropped in a follow-up migration once encrypted column soaks (F-41).
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     credentialsJson: text("credentials_json"),
     credentialsJsonEncrypted: text("credentials_json_encrypted"),
     orgId: text("org_id"),
@@ -1127,7 +1125,7 @@ export const githubInstallations = pgTable(
   "github_installations",
   {
     userId: text("user_id").primaryKey(),
-    // Plaintext column relaxed to nullable for dual-write back-compat (F-41).
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     accessToken: text("access_token"),
     accessTokenEncrypted: text("access_token_encrypted"),
     username: text("username"),
@@ -1147,7 +1145,7 @@ export const linearInstallations = pgTable(
   "linear_installations",
   {
     userId: text("user_id").primaryKey(),
-    // Plaintext column relaxed to nullable for dual-write back-compat (F-41).
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     apiKey: text("api_key"),
     apiKeyEncrypted: text("api_key_encrypted"),
     userName: text("user_name"),
@@ -1168,7 +1166,7 @@ export const whatsappInstallations = pgTable(
   "whatsapp_installations",
   {
     phoneNumberId: text("phone_number_id").primaryKey(),
-    // Plaintext column relaxed to nullable for dual-write back-compat (F-41).
+    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
     accessToken: text("access_token"),
     accessTokenEncrypted: text("access_token_encrypted"),
     displayPhone: text("display_phone"),
@@ -1190,9 +1188,9 @@ export const emailInstallations = pgTable(
     configId: text("config_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     provider: text("provider").notNull(),
     senderAddress: text("sender_address").notNull(),
-    // F-41: plaintext JSONB relaxed for dual-write back-compat. The
-    // `config_encrypted` TEXT column carries encryptSecret(JSON.stringify(config)).
-    // The plaintext JSONB column is dropped in a follow-up migration.
+    // F-41 dual-write: plaintext JSONB relaxed for back-compat. The
+    // `config_encrypted` TEXT column carries `encryptSecret(JSON.stringify(config))`.
+    // The plaintext JSONB column is dropped in #1832.
     config: jsonb("config").$type<Record<string, unknown>>(),
     configEncrypted: text("config_encrypted"),
     orgId: text("org_id"),
@@ -1357,10 +1355,9 @@ export const sandboxCredentials = pgTable(
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     orgId: text("org_id").notNull(),
     provider: text("provider").notNull(),
-    // F-41: plaintext JSONB relaxed for dual-write back-compat. The
-    // `credentials_encrypted` TEXT column carries
-    // `encryptSecret(JSON.stringify(credentials))`. Plaintext JSONB column
-    // is dropped in a follow-up migration.
+    // F-41 dual-write: plaintext JSONB relaxed for back-compat. The
+    // `credentials_encrypted` TEXT column carries `encryptSecret(JSON.stringify(credentials))`.
+    // The plaintext JSONB column is dropped in #1832.
     credentials: jsonb("credentials"),
     credentialsEncrypted: text("credentials_encrypted"),
     displayName: text("display_name"),

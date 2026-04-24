@@ -139,6 +139,20 @@ describe("store", () => {
       expect(result?.bot_token).toBe("xoxb-legacy");
     });
 
+    it("ON CONFLICT DO UPDATE clause writes both plaintext and encrypted columns", async () => {
+      // Guard against a param-renumbering regression that drops the
+      // encrypted column from the UPDATE clause — on dual-write this
+      // would be invisible (plaintext still updates), but would break
+      // every re-save once the plaintext column is dropped in #1832.
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
+
+      await saveInstallation("T123", "xoxb-new");
+      const [sql] = mockPoolQuery.mock.calls[0];
+      expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bbot_token\s*=\s*\$\d/);
+      expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bbot_token_encrypted\s*=\s*\$\d/);
+    });
+
     it("returns null when DB has no matching row", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockInternalQuery.mockResolvedValue([]);

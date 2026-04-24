@@ -11,9 +11,14 @@
  * carriers (email_installations.config, sandbox_credentials.credentials)
  * it JSON-serializes the blob first.
  *
- * Idempotent — re-running is safe, the `IS NULL` guard skips already-
- * backfilled rows. Runs each table in its own transaction so a failure
- * on one table doesn't roll back the others.
+ * Idempotent — re-running is safe: the `IS NULL` guard skips already-
+ * backfilled rows. Each table runs inside its own transaction so a failure
+ * on one table doesn't roll back the others that already committed. A
+ * failure does stop the script (remaining tables are not attempted) —
+ * re-run after fixing the cause; earlier tables will be skipped because
+ * their encrypted columns are already populated. A session-level
+ * advisory lock prevents two operators from doing the same work
+ * concurrently.
  *
  * Usage:
  *   bun run packages/api/src/lib/db/backfill-integration-credentials.ts
@@ -25,10 +30,13 @@
 
 import { Pool } from "pg";
 import { encryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("backfill-f41");
 
 /**
  * Narrowed pool interface — only the two methods `backfillTable` touches.
- * Avoiding the full `pg.PoolClient` type here keeps the function easy to
+ * Avoiding the full `pg.PoolClient` type keeps the function easy to
  * exercise with a hand-rolled mock in tests.
  */
 interface BackfillClient {
@@ -39,31 +47,28 @@ interface BackfillPool {
   connect(): Promise<BackfillClient>;
 }
 
-interface TextTable {
-  kind: "text";
+/**
+ * A single backfill target. `kind` picks between plain-string and
+ * JSON-stringified serialization; the other four fields name the table
+ * and columns that get interpolated into the raw SQL below. They must
+ * pass `assertIdentifier` — the `TABLES` literal below does, and
+ * `backfillTable` re-checks at runtime to keep the attack surface closed
+ * if the helper is ever called with caller-supplied config.
+ */
+export interface TableConfig {
+  kind: "text" | "jsonb";
   table: string;
   pk: string;
   plaintext: string;
   encrypted: string;
 }
-
-interface JsonbTable {
-  kind: "jsonb";
-  table: string;
-  pk: string;
-  plaintext: string;
-  encrypted: string;
-}
-
-type TableConfig = TextTable | JsonbTable;
 
 /**
- * Ordered list of tables to backfill. Order is presentation-only — each
- * table runs in its own transaction. Primary-key columns drive the
- * per-row UPDATE so the script works even when the plaintext value
- * itself is not unique.
+ * Every integration credential table. Extending this list is how new
+ * encrypted integrations opt into the backfill. Names are validated at
+ * `backfillTable` entry against `/^[a-z_][a-z0-9_]*$/`.
  */
-const TABLES: ReadonlyArray<TableConfig> = [
+export const TABLES: ReadonlyArray<TableConfig> = [
   { kind: "text", table: "slack_installations", pk: "team_id", plaintext: "bot_token", encrypted: "bot_token_encrypted" },
   { kind: "text", table: "teams_installations", pk: "tenant_id", plaintext: "app_password", encrypted: "app_password_encrypted" },
   { kind: "text", table: "discord_installations", pk: "guild_id", plaintext: "bot_token", encrypted: "bot_token_encrypted" },
@@ -76,11 +81,19 @@ const TABLES: ReadonlyArray<TableConfig> = [
   { kind: "jsonb", table: "sandbox_credentials", pk: "id", plaintext: "credentials", encrypted: "credentials_encrypted" },
 ] as const;
 
-interface BackfillResult {
+export interface BackfillResult {
   table: string;
   scanned: number;
   updated: number;
   skipped: number;
+}
+
+const IDENTIFIER_RE = /^[a-z_][a-z0-9_]*$/;
+
+function assertIdentifier(name: string, role: string): void {
+  if (!IDENTIFIER_RE.test(name)) {
+    throw new Error(`Backfill ${role} ${JSON.stringify(name)} is not a valid SQL identifier`);
+  }
 }
 
 /**
@@ -98,7 +111,17 @@ export async function backfillTable(
   pool: BackfillPool,
   config: TableConfig,
 ): Promise<BackfillResult> {
+  for (const [role, name] of Object.entries({
+    table: config.table,
+    pk: config.pk,
+    plaintext: config.plaintext,
+    encrypted: config.encrypted,
+  })) {
+    assertIdentifier(name, role);
+  }
+
   const client = await pool.connect();
+  let caught: unknown;
   try {
     await client.query("BEGIN");
 
@@ -130,21 +153,28 @@ export async function backfillTable(
     await client.query("COMMIT");
     return { table: config.table, scanned: rows.length, updated, skipped };
   } catch (err) {
+    caught = err;
     await client.query("ROLLBACK").catch(() => {
       // Rollback failure is secondary — the original error is what matters.
     });
     throw err;
   } finally {
-    client.release();
+    // Pass a truthy error so node-postgres destroys the socket instead
+    // of returning a client in-transaction (or otherwise-broken) to the
+    // pool. `undefined` on success lets the pool reuse it normally.
+    client.release(caught instanceof Error ? caught : undefined);
   }
 }
 
 /**
  * Coerce the raw plaintext column value into the string that
- * `encryptSecret` operates on. JSONB columns arrive as objects from the
- * pg driver and need JSON.stringify. A null, undefined, or empty row is
- * skipped rather than encrypted (the migration already relaxed NOT NULL,
- * so empty rows are legal and should not be rewritten to `enc:v1:…`).
+ * `encryptSecret` operates on. The SQL `WHERE` already excludes NULL
+ * plaintext values, but these null/empty branches are belt-and-braces
+ * safety — encrypting an empty blob and persisting `enc:v1:…` would be
+ * strictly worse than leaving the row untouched for a future audit.
+ * JSONB columns arrive as objects from the pg driver and are
+ * re-stringified verbatim so `JSON.parse(decryptSecret(x))` round-trips
+ * to the same shape the stored JSONB holds.
  */
 function serializePlaintext(config: TableConfig, raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
@@ -152,42 +182,56 @@ function serializePlaintext(config: TableConfig, raw: unknown): string | null {
     if (typeof raw !== "string" || raw.length === 0) return null;
     return raw;
   }
-  // JSONB: pg driver returns objects; re-stringify verbatim so round-trip
-  // parse(decrypt(x)) matches the stored JSONB content. If the driver
-  // returned a string (rare — depends on column parsers), take it as-is.
+  // JSONB path. If the driver returns a string (depends on column-type
+  // parsers — some apps register a JSONB text parser override), take it
+  // as-is; otherwise stringify the object.
   if (typeof raw === "string") return raw.length === 0 ? null : raw;
   if (typeof raw === "object") return JSON.stringify(raw);
   return null;
 }
 
+/** 32-bit stable hash of a literal — used as the `pg_advisory_lock` key. */
+const LOCK_KEY = 0x1f41; // arbitrary, stable across runs so concurrent operators block
+
 async function main(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
-    console.error("DATABASE_URL is not set — nothing to backfill");
+    log.error("DATABASE_URL is not set — nothing to backfill");
     process.exit(1);
   }
 
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  // Hold the advisory lock on a single session for the whole run so two
+  // operators invoking the script in parallel don't re-encrypt the same
+  // rows (correct-but-wasteful — second write just produces fresh IVs,
+  // but the first also uses CPU + WAL).
+  const lockClient = await pool.connect();
   try {
+    await lockClient.query("SELECT pg_advisory_lock($1)", [LOCK_KEY]);
     let grandTotal = 0;
     for (const config of TABLES) {
+      log.info({ table: config.table }, "backfill starting");
       const result = await backfillTable(pool, config);
       grandTotal += result.updated;
-      console.log(
-        `[${result.table}] scanned=${result.scanned} updated=${result.updated} skipped=${result.skipped}`,
+      log.info(
+        { table: result.table, scanned: result.scanned, updated: result.updated, skipped: result.skipped },
+        "backfill complete",
       );
     }
-    console.log(`Backfill complete — ${grandTotal} rows encrypted across ${TABLES.length} tables`);
+    log.info({ grandTotal, tableCount: TABLES.length }, "Backfill complete across all tables");
   } finally {
+    await lockClient.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]).catch(() => {
+      // intentionally ignored: advisory unlock is best-effort; session
+      // teardown below releases the lock regardless.
+    });
+    lockClient.release();
     await pool.end();
   }
 }
 
-// `import.meta.main` is true when this file is invoked directly with bun,
-// false when imported from a test. Keeps the script dual-purpose.
 if (import.meta.main) {
   main().catch((err) => {
-    console.error("Backfill failed:", err instanceof Error ? err.message : String(err));
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "Backfill failed");
     process.exit(1);
   });
 }

@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { backfillTable } from "../backfill-integration-credentials";
+import { backfillTable, TABLES } from "../backfill-integration-credentials";
 import { _resetEncryptionKeyCache } from "../internal";
 
 /**
@@ -127,6 +127,60 @@ describe("backfillTable", () => {
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
     expect(updates).toHaveLength(1);
     expect(updates[0].params![1]).toBe("D");
+  });
+
+  it("scans only rows where encrypted IS NULL AND plaintext IS NOT NULL (idempotent re-run)", async () => {
+    // Lock in the idempotence predicate — a regression that dropped the
+    // filter would re-encrypt already-encrypted rows and produce
+    // `enc:v1:enc:v1:…` on the second run, which would then fail
+    // `decryptSecret`'s three-part split. This is cheap to pin.
+    const { pool, queries } = createMockPool([]);
+    await backfillTable(pool, {
+      kind: "text",
+      table: "slack_installations",
+      pk: "team_id",
+      plaintext: "bot_token",
+      encrypted: "bot_token_encrypted",
+    });
+    const select = queries.find((q) => q.sql.startsWith("SELECT"));
+    expect(select).toBeDefined();
+    expect(select!.sql).toMatch(/WHERE\s+bot_token_encrypted\s+IS\s+NULL/);
+    expect(select!.sql).toMatch(/AND\s+bot_token\s+IS\s+NOT\s+NULL/);
+  });
+
+  it("every TABLES entry produces the expected per-table SQL shape", async () => {
+    // Typo-catcher: if someone adds a new integration (or renames a
+    // column) and the TABLES entry references a non-existent column or
+    // PK, this exercises the full path so the shape regression is caught
+    // at unit-test time instead of in production.
+    for (const config of TABLES) {
+      const { pool, queries } = createMockPool([{ pk: "row-x", plaintext: "value" }]);
+      await backfillTable(pool, config);
+      const select = queries.find((q) => q.sql.startsWith("SELECT"));
+      const update = queries.find((q) => q.sql.startsWith("UPDATE"));
+      expect(select!.sql).toContain(`FROM ${config.table}`);
+      expect(select!.sql).toContain(`WHERE ${config.encrypted} IS NULL`);
+      expect(select!.sql).toContain(`AND ${config.plaintext} IS NOT NULL`);
+      expect(update!.sql).toBe(
+        `UPDATE ${config.table} SET ${config.encrypted} = $1 WHERE ${config.pk} = $2`,
+      );
+    }
+  });
+
+  it("rejects configs with non-identifier table or column names (defense in depth)", async () => {
+    // `TABLES` is the only caller today, but guard against a future
+    // caller passing unvetted config — SQL identifiers go into string
+    // concatenation so the validator must fail-loud.
+    const { pool } = createMockPool([]);
+    await expect(
+      backfillTable(pool, {
+        kind: "text",
+        table: "slack_installations; DROP TABLE x",
+        pk: "team_id",
+        plaintext: "bot_token",
+        encrypted: "bot_token_encrypted",
+      }),
+    ).rejects.toThrow(/not a valid SQL identifier/);
   });
 
   it("rolls back the transaction when an UPDATE fails", async () => {

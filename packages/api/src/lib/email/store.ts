@@ -40,10 +40,14 @@ function isEmailProvider(value: string): value is EmailProvider {
 }
 
 /**
- * Decode the provider-config payload, preferring the encrypted TEXT column
- * over the legacy plaintext JSONB. Both columns are nullable post-F-41 —
- * rows written after dual-write carry both; rows written before only have
- * the plaintext JSONB until the backfill script runs.
+ * Decode the provider-config payload. Prefer `config_encrypted` and fall
+ * back to the plaintext `config` JSONB when the encrypted column is
+ * missing *or* fails to decrypt. The decrypt-failure fallback is
+ * load-bearing during the F-41 soak — a single bad ciphertext must not
+ * hide a working plaintext copy (which would cause the admin UI to show
+ * "no provider configured" and invite an overwrite that loses the
+ * working config). Post-#1832 (plaintext drop), decrypt failure becomes
+ * terminal naturally.
  */
 function pickEncryptedConfig(
   encrypted: unknown,
@@ -54,17 +58,13 @@ function pickEncryptedConfig(
     try {
       const decoded = decryptSecret(encrypted);
       const parsed = JSON.parse(decoded) as unknown;
-      if (!parsed || typeof parsed !== "object") {
-        log.warn({ ...context }, "Decrypted email config is not an object — treating record as invalid");
-        return null;
-      }
-      return parsed as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+      log.warn({ ...context }, "Decrypted email config is not an object — falling back to plaintext");
     } catch (err) {
       log.warn(
         { ...context, parseError: err instanceof Error ? err.message : String(err) },
-        "Failed to decrypt/parse email config — treating record as invalid",
+        "Failed to decrypt/parse email config — falling back to plaintext (F-41 soak)",
       );
-      return null;
     }
   }
   if (plaintext && typeof plaintext === "object") {

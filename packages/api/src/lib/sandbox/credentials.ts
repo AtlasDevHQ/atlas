@@ -35,8 +35,11 @@ export interface SandboxCredential {
 // ---------------------------------------------------------------------------
 
 /**
- * Decode the provider credentials blob, preferring the encrypted TEXT column
- * over the legacy plaintext JSONB. Both columns are nullable post-F-41.
+ * Decode the provider credentials blob. Prefer `credentials_encrypted`
+ * and fall back to the plaintext JSONB when the encrypted column is
+ * missing *or* fails to decrypt. The decrypt-failure fallback is
+ * load-bearing during the F-41 soak (see `email/store.ts`'s matching
+ * helper for the same rationale).
  */
 function pickEncryptedCredentials(
   encrypted: unknown,
@@ -47,18 +50,19 @@ function pickEncryptedCredentials(
     try {
       const decoded = decryptSecret(encrypted);
       const parsed = JSON.parse(decoded) as unknown;
-      if (!parsed || typeof parsed !== "object") {
-        log.warn(context, "Decrypted sandbox credentials is not an object — treating record as invalid");
-        return null;
-      }
-      return parsed as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+      log.warn(context, "Decrypted sandbox credentials is not an object — falling back to plaintext");
     } catch (err) {
       log.warn(
         { ...context, parseError: err instanceof Error ? err.message : String(err) },
-        "Failed to decrypt/parse sandbox credentials — treating record as invalid",
+        "Failed to decrypt/parse sandbox credentials — falling back to plaintext (F-41 soak)",
       );
-      return null;
     }
+  }
+  // Prefer the pg-driver object form first; only fall through to string
+  // parsing for exotic column-parser configurations.
+  if (plaintext && typeof plaintext === "object") {
+    return plaintext as Record<string, unknown>;
   }
   if (typeof plaintext === "string") {
     try {
@@ -71,9 +75,6 @@ function pickEncryptedCredentials(
       );
       return null;
     }
-  }
-  if (plaintext && typeof plaintext === "object") {
-    return plaintext as Record<string, unknown>;
   }
   log.warn(context, "Missing credentials field in sandbox_credentials record");
   return null;

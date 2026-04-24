@@ -81,6 +81,43 @@ describe("secret encryption helpers", () => {
       // Prefix present but body has only two parts instead of three.
       expect(() => decryptSecret("enc:v1:abc:def")).toThrow("Failed to decrypt secret");
     });
+
+    it("rejects plaintext that accidentally begins with enc:v1: (prefix is reserved)", () => {
+      // If a legacy plaintext credential starts with `enc:v1:` it WILL
+      // be mis-treated as ciphertext and throw. This is the documented
+      // contract — the `enc:v1:` prefix is reserved and a future
+      // refactor must not "helpfully" fall back to passthrough.
+      expect(() => decryptSecret("enc:v1:fake-legacy-plaintext-value")).toThrow(
+        "Failed to decrypt secret",
+      );
+    });
+
+    it("throws with actionable message when decrypt key differs from encrypt key (F-47 rotation)", () => {
+      const ciphertext = encryptSecret("secret");
+      // Swap the configured key — the cached key is reset so getEncryptionKey
+      // picks up the new env var.
+      process.env.ATLAS_ENCRYPTION_KEY = "different-key";
+      _resetEncryptionKeyCache();
+      expect(() => decryptSecret(ciphertext)).toThrow("Failed to decrypt secret");
+    });
+  });
+
+  describe("key precedence", () => {
+    // Pins the documented contract: ATLAS_ENCRYPTION_KEY wins over
+    // BETTER_AUTH_SECRET when both are set. A regression that flipped
+    // the precedence would invalidate every previously-encrypted row.
+    it("ATLAS_ENCRYPTION_KEY takes precedence over BETTER_AUTH_SECRET", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "atlas-key";
+      process.env.BETTER_AUTH_SECRET = "auth-secret";
+      _resetEncryptionKeyCache();
+      const ciphertext = encryptSecret("precedence-test");
+
+      // Remove ATLAS_ key so only BETTER_AUTH_SECRET is visible — decrypt
+      // must fail because it was encrypted under ATLAS_ENCRYPTION_KEY.
+      delete process.env.ATLAS_ENCRYPTION_KEY;
+      _resetEncryptionKeyCache();
+      expect(() => decryptSecret(ciphertext)).toThrow("Failed to decrypt secret");
+    });
   });
 
   describe("without an encryption key configured", () => {
@@ -130,6 +167,21 @@ describe("secret encryption helpers", () => {
     it("ignores non-string types from the driver", () => {
       expect(pickDecryptedSecret(123, "plaintext-value")).toBe("plaintext-value");
       expect(pickDecryptedSecret(null, 42)).toBeNull();
+    });
+
+    it("falls back to plaintext when encrypted decodes unsuccessfully (F-41 soak)", () => {
+      // Corrupted ciphertext — the decrypt-failure fallback to plaintext
+      // is what keeps a single bad row from taking down an integration
+      // while the plaintext copy is still there during the soak period.
+      expect(
+        pickDecryptedSecret("enc:v1:malformed", "working-plaintext"),
+      ).toBe("working-plaintext");
+    });
+
+    it("returns null when encrypted fails AND plaintext is also missing", () => {
+      // Defensive: don't silently return the malformed ciphertext — the
+      // caller should treat this as a bad row and move on.
+      expect(pickDecryptedSecret("enc:v1:malformed", null)).toBeNull();
     });
   });
 });

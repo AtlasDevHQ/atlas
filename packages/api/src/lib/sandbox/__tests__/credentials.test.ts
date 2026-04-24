@@ -73,6 +73,18 @@ describe("F-41 sandbox_credentials dual-write + read priority", () => {
     expect(cred?.credentials).toEqual(fresh);
   });
 
+  it("ON CONFLICT DO UPDATE clause writes both JSONB and encrypted columns", async () => {
+    // JSONB analogue of the Slack test: a future refactor that drops
+    // `credentials_encrypted` from the UPDATE clause would leave the
+    // encrypted column stale on every re-save, invisible during
+    // dual-write but fatal post-#1832. Pin both column refs.
+    await saveSandboxCredential("org-1", "vercel", { token: "t" }, "Prod");
+    const insert = capturedQueries.find((q) => q.sql.includes("INSERT INTO sandbox_credentials"));
+    const sql = insert!.sql;
+    expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bcredentials\s*=\s*\$\d/);
+    expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bcredentials_encrypted\s*=\s*\$\d/);
+  });
+
   it("falls back to plaintext JSONB when credentials_encrypted is NULL", async () => {
     const legacy = { token: "legacy_token" };
     mockInternalQueryResult = [

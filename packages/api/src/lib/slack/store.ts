@@ -3,11 +3,6 @@
  *
  * Stores OAuth bot tokens in the internal database when available.
  * Falls back to SLACK_BOT_TOKEN env var for single-workspace mode.
- *
- * Bot tokens are encrypted at rest via `encryptSecret` — the handler
- * dual-writes both `bot_token` (plaintext, nullable post-F-41) and
- * `bot_token_encrypted`. Reads prefer the encrypted column and fall
- * back to plaintext for rows not yet migrated by the backfill script.
  */
 
 import {

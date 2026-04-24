@@ -2566,7 +2566,7 @@ token-bucket weighting where chat counts as N tokens.
 
 ---
 
-**F-75 — Webhook plugin has no replay-attack protection (no timestamp window)** — P2
+**F-75 — Webhook plugin has no replay-attack protection (no timestamp window)** — P2 — **shipped**
 
 **Location:** `plugins/webhook/src/routes.ts:43-60` (`verifyHmac`),
 `:31-41` (`verifyApiKey`).
@@ -2598,11 +2598,18 @@ the signing input — `${timestamp}:${body}` — and reject when the
 delta is > 300s. Match the Slack pattern. Add a small recent-nonce
 cache for in-window replay.
 
-**Issue:** #1846.
+**Remediation:** Shipped in `plugins/webhook/src/replay.ts` (timestamp
+window + nonce cache, 305s TTL keyed on `(channelId, signature)`),
+wired through `routes.ts`. HMAC mode requires the timestamp by
+default; api-key mode opts in via `requireTimestamp`. Soft-fail flag
+`ATLAS_WEBHOOK_REPLAY_LEGACY=true` lets operators stage upstream
+senders through the wire-format change before flipping to fail-closed.
+
+**Issue:** #1846 — closed by the F-75/F-76 webhook hardening PR.
 
 ---
 
-**F-76 — Webhook plugin has no per-channel rate limit; one secret leak = unbounded agent invocations** — P2
+**F-76 — Webhook plugin has no per-channel rate limit; one secret leak = unbounded agent invocations** — P2 — **shipped**
 
 **Location:** `plugins/webhook/src/routes.ts:115-236`.
 
@@ -2630,7 +2637,18 @@ on the `WebhookChannel` type. Borrow the `acquireSlot` /
 (60 RPM, 3 concurrent) so channels configured without overrides still
 get a ceiling.
 
-**Issue:** #1847.
+**Remediation:** Shipped in `plugins/webhook/src/throttle.ts`
+(borrows the shape from `lib/db/source-rate-limit.ts` but stays
+in-plugin so the standalone npm package keeps its no-`@atlas/api`
+shape — lift to a shared module once a second plugin needs it).
+Per-channel slot acquired before `executeQuery`, released in a
+`finally` block (sync) or after `processAsync` settles (async).
+Excess requests get `429` + `Retry-After` and a structured
+`webhook.rate_limited` log line for downstream abuse signals. Default
+ceilings 60 RPM / 3 concurrent apply when the channel doesn't
+override.
+
+**Issue:** #1847 — closed by the F-75/F-76 webhook hardening PR.
 
 ---
 
@@ -2913,8 +2931,8 @@ nsjail `-u 65534 -g 65534` runs as nobody. Verified-clean.
 |---|---|---|---|---|---|---|
 | F-73 | P1 | Live DoS surface | `/api/public/conversations/:token`, `/api/public/dashboards/:token` rate limit broken without `ATLAS_TRUST_PROXY` | SOC 2 CC6.6 / availability | #1844 | open |
 | F-74 | P2 | Hardening | Single global RPM bucket conflates chat (25-step) with cheap reads | — | #1845 | open |
-| F-75 | P2 | Replay protection gap | Webhook plugin has no timestamp-window check | SOC 2 CC6.7 | #1846 | open |
-| F-76 | P2 | Cost ceiling gap | Webhook plugin has no per-channel rate limit | — | #1847 | open |
+| F-75 | P2 | Replay protection gap | Webhook plugin has no timestamp-window check | SOC 2 CC6.7 | #1846 | shipped |
+| F-76 | P2 | Cost ceiling gap | Webhook plugin has no per-channel rate limit | — | #1847 | shipped |
 | F-77 | P2 | Hardening | No per-conversation aggregate budget cap | — | #1848 | open |
 | F-78 | P3 | Hardening | `just-bash` explore backend has no wall-clock timeout | — | — | noted |
 | F-79 | P3 | Hardening | Vercel python sandbox memory cap delegated to platform | — | — | noted |

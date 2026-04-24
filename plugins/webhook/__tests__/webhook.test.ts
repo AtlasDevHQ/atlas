@@ -10,7 +10,6 @@ import {
   test,
   expect,
   mock,
-  beforeEach,
   afterEach,
   type Mock,
 } from "bun:test";
@@ -19,6 +18,9 @@ import { Hono } from "hono";
 import { definePlugin, isInteractionPlugin } from "@useatlas/plugin-sdk";
 import { webhookPlugin, buildWebhookPlugin } from "../src/index";
 import type { WebhookPluginConfig, WebhookQueryResult } from "../src/index";
+import { createWebhookRoutes } from "../src/routes";
+import { createChannelThrottle } from "../src/throttle";
+import { createNonceCache } from "../src/replay";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -73,14 +75,42 @@ function createMockCtx() {
   };
 }
 
+/**
+ * Builds an isolated Hono app with fresh throttle + nonce caches so tests
+ * don't share state. Use this everywhere we exercise the route layer.
+ */
 function createTestApp(config: WebhookPluginConfig): Hono {
-  const plugin = buildWebhookPlugin(config);
+  const channelMap = new Map(config.channels.map((c) => [c.channelId, c]));
+  const log = {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  };
   const app = new Hono();
-  plugin.routes!(app);
+  app.route(
+    "",
+    createWebhookRoutes({
+      channels: channelMap,
+      log,
+      executeQuery: config.executeQuery,
+      replayMode: "strict",
+      throttle: createChannelThrottle(),
+      nonceCache: createNonceCache(),
+    }),
+  );
   return app;
 }
 
-function hmacSign(secret: string, body: string): string {
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function hmacSign(secret: string, body: string, timestamp: number): string {
+  return crypto.createHmac("sha256", secret).update(`${timestamp}:${body}`).digest("hex");
+}
+
+function hmacSignBodyOnly(secret: string, body: string): string {
   return crypto.createHmac("sha256", secret).update(body).digest("hex");
 }
 
@@ -152,6 +182,41 @@ describe("webhookPlugin — config validation", () => {
         executeQuery: mock(() => Promise.resolve(defaultQueryResult)),
       }),
     ).not.toThrow();
+  });
+
+  test("accepts rateLimitRpm + concurrencyLimit overrides", () => {
+    expect(() =>
+      webhookPlugin({
+        channels: [
+          {
+            channelId: "ch1",
+            authType: "api-key",
+            secret: "s",
+            responseFormat: "json",
+            rateLimitRpm: 120,
+            concurrencyLimit: 10,
+          },
+        ],
+        executeQuery: mock(() => Promise.resolve(defaultQueryResult)),
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects rateLimitRpm < 1", () => {
+    expect(() =>
+      webhookPlugin({
+        channels: [
+          {
+            channelId: "ch1",
+            authType: "api-key",
+            secret: "s",
+            responseFormat: "json",
+            rateLimitRpm: 0,
+          },
+        ],
+        executeQuery: mock(() => Promise.resolve(defaultQueryResult)),
+      }),
+    ).toThrow("Plugin config validation failed");
   });
 
   test("rejects empty channels array", () => {
@@ -346,7 +411,7 @@ describe("routes — API key auth", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Route tests: HMAC auth
+// Route tests: HMAC auth (F-75 wire format)
 // ---------------------------------------------------------------------------
 
 describe("routes — HMAC auth", () => {
@@ -367,10 +432,31 @@ describe("routes — HMAC auth", () => {
     );
   }
 
-  test("valid HMAC signature returns 200", async () => {
+  test("valid HMAC signature with timestamp returns 200", async () => {
     const app = createHmacApp();
     const body = JSON.stringify({ query: "revenue last month?" });
-    const signature = hmacSign(HMAC_SECRET, body);
+    const ts = nowSeconds();
+    const signature = hmacSign(HMAC_SECRET, body, ts);
+
+    const resp = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+        "X-Webhook-Timestamp": String(ts),
+      },
+      body,
+    });
+
+    expect(resp.status).toBe(200);
+    const json = (await resp.json()) as Record<string, unknown>;
+    expect(json.success).toBe(true);
+  });
+
+  test("missing timestamp returns 401 in strict mode", async () => {
+    const app = createHmacApp();
+    const body = JSON.stringify({ query: "revenue last month?" });
+    const signature = hmacSign(HMAC_SECRET, body, nowSeconds());
 
     const resp = await app.request("/webhook/hmac-channel", {
       method: "POST",
@@ -381,20 +467,22 @@ describe("routes — HMAC auth", () => {
       body,
     });
 
-    expect(resp.status).toBe(200);
+    expect(resp.status).toBe(401);
     const json = (await resp.json()) as Record<string, unknown>;
-    expect(json.success).toBe(true);
+    expect(String(json.error).toLowerCase()).toContain("timestamp");
   });
 
   test("invalid HMAC signature returns 401", async () => {
     const app = createHmacApp();
     const body = JSON.stringify({ query: "revenue last month?" });
+    const ts = nowSeconds();
 
     const resp = await app.request("/webhook/hmac-channel", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Webhook-Signature": "invalid-signature",
+        "X-Webhook-Timestamp": String(ts),
       },
       body,
     });
@@ -418,18 +506,441 @@ describe("routes — HMAC auth", () => {
     const app = createHmacApp();
     const bodyA = JSON.stringify({ query: "original query" });
     const bodyB = JSON.stringify({ query: "tampered query" });
-    const signatureForA = hmacSign(HMAC_SECRET, bodyA);
+    const ts = nowSeconds();
+    const signatureForA = hmacSign(HMAC_SECRET, bodyA, ts);
 
     const resp = await app.request("/webhook/hmac-channel", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Webhook-Signature": signatureForA,
+        "X-Webhook-Timestamp": String(ts),
       },
       body: bodyB,
     });
 
     expect(resp.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-75 — Replay protection
+// ---------------------------------------------------------------------------
+
+describe("F-75 — replay protection", () => {
+  const HMAC_SECRET = "hmac-test-secret";
+
+  function makeApp(): Hono {
+    return createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "hmac-channel",
+            authType: "hmac",
+            secret: HMAC_SECRET,
+            responseFormat: "json",
+          },
+        ],
+      }),
+    );
+  }
+
+  test("rejects request whose timestamp is 301 seconds old", async () => {
+    const app = makeApp();
+    const ts = nowSeconds() - 301;
+    const body = JSON.stringify({ query: "stale request" });
+    const signature = hmacSign(HMAC_SECRET, body, ts);
+
+    const resp = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+        "X-Webhook-Timestamp": String(ts),
+      },
+      body,
+    });
+
+    expect(resp.status).toBe(401);
+    const json = (await resp.json()) as Record<string, unknown>;
+    expect(json.error).toContain("window");
+  });
+
+  test("accepts request whose timestamp is 299 seconds old", async () => {
+    const app = makeApp();
+    const ts = nowSeconds() - 299;
+    const body = JSON.stringify({ query: "still fresh" });
+    const signature = hmacSign(HMAC_SECRET, body, ts);
+
+    const resp = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+        "X-Webhook-Timestamp": String(ts),
+      },
+      body,
+    });
+
+    expect(resp.status).toBe(200);
+  });
+
+  test("rejects future-dated timestamp outside window", async () => {
+    const app = makeApp();
+    const ts = nowSeconds() + 600;
+    const body = JSON.stringify({ query: "future" });
+    const signature = hmacSign(HMAC_SECRET, body, ts);
+
+    const resp = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+        "X-Webhook-Timestamp": String(ts),
+      },
+      body,
+    });
+
+    expect(resp.status).toBe(401);
+  });
+
+  test("rejects in-window replay of an already-seen signature", async () => {
+    const app = makeApp();
+    const ts = nowSeconds();
+    const body = JSON.stringify({ query: "replay me" });
+    const signature = hmacSign(HMAC_SECRET, body, ts);
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Webhook-Signature": signature,
+      "X-Webhook-Timestamp": String(ts),
+    };
+
+    const first = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(first.status).toBe(200);
+
+    const second = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(second.status).toBe(401);
+    const json = (await second.json()) as Record<string, unknown>;
+    expect(String(json.error)).toContain("Duplicate");
+  });
+
+  test("legacy mode accepts body-only HMAC when timestamp is missing", async () => {
+    const channelMap = new Map([
+      [
+        "hmac-channel",
+        {
+          channelId: "hmac-channel",
+          authType: "hmac" as const,
+          secret: HMAC_SECRET,
+          responseFormat: "json" as const,
+        },
+      ],
+    ]);
+    const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+    const app = new Hono();
+    app.route(
+      "",
+      createWebhookRoutes({
+        channels: channelMap,
+        log,
+        executeQuery: mock(() => Promise.resolve(defaultQueryResult)),
+        replayMode: "legacy",
+        throttle: createChannelThrottle(),
+        nonceCache: createNonceCache(),
+      }),
+    );
+
+    const body = JSON.stringify({ query: "legacy upstream" });
+    const signature = hmacSignBodyOnly(HMAC_SECRET, body);
+
+    const resp = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+      },
+      body,
+    });
+
+    expect(resp.status).toBe(200);
+  });
+
+  test("legacy mode still enforces timestamp window when one IS provided", async () => {
+    const channelMap = new Map([
+      [
+        "hmac-channel",
+        {
+          channelId: "hmac-channel",
+          authType: "hmac" as const,
+          secret: HMAC_SECRET,
+          responseFormat: "json" as const,
+        },
+      ],
+    ]);
+    const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+    const app = new Hono();
+    app.route(
+      "",
+      createWebhookRoutes({
+        channels: channelMap,
+        log,
+        executeQuery: mock(() => Promise.resolve(defaultQueryResult)),
+        replayMode: "legacy",
+        throttle: createChannelThrottle(),
+        nonceCache: createNonceCache(),
+      }),
+    );
+
+    const ts = nowSeconds() - 600;
+    const body = JSON.stringify({ query: "stale" });
+    const signature = hmacSign(HMAC_SECRET, body, ts);
+
+    const resp = await app.request("/webhook/hmac-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+        "X-Webhook-Timestamp": String(ts),
+      },
+      body,
+    });
+
+    expect(resp.status).toBe(401);
+  });
+
+  test("api-key channel with requireTimestamp rejects missing header", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            requireTimestamp: true,
+          },
+        ],
+      }),
+    );
+
+    const resp = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": TEST_SECRET,
+      },
+      body: JSON.stringify({ query: "needs timestamp" }),
+    });
+
+    expect(resp.status).toBe(401);
+    const json = (await resp.json()) as Record<string, unknown>;
+    expect(String(json.error).toLowerCase()).toContain("timestamp");
+  });
+
+  test("api-key channel with requireTimestamp rejects out-of-window header", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            requireTimestamp: true,
+          },
+        ],
+      }),
+    );
+
+    const resp = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": TEST_SECRET,
+        "X-Webhook-Timestamp": String(nowSeconds() - 1000),
+      },
+      body: JSON.stringify({ query: "stale" }),
+    });
+
+    expect(resp.status).toBe(401);
+  });
+
+  test("api-key channel with requireTimestamp accepts in-window header", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            requireTimestamp: true,
+          },
+        ],
+      }),
+    );
+
+    const resp = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": TEST_SECRET,
+        "X-Webhook-Timestamp": String(nowSeconds()),
+      },
+      body: JSON.stringify({ query: "fresh" }),
+    });
+
+    expect(resp.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-76 — Per-channel rate limit
+// ---------------------------------------------------------------------------
+
+describe("F-76 — per-channel rate limit", () => {
+  test("rejects (N+1)th in-flight request with 429 when concurrencyLimit reached", async () => {
+    const pending: Array<(value: WebhookQueryResult) => void> = [];
+    const slowQuery = mock(
+      () =>
+        new Promise<WebhookQueryResult>((resolve) => {
+          pending.push(resolve);
+        }),
+    ) as unknown as WebhookPluginConfig["executeQuery"];
+
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            concurrencyLimit: 2,
+            rateLimitRpm: 60,
+          },
+        ],
+        executeQuery: slowQuery,
+      }),
+    );
+
+    // Fire 2 requests that block (concurrencyLimit = 2) and 1 over the cap.
+    const inFlight1 = app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
+      body: JSON.stringify({ query: "slow 1" }),
+    });
+    const inFlight2 = app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
+      body: JSON.stringify({ query: "slow 2" }),
+    });
+    // Yield the event loop so the in-flight requests reach executeQuery and
+    // hold their concurrency slots before the 3rd request fires.
+    await new Promise((r) => setTimeout(r, 10));
+
+    const overflow = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
+      body: JSON.stringify({ query: "overflow" }),
+    });
+
+    expect(overflow.status).toBe(429);
+    expect(overflow.headers.get("retry-after")).toBeTruthy();
+    const json = (await overflow.json()) as Record<string, unknown>;
+    expect(json.reason).toBe("concurrency");
+
+    // Drain the in-flight requests so the test can finish.
+    for (const resolve of pending) resolve(defaultQueryResult);
+    await Promise.all([inFlight1, inFlight2]);
+  });
+
+  test("rejects rate-limited request when rateLimitRpm is reached", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            rateLimitRpm: 2,
+            concurrencyLimit: 10,
+          },
+        ],
+      }),
+    );
+
+    const fire = () =>
+      app.request("/webhook/test-channel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
+        body: JSON.stringify({ query: "ping" }),
+      });
+
+    expect((await fire()).status).toBe(200);
+    expect((await fire()).status).toBe(200);
+    const third = await fire();
+    expect(third.status).toBe(429);
+    expect(third.headers.get("retry-after")).toBeTruthy();
+    const json = (await third.json()) as Record<string, unknown>;
+    expect(json.reason).toBe("rate");
+  });
+
+  test("default limits apply when channel does not specify them", async () => {
+    // 60 RPM / 3 concurrent ceilings. We only verify defaults via a small
+    // burst — the assertion is that requests succeed under the default
+    // ceiling, not that we exhaust it.
+    const app = createTestApp(createMockConfig());
+
+    for (let i = 0; i < 5; i++) {
+      const resp = await app.request("/webhook/test-channel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
+        body: JSON.stringify({ query: `q-${i}` }),
+      });
+      expect(resp.status).toBe(200);
+    }
+  });
+
+  test("slot is released on validation failure (e.g. invalid JSON body)", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            concurrencyLimit: 1,
+            rateLimitRpm: 60,
+          },
+        ],
+      }),
+    );
+
+    // First request fails parsing — slot must be released before the second.
+    const bad = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
+      body: "not json",
+    });
+    expect(bad.status).toBe(400);
+
+    const good = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
+      body: JSON.stringify({ query: "after-bad" }),
+    });
+    expect(good.status).toBe(200);
   });
 });
 

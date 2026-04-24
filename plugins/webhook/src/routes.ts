@@ -4,7 +4,11 @@
  * - POST /webhook/:channelId — inbound webhook endpoint
  *
  * Authentication is per-channel: API key via `X-Webhook-Secret` header,
- * or HMAC-SHA256 via `X-Webhook-Signature` header.
+ * or HMAC-SHA256 via `X-Webhook-Signature` header. Both modes verify the
+ * `X-Webhook-Timestamp` header and reject requests outside a 5-minute
+ * window (F-75 — set ATLAS_WEBHOOK_REPLAY_LEGACY=true to soft-fail on a
+ * missing timestamp during the upgrade window). Each channel also has a
+ * per-channel RPM + concurrency throttle (F-76).
  *
  * Async mode provides at-most-once delivery — no retry on callback failure.
  */
@@ -13,6 +17,20 @@ import crypto from "crypto";
 import { Hono } from "hono";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type { WebhookChannel, WebhookPluginConfig, WebhookQueryResult } from "./config";
+import {
+  checkTimestamp,
+  createNonceCache,
+  parseReplayMode,
+  verifyHmacWithTimestamp,
+  type NonceCache,
+  type ReplayMode,
+} from "./replay";
+import {
+  createChannelThrottle,
+  DEFAULT_RATE_LIMIT,
+  type AcquireResult,
+  type ChannelThrottle,
+} from "./throttle";
 
 // ---------------------------------------------------------------------------
 // Runtime dependency interface
@@ -22,41 +40,25 @@ export interface WebhookRuntimeDeps {
   channels: Map<string, WebhookChannel>;
   log: PluginLogger;
   executeQuery: WebhookPluginConfig["executeQuery"];
+  /** Replay mode override for tests; defaults to ATLAS_WEBHOOK_REPLAY_LEGACY env. */
+  replayMode?: ReplayMode;
+  /** Throttle override for tests; defaults to a fresh in-memory throttle. */
+  throttle?: ChannelThrottle;
+  /** Nonce cache override for tests; defaults to a fresh in-memory cache. */
+  nonceCache?: NonceCache;
 }
 
 // ---------------------------------------------------------------------------
 // Auth helpers
 // ---------------------------------------------------------------------------
 
-function verifyApiKey(
-  channel: WebhookChannel,
-  request: Request,
-): boolean {
+function verifyApiKey(channel: WebhookChannel, request: Request): boolean {
   const provided = request.headers.get("x-webhook-secret");
   if (!provided) return false;
   const expected = Buffer.from(channel.secret);
   const actual = Buffer.from(provided);
   if (expected.length !== actual.length) return false;
   return crypto.timingSafeEqual(expected, actual);
-}
-
-function verifyHmac(
-  channel: WebhookChannel,
-  body: string,
-  request: Request,
-): boolean {
-  const signature = request.headers.get("x-webhook-signature");
-  if (!signature) return false;
-
-  const expected = crypto
-    .createHmac("sha256", channel.secret)
-    .update(body)
-    .digest("hex");
-
-  const expectedBuf = Buffer.from(expected);
-  const actualBuf = Buffer.from(signature);
-  if (expectedBuf.length !== actualBuf.length) return false;
-  return crypto.timingSafeEqual(expectedBuf, actualBuf);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +117,10 @@ function formatResult(result: WebhookQueryResult, format: "json" | "text") {
 export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
   const webhook = new Hono();
   const { channels, log } = deps;
+  const replayMode: ReplayMode =
+    deps.replayMode ?? parseReplayMode(process.env.ATLAS_WEBHOOK_REPLAY_LEGACY);
+  const throttle = deps.throttle ?? createChannelThrottle();
+  const nonceCache = deps.nonceCache ?? createNonceCache();
 
   webhook.post("/webhook/:channelId", async (c) => {
     const channelId = c.req.param("channelId");
@@ -126,23 +132,92 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
     }
 
     const body = await c.req.raw.clone().text();
+    const rawTimestamp = c.req.header("x-webhook-timestamp") ?? null;
+    const signatureHeader = c.req.header("x-webhook-signature") ?? null;
 
     if (channel.authType === "api-key") {
       if (!verifyApiKey(channel, c.req.raw)) {
         log.warn({ channelId }, "Webhook API key verification failed");
         return c.json({ error: "Invalid authentication" }, 401);
       }
-    } else {
-      if (!verifyHmac(channel, body, c.req.raw)) {
-        log.warn({ channelId }, "Webhook HMAC verification failed");
-        return c.json({ error: "Invalid signature" }, 401);
+      // Defense-in-depth: opt-in timestamp check for api-key channels.
+      // The legacy flag deliberately does not relax this — `requireTimestamp`
+      // is a new opt-in, so operators that turn it on are committing to the
+      // strict contract.
+      if (channel.requireTimestamp) {
+        const tsCheck = checkTimestamp(rawTimestamp);
+        if (!tsCheck.valid) {
+          log.warn(
+            { channelId, reason: tsCheck.error },
+            "Webhook api-key request rejected by timestamp window",
+          );
+          return c.json({ error: tsCheck.error }, 401);
+        }
       }
+    } else {
+      const result = verifyHmacWithTimestamp(
+        channel.secret,
+        signatureHeader,
+        rawTimestamp,
+        body,
+        replayMode,
+      );
+      if (!result.valid) {
+        log.warn(
+          { channelId, reason: result.error, replayMode },
+          "Webhook HMAC verification failed",
+        );
+        return c.json({ error: result.error }, 401);
+      }
+      if (replayMode === "legacy" && result.timestamp === null) {
+        log.warn(
+          { channelId },
+          "Webhook accepted under ATLAS_WEBHOOK_REPLAY_LEGACY — upstream sender is missing X-Webhook-Timestamp",
+        );
+      }
+      // In-window replay block. Only relevant when we actually have a signed
+      // payload to key on; legacy/no-timestamp paths skip the cache (they're
+      // already opted into a soft-fail mode).
+      if (signatureHeader && result.timestamp !== null) {
+        if (nonceCache.checkAndRecord(channelId, signatureHeader)) {
+          log.warn(
+            { channelId, event: "webhook.replay_blocked" },
+            "Webhook signature replayed within window",
+          );
+          return c.json({ error: "Duplicate signature" }, 401);
+        }
+      }
+    }
+
+    const limit = {
+      rateLimitRpm: channel.rateLimitRpm ?? DEFAULT_RATE_LIMIT.rateLimitRpm,
+      concurrencyLimit: channel.concurrencyLimit ?? DEFAULT_RATE_LIMIT.concurrencyLimit,
+    };
+    const slot: AcquireResult = throttle.acquire(channelId, limit);
+    if (!slot.ok) {
+      const retryAfterSeconds =
+        slot.reason === "rate" ? Math.max(1, Math.ceil(slot.retryAfterMs / 1000)) : 1;
+      log.warn(
+        {
+          channelId,
+          event: "webhook.rate_limited",
+          reason: slot.reason,
+          limit: slot.limit,
+        },
+        "Webhook request throttled",
+      );
+      return c.json(
+        { error: "Too many requests", reason: slot.reason },
+        429,
+        { "Retry-After": String(retryAfterSeconds) },
+      );
     }
 
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse(body);
     } catch (err) {
+      slot.release();
       log.warn(
         { err: err instanceof Error ? err.message : String(err), channelId },
         "Webhook received invalid JSON body",
@@ -152,6 +227,7 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
 
     const query = payload.query;
     if (!query || typeof query !== "string" || !query.trim()) {
+      slot.release();
       return c.json({ error: "Missing or empty query" }, 400);
     }
 
@@ -164,6 +240,7 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
     let callbackUrl: string | undefined;
     if (rawCallbackUrl) {
       if (!isAllowedCallbackUrl(rawCallbackUrl)) {
+        slot.release();
         return c.json({ error: "Invalid callback URL" }, 400);
       }
       callbackUrl = rawCallbackUrl;
@@ -207,10 +284,15 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
           );
           // Deliver error to callback so the caller knows the request failed
           await deliverCallback({ requestId, success: false, error: "Query execution failed" });
+        } finally {
+          // Concurrency slot is held for the full duration of the async run so
+          // that backlog can't pile up beyond `concurrencyLimit`.
+          slot.release();
         }
       };
 
       processAsync().catch((err) => {
+        slot.release();
         log.error(
           { err: err instanceof Error ? err.message : String(err), channelId, requestId },
           "Unhandled error in webhook async processing",
@@ -232,6 +314,8 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
         "Webhook query execution failed",
       );
       return c.json({ error: "Query execution failed" }, 500);
+    } finally {
+      slot.release();
     }
   });
 

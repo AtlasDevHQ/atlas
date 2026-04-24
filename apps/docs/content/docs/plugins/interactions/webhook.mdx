@@ -87,6 +87,9 @@ export default defineConfig({
 | `secret` | `string` | Yes | — | API key or HMAC secret for request verification. |
 | `responseFormat` | `"json" \| "text"` | No | `"json"` | Response format. `"json"` returns structured data; `"text"` returns the answer string only. |
 | `callbackUrl` | `string` | No | — | When set, the plugin accepts requests immediately and POSTs results to this URL when done. |
+| `rateLimitRpm` | `number` | No | `60` | Per-channel requests-per-minute cap. Excess returns `429` with a `Retry-After` header. |
+| `concurrencyLimit` | `number` | No | `3` | Per-channel concurrent in-flight cap. Excess returns `429` with a `Retry-After` header. |
+| `requireTimestamp` | `boolean` | No | `false` | For `api-key` channels only: require the `X-Webhook-Timestamp` header and enforce the 5-minute window. HMAC channels always require it (subject to the legacy flag). |
 
 ## Endpoint Reference
 
@@ -105,17 +108,23 @@ curl -X POST https://api.example.com/api/plugins/webhook-interaction/webhook/zap
   -d '{"query": "How many active users last month?"}'
 ```
 
-**HMAC mode** (`authType: "hmac"`): Compute an HMAC-SHA256 of the request body using the shared secret, and send the hex digest in the `X-Webhook-Signature` header.
+**HMAC mode** (`authType: "hmac"`): Compute an HMAC-SHA256 of `${timestamp}:${body}` using the shared secret. Send the hex digest in the `X-Webhook-Signature` header AND send the same Unix-second timestamp in the `X-Webhook-Timestamp` header. Requests outside a 5-minute window or with a previously-seen signature are rejected.
 
 ```bash
+TS=$(date +%s)
 BODY='{"query": "How many active users last month?"}'
-SIGNATURE=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "your-secret" | cut -d' ' -f2)
+SIGNATURE=$(printf "%s:%s" "$TS" "$BODY" | openssl dgst -sha256 -hmac "your-secret" | cut -d' ' -f2)
 
 curl -X POST https://api.example.com/api/plugins/webhook-interaction/webhook/n8n \
   -H "Content-Type: application/json" \
   -H "X-Webhook-Signature: $SIGNATURE" \
+  -H "X-Webhook-Timestamp: $TS" \
   -d "$BODY"
 ```
+
+<Callout type="warn">
+**Wire-format change in v0.0.7.** The HMAC signing input is now `${timestamp}:${body}` (previously just the body). Upstream senders that haven't updated yet can be staged through the upgrade by setting `ATLAS_WEBHOOK_REPLAY_LEGACY=true`, which makes a missing `X-Webhook-Timestamp` header soft-fail with a warning log instead of a 401. Plan to flip the env var off within a week — default is fail-closed.
+</Callout>
 
 #### Request Body
 
@@ -189,8 +198,9 @@ The plugin POSTs the full result to the callback URL when ready. Delivery is at-
 | Status | Meaning |
 |--------|---------|
 | `400` | Missing or empty `query`, or invalid JSON body |
-| `401` | Invalid API key or HMAC signature |
+| `401` | Invalid API key, HMAC signature, missing/stale timestamp, or in-window replay |
 | `404` | Unknown `channelId` |
+| `429` | Per-channel rate limit or concurrency cap hit; `Retry-After` header set |
 | `500` | Agent query execution failed |
 
 ## Platform Setup Guides
@@ -217,7 +227,7 @@ The plugin POSTs the full result to the callback URL when ready. Delivery is at-
 2. Set method to `POST` and URL to `https://your-atlas-api.com/api/plugins/webhook-interaction/webhook/n8n`.
 3. Under **Authentication**, add a header auth with `X-Webhook-Secret`.
 4. Set the JSON body: `{"query": "{{$json.question}}"}`.
-5. For HMAC auth, use a **Code** node to compute the signature and set `X-Webhook-Signature`.
+5. For HMAC auth, use a **Code** node to compute the signature over `${timestamp}:${body}`, then set both `X-Webhook-Signature` and `X-Webhook-Timestamp` (Unix seconds).
 
 <Callout type="info">
 The `executeQuery` callback is the bridge between the webhook plugin and the Atlas agent. It receives the user's question, runs the agent, and returns structured results with the SQL query, column names, and row data.

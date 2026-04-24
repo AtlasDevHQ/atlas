@@ -18,6 +18,24 @@ export const WebhookChannelSchema = z.object({
   responseFormat: z.enum(["json", "text"]).default("json"),
   /** Optional callback URL for async result delivery. */
   callbackUrl: z.string().url().optional(),
+  /**
+   * Per-channel rate limit (requests per minute). Defaults to 60.
+   * Caps LLM/sandbox cost when a channel secret leaks (F-76).
+   */
+  rateLimitRpm: z.number().int().min(1).optional(),
+  /**
+   * Per-channel concurrent in-flight request cap. Defaults to 3.
+   * Excess requests are rejected with 429 + Retry-After (F-76).
+   */
+  concurrencyLimit: z.number().int().min(1).optional(),
+  /**
+   * For api-key channels: require the X-Webhook-Timestamp header and reject
+   * requests outside the 5-minute window. Defense-in-depth against replay
+   * once the API key leaks. HMAC channels always require the timestamp
+   * (unless ATLAS_WEBHOOK_REPLAY_LEGACY=true is set during the upgrade
+   * window).
+   */
+  requireTimestamp: z.boolean().optional(),
 });
 
 export type WebhookChannel = z.infer<typeof WebhookChannelSchema>;

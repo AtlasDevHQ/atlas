@@ -1023,12 +1023,13 @@ export class ConnectionRegistry {
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start);
       // `errorMessage` scrubs driver-echoed DSN userinfo (`postgres://u:p@h/db`)
-      // from both the log field and the HealthCheckResult.message surfaced to
-      // admin UI / API consumers. The pino serializer would catch the log
-      // field on its own, but scrubbing here keeps the in-memory result and
-      // the emitted log consistent.
-      const rawMessage = errorMessage(err);
-      log.warn({ err: rawMessage, connectionId: id, latencyMs }, "Health check failed");
+      // so the `HealthCheckResult.message` surfaced to admin UI / API
+      // consumers can't leak credentials. The log line passes the original
+      // `err` through so the pino err serializer preserves
+      // `{type, message, stack}` — the stack is useful for triage; scrubbing
+      // there is handled centrally by `scrubErrSerializer` in `lib/logger.ts`.
+      const scrubbedMessage = errorMessage(err);
+      log.warn({ err, connectionId: id, latencyMs }, "Health check failed");
       entry.consecutiveFailures++;
       if (entry.firstFailureAt === null) {
         entry.firstFailureAt = Date.now();
@@ -1046,7 +1047,7 @@ export class ConnectionRegistry {
       const result: HealthCheckResult = {
         status,
         latencyMs,
-        message: matched?.message ?? rawMessage,
+        message: matched?.message ?? scrubbedMessage,
         checkedAt: new Date(),
       };
       entry.lastHealth = result;

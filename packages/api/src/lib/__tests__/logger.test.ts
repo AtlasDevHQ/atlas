@@ -365,6 +365,29 @@ describe("logger", () => {
       expect((out.nested as { raw: string }).raw).toBe("postgres://u:p@h/db");
     });
 
+    test("does not mutate the caller's object (copy-on-write)", () => {
+      // pino passes the caller's merged log object by reference. If the
+      // formatter mutated it, a caller that logs a long-lived reference
+      // would observe the scrubbed string in their in-memory state.
+      const caller = {
+        msg: "x",
+        reason: "postgres://u:p@h/db failed",
+        other: "noop",
+      };
+      const before = { ...caller };
+      const out = scrubLogFormatter(caller);
+      expect(caller).toEqual(before);
+      expect(caller.reason).toBe("postgres://u:p@h/db failed");
+      expect((out as { reason: string }).reason).toBe("postgres://***@h/db failed");
+      expect(out).not.toBe(caller);
+    });
+
+    test("does not clone when no field matches (allocation-free hot path)", () => {
+      const caller = { msg: "x", note: "no secrets here", latencyMs: 42 };
+      const out = scrubLogFormatter(caller);
+      expect(out).toBe(caller);
+    });
+
     test("fails open — returns original object if scrubbing throws", () => {
       // Simulate a pathological string via a Proxy that throws on read. The
       // formatter must still return an object — never throw, never drop.

@@ -152,6 +152,12 @@ export function scrubErrSerializer(value: unknown): unknown {
  * already covered by `redact.paths` wildcards; recursing deeper would pay an
  * allocation cost on every log call for diminishing returns.
  *
+ * Copy-on-write: pino passes the caller's merged object by reference. If a
+ * caller logs a long-lived reference (e.g. `log.warn(entry.lastHealth, ...)`)
+ * and we mutated it, the scrubbed string would replace the original in the
+ * caller's in-memory state. We clone on the first match so the caller's
+ * object is never touched. Common case (no match) stays allocation-free.
+ *
  * Fail-open: any exception returns the original object so the line still
  * emits.
  */
@@ -159,13 +165,15 @@ export function scrubLogFormatter(
   obj: Record<string, unknown>,
 ): Record<string, unknown> {
   try {
+    let out: Record<string, unknown> = obj;
     for (const key of Object.keys(obj)) {
       const value = obj[key];
       if (typeof value === "string" && CREDENTIAL_URI_PATTERN.test(value)) {
-        obj[key] = errorMessage(value);
+        if (out === obj) out = { ...obj };
+        out[key] = errorMessage(value);
       }
     }
-    return obj;
+    return out;
   } catch {
     return obj;
   }

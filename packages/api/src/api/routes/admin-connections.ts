@@ -384,7 +384,7 @@ adminConnections.openapi(getOrgPoolMetricsRoute, async (c) => runHandler(c, "get
     }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
-    return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics", requestId }, 500);
+    return c.json({ error: "metrics_failed", message: errorMessage(err), requestId }, 500);
   }
 }));
 
@@ -421,7 +421,7 @@ adminConnections.openapi(drainOrgPoolRoute, async (c) => runHandler(c, "drain or
     return c.json(result, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId: targetOrgId, requestId }, "Org pool drain failed");
-    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed", requestId }, 500);
+    return c.json({ error: "drain_failed", message: errorMessage(err), requestId }, 500);
   }
 }));
 
@@ -451,7 +451,7 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "d
     return c.json({ drained: true, message: result.message }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
-    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed", requestId }, 500);
+    return c.json({ error: "drain_failed", message: errorMessage(err), requestId }, 500);
   }
 }));
 
@@ -476,7 +476,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
   try {
     dbType = detectDBType(url);
   } catch (err) {
-    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+    return c.json({ error: "invalid_request", message: errorMessage(err), requestId }, 400);
   }
 
   const tempId = `_test_${Date.now()}`;
@@ -512,7 +512,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
     });
     return c.json({
       error: "connection_failed",
-      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+      message: `Connection test failed: ${errorMessage(err)}`,
       requestId,
     }, 400);
   } finally {
@@ -609,7 +609,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   try {
     dbType = detectDBType(url);
   } catch (err) {
-    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+    return c.json({ error: "invalid_request", message: errorMessage(err), requestId }, 400);
   }
 
   if (connections.has(id)) {
@@ -648,7 +648,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     connections.unregister(id);
     return c.json({
       error: "connection_failed",
-      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
+      message: `Connection test failed: ${errorMessage(err)}. Fix the URL and try again.`,
       requestId,
     }, 400);
   }
@@ -772,7 +772,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     try {
       dbType = detectDBType(newUrl);
     } catch (err) {
-      return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+      return c.json({ error: "invalid_request", message: errorMessage(err), requestId }, 400);
     }
   }
 
@@ -790,7 +790,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
         log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
         connections.unregister(id);
       }
-      const baseMsg = `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`;
+      const baseMsg = `Connection test failed: ${errorMessage(err)}. Fix the URL and try again.`;
       if (rollbackFailed) {
         return c.json({ error: "internal_error", message: `${baseMsg} The connection may need a server restart to restore.`, requestId }, 500);
       }

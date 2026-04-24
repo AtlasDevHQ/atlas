@@ -1355,8 +1355,13 @@ export const adminActionLog = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     timestamp: timestamp("timestamp", { withTimezone: true }).notNull().defaultNow(),
-    actorId: text("actor_id").notNull(),
-    actorEmail: text("actor_email").notNull(),
+    // actorId / actorEmail relaxed to nullable in migration 0035 (F-36)
+    // to back the GDPR "right to erasure" contract — scrubbed rows set
+    // both columns to NULL and stamp `anonymizedAt`. Live-write rows
+    // remain populated by `logAdminAction`; nullability applies only to
+    // the post-erasure state.
+    actorId: text("actor_id"),
+    actorEmail: text("actor_email"),
     scope: text("scope").notNull().default("workspace"),
     orgId: text("org_id"),
     actionType: text("action_type").notNull(),
@@ -1366,6 +1371,8 @@ export const adminActionLog = pgTable(
     metadata: jsonb("metadata"),
     ipAddress: text("ip_address"),
     requestId: text("request_id").notNull(),
+    /** GDPR erasure marker (F-36). NULL = not scrubbed; non-NULL = actor_id + actor_email are NULL. */
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
   },
   (t) => [
     index("idx_admin_action_log_timestamp").on(t.timestamp),

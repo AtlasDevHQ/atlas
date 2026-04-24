@@ -13,6 +13,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 const log = createLogger("ee:audit-purge");
 
@@ -21,9 +22,13 @@ const DEFAULT_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Reserved system-actor string for every audit row written by the purge
- * scheduler (cycle rows + any library-layer hard-delete rows triggered from
- * within a cycle). Exported so retention.ts and tests can pin the format
- * rather than duplicate the literal. See F-27.
+ * scheduler (cycle rows + library-layer hard-delete rows triggered from
+ * within a cycle) AND for system-initiated erasure paths (`user.erase` via
+ * `anonymizeUserAdminActions`, including DSR-ticket and scheduled-retention
+ * flows). Exported so retention.ts and tests can pin the format rather than
+ * duplicate the literal. See F-27 and F-36. If the actor surface ever needs
+ * splitting (e.g., a dedicated `system:user-erasure` for DSR flows), both
+ * places that use this literal must move together.
  */
 export const AUDIT_PURGE_SCHEDULER_ACTOR = "system:audit-purge-scheduler" as const;
 
@@ -72,6 +77,17 @@ const runAuditLogBranch = (): Effect.Effect<void> =>
         log.info({ deletedCount: hardResult.deletedCount }, "Audit purge cycle: hard-delete complete");
       }
 
+      // Always log cycle completion to pino so a zero-count tick still
+      // leaves an operational breadcrumb. The admin_action_log cycle row
+      // is the forensic store, but the F-27 "absence of a cycle row =
+      // scheduler stopped" invariant depends on that INSERT actually
+      // landing — if the internal-DB circuit breaker is open, the INSERT
+      // silently drops. The pino line is the fallback signal.
+      log.info(
+        { totalSoftDeleted, hardDeleted: hardResult.deletedCount, orgs: softResults.length },
+        "Audit purge cycle complete",
+      );
+
       // Self-audit the cycle (F-27). Emitted even at zero rows — the
       // *absence* of a cycle row over a retention window is itself
       // evidence the scheduler stopped, which a compliance reviewer must
@@ -108,16 +124,16 @@ const runAuditLogBranch = (): Effect.Effect<void> =>
           scope: "platform",
           systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
           status: "failure",
-          metadata: { error: err.message, softDeleted: 0, hardDeleted: 0, orgs: 0 },
+          metadata: { error: errorMessage(err), softDeleted: 0, hardDeleted: 0, orgs: 0 },
         });
       } catch (auditErr: unknown) {
         log.error(
-          { err: auditErr instanceof Error ? auditErr.message : String(auditErr) },
+          { err: errorMessage(auditErr) },
           "Audit purge cycle failure-row emission itself threw — original error preserved below",
         );
       }
       log.error(
-        { err: err.message },
+        { err: errorMessage(err) },
         "Audit purge cycle failed — will retry next interval",
       );
       return Effect.void;
@@ -149,6 +165,14 @@ const runAdminActionBranch = (): Effect.Effect<void> =>
         );
       }
 
+      // Always log cycle completion (see audit-log branch for rationale —
+      // the pino line is the fallback when the internal-DB circuit
+      // breaker silently drops the admin_action_log INSERT).
+      log.info(
+        { deleted: totalDeleted, orgs: purgeResults.length },
+        "Admin-action purge cycle complete",
+      );
+
       logAdminAction({
         actionType: ADMIN_ACTIONS.admin_action_log.purgeCycle,
         targetType: "admin_action_log",
@@ -172,16 +196,16 @@ const runAdminActionBranch = (): Effect.Effect<void> =>
           scope: "platform",
           systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
           status: "failure",
-          metadata: { error: err.message, deleted: 0, orgs: 0 },
+          metadata: { error: errorMessage(err), deleted: 0, orgs: 0 },
         });
       } catch (auditErr: unknown) {
         log.error(
-          { err: auditErr instanceof Error ? auditErr.message : String(auditErr) },
+          { err: errorMessage(auditErr) },
           "Admin-action purge cycle failure-row emission itself threw — original error preserved below",
         );
       }
       log.error(
-        { err: err.message },
+        { err: errorMessage(err) },
         "Admin-action purge cycle failed — will retry next interval",
       );
       return Effect.void;

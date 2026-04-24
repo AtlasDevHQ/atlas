@@ -237,11 +237,14 @@ export const ADMIN_ACTIONS = {
   /**
    * Admin-action retention domain (F-36). Parallels `audit_retention.*`
    * but governs the `admin_action_log` table instead of `audit_log`.
-   * `policyUpdate` covers the admin-mutated retention policy; `manualPurge`
-   * is reserved for the Phase 2 admin-UI hard-delete button; `hardDelete`
-   * is emitted by the scheduler-driven `purgeAdminActionExpired` when
-   * `count > 0` (consistent with the F-27 zero-row suppression to keep
-   * scheduler health noise out of the admin trail). Design doc:
+   * `policyUpdate` is reserved for the Phase 2 admin-UI policy editor
+   * (#1813 — no route emits it yet; the library layer in `ee/src/audit/retention.ts`
+   * would add a `setAdminActionRetentionPolicy` sibling of the existing
+   * `setRetentionPolicy` when that surface lands). `manualPurge` is also
+   * reserved for the Phase 2 admin-UI hard-delete button. `hardDelete`
+   * is live: emitted by the scheduler-driven `purgeAdminActionExpired`
+   * when `count > 0` (consistent with the F-27 zero-row suppression to
+   * keep scheduler health noise out of the admin trail). Design doc:
    * `.claude/research/design/admin-action-log-retention.md`.
    */
   admin_action_retention: {

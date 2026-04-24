@@ -24,7 +24,8 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { AUDIT_PURGE_SCHEDULER_ACTOR } from "./purge-scheduler";
 
 const log = createLogger("ee:audit-retention");
@@ -570,33 +571,57 @@ export const exportAuditLog = (options: ExportOptions): Effect.Effect<{
  * Hard-delete `admin_action_log` rows past the retention window for every
  * configured org (or a single org when `orgId` is provided).
  *
+ * Per-config errors are isolated: one org's DB failure cannot erase the
+ * forensic record of other orgs' successful deletes on the same cycle.
+ * Partial progress is reflected in the `failedOrgs` metadata on the
+ * self-audit row so a compliance reviewer sees exactly which configs
+ * succeeded and which errored.
+ *
  * Emits `admin_action_retention.hard_delete` under the reserved
  * `system:audit-purge-scheduler` actor when the total deleted count is > 0,
  * mirroring the F-27 zero-row suppression on `hardDeleteExpired`.
  */
-export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActionPurgeResult[], EnterpriseError> =>
+export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActionPurgeResult[], EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("audit-retention");
     if (!hasInternalDB()) return [];
 
     const pool = getInternalDB();
 
-    // Fetch applicable retention configs — mirrors audit-log path.
+    // Fetch applicable retention configs — mirrors audit-log path. A DB
+    // failure here cannot be isolated (nothing to iterate yet), so a
+    // typed failure surfaces to the scheduler's catchAll which emits the
+    // cycle failure-row.
     const configs = orgId
-      ? yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
-          `SELECT org_id, retention_days FROM admin_action_retention_config WHERE org_id = $1 AND retention_days IS NOT NULL`,
-          [orgId],
-        ))
-      : yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
-          `SELECT org_id, retention_days FROM admin_action_retention_config WHERE retention_days IS NOT NULL`,
-        ));
+      ? yield* Effect.tryPromise({
+          try: () => internalQuery<RetentionConfigRow>(
+            `SELECT org_id, retention_days FROM admin_action_retention_config WHERE org_id = $1 AND retention_days IS NOT NULL`,
+            [orgId],
+          ),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        })
+      : yield* Effect.tryPromise({
+          try: () => internalQuery<RetentionConfigRow>(
+            `SELECT org_id, retention_days FROM admin_action_retention_config WHERE retention_days IS NOT NULL`,
+          ),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        });
 
     const results: AdminActionPurgeResult[] = [];
     const affectedOrgs: Array<{ orgId: string; deletedCount: number }> = [];
+    const failedOrgs: Array<{ orgId: string; error: string }> = [];
     let totalDeleted = 0;
 
     for (const config of configs) {
-      if (config.retention_days === null) continue;
+      // Defensive skip: the SELECT already filters retention_days IS NOT
+      // NULL. A config row without a window shouldn't arrive here, but if
+      // a future callsite bypasses the SELECT filter, an unlimited-retention
+      // row would trip the `($2 || ' days')::interval` cast on NULL. Warn +
+      // skip so the scheduler stays safe.
+      if (config.retention_days === null) {
+        log.warn({ orgId: config.org_id }, "admin_action_retention_config.retention_days unexpectedly null — skipping");
+        continue;
+      }
 
       // Platform-scope config row keys on reserved literal 'platform' —
       // delete only the platform-scoped rows on that config. Per-org
@@ -608,26 +633,49 @@ export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActi
         : `scope = 'workspace' AND org_id = $1`;
       const scopeParams = isPlatformConfig ? [] : [config.org_id];
 
-      const result = yield* Effect.promise(() => pool.query(
-        `WITH deleted AS (
-           DELETE FROM admin_action_log
-           WHERE ${scopeFilter}
-             AND timestamp < now() - ($${scopeParams.length + 1} || ' days')::interval
-           RETURNING 1
-         ) SELECT COUNT(*)::int AS cnt FROM deleted`,
-        [...scopeParams, config.retention_days],
-      ));
+      // Single statement: DELETE + metadata UPDATE in one transactional CTE.
+      // Prior shape ran two queries — a partial failure could commit the
+      // delete without recording last_purge_at, which is the admin-UI lie
+      // the Phase 2 surface must not inherit. The `meta` CTE writes the
+      // count back to admin_action_retention_config atomically.
+      const result = yield* Effect.either(Effect.tryPromise({
+        try: () => pool.query(
+          `WITH deleted AS (
+             DELETE FROM admin_action_log
+             WHERE ${scopeFilter}
+               AND timestamp < now() - ($${scopeParams.length + 1} || ' days')::interval
+             RETURNING 1
+           ),
+           cnt AS (SELECT COUNT(*)::int AS n FROM deleted),
+           meta AS (
+             UPDATE admin_action_retention_config
+             SET last_purge_at = now(), last_purge_count = (SELECT n FROM cnt)
+             WHERE org_id = $${scopeParams.length + 2}
+             RETURNING 1
+           )
+           SELECT n AS cnt FROM cnt`,
+          [...scopeParams, config.retention_days, config.org_id],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }));
 
-      const count = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
+      if (result._tag === "Left") {
+        // Preserve partial progress: earlier orgs' delete counts stay in
+        // `results` and `affectedOrgs`. A combined failure would erase
+        // those forensic rows on the first error. The scrubbed error is
+        // captured for the self-audit row's metadata.
+        const scrubbed = errorMessage(result.left);
+        failedOrgs.push({ orgId: config.org_id, error: scrubbed });
+        log.warn(
+          { orgId: config.org_id, err: scrubbed },
+          "admin_action_log purge failed for org — continuing with remaining configs",
+        );
+        continue;
+      }
+
+      const count = Number((result.right.rows[0] as Record<string, unknown>)?.cnt ?? 0);
       totalDeleted += count;
       results.push({ orgId: config.org_id, deletedCount: count });
-
-      // Update last-purge metadata so the admin UI in Phase 2 can show
-      // "last purged X rows on Y" without scanning admin_action_log.
-      yield* Effect.promise(() => pool.query(
-        `UPDATE admin_action_retention_config SET last_purge_at = now(), last_purge_count = $1 WHERE org_id = $2`,
-        [count, config.org_id],
-      ));
 
       if (count > 0) {
         affectedOrgs.push({ orgId: config.org_id, deletedCount: count });
@@ -641,18 +689,23 @@ export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActi
     // Self-audit row. Follows the F-27 convention: suppressed at zero
     // (the outer scheduler cycle row proves liveness), suppressed under
     // HTTP (route-layer emission is the richer source when the Phase 2
-    // admin UI lands).
-    if (totalDeleted > 0 && !isHttpContext()) {
+    // admin UI lands). Emission also fires when any per-org failures
+    // occurred, regardless of totalDeleted — a failure during erasure of
+    // scheduled retention is itself a forensic signal that must land.
+    const shouldEmit = (totalDeleted > 0 || failedOrgs.length > 0) && !isHttpContext();
+    if (shouldEmit) {
       logAdminAction({
         actionType: ADMIN_ACTIONS.admin_action_retention.hardDelete,
         targetType: "admin_action_retention",
         targetId: orgId ?? "all",
         scope: "platform",
+        status: failedOrgs.length > 0 && totalDeleted === 0 ? "failure" : "success",
         systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
         metadata: {
           deletedCount: totalDeleted,
           orgCount: affectedOrgs.length,
           affectedOrgs,
+          ...(failedOrgs.length > 0 && { failedOrgs }),
         },
       });
     }
@@ -673,6 +726,21 @@ export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActi
  * regulator-facing contract is "we processed the request," and a zero-row
  * result means "this user never wrote to admin_action_log," which is
  * still forensic evidence the request was handled.
+ *
+ * **Emission is unconditional on HTTP context.** Every other library-layer
+ * emission in this file (policyUpdate, hardDelete, admin-action hardDelete)
+ * gates on `!isHttpContext()` to dedup with a F-26 / Phase-2 route-layer
+ * emission. Erasure is different: there is no planned route-layer
+ * `user.erase` emission — the Phase 2 "Erase user" admin route MUST call
+ * this function and NOT emit its own row. If that contract changes, this
+ * call becomes double-audit; the docstring of the function is the contract
+ * declaration so a future maintainer doesn't accidentally split the row.
+ *
+ * **Durability:** unlike the fire-and-forget `logAdminAction` used by
+ * `hardDeleteExpired`, erasure uses `logAdminActionAwait` so the compliance
+ * row is synchronously committed. A failure to write the audit row
+ * surfaces as an Effect error to the caller — "scrub + no audit row" is
+ * not a valid final state under the regulator-facing contract.
  */
 export const anonymizeUserAdminActions = (
   userId: string,
@@ -681,6 +749,17 @@ export const anonymizeUserAdminActions = (
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("audit-retention");
     yield* requireInternalDBEffect("admin action log erasure");
+
+    // Input validation: empty / whitespace userId would scan every row
+    // matching `actor_id = ''` (empty-string matches nothing in practice,
+    // but whitespace-only values could poison the audit trail by writing
+    // meaningless `user.erase` rows keyed on blank user ids).
+    if (typeof userId !== "string" || userId.trim() === "") {
+      return yield* Effect.fail(new RetentionError({
+        message: `Invalid userId: must be a non-empty string.`,
+        code: "validation",
+      }));
+    }
 
     // Belt-and-brace the compile-time type with a runtime check. The
     // initiatedBy label drives DSR reporting — a typo via an `as any`
@@ -694,18 +773,21 @@ export const anonymizeUserAdminActions = (
 
     const pool = getInternalDB();
 
-    const result = yield* Effect.promise(() => pool.query(
-      `WITH updated AS (
-         UPDATE admin_action_log
-         SET actor_id = NULL,
-             actor_email = NULL,
-             anonymized_at = now()
-         WHERE actor_id = $1
-           AND anonymized_at IS NULL
-         RETURNING 1
-       ) SELECT COUNT(*)::int AS cnt FROM updated`,
-      [userId],
-    ));
+    const result = yield* Effect.tryPromise({
+      try: () => pool.query(
+        `WITH updated AS (
+           UPDATE admin_action_log
+           SET actor_id = NULL,
+               actor_email = NULL,
+               anonymized_at = now()
+           WHERE actor_id = $1
+             AND anonymized_at IS NULL
+           RETURNING 1
+         ) SELECT COUNT(*)::int AS cnt FROM updated`,
+        [userId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     const anonymizedRowCount = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
 
@@ -716,18 +798,23 @@ export const anonymizeUserAdminActions = (
 
     // Emit `user.erase` unconditionally (zero rows included). The erasure
     // request was processed — the audit trail records that it happened
-    // regardless of whether there was anything to scrub.
-    logAdminAction({
-      actionType: ADMIN_ACTIONS.user.erase,
-      targetType: "user",
-      targetId: userId,
-      scope: "platform",
-      systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
-      metadata: {
-        targetUserId: userId,
-        anonymizedRowCount,
-        initiatedBy,
-      },
+    // regardless of whether there was anything to scrub. Awaited so a
+    // DB failure on the audit INSERT surfaces to the caller instead of
+    // leaving a "scrubbed without audit row" final state.
+    yield* Effect.tryPromise({
+      try: () => logAdminActionAwait({
+        actionType: ADMIN_ACTIONS.user.erase,
+        targetType: "user",
+        targetId: userId,
+        scope: "platform",
+        systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
+        metadata: {
+          targetUserId: userId,
+          anonymizedRowCount,
+          initiatedBy,
+        },
+      }),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
     return { anonymizedRowCount };

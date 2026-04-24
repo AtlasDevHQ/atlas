@@ -54,6 +54,13 @@ mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
   },
+  // F-36 erasure uses the awaitable variant so a failure to commit the
+  // audit row surfaces to the caller instead of leaving "scrubbed without
+  // audit row" state. Both variants push to the same in-memory list so
+  // tests can assert against auditCalls uniformly.
+  logAdminActionAwait: async (entry: Record<string, unknown>) => {
+    auditCalls.push(entry);
+  },
   ADMIN_ACTIONS: {
     audit_log: { purgeCycle: "audit_log.purge_cycle" },
     admin_action_log: { purgeCycle: "admin_action_log.purge_cycle" },
@@ -71,6 +78,14 @@ mock.module("@atlas/api/lib/audit", () => ({
     },
     user: { erase: "user.erase" },
   },
+}));
+
+// `errorMessage` from `@atlas/api/lib/audit/error-scrub` — used by retention.ts
+// for audit-metadata scrubbing on failure paths. Stub to pass-through so the
+// test assertions can pattern-match error text directly.
+mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+  errorMessage: (err: unknown) => err instanceof Error ? err.message : String(err),
+  causeToError: (_cause: unknown) => undefined,
 }));
 
 // NOTE: this literal must stay in sync with the real
@@ -658,6 +673,21 @@ describe("anonymizeUserAdminActions (F-36)", () => {
     ).rejects.toThrow(/initiatedBy/i);
   });
 
+  it("rejects empty-string userId (avoids poisoning the audit trail with blank user.erase rows)", async () => {
+    // Without this guard, `userId = ""` would scan actor_id = '' (empty
+    // matches nothing in practice) and then emit a user.erase row keyed
+    // on a blank identifier — a meaningless compliance record.
+    await expect(
+      run(anonymizeUserAdminActions("", "self_request")),
+    ).rejects.toThrow(/userId/i);
+  });
+
+  it("rejects whitespace-only userId", async () => {
+    await expect(
+      run(anonymizeUserAdminActions("   ", "self_request")),
+    ).rejects.toThrow(/userId/i);
+  });
+
   it("throws when enterprise is not enabled (gated like other retention ops)", async () => {
     mockEnterpriseEnabled = false;
     mockLicenseKey = undefined;
@@ -719,9 +749,129 @@ describe("purgeAdminActionExpired (F-36)", () => {
     expect(result[1].orgId).toBe("org-1");
     expect(result[1].deletedCount).toBe(4);
 
-    // Each config -> one DELETE + one config-metadata update
+    // One DELETE+metadata CTE per config (combined in one statement).
     const deleteCalls = mockPool.query.mock.calls.filter((c) => /DELETE\s+FROM\s+admin_action_log/i.test(String(c[0])));
     expect(deleteCalls.length).toBe(2);
+  });
+
+  it("pins the scope-partition SQL predicates — platform-vs-workspace are distinct", async () => {
+    // Load-bearing compliance invariant: a workspace retention policy must
+    // NOT delete platform-scoped rows, and vice versa. The branch is driven
+    // by `config.org_id === "platform"` and emits different SQL predicates.
+    // A regression that swaps the branches or drops the `AND org_id = $1`
+    // clause would leak rows across the scope boundary silently.
+    queryResults = [
+      [
+        { org_id: "platform", retention_days: 2555 },
+        { org_id: "org-1", retention_days: 365 },
+      ],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 1 }] }));
+
+    await run(purgeAdminActionExpired());
+
+    const deleteCalls = mockPool.query.mock.calls.filter((c) => /DELETE\s+FROM\s+admin_action_log/i.test(String(c[0])));
+    expect(deleteCalls.length).toBe(2);
+
+    // Platform config — config.retention_days is bound to $1, config.org_id to $2.
+    const platformCall = deleteCalls.find((c) => (c[1] as unknown[])[0] === 2555);
+    expect(platformCall).toBeDefined();
+    const platformSql = String(platformCall![0]);
+    expect(platformSql).toMatch(/scope\s*=\s*'platform'/i);
+    expect(platformSql).not.toMatch(/scope\s*=\s*'workspace'/i);
+    // Platform branch has no $1 org_id binding on the delete predicate.
+    expect(platformSql).not.toMatch(/WHERE\s+scope\s*=\s*'platform'\s+AND\s+org_id\s*=/i);
+
+    // Workspace config — retention_days at $2 (because $1 is org_id).
+    const workspaceCall = deleteCalls.find((c) => (c[1] as unknown[])[0] === "org-1");
+    expect(workspaceCall).toBeDefined();
+    const workspaceSql = String(workspaceCall![0]);
+    expect(workspaceSql).toMatch(/scope\s*=\s*'workspace'\s+AND\s+org_id\s*=\s*\$1/i);
+    expect(workspaceSql).not.toMatch(/scope\s*=\s*'platform'/i);
+  });
+
+  it("writes last_purge_at + last_purge_count atomically in the same CTE (no split-write risk)", async () => {
+    // A prior shape ran the metadata UPDATE as a separate query after the
+    // DELETE — partial failure would let rows disappear while the admin
+    // UI kept showing "last purged: never." Fold into one statement so
+    // either both writes commit or neither does.
+    queryResults = [
+      [{ org_id: "org-1", retention_days: 365 }],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 3 }] }));
+
+    await run(purgeAdminActionExpired("org-1"));
+
+    const deleteCalls = mockPool.query.mock.calls.filter((c) => /DELETE\s+FROM\s+admin_action_log/i.test(String(c[0])));
+    expect(deleteCalls.length).toBe(1);
+    const sql = String(deleteCalls[0]![0]);
+    // Must include the DELETE + count CTE + metadata UPDATE in one statement.
+    expect(sql).toMatch(/WITH\s+deleted\s+AS/i);
+    expect(sql).toMatch(/UPDATE\s+admin_action_retention_config[\s\S]*last_purge_at\s*=\s*now\(\)[\s\S]*last_purge_count/i);
+
+    // No follow-up solo UPDATE to admin_action_retention_config should fire.
+    const metadataUpdates = mockPool.query.mock.calls.filter((c) => {
+      const s = String(c[0]);
+      return /UPDATE\s+admin_action_retention_config/i.test(s) && !/WITH\s+deleted/i.test(s);
+    });
+    expect(metadataUpdates.length).toBe(0);
+  });
+
+  it("isolates per-config DB errors — earlier successes still emit the hard_delete row", async () => {
+    // I2 from the silent-failure hunt: a failure on iteration 2 must not
+    // discard iteration 1's successful delete count. The self-audit row
+    // must fire and carry both `affectedOrgs` (successes) and `failedOrgs`
+    // so a compliance reviewer sees partial progress.
+    queryResults = [
+      [
+        { org_id: "org-1", retention_days: 365 },
+        { org_id: "org-2", retention_days: 365 },
+      ],
+    ];
+    let call = 0;
+    mockPool.query.mockImplementation(async () => {
+      call++;
+      if (call === 1) return { rows: [{ cnt: 5 }] };
+      throw new Error("postgres exploded on org-2");
+    });
+
+    const result = await run(purgeAdminActionExpired());
+    // Only org-1 made it into the results array.
+    expect(result).toHaveLength(1);
+    expect(result[0].orgId).toBe("org-1");
+    expect(result[0].deletedCount).toBe(5);
+
+    const hardRows = auditCalls.filter((c) => c.actionType === "admin_action_retention.hard_delete");
+    expect(hardRows).toHaveLength(1);
+    const meta = hardRows[0].metadata as {
+      deletedCount: number;
+      orgCount: number;
+      affectedOrgs: Array<{ orgId: string; deletedCount: number }>;
+      failedOrgs: Array<{ orgId: string; error: string }>;
+    };
+    expect(meta.deletedCount).toBe(5);
+    expect(meta.affectedOrgs).toEqual([{ orgId: "org-1", deletedCount: 5 }]);
+    expect(meta.failedOrgs).toHaveLength(1);
+    expect(meta.failedOrgs[0].orgId).toBe("org-2");
+    expect(meta.failedOrgs[0].error).toContain("postgres exploded");
+  });
+
+  it("defensively skips a config row with retention_days === null", async () => {
+    // The SELECT filters `retention_days IS NOT NULL`, so this is dead code
+    // in the happy path — but it's load-bearing against a future callsite
+    // that bypasses the SELECT filter. An unlimited-retention row would
+    // otherwise trip `($N || ' days')::interval` on NULL.
+    queryResults = [
+      [{ org_id: "org-1", retention_days: null }],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 99 }] }));
+
+    const result = await run(purgeAdminActionExpired());
+    expect(result).toEqual([]);
+
+    // No DELETE should have fired for the null-retention config.
+    const deleteCalls = mockPool.query.mock.calls.filter((c) => /DELETE\s+FROM\s+admin_action_log/i.test(String(c[0])));
+    expect(deleteCalls.length).toBe(0);
   });
 
   it("emits admin_action_retention.hard_delete audit row when count > 0 (outside HTTP)", async () => {

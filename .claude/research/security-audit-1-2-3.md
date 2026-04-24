@@ -1524,7 +1524,10 @@ Phase-1 F-04 fixed the auth gap on install routes (PR #1748). Callbacks now reco
 
 ### Append-only integrity — verified
 
-- **`admin_action_log`**: no `UPDATE` or `DELETE` statements anywhere in `packages/`, `ee/`, or `apps/` (verified by grep of `UPDATE admin_action_log` + `DELETE FROM admin_action_log` across the whole repo — zero matches). Enforcement is convention-level: there is no RLS policy, DB trigger, or per-role grant revoking UPDATE/DELETE to application roles. A misbehaving route could technically issue either. **Mitigation:** consider migration that revokes UPDATE/DELETE on `admin_action_log` from the app role; ship only the INSERT grant. Tracked as F-40 below (P3).
+- **`admin_action_log`**: mutations are tightly scoped and all legitimate post-F-36:
+  - `UPDATE admin_action_log SET actor_id = NULL, actor_email = NULL, anonymized_at = now() WHERE actor_id = $1 AND anonymized_at IS NULL` — `ee/audit/retention.ts#anonymizeUserAdminActions` (GDPR / CCPA right-to-erasure; idempotent via the NULL guard).
+  - `DELETE FROM admin_action_log WHERE ... AND timestamp < now() - ...` — `ee/audit/retention.ts#purgeAdminActionExpired` (retention-window hard-delete under `admin_action_retention_config`).
+  Both paths are documented + gated by retention / erasure and fire self-audit rows under the `system:audit-purge-scheduler` actor. No route-layer mutation paths. Enforcement is still convention-level at the DB (no RLS policy, no per-role grant revocation); a misbehaving future route could technically issue either statement. **Mitigation:** migration to `REVOKE UPDATE, DELETE ON admin_action_log FROM app_role` tracked as F-40 below (P3).
 - **`audit_log`**: mutations are tightly scoped and all legitimate:
   - `UPDATE audit_log SET deleted_at = now()` — `ee/audit/retention.ts#purgeExpiredEntries` (soft-delete under retention policy).
   - `DELETE FROM audit_log WHERE deleted_at < now() - interval` — `ee/audit/retention.ts#hardDeleteExpired` (hard-delete under retention policy).

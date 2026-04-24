@@ -86,8 +86,17 @@ mock.module("./retention", () => ({
   },
 }));
 
+mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+  errorMessage: (err: unknown) => err instanceof Error ? err.message : String(err),
+  causeToError: (_cause: unknown) => undefined,
+}));
+
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
+    auditCalls.push(entry);
+    if (auditShouldThrow) throw auditShouldThrow;
+  },
+  logAdminActionAwait: async (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
     if (auditShouldThrow) throw auditShouldThrow;
   },

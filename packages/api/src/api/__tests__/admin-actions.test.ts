@@ -154,6 +154,48 @@ describe("GET /api/v1/admin/admin-actions", () => {
     expect(action.scope).toBe("workspace");
   });
 
+  it("passes through anonymized rows (F-36 GDPR erasure) without throwing", async () => {
+    // Post-F-36 a row may arrive with actor_id/email set to NULL and
+    // anonymized_at set. The row type + Zod response schema must not
+    // reject — a scrubbed row that crashes the list endpoint would
+    // break compliance by taking the admin UI offline for every tenant
+    // containing an erased user.
+    const SCRUBBED_ACTION = {
+      ...SAMPLE_WORKSPACE_ACTION,
+      id: "act-ws-scrubbed",
+      actor_id: null,
+      actor_email: null,
+      anonymized_at: "2026-04-24T10:00:00Z",
+    };
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT(*)")) return [{ count: 1 }];
+      return [SCRUBBED_ACTION];
+    });
+
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions"));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { actions: Array<Record<string, unknown>> };
+    const action = body.actions[0];
+    expect(action.actorId).toBeNull();
+    expect(action.actorEmail).toBeNull();
+    expect(action.anonymizedAt).toBe("2026-04-24T10:00:00Z");
+    // Non-erased columns are still intact — the sequence of actions is preserved.
+    expect(action.actionType).toBe("settings.update");
+    expect(action.targetType).toBe("settings");
+  });
+
+  it("SELECT includes anonymized_at column (backs the scrubbed-row contract)", async () => {
+    let capturedSql: string | undefined;
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (!sql.includes("COUNT(*)")) capturedSql = sql;
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions"));
+    expect(capturedSql).toContain("anonymized_at");
+  });
+
   it("filters by org_id in SQL query (org isolation)", async () => {
     let capturedParams: unknown[] | undefined;
     let capturedSql: string | undefined;

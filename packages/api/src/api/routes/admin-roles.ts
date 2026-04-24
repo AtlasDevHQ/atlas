@@ -3,17 +3,29 @@
  *
  * Mounted under /api/v1/admin/roles. All routes require admin role AND
  * enterprise license (enforced within the roles service layer).
+ *
+ * Audit emission: every write path (`role.create|update|delete|assign`)
+ * emits a `logAdminAction` row on success AND failure. The mutation-with-
+ * prior-state handlers (update / delete / assign) pre-fetch the existing
+ * row so the audit metadata captures what was replaced or removed — a
+ * compromised admin can't stage permissions, exploit them, and purge the
+ * trail. See F-25 in .claude/research/security-audit-1-2-3.md.
  */
 
-import { Effect } from "effect";
+import { Array as Arr, Cause, Effect, Option } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
   listRoles,
   createRole,
   updateRole,
   deleteRole,
+  getRole,
+  getRoleByName,
   listRoleMembers,
   assignRole,
   RoleError,
@@ -21,6 +33,37 @@ import {
 } from "@atlas/ee/auth/roles";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+function clientIP(c: Context): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+}
+
+const ERROR_MESSAGE_MAX = 512;
+
+// Strip credential-bearing URI userinfo so pg error text that leaks a
+// connection string can't land in `admin_action_log.metadata`. Bounded so
+// JSONB rows stay small.
+function errorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const scrubbed = raw.replace(
+    /\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi,
+    "$1://***@",
+  );
+  return scrubbed.length > ERROR_MESSAGE_MAX
+    ? `${scrubbed.slice(0, ERROR_MESSAGE_MAX - 3)}...`
+    : scrubbed;
+}
+
+// Extract the primary error from an Effect Cause — covers typed failures
+// AND defects (rejected `Effect.promise`, `Effect.die`). Returns undefined
+// on pure interrupts (no error to report).
+function causeToError(cause: Cause.Cause<unknown>): unknown | undefined {
+  if (Cause.isInterruptedOnly(cause)) return undefined;
+  const failure = Cause.failureOption(cause);
+  if (Option.isSome(failure)) return failure.value;
+  const defects = Arr.fromIterable(Cause.defects(cause));
+  return defects[0];
+}
 
 const roleDomainError = domainError(RoleError, { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 });
 
@@ -213,52 +256,221 @@ adminRoles.openapi(listRolesRoute, async (c) => {
 
 // POST / — create a custom role
 adminRoles.openapi(createRoleRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const body = c.req.valid("json");
+  const roleName = body.name?.toLowerCase().trim() ?? "";
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const body = c.req.valid("json");
 
     if (!body.name || !body.permissions || !Array.isArray(body.permissions)) {
       return c.json({ error: "bad_request", message: "Missing required fields: name, permissions." }, 400);
     }
 
     const role = yield* createRole(orgId!, body);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.role.create,
+      targetType: "role",
+      targetId: role.id,
+      ipAddress,
+      metadata: {
+        roleId: role.id,
+        roleName: role.name,
+        permissions: role.permissions,
+      },
+    });
+
     return c.json({ role }, 201);
-  }), { label: "create role", domainErrors: [roleDomainError] });
+  }).pipe(
+    // `tapErrorCause` catches both typed failures (RoleError /
+    // EnterpriseError from `yield*`) AND defects from `Effect.promise`
+    // (rejected DB promises — pool exhaustion, network drops). `tapError`
+    // alone would miss defects, dropping the audit row on the exact
+    // failure mode a malicious admin would probe for.
+    Effect.tapErrorCause((cause) => {
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.role.create,
+          // No role id yet — key the row by the attempted name so forensic
+          // queries can pivot across "admin tried to create X" even when
+          // the row was never persisted. `roleId: null` in metadata keeps
+          // the column shape aligned with update/delete/assign so
+          // compliance queries can UNION across the four actions.
+          targetType: "role",
+          targetId: roleName || "unknown",
+          status: "failure",
+          ipAddress,
+          metadata: {
+            roleId: null,
+            roleName,
+            permissions: body.permissions,
+            error: errorMessage(err),
+          },
+        }),
+      );
+    }),
+  ), { label: "create role", domainErrors: [roleDomainError] });
 });
 
 // PUT /:id — update a custom role
 adminRoles.openapi(updateRoleRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const { id: roleId } = c.req.valid("param");
+  const body = c.req.valid("json");
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const { id: roleId } = c.req.valid("param");
 
     if (!isValidId(roleId)) {
       return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
     }
 
-    const body = c.req.valid("json");
+    // Pre-fetch so the audit row captures what the update replaced. Without
+    // this a compromised admin could flip a role from `query` to
+    // `query,admin:audit` and the audit trail would only show the new perms
+    // — forensic reconstruction needs the delta.
+    const prior = yield* getRole(orgId!, roleId);
 
     const role = yield* updateRole(orgId!, roleId, body);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.role.update,
+      targetType: "role",
+      targetId: role.id,
+      ipAddress,
+      metadata: {
+        roleId: role.id,
+        roleName: role.name,
+        permissions: role.permissions,
+        previousPermissions: prior?.permissions ?? null,
+      },
+    });
+
     return c.json({ role }, 200);
-  }), { label: "update role", domainErrors: [roleDomainError] });
+  }).pipe(
+    Effect.tapErrorCause((cause) =>
+      Effect.gen(function* () {
+        const err = causeToError(cause);
+        if (err === undefined) return;
+        // Best-effort pre-fetch for the failure row too. Swallow errors
+        // from this lookup so the audit emission isn't dropped when the
+        // underlying DB is the failure itself.
+        const { orgId } = yield* AuthContext;
+        const prior = yield* getRole(orgId!, roleId).pipe(
+          Effect.catchAll(() => Effect.succeed(null)),
+        );
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.role.update,
+          targetType: "role",
+          targetId: roleId,
+          status: "failure",
+          ipAddress,
+          metadata: {
+            roleId,
+            roleName: prior?.name ?? null,
+            permissions: body.permissions ?? null,
+            previousPermissions: prior?.permissions ?? null,
+            error: errorMessage(err),
+          },
+        });
+      }),
+    ),
+  ), { label: "update role", domainErrors: [roleDomainError] });
 });
 
 // DELETE /:id — delete a custom role
 adminRoles.openapi(deleteRoleRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const { id: roleId } = c.req.valid("param");
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const { id: roleId } = c.req.valid("param");
 
     if (!isValidId(roleId)) {
       return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
     }
 
-    const deleted = yield* deleteRole(orgId!, roleId);
-    if (!deleted) {
+    // Pre-fetch the row BEFORE calling deleteRole. Without this the audit
+    // metadata can't record which permissions were revoked — the row is
+    // gone by the time we'd emit.
+    const existing = yield* getRole(orgId!, roleId);
+
+    if (!existing) {
+      // Admin attempted to delete a role that doesn't exist — a probe
+      // pattern an attacker exercises before pivoting. Emit as failure so
+      // forensic queries filtering on `status = 'failure'` catch it.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.role.delete,
+        targetType: "role",
+        targetId: roleId,
+        status: "failure",
+        ipAddress,
+        metadata: { roleId, found: false },
+      });
       return c.json({ error: "not_found", message: "Role not found." }, 404);
     }
+
+    const deleted = yield* deleteRole(orgId!, roleId);
+
+    if (!deleted) {
+      // Race between pre-fetch and delete — audit must not claim a
+      // successful removal that didn't happen.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.role.delete,
+        targetType: "role",
+        targetId: roleId,
+        status: "failure",
+        ipAddress,
+        metadata: {
+          roleId,
+          roleName: existing.name,
+          permissions: existing.permissions,
+          reason: "race_deleted_between_fetch_and_delete",
+        },
+      });
+      return c.json({ error: "not_found", message: "Role not found." }, 404);
+    }
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.role.delete,
+      targetType: "role",
+      targetId: roleId,
+      ipAddress,
+      metadata: {
+        roleId,
+        roleName: existing.name,
+        permissions: existing.permissions,
+      },
+    });
     return c.json({ message: "Role deleted." }, 200);
-  }), { label: "delete role", domainErrors: [roleDomainError] });
+  }).pipe(
+    Effect.tapErrorCause((cause) =>
+      Effect.gen(function* () {
+        const err = causeToError(cause);
+        if (err === undefined) return;
+        const { orgId } = yield* AuthContext;
+        const prior = yield* getRole(orgId!, roleId).pipe(
+          Effect.catchAll(() => Effect.succeed(null)),
+        );
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.role.delete,
+          targetType: "role",
+          targetId: roleId,
+          status: "failure",
+          ipAddress,
+          metadata: {
+            roleId,
+            roleName: prior?.name ?? null,
+            permissions: prior?.permissions ?? null,
+            error: errorMessage(err),
+          },
+        });
+      }),
+    ),
+  ), { label: "delete role", domainErrors: [roleDomainError] });
 });
 
 // GET /:id/members — list members with a specific role
@@ -278,19 +490,83 @@ adminRoles.openapi(listRoleMembersRoute, async (c) => {
 
 // PUT /users/:userId/role — assign a role to a user
 adminRoles.openapi(assignRoleRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const { userId } = c.req.valid("param");
+  const { role: roleName } = c.req.valid("json");
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const { userId } = c.req.valid("param");
 
     if (!isValidId(userId)) {
       return c.json({ error: "bad_request", message: "Invalid user ID." }, 400);
     }
 
-    const { role: roleName } = c.req.valid("json");
+    // Pre-fetch role row (by name) to resolve a stable roleId for the audit,
+    // and the user's existing member.role so the audit captures what was
+    // replaced. Mirrors the `user.change_role` pattern in admin.ts —
+    // compliance reconstruction needs the before-state, not just the after.
+    const targetRole = yield* getRoleByName(orgId!, roleName);
+    const priorRows = yield* Effect.tryPromise({
+      try: () => internalQuery<{ role: string }>(
+        `SELECT role FROM member WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
+        [orgId, userId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll(() => Effect.succeed([])));
+    const previousRole = priorRows[0]?.role ?? null;
 
     const result = yield* assignRole(orgId!, userId, roleName);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.role.assign,
+      targetType: "role",
+      targetId: targetRole?.id ?? roleName,
+      ipAddress,
+      metadata: {
+        roleId: targetRole?.id ?? null,
+        roleName: result.role,
+        userId,
+        previousRole,
+      },
+    });
+
     return c.json(result, 200);
-  }), { label: "assign role", domainErrors: [roleDomainError] });
+  }).pipe(
+    Effect.tapErrorCause((cause) =>
+      Effect.gen(function* () {
+        const err = causeToError(cause);
+        if (err === undefined) return;
+        // Re-run the same best-effort lookups so the failure row carries
+        // the same shape as the success row — compliance queries can then
+        // union on metadata keys without special-casing the failure path.
+        const { orgId } = yield* AuthContext;
+        const targetRole = yield* getRoleByName(orgId!, roleName).pipe(
+          Effect.catchAll(() => Effect.succeed(null)),
+        );
+        const priorRows = yield* Effect.tryPromise({
+          try: () => internalQuery<{ role: string }>(
+            `SELECT role FROM member WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
+            [orgId, userId],
+          ),
+          catch: (e) => e instanceof Error ? e : new Error(String(e)),
+        }).pipe(Effect.catchAll(() => Effect.succeed([] as Array<{ role: string }>)));
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.role.assign,
+          targetType: "role",
+          targetId: targetRole?.id ?? roleName,
+          status: "failure",
+          ipAddress,
+          metadata: {
+            roleId: targetRole?.id ?? null,
+            roleName,
+            userId,
+            previousRole: priorRows[0]?.role ?? null,
+            error: errorMessage(err),
+          },
+        });
+      }),
+    ),
+  ), { label: "assign role", domainErrors: [roleDomainError] });
 });
 
 export { adminRoles };

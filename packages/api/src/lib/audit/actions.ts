@@ -110,6 +110,19 @@ export const ADMIN_ACTIONS = {
     groupMappingDelete: "scim.group_mapping_delete",
   },
   /**
+   * EE custom RBAC mutations. Without these entries the Better-Auth
+   * `user.change_role` trail covers platform-role changes but a workspace
+   * admin can define a role with `admin:audit` / `connection:delete`, assign
+   * it to any org member, and leave no forensic trace. See F-25 in
+   * .claude/research/security-audit-1-2-3.md.
+   */
+  role: {
+    create: "role.create",
+    update: "role.update",
+    delete: "role.delete",
+    assign: "role.assign",
+  },
+  /**
    * Without these entries a compromised admin could shrink retentionDays
    * and hard-delete the audit trail leaving zero forensic record.
    */

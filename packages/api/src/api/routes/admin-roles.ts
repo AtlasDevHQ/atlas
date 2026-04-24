@@ -42,7 +42,7 @@ const ERROR_MESSAGE_MAX = 512;
 
 // Strip credential-bearing URI userinfo so pg error text that leaks a
 // connection string can't land in `admin_action_log.metadata`. Bounded so
-// JSONB rows stay small. Mirrors the helper in admin-scim.ts.
+// JSONB rows stay small.
 function errorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   const scrubbed = raw.replace(
@@ -283,11 +283,11 @@ adminRoles.openapi(createRoleRoute, async (c) => {
 
     return c.json({ role }, 201);
   }).pipe(
-    // `tapErrorCause` sees both typed failures (RoleError / EnterpriseError
-    // from `yield*`) and defects (rejected `Effect.promise`). Earlier SCIM
-    // iterations used `tapError` and missed pool-exhaustion defects — the
-    // audit trail went blank on the exact failure mode a malicious admin
-    // would look to exploit.
+    // `tapErrorCause` catches both typed failures (RoleError /
+    // EnterpriseError from `yield*`) AND defects from `Effect.promise`
+    // (rejected DB promises — pool exhaustion, network drops). `tapError`
+    // alone would miss defects, dropping the audit row on the exact
+    // failure mode a malicious admin would probe for.
     Effect.tapErrorCause((cause) => {
       const err = causeToError(cause);
       if (err === undefined) return Effect.void;
@@ -296,12 +296,15 @@ adminRoles.openapi(createRoleRoute, async (c) => {
           actionType: ADMIN_ACTIONS.role.create,
           // No role id yet — key the row by the attempted name so forensic
           // queries can pivot across "admin tried to create X" even when
-          // the row was never persisted.
+          // the row was never persisted. `roleId: null` in metadata keeps
+          // the column shape aligned with update/delete/assign so
+          // compliance queries can UNION across the four actions.
           targetType: "role",
           targetId: roleName || "unknown",
           status: "failure",
           ipAddress,
           metadata: {
+            roleId: null,
             roleName,
             permissions: body.permissions,
             error: errorMessage(err),
@@ -396,10 +399,14 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
     const existing = yield* getRole(orgId!, roleId);
 
     if (!existing) {
+      // Admin attempted to delete a role that doesn't exist — a probe
+      // pattern an attacker exercises before pivoting. Emit as failure so
+      // forensic queries filtering on `status = 'failure'` catch it.
       logAdminAction({
         actionType: ADMIN_ACTIONS.role.delete,
         targetType: "role",
         targetId: roleId,
+        status: "failure",
         ipAddress,
         metadata: { roleId, found: false },
       });

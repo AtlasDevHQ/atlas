@@ -1,5 +1,5 @@
 /**
- * Tests for admin custom-role audit emission (F-25 / #1780).
+ * Tests for admin custom-role audit emission (F-25).
  *
  * Covers the four write routes under /api/v1/admin/roles:
  *   - POST   /                          (role.create)
@@ -243,6 +243,10 @@ describe("admin roles — POST / (role.create)", () => {
     const metadata = entry.metadata as Record<string, unknown>;
     expect(metadata.roleName).toBe("auditor");
     expect(metadata.error).toContain("already exists");
+    // `roleId: null` keeps the create failure row shape-compatible with
+    // update/delete/assign so compliance queries can UNION across the
+    // four `role.*` actions without special-casing create.
+    expect(metadata.roleId).toBeNull();
   });
 
   it("emits failure audit when EE call dies (defect path)", async () => {
@@ -382,7 +386,7 @@ describe("admin roles — DELETE /{id} (role.delete)", () => {
     expect(entry.status).toBeUndefined();
   });
 
-  it("emits { roleId, found: false } when the role does not exist", async () => {
+  it("emits status:failure with { roleId, found: false } when the role does not exist", async () => {
     mockGetRole.mockImplementation(() => Effect.succeed(null));
 
     const res = await app.fetch(
@@ -392,10 +396,13 @@ describe("admin roles — DELETE /{id} (role.delete)", () => {
     expect(res.status).toBe(404);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = mockLogAdminAction.mock.calls[0][0];
+    // Not-found deletes must record as failure — a `status='failure'`
+    // filter in forensic queries would otherwise miss probe attempts.
     expect(entry).toMatchObject({
       actionType: "role.delete",
       targetType: "role",
       targetId: "role_missing",
+      status: "failure",
       metadata: { roleId: "role_missing", found: false },
     });
     // deleteRole should NOT have been invoked when pre-fetch showed nothing.
@@ -636,6 +643,159 @@ describe("admin roles — non-admin callers don't emit audit", () => {
     expect(mockLogAdminAction).not.toHaveBeenCalled();
     // Service was never invoked — a non-admin caller must not trigger a DB
     // write even when the audit emission is already guarded.
+    expect(mockCreateRole).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /{id} — race between pre-fetch and delete
+// ---------------------------------------------------------------------------
+
+describe("admin roles — DELETE /{id} race handling", () => {
+  it("emits status:failure with race reason when deleteRole returns false", async () => {
+    // Pre-fetch sees the row → existing is populated.
+    // deleteRole races and returns false (row gone).
+    // Audit must NOT claim a successful revoke that didn't happen.
+    mockGetRole.mockImplementation(() => Effect.succeed(existingRole));
+    mockDeleteRole.mockImplementation(() => Effect.succeed(false));
+
+    const res = await app.fetch(
+      rolesRequest("/api/v1/admin/roles/role_abc123", "DELETE"),
+    );
+
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0][0];
+    expect(entry).toMatchObject({
+      actionType: "role.delete",
+      targetType: "role",
+      targetId: "role_abc123",
+      status: "failure",
+      metadata: {
+        roleId: "role_abc123",
+        roleName: "auditor",
+        permissions: ["query", "admin:audit"],
+        reason: "race_deleted_between_fetch_and_delete",
+      },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Credential scrubbing in error metadata
+// ---------------------------------------------------------------------------
+
+describe("admin roles — audit payload hygiene", () => {
+  it("scrubs connection-string credentials from create failure metadata", async () => {
+    mockCreateRole.mockImplementation(() =>
+      Effect.die(
+        new Error("pg error: connect ECONNREFUSED postgres://admin:hunter2@10.0.0.1:5432/atlas"),
+      ),
+    );
+
+    await app.fetch(
+      rolesRequest("/api/v1/admin/roles", "POST", {
+        name: "auditor",
+        permissions: ["query"],
+      }),
+    );
+
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0][0];
+    const errorText = (entry.metadata as Record<string, unknown>).error as string;
+    // Userinfo replaced; scheme + host retained for forensics.
+    expect(errorText).not.toContain("hunter2");
+    expect(errorText).not.toContain("admin:");
+    expect(errorText).toContain("postgres://***@10.0.0.1");
+  });
+
+  it("captures x-forwarded-for into ipAddress on success audit", async () => {
+    const created = { ...existingRole, id: "role_ip1" };
+    mockCreateRole.mockImplementation(() => Effect.succeed(created));
+
+    await app.fetch(
+      new Request("http://localhost/api/v1/admin/roles", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": "198.51.100.42",
+        },
+        body: JSON.stringify({ name: "auditor", permissions: ["query"] }),
+      }),
+    );
+
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    expect(mockLogAdminAction.mock.calls[0][0].ipAddress).toBe("198.51.100.42");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Middleware short-circuits — audit contract at the edge
+// ---------------------------------------------------------------------------
+//
+// The "every write attempt is traced" contract must not leak into
+// middleware that runs before the handler. If a caller hits the route with
+// an invalid body (422 Zod) OR without an internal DB (404 short-circuit)
+// OR without an active organization (400 short-circuit), no audit row
+// should emit — there is no admin write to audit yet. A future refactor
+// that moves audit emission into middleware could silently break this;
+// these tests pin the current contract.
+
+describe("admin roles — middleware short-circuits don't emit audit", () => {
+  it("POST / with an invalid body returns 4xx and no audit row", async () => {
+    // `name` missing fails the `min(1)` zod constraint.
+    const res = await app.fetch(
+      rolesRequest("/api/v1/admin/roles", "POST", { permissions: ["query"] }),
+    );
+
+    // `@hono/zod-openapi` returns 400 via validationHook for this repo.
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+    expect(mockCreateRole).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 and no audit row when internal DB is not configured", async () => {
+    mocks.hasInternalDB = false;
+    mockCreateRole.mockImplementation(() => Effect.succeed(existingRole));
+
+    const res = await app.fetch(
+      rolesRequest("/api/v1/admin/roles", "POST", {
+        name: "auditor",
+        permissions: ["query"],
+      }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+    expect(mockCreateRole).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 and no audit row when admin has no active organization", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: {
+          id: "admin-1",
+          mode: "managed",
+          label: "admin@test.com",
+          role: "admin",
+          // no activeOrganizationId
+        },
+      }),
+    );
+    mockCreateRole.mockImplementation(() => Effect.succeed(existingRole));
+
+    const res = await app.fetch(
+      rolesRequest("/api/v1/admin/roles", "POST", {
+        name: "auditor",
+        permissions: ["query"],
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
     expect(mockCreateRole).not.toHaveBeenCalled();
   });
 });

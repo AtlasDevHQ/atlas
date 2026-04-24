@@ -1483,6 +1483,15 @@ GDPR "right to erasure" support is the open design decision the fix PR must prop
 
 **Issue:** #1791.
 
+**Status:** fixed phase 1. Design + data layer landed in PR <this-pr> (closes #1791 phase 1; Phase 2 admin-UI surface tracked in follow-up). Design commitments codified in `.claude/research/design/admin-action-log-retention.md` and pinned by tests:
+- **Erasure shape — option 1 (NULL + `anonymized_at` timestamp).** Migration `0035_admin_action_retention.sql` adds `anonymized_at TIMESTAMPTZ` to `admin_action_log`, relaxes `actor_id` / `actor_email` to nullable so the erasure writer can scrub both columns to NULL, and carries a partial index `idx_admin_action_log_anonymized_at` for scrubbed-row forensic queries. `anonymizeUserAdminActions(userId, initiatedBy)` in `ee/src/audit/retention.ts` runs the UPDATE inside a single-statement CTE with an `anonymized_at IS NULL` idempotency guard so a second erasure run does not refresh the first-scrub timestamp.
+- **Retention default — 7 years (`2555` days).** Parallel `admin_action_retention_config` table (separate from `audit_retention_config`, not a `table_name` discriminator on it — see D4 of the design doc) reuses `MIN_RETENTION_DAYS = 7` and `DEFAULT_HARD_DELETE_DELAY_DAYS = 30` by shape parity. No per-org row exists until policy is set; an operator who never configures a policy gets unlimited retention (same convention as audit-log).
+- **pino boundary — out-of-band.** The forensic store is `admin_action_log`; pino is the operational log. Phase 1 does not redact pino pre-write; the Phase 2 UI will carry helper copy reading "Identifiers are removed from the audit log. Pino / operational logs are controlled by your log-aggregator retention policy." This keeps operational triage readable while the regulator-facing promise ("prove user X's identifier is gone") resolves against the DB.
+- **Self-audit row shape — per-table, not combined.** Scheduler emits two rows per tick: `audit_log.purge_cycle` (existing, F-27) and `admin_action_log.purge_cycle` (new). The two branches are independent `Effect.tryPromise` calls so one table's failure cannot suppress the other's cycle row; the F-27 "absence of a cycle row = scheduler stopped" invariant extends to per-table granularity so a reviewer can detect a table-scoped outage.
+- **`user.erase` emits even at zero rows.** The regulator-facing contract is "we processed the request" — a zero-row erasure is still forensic evidence. Metadata carries `{ targetUserId, anonymizedRowCount, initiatedBy: "self_request" | "dsr_request" | "scheduled_retention" }` with a runtime guard on `initiatedBy` so a typo at a future callsite fails loudly instead of quietly rewriting the DSR-reporting split.
+
+**Phase 2 (admin UI surface) tracked as #1813** — `/admin/audit/retention` gains a second tab for admin-action retention, plus a "Erase user" action that calls `anonymizeUserAdminActions`. Phase 2 is a UI-only follow-up; the data contract is frozen by this PR.
+
 ---
 
 **F-37 — Low-signal admin writes unaudited: cache purge, migrate, suggestion delete, sandbox, onboarding complete** — P3
@@ -1581,7 +1590,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | fixed (PR #1808) |
 | F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 | open |
 | F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 | fixed (PR #1809) |
-| F-36 | P2 | Retention | `admin_action_log` unbounded, no purge, no GDPR erasure path | #1791 | open |
+| F-36 | P2 | Retention | `admin_action_log` unbounded, no purge, no GDPR erasure path | #1791 | fixed phase 1 (data layer) — Phase 2 UI is a follow-up |
 | F-37 | P3 | Audit gap | Low-signal admin writes (cache / migrate / suggestions / sandbox / onboarding) | — (stays in doc) | deferred |
 | F-38 | P3 | Audit gap | OAuth-callback install path not mirrored in `admin_action_log` | — (stays in doc) | deferred |
 | F-39 | — | unused | (reserved; gap in numbering avoided) | — | — |

@@ -56,6 +56,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
   ADMIN_ACTIONS: {
     audit_log: { purgeCycle: "audit_log.purge_cycle" },
+    admin_action_log: { purgeCycle: "admin_action_log.purge_cycle" },
     audit_retention: {
       policyUpdate: "audit_retention.policy_update",
       export: "audit_retention.export",
@@ -63,6 +64,12 @@ mock.module("@atlas/api/lib/audit", () => ({
       manualHardDelete: "audit_retention.manual_hard_delete",
       hardDelete: "audit_retention.hard_delete",
     },
+    admin_action_retention: {
+      policyUpdate: "admin_action_retention.policy_update",
+      manualPurge: "admin_action_retention.manual_purge",
+      hardDelete: "admin_action_retention.hard_delete",
+    },
+    user: { erase: "user.erase" },
   },
 }));
 
@@ -118,6 +125,8 @@ const {
   exportAuditLog,
   MIN_RETENTION_DAYS,
   RetentionError,
+  purgeAdminActionExpired,
+  anonymizeUserAdminActions,
 } = await import("./retention");
 
 // ---------------------------------------------------------------------------
@@ -551,5 +560,238 @@ describe("hardDeleteExpired — library self-audit (F-27)", () => {
     expect(result.deletedCount).toBe(2);
     const hardRows = auditCalls.filter((c) => c.actionType === "audit_retention.hard_delete");
     expect(hardRows).toHaveLength(0);
+  });
+});
+
+/**
+ * F-36 — GDPR / CCPA "right to erasure" over `admin_action_log`.
+ *
+ * `anonymizeUserAdminActions(userId, initiatedBy)` scrubs `actor_id` and
+ * `actor_email` to NULL and stamps `anonymized_at = now()` on every row
+ * where `actor_id = userId`. The row survives (timestamp, action_type,
+ * target, metadata, ip_address, request_id preserved) so the sequence of
+ * actions is intact without the identifier.
+ *
+ * Design doc: .claude/research/design/admin-action-log-retention.md
+ *
+ * These are the load-bearing compliance tests — the anonymize promise is
+ * the regulator-facing contract — so they go first, before the purge and
+ * scheduler tests, per the TDD sequencing in the design doc.
+ */
+describe("anonymizeUserAdminActions (F-36)", () => {
+  beforeEach(() => {
+    mockEnterpriseEnabled = true;
+    mockLicenseKey = "test-key";
+    mockInternalDB = true;
+    queryResults = [];
+    queryCallIndex = 0;
+    capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
+    mockPool.query.mockClear();
+  });
+
+  it("scrubs actor_id + actor_email and stamps anonymized_at on matching rows", async () => {
+    // pool.query for the UPDATE CTE — returns count of affected rows
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 3 }] }));
+
+    const result = await run(anonymizeUserAdminActions("user-42", "self_request"));
+    expect(result.anonymizedRowCount).toBe(3);
+
+    // The update must target actor_id + actor_email (both set to NULL) and
+    // stamp anonymized_at. A future regression that "anonymizes" only one
+    // of the two identifier columns would defeat the compliance promise.
+    const updateCall = mockPool.query.mock.calls.find((c) => /UPDATE\s+admin_action_log/i.test(String(c[0])));
+    expect(updateCall).toBeDefined();
+    const sql = String(updateCall![0]);
+    expect(sql).toMatch(/actor_id\s*=\s*NULL/i);
+    expect(sql).toMatch(/actor_email\s*=\s*NULL/i);
+    expect(sql).toMatch(/anonymized_at\s*=\s*now\(\)/i);
+    expect(sql).toMatch(/WHERE\s+actor_id\s*=\s*\$1/i);
+    // Must not re-anonymize already-scrubbed rows (idempotency + keeps
+    // the first-scrub timestamp truthful).
+    expect(sql).toMatch(/anonymized_at\s+IS\s+NULL/i);
+  });
+
+  it("emits a user.erase audit row with targetUserId + anonymizedRowCount + initiatedBy", async () => {
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 5 }] }));
+
+    await run(anonymizeUserAdminActions("user-42", "dsr_request"));
+
+    const eraseRows = auditCalls.filter((c) => c.actionType === "user.erase");
+    expect(eraseRows).toHaveLength(1);
+    expect(eraseRows[0].targetType).toBe("user");
+    expect(eraseRows[0].targetId).toBe("user-42");
+    expect(eraseRows[0].scope).toBe("platform");
+    expect(eraseRows[0].systemActor).toBe("system:audit-purge-scheduler");
+
+    const meta = eraseRows[0].metadata as {
+      targetUserId: string;
+      anonymizedRowCount: number;
+      initiatedBy: string;
+    };
+    expect(meta.targetUserId).toBe("user-42");
+    expect(meta.anonymizedRowCount).toBe(5);
+    expect(meta.initiatedBy).toBe("dsr_request");
+  });
+
+  it("emits a user.erase row even when zero rows were anonymized", async () => {
+    // Compliance contract: the erasure request was processed. A zero-row
+    // result means "this user never wrote to admin_action_log"; the
+    // forensic trail must still record that the request ran.
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 0 }] }));
+
+    const result = await run(anonymizeUserAdminActions("user-99", "self_request"));
+    expect(result.anonymizedRowCount).toBe(0);
+
+    const eraseRows = auditCalls.filter((c) => c.actionType === "user.erase");
+    expect(eraseRows).toHaveLength(1);
+    expect((eraseRows[0].metadata as { anonymizedRowCount: number }).anonymizedRowCount).toBe(0);
+  });
+
+  it("rejects unknown initiatedBy values (invariant guard)", async () => {
+    // The initiatedBy label drives compliance reporting; a typo would
+    // silently erode the DSR / self-serve split in forensic queries.
+    await expect(
+      // @ts-expect-error — invalid string is the test subject
+      run(anonymizeUserAdminActions("user-42", "typo_request")),
+    ).rejects.toThrow(/initiatedBy/i);
+  });
+
+  it("throws when enterprise is not enabled (gated like other retention ops)", async () => {
+    mockEnterpriseEnabled = false;
+    mockLicenseKey = undefined;
+    await expect(
+      run(anonymizeUserAdminActions("user-42", "self_request")),
+    ).rejects.toThrow("Enterprise features");
+  });
+
+  it("throws when no internal DB (erasure has nothing to write)", async () => {
+    mockInternalDB = false;
+    await expect(
+      run(anonymizeUserAdminActions("user-42", "self_request")),
+    ).rejects.toThrow("Internal database required");
+  });
+
+  it("pins the scheduled_retention initiatedBy path for future automation", async () => {
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 2 }] }));
+
+    await run(anonymizeUserAdminActions("user-7", "scheduled_retention"));
+    const eraseRows = auditCalls.filter((c) => c.actionType === "user.erase");
+    expect((eraseRows[0].metadata as { initiatedBy: string }).initiatedBy).toBe("scheduled_retention");
+  });
+});
+
+/**
+ * F-36 — scheduler-driven retention purge against `admin_action_log`.
+ *
+ * Parallels `hardDeleteExpired` for the audit-log table. No soft-delete
+ * stage: the admin-action retention default is long enough (7 years) that
+ * a second recovery window adds little relative to the audit volume.
+ */
+describe("purgeAdminActionExpired (F-36)", () => {
+  beforeEach(() => {
+    mockEnterpriseEnabled = true;
+    mockLicenseKey = "test-key";
+    mockInternalDB = true;
+    queryResults = [];
+    queryCallIndex = 0;
+    capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
+    mockPool.query.mockClear();
+  });
+
+  it("deletes rows past the retention window for every configured org", async () => {
+    // Configs query returns two orgs with distinct retention windows.
+    queryResults = [
+      [
+        { org_id: "platform", retention_days: 2555 },
+        { org_id: "org-1", retention_days: 365 },
+      ],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 4 }] }));
+
+    const result = await run(purgeAdminActionExpired());
+    expect(result.length).toBe(2);
+    expect(result[0].orgId).toBe("platform");
+    expect(result[0].deletedCount).toBe(4);
+    expect(result[1].orgId).toBe("org-1");
+    expect(result[1].deletedCount).toBe(4);
+
+    // Each config -> one DELETE + one config-metadata update
+    const deleteCalls = mockPool.query.mock.calls.filter((c) => /DELETE\s+FROM\s+admin_action_log/i.test(String(c[0])));
+    expect(deleteCalls.length).toBe(2);
+  });
+
+  it("emits admin_action_retention.hard_delete audit row when count > 0 (outside HTTP)", async () => {
+    queryResults = [
+      [
+        { org_id: "platform", retention_days: 2555 },
+        { org_id: "org-1", retention_days: 365 },
+      ],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 2 }] }));
+
+    await run(purgeAdminActionExpired());
+    const hardRows = auditCalls.filter((c) => c.actionType === "admin_action_retention.hard_delete");
+    expect(hardRows).toHaveLength(1);
+    expect(hardRows[0].scope).toBe("platform");
+    expect(hardRows[0].systemActor).toBe("system:audit-purge-scheduler");
+    const meta = hardRows[0].metadata as {
+      deletedCount: number;
+      orgCount: number;
+      affectedOrgs: Array<{ orgId: string; deletedCount: number }>;
+    };
+    expect(meta.deletedCount).toBe(4);
+    expect(meta.orgCount).toBe(2);
+    expect(meta.affectedOrgs).toEqual([
+      { orgId: "platform", deletedCount: 2 },
+      { orgId: "org-1", deletedCount: 2 },
+    ]);
+  });
+
+  it("emits NO hard_delete audit row when zero rows purged (F-27 parity)", async () => {
+    queryResults = [
+      [{ org_id: "org-1", retention_days: 365 }],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 0 }] }));
+
+    const result = await run(purgeAdminActionExpired());
+    expect(result[0].deletedCount).toBe(0);
+    const hardRows = auditCalls.filter((c) => c.actionType === "admin_action_retention.hard_delete");
+    expect(hardRows).toHaveLength(0);
+  });
+
+  it("returns empty when no configs exist", async () => {
+    queryResults = [[]];
+    const result = await run(purgeAdminActionExpired());
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty when no internal DB", async () => {
+    mockInternalDB = false;
+    const result = await run(purgeAdminActionExpired());
+    expect(result).toEqual([]);
+  });
+
+  it("throws when enterprise is not enabled", async () => {
+    mockEnterpriseEnabled = false;
+    mockLicenseKey = undefined;
+    await expect(run(purgeAdminActionExpired())).rejects.toThrow("Enterprise features");
+  });
+
+  it("scopes to a single org when orgId is provided", async () => {
+    queryResults = [
+      [{ org_id: "org-1", retention_days: 365 }],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 1 }] }));
+
+    await run(purgeAdminActionExpired("org-1"));
+    // config-fetch query should filter on org_id
+    const configFetch = capturedQueries.find((q) => /FROM\s+admin_action_retention_config/i.test(q.sql));
+    expect(configFetch).toBeDefined();
+    expect(configFetch!.sql).toMatch(/WHERE\s+org_id\s*=\s*\$1/i);
+    expect(configFetch!.params).toEqual(["org-1"]);
   });
 });

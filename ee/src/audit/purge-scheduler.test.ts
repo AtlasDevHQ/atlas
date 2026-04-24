@@ -49,6 +49,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: () => {},
 }));
 
+let adminActionPurgeCalled = false;
+let adminActionPurgeReturn: Array<{ orgId: string; deletedCount: number }> = [];
+let adminActionPurgeThrow: Error | null = null;
+
 mock.module("./retention", () => ({
   purgeExpiredEntries: () => {
     purgeCalled = true;
@@ -59,6 +63,15 @@ mock.module("./retention", () => ({
     if (hardDeleteThrow) return Effect.fail(hardDeleteThrow);
     return Effect.succeed(hardDeleteReturn);
   },
+  // F-36 — the scheduler processes both `audit_log` and `admin_action_log`
+  // in one cycle. The admin-action branch returns per-org deletes plus a
+  // per-table self-audit row; this mock mirrors the audit-log branch.
+  purgeAdminActionExpired: () => {
+    adminActionPurgeCalled = true;
+    if (adminActionPurgeThrow) return Effect.fail(adminActionPurgeThrow);
+    return Effect.succeed(adminActionPurgeReturn);
+  },
+  anonymizeUserAdminActions: () => Effect.succeed({ anonymizedRowCount: 0 }),
   getRetentionPolicy: () => Effect.succeed(null),
   setRetentionPolicy: () => Effect.succeed({}),
   exportAuditLog: () => Effect.succeed({ content: "", format: "json", rowCount: 0, totalAvailable: 0, truncated: false }),
@@ -80,10 +93,17 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
   ADMIN_ACTIONS: {
     audit_log: { purgeCycle: "audit_log.purge_cycle" },
+    admin_action_log: { purgeCycle: "admin_action_log.purge_cycle" },
     audit_retention: {
       policyUpdate: "audit_retention.policy_update",
       hardDelete: "audit_retention.hard_delete",
     },
+    admin_action_retention: {
+      policyUpdate: "admin_action_retention.policy_update",
+      manualPurge: "admin_action_retention.manual_purge",
+      hardDelete: "admin_action_retention.hard_delete",
+    },
+    user: { erase: "user.erase" },
   },
 }));
 
@@ -113,6 +133,9 @@ describe("purge scheduler", () => {
     hardDeleteThrow = null;
     auditCalls = [];
     auditShouldThrow = null;
+    adminActionPurgeCalled = false;
+    adminActionPurgeReturn = [];
+    adminActionPurgeThrow = null;
   });
 
   it("starts and reports running", () => {
@@ -175,6 +198,9 @@ describe("runPurgeCycle self-audit (F-27)", () => {
     hardDeleteThrow = null;
     auditCalls = [];
     auditShouldThrow = null;
+    adminActionPurgeCalled = false;
+    adminActionPurgeReturn = [];
+    adminActionPurgeThrow = null;
   });
 
   it("emits exactly one purge_cycle audit row per cycle on a zero-row cycle", async () => {
@@ -239,10 +265,105 @@ describe("runPurgeCycle self-audit (F-27)", () => {
     // not sync defects in its handler) and emit an unhandled rejection.
     auditShouldThrow = new TypeError("synthetic audit crash");
     await expect(Effect.runPromise(runPurgeCycle())).resolves.toBeUndefined();
-    // Two attempts: one from the success path (inside tryPromise.try)
-    // and one from the failure-row emission (inside Effect.catchAll).
-    // Both pushed-then-threw. Neither should crash the cycle.
-    expect(auditCalls).toHaveLength(2);
+    // F-36 split the cycle into two branches (audit_log + admin_action_log).
+    // Each branch attempts a success row (inside tryPromise.try) which
+    // throws, then a failure row (inside Effect.catchAll) which also
+    // throws. Two branches × two attempts = four entries in auditCalls.
+    // None of them should crash the cycle.
+    expect(auditCalls).toHaveLength(4);
     expect(auditCalls[1].status).toBe("failure");
+    expect(auditCalls[3].status).toBe("failure");
+  });
+});
+
+/**
+ * F-36 — scheduler processes `audit_log` and `admin_action_log` in one tick.
+ *
+ * Emits two self-audit rows per cycle (one per table) so an outage on
+ * either side can be detected independently by forensic queries. See the
+ * design doc at `.claude/research/design/admin-action-log-retention.md`
+ * for the "two rows per cycle, not one combined" decision.
+ */
+describe("runPurgeCycle admin-action branch (F-36)", () => {
+  beforeEach(() => {
+    _resetPurgeScheduler();
+    mockEnterpriseEnabled = true;
+    mockLicenseKey = "test-key";
+    mockInternalDB = true;
+    purgeCalled = false;
+    hardDeleteCalled = false;
+    purgeReturn = [];
+    hardDeleteReturn = { deletedCount: 0 };
+    hardDeleteThrow = null;
+    auditCalls = [];
+    auditShouldThrow = null;
+    adminActionPurgeCalled = false;
+    adminActionPurgeReturn = [];
+    adminActionPurgeThrow = null;
+  });
+
+  it("calls purgeAdminActionExpired on every cycle", async () => {
+    await Effect.runPromise(runPurgeCycle());
+    expect(adminActionPurgeCalled).toBe(true);
+  });
+
+  it("emits exactly one admin_action_log.purge_cycle row per cycle on zero rows", async () => {
+    await Effect.runPromise(runPurgeCycle());
+    const adminCycleRows = auditCalls.filter((c) => c.actionType === "admin_action_log.purge_cycle");
+    expect(adminCycleRows).toHaveLength(1);
+    expect(adminCycleRows[0].targetType).toBe("admin_action_log");
+    expect(adminCycleRows[0].targetId).toBe("scheduler");
+    expect(adminCycleRows[0].scope).toBe("platform");
+    expect(adminCycleRows[0].systemActor).toBe("system:audit-purge-scheduler");
+    expect(adminCycleRows[0].metadata).toEqual({
+      deleted: 0,
+      orgs: 0,
+    });
+  });
+
+  it("records deleted count + orgs in metadata on a non-empty admin-action cycle", async () => {
+    adminActionPurgeReturn = [
+      { orgId: "platform", deletedCount: 7 },
+      { orgId: "org-1", deletedCount: 3 },
+    ];
+    await Effect.runPromise(runPurgeCycle());
+    const adminCycleRow = auditCalls.find((c) => c.actionType === "admin_action_log.purge_cycle");
+    expect(adminCycleRow).toBeDefined();
+    expect(adminCycleRow!.metadata).toEqual({
+      deleted: 10,
+      orgs: 2,
+    });
+  });
+
+  it("emits two separate cycle rows per tick (audit_log + admin_action_log)", async () => {
+    await Effect.runPromise(runPurgeCycle());
+    const auditLogRows = auditCalls.filter((c) => c.actionType === "audit_log.purge_cycle");
+    const adminActionRows = auditCalls.filter((c) => c.actionType === "admin_action_log.purge_cycle");
+    // Two rows = two forensic signals. A combined row would hide a
+    // per-table outage from a compliance reviewer.
+    expect(auditLogRows).toHaveLength(1);
+    expect(adminActionRows).toHaveLength(1);
+  });
+
+  it("admin-action branch failure emits a failure cycle row without crashing audit-log branch", async () => {
+    adminActionPurgeThrow = new Error("admin-action branch boom");
+    await Effect.runPromise(runPurgeCycle());
+    const adminCycleRows = auditCalls.filter((c) => c.actionType === "admin_action_log.purge_cycle");
+    expect(adminCycleRows).toHaveLength(1);
+    expect(adminCycleRows[0].status).toBe("failure");
+    expect((adminCycleRows[0].metadata as { error: string }).error).toContain("admin-action branch boom");
+    // The audit-log branch must still have fired its success row.
+    const auditLogRows = auditCalls.filter((c) => c.actionType === "audit_log.purge_cycle");
+    expect(auditLogRows).toHaveLength(1);
+    expect(auditLogRows[0].status === undefined || auditLogRows[0].status === "success").toBe(true);
+  });
+
+  it("is a no-op when enterprise is disabled (no admin-action cycle row emitted)", async () => {
+    mockEnterpriseEnabled = false;
+    mockLicenseKey = undefined;
+    await Effect.runPromise(runPurgeCycle());
+    expect(adminActionPurgeCalled).toBe(false);
+    const adminCycleRows = auditCalls.filter((c) => c.actionType === "admin_action_log.purge_cycle");
+    expect(adminCycleRows).toHaveLength(0);
   });
 });

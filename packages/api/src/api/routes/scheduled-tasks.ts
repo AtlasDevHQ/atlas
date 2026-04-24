@@ -352,13 +352,52 @@ scheduledTasks.openapi(tickRoute, async (c) => {
       return Effect.succeed({ error: "internal_error" as const, requestId });
     }));
 
-    if ("error" in tickOutcome && tickOutcome.error === "internal_error") {
+    // F-29: emit one `schedule.tick` row per tick — success or failure,
+    // zero tasks or many. The absence of a row over a cadence window is
+    // the signal that the scheduler stopped firing (mirrors F-27's
+    // purge-cycle convention). Uses the reserved `system:scheduler`
+    // actor — enforced at logAdminAction call time so a typo or rename
+    // fails loudly rather than writing a malformed audit row.
+    const tickFailedInternally = "error" in tickOutcome && tickOutcome.error === "internal_error";
+    const tickHasEngineError = !tickFailedInternally && "error" in tickOutcome && typeof tickOutcome.error === "string";
+    const tickSucceeded = !tickFailedInternally && !tickHasEngineError;
+
+    if (tickSucceeded) {
+      const result = tickOutcome as import("@atlas/api/lib/scheduler/engine").TickResult;
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.schedule.tick,
+        targetType: "schedule",
+        targetId: "scheduler",
+        scope: "platform",
+        systemActor: "system:scheduler",
+        metadata: {
+          tasksProcessed: result.tasksDispatched,
+          successes: result.tasksCompleted,
+          failures: result.tasksFailed,
+        },
+      });
+      return c.json(tickOutcome, 200);
+    }
+
+    // Failure branches — both emit a `status: "failure"` audit row so a
+    // compliance reviewer can distinguish a silent drop-off from an
+    // errored run. Consistent with F-27's purge-cycle failure handling.
+    const errorLabel = tickFailedInternally
+      ? "internal_error"
+      : ((tickOutcome as { error: string }).error);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.schedule.tick,
+      targetType: "schedule",
+      targetId: "scheduler",
+      status: "failure",
+      scope: "platform",
+      systemActor: "system:scheduler",
+      metadata: { tasksProcessed: 0, successes: 0, failures: 0, error: errorLabel },
+    });
+    if (tickFailedInternally) {
       return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
     }
-    if (tickOutcome.error) {
-      return c.json({ error: "tick_failed", message: tickOutcome.error, requestId }, 500);
-    }
-    return c.json(tickOutcome, 200);
+    return c.json({ error: "tick_failed", message: errorLabel, requestId }, 500);
   }), { label: "scheduler tick" });
 });
 
@@ -539,6 +578,18 @@ authed.openapi(triggerTaskRoute, async (c) => {
 
     const { triggerTask } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/engine"));
     yield* Effect.promise(() => triggerTask(id));
+
+    // Manual out-of-cadence trigger — high-impact (delivers data to recipients
+    // outside the normal cron window). Emitted after the dispatch call so a
+    // rejection short-circuits without a false audit row. See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.schedule.trigger,
+      targetType: "schedule",
+      targetId: id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { taskId: id, taskName: task.data.name },
+    });
+
     return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
   }), { label: "trigger task execution" });
 });
@@ -565,6 +616,19 @@ authed.openapi(previewTaskRoute, async (c) => {
 
     const { generateDeliveryPreview } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/preview"));
     const preview = generateDeliveryPreview(task.data);
+
+    // Dry-run delivery preview — reveals recipient/channel shape to the
+    // caller. Low-impact relative to `trigger`, but the access itself
+    // warrants a forensic trail. `dryRun: true` distinguishes from
+    // `schedule.trigger` when both land in the same log stream. See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.schedule.preview,
+      targetType: "schedule",
+      targetId: id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { taskId: id, dryRun: true },
+    });
+
     return c.json(preview, 200);
   }), { label: "generate delivery preview" });
 });

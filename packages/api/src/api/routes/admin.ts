@@ -1557,6 +1557,24 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     { requestId, orgId, imported: result.imported, skipped: result.skipped, total: result.total },
     "Org semantic import completed",
   );
+
+  // Bulk disk → DB sync: one row per import call instead of per entity
+  // so the audit trail scales with admin intent, not entity count. The
+  // per-entity trail (if ever needed) can be reconstructed from the
+  // sync log lines. `sourceRef` falls back to "disk:all" when the
+  // caller didn't narrow to a single connection — forensic queries can
+  // filter on the per-connection variant. See F-29.
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.semantic.bulkImport,
+    targetType: "semantic",
+    targetId: orgId,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: {
+      importedCount: result.imported,
+      sourceRef: body.connectionId ? `disk:${body.connectionId}` : "disk:all",
+    },
+  });
+
   return c.json(result, 200);
 }));
 
@@ -1653,6 +1671,22 @@ admin.openapi(changePasswordRoute, async (c) => {
       }
 
       log.info({ requestId, userId: user.id }, "Password changed and flag cleared");
+
+      // Self-service password change: the actor IS the target. `targetId`
+      // pins to the actor's user id so forensic queries can distinguish a
+      // self-action from an admin rotating someone else's password (the
+      // latter flows through Better Auth's admin API and fires other
+      // `user.*` audit entries). Metadata deliberately omits any password
+      // material — the flag-clear ("passwordChangeRequiredCleared") is
+      // the only structured signal. See F-29.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.user.passwordChange,
+        targetType: "user",
+        targetId: user.id,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { self: true },
+      });
+
       return c.json({ success: true }, 200);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Password change failed";

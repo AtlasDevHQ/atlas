@@ -111,8 +111,20 @@ mock.module("@atlas/ee/governance/approval", () => {
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: () => {},
   logAdminActionAwait: async () => {},
+  // Keep in sync with `ADMIN_ACTIONS.approval` in
+  // `packages/api/src/lib/audit/actions.ts` — adding a new action there and
+  // forgetting to update this mock leaves route audit calls writing
+  // `actionType: undefined` at test time. The parity test in
+  // `admin-approval-audit.test.ts` (F-29) enforces the real catalog.
   ADMIN_ACTIONS: {
-    approval: { approve: "approval.approve", deny: "approval.deny" },
+    approval: {
+      approve: "approval.approve",
+      deny: "approval.deny",
+      ruleCreate: "approval.rule_create",
+      ruleUpdate: "approval.rule_update",
+      ruleDelete: "approval.rule_delete",
+      expireSweep: "approval.expire_sweep",
+    },
   },
 }));
 

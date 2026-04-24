@@ -779,6 +779,19 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
     const { enforced } = c.req.valid("json");
 
     const result = yield* setSSOEnforcement(orgId!, enforced);
+
+    // Toggling SSO enforcement blocks or unblocks password login for every
+    // member of the org — availability-critical, must never be silent.
+    // Emitted post-mutation so a failure in `setSSOEnforcement` short-circuits
+    // without a false audit row. See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sso.enforcementUpdate,
+      targetType: "sso",
+      targetId: orgId!,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { enforced },
+    });
+
     return c.json(result, 200);
   }), { label: "set SSO enforcement", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
@@ -794,6 +807,22 @@ adminSso.openapi(verifyDomainRoute, async (c) => {
     }
 
     const result = yield* verifyDomain(providerId, orgId!);
+
+    // DNS TXT lookup that flips a provider to `verified` — the gate that
+    // separates an unverified SSO config from one that can be enabled.
+    // Audit status mirrors the verifier result so compliance queries can
+    // distinguish successful verifications from failed attempts (the
+    // attempt itself is the auditable action; failure is still worth
+    // logging). See F-29.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sso.verifyDomain,
+      targetType: "sso",
+      targetId: providerId,
+      status: result.status === "verified" ? "success" : "failure",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { result: result.status },
+    });
+
     return c.json(result, 200);
   }), { label: "verify SSO domain", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });

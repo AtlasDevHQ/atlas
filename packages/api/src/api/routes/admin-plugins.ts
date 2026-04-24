@@ -235,7 +235,7 @@ adminPlugins.openapi(enablePluginRoute, async (c) => {
 
   const plugin = plugins.get(id);
   if (!plugin) {
-    // 404 short-circuits before any state change — pre-handler rejection, no audit.
+    // Not-found short-circuits — no state change, no audit event.
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
@@ -392,19 +392,23 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     return c.json({ error: "invalid_request", message: "Request body must be a JSON object." }, 400);
   }
 
-  // Validate against schema if plugin provides one
+  // Validate against schema if plugin provides one. `originals` is captured
+  // so we can (a) restore masked secret placeholders to their prior value
+  // and (b) compute an accurate `keysChanged` that excludes re-submitted
+  // placeholders — otherwise every admin save would report apiKey as
+  // rotated even when they only toggled `debug`.
   const MASKED_PLACEHOLDER = "••••••••";
+  let originals: Record<string, unknown> = {};
   if (typeof plugin.getConfigSchema === "function") {
     const schema = plugin.getConfigSchema();
     const schemaKeys = new Set(schema.map((f) => f.key));
     const errors: string[] = [];
 
-    // Restore masked secret values from original config
     const pluginConfig = plugin.config != null && typeof plugin.config === "object"
       ? (plugin.config as Record<string, unknown>)
       : {};
     const dbOverrides = await getPluginConfig(id);
-    const originals = { ...pluginConfig, ...dbOverrides };
+    originals = { ...pluginConfig, ...dbOverrides };
 
     for (const field of schema) {
       const value = body[field.key];
@@ -457,11 +461,13 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     }
   }
 
-  // Snapshot key names BEFORE persist so the audit row captures what the
-  // admin intended to change even if savePluginConfig throws. NEVER log
-  // values — the body may contain secrets (BigQuery service account JSON,
-  // Snowflake passwords).
-  const keysChanged = Object.keys(body).toSorted();
+  // Keys only — see ADMIN_ACTIONS.plugin JSDoc. Filter out keys whose final
+  // value equals the originals (happens when the admin re-submits the
+  // masked placeholder for a secret they didn't rotate). Snapshotted BEFORE
+  // persist so a savePluginConfig throw still emits the intended change set.
+  const keysChanged = Object.keys(body)
+    .filter((key) => body[key] !== originals[key])
+    .toSorted();
 
   try {
     await savePluginConfig(id, body);

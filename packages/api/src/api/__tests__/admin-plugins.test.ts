@@ -415,10 +415,10 @@ describe("POST /api/v1/admin/plugins/:id/enable — persistence warnings", () =>
 });
 
 // ---------------------------------------------------------------------------
-// F-22: audit emission
+// Audit emission
 // ---------------------------------------------------------------------------
 
-describe("F-22 audit emission — POST /api/v1/admin/plugins/:id/enable", () => {
+describe("audit emission — POST /api/v1/admin/plugins/:id/enable", () => {
   it("emits exactly one plugin.enable audit on success", async () => {
     mockPluginEnabled = false;
     const res = await request("/api/v1/admin/plugins/test-plugin/enable", {
@@ -470,7 +470,7 @@ describe("F-22 audit emission — POST /api/v1/admin/plugins/:id/enable", () => 
   });
 });
 
-describe("F-22 audit emission — POST /api/v1/admin/plugins/:id/disable", () => {
+describe("audit emission — POST /api/v1/admin/plugins/:id/disable", () => {
   it("emits exactly one plugin.disable audit on success", async () => {
     const res = await request("/api/v1/admin/plugins/test-plugin/disable", {
       method: "POST",
@@ -507,7 +507,7 @@ describe("F-22 audit emission — POST /api/v1/admin/plugins/:id/disable", () =>
   });
 });
 
-describe("F-22 audit emission — PUT /api/v1/admin/plugins/:id/config", () => {
+describe("audit emission — PUT /api/v1/admin/plugins/:id/config", () => {
   it("emits exactly one plugin.config_update audit on success with keysChanged", async () => {
     const res = await request("/api/v1/admin/plugins/test-plugin/config", {
       method: "PUT",
@@ -557,10 +557,12 @@ describe("F-22 audit emission — PUT /api/v1/admin/plugins/:id/config", () => {
     mockSavePluginConfig.mockImplementation(() =>
       Promise.reject(new Error("savePluginConfig DB error")),
     );
+    // Originals are { apiKey: "sk-secret-123", region: "us-east", debug: false };
+    // sending `eu-west` guarantees region shows up as changed.
     const res = await request("/api/v1/admin/plugins/test-plugin/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey: "x", region: "us-east" }),
+      body: JSON.stringify({ apiKey: "rotated", region: "eu-west" }),
     });
     expect(res.status).toBe(500);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
@@ -589,5 +591,42 @@ describe("F-22 audit emission — PUT /api/v1/admin/plugins/:id/config", () => {
     });
     expect(res.status).toBe(404);
     expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("sorts keysChanged alphabetically regardless of body insertion order", async () => {
+    // Reverse-alphabetical body — proves `.toSorted()` is load-bearing, not
+    // a coincidence of the other test cases picking alphabetical inputs.
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        region: "eu-west",
+        debug: true,
+        apiKey: "rotated",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.metadata!.keysChanged).toEqual(["apiKey", "debug", "region"]);
+  });
+
+  it("filters keysChanged to only fields that actually changed", async () => {
+    // Admin re-submits the masked placeholder for `apiKey` — the handler
+    // restores the original value, so `apiKey` is NOT a real change.
+    // `debug` gets sent with its original value (false). Only `region`
+    // actually changes. Without the filter, all three keys would leak
+    // into `keysChanged` and misrepresent the edit as a secret rotation.
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "••••••••",
+        region: "eu-west",
+        debug: false,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.metadata!.keysChanged).toEqual(["region"]);
   });
 });

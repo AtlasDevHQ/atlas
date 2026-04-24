@@ -59,7 +59,11 @@ const fakeAuthContext = {
 // EffectPromise carries a list of error taps (side-effect handlers run before
 // the error propagates into the generator). `.pipe(Effect.tapError(fn))` on
 // the queryEffect return decorates this list so the catch block in runEffect
-// runs the taps before calling `gen.throw()`.
+// runs the taps before calling `gen.throw()`. Any operator beyond tapError
+// (map, catchAll, flatMap, zip, race) is not implemented — if a route starts
+// using one, extend the shim. For failure-path branching, routes use plain
+// try/catch around `yield* queryEffect(...)` which works under both real
+// Effect and this shim.
 interface TestEffectPromise {
   _tag: "EffectPromise";
   fn: () => Promise<unknown>;
@@ -148,8 +152,10 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
           result = gen.next(resolved);
         } catch (err) {
           // Run any error taps attached via .pipe(Effect.tapError(...)) BEFORE
-          // the error enters the generator. Matches real Effect semantics:
-          // tapError is a pre-error observer, the error still propagates.
+          // the error enters the generator. Matches real Effect behavior
+          // observationally: tap runs, then error propagates. (Real Effect
+          // composes these in the error channel asynchronously; the shim
+          // inlines them — the end-state is the same for our assertions.)
           for (const tap of promiseValue.errorTaps) {
             try {
               const tapResult = tap(err);
@@ -656,10 +662,10 @@ describe("Workspace Plugin Marketplace", () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-22: audit emission across catalog + marketplace write routes
+// Audit emission across catalog + marketplace write routes
 // ---------------------------------------------------------------------------
 
-describe("F-22 audit emission — Platform catalog", () => {
+describe("audit emission — Platform catalog", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
@@ -745,7 +751,10 @@ describe("F-22 audit emission — Platform catalog", () => {
       expect(entry.metadata!.keysChanged).toEqual(["enabled", "name"]);
     });
 
-    it("emits status=failure when UPDATE throws", async () => {
+    it("emits status=failure when UPDATE throws — carries pluginSlug from pre-lookup", async () => {
+      // Pre-lookup succeeds, UPDATE fails. Failure audit includes the slug
+      // even though the UPDATE never returned a row.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "bigquery" }]);
       setQueryResult("UPDATE plugin_catalog", new Error("db update failed"));
 
       const app = buildPlatformApp();
@@ -759,7 +768,31 @@ describe("F-22 audit emission — Platform catalog", () => {
       const entry = mockLogAdminAction.mock.calls[0]![0];
       expect(entry.actionType).toBe("plugin.catalog_update");
       expect(entry.status).toBe("failure");
+      expect(entry.metadata!.pluginSlug).toBe("bigquery");
       expect(entry.metadata!.keysChanged).toEqual(["name"]);
+    });
+
+    it("emits failure audit with priorLookupFailed when pre-lookup throws", async () => {
+      // Pre-lookup throws → degrade to priorLookupFailed sentinel and let
+      // the UPDATE throw its own failure (the pre-lookup isn't allowed to
+      // replace the UPDATE error channel). This keeps the audit trail honest
+      // even under pool-exhaustion attacks.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", new Error("pool exhausted"));
+      setQueryResult("UPDATE plugin_catalog", new Error("subsequent UPDATE failed"));
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "X" }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_update");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.priorLookupFailed).toBe(true);
+      expect(entry.metadata).not.toHaveProperty("pluginSlug");
     });
   });
 
@@ -829,10 +862,28 @@ describe("F-22 audit emission — Platform catalog", () => {
       expect(res.status).toBe(404);
       expect(mockLogAdminAction).not.toHaveBeenCalled();
     });
+
+    it("emits failure audit with priorLookupFailed when pre-lookup throws", async () => {
+      // The critical silent-audit-miss path: pre-delete SELECT throws, the
+      // handler must still emit a failure audit so a compromised admin
+      // can't flood transient errors to hide attempted deletes.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", new Error("pool exhausted"));
+      setQueryResult("DELETE FROM plugin_catalog", new Error("subsequent DELETE failed"));
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_delete");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.priorLookupFailed).toBe(true);
+      expect(entry.metadata).not.toHaveProperty("pluginSlug");
+    });
   });
 });
 
-describe("F-22 audit emission — Workspace marketplace", () => {
+describe("audit emission — Workspace marketplace", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
@@ -915,6 +966,59 @@ describe("F-22 audit emission — Workspace marketplace", () => {
       expect(res.status).toBe(400);
       expect(mockLogAdminAction).not.toHaveBeenCalled();
     });
+
+    it("does not emit audit when catalog entry not found (404)", async () => {
+      // Prevents log flooding from attackers brute-forcing catalogId to probe
+      // which entries exist in this deployment.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "missing-cat" }),
+      });
+      expect(res.status).toBe(404);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("does not emit audit when plugin already installed (409)", async () => {
+      // Symmetric with the catalog-create duplicate-slug rejection — a
+      // workspace-level enumeration probe should not flood the audit trail.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", [{ id: "inst-existing" }]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(409);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("emits failure audit when pre-lookup SELECT throws (F-22 pattern)", async () => {
+      // Pre-lookup failure must not silently 500 — without the failure audit
+      // an attacker could flood transient errors to probe catalog IDs.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", new Error("pool exhausted"));
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.install");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.priorLookupFailed).toBe(true);
+      expect(entry.metadata!.orgId).toBe("org-1");
+      expect(entry.metadata!.error).toContain("pool exhausted");
+    });
   });
 
   describe("DELETE /marketplace/:id — plugin.uninstall", () => {
@@ -950,6 +1054,36 @@ describe("F-22 audit emission — Workspace marketplace", () => {
       expect(entry.actionType).toBe("plugin.uninstall");
       expect(entry.status).toBe("failure");
       expect(entry.metadata!.error).toContain("uninstall failed");
+    });
+
+    it("does not emit audit when installation not found (404)", async () => {
+      // 404 short-circuits after the DELETE returns zero rows — no state
+      // changed, no audit.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/missing-inst", { method: "DELETE" });
+      expect(res.status).toBe(404);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("emits audit without pluginSlug when catalog row raced away", async () => {
+      // catalog_delete cascade could fire concurrently and wipe the
+      // plugin_catalog row the subselect relies on. The audit still emits
+      // with pluginId + orgId so forensic reconstruction isn't completely
+      // blind even though the slug is gone.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: null },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.uninstall");
+      expect(entry.metadata).toMatchObject({ pluginId: "cat-1", orgId: "org-1" });
+      expect(entry.metadata).not.toHaveProperty("pluginSlug");
     });
   });
 
@@ -1044,6 +1178,45 @@ describe("F-22 audit emission — Workspace marketplace", () => {
       expect(entry.status).toBe("failure");
       expect(entry.metadata!.keysChanged).toEqual(["key"]);
       expect(entry.metadata!.error).toContain("config update failed");
+    });
+
+    it("does not emit audit when installation not found (404)", async () => {
+      setQueryResult("UPDATE workspace_plugins", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/missing/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { key: "val" } }),
+      });
+      expect(res.status).toBe(404);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("sorts keysChanged alphabetically regardless of input order", async () => {
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: null,
+      }]);
+
+      await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: { zzz: 1, mmm: 2, aaa: 3 },
+        }),
+      });
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.metadata!.keysChanged).toEqual(["aaa", "mmm", "zzz"]);
     });
   });
 });

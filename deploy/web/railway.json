@@ -12,6 +12,11 @@
       "packages/react/**",
       "packages/types/**",
       "packages/schemas/**",
+      "packages/**/package.json",
+      "apps/**/package.json",
+      "examples/**/package.json",
+      "plugins/**/package.json",
+      "create-atlas-plugin/package.json",
       "ee/**",
       "deploy/web/**"
     ]

@@ -13,3 +13,4 @@ export { getPluginTools, setPluginTools, getContextFragments, setContextFragment
 export { loadPluginSettings, savePluginEnabled, savePluginConfig, getPluginConfig, getAllPluginSettings } from "./settings";
 export type { PluginSettings } from "./settings";
 export { MASKED_PLACEHOLDER, maskSecretFields, restoreMaskedSecrets, parseConfigSchema } from "./secrets";
+export type { ConfigSchema } from "./secrets";

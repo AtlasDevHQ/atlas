@@ -343,9 +343,10 @@ adminPlugins.openapi(getPluginSchemaRoute, async (c) => {
   const dbOverrides = await getPluginConfig(id);
   const merged = { ...pluginConfig, ...dbOverrides };
 
-  // Mask secret values (see @atlas/api/lib/plugins/secrets for the shared
-  // constant — must match the marketplace GET /available masking so the
-  // write-path MASKED_PLACEHOLDER restore works across both surfaces).
+  // Mask secret values. MASKED_PLACEHOLDER is shared with every admin
+  // plugin surface via @atlas/api/lib/plugins/secrets — the write paths
+  // there round-trip this exact string on save, so drift here would
+  // corrupt live credentials.
   const maskedValues: Record<string, unknown> = {};
   const secretKeys = new Set(schema.filter((f) => f.secret).map((f) => f.key));
   for (const [key, value] of Object.entries(merged)) {

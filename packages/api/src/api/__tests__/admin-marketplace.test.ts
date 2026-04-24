@@ -501,6 +501,7 @@ describe("Workspace Plugin Marketplace", () => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
     capturedQueries = [];
+    mockLogAdminAction.mockClear();
   });
 
   describe("GET /marketplace/available", () => {
@@ -562,9 +563,54 @@ describe("Workspace Plugin Marketplace", () => {
       const body = await json(res);
       expect(body.plugins[0].installedConfig.apiKey).toBe("••••••••");
       expect(body.plugins[0].installedConfig.region).toBe("us-east-1");
-      // Exact-match the placeholder string — drifting from admin-plugins.ts
-      // would confuse the write-path restoration guard.
+      // Exact-match the placeholder from `@atlas/api/lib/plugins/secrets`.
+      // A drift on this constant would confuse the write-path restoration
+      // guard in both admin-plugins.ts and admin-marketplace.ts.
       expect(body.plugins[0].installedConfig.apiKey).not.toContain("sk-live");
+    });
+
+    it("leaves null stored secret values unmasked — the UI uses null to show 'never configured'", async () => {
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
+        {
+          ...sampleCatalogRow,
+          config_schema: [{ key: "apiKey", type: "string", secret: true }],
+        },
+      ]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", [
+        { catalog_id: "cat-1", id: "inst-1", config: { apiKey: null } },
+      ]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.plugins[0].installedConfig.apiKey).toBeNull();
+    });
+
+    it("fail-closes on malformed config_schema — every string masked, not passed through raw (F-43 #1817)", async () => {
+      // A catalog row with a JSONB envelope or stringified schema would
+      // otherwise return every credential unmasked. parseConfigSchema marks
+      // this "corrupt" and maskSecretFields defensively masks every string.
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
+        {
+          ...sampleCatalogRow,
+          // Object instead of array — simulates DB drift.
+          config_schema: { fields: [{ key: "apiKey", secret: true }] },
+        },
+      ]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", [
+        { catalog_id: "cat-1", id: "inst-1", config: { apiKey: "sk-live-12345", port: 5432, debug: true } },
+      ]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.plugins[0].installedConfig.apiKey).toBe("••••••••");
+      expect(body.plugins[0].installedConfig.apiKey).not.toContain("sk-live");
+      // Non-string values pass through — we only mask what could be a secret.
+      expect(body.plugins[0].installedConfig.port).toBe(5432);
+      expect(body.plugins[0].installedConfig.debug).toBe(true);
     });
 
     it("leaves null installedConfig unchanged when plugin is not installed", async () => {
@@ -790,6 +836,100 @@ describe("Workspace Plugin Marketplace", () => {
       expect(persisted.apiKey).toBe("sk-new");
     });
 
+    it("preserves a secret field omitted entirely by the UI — dirty-field saves must not wipe the credential (F-43 #1817)", async () => {
+      // A real UI that only sends changed inputs will PUT { config: { region: "eu" } }
+      // when the admin edits the region. Without omit-to-preserve the UPDATE
+      // would persist `{ region: "eu" }` and silently wipe apiKey.
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "sk-live-12345", region: "us-east-1" },
+          config_schema: [
+            { key: "apiKey", type: "string", secret: true },
+            { key: "region", type: "string" },
+          ],
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: { apiKey: "sk-live-12345", region: "eu-west-1" },
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { region: "eu-west-1" } }),
+      });
+      expect(res.status).toBe(200);
+      const updateCall = findCapturedQuery("UPDATE workspace_plugins");
+      const persisted = JSON.parse(updateCall!.params[0] as string) as Record<string, unknown>;
+      expect(persisted.apiKey).toBe("sk-live-12345");
+      expect(persisted.region).toBe("eu-west-1");
+    });
+
+    it("honors an explicit clear (empty string) — admin can still remove a secret", async () => {
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "sk-old" },
+          config_schema: [{ key: "apiKey", type: "string", secret: true }],
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: { apiKey: "" },
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "" } }),
+      });
+      expect(res.status).toBe(200);
+      const persisted = JSON.parse(findCapturedQuery("UPDATE workspace_plugins")!.params[0] as string) as Record<string, unknown>;
+      expect(persisted.apiKey).toBe("");
+    });
+
+    it("fail-closes on malformed config_schema — restores every stored key rather than risk wiping a secret", async () => {
+      // When parseConfigSchema returns { state: "corrupt" }, restoreMaskedSecrets
+      // preserves every key in originals that the UI hid (placeholder) or
+      // omitted. A malformed schema could otherwise turn a disclosure fix
+      // into a silent-wipe regression.
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "sk-live", region: "us-east-1" },
+          config_schema: "not-an-array", // corrupt
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: { apiKey: "sk-live", region: "us-east-1" },
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "••••••••" } }),
+      });
+      expect(res.status).toBe(200);
+      const persisted = JSON.parse(findCapturedQuery("UPDATE workspace_plugins")!.params[0] as string) as Record<string, unknown>;
+      expect(persisted.apiKey).toBe("sk-live");    // placeholder restored
+      expect(persisted.region).toBe("us-east-1");  // omitted → preserved
+    });
+
     it("returns 404 when the pre-fetch finds no installation", async () => {
       setQueryResult("FROM workspace_plugins wp", []);
 
@@ -800,6 +940,26 @@ describe("Workspace Plugin Marketplace", () => {
         body: JSON.stringify({ config: {} }),
       });
       expect(res.status).toBe(404);
+    });
+
+    it("emits a failure audit with priorLookupFailed when the pre-fetch throws — an admin-triggered attempt is never silent", async () => {
+      setQueryResult("FROM workspace_plugins wp", new Error("pool exhausted"));
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "sk-rot" } }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.config_update");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.priorLookupFailed).toBe(true);
+      expect(entry.metadata!.error).toContain("pool exhausted");
+      // Metadata still carries keysChanged — auditors can see which fields
+      // the admin attempted to rotate even when we never got as far as UPDATE.
+      expect(entry.metadata!.keysChanged).toEqual(["apiKey"]);
     });
 
     it("returns 404 for non-existent installation", async () => {

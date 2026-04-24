@@ -2485,6 +2485,16 @@ governance enforcement is per-call-site rather than centralized in the
 agent, so the easy thing (skip context) and the safe thing (block on
 no context) are inverted.
 
+**Partial mitigation worth noting:** `sql.ts:1037-1047` does fail
+closed when `approvalMatch.required === true` AND user identity is
+missing — it returns a clear "approval required but the requester
+identity could not be determined" error. The bug is not that the
+hard-fail is wrong; it is that `approvalMatch.required` never becomes
+true on the scheduler path because the orgId-less call to
+`checkApprovalRequired` short-circuits at `approval.ts:412` before any
+rule lookup runs. Readers should not infer the entire approval
+pipeline is broken — only the orgId-less entry path is.
+
 **Compliance lens:** SOC 2 CC6.1 / SOC 2 CC7.2 — change-management
 controls. The approval workflow is the auditable boundary between
 "user requested data" and "data was returned"; bypassing it via a
@@ -2576,13 +2586,26 @@ case "byot":
 ```
 
 A workspace that has SSO enforcement enabled and is running in
-`simple-key` or `byot` mode (typical for self-hosted multi-tenant
-deployments that want SSO for end-users + an API key for service
-accounts) will allow API-key holders to bypass SSO entirely. The user
-identity surfaced by `simple-key` (`api-key-<sha256-prefix>`) has no
-email domain, so even if SSO checks did run they would no-op via
-`extractEmailDomain` returning null — but the bigger issue is that the
-bypass is undocumented for `byot`.
+`simple-key` or `byot` mode will allow API-key/JWT holders to bypass
+Atlas's internal SSO enforcement entirely. The user identity surfaced
+by `simple-key` (`api-key-<sha256-prefix>`) has no email domain, so even
+if SSO checks did run they would no-op via `extractEmailDomain`
+returning null — that path is the documented break-glass. The live gap
+is `byot`.
+
+`byot` mode is gated on `ATLAS_AUTH_JWKS_URL` being set
+(`packages/api/src/lib/auth/detect.ts:76-77`) — a generic IdP signal
+that fits **multi-tenant SaaS deployments using an external IdP**
+(Auth0, Cognito, custom JWKS) just as well as self-hosted. The earlier
+revision of this finding called BYOT "self-hosted only"; that's wrong.
+Any deployment that runs Atlas behind an external IdP and ALSO has an
+SSO enforcement record in `sso_providers` will see the enforcement
+record silently no-op. In one sense the IdP itself is enforcing SSO
+(JWKS validation implies a verified IdP-signed token), so Atlas's
+internal table is somewhat redundant. The gap is the "I clicked the
+'enforce SSO' toggle in the admin UI and assumed it gated my BYOT
+JWTs" mismatch — the operator's mental model and the actual behaviour
+diverge silently.
 
 **Comment in code documents the simple-key carve-out only:**
 
@@ -2598,16 +2621,22 @@ workspace, and the enforcement *should* fire — but it doesn't because
 the switch case skips the check.
 
 **Why this is P2:** the SSO threat model assumes managed-mode
-deployments, which is where SaaS Atlas lives and is what the SSO admin
-UI gates on. Self-hosted with `simple-key` + SSO is an unusual
-configuration. Self-hosted with `byot` + SSO is more plausible and is
-the live gap. Not P1 because:
-1. No production SaaS deployment is affected.
-2. The bypass requires the operator to have configured both SSO and
-   `byot` simultaneously, which is uncommon.
-3. The break-glass framing is defensible — the API-key bypass is the
-   intended escape hatch when SSO breaks (e.g. IdP outage during
-   incident response).
+deployments, which is where the official Atlas SaaS deployment lives and
+is what the SSO admin UI gates on. The `simple-key` carve-out is the
+documented break-glass. The `byot` carve-out is the live gap, but its
+real-world impact is bounded by the fact that a BYOT deployment is by
+definition already delegating identity to an external IdP — the IdP is
+enforcing SSO upstream, just not via Atlas's internal table. Not P1
+because:
+1. The official Atlas SaaS (managed mode) is unaffected.
+2. The break-glass framing is defensible for `simple-key` — the API-key
+   bypass is the intended escape hatch when SSO breaks (e.g. IdP outage
+   during incident response).
+3. BYOT operators who set Atlas's SSO enforcement record alongside an
+   external IdP have a misconfigured stack rather than an exploitable
+   bypass — but the misconfiguration is silent, which is what makes
+   this P2 (admin UI promises something the backend doesn't deliver)
+   rather than P3 (cosmetic).
 
 **Compliance lens:** SOC 2 CC6.6 / ISO A.9.4.2 — system access controls.
 A SOC 2 auditor reviewing the SSO enforcement claim would expect
@@ -2638,13 +2667,15 @@ the `member` / `user` table without consulting the
 `account.providerId` ↔ `scimProvider` join that
 `ee/src/auth/scim.ts:198-205` uses to identify SCIM-managed users:
 
+All line numbers point to the `.openapi(...)` registration site:
+
 | Handler | File | Line |
 |---|---|---|
 | `removeMembershipRoute` | `admin.ts` | 2081 |
 | `deleteUserRoute` | `admin.ts` | 2151 |
 | `changeUserRoleRoute` | `admin.ts` | 1894 |
 | `revokeUserSessionsRoute` | `admin.ts` | 2213 |
-| `banUserRoute` | `admin.ts` | 2007 |
+| `banUserRoute` | `admin.ts` | 1986 |
 | `assignRoleRoute` | `admin-roles.ts` | 466 |
 
 The SCIM "source of truth" model is that the IdP (Okta, Azure AD, etc.)
@@ -2678,6 +2709,18 @@ references the old id.
 already be authorized to make the mutation. There is no privilege
 escalation. The damage is data-integrity (orphaned references,
 ping-pong with the IdP) and audit clarity (changes that don't stick).
+
+**Remediation cost is non-trivial — flagged here so the issue isn't
+mistaken for a one-line guard.** A grep of `packages/api/src/` and
+`ee/src/` for `scim_provisioned`, `scimProvisioned`, or
+`provisioned_via` returns zero hits — there is no marker column
+distinguishing SCIM-provisioned users from others. The
+`account.providerId` ↔ `scimProvider` join in `scim.ts:198-205` is the
+only mechanism, and it's a runtime query rather than a schema flag.
+Adding the SCIM-provenance check to the 6 user-mutation handlers
+either (a) adds a query per mutation, or (b) requires a schema
+migration to materialize a flag. Either path is doable; flagging it
+here so the implementer doesn't underestimate scope.
 
 **Compliance lens:** ISO A.9.2 — user access management. SCIM is the
 declared source of truth; the API not enforcing it weakens the
@@ -2762,12 +2805,15 @@ shape:
 
 ---
 
-### F-60 — `/api/v1/demo/chat` runs agent without user context — approval workflows skipped (P3 → noted)
+### F-60 — `/api/v1/demo/chat` runs agent without `activeOrganizationId` — approval workflows skipped (P3 → noted)
 
 **Where:** `packages/api/src/api/routes/demo.ts:399-435`. The demo chat
-handler binds an `orgContext` to the demo workspace but does not bind
-a user. The agent runs without a Better Auth user identity, so
-`checkApprovalRequired` short-circuits.
+handler binds a demo `user` (synthesized via `createAtlasUser`) into
+`withRequestContext({ requestId, user: demoUser })`, but the demo user
+carries no `activeOrganizationId`. Inside `executeSQL`,
+`getRequestContext()?.user?.activeOrganizationId` resolves to undefined,
+which trips the same `checkApprovalRequired(undefined, ...)`
+short-circuit as F-54 / F-55.
 
 **Why this is P3 and not a real finding:** the demo workspace ships
 fixed sample data (the SaaS demo dataset) and is firewalled from any
@@ -2853,7 +2899,7 @@ for each so future audits can short-circuit:
   resolved value. Verified by reading the source: no SaaS-only
   governance route bypasses this gate.
 - **Stripe webhook signature verification** — `/api/auth/stripe/*` is
-  handled by Better Auth's Stripe plugin (`packages/api/src/lib/auth/server.ts:438`
+  handled by Better Auth's Stripe plugin (`packages/api/src/lib/auth/server.ts:491`
   conditionally registers when `STRIPE_SECRET_KEY` is present). The
   plugin uses `stripe.webhooks.constructEvent` with `STRIPE_WEBHOOK_SECRET`.
   Confirmed via Phase 5 audit (#1724) — no Atlas-side changes.

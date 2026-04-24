@@ -23,8 +23,23 @@ import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
+import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 
 const log = createLogger("internal-db");
+
+// Re-exports: downstream callers import encryption helpers from
+// `@atlas/api/lib/db/internal` for historical reasons. Keep the surface
+// stable even though the resolver itself now lives in
+// `encryption-keys.ts`.
+export {
+  getEncryptionKey,
+  getEncryptionKeyset,
+  _resetEncryptionKeyCache,
+} from "@atlas/api/lib/db/encryption-keys";
+export type {
+  EncryptionKeyset,
+  VersionedKey,
+} from "@atlas/api/lib/db/encryption-keys";
 
 // ---------------------------------------------------------------------------
 // Connection URL encryption (AES-256-GCM)
@@ -34,87 +49,148 @@ const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // 96-bit IV recommended for GCM
 const AUTH_TAG_LENGTH = 16;
 
-let _cachedKey: { raw: string; key: Buffer } | null = null;
-
 /**
- * Returns the 32-byte encryption key derived via SHA-256 from
- * ATLAS_ENCRYPTION_KEY (takes precedence) or BETTER_AUTH_SECRET.
- * Returns null if neither is set. Result is cached.
+ * Versioned ciphertext prefix. Post-F-47 all new writes carry
+ * `enc:v<N>:iv:authTag:ciphertext`; pre-F-47 URLs encrypted by this
+ * module use the bare `iv:authTag:ciphertext` 3-part format and are
+ * decrypted via the unversioned fallback below.
  */
-export function getEncryptionKey(): Buffer | null {
-  const raw = process.env.ATLAS_ENCRYPTION_KEY ?? process.env.BETTER_AUTH_SECRET;
-  if (!raw) return null;
-  if (_cachedKey && _cachedKey.raw === raw) return _cachedKey.key;
-  // Derive a fixed 32-byte key via SHA-256 so any-length secret works
-  const key = crypto.createHash("sha256").update(raw).digest();
-  _cachedKey = { raw, key };
-  return key;
+const VERSIONED_PREFIX_RE = /^enc:v(\d+):(.+)$/s;
+
+/** Parse `enc:v<N>:body`. Returns null if the input lacks the prefix. */
+function parseVersionedCiphertext(stored: string): { version: number; body: string } | null {
+  const match = stored.match(VERSIONED_PREFIX_RE);
+  if (!match) return null;
+  const version = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(version) || version < 1) return null;
+  return { version, body: match[2] };
 }
 
-/** @internal Reset cached encryption key — for testing only. */
-export function _resetEncryptionKeyCache(): void {
-  _cachedKey = null;
+/** AES-GCM decrypt of a 3-part `iv:authTag:ciphertext` body under a specific key. */
+function decryptBody(body: string, key: Buffer): string {
+  const parts = body.split(":");
+  if (parts.length !== 3) {
+    throw new Error("Failed to decrypt connection URL: unrecognized format");
+  }
+  const iv = Buffer.from(parts[0], "base64");
+  const authTag = Buffer.from(parts[1], "base64");
+  const ciphertext = Buffer.from(parts[2], "base64");
+  const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  decipher.setAuthTag(authTag);
+  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return decrypted.toString("utf8");
 }
 
 /**
- * Encrypts a connection URL using AES-256-GCM.
- * Returns `iv:authTag:ciphertext` (all base64). Returns the plaintext
- * unchanged if no encryption key is available.
+ * Encrypts a connection URL using AES-256-GCM under the active keyset
+ * entry. New writes carry the `enc:v<N>:` prefix so the rotation script
+ * can identify rows below the active version. Returns the plaintext
+ * unchanged if no encryption key is available (dev / self-hosted
+ * passthrough).
  */
 export function encryptUrl(plaintext: string): string {
-  const key = getEncryptionKey();
-  if (!key) return plaintext;
+  const keyset = getEncryptionKeyset();
+  if (!keyset) return plaintext;
 
   const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, keyset.active.key, iv, { authTagLength: AUTH_TAG_LENGTH });
   const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
   // `:` is safe as delimiter — base64 alphabet is A-Za-z0-9+/= (no colon)
-  return `${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
+  return `enc:v${keyset.active.version}:${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
 }
 
 /**
  * Decrypts a connection URL encrypted by `encryptUrl()`.
- * Plaintext detection (two checks):
- *   1. Starts with a URL scheme (`postgresql://`, `mysql://`, etc.) → plaintext
- *   2. Not exactly 3 colon-separated parts (`iv:authTag:ciphertext`) → plaintext
- * Returns plaintext values as-is for backward compatibility with pre-encryption data.
+ * Read order (each case short-circuits):
+ *   1. Looks like a plaintext URL (`scheme://…`) → return as-is.
+ *   2. Carries `enc:v<N>:` prefix → look up key by version; fail loudly
+ *      if the version isn't in the active keyset (operator misconfig).
+ *   3. Three colon-separated base64 parts → pre-F-47 unversioned
+ *      format; decrypt with the active key (same as pre-F-47 behavior).
+ *   4. Anything else → unrecognized format, throw.
  */
 export function decryptUrl(stored: string): string {
   if (isPlaintextUrl(stored)) return stored;
 
-  const key = getEncryptionKey();
-  if (!key) {
+  const keyset = getEncryptionKeyset();
+  if (!keyset) {
     log.error("Encrypted connection URL found but no encryption key is available — set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET");
     throw new Error("Cannot decrypt connection URL: no encryption key available");
   }
 
+  const versioned = parseVersionedCiphertext(stored);
+  if (versioned) {
+    const key = keyset.byVersion.get(versioned.version);
+    if (!key) {
+      log.error(
+        { version: versioned.version, active: keyset.active.version },
+        "Encrypted connection URL references an unknown key version — ATLAS_ENCRYPTION_KEYS missing this version",
+      );
+      throw new Error(
+        `Cannot decrypt connection URL: key version v${versioned.version} not present in ATLAS_ENCRYPTION_KEYS`,
+      );
+    }
+    try {
+      return decryptBody(versioned.body, key);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), version: versioned.version },
+        "Failed to decrypt versioned connection URL — data may be corrupted",
+      );
+      throw new Error("Failed to decrypt connection URL", { cause: err });
+    }
+  }
+
+  // Pre-F-47 legacy unversioned format: iv:authTag:ciphertext. Try v1
+  // first (pre-F-47 deployments had a single key, and the F-47 keyset
+  // adopts it as v1). If v1 isn't in the keyset — a fresh deployment
+  // that landed post-F-47 with only `ATLAS_ENCRYPTION_KEYS=v2:…` —
+  // fall back to the active key as a last resort. A failed decrypt
+  // under the chosen key surfaces as a 500; recovery requires adding
+  // the original raw key material back to the keyset (under any
+  // version label — legacy ciphertext carries no version, so any entry
+  // that successfully decrypts is the right one).
   const parts = stored.split(":");
   if (parts.length !== 3) {
     log.error({ partCount: parts.length }, "Stored connection URL is not plaintext and does not match encrypted format (expected 3 colon-separated parts)");
     throw new Error("Failed to decrypt connection URL: unrecognized format");
   }
-
+  const legacyKey = keyset.byVersion.get(1);
+  const usingActiveFallback = legacyKey === undefined;
+  if (usingActiveFallback) {
+    // Visible breadcrumb — this path almost certainly fails (the active
+    // key was never used to encrypt un-versioned data unless the deploy
+    // started with it) and the operator needs the hint that adding the
+    // original key back under `v1:…` is the fix, not a ciphertext audit.
+    log.warn(
+      { active: keyset.active.version },
+      "F-47 legacy-unversioned connection URL encountered with no v1 key in ATLAS_ENCRYPTION_KEYS — " +
+      "falling back to the active key. If this row was written pre-F-47 under a different raw value, " +
+      "decryption will fail; add the original key back as v1:<raw> in ATLAS_ENCRYPTION_KEYS.",
+    );
+  }
+  const keyToUse = legacyKey ?? keyset.active.key;
   try {
-    const iv = Buffer.from(parts[0], "base64");
-    const authTag = Buffer.from(parts[1], "base64");
-    const ciphertext = Buffer.from(parts[2], "base64");
-
-    const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
-    decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    return decrypted.toString("utf8");
+    return decryptBody(stored, keyToUse);
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      {
+        err: err instanceof Error ? err.message : String(err),
+        usingActiveFallback,
+      },
       "Failed to decrypt connection URL — data may be corrupted or key may have changed",
     );
     throw new Error("Failed to decrypt connection URL", { cause: err });
   }
 }
 
-/** Returns true if the stored value looks like a plaintext URL (any URI scheme, not just database schemes). */
+/**
+ * Returns true when the value looks like a plaintext URL. Rejects
+ * versioned ciphertext like `enc:v1:…` (regex requires `://` after the
+ * scheme) so the F-47 prefix is never mistaken for a scheme.
+ */
 export function isPlaintextUrl(value: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
 }

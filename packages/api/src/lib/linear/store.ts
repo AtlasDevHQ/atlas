@@ -7,6 +7,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -125,23 +126,25 @@ export async function saveLinearInstallation(
   const userName = opts.userName ?? null;
   const userEmail = opts.userEmail ?? null;
   const apiKeyEncrypted = encryptSecret(opts.apiKey);
+  const keyVersion = activeKeyVersion();
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ user_id: string }>(
-      `INSERT INTO linear_installations (user_id, api_key, api_key_encrypted, user_name, user_email, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO linear_installations (user_id, api_key, api_key_encrypted, api_key_key_version, user_name, user_email, org_id)
+       VALUES ($1, $2, $3, $7, $4, $5, $6)
        ON CONFLICT (user_id) DO UPDATE SET
          api_key = $2,
          api_key_encrypted = $3,
+         api_key_key_version = $7,
          user_name = COALESCE($4, linear_installations.user_name),
          user_email = COALESCE($5, linear_installations.user_email),
          org_id = COALESCE($6, linear_installations.org_id),
          installed_at = now()
        WHERE linear_installations.org_id IS NULL OR linear_installations.org_id = $6
        RETURNING user_id`,
-      [userId, opts.apiKey, apiKeyEncrypted, userName, userEmail, orgId],
+      [userId, opts.apiKey, apiKeyEncrypted, userName, userEmail, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

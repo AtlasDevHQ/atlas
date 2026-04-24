@@ -735,12 +735,15 @@ describe("hardDeleteWorkspace()", () => {
 
 describe("connection URL encryption", () => {
   const origEncKey = process.env.ATLAS_ENCRYPTION_KEY;
+  const origEncKeys = process.env.ATLAS_ENCRYPTION_KEYS;
   const origAuthSecret = process.env.BETTER_AUTH_SECRET;
 
   afterEach(() => {
     // Restore env vars and reset cached key
     if (origEncKey !== undefined) process.env.ATLAS_ENCRYPTION_KEY = origEncKey;
     else delete process.env.ATLAS_ENCRYPTION_KEY;
+    if (origEncKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = origEncKeys;
+    else delete process.env.ATLAS_ENCRYPTION_KEYS;
     if (origAuthSecret !== undefined) process.env.BETTER_AUTH_SECRET = origAuthSecret;
     else delete process.env.BETTER_AUTH_SECRET;
     _resetEncryptionKeyCache();
@@ -816,9 +819,13 @@ describe("connection URL encryption", () => {
       expect(encrypted).not.toContain("admin");
       expect(encrypted).not.toContain("s3cret");
 
-      // Should have iv:authTag:ciphertext format
+      // F-47: new writes carry a versioned prefix enc:v<N>: so the
+      // rotation script can identify rows below the active version.
+      // That turns the legacy 3-part format (iv:authTag:ciphertext)
+      // into a 5-part format (enc:v1:iv:authTag:ciphertext).
+      expect(encrypted.startsWith("enc:v1:")).toBe(true);
       const parts = encrypted.split(":");
-      expect(parts.length).toBe(3);
+      expect(parts.length).toBe(5);
 
       // Decrypt should return the original
       expect(decryptUrl(encrypted)).toBe(url);
@@ -898,8 +905,8 @@ describe("connection URL encryption", () => {
       const url = "postgresql://user:pass@host/db";
       const encrypted = encryptUrl(url);
       const parts = encrypted.split(":");
-      // Tamper with the ciphertext
-      parts[2] = "AAAA" + parts[2].slice(4);
+      // F-47 format: enc:v1:iv:authTag:ciphertext — ciphertext is parts[4].
+      parts[4] = "AAAA" + parts[4].slice(4);
       const tampered = parts.join(":");
       expect(() => decryptUrl(tampered)).toThrow("Failed to decrypt connection URL");
     });
@@ -924,8 +931,8 @@ describe("connection URL encryption", () => {
       const url = "postgresql://user:pass@host/db";
       const encrypted = encryptUrl(url);
       const parts = encrypted.split(":");
-      // Tamper with the auth tag (part[1])
-      parts[1] = "AAAA" + parts[1].slice(4);
+      // F-47 format: enc:v1:iv:authTag:ciphertext — auth tag is parts[3].
+      parts[3] = "AAAA" + parts[3].slice(4);
       const tampered = parts.join(":");
       expect(() => decryptUrl(tampered)).toThrow("Failed to decrypt connection URL");
     });
@@ -934,6 +941,97 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
       // 2 parts — not a URL, not 3-part encrypted format
       expect(() => decryptUrl("some:garbage")).toThrow("unrecognized format");
+    });
+  });
+
+  describe("F-47 key versioning for connection URLs", () => {
+    beforeEach(() => {
+      delete process.env.ATLAS_ENCRYPTION_KEY;
+      delete process.env.BETTER_AUTH_SECRET;
+      delete process.env.ATLAS_ENCRYPTION_KEYS;
+      _resetEncryptionKeyCache();
+    });
+
+    it("writes are tagged with the active keyset version", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
+      _resetEncryptionKeyCache();
+      const url = "postgresql://admin:pw@host:5432/db";
+      const encrypted = encryptUrl(url);
+      expect(encrypted.startsWith("enc:v2:")).toBe(true);
+      expect(decryptUrl(encrypted)).toBe(url);
+    });
+
+    it("reads ciphertext stamped with a legacy (non-active) version by looking up the key", () => {
+      // Phase A: write under v1-only keyset.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
+      _resetEncryptionKeyCache();
+      const url = "postgresql://admin:pw@host:5432/db";
+      const v1Ciphertext = encryptUrl(url);
+      expect(v1Ciphertext.startsWith("enc:v1:")).toBe(true);
+
+      // Phase B: rotate — active flips to v2, v1 preserved for reads.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
+      _resetEncryptionKeyCache();
+      expect(decryptUrl(v1Ciphertext)).toBe(url);
+    });
+
+    it("reads pre-F-47 unversioned ciphertext (iv:authTag:ciphertext) using the active key as a fallback", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "legacy-raw-key";
+      _resetEncryptionKeyCache();
+      // Synthesize a pre-F-47 ciphertext by re-encoding the output of
+      // encryptUrl without the `enc:v1:` prefix — same key, same body.
+      const url = "postgresql://user:pass@host/db";
+      const versioned = encryptUrl(url);
+      const legacy = versioned.replace(/^enc:v1:/, "");
+      const parts = legacy.split(":");
+      expect(parts.length).toBe(3);
+      expect(decryptUrl(legacy)).toBe(url);
+    });
+
+    it("reads pre-F-47 unversioned ciphertext after rotation via the v1 key lookup (not the new active key)", () => {
+      // The unversioned-fallback path has to pick `byVersion.get(1)`
+      // rather than `active.key` — otherwise a rotation would strand
+      // every un-migrated connection URL even though the operator
+      // explicitly kept v1 in the keyset for the soak.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:original-key";
+      _resetEncryptionKeyCache();
+      const url = "postgresql://admin:pw@host/db";
+      const versioned = encryptUrl(url);
+      const unversioned = versioned.replace(/^enc:v1:/, "");
+
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-key,v1:original-key";
+      _resetEncryptionKeyCache();
+      expect(decryptUrl(unversioned)).toBe(url);
+    });
+
+    it("throws clearly when un-versioned ciphertext meets a keyset with no v1 (fresh-deploy misconfig)", () => {
+      // The third scenario of the legacy-fallback: a fresh deployment
+      // that lands post-F-47 with only `ATLAS_ENCRYPTION_KEYS=v2:…`
+      // configured, then encounters un-versioned ciphertext migrated
+      // from an older dump. Code falls back to `active.key`, which
+      // fails AES-GCM auth-tag verification and throws. Pinning this
+      // so a future "helpful" refactor can't silently try every key
+      // (which would mask real corruption / keep bad data alive).
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:original-key";
+      _resetEncryptionKeyCache();
+      const url = "postgresql://admin:pw@host/db";
+      const unversioned = encryptUrl(url).replace(/^enc:v1:/, "");
+
+      // v1 dropped — active is now a totally different raw value.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:never-used-to-encrypt-this";
+      _resetEncryptionKeyCache();
+      expect(() => decryptUrl(unversioned)).toThrow(/Failed to decrypt connection URL/);
+    });
+
+    it("throws a configuration-specific error when the ciphertext version is missing from the keyset", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
+      _resetEncryptionKeyCache();
+      const url = "postgresql://user:pass@host/db";
+      const v2Ciphertext = encryptUrl(url);
+
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
+      _resetEncryptionKeyCache();
+      expect(() => decryptUrl(v2Ciphertext)).toThrow(/v2|not present|missing/i);
     });
   });
 

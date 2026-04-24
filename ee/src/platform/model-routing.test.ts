@@ -140,6 +140,53 @@ describe("setWorkspaceModelConfig", () => {
     expect(ee.capturedQueries[0].params[3]).toBe("encrypted:sk-ant-test1234");
   });
 
+  it("F-47: INSERT carries api_key_key_version and stamps the active version when apiKey is set", async () => {
+    // Pins the F-47 INSERT/UPDATE shape — a regression that dropped
+    // `api_key_key_version` from the column list (or swapped the $N
+    // ordering) would silently let rows land at the wrong version and
+    // break the post-rotation ops queries.
+    ee.queueMockRows([makeRow()]);
+    await run(setWorkspaceModelConfig("org-1", {
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      apiKey: "sk-ant-test1234",
+    }));
+    const { sql, params } = ee.capturedQueries[0];
+    // Column list + ON CONFLICT SET both name the key-version column.
+    expect(sql).toContain("api_key_key_version");
+    expect(sql).toMatch(/ON CONFLICT[\s\S]*api_key_key_version\s*=\s*COALESCE\(\$6/);
+    // $4 = encryptedKey, $6 = keyVersion (active version, 1 in tests
+    // with no ATLAS_ENCRYPTION_KEYS set).
+    expect(params[3]).toBe("encrypted:sk-ant-test1234");
+    expect(params[5]).toBe(1);
+  });
+
+  it("F-47: when apiKey is omitted, both api_key_encrypted AND api_key_key_version are preserved via COALESCE", async () => {
+    // The load-bearing COALESCE pair: on a metadata-only edit (apiKey
+    // undefined), the stored ciphertext is kept, AND the companion
+    // key_version column is kept alongside. Swapping one without the
+    // other would break post-rotation decryption because the version
+    // column would disagree with the ciphertext's enc:v<N>: prefix.
+    // The PR body explicitly called this out as the risky case — this
+    // test pins the behavior.
+    ee.queueMockRows([makeRow()]);
+    await run(setWorkspaceModelConfig("org-1", {
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      // apiKey intentionally omitted
+    }));
+    const { sql, params } = ee.capturedQueries[0];
+    // Both columns COALESCE to the existing row when $4/$6 are null.
+    expect(sql).toMatch(/api_key_encrypted\s*=\s*COALESCE\(\$4/);
+    expect(sql).toMatch(/api_key_key_version\s*=\s*COALESCE\(\$6/);
+    // VALUES also preserves both via the SELECT-subquery fallback so a
+    // fresh INSERT (no existing row) still lands a legal key_version.
+    expect(sql).toContain("SELECT api_key_encrypted FROM workspace_model_config");
+    expect(sql).toContain("SELECT api_key_key_version FROM workspace_model_config");
+    expect(params[3]).toBeNull();
+    expect(params[5]).toBeNull();
+  });
+
   it("rejects invalid provider", async () => {
     await expect(
       run(setWorkspaceModelConfig("org-1", {

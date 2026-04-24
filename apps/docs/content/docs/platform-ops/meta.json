@@ -10,6 +10,7 @@
     "backups",
     "data-residency",
     "abuse-prevention",
-    "plugin-catalog"
+    "plugin-catalog",
+    "encryption-key-rotation"
   ]
 }

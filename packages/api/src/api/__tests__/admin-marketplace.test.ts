@@ -304,6 +304,30 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
   getPendingAmendmentCount: mock(async () => 0),
   getEncryptionKey: () => testEncryptionKey,
+  getEncryptionKeyset: () => ({
+    active: { version: 1, key: testEncryptionKey },
+    byVersion: new Map([[1, testEncryptionKey]]),
+    decrypt: [{ version: 1, key: testEncryptionKey }],
+    source: "ATLAS_ENCRYPTION_KEY",
+  }),
+  _resetEncryptionKeyCache: () => {},
+}));
+
+// F-47: secret-encryption.ts pulls getEncryptionKeyset from
+// encryption-keys.ts directly (not via the db/internal re-export), so
+// the db/internal mock above is not enough — the dedicated module also
+// needs a mock. Without this, `getEncryptionKeyset()` returns null, the
+// encrypt helpers degrade to plaintext passthrough, and the F-42
+// "encrypted at rest" assertions fail.
+mock.module("@atlas/api/lib/db/encryption-keys", () => ({
+  getEncryptionKey: () => testEncryptionKey,
+  getEncryptionKeyset: () => ({
+    active: { version: 1, key: testEncryptionKey },
+    byVersion: new Map([[1, testEncryptionKey]]),
+    decrypt: [{ version: 1, key: testEncryptionKey }],
+    source: "ATLAS_ENCRYPTION_KEY",
+  }),
+  activeKeyVersion: () => 1,
   _resetEncryptionKeyCache: () => {},
 }));
 

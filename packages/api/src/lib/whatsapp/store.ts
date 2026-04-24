@@ -8,6 +8,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -124,22 +125,24 @@ export async function saveWhatsAppInstallation(
   const orgId = opts.orgId ?? null;
   const displayPhone = opts.displayPhone ?? null;
   const accessTokenEncrypted = encryptSecret(opts.accessToken);
+  const keyVersion = activeKeyVersion();
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ phone_number_id: string }>(
-      `INSERT INTO whatsapp_installations (phone_number_id, access_token, access_token_encrypted, display_phone, org_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO whatsapp_installations (phone_number_id, access_token, access_token_encrypted, access_token_key_version, display_phone, org_id)
+       VALUES ($1, $2, $3, $6, $4, $5)
        ON CONFLICT (phone_number_id) DO UPDATE SET
          access_token = $2,
          access_token_encrypted = $3,
+         access_token_key_version = $6,
          display_phone = COALESCE($4, whatsapp_installations.display_phone),
          org_id = COALESCE($5, whatsapp_installations.org_id),
          installed_at = now()
        WHERE whatsapp_installations.org_id IS NULL OR whatsapp_installations.org_id = $5
        RETURNING phone_number_id`,
-      [phoneNumberId, opts.accessToken, accessTokenEncrypted, displayPhone, orgId],
+      [phoneNumberId, opts.accessToken, accessTokenEncrypted, displayPhone, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

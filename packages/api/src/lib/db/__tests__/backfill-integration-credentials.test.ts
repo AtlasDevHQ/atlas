@@ -60,6 +60,7 @@ describe("backfillTable", () => {
       pk: "team_id",
       plaintext: "bot_token",
       encrypted: "bot_token_encrypted",
+      keyVersionColumn: "bot_token_key_version",
     });
 
     expect(result.table).toBe("slack_installations");
@@ -73,12 +74,18 @@ describe("backfillTable", () => {
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
     expect(updates).toHaveLength(2);
     // First param is the encrypted ciphertext — assert the enc:v1: prefix
-    // and that the PK lines up with the source row.
-    expect(updates[0].sql).toContain("UPDATE slack_installations SET bot_token_encrypted = $1 WHERE team_id = $2");
+    // and that the PK lines up with the source row. F-47 added the
+    // `<col>_key_version = $3` stamp so the rotation script can
+    // identify rows below the active version.
+    expect(updates[0].sql).toContain(
+      "UPDATE slack_installations SET bot_token_encrypted = $1, bot_token_key_version = $3 WHERE team_id = $2",
+    );
     expect(String(updates[0].params![0])).toMatch(/^enc:v1:/);
     expect(updates[0].params![1]).toBe("T1");
+    expect(updates[0].params![2]).toBe(1);
     expect(String(updates[1].params![0])).toMatch(/^enc:v1:/);
     expect(updates[1].params![1]).toBe("T2");
+    expect(updates[1].params![2]).toBe(1);
   });
 
   it("serializes JSONB objects before encrypting", async () => {
@@ -91,6 +98,7 @@ describe("backfillTable", () => {
       pk: "config_id",
       plaintext: "config",
       encrypted: "config_encrypted",
+      keyVersionColumn: "config_key_version",
     });
 
     expect(result.updated).toBe(1);
@@ -119,6 +127,7 @@ describe("backfillTable", () => {
       pk: "user_id",
       plaintext: "api_key",
       encrypted: "api_key_encrypted",
+      keyVersionColumn: "api_key_key_version",
     });
 
     expect(result.scanned).toBe(4);
@@ -141,6 +150,7 @@ describe("backfillTable", () => {
       pk: "team_id",
       plaintext: "bot_token",
       encrypted: "bot_token_encrypted",
+      keyVersionColumn: "bot_token_key_version",
     });
     const select = queries.find((q) => q.sql.startsWith("SELECT"));
     expect(select).toBeDefined();
@@ -162,7 +172,7 @@ describe("backfillTable", () => {
       expect(select!.sql).toContain(`WHERE ${config.encrypted} IS NULL`);
       expect(select!.sql).toContain(`AND ${config.plaintext} IS NOT NULL`);
       expect(update!.sql).toBe(
-        `UPDATE ${config.table} SET ${config.encrypted} = $1 WHERE ${config.pk} = $2`,
+        `UPDATE ${config.table} SET ${config.encrypted} = $1, ${config.keyVersionColumn} = $3 WHERE ${config.pk} = $2`,
       );
     }
   });
@@ -179,6 +189,7 @@ describe("backfillTable", () => {
         pk: "team_id",
         plaintext: "bot_token",
         encrypted: "bot_token_encrypted",
+        keyVersionColumn: "bot_token_key_version",
       }),
     ).rejects.toThrow(/not a valid SQL identifier/);
   });
@@ -203,6 +214,7 @@ describe("backfillTable", () => {
         pk: "team_id",
         plaintext: "bot_token",
         encrypted: "bot_token_encrypted",
+        keyVersionColumn: "bot_token_key_version",
       }),
     ).rejects.toThrow("disk full");
 

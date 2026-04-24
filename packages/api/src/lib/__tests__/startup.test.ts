@@ -58,6 +58,9 @@ const MANAGED_VARS = [
   "DATABASE_URL",
   "ATLAS_API_KEY",
   "ATLAS_PROVIDER",
+  "ATLAS_ENCRYPTION_KEY",
+  "ATLAS_ENCRYPTION_KEYS",
+  "ATLAS_DEPLOY_MODE",
   "BETTER_AUTH_SECRET",
   "BETTER_AUTH_URL",
   "BETTER_AUTH_TRUSTED_ORIGINS",
@@ -91,6 +94,9 @@ beforeEach(() => {
   delete process.env.ATLAS_AUTH_JWKS_URL;
   delete process.env.ATLAS_AUTH_ISSUER;
   delete process.env.ATLAS_AUTH_AUDIENCE;
+  delete process.env.ATLAS_ENCRYPTION_KEY;
+  delete process.env.ATLAS_ENCRYPTION_KEYS;
+  delete process.env.ATLAS_DEPLOY_MODE;
   delete process.env.ATLAS_SANDBOX;
   delete process.env.ATLAS_SANDBOX_URL;
   delete process.env.ATLAS_RUNTIME;
@@ -468,5 +474,63 @@ describe("sidecar diagnostics", () => {
     // fetch should not have been called for a sidecar health check
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockMarkSidecarFailedCalled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-47 encryption key deprecation diagnostics
+// ---------------------------------------------------------------------------
+
+describe("F-47 encryption key diagnostics", () => {
+  // DATABASE_URL is intentionally left unset — the F-47 deprecation
+  // check does not depend on it, and touching the live DB-probing path
+  // makes these cases spend 5s on real network I/O and time out.
+
+  beforeEach(() => {
+    process.env.BETTER_AUTH_SECRET = "longer-than-thirty-two-chars-please-123";
+  });
+
+  it("emits the SaaS BETTER_AUTH_SECRET-as-key deprecation warning", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    expect(
+      warnings.some((w) => w.includes("ATLAS_DEPLOY_MODE=saas") && w.includes("BETTER_AUTH_SECRET")),
+    ).toBe(true);
+  });
+
+  it("stays quiet on self-hosted (no ATLAS_DEPLOY_MODE=saas)", async () => {
+    delete process.env.ATLAS_DEPLOY_MODE;
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    expect(warnings.some((w) => w.includes("ATLAS_DEPLOY_MODE=saas"))).toBe(false);
+  });
+
+  it("stays quiet under SaaS when ATLAS_ENCRYPTION_KEYS is set", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:dedicated-key";
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    expect(
+      warnings.some((w) => w.includes("ATLAS_DEPLOY_MODE=saas") && w.includes("BETTER_AUTH_SECRET")),
+    ).toBe(false);
+  });
+
+  it("stays quiet under SaaS when ATLAS_ENCRYPTION_KEY is set", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    process.env.ATLAS_ENCRYPTION_KEY = "dedicated-key";
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    expect(
+      warnings.some((w) => w.includes("ATLAS_DEPLOY_MODE=saas") && w.includes("BETTER_AUTH_SECRET")),
+    ).toBe(false);
   });
 });

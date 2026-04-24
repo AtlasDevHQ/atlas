@@ -658,7 +658,11 @@ describe("admin connections — org scoping", () => {
       expect(insertCall).toBeDefined();
       const [sql, params] = insertCall!;
       expect(sql).toContain("status");
-      expect((params as unknown[])[(params as unknown[]).length - 1]).toBe("published");
+      expect(sql).toContain("url_key_version");
+      // F-47: status is now at index 6 (was last, pushed by url_key_version at index 7).
+      expect((params as unknown[])[6]).toBe("published");
+      // url_key_version is the active keyset version (1 for dev/no-key deployments).
+      expect((params as unknown[])[7]).toBe(1);
     });
 
     it("developer mode inserts status='draft'", async () => {
@@ -678,8 +682,8 @@ describe("admin connections — org scoping", () => {
       expect(insertCall).toBeDefined();
       const [sql, params] = insertCall!;
       expect(sql).toContain("status");
-      // status is the last parameter — verify it's 'draft'
-      expect((params as unknown[])[(params as unknown[]).length - 1]).toBe("draft");
+      // F-47 shifted status from last → index 6.
+      expect((params as unknown[])[6]).toBe("draft");
     });
 
     it("revives an archived row (UPDATE, not INSERT) when PK collides", async () => {

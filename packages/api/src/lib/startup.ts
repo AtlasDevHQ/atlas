@@ -519,10 +519,37 @@ async function checkAuthModeDiagnostics(errors: DiagnosticError[]): Promise<stri
   warnOrphanedAuthVars(authMode, authSource);
 
   // 6.5. Connection encryption key check — only relevant when internal DB stores connection URLs
-  if (process.env.DATABASE_URL && !process.env.ATLAS_ENCRYPTION_KEY && !process.env.BETTER_AUTH_SECRET) {
+  if (
+    process.env.DATABASE_URL &&
+    !process.env.ATLAS_ENCRYPTION_KEY &&
+    !process.env.ATLAS_ENCRYPTION_KEYS &&
+    !process.env.BETTER_AUTH_SECRET
+  ) {
     const msg =
-      "No encryption key available for connection URLs. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET " +
+      "No encryption key available for connection URLs. Set ATLAS_ENCRYPTION_KEYS (preferred) or ATLAS_ENCRYPTION_KEY " +
       "to encrypt connection credentials at rest.";
+    if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+    log.warn(msg);
+  }
+
+  // 6.6. F-47 SaaS deprecation: BETTER_AUTH_SECRET doubling as the
+  // at-rest encryption key entangles session-signing with data-at-rest
+  // encryption. Rotating the session key (a routine Better Auth step)
+  // would silently destroy every encrypted credential. Nudge SaaS
+  // operators toward a dedicated key; leave self-hosted quiet because
+  // the fallback is a valid dev-friendly default.
+  const isSaas = process.env.ATLAS_DEPLOY_MODE === "saas";
+  if (
+    isSaas &&
+    !process.env.ATLAS_ENCRYPTION_KEYS &&
+    !process.env.ATLAS_ENCRYPTION_KEY &&
+    process.env.BETTER_AUTH_SECRET
+  ) {
+    const msg =
+      "ATLAS_DEPLOY_MODE=saas but no ATLAS_ENCRYPTION_KEYS / ATLAS_ENCRYPTION_KEY is set — " +
+      "falling back to BETTER_AUTH_SECRET for at-rest encryption. This entangles session signing " +
+      "with data encryption and blocks key rotation. Set ATLAS_ENCRYPTION_KEYS to a dedicated value. " +
+      "See docs/platform-ops/encryption-key-rotation.";
     if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     log.warn(msg);
   }

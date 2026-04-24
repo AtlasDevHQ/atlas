@@ -320,6 +320,26 @@ export const getRole = (orgId: string, roleId: string): Effect.Effect<CustomRole
   });
 
 /**
+ * Get a single role by name, scoped to org. Used by the audit path for
+ * role.assign to resolve the caller's `roleName` body param into the row id
+ * so the audit row ties the assignment to a stable primary key rather than
+ * a string that tenant admins can rename later.
+ */
+export const getRoleByName = (orgId: string, name: string): Effect.Effect<CustomRole | null, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("roles");
+    if (!hasInternalDB()) return null;
+
+    const rows = yield* Effect.promise(() => internalQuery<CustomRoleRow>(
+      `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
+       FROM custom_roles
+       WHERE org_id = $1 AND name = $2`,
+      [orgId, name.toLowerCase()],
+    ));
+    return rows[0] ? rowToRole(rows[0]) : null;
+  });
+
+/**
  * Create a custom role for an organization.
  */
 export const createRole = (

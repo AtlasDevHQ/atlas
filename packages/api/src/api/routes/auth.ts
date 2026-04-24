@@ -8,6 +8,7 @@
 
 import { Hono, type Context } from "hono";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeSignupResponseBody } from "@atlas/api/lib/auth/signup-response";
 
@@ -102,19 +103,20 @@ auth.all("/*", async (c) => {
  *   3. Content-Type must be `application/json`. Non-JSON bodies
  *      (redirect HTML, empty 204s) are passed through.
  *   4. Body must parse as JSON. A parse failure logs warn and returns
- *      the original response untouched — the security boundary fails
- *      open here because the underlying response is still Better
- *      Auth's (untampered) output.
+ *      the original response untouched — an unparseable body cannot be
+ *      the `/sign-up/email` JSON envelope this workaround targets, so
+ *      forwarding Better Auth's (untampered) output is correct and
+ *      safe. The log exists so operators see if Better Auth ever
+ *      changes the response shape and the normalizer stops applying.
  *
  * The rewrite preserves every upstream header (including Set-Cookie
  * for verification tokens) because it copies `upstream.headers` into
  * the new Response; only the body bytes change.
  *
- * Rip this workaround out once better-auth/better-auth lands a
- * symmetric `parseUserOutput` — linked in the PR body that introduces
- * this helper so the follow-up is discoverable.
+ * Rip this workaround out once better-auth/better-auth#9346 lands a
+ * symmetric `parseUserOutput` upstream.
  */
-async function maybeNormalizeSignupResponse(
+export async function maybeNormalizeSignupResponse(
   c: Context,
   upstream: Response,
 ): Promise<Response> {
@@ -129,7 +131,7 @@ async function maybeNormalizeSignupResponse(
     parsed = JSON.parse(raw);
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: errorMessage(err), path: c.req.path, status: upstream.status },
       "Signup response advertised application/json but did not parse — "
         + "skipping F-P3 normalization and forwarding upstream body unchanged.",
     );

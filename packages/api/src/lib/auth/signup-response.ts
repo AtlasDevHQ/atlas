@@ -19,10 +19,9 @@
  * path before the response leaves Atlas.
  *
  * This is the Atlas-side workaround (issue #1792 option 2). The
- * long-term fix is upstream: once Better Auth's `parseUserOutput`
- * emits `image: null` on real signups too, this normalizer becomes a
- * no-op and can be deleted. The PR that lands this change links the
- * upstream issue so the workaround is easy to rip out later.
+ * long-term fix is upstream at better-auth/better-auth#9346: once
+ * `parseUserOutput` emits `image: null` on real signups too, this
+ * normalizer becomes a no-op and can be deleted outright.
  *
  * Scope invariants:
  *   - Only touches `body.user.image`. Every other field — top-level,

@@ -819,3 +819,160 @@ export const anonymizeUserAdminActions = (
 
     return { anonymizedRowCount };
   });
+
+// ── Admin-action retention policy CRUD (F-36 Phase 2) ─────────────────
+//
+// Parallel to `getRetentionPolicy` / `setRetentionPolicy` above but against
+// `admin_action_retention_config`. The Phase 2 admin-UI issue (#1813) needs
+// these as the surface for the admin-action retention panel — the Phase 1
+// ADMIN_ACTIONS comment reserves `admin_action_retention.policy_update` for
+// this exact call path.
+//
+// No new decisions here — table shape, key convention (`org_id` with
+// reserved `"platform"` literal), 7-day minimum, 30-day hard-delete-delay
+// default are all Phase 1 decisions. These helpers only expose the Phase 1
+// data layer.
+
+/**
+ * Get the admin-action retention policy for an organization.
+ * Returns null if no policy is configured (unlimited retention).
+ *
+ * Uses the reserved literal `"platform"` for platform-scoped policy.
+ */
+export const getAdminActionRetentionPolicy = (
+  orgId: string,
+): Effect.Effect<AuditRetentionPolicy | null, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    if (!hasInternalDB()) return null;
+
+    const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+      `SELECT id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count
+       FROM admin_action_retention_config
+       WHERE org_id = $1`,
+      [orgId],
+    ));
+
+    if (rows.length === 0) return null;
+    return rowToPolicy(rows[0]);
+  });
+
+/**
+ * Set or update the admin-action retention policy for an organization.
+ *
+ * Validation mirrors `setRetentionPolicy`:
+ *   - retention_days must be >= MIN_RETENTION_DAYS or null (unlimited)
+ *   - hard_delete_delay_days must be a non-negative integer
+ *
+ * Library-layer self-audit is gated by `!isHttpContext()` for the same
+ * reason as `setRetentionPolicy`: the Phase 2 HTTP route emits a richer
+ * row (previous values, ipAddress) via `emitAudit`, and a duplicate library
+ * emission under HTTP context would double-audit the same admin intent.
+ * The scheduler / CLI path retains a library row under the reserved
+ * `system:audit-purge-scheduler` actor.
+ */
+export const setAdminActionRetentionPolicy = (
+  orgId: string,
+  input: SetRetentionPolicyInput,
+  updatedBy: string | null,
+): Effect.Effect<AuditRetentionPolicy, RetentionError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    yield* requireInternalDBEffect("admin-action retention configuration");
+
+    if (input.retentionDays !== null) {
+      if (!Number.isInteger(input.retentionDays) || input.retentionDays < MIN_RETENTION_DAYS) {
+        return yield* Effect.fail(new RetentionError({
+          message: `Retention period must be at least ${MIN_RETENTION_DAYS} days or null (unlimited). Got: ${input.retentionDays}.`,
+          code: "validation",
+        }));
+      }
+    }
+
+    const hardDeleteDelay = input.hardDeleteDelayDays ?? DEFAULT_HARD_DELETE_DELAY_DAYS;
+    if (!Number.isInteger(hardDeleteDelay) || hardDeleteDelay < 0) {
+      return yield* Effect.fail(new RetentionError({
+        message: `Hard delete delay must be a non-negative integer. Got: ${hardDeleteDelay}.`,
+        code: "validation",
+      }));
+    }
+
+    const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+      `INSERT INTO admin_action_retention_config (org_id, retention_days, hard_delete_delay_days, updated_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (org_id) DO UPDATE SET
+         retention_days = EXCLUDED.retention_days,
+         hard_delete_delay_days = EXCLUDED.hard_delete_delay_days,
+         updated_at = now(),
+         updated_by = EXCLUDED.updated_by
+       RETURNING id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count`,
+      [orgId, input.retentionDays, hardDeleteDelay, updatedBy],
+    ));
+
+    if (!rows[0]) return yield* Effect.die(new Error("Failed to upsert admin_action_retention_config — no row returned."));
+
+    log.info(
+      { orgId, retentionDays: input.retentionDays, hardDeleteDelayDays: hardDeleteDelay },
+      "Admin-action retention policy updated",
+    );
+
+    if (!isHttpContext()) {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.admin_action_retention.policyUpdate,
+        targetType: "admin_action_retention",
+        targetId: orgId,
+        scope: "platform",
+        systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
+        metadata: {
+          retentionDays: input.retentionDays,
+          hardDeleteDelayDays: hardDeleteDelay,
+          via: "library",
+        },
+      });
+    }
+
+    return rowToPolicy(rows[0]);
+  });
+
+/**
+ * Preview the count of `admin_action_log` rows that would be scrubbed by
+ * `anonymizeUserAdminActions(userId, ...)`. Read-only, no audit emission,
+ * no state changes. Drives the admin-UI "confirm erasure" dialog so an
+ * admin can see the blast radius before committing.
+ *
+ * The predicate (`actor_id = $1 AND anonymized_at IS NULL`) is identical to
+ * the UPDATE predicate in `anonymizeUserAdminActions` so preview and
+ * execution agree on what counts as "erasable." A row count that differs
+ * between preview and erasure can only come from concurrent writes against
+ * the same user between the two calls — acceptable race for a UI preview,
+ * and the erasure's `user.erase` audit row records the authoritative final
+ * count.
+ */
+export const previewAdminActionErasure = (
+  userId: string,
+): Effect.Effect<{ anonymizableRowCount: number }, RetentionError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    if (!hasInternalDB()) return { anonymizableRowCount: 0 };
+
+    if (typeof userId !== "string" || userId.trim() === "") {
+      return yield* Effect.fail(new RetentionError({
+        message: `Invalid userId: must be a non-empty string.`,
+        code: "validation",
+      }));
+    }
+
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<{ cnt: string | number }>(
+        `SELECT COUNT(*)::int AS cnt
+           FROM admin_action_log
+          WHERE actor_id = $1
+            AND anonymized_at IS NULL`,
+        [userId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+
+    const anonymizableRowCount = Number((rows[0] as Record<string, unknown> | undefined)?.cnt ?? 0);
+    return { anonymizableRowCount };
+  });

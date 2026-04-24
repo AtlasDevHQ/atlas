@@ -1,6 +1,6 @@
 ---
 title: Audit Log Retention
-description: Configure audit log retention policies, automatic purging, and compliance exports.
+description: Configure audit log retention policies, automatic purging, compliance exports, and right-to-erasure for the admin-action log.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -166,3 +166,105 @@ The retention settings are available in the admin console under **Audit Log > Re
 | `POST` | `/api/v1/admin/audit/retention/hard-delete` | Trigger permanent deletion |
 
 All endpoints require admin role and enterprise license.
+
+---
+
+## Admin Action Log Retention
+
+Two audit tables live side-by-side in the internal database:
+
+- **`audit_log`** — query-level audit (every SQL run through the agent). Covered above.
+- **`admin_action_log`** — privileged-action audit (every admin mutation, plugin install, role change, retention-policy update, etc.).
+
+The admin-action log has its own retention policy, its own manual purge, and its own erasure surface for GDPR / CCPA right-to-erasure requests. Configured in **Audit Log &gt; Retention &gt; Admin action log** and surfaced at `/api/v1/admin/audit/admin-action-retention`.
+
+### Recommended default — 7 years
+
+Admin-action retention defaults to **2555 days (7 years)** — the common SOC 2 / HIPAA / ISO 27001 window for privileged-action logs. `null` (unlimited) is available for operators who prefer an explicit "keep forever." Minimum retention is 7 days (same guardrail as the query-audit trail) — shorter windows risk wiping evidence of an in-progress investigation.
+
+Admin-action purge is a **direct hard-delete** — there is no soft-delete recovery stage. The 7-year window is long enough that a second window adds little safety relative to the admin-action volume.
+
+### Setting a Policy
+
+```bash
+# Set 7-year retention (recommended)
+curl -X PUT /api/v1/admin/audit/admin-action-retention \
+  -H "Content-Type: application/json" \
+  -d '{"retentionDays": 2555, "hardDeleteDelayDays": 30}'
+
+# View current policy + last-purge metadata
+curl /api/v1/admin/audit/admin-action-retention
+```
+
+### Manual Purge
+
+```bash
+curl -X POST /api/v1/admin/audit/admin-action-retention/purge
+```
+
+Returns per-org `{ orgId, deletedCount }` results. Normally runs automatically on the same 24-hour scheduler tick that purges the query-audit log.
+
+### User Erasure (GDPR / CCPA right-to-erasure)
+
+The admin-action log is the forensic record of what a user did while logged in as an admin. When a user invokes their right-to-erasure, you scrub their identifier — but preserve the row so the sequence of admin actions stays reconstructable.
+
+```bash
+# Preview — returns { anonymizableRowCount } without modifying state
+curl "/api/v1/admin/audit/erase-user/preview?userId=usr_abc123"
+
+# Erase — scrubs actor_id + actor_email → NULL, stamps anonymized_at = now()
+curl -X POST /api/v1/admin/audit/erase-user \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "usr_abc123", "initiatedBy": "dsr_request"}'
+```
+
+| Field | Meaning |
+|---|---|
+| `initiatedBy: "self_request"` | User hit a self-serve erasure button |
+| `initiatedBy: "dsr_request"` | You processed a formal DSR letter on the user's behalf |
+
+The erasure emits a `user.erase` audit row with `{ targetUserId, anonymizedRowCount, initiatedBy }` — **even when the row count is zero**. The regulator-facing contract is "we processed the request," and a zero-row erasure is still forensic evidence the request was handled.
+
+### Pino / operational log boundary
+
+<Callout type="warn" title="Pino logs are out of scope">
+  Identifiers are removed from the admin-action audit log only. Pino / operational logs (stdout, Grafana Loki, or whatever sink you've wired up) are controlled by your log-aggregator retention policy. A compliance-minded operator processing an erasure request should also verify their log aggregator's retention window against their regulatory response deadline.
+</Callout>
+
+This is deliberate — the pino line "admin X changed connection Y" is operational telemetry an oncall engineer needs during triage. Redacting identifiers pre-write would force every triage flow to join on the DB row to identify the actor, defeating the purpose of the log line. Aggregators' own retention windows (days for SaaS Loki, operator-configured self-hosted) naturally age out identifiers within most regulators' response windows.
+
+### Admin UI
+
+Under **Audit Log &gt; Retention**, the page is split into two sibling sections:
+
+- **Query audit log** — retention policy, compliance export, manual purge for `audit_log` (covered above).
+- **Admin action log** — retention policy, manual purge, and **Erase user** button for `admin_action_log`.
+
+The "Erase user" button loads a preview count before the confirm dialog so you can see the blast radius of a typo'd userId before committing. The confirm dialog shows the exact row count that will be scrubbed and the chosen initiator (DSR vs self-service).
+
+### API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/audit/admin-action-retention` | Get current admin-action retention policy |
+| `PUT` | `/api/v1/admin/audit/admin-action-retention` | Update admin-action retention policy |
+| `POST` | `/api/v1/admin/audit/admin-action-retention/purge` | Trigger manual hard-delete past retention |
+| `GET` | `/api/v1/admin/audit/erase-user/preview?userId=...` | Preview erasure row count (no audit emission) |
+| `POST` | `/api/v1/admin/audit/erase-user` | Scrub a user's identifiers from `admin_action_log` |
+
+All endpoints require admin role and enterprise license.
+
+### Scheduler self-audit
+
+Like the query-audit trail, admin-action retention is audited by the same 24-hour scheduler:
+
+| Action type | Status | When | Metadata |
+|---|---|---|---|
+| `admin_action_log.purge_cycle` | `success` | Every 24 h tick, including zero-row cycles | `{ deletedCount, orgs }` |
+| `admin_action_log.purge_cycle` | `failure` | A cycle that errored | `{ error, deletedCount: 0 }` |
+| `admin_action_retention.hard_delete` | `success` | Only when a cycle actually removes rows (`count > 0`) | `{ deletedCount, orgCount, affectedOrgs }` |
+| `admin_action_retention.manual_purge` | `success` / `failure` | Admin-triggered purge via API / UI | `{ deletedCount, retentionDays }` |
+| `admin_action_retention.policy_update` | `success` / `failure` | Admin updated retention settings | `{ retentionDays, hardDeleteDelayDays, previousRetentionDays, previousHardDeleteDelayDays }` |
+| `user.erase` | `success` (library) / `failure` (route) | Every erasure request, including zero-row | `{ targetUserId, anonymizedRowCount, initiatedBy }` |
+
+The `user.erase` row is emitted regardless of the scrubbed row count — a zero-row erasure still proves the DSR request was processed.

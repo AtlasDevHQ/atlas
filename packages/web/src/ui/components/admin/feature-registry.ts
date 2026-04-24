@@ -20,6 +20,7 @@ export const FEATURE_NAMES = [
   "Actions",
   "Activate workspace",
   "Admin Action Log",
+  "Admin Action Retention",
   "AI Model",
   "AI Provider",
   "API Keys",
@@ -63,6 +64,7 @@ export const FEATURE_NAMES = [
   "Suspend workspace",
   "Token Usage",
   "Usage Dashboard",
+  "User Erasure",
   "Users",
 ] as const;
 

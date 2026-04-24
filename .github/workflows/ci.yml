@@ -46,6 +46,9 @@ jobs:
       - name: Check Dockerfile workspace completeness
         run: bash scripts/check-dockerfile-workspace.sh
 
+      - name: Check Railway watchPatterns coverage
+        run: bash scripts/check-railway-watch.sh
+
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 

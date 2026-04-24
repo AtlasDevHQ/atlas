@@ -2325,6 +2325,702 @@ migration).
 
 ---
 
+## Phase 7 — Enterprise governance paths
+
+**Status:** complete (2026-04-24)
+**Scope:** SSO enforcement, SCIM directory sync, IP allowlist, approval
+workflows, custom roles, deploy-mode gating, and the `requireEnterprise()`
+guard contract. Sources walked: `ee/src/auth/{sso,scim,ip-allowlist,roles}.ts`
++ `.test.ts`, `ee/src/governance/approval.ts` + `.test.ts`,
+`ee/src/deploy-mode.ts`, `ee/src/index.ts`,
+`packages/api/src/api/routes/admin-{sso,scim,roles,approval,ip-allowlist,
+action-retention}.ts`, `packages/api/src/api/routes/middleware.ts`,
+`packages/api/src/api/routes/{slack,teams,discord,billing,scheduled-tasks,
+auth,demo,query,chat,validate-sql}.ts`,
+`packages/api/src/lib/auth/{middleware,managed,server}.ts`, and
+`packages/api/src/lib/{tools/sql,scheduler/executor,agent-query}.ts`.
+**Issue:** #1726
+**Phase 6 coordination:** Phase 6 (rate-limit / DoS audit) had not started
+at the time this section was written, so Phase 7 claims the IDs starting at
+F-53. If Phase 6 starts after this lands it picks up at F-61+, per the
+coordination rule in the original prompt.
+
+### Bypass matrix
+
+Governance control × entry point. **yes** = bypass exists (and is a
+finding); **no** = control is enforced; **n/a** = control does not apply
+to this entry point by design (the cell links to the rationale).
+
+| Entry point | SSO enforcement | SCIM-managed identity | IP allowlist | Approval workflows | Custom-role permissions |
+|---|---|---|---|---|---|
+| Web session (cookie / Better Auth bearer) | no | no — admin still mutates SCIM users (F-57) | no | no — chat / query bind user (F-54 covers scheduler) | **yes** — never gated at route layer (F-53) |
+| Better Auth API key (`apiKey()` plugin) | no — `validateManaged` resolves user, SSO check fires | no — same admin path (F-57) | no — `adminAuth`/`standardAuth` middleware fires `checkIPAllowlist` | no — agent path inherits user context | **yes** — never gated at route layer (F-53) |
+| `simple-key` mode (`x-api-key` header, self-hosted) | **yes** — `authenticateRequest` skips SSO check in this branch (F-56) | n/a — no managed users | no — IP allowlist still runs (no orgId → check returns `{ allowed: true }`, by design) | n/a — no orgId → approval check returns `required: false` | n/a — no user role; legacy admin assumed |
+| `byot` mode (third-party JWT) | **yes** — `authenticateRequest` skips SSO check in this branch (F-56) | n/a — IdP owns identity | no — IP allowlist still runs against the BYOT user | inherits user context if user has orgId | inherits user role; **yes** — same route-layer gap as web session (F-53) |
+| Slack / Teams / Discord webhook receivers (`/commands`, `/events`, `/interactions`) | n/a — no Atlas user identity in webhook payload | n/a | **yes** — by design but undocumented (F-58) | **yes** — `executeAgentQuery(text)` runs without user/org context (F-55) | n/a — no user role |
+| Scheduled-task executor (`/tick` + bun in-process loop) | n/a — system-initiated | n/a | n/a — server-internal call, not a request | **yes** — `executeAgentQuery(question, requestId)` drops user (F-54) | n/a — system context |
+| Stripe webhook (`/api/auth/stripe/*`) | n/a — Stripe-originated | n/a | n/a — third-party | n/a | n/a |
+| OAuth install (`/api/v1/{slack,teams,discord}/install`) | n/a — pre-auth handshake; admin gate enforced via `adminAuthPreamble` (F-04 fix) | n/a | no — `adminAuthPreamble` does not invoke `rateLimitAndIPCheck` directly, but admin role is required (gap noted, low risk) | n/a | n/a |
+| MCP server (stdio + SSE) | n/a — local stdio + bearer over SSE | n/a — separate identity model | n/a — outside the Hono app | n/a — runs separately from agent loop | n/a |
+| Embedded widget (`/widget`, `/widget.js`) | n/a — public static asset | n/a | n/a — public static asset | n/a — widget calls back into authenticated API which enforces approval | n/a |
+| Plugin callbacks (Better Auth Stripe plugin, plugin SDK hooks) | n/a — server-internal | n/a | n/a | n/a | n/a |
+
+**Reading the matrix:** every "yes" maps to a finding below. The cells
+that look concerning at first glance (e.g. webhook receivers vs. IP
+allowlist) are documented as "by design" because there is no Atlas-user
+identity to bind to a workspace allowlist — the third-party platform is
+the originating IP. The findings below tighten the cases where bypass is
+exploitable, surfaces undocumented carve-outs, and notes the cases that
+are correct-by-design but undocumented.
+
+### F-53 — Custom-role permission flags defined but never enforced at the route layer ⬆ **P1**
+
+**Where:** `ee/src/auth/roles.ts:42-53` defines `PERMISSIONS` (`query`,
+`query:raw_data`, `admin:users`, `admin:connections`, `admin:settings`,
+`admin:audit`, `admin:roles`, `admin:semantic`).
+`ee/src/auth/roles.ts:256-279` exports a `checkPermission()` middleware
+factory. **Zero call sites** in `packages/api/src/api/routes/**` or
+anywhere outside `roles.ts` itself:
+
+```
+$ grep -rn "checkPermission\|hasPermission\|resolvePermissions\b" \
+    packages/api/src/ --include="*.ts" | grep -v test
+packages/api/src/api/routes/admin-roles.ts:34: } from "@atlas/ee/auth/roles";   # CRUD only
+packages/api/src/api/routes/shared-schemas.ts:38: * custom-role surface (@atlas/ee/auth/roles) ...
+```
+
+The admin routes (`admin.ts`, `admin-{users,connections,audit,settings,
+semantic,roles}.ts`) all gate via `adminAuth` middleware
+(`packages/api/src/api/routes/middleware.ts:244-282`) which checks role
+∈ {admin, owner, platform_admin}. None of them refine by permission flag.
+
+**Repro path:** an admin creates a custom role `data-engineer` with
+permissions `["query", "query:raw_data"]` — explicitly NOT
+`admin:audit`. They `assignRole(userId, "data-engineer")`. The user's
+`member.role` becomes `"data-engineer"`, but every admin route still
+gates on `adminAuth` which doesn't know `data-engineer` from `admin`. The
+user lacks admin role and can't reach `/api/v1/admin/audit` — but that's
+because the role is not in `{admin, owner, platform_admin}`, not because
+the permission flag is missing. Conversely, an admin with a role that
+*does* have `admin` plus a stripped-down permission set still has full
+admin access at the route layer.
+
+The `resolvePermissions()` function in `roles.ts` does correctly compute
+the effective permission set (custom > legacy fallback), but nothing
+calls it on a request boundary. The permission system is currently a
+self-contained UI display feature that has never been wired into
+authorization.
+
+Per the acceptance criteria in #1726: *"Custom roles — permissions
+enforced at the route layer, not just UI. UI-only checks are P1 bypass
+bugs (explicitly called out in acceptance criteria)."* This is a stricter
+shape — there is **no** check (UI or otherwise) of permission flags. P1
+is correct.
+
+**Compliance lens:** SOC 2 CC6.3 (logical access — granular
+authorization). A SOC 2 audit reviewing the admin RBAC matrix would find
+that the role/permission UI promises segregation that the API does not
+deliver.
+
+**Remediation hint:** wire `checkPermission()` into the admin routes
+that map cleanly onto a permission flag. Suggested mapping:
+- `admin:users` → `admin.ts` (`/users`, `/users/{id}/*`,
+  `/users/{id}/membership`, `/users/{id}/role`)
+- `admin:connections` → `admin-connections.ts` (all routes)
+- `admin:audit` → `admin-audit.ts`, `admin-audit-retention.ts`,
+  `admin-action-retention.ts`
+- `admin:roles` → `admin-roles.ts` (all routes)
+- `admin:semantic` → `admin-semantic.ts`, `admin-semantic-improve.ts`
+- `admin:settings` → `admin.ts` settings sub-routes,
+  `admin-{branding,domains,email-provider,sandbox,residency,model-config}.ts`
+- `query`, `query:raw_data` → enforced inside `executeSQL` already via
+  `resolvePermissions`, but route-layer guard on `/api/v1/query` and
+  `/api/v1/chat` would catch users whose role lacks `query`.
+
+This will be a multi-PR remediation — the route-layer changes are wide.
+Suggest doing it in one cluster across the admin surface so the
+permission contract is consistent.
+
+**Status:** P1 — issue to be filed.
+
+---
+
+### F-54 — Approval workflows bypassed for scheduled-task executions ⬆ **P1**
+
+**Where:** `packages/api/src/lib/scheduler/executor.ts:41` calls
+`executeAgentQuery(question, requestId)`. `agent-query.ts:43` then runs
+the agent inside `withRequestContext({ requestId: id }, ...)` — no
+`user` field. Inside `executeSQL` (`packages/api/src/lib/tools/sql.ts:1017`):
+
+```ts
+const checkReqCtx = getRequestContext();
+const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+approvalMatch = await Effect.runPromise(checkApprovalRequired(
+  checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+));
+```
+
+`checkOrgId` is `undefined` because no user is bound. The first line of
+`checkApprovalRequired` (`ee/src/governance/approval.ts:412`):
+
+```ts
+if (!orgId || !hasInternalDB()) {
+  return { required: false, matchedRules: [] };
+}
+```
+
+short-circuits to "no approval required". The query executes with no
+audit trail of an approval bypass.
+
+**Repro path:** workspace admin creates an approval rule
+`SELECT FROM customer_pii` requiring approval. They then create a
+scheduled task with the question *"How many records does customer_pii
+have, broken down by acquisition channel?"*. The task runs daily without
+ever hitting the approval queue. Every other route that runs the same
+agent (chat, /query) DOES enforce approval — only the scheduler path
+silently bypasses.
+
+This is the same shape as the F-13 cross-tenant-state-change pattern —
+governance enforcement is per-call-site rather than centralized in the
+agent, so the easy thing (skip context) and the safe thing (block on
+no context) are inverted.
+
+**Partial mitigation worth noting:** `sql.ts:1037-1047` does fail
+closed when `approvalMatch.required === true` AND user identity is
+missing — it returns a clear "approval required but the requester
+identity could not be determined" error. The bug is not that the
+hard-fail is wrong; it is that `approvalMatch.required` never becomes
+true on the scheduler path because the orgId-less call to
+`checkApprovalRequired` short-circuits at `approval.ts:412` before any
+rule lookup runs. Readers should not infer the entire approval
+pipeline is broken — only the orgId-less entry path is.
+
+**Compliance lens:** SOC 2 CC6.1 / SOC 2 CC7.2 — change-management
+controls. The approval workflow is the auditable boundary between
+"user requested data" and "data was returned"; bypassing it via a
+scheduled task removes the human reviewer from the loop.
+
+**Remediation hint:** scheduled tasks are created by a user with
+recorded `created_by`. The task row already carries the actor's user_id
++ org_id. The fix is to:
+
+1. Resolve the task row's `created_by` user before invoking the agent.
+2. Bind that user into `withRequestContext` so `checkOrgId` resolves
+   correctly and approval rules apply.
+3. When approval is required, persist the request to the queue and
+   surface it in the task's run history as `delivery_status =
+   "pending_approval"` rather than silently executing.
+4. Consider whether scheduled tasks created by a user who has since lost
+   permissions should be auto-paused (separate concern, but related).
+
+A defensive secondary fix: in `executeSQL`, treat `orgId === undefined`
+as a hard block when `hasInternalDB()` AND any approval rule exists for
+the workspace. Currently the absence of orgId silently disables the
+gate; the safer default is fail-closed.
+
+**Status:** P1 — issue to be filed.
+
+---
+
+### F-55 — Approval workflows bypassed for Slack / Teams / Discord agent invocations ⬆ **P2**
+
+**Where:**
+- `packages/api/src/api/routes/slack.ts:302` (slash command path) and
+  `slack.ts:458` (events / threaded follow-up path) call
+  `executeAgentQuery(text)` with no user context.
+- `packages/api/src/api/routes/teams.ts` and `discord.ts` follow the
+  same pattern (each forwards to the same agent helper without resolving
+  the bot-platform user back to an Atlas user).
+
+Same root cause as F-54 — the agent runs without `user` bound to
+`RequestContext`, so `checkApprovalRequired(undefined, ...)`
+short-circuits.
+
+**Why this is P2 not P1:** the chat-platform integrations have a known
+identity-mapping gap (Slack user IDs are not Atlas user IDs). Operators
+who deploy Slack / Teams / Discord effectively grant the bot a
+no-approval execution environment. This is a defensible *design* choice
+when documented; it is a *bypass* when not. Today, no admin-facing
+documentation, no admin-toggle, and no audit row records that approval
+was skipped.
+
+**Compliance lens:** same as F-54 — but the impact is mitigated by the
+small surface (only orgs that install the chat integrations are
+exposed).
+
+**Remediation hint:** at minimum, persist a Slack-team-id → Atlas-org-id
+mapping (already done for installation routing; `getBotToken(teamId)`
+implies it) and bind the org as the agent's RequestContext orgId. With
+no Atlas user bound, surface the user identity as `slack:<userId>` and
+reject any approval-required query with a clear "approve via the Atlas
+admin console" message in Slack. This keeps the bot useful for queries
+that don't trip an approval rule and produces an audit trail for the
+ones that do.
+
+A simpler stop-gap: an admin setting `ATLAS_CHAT_PLATFORMS_BYPASS_APPROVAL`
+defaulting to `false`, surfaced in the integrations admin UI, with a
+clear warning that disabling approval for chat platforms reduces the
+governance posture. Logging an `admin_action_log` row when the toggle
+flips closes the audit gap.
+
+**Status:** P2 — issue to be filed.
+
+---
+
+### F-56 — SSO enforcement does not gate `simple-key` or `byot` auth modes ⬆ **P2**
+
+**Where:** `packages/api/src/lib/auth/middleware.ts:227-285`. The switch
+on `mode` has SSO enforcement only in the `case "managed":` branch
+(line 241). The `simple-key` and `byot` branches return immediately
+without any SSO check:
+
+```ts
+case "simple-key":
+  return validateApiKey(req);
+
+case "managed":
+  // ... validateManaged + checkSSOEnforcement ...
+
+case "byot":
+  return await (_byotOverride ?? validateBYOT)(req);
+```
+
+A workspace that has SSO enforcement enabled and is running in
+`simple-key` or `byot` mode will allow API-key/JWT holders to bypass
+Atlas's internal SSO enforcement entirely. The user identity surfaced
+by `simple-key` (`api-key-<sha256-prefix>`) has no email domain, so even
+if SSO checks did run they would no-op via `extractEmailDomain`
+returning null — that path is the documented break-glass. The live gap
+is `byot`.
+
+`byot` mode is gated on `ATLAS_AUTH_JWKS_URL` being set
+(`packages/api/src/lib/auth/detect.ts:76-77`) — a generic IdP signal
+that fits **multi-tenant SaaS deployments using an external IdP**
+(Auth0, Cognito, custom JWKS) just as well as self-hosted. The earlier
+revision of this finding called BYOT "self-hosted only"; that's wrong.
+Any deployment that runs Atlas behind an external IdP and ALSO has an
+SSO enforcement record in `sso_providers` will see the enforcement
+record silently no-op. In one sense the IdP itself is enforcing SSO
+(JWKS validation implies a verified IdP-signed token), so Atlas's
+internal table is somewhat redundant. The gap is the "I clicked the
+'enforce SSO' toggle in the admin UI and assumed it gated my BYOT
+JWTs" mismatch — the operator's mental model and the actual behaviour
+diverge silently.
+
+**Comment in code documents the simple-key carve-out only:**
+
+```ts
+// SSO enforcement: if the user's email domain has SSO enforced,
+// block password/session auth and require SSO login instead.
+// Break-glass bypass: simple-key auth (API key) is not affected.
+```
+
+No comment exists for `byot`. A BYOT JWT does carry the user's email
+(per the BYOT contract), so the domain *would* match an SSO-enforced
+workspace, and the enforcement *should* fire — but it doesn't because
+the switch case skips the check.
+
+**Why this is P2:** the SSO threat model assumes managed-mode
+deployments, which is where the official Atlas SaaS deployment lives and
+is what the SSO admin UI gates on. The `simple-key` carve-out is the
+documented break-glass. The `byot` carve-out is the live gap, but its
+real-world impact is bounded by the fact that a BYOT deployment is by
+definition already delegating identity to an external IdP — the IdP is
+enforcing SSO upstream, just not via Atlas's internal table. Not P1
+because:
+1. The official Atlas SaaS (managed mode) is unaffected.
+2. The break-glass framing is defensible for `simple-key` — the API-key
+   bypass is the intended escape hatch when SSO breaks (e.g. IdP outage
+   during incident response).
+3. BYOT operators who set Atlas's SSO enforcement record alongside an
+   external IdP have a misconfigured stack rather than an exploitable
+   bypass — but the misconfiguration is silent, which is what makes
+   this P2 (admin UI promises something the backend doesn't deliver)
+   rather than P3 (cosmetic).
+
+**Compliance lens:** SOC 2 CC6.6 / ISO A.9.4.2 — system access controls.
+A SOC 2 auditor reviewing the SSO enforcement claim would expect
+documentation of any break-glass paths. Currently undocumented for
+`byot`.
+
+**Remediation hint:** two cleanly-separable changes:
+1. **Documentation:** add an inline comment explaining the `byot`
+   bypass intent and update the SSO admin UI to surface "API key access
+   bypasses SSO enforcement" when an admin enables enforcement.
+2. **Enforcement:** factor `checkSSOEnforcement` out of
+   `case "managed":` into a wrapper that fires for any authenticated
+   path with a resolved email domain. Add a `bypassSSO` flag on
+   per-key / per-token grant if break-glass is needed, gated by an
+   admin-action audit row. Default behaviour: SSO is enforced regardless
+   of auth mode, with an explicit allow-list of bypass-eligible API keys.
+
+**Status:** P2 — issue to be filed. Suggest pairing with F-59 (test
+debt) so the bypass branches grow tests in the same PR.
+
+---
+
+### F-57 — Admin routes mutate SCIM-provisioned users without checking provisioning origin ⬆ **P2**
+
+**Where:** every user-mutation handler in
+`packages/api/src/api/routes/admin.ts` and `admin-roles.ts` operates on
+the `member` / `user` table without consulting the
+`account.providerId` ↔ `scimProvider` join that
+`ee/src/auth/scim.ts:198-205` uses to identify SCIM-managed users:
+
+All line numbers point to the `.openapi(...)` registration site:
+
+| Handler | File | Line |
+|---|---|---|
+| `removeMembershipRoute` | `admin.ts` | 2081 |
+| `deleteUserRoute` | `admin.ts` | 2151 |
+| `changeUserRoleRoute` | `admin.ts` | 1894 |
+| `revokeUserSessionsRoute` | `admin.ts` | 2213 |
+| `banUserRoute` | `admin.ts` | 1986 |
+| `assignRoleRoute` | `admin-roles.ts` | 466 |
+
+The SCIM "source of truth" model is that the IdP (Okta, Azure AD, etc.)
+owns the user lifecycle — when a user is removed from the SCIM group,
+the next sync deactivates the Atlas user. Per the SCIM-with-RBAC
+contract:
+- Admin UI mutations on SCIM-provisioned users **should** be either
+  blocked outright OR explicitly recorded as "manual override" with a
+  warning that the change will be reverted by the next sync.
+- Today, every admin mutation on a SCIM user proceeds silently. The
+  next SCIM sync may revert role changes, may re-create deleted users
+  via a follow-up `User` POST, or may surface the user in an
+  inconsistent state (deleted in Atlas but still in the SCIM provider's
+  user mirror).
+
+**Repro path:** workspace admin demotes an Okta-provisioned admin
+(`PATCH /admin/users/{id}/role` body `{role: "member"}`). The change
+applies immediately to `member.role`. On the next SCIM sync, Okta's
+group mapping promotes the user back to `admin`. The role flip is
+recorded in `admin_action_log` as a successful change, which it was —
+but the operator has no way to predict or learn that the change was
+transient.
+
+More severe variant: admin `DELETE /admin/users/{id}`, the user's
+account row in Better Auth is removed. Next SCIM sync from the IdP
+re-provisions the user with a new userId, orphaning the deleted user's
+audit trail (different primary key) and breaking any per-user RLS that
+references the old id.
+
+**Why this is P2 and not P1:** the F-57 path requires the admin to
+already be authorized to make the mutation. There is no privilege
+escalation. The damage is data-integrity (orphaned references,
+ping-pong with the IdP) and audit clarity (changes that don't stick).
+
+**Remediation cost is non-trivial — flagged here so the issue isn't
+mistaken for a one-line guard.** A grep of `packages/api/src/` and
+`ee/src/` for `scim_provisioned`, `scimProvisioned`, or
+`provisioned_via` returns zero hits — there is no marker column
+distinguishing SCIM-provisioned users from others. The
+`account.providerId` ↔ `scimProvider` join in `scim.ts:198-205` is the
+only mechanism, and it's a runtime query rather than a schema flag.
+Adding the SCIM-provenance check to the 6 user-mutation handlers
+either (a) adds a query per mutation, or (b) requires a schema
+migration to materialize a flag. Either path is doable; flagging it
+here so the implementer doesn't underestimate scope.
+
+**Compliance lens:** ISO A.9.2 — user access management. SCIM is the
+declared source of truth; the API not enforcing it weakens the
+auditable identity contract.
+
+**Remediation hint:** add a helper
+`isSCIMProvisioned(userId): Effect<boolean>` (mirroring the join in
+`scim.ts:getSyncStatus`) and wire it into the user-mutation routes
+above. Two policy modes worth surfacing as a workspace setting:
+- **strict** (default for SCIM-enabled workspaces): block the mutation
+  with a 409 + message explaining that SCIM owns this user.
+- **override** (admin opts in per mutation): mutation proceeds, an
+  `admin_action_log` row is emitted with `metadata.scim_override = true`
+  and a warning is sent to the admin via UI banner.
+
+Phase 4 already established the pattern of recording overrides in
+`admin_action_log` with `status` + structured metadata; reuse the same
+shape.
+
+**Status:** P2 — issue to be filed.
+
+---
+
+### F-58 — Webhook receivers (Slack / Teams / Discord) bypass IP allowlist by design — undocumented (P3 → noted)
+
+**Where:** the Slack `/commands`, `/events`, `/interactions` handlers
+mount via `OpenAPIHono` without `adminAuth`/`standardAuth`/
+`platformAdminAuth` middleware. The only middleware they get is
+`withRequestId` via the parent route. Same for `teams.ts` and
+`discord.ts` chat-platform handlers.
+
+`rateLimitAndIPCheck` (the function that calls `checkIPAllowlist`) only
+runs from `adminAuth` / `standardAuth` / `platformAdminAuth`. Webhook
+receivers therefore never hit the allowlist.
+
+**Why this is correct-by-design:** the webhook receivers verify HMAC
+signatures from the originating platform (Slack:
+`verifySlackSignature`; Teams: bot-framework token; Discord: signature
+header). The originating IP is the third-party platform, not a user IP
+that operators can or should allowlist.
+
+**Why this is still worth documenting:** an operator who configures an
+IP allowlist with the mental model "all access requires an allowlisted
+IP" will be surprised to learn that the chat integrations carve out a
+hole. The carve-out is invisible in admin UI today.
+
+**Remediation hint:** in the integrations admin UI, when a workspace
+has both an active IP allowlist and an active chat integration, surface
+a banner: *"Chat integration messages are validated by signature, not
+IP. Disable the integration to fully scope access to allowlisted IPs."*
+No code change to the receivers themselves.
+
+**Status:** P3 — noted, no separate issue. Roll into the IP allowlist
+admin UI polish cycle (1.3.0 admin revamp final pass).
+
+---
+
+### F-59 — Test coverage gap: SSO enforcement bypass branches not exercised (P3 → noted)
+
+**Where:** `packages/api/src/lib/auth/__tests__/middleware.test.ts`
+covers `mode: managed` SSO enforcement at line 205-247 (block + 500 fail-
+closed). No test covers:
+- `mode: simple-key` skipping SSO enforcement (the F-56 bypass).
+- `mode: byot` skipping SSO enforcement (also F-56).
+- A `managed`-mode session backed by a Better Auth API key (hits SSO
+  check via `auth.api.getSession`'s API-key resolution; is the most
+  common cross-cut and is currently inferred-correct rather than
+  asserted).
+
+Per the prompt's framing — *"if a bypass isn't tested for, that's itself
+a finding"* — these missing tests are the test-debt mirror of F-56.
+Once F-56 is fixed (or its scope is explicitly affirmed), the tests
+should land alongside.
+
+**Remediation hint:** add three test cases mirroring the existing F-56
+shape:
+1. `mode: simple-key — SSO enforcement does NOT block API key auth (documents intentional break-glass)`
+2. `mode: byot — SSO enforcement DOES block when domain matches (target behaviour after F-56)` *or* `mode: byot — SSO enforcement does NOT block (documents current behaviour pending F-56 fix)`
+3. `mode: managed (API-key) — SSO enforcement DOES fire for Better Auth API key auth`
+
+**Status:** P3 — noted. Folded into F-56 remediation PR.
+
+---
+
+### F-60 — `/api/v1/demo/chat` runs agent without `activeOrganizationId` — approval workflows skipped (P3 → noted)
+
+**Where:** `packages/api/src/api/routes/demo.ts:399-435`. The demo chat
+handler binds a demo `user` (synthesized via `createAtlasUser`) into
+`withRequestContext({ requestId, user: demoUser })`, but the demo user
+carries no `activeOrganizationId`. Inside `executeSQL`,
+`getRequestContext()?.user?.activeOrganizationId` resolves to undefined,
+which trips the same `checkApprovalRequired(undefined, ...)`
+short-circuit as F-54 / F-55.
+
+**Why this is P3 and not a real finding:** the demo workspace ships
+fixed sample data (the SaaS demo dataset) and is firewalled from any
+real workspace's data. Approval rules don't apply because there is no
+sensitive data to gate. The demo handler is gated by `isDemoEnabled()`
++ a signed demo token + email rate-limiting (covered by Phase 1 review).
+
+Worth noting for completeness so that future audits don't re-flag the
+same path — and so that any future change that lets the demo handler
+touch real workspace data picks up the explicit "no approval gate"
+constraint as a known precondition.
+
+**Status:** P3 — noted, no issue.
+
+---
+
+### Affirmative verifications
+
+The cells in the bypass matrix marked "no" each correspond to a
+correctly-wired enforcement path. Documenting the verification rationale
+for each so future audits can short-circuit:
+
+- **SSO enforcement on managed-mode auth** — `auth/middleware.ts:191-221`
+  calls `checkSSOEnforcement` after `validateManaged` succeeds. Returns
+  403 + `ssoRedirectUrl` to surface the IdP login URL. Fail-closed on
+  errors (returns 500 not allow). Test coverage:
+  `auth/__tests__/middleware.test.ts:205-247` (block + fail-closed).
+  Verified: no bypass via password, magic link, OAuth (Google / GitHub /
+  Microsoft), or session resume.
+- **SSO enforcement on Better Auth API key** — the `apiKey()` plugin
+  resolves the key to its owning user via `auth.api.getSession`, so the
+  same `validateManaged` → `checkSSOEnforcement` path applies. Inferred
+  from Better Auth docs + plugin source (the plugin populates
+  `session.user` from the key's owner). Test debt: not directly asserted
+  (see F-59).
+- **IP allowlist on `adminAuth` / `platformAdminAuth` / `standardAuth`** —
+  `routes/middleware.ts:117-156` calls `checkIPAllowlist(orgId, ip)`
+  unconditionally inside `rateLimitAndIPCheck`. All three middlewares
+  invoke this helper. Verified by reading the middleware bodies and
+  cross-referencing the inner-app route registrations.
+- **IP allowlist fail-closed on DB error** — `ee/src/auth/ip-allowlist.ts:334-346`
+  uses `Effect.tryPromise` with a typed `catch` that **re-throws** rather
+  than returning `{ allowed: true }` — DB outage blocks rather than
+  permits. Comment explicitly cites CLAUDE.md: *"`catch { return false }`
+  on a security check is a bug"*. Hardened correctly.
+- **Approval enforcement on `/api/v1/chat`** — `chat.ts:309` binds
+  `withRequestContext({ requestId, user: authResult.user, atlasMode })`
+  before the agent runs. `executeSQL` reads the bound user, so
+  `checkApprovalRequired` receives a valid orgId.
+- **Approval enforcement on `/api/v1/query`** — `query.ts:200` follows
+  the same `withRequestContext({ requestId, user: authResult.user })`
+  pattern as chat. Verified.
+- **Approval availability fail-open + creation hard-fail split** —
+  `lib/tools/sql.ts:1009-1090` splits the approval check into two
+  phases. Phase 1 (`checkApprovalRequired`) fails open (logs warn,
+  proceeds without gate) when EE is unavailable. Phase 2
+  (`createApprovalRequest` + `hasApprovedRequest`) fails closed (typed
+  `QueryExecutionError`, blocks the query). Comment explicitly cites
+  *"governance bypass is worse than a failed query"*. Correct posture.
+- **Approval cache-hit cannot bypass approval** — `lib/tools/sql.ts:1094-1110`
+  runs the cache check AFTER the approval check, so a cached result
+  for a query that now requires approval will not short-circuit. The
+  approval phase is upstream of the cache lookup.
+- **Custom-role names cannot shadow built-in Atlas roles (F-10
+  hardening)** — `ee/src/auth/roles.ts:36-38` builds
+  `RESERVED_ATLAS_ROLE_NAMES` from `ATLAS_ROLES`, then checks both at
+  `createRole` (line 364) and at `assignRole` (line 548). Belt-and-
+  suspenders defense. Verified.
+- **`requireEnterprise()` gates every EE CRUD function** — every
+  `Effect.gen` in `ee/src/{auth,governance,audit,branding,platform,
+  compliance,sla}/*.ts` starts with `yield* requireEnterpriseEffect("...")`.
+  The two intentional exceptions (`findProviderByDomain`,
+  `isSSOEnforced{,ForDomain}` in sso.ts; `getWorkspaceBrandingPublic`
+  in branding) carry inline rationale comments. Verified:
+  ```
+  $ grep -nL "requireEnterprise" ee/src/{auth,governance,audit,branding,
+    platform,compliance,sla}/*.ts | xargs grep -nE "^export"
+  # only test files + the documented carve-outs
+  ```
+- **`ATLAS_DEPLOY_MODE=saas` falls back to `self-hosted` without EE** —
+  `ee/src/deploy-mode.ts:31-33` and `deploy-mode.ts:36`. The frontend
+  `deployMode` value comes from `getDeployMode()` which reads the
+  resolved value. Verified by reading the source: no SaaS-only
+  governance route bypasses this gate.
+- **Stripe webhook signature verification** — `/api/auth/stripe/*` is
+  handled by Better Auth's Stripe plugin (`packages/api/src/lib/auth/server.ts:491`
+  conditionally registers when `STRIPE_SECRET_KEY` is present). The
+  plugin uses `stripe.webhooks.constructEvent` with `STRIPE_WEBHOOK_SECRET`.
+  Confirmed via Phase 5 audit (#1724) — no Atlas-side changes.
+- **OAuth state CSRF + orgId binding for chat-platform installs** —
+  `oauth-state.ts` 10-minute TTL + single-use DELETE-RETURNING.
+  `slack.ts:743`, `teams.ts:194`, `discord.ts:202` reject installs that
+  lack `orgId` when `deployMode === "saas"`. Phase 1 / F-04 fix carries
+  forward.
+- **Approval `expireStaleRequests` + `getPendingCount` are org-scoped** —
+  `ee/src/governance/approval.ts:654` and `:687`. The `@security F-13`
+  comment explicitly preserves the cross-tenant guard. Verified.
+- **`reviewApprovalRequest` blocks self-approval** —
+  `approval.ts:606-609`. Requester cannot approve their own request.
+  Verified.
+
+### Considered, not filed
+
+- **Better Auth `/api/auth/sign-in/email` from outside an IP allowlist** —
+  the auth catch-all is mounted without `adminAuth` / `standardAuth`,
+  so a user from outside the allowlist can authenticate. On the next
+  authenticated request, the allowlist fires and blocks them. This is
+  the documented "logged in but can't use the API" state — not a
+  bypass, just an audit-log surface that records a successful login
+  followed by a 403 on the very next request. Worth surfacing in
+  admin UI ("the following users authenticated from outside the
+  allowlist") but not a bypass finding.
+- **MCP server access** — the MCP server (stdio + SSE transport) is a
+  separate runtime from the Hono app. It owns its own auth (bearer over
+  SSE) and tool authorization. Not under Phase 7 scope; will be revisited
+  during the MCP hardening pass.
+- **Better Auth bearer plugin token revocation** — Phase 1 F-11
+  identified that bearer + apiKey co-existence has no documented
+  revocation flow. Re-reading in Phase 7: revocation is delegated to
+  Better Auth's session and apiKey tables (delete the row → next
+  request fails `getSession`). Documented behaviour, not a Phase 7
+  finding. Tracked under #1733 / Phase 1 cleanup.
+- **`getWorkspaceBrandingPublic` skips `requireEnterprise`** — by
+  design (see comment in `ee/src/branding/white-label.ts:130-134`).
+  Reads the public-safe branding fields only (logo, colors, hide-Atlas
+  toggle). No PII or credentials surface here. Phase 5 covered this
+  surface.
+- **`isSSOEnforced` / `isSSOEnforcedForDomain` skip
+  `requireEnterprise`** — by design; these are called during the login
+  flow before the user has a session, and the enterprise gate happens
+  at the admin toggle (`setSSOEnforcement`). Documented in source.
+- **`findProviderByDomain` skips `requireEnterprise`** — same rationale
+  as above; used in the login flow.
+- **`resolvePermissions` skips `requireEnterprise`** — by design; used
+  on every request and gracefully degrades to legacy role mapping when
+  EE is off. (Pairs with F-53; once permissions are wired into routes,
+  the legacy fallback is what protects self-hosted no-EE workspaces.)
+- **`hasInternalDB()` short-circuits** — every EE function checks
+  `if (!hasInternalDB()) return ...` after the enterprise gate. This is
+  the standard pattern for self-hosted-no-DB compatibility. Not a
+  bypass; verified throughout.
+- **`adminAuthPreamble` on chat-platform OAuth install routes does not
+  invoke IP allowlist** — Slack / Teams / Discord `/install` routes
+  use `adminAuthPreamble` directly (which checks role) instead of the
+  `adminAuth` middleware (which also does IP allowlist). An admin from
+  outside the IP allowlist could initiate an OAuth install. Subsequent
+  callbacks save the installation. Low risk because: (1) the install
+  binds to the user's session orgId (F-04 hardening), (2) the
+  callback consumes a single-use OAuth state nonce. But cosmetically
+  inconsistent — worth folding into the admin-router unification when
+  the `/install` flows next get touched. Not a P-finding because no
+  privilege gain.
+
+### Findings summary
+
+| ID | Severity | Type | Surface | Compliance lens | Issue | Status |
+|---|---|---|---|---|---|---|
+| F-53 | P1 | Authorization gap | Custom-role permission flags never enforced at route layer | SOC 2 CC6.3 (granular authorization) | #1849 | open |
+| F-54 | P1 | Governance bypass | Scheduled-task executor runs agent without user context → approval workflows skipped | SOC 2 CC6.1 / CC7.2 (change management) | #1850 | open |
+| F-55 | P2 | Governance bypass | Slack / Teams / Discord agent invocations bypass approval workflows | SOC 2 CC6.1 / CC7.2 | #1851 | open |
+| F-56 | P2 | SSO bypass | `simple-key` and `byot` auth modes skip SSO enforcement | SOC 2 CC6.6 / ISO A.9.4.2 | #1852 | open |
+| F-57 | P2 | Identity-source bypass | Admin routes mutate SCIM-provisioned users without provisioning-origin check | ISO A.9.2 (user access management) | #1853 | open |
+| F-58 | P3 | Doc / UX | Webhook receivers bypass IP allowlist by design — undocumented in admin UI | — | — | noted |
+| F-59 | P3 | Test debt | No tests for `simple-key` / `byot` SSO bypass branches; API-key SSO check inferred-only | — | — | noted (folds into F-56) |
+| F-60 | P3 | Verified by-design | `/api/v1/demo/chat` runs agent without user context — non-sensitive demo data | — | — | noted |
+
+**Totals:** P0 = 0, P1 = 2 (F-53, F-54), P2 = 3 (F-55, F-56, F-57), P3 = 3 (F-58, F-59, F-60). Issue IDs filled in below as filed.
+
+### Deliverables this PR
+
+- **This audit section** — bypass matrix + 5 P1/P2 issue-bearing
+  findings + 3 P3 noted-only findings + an affirmative-verification
+  block listing each correctly-wired enforcement path.
+- **5 GitHub issues filed** (linked in the table above) for every
+  P1/P2 finding (none here are P0). Labels per finding: `security`,
+  `bug` (live flaw) or `chore` (hardening), and `area: api`. Milestone:
+  `1.2.3 — Security Sweep`.
+- **Phase-7 checkbox flipped** in the tracker (#1718). This is the
+  final phase — the audit portion of 1.2.3 closes with this PR.
+- **No production code changes** — fixes ship as follow-up PRs per the
+  phase-1/2/3/4/5 workflow.
+
+**Suggested remediation ordering for the follow-up cluster:**
+
+1. **F-54** first (P1, smallest blast radius). Scheduler executor
+   binds task creator's user; `executeSQL` defends with fail-closed
+   when orgId is undefined and approval rules exist.
+2. **F-53** next (P1, biggest scope). Wire `checkPermission()` into
+   the admin route surface. Multi-PR cluster — one PR per admin
+   sub-router would keep diffs reviewable.
+3. **F-57** (P2). Add `isSCIMProvisioned()` helper and gate the user-
+   mutation routes in `admin.ts` + `admin-roles.ts`. Workspace setting
+   chooses strict / override mode.
+4. **F-55** (P2). Bind chat-platform team-id → org-id mapping into
+   `executeAgentQuery` from Slack / Teams / Discord receivers; reject
+   approval-required queries with a "approve via admin console"
+   message. Or ship the `ATLAS_CHAT_PLATFORMS_BYPASS_APPROVAL`
+   stop-gap.
+5. **F-56 + F-59** (P2 + P3). Document the SSO/`byot` bypass; factor
+   `checkSSOEnforcement` out of the managed-only branch; add the three
+   missing test cases.
+
+P3s (F-58, F-60) roll into 1.3.0 admin polish or stay in this audit
+doc as noted-only.
+
+---
+
 ## 1.2.3 Phase scorecard
 
 | Phase | Title | Audit status | Findings (P0 / P1 / P2 / P3) | Issues filed | Notes |
@@ -2335,6 +3031,10 @@ migration).
 | 4 | Audit-log coverage on write routes | complete | 5 / 5 / 5 / 3 | #1777 – #1791 | 15 findings; 9 fixed in-milestone (PR #1797–#1809) |
 | 5 | Secrets + error surfaces + plugin credentials | complete | 0 / 3 / 3 / 4 + 1 verified-clean | 6 P1/P2 issues filed | encryption-at-rest gap is the dominant pattern; no P0 |
 | 6 | Rate limiting + DoS | not started | — | — | #1725 (pending) |
-| 7 | Enterprise governance paths | not started | — | — | #1726 (pending) |
+| 7 | Enterprise governance paths | complete | 0 / 2 / 3 / 3 | 5 P1/P2 issues filed | F-53 (custom-role permissions never enforced) is the dominant gap; F-54 (scheduler approval bypass) is the second |
+
+**Cross-phase totals (phases 1–5 + 7):** P0 = 8, P1 = 14, P2 = 21, P3 = 18.
+Phase 6 still pending. No current P0 open. Phase 7 remediation clusters
+into 5 follow-up PRs (see Phase 7 deliverables for ordering).
 
 **Cross-phase totals (phases 1–5):** P0 = 8, P1 = 12, P2 = 18, P3 = 15. No current P0 open; remediation for Phase 5 P1/P2 clustered into follow-up PRs after the audit lands.

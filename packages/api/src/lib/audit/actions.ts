@@ -98,12 +98,30 @@ export const ADMIN_ACTIONS = {
     delete: "sso.delete",
     test: "sso.test",
   },
+  /**
+   * Semantic-layer mutations. `createEntity` / `updateEntity` /
+   * `deleteEntity` / `updateMetric` / `updateGlossary` cover direct
+   * entity CRUD (`admin-semantic.ts` and the admin bulk import). The
+   * `improve*` variants cover the AI-assisted expert-agent surface
+   * (`admin-semantic-improve.ts`): `improveDraft` marks a new
+   * chat-driven draft session, `improveApply` fires when a DB-backed
+   * amendment review flips a pending row to applied (YAML written to
+   * disk), `improveAccept` / `improveReject` cover the in-memory
+   * session proposal decisions. Note: the DB-backed review route
+   * branches on `decision` — rejection emits `improve_reject` so
+   * forensic queries can filter on a single action_type regardless of
+   * which surface rejected it. See F-35.
+   */
   semantic: {
     createEntity: "semantic.create_entity",
     updateEntity: "semantic.update_entity",
     deleteEntity: "semantic.delete_entity",
     updateMetric: "semantic.update_metric",
     updateGlossary: "semantic.update_glossary",
+    improveDraft: "semantic.improve_draft",
+    improveApply: "semantic.improve_apply",
+    improveAccept: "semantic.improve_accept",
+    improveReject: "semantic.improve_reject",
   },
   pattern: {
     approve: "pattern.approve",
@@ -261,6 +279,39 @@ export const ADMIN_ACTIONS = {
   compliance: {
     piiConfigUpdate: "compliance.pii_config_update",
     piiConfigDelete: "compliance.pii_config_delete",
+  },
+  /**
+   * Prompt library CRUD — collections + prompt items. Content-governance
+   * trail: these writes reshape the prompts end-users see in the workspace
+   * library. Without these entries a workspace admin can edit / delete /
+   * reorder prompts (or the collections they live in) with zero forensic
+   * record. `collection_*` actions target the collection; `create` /
+   * `update` / `delete` / `reorder` target individual prompt items.
+   * See F-35.
+   */
+  prompt: {
+    collectionCreate: "prompt.collection_create",
+    collectionUpdate: "prompt.collection_update",
+    collectionDelete: "prompt.collection_delete",
+    create: "prompt.create",
+    update: "prompt.update",
+    delete: "prompt.delete",
+    reorder: "prompt.reorder",
+  },
+  /**
+   * Starter-prompt moderation queue. Approve / hide / unhide flip
+   * `approval_status` on a `query_suggestions` row; `author_update`
+   * covers the admin-authored seed path that skips the pending queue.
+   * Starter prompts are surfaced on the first-run / empty-state
+   * surfaces, so a workspace admin can reshape the landing experience
+   * for every tenant user — unaudited, nobody knows who authored what.
+   * See F-35.
+   */
+  starter_prompt: {
+    approve: "starter_prompt.approve",
+    hide: "starter_prompt.hide",
+    unhide: "starter_prompt.unhide",
+    authorUpdate: "starter_prompt.author_update",
   },
 } as const;
 

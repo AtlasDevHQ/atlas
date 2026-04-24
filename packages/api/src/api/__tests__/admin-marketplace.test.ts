@@ -233,6 +233,14 @@ let mockHasInternalDB = true;
 // and drive both the internalQuery and queryEffect mocks down the failure path.
 let mockQueryResults: Map<string, unknown[] | Error> = new Map();
 
+/**
+ * Every (sql, params) pair issued by the route under test. Tests asserting
+ * what was persisted (e.g. secret restoration in a PUT config round-trip) pop
+ * matching entries out of here. Cleared in each `beforeEach` alongside
+ * `mockQueryResults`.
+ */
+let capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
+
 function setQueryResult(pattern: string, rows: unknown[] | Error) {
   mockQueryResults.set(pattern, rows);
 }
@@ -244,9 +252,14 @@ function findQueryResult(sql: string): unknown[] | Error {
   return [];
 }
 
-function invokeInternalQueryMock(sql: string): Promise<unknown[]> {
+function invokeInternalQueryMock(sql: string, params: unknown[] = []): Promise<unknown[]> {
+  capturedQueries.push({ sql, params });
   const result = findQueryResult(sql);
   return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
+}
+
+function findCapturedQuery(pattern: string): { sql: string; params: unknown[] } | undefined {
+  return capturedQueries.find((q) => q.sql.includes(pattern));
 }
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -256,11 +269,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     end: async () => {},
     on: () => {},
   }),
-  internalQuery: (sql: string, _params?: unknown[]) => invokeInternalQueryMock(sql),
-  queryEffect: (sql: string) => {
+  internalQuery: (sql: string, params?: unknown[]) => invokeInternalQueryMock(sql, params),
+  queryEffect: (sql: string, params?: unknown[]) => {
     const effectValue: TestEffectPromise = {
       _tag: "EffectPromise",
-      fn: () => invokeInternalQueryMock(sql),
+      fn: () => invokeInternalQueryMock(sql, params),
       errorTaps: [],
     };
     return makePipeable(effectValue);
@@ -351,6 +364,7 @@ describe("Platform Plugin Catalog", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
+    capturedQueries = [];
   });
 
   describe("GET /catalog", () => {
@@ -486,6 +500,7 @@ describe("Workspace Plugin Marketplace", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
+    capturedQueries = [];
   });
 
   describe("GET /marketplace/available", () => {
@@ -521,6 +536,53 @@ describe("Workspace Plugin Marketplace", () => {
       expect(body.plugins[0].installed).toBe(true);
       expect(body.plugins[0].installationId).toBe("inst-1");
       expect(body.plugins[0].installedConfig).toEqual({ host: "localhost" });
+    });
+
+    it("masks secret: true fields in installedConfig and leaves non-secret fields untouched (F-43 #1817)", async () => {
+      // Catalog advertises one secret field + one non-secret. Installed row
+      // holds concrete values. The response must hide only the secret; any
+      // leak would let a workspace admin read the live credential.
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
+        {
+          ...sampleCatalogRow,
+          config_schema: [
+            { key: "apiKey", type: "string", secret: true },
+            { key: "region", type: "string" },
+          ],
+        },
+      ]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", [
+        { catalog_id: "cat-1", id: "inst-1", config: { apiKey: "sk-live-12345", region: "us-east-1" } },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.plugins[0].installedConfig.apiKey).toBe("••••••••");
+      expect(body.plugins[0].installedConfig.region).toBe("us-east-1");
+      // Exact-match the placeholder string — drifting from admin-plugins.ts
+      // would confuse the write-path restoration guard.
+      expect(body.plugins[0].installedConfig.apiKey).not.toContain("sk-live");
+    });
+
+    it("leaves null installedConfig unchanged when plugin is not installed", async () => {
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
+        {
+          ...sampleCatalogRow,
+          config_schema: [{ key: "apiKey", type: "string", secret: true }],
+        },
+      ]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.plugins[0].installed).toBe(false);
+      expect(body.plugins[0].installedConfig).toBeNull();
     });
   });
 
@@ -622,6 +684,10 @@ describe("Workspace Plugin Marketplace", () => {
 
   describe("PUT /marketplace/:id/config", () => {
     it("updates plugin config", async () => {
+      // Pre-SELECT: current config + catalog schema (for secret restoration).
+      setQueryResult("FROM workspace_plugins wp", [
+        { config: { key: "old-value" }, config_schema: null },
+      ]);
       setQueryResult("UPDATE workspace_plugins", [{
         id: "inst-1",
         workspace_id: "org-1",
@@ -647,7 +713,97 @@ describe("Workspace Plugin Marketplace", () => {
       expect(body.config).toEqual({ key: "new-value" });
     });
 
+    it("round-trips MASKED_PLACEHOLDER: PUT leaves the stored secret intact (F-43 #1817)", async () => {
+      // A UI that renders the masked GET /available response will echo
+      // "••••••••" back on save for any secret the admin didn't touch.
+      // Without restoration, this PUT would overwrite the live credential
+      // with the placeholder — turning a disclosure bug into a corruption
+      // bug.
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "sk-live-12345", region: "us-east-1" },
+          config_schema: [
+            { key: "apiKey", type: "string", secret: true },
+            { key: "region", type: "string" },
+          ],
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: { apiKey: "sk-live-12345", region: "eu-west-1" },
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: "Google BigQuery datasource",
+      }]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: { apiKey: "••••••••", region: "eu-west-1" },
+        }),
+      });
+      expect(res.status).toBe(200);
+
+      // The persisted config blob is param[0] of the UPDATE (stringified JSON).
+      const updateCall = findCapturedQuery("UPDATE workspace_plugins");
+      expect(updateCall).toBeDefined();
+      const persisted = JSON.parse(updateCall!.params[0] as string) as Record<string, unknown>;
+      expect(persisted.apiKey).toBe("sk-live-12345"); // original preserved
+      expect(persisted.apiKey).not.toBe("••••••••");  // placeholder stripped
+      expect(persisted.region).toBe("eu-west-1");     // non-secret passed through
+    });
+
+    it("rotates a secret when the admin submits a new value (not the placeholder)", async () => {
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "sk-old" },
+          config_schema: [{ key: "apiKey", type: "string", secret: true }],
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: { apiKey: "sk-new" },
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+      }]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "sk-new" } }),
+      });
+      expect(res.status).toBe(200);
+      const updateCall = findCapturedQuery("UPDATE workspace_plugins");
+      const persisted = JSON.parse(updateCall!.params[0] as string) as Record<string, unknown>;
+      expect(persisted.apiKey).toBe("sk-new");
+    });
+
+    it("returns 404 when the pre-fetch finds no installation", async () => {
+      setQueryResult("FROM workspace_plugins wp", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/nonexistent/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: {} }),
+      });
+      expect(res.status).toBe(404);
+    });
+
     it("returns 404 for non-existent installation", async () => {
+      setQueryResult("FROM workspace_plugins wp", [{ config: {}, config_schema: null }]);
       setQueryResult("UPDATE workspace_plugins", []);
 
       const app = buildWorkspaceApp();
@@ -669,6 +825,7 @@ describe("audit emission — Platform catalog", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
+    capturedQueries = [];
     mockLogAdminAction.mockClear();
   });
 
@@ -887,6 +1044,7 @@ describe("audit emission — Workspace marketplace", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
+    capturedQueries = [];
     mockLogAdminAction.mockClear();
   });
 
@@ -1089,6 +1247,7 @@ describe("audit emission — Workspace marketplace", () => {
 
   describe("PUT /marketplace/:id/config — plugin.config_update", () => {
     it("emits exactly one plugin.config_update audit with keysChanged only", async () => {
+      setQueryResult("FROM workspace_plugins wp", [{ config: {}, config_schema: null }]);
       setQueryResult("UPDATE workspace_plugins", [{
         id: "inst-1",
         workspace_id: "org-1",
@@ -1130,6 +1289,7 @@ describe("audit emission — Workspace marketplace", () => {
     });
 
     it("never includes config values in audit metadata", async () => {
+      setQueryResult("FROM workspace_plugins wp", [{ config: {}, config_schema: null }]);
       setQueryResult("UPDATE workspace_plugins", [{
         id: "inst-1",
         workspace_id: "org-1",
@@ -1163,6 +1323,7 @@ describe("audit emission — Workspace marketplace", () => {
     });
 
     it("emits status=failure when UPDATE throws", async () => {
+      setQueryResult("FROM workspace_plugins wp", [{ config: {}, config_schema: null }]);
       setQueryResult("UPDATE workspace_plugins", new Error("config update failed"));
 
       const app = buildWorkspaceApp();
@@ -1181,7 +1342,9 @@ describe("audit emission — Workspace marketplace", () => {
     });
 
     it("does not emit audit when installation not found (404)", async () => {
-      setQueryResult("UPDATE workspace_plugins", []);
+      // The pre-SELECT for secret restoration finds no row, short-circuits
+      // to 404 before UPDATE runs.
+      setQueryResult("FROM workspace_plugins wp", []);
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/missing/config", {
@@ -1194,6 +1357,7 @@ describe("audit emission — Workspace marketplace", () => {
     });
 
     it("sorts keysChanged alphabetically regardless of input order", async () => {
+      setQueryResult("FROM workspace_plugins wp", [{ config: {}, config_schema: null }]);
       setQueryResult("UPDATE workspace_plugins", [{
         id: "inst-1",
         workspace_id: "org-1",

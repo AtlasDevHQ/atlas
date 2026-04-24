@@ -42,6 +42,32 @@ const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
 
 /**
+ * Thrown by `decryptSecret` when the ciphertext's `enc:v<N>:` prefix
+ * references a version that isn't in the currently-configured keyset.
+ *
+ * Distinct from a generic decrypt failure because the remediation is
+ * different: an `UnknownKeyVersionError` is an *operator misconfig*
+ * (legacy key dropped from `ATLAS_ENCRYPTION_KEYS` before rotation
+ * finished), not data corruption. `pickDecryptedSecret` distinguishes
+ * these so a dropped key surfaces as a `log.error` with a distinct
+ * breadcrumb instead of hiding inside the generic F-41 "fall back to
+ * plaintext" warn — otherwise the integration keeps working silently
+ * until the follow-up plaintext-drop (#1832) turns every read into a
+ * 500 with no warning history.
+ */
+export class UnknownKeyVersionError extends Error {
+  readonly _tag = "UnknownKeyVersionError" as const;
+  readonly version: number;
+  readonly activeVersion: number;
+  constructor(version: number, activeVersion: number) {
+    super(`Cannot decrypt secret: key version v${version} not present in ATLAS_ENCRYPTION_KEYS`);
+    this.name = "UnknownKeyVersionError";
+    this.version = version;
+    this.activeVersion = activeVersion;
+  }
+}
+
+/**
  * F-47 versioned prefix format: `enc:v<N>:iv:authTag:ciphertext`. The
  * version label points into the active keyset (`ATLAS_ENCRYPTION_KEYS`
  * / `ATLAS_ENCRYPTION_KEY` / `BETTER_AUTH_SECRET`). Pre-F-47 ciphertext
@@ -124,9 +150,7 @@ export function decryptSecret(stored: string): string {
       { version, active: keyset.active.version },
       "Encrypted secret references an unknown key version — ATLAS_ENCRYPTION_KEYS is missing this version",
     );
-    throw new Error(
-      `Cannot decrypt secret: key version v${version} not present in ATLAS_ENCRYPTION_KEYS`,
-    );
+    throw new UnknownKeyVersionError(version, keyset.active.version);
   }
 
   const body = match[2];
@@ -166,9 +190,15 @@ export function decryptSecret(stored: string): string {
  * plaintext copy is still there. Post-#1832 (plaintext drop), decrypt
  * failure will naturally become terminal since the fallback disappears.
  *
- * A warn breadcrumb is emitted in the fallback cases so ops can see
- * schema drift (non-string encrypted values) or cipher-format drift
- * (decrypt failures) without spelunking pg logs.
+ * F-47: `UnknownKeyVersionError` (the ciphertext's `enc:v<N>:` points
+ * at a version missing from the keyset) is logged at `error` level, not
+ * `warn`. Rationale: every other decrypt failure is data-corruption
+ * drift, but a missing version is *operator misconfig* — the legacy
+ * key was dropped before the rotation script finished. Same symptom,
+ * different remediation, so the breadcrumbs must not blur together
+ * (the generic F-41 warn path was hiding this class of misconfig
+ * silently until #1832 turned every read into a 500). Sentry-grade
+ * alert wiring should page on the `error`, not sample the warn stream.
  *
  * Returns `null` when neither column carries a usable string — the
  * caller treats that as a malformed row.
@@ -187,10 +217,20 @@ export function pickDecryptedSecret(
     try {
       return decryptSecret(encryptedValue);
     } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Encrypted column failed to decrypt — falling back to plaintext column (F-41 soak)",
-      );
+      if (err instanceof UnknownKeyVersionError) {
+        log.error(
+          { version: err.version, activeVersion: err.activeVersion },
+          "F-47 dropped-legacy-key: ciphertext references an unknown key version — " +
+          "ATLAS_ENCRYPTION_KEYS is missing the version the row was written under. " +
+          "Falling back to plaintext column (soak); post-#1832 this will 500. " +
+          "Add the legacy key back under the right v<N>: label and run the rotation script.",
+        );
+      } else {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Encrypted column failed to decrypt — falling back to plaintext column (F-41 soak)",
+        );
+      }
     }
   }
   if (typeof plaintextValue === "string" && plaintextValue.length > 0) {

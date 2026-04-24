@@ -24,10 +24,16 @@ still decrypts during the rotation soak.
 ATLAS_ENCRYPTION_KEYS=v2:THIRTY-TWO-BYTE-NEW-KEY-MATERIAL,v1:OLD-KEY-MATERIAL
 ```
 
-The `v<N>:` prefix is required on every entry once the list grows past
-one key. Version labels are stable identifiers — the ciphertext
-`enc:v<N>:…` prefix stores the number at write time so the rotation
-script can distinguish unrotated rows.
+Use the `v<N>:` prefix on every entry once the list grows past one
+key. Atlas *will* also accept all-bare entries (`newkey,oldkey`) and
+assign versions positionally (first = `length`, last = `1`) — but the
+positional semantics are easy to misread, so prefer the explicit
+`v<N>:raw` form in production. Mixing prefixed and bare entries in the
+same list is rejected loudly at startup.
+
+Version labels are stable identifiers: the ciphertext `enc:v<N>:…`
+prefix stores the number at write time so the rotation script can
+distinguish unrotated rows.
 
 ### Legacy single-key compatibility
 
@@ -92,15 +98,65 @@ silently destroys every encrypted credential. Set a dedicated
    `<col>_key_version < $active`, so re-runs after partial progress
    pick up where the previous run left off.
 
-5. **Verify.** Query each `_key_version` column:
+5. **Verify.** Atlas has 12 encrypted columns, each with a companion
+   `*_key_version` column. The script should have left every row at
+   the active version (here `2`). Run this once across every table:
 
    ```sql
-   SELECT
-     COUNT(*) AS below_active
-   FROM connections
-   WHERE url_key_version < 2;
-   -- Repeat for every encrypted column; all should return 0.
+   SELECT 'connections.url' AS col,
+          COUNT(*) FILTER (WHERE url_key_version < 2) AS below_active
+     FROM connections
+   UNION ALL
+   SELECT 'workspace_model_config.api_key_encrypted',
+          COUNT(*) FILTER (WHERE api_key_key_version < 2)
+     FROM workspace_model_config
+   UNION ALL
+   SELECT 'slack_installations.bot_token_encrypted',
+          COUNT(*) FILTER (WHERE bot_token_key_version < 2)
+     FROM slack_installations
+   UNION ALL
+   SELECT 'teams_installations.app_password_encrypted',
+          COUNT(*) FILTER (WHERE app_password_key_version < 2)
+     FROM teams_installations
+   UNION ALL
+   SELECT 'discord_installations.bot_token_encrypted',
+          COUNT(*) FILTER (WHERE bot_token_key_version < 2)
+     FROM discord_installations
+   UNION ALL
+   SELECT 'telegram_installations.bot_token_encrypted',
+          COUNT(*) FILTER (WHERE bot_token_key_version < 2)
+     FROM telegram_installations
+   UNION ALL
+   SELECT 'gchat_installations.credentials_json_encrypted',
+          COUNT(*) FILTER (WHERE credentials_json_key_version < 2)
+     FROM gchat_installations
+   UNION ALL
+   SELECT 'github_installations.access_token_encrypted',
+          COUNT(*) FILTER (WHERE access_token_key_version < 2)
+     FROM github_installations
+   UNION ALL
+   SELECT 'linear_installations.api_key_encrypted',
+          COUNT(*) FILTER (WHERE api_key_key_version < 2)
+     FROM linear_installations
+   UNION ALL
+   SELECT 'whatsapp_installations.access_token_encrypted',
+          COUNT(*) FILTER (WHERE access_token_key_version < 2)
+     FROM whatsapp_installations
+   UNION ALL
+   SELECT 'email_installations.config_encrypted',
+          COUNT(*) FILTER (WHERE config_key_version < 2)
+     FROM email_installations
+   UNION ALL
+   SELECT 'sandbox_credentials.credentials_encrypted',
+          COUNT(*) FILTER (WHERE credentials_key_version < 2)
+     FROM sandbox_credentials;
+   -- Every row should report `below_active = 0`.
    ```
+
+   The rotation script also exits `2` if any row was orphaned (stored
+   ciphertext references a version missing from the keyset); if you
+   saw exit-2, re-check `ATLAS_ENCRYPTION_KEYS` for a dropped legacy
+   key before continuing to step 6.
 
 6. **Drop the legacy key.**
 
@@ -160,7 +216,8 @@ the escrow copy is a compromise target too.
 
 | Mistake | Symptom | Recovery |
 | --- | --- | --- |
-| Remove `v1` before running the rotation script | `decryptSecret` / `decryptUrl` throws `key version v1 not present` on any unrotated row; integration reads 500 | Put `v1:OLD-KEY` back, run the rotation script, then remove |
+| Remove `v1` before running the rotation script | `decryptSecret` throws `key version v1 not present` on any unrotated row; integration reads 500 | Put `v1:OLD-KEY` back, run the rotation script, then remove |
+| Remove `v1` while un-rotated **pre-F-47 connection URLs** still exist (they carry no `enc:v<N>:` prefix) | `decryptUrl` falls through to the active key, fails auth-tag verification, throws generic `Failed to decrypt connection URL`. Logs carry the `usingActiveFallback: true` breadcrumb from `internal.ts`. | Add the original key back to `ATLAS_ENCRYPTION_KEYS` under **any** version label (legacy URLs carry no version, so any entry that decrypts is the right one), then run the rotation script to close out the un-versioned format |
 | Mix prefixed + bare entries (`v2:NEW,OLD`) | Startup fails: `ATLAS_ENCRYPTION_KEYS: entries mix prefixed (v<N>:raw) and bare raw values` | Use one style throughout |
 | Duplicate version labels (`v2:a,v2:b`) | Startup fails: `version v2 appears more than once` | Each version must be unique |
 | Rotate `BETTER_AUTH_SECRET` without a dedicated key | Every encrypted credential becomes unreadable; self-hosted installs without a prior `ATLAS_ENCRYPTION_KEY`/`ATLAS_ENCRYPTION_KEYS` are the worst hit | Restore the prior secret value from backup; set `ATLAS_ENCRYPTION_KEYS` going forward |
@@ -175,6 +232,26 @@ the escrow copy is a compromise target too.
 - [ ] `scripts/rotate-encryption-key.ts` run to completion
 - [ ] Per-column verification query shows `below_active = 0`
 - [ ] Legacy key dropped from config and revoked in the secret manager
+
+## Known limitations
+
+- **OIDC SSO client secrets are not included in the rotation script.**
+  `sso_providers.config` is a JSONB blob with the `clientSecret`
+  ciphertext embedded inside; rotating it requires walking the JSON
+  rather than a column-oriented UPDATE. Operators can re-save OIDC
+  provider configs via the admin UI after rotation to re-encrypt them
+  under the active key. The `enc:v<N>:` prefix keeps the ciphertext
+  readable as long as the legacy key stays in `ATLAS_ENCRYPTION_KEYS`.
+- **Dev-mode rows (no key configured) stamp `_key_version = 1`.** When
+  no key is set, `encryptSecret` / `encryptUrl` pass plaintext through
+  unchanged, but the companion `_key_version` column still defaults to
+  `1` via the schema-side `DEFAULT 1 NOT NULL` constraint. The
+  observability consequence: a post-install audit query that counts
+  rows at version 1 cannot distinguish "genuinely encrypted under v1"
+  from "stored plaintext because no key was set." To disambiguate,
+  additionally filter on the ciphertext itself — e.g. `… AND
+  bot_token_encrypted LIKE 'enc:v%'` — to count only truly-encrypted
+  rows.
 
 ## Related
 

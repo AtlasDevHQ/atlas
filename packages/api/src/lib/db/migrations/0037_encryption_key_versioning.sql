@@ -8,8 +8,16 @@
 -- only remediation was to re-enter each admin-managed credential.
 --
 -- F-47 introduces ATLAS_ENCRYPTION_KEYS (multi-key, with explicit
--- v<N>: version labels) and extends the ciphertext prefix from
--- `enc:v1:` to `enc:v<N>:` where <N> points into the keyset.
+-- v<N>: version labels). On the ciphertext side two histories matter:
+--   • F-41 integration credentials already carried the prefix
+--     `enc:v1:iv:authTag:ciphertext` — F-47 generalizes the `v1` to
+--     `v<N>` where <N> points into the keyset.
+--   • Pre-F-47 connection URLs (connections.url) carried the bare
+--     3-part `iv:authTag:ciphertext` with no prefix at all. F-47 is
+--     what introduces the `enc:v<N>:` prefix on *new* URL writes; the
+--     decryptUrl legacy-unversioned fallback still reads the old
+--     format by trying the v1 key (or the active key as a last
+--     resort, with a loud warn breadcrumb).
 --
 -- This migration adds a `*_key_version INTEGER NOT NULL DEFAULT 1`
 -- column alongside every encrypted column. The column is populated by

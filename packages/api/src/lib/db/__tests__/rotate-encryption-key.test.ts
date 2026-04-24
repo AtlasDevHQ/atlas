@@ -69,13 +69,14 @@ describe("rotateTable (F-47 re-encryption)", () => {
       table: "slack_installations",
       pk: "team_id",
       encrypted: "bot_token_encrypted",
-      keyVersion: "bot_token_key_version",
+      keyVersionColumn: "bot_token_key_version",
       kind: "secret",
     }, 2);
 
     expect(result.table).toBe("slack_installations");
     expect(result.updated).toBe(1);
-    expect(result.skipped).toBe(0);
+    expect(result.skippedEmpty).toBe(0);
+    expect(result.orphaned).toBe(0);
 
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
     expect(updates).toHaveLength(1);
@@ -101,7 +102,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
       table: "slack_installations",
       pk: "team_id",
       encrypted: "bot_token_encrypted",
-      keyVersion: "bot_token_key_version",
+      keyVersionColumn: "bot_token_key_version",
       kind: "secret",
     }, 2);
 
@@ -131,7 +132,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
       table: "connections",
       pk: "id",
       encrypted: "url",
-      keyVersion: "url_key_version",
+      keyVersionColumn: "url_key_version",
       kind: "url",
     }, 2);
 
@@ -155,7 +156,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
       table: "connections",
       pk: "id",
       encrypted: "url",
-      keyVersion: "url_key_version",
+      keyVersionColumn: "url_key_version",
       kind: "url",
     }, 2);
     expect(result.updated).toBe(1);
@@ -186,17 +187,43 @@ describe("rotateTable (F-47 re-encryption)", () => {
       table: "slack_installations",
       pk: "team_id",
       encrypted: "bot_token_encrypted",
-      keyVersion: "bot_token_key_version",
+      keyVersionColumn: "bot_token_key_version",
       kind: "secret",
     }, 5);
 
     expect(result.scanned).toBe(2);
     expect(result.updated).toBe(1);
-    expect(result.skipped).toBe(1);
+    // Orphan path bumps `orphaned`, not `skippedEmpty` — ops need to
+    // distinguish "bad data drift" from "you dropped a legacy key".
+    expect(result.orphaned).toBe(1);
+    expect(result.skippedEmpty).toBe(0);
 
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
     expect(updates).toHaveLength(1);
     expect(updates[0].params![2]).toBe("healthy");
+  });
+
+  it("separates empty-string rows into skippedEmpty, not orphaned", async () => {
+    // Belt-and-braces for the RotateResult invariant: a NULL/empty
+    // encrypted column is harmless schema drift (not a rotation failure).
+    // Only decrypt failures count as `orphaned` — ops uses `orphaned > 0`
+    // as the exit-code-2 signal, so the separation has to hold.
+    process.env.ATLAS_ENCRYPTION_KEYS = "v2:new,v1:old";
+    _resetEncryptionKeyCache();
+    const { client } = createMockClient([
+      { pk: "blank", encrypted: "" },
+      { pk: "nully", encrypted: null as unknown as string },
+    ]);
+    const result = await rotateTable(client, {
+      table: "slack_installations",
+      pk: "team_id",
+      encrypted: "bot_token_encrypted",
+      keyVersionColumn: "bot_token_key_version",
+      kind: "secret",
+    }, 2);
+    expect(result.updated).toBe(0);
+    expect(result.skippedEmpty).toBe(2);
+    expect(result.orphaned).toBe(0);
   });
 
   it("rejects unvetted SQL identifiers to prevent injection", async () => {
@@ -208,7 +235,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
         table: "slack_installations; DROP TABLE x",
         pk: "team_id",
         encrypted: "bot_token_encrypted",
-        keyVersion: "bot_token_key_version",
+        keyVersionColumn: "bot_token_key_version",
         kind: "secret",
       }, 1),
     ).rejects.toThrow(/not a valid SQL identifier/);
@@ -248,7 +275,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
         table: "slack_installations",
         pk: "team_id",
         encrypted: "bot_token_encrypted",
-        keyVersion: "bot_token_key_version",
+        keyVersionColumn: "bot_token_key_version",
         kind: "secret",
       }, 2),
     ).rejects.toThrow("disk full");

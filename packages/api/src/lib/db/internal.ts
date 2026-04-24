@@ -143,24 +143,43 @@ export function decryptUrl(stored: string): string {
     }
   }
 
-  // Pre-F-47 legacy unversioned format: iv:authTag:ciphertext. Try the
-  // v1 key first (pre-F-47 deployments had a single key that the F-47
-  // keyset adopts as v1) and fall back to the active key when v1 isn't
-  // in the keyset (fresh deployments that land post-F-47 with only
-  // ATLAS_ENCRYPTION_KEYS=v2:… configured). A failed decrypt under
-  // either key surfaces as a 500; ops can recover by adding the
-  // original key back under the right version label.
+  // Pre-F-47 legacy unversioned format: iv:authTag:ciphertext. Try v1
+  // first (pre-F-47 deployments had a single key, and the F-47 keyset
+  // adopts it as v1). If v1 isn't in the keyset — a fresh deployment
+  // that landed post-F-47 with only `ATLAS_ENCRYPTION_KEYS=v2:…` —
+  // fall back to the active key as a last resort. A failed decrypt
+  // under the chosen key surfaces as a 500; recovery requires adding
+  // the original raw key material back to the keyset (under any
+  // version label — legacy ciphertext carries no version, so any entry
+  // that successfully decrypts is the right one).
   const parts = stored.split(":");
   if (parts.length !== 3) {
     log.error({ partCount: parts.length }, "Stored connection URL is not plaintext and does not match encrypted format (expected 3 colon-separated parts)");
     throw new Error("Failed to decrypt connection URL: unrecognized format");
   }
-  const legacyKey = keyset.byVersion.get(1) ?? keyset.active.key;
+  const legacyKey = keyset.byVersion.get(1);
+  const usingActiveFallback = legacyKey === undefined;
+  if (usingActiveFallback) {
+    // Visible breadcrumb — this path almost certainly fails (the active
+    // key was never used to encrypt un-versioned data unless the deploy
+    // started with it) and the operator needs the hint that adding the
+    // original key back under `v1:…` is the fix, not a ciphertext audit.
+    log.warn(
+      { active: keyset.active.version },
+      "F-47 legacy-unversioned connection URL encountered with no v1 key in ATLAS_ENCRYPTION_KEYS — " +
+      "falling back to the active key. If this row was written pre-F-47 under a different raw value, " +
+      "decryption will fail; add the original key back as v1:<raw> in ATLAS_ENCRYPTION_KEYS.",
+    );
+  }
+  const keyToUse = legacyKey ?? keyset.active.key;
   try {
-    return decryptBody(stored, legacyKey);
+    return decryptBody(stored, keyToUse);
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      {
+        err: err instanceof Error ? err.message : String(err),
+        usingActiveFallback,
+      },
       "Failed to decrypt connection URL — data may be corrupted or key may have changed",
     );
     throw new Error("Failed to decrypt connection URL", { cause: err });

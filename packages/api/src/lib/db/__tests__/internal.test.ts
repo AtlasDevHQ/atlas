@@ -1004,6 +1004,25 @@ describe("connection URL encryption", () => {
       expect(decryptUrl(unversioned)).toBe(url);
     });
 
+    it("throws clearly when un-versioned ciphertext meets a keyset with no v1 (fresh-deploy misconfig)", () => {
+      // The third scenario of the legacy-fallback: a fresh deployment
+      // that lands post-F-47 with only `ATLAS_ENCRYPTION_KEYS=v2:…`
+      // configured, then encounters un-versioned ciphertext migrated
+      // from an older dump. Code falls back to `active.key`, which
+      // fails AES-GCM auth-tag verification and throws. Pinning this
+      // so a future "helpful" refactor can't silently try every key
+      // (which would mask real corruption / keep bad data alive).
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:original-key";
+      _resetEncryptionKeyCache();
+      const url = "postgresql://admin:pw@host/db";
+      const unversioned = encryptUrl(url).replace(/^enc:v1:/, "");
+
+      // v1 dropped — active is now a totally different raw value.
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:never-used-to-encrypt-this";
+      _resetEncryptionKeyCache();
+      expect(() => decryptUrl(unversioned)).toThrow(/Failed to decrypt connection URL/);
+    });
+
     it("throws a configuration-specific error when the ciphertext version is missing from the keyset", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
       _resetEncryptionKeyCache();

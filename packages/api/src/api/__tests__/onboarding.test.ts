@@ -677,8 +677,13 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(connectionInsertCall).toBeDefined();
     const sql = connectionInsertCall![0] as string;
     expect(sql).toContain("'published'");
+    // F-47: INSERT carries url_key_version so post-rotation ops queries
+    // (`WHERE url_key_version < $active`) surface demo-flow rows too.
+    expect(sql).toContain("url_key_version");
     const params = connectionInsertCall![1] as unknown[];
     expect(params[0]).toBe("__demo__");
+    // url_key_version defaults to 1 in tests with no ATLAS_ENCRYPTION_KEYS set.
+    expect(params[params.length - 1]).toBe(1);
   });
 
   it("imports semantic entities with connectionId='__demo__'", async () => {

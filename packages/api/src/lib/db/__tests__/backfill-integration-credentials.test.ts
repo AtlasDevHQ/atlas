@@ -60,7 +60,7 @@ describe("backfillTable", () => {
       pk: "team_id",
       plaintext: "bot_token",
       encrypted: "bot_token_encrypted",
-      keyVersion: "bot_token_key_version",
+      keyVersionColumn: "bot_token_key_version",
     });
 
     expect(result.table).toBe("slack_installations");
@@ -98,7 +98,7 @@ describe("backfillTable", () => {
       pk: "config_id",
       plaintext: "config",
       encrypted: "config_encrypted",
-      keyVersion: "config_key_version",
+      keyVersionColumn: "config_key_version",
     });
 
     expect(result.updated).toBe(1);
@@ -127,7 +127,7 @@ describe("backfillTable", () => {
       pk: "user_id",
       plaintext: "api_key",
       encrypted: "api_key_encrypted",
-      keyVersion: "api_key_key_version",
+      keyVersionColumn: "api_key_key_version",
     });
 
     expect(result.scanned).toBe(4);
@@ -150,7 +150,7 @@ describe("backfillTable", () => {
       pk: "team_id",
       plaintext: "bot_token",
       encrypted: "bot_token_encrypted",
-      keyVersion: "bot_token_key_version",
+      keyVersionColumn: "bot_token_key_version",
     });
     const select = queries.find((q) => q.sql.startsWith("SELECT"));
     expect(select).toBeDefined();
@@ -172,7 +172,7 @@ describe("backfillTable", () => {
       expect(select!.sql).toContain(`WHERE ${config.encrypted} IS NULL`);
       expect(select!.sql).toContain(`AND ${config.plaintext} IS NOT NULL`);
       expect(update!.sql).toBe(
-        `UPDATE ${config.table} SET ${config.encrypted} = $1, ${config.keyVersion} = $3 WHERE ${config.pk} = $2`,
+        `UPDATE ${config.table} SET ${config.encrypted} = $1, ${config.keyVersionColumn} = $3 WHERE ${config.pk} = $2`,
       );
     }
   });
@@ -189,7 +189,7 @@ describe("backfillTable", () => {
         pk: "team_id",
         plaintext: "bot_token",
         encrypted: "bot_token_encrypted",
-        keyVersion: "bot_token_key_version",
+        keyVersionColumn: "bot_token_key_version",
       }),
     ).rejects.toThrow(/not a valid SQL identifier/);
   });
@@ -214,7 +214,7 @@ describe("backfillTable", () => {
         pk: "team_id",
         plaintext: "bot_token",
         encrypted: "bot_token_encrypted",
-        keyVersion: "bot_token_key_version",
+        keyVersionColumn: "bot_token_key_version",
       }),
     ).rejects.toThrow("disk full");
 

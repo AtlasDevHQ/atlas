@@ -17,6 +17,18 @@
  * vars) to be set. See
  * `apps/docs/content/docs/platform-ops/encryption-key-rotation.mdx`
  * for the full rotation procedure.
+ *
+ * Not covered by this script (by design):
+ *   • OIDC `sso_providers.config` — `clientSecret` is encrypted inside
+ *     a JSONB blob with no companion `_key_version` column, so the
+ *     column-oriented UPDATE pattern here doesn't apply. The ciphertext
+ *     carries the `enc:v<N>:` prefix so it stays readable while the
+ *     legacy key is in the keyset. Operators re-save OIDC configs via
+ *     admin UI to re-encrypt them under the active key.
+ *   • Integration tests against a seeded DB — this file's unit tests
+ *     use a mock pg client to pin per-row behavior. An end-to-end test
+ *     against the live migration + row fixtures is worthwhile future
+ *     work, but not currently wired up.
  */
 
 import { Pool, type PoolClient } from "pg";
@@ -34,7 +46,10 @@ import {
   decryptSecret,
   encryptSecret,
 } from "@atlas/api/lib/db/secret-encryption";
-import { TABLES as INTEGRATION_TABLES } from "@atlas/api/lib/db/backfill-integration-credentials";
+import {
+  TABLES as INTEGRATION_TABLES,
+  type TableConfig,
+} from "@atlas/api/lib/db/backfill-integration-credentials";
 
 const log = createLogger("rotate-encryption-key");
 
@@ -42,31 +57,35 @@ const log = createLogger("rotate-encryption-key");
 // Table catalog
 // ---------------------------------------------------------------------------
 
-/** A column whose value is encrypted with `encryptSecret` (F-41 + model-config-style) or `encryptUrl` (connection URL). */
-interface RotateTarget {
-  table: string;
-  pk: string;
-  encrypted: string;
-  keyVersion: string;
-  /**
-   * `url`: uses `encryptUrl` / `decryptUrl` (connection URL with
-   * plaintext `postgres://…` fallback). `secret`: uses `encryptSecret`
-   * / `decryptSecret` (every F-41 integration column plus the
-   * workspace model-config API key, which was historically encrypted
-   * via `encryptUrl` but reads identically because both helpers now
-   * share the versioned-keyset decryptor).
-   */
-  kind: "url" | "secret";
-}
+/**
+ * A column whose ciphertext the rotation script should re-encrypt. The
+ * shape overlaps with F-41's `TableConfig` — every field except
+ * `plaintext` (which only matters for backfill) is identical — so we
+ * reuse it and tack on a `kind` discriminator to pick the right cipher
+ * helper pair:
+ *
+ *   `url`    → `encryptUrl` / `decryptUrl` (connection URL, with
+ *              plaintext `postgres://…` fallback for pre-encryption
+ *              rows)
+ *   `secret` → `encryptSecret` / `decryptSecret` (every F-41
+ *              integration column plus the workspace model-config API
+ *              key, which historically used `encryptUrl` but reads
+ *              identically now that both helpers share the versioned-
+ *              keyset decryptor)
+ */
+type RotateTarget = Omit<TableConfig, "plaintext" | "kind"> & { kind: "url" | "secret" };
 
 const ROTATION_TABLES: readonly RotateTarget[] = [
-  { table: "connections", pk: "id", encrypted: "url", keyVersion: "url_key_version", kind: "url" },
-  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersion: "api_key_key_version", kind: "secret" },
+  { table: "connections", pk: "id", encrypted: "url", keyVersionColumn: "url_key_version", kind: "url" },
+  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version", kind: "secret" },
+  // Derive from F-41's INTEGRATION_TABLES so adding a new integration
+  // in one place covers both backfill and rotation — matches the
+  // "single source of truth" convention already used by F-41.
   ...INTEGRATION_TABLES.map((t): RotateTarget => ({
     table: t.table,
     pk: t.pk,
     encrypted: t.encrypted,
-    keyVersion: t.keyVersion,
+    keyVersionColumn: t.keyVersionColumn,
     kind: "secret",
   })),
 ];
@@ -88,16 +107,20 @@ function assertIdentifier(name: string, role: string): void {
 
 /**
  * Decrypt the stored ciphertext (under whichever keyset entry its
- * prefix names) and re-encrypt with the active key. Returns the new
- * ciphertext, or `null` when the row's stored value is already
- * plaintext (connection URLs only — `postgres://…` style).
+ * prefix names) and re-encrypt with the active key. Always returns a
+ * new ciphertext string:
+ *   • secret kind — decryptSecret passthrough for un-prefixed plaintext
+ *     + re-encrypt under the active key
+ *   • url kind — plaintext URLs (`postgres://…`) get encrypted for the
+ *     first time; versioned/unversioned ciphertext is decrypted +
+ *     re-encrypted
+ * Rotation is a convenient moment to close out the pre-encryption
+ * back-compat window, so plaintext rows land encrypted on the other
+ * side. Throws on decryption failure (caller handles orphan counting).
  */
-function rotateValue(kind: RotateTarget["kind"], stored: string): string | null {
+function rotateValue(kind: RotateTarget["kind"], stored: string): string {
   if (kind === "url") {
     if (isPlaintextUrl(stored)) {
-      // Legacy plaintext connection URL. Encrypt it for the first time
-      // under the active key — a rotation is a convenient moment to
-      // close out the pre-encryption back-compat window.
       return encryptUrl(stored);
     }
     const decoded = decryptUrl(stored);
@@ -111,7 +134,10 @@ export interface RotateResult {
   table: string;
   scanned: number;
   updated: number;
-  skipped: number;
+  /** Rows where the encrypted column was empty / non-string (data drift, not a rotation problem). */
+  skippedEmpty: number;
+  /** Rows that failed to decrypt under the current keyset — operator misconfig (dropped legacy key). */
+  orphaned: number;
 }
 
 /**
@@ -126,7 +152,7 @@ export async function rotateTable(
   assertIdentifier(target.table, "table");
   assertIdentifier(target.pk, "pk");
   assertIdentifier(target.encrypted, "encrypted");
-  assertIdentifier(target.keyVersion, "keyVersion");
+  assertIdentifier(target.keyVersionColumn, "keyVersionColumn");
 
   try {
     await client.query("BEGIN");
@@ -135,42 +161,43 @@ export async function rotateTable(
         `SELECT ${target.pk} AS pk, ${target.encrypted} AS encrypted
          FROM ${target.table}
          WHERE ${target.encrypted} IS NOT NULL
-           AND ${target.keyVersion} < $1`,
+           AND ${target.keyVersionColumn} < $1`,
         [activeVersion],
       )
     ).rows as Array<{ pk: string; encrypted: unknown }>;
 
     let updated = 0;
-    let skipped = 0;
+    let skippedEmpty = 0;
+    let orphaned = 0;
     for (const row of rows) {
       if (typeof row.encrypted !== "string" || row.encrypted.length === 0) {
-        skipped += 1;
+        skippedEmpty += 1;
         continue;
       }
-      let re: string | null;
+      let re: string;
       try {
         re = rotateValue(target.kind, row.encrypted);
       } catch (err) {
-        // Leave the row alone and surface the error — operators need
-        // to decide whether to drop the row or re-enter the credential.
+        // Orphan: the row's ciphertext references a key version that
+        // isn't in the current keyset (or decryption failed outright).
+        // The operator needs to add the legacy key back before we can
+        // rotate this row. Tracked separately from `skippedEmpty` so
+        // the final summary distinguishes "nothing to rotate" from
+        // "partial-success rotation". main() exits non-zero on orphans.
         log.error(
           {
             table: target.table,
             pk: row.pk,
             err: err instanceof Error ? err.message : String(err),
           },
-          "Failed to rotate row — leaving under legacy version",
+          "Failed to rotate row — legacy key likely dropped from ATLAS_ENCRYPTION_KEYS",
         );
-        skipped += 1;
-        continue;
-      }
-      if (re === null) {
-        skipped += 1;
+        orphaned += 1;
         continue;
       }
       await client.query(
         `UPDATE ${target.table}
-         SET ${target.encrypted} = $1, ${target.keyVersion} = $2
+         SET ${target.encrypted} = $1, ${target.keyVersionColumn} = $2
          WHERE ${target.pk} = $3`,
         [re, activeVersion, row.pk],
       );
@@ -178,7 +205,7 @@ export async function rotateTable(
     }
 
     await client.query("COMMIT");
-    return { table: target.table, scanned: rows.length, updated, skipped };
+    return { table: target.table, scanned: rows.length, updated, skippedEmpty, orphaned };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {
       // Rollback failure is secondary — the original error is what matters.
@@ -218,20 +245,23 @@ async function main(): Promise<void> {
     await lockClient.query("SELECT pg_advisory_lock($1)", [LOCK_KEY]);
 
     let totalUpdated = 0;
-    let totalSkipped = 0;
+    let totalSkippedEmpty = 0;
+    let totalOrphaned = 0;
     for (const target of ROTATION_TABLES) {
       const client = await pool.connect();
       try {
         log.info({ table: target.table }, "rotate starting");
         const result = await rotateTable(client, target, active);
         totalUpdated += result.updated;
-        totalSkipped += result.skipped;
+        totalSkippedEmpty += result.skippedEmpty;
+        totalOrphaned += result.orphaned;
         log.info(
           {
             table: result.table,
             scanned: result.scanned,
             updated: result.updated,
-            skipped: result.skipped,
+            skippedEmpty: result.skippedEmpty,
+            orphaned: result.orphaned,
           },
           "rotate complete",
         );
@@ -240,10 +270,28 @@ async function main(): Promise<void> {
       }
     }
 
-    log.info(
-      { active, totalUpdated, totalSkipped, tableCount: ROTATION_TABLES.length },
-      "Rotation complete across all tables",
-    );
+    if (totalOrphaned > 0) {
+      // Loud summary-line error — the per-row log.errors above are easy
+      // to miss in a long log tail. An operator walking the runbook
+      // should not be able to exit this command and believe rotation
+      // completed when in fact `totalOrphaned` rows stayed at the
+      // legacy version and will 500 when `#1832` drops the plaintext.
+      log.error(
+        { active, totalUpdated, totalSkippedEmpty, totalOrphaned, tableCount: ROTATION_TABLES.length },
+        `Rotation finished with ${totalOrphaned} orphaned row(s) — their ciphertext references a key version ` +
+        "missing from ATLAS_ENCRYPTION_KEYS. Add the legacy key(s) back under the correct v<N>: label and re-run.",
+      );
+    } else {
+      log.info(
+        { active, totalUpdated, totalSkippedEmpty, tableCount: ROTATION_TABLES.length },
+        "Rotation complete across all tables",
+      );
+    }
+    if (totalOrphaned > 0) {
+      // Exit code 2 distinguishes "ran to completion with orphans" from
+      // exit 1 (script bailed early: no DATABASE_URL / no keyset).
+      process.exit(2);
+    }
   } finally {
     await lockClient.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]).catch(() => {
       // intentionally ignored: advisory unlock is best-effort; session

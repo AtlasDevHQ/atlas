@@ -63,12 +63,13 @@ export interface TableConfig {
   plaintext: string;
   encrypted: string;
   /**
-   * F-47 companion column that stores the keyset version used to produce
-   * `encrypted`. Keeping plaintext → ciphertext in one transaction also
-   * stamps the version so post-rotation scans (`_key_version < $active`)
-   * stay accurate.
+   * Name of the F-47 companion `_key_version` column that stores the
+   * keyset version used to produce the row's `encrypted` ciphertext.
+   * Named `…Column` (not just `keyVersion`) to avoid confusion with an
+   * actual version *number* — every other field here is a SQL
+   * identifier, and this one is too.
    */
-  keyVersion: string;
+  keyVersionColumn: string;
 }
 
 /**
@@ -77,16 +78,16 @@ export interface TableConfig {
  * `backfillTable` entry against `/^[a-z_][a-z0-9_]*$/`.
  */
 export const TABLES: ReadonlyArray<TableConfig> = [
-  { kind: "text", table: "slack_installations", pk: "team_id", plaintext: "bot_token", encrypted: "bot_token_encrypted", keyVersion: "bot_token_key_version" },
-  { kind: "text", table: "teams_installations", pk: "tenant_id", plaintext: "app_password", encrypted: "app_password_encrypted", keyVersion: "app_password_key_version" },
-  { kind: "text", table: "discord_installations", pk: "guild_id", plaintext: "bot_token", encrypted: "bot_token_encrypted", keyVersion: "bot_token_key_version" },
-  { kind: "text", table: "telegram_installations", pk: "bot_id", plaintext: "bot_token", encrypted: "bot_token_encrypted", keyVersion: "bot_token_key_version" },
-  { kind: "text", table: "gchat_installations", pk: "project_id", plaintext: "credentials_json", encrypted: "credentials_json_encrypted", keyVersion: "credentials_json_key_version" },
-  { kind: "text", table: "github_installations", pk: "user_id", plaintext: "access_token", encrypted: "access_token_encrypted", keyVersion: "access_token_key_version" },
-  { kind: "text", table: "linear_installations", pk: "user_id", plaintext: "api_key", encrypted: "api_key_encrypted", keyVersion: "api_key_key_version" },
-  { kind: "text", table: "whatsapp_installations", pk: "phone_number_id", plaintext: "access_token", encrypted: "access_token_encrypted", keyVersion: "access_token_key_version" },
-  { kind: "jsonb", table: "email_installations", pk: "config_id", plaintext: "config", encrypted: "config_encrypted", keyVersion: "config_key_version" },
-  { kind: "jsonb", table: "sandbox_credentials", pk: "id", plaintext: "credentials", encrypted: "credentials_encrypted", keyVersion: "credentials_key_version" },
+  { kind: "text", table: "slack_installations", pk: "team_id", plaintext: "bot_token", encrypted: "bot_token_encrypted", keyVersionColumn: "bot_token_key_version" },
+  { kind: "text", table: "teams_installations", pk: "tenant_id", plaintext: "app_password", encrypted: "app_password_encrypted", keyVersionColumn: "app_password_key_version" },
+  { kind: "text", table: "discord_installations", pk: "guild_id", plaintext: "bot_token", encrypted: "bot_token_encrypted", keyVersionColumn: "bot_token_key_version" },
+  { kind: "text", table: "telegram_installations", pk: "bot_id", plaintext: "bot_token", encrypted: "bot_token_encrypted", keyVersionColumn: "bot_token_key_version" },
+  { kind: "text", table: "gchat_installations", pk: "project_id", plaintext: "credentials_json", encrypted: "credentials_json_encrypted", keyVersionColumn: "credentials_json_key_version" },
+  { kind: "text", table: "github_installations", pk: "user_id", plaintext: "access_token", encrypted: "access_token_encrypted", keyVersionColumn: "access_token_key_version" },
+  { kind: "text", table: "linear_installations", pk: "user_id", plaintext: "api_key", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version" },
+  { kind: "text", table: "whatsapp_installations", pk: "phone_number_id", plaintext: "access_token", encrypted: "access_token_encrypted", keyVersionColumn: "access_token_key_version" },
+  { kind: "jsonb", table: "email_installations", pk: "config_id", plaintext: "config", encrypted: "config_encrypted", keyVersionColumn: "config_key_version" },
+  { kind: "jsonb", table: "sandbox_credentials", pk: "id", plaintext: "credentials", encrypted: "credentials_encrypted", keyVersionColumn: "credentials_key_version" },
 ] as const;
 
 export interface BackfillResult {
@@ -124,7 +125,7 @@ export async function backfillTable(
     pk: config.pk,
     plaintext: config.plaintext,
     encrypted: config.encrypted,
-    keyVersion: config.keyVersion,
+    keyVersionColumn: config.keyVersionColumn,
   })) {
     assertIdentifier(name, role);
   }
@@ -154,7 +155,7 @@ export async function backfillTable(
       const encrypted = encryptSecret(plaintext);
       const keyVersion = activeKeyVersion();
       await client.query(
-        `UPDATE ${config.table} SET ${config.encrypted} = $1, ${config.keyVersion} = $3 WHERE ${config.pk} = $2`,
+        `UPDATE ${config.table} SET ${config.encrypted} = $1, ${config.keyVersionColumn} = $3 WHERE ${config.pk} = $2`,
         [encrypted, row.pk, keyVersion],
       );
       updated += 1;

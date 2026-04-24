@@ -34,6 +34,7 @@
 
 import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { InternalDB, makeInternalDBLive, hasInternalDB } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("effect:layers");
@@ -299,7 +300,7 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
         return getConfig()?.deployMode === "saas";
       },
       catch: (err) => {
-        log.debug({ err: err instanceof Error ? err.message : String(err) }, "Config not available for SaaS detection — defaulting to self-hosted");
+        log.debug({ err: errorMessage(err) }, "Config not available for SaaS detection — defaulting to self-hosted");
         return false;
       },
     }).pipe(Effect.catchAll(() => Effect.succeed(false)));
@@ -316,7 +317,7 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.warn(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "Periodic settings refresh failed — will retry next interval",
             );
           }),
@@ -407,7 +408,7 @@ export function makeSchedulerLive(
           return isEmailSchedulerEnabled();
         },
         catch: (err) => {
-          log.debug({ err: err instanceof Error ? err.message : String(err) }, "Email scheduler module not available — skipping");
+          log.debug({ err: errorMessage(err) }, "Email scheduler module not available — skipping");
           return false;
         },
       }).pipe(Effect.catchAll(() => Effect.succeed(false)));
@@ -426,7 +427,7 @@ export function makeSchedulerLive(
         }).pipe(
           Effect.catchAll((err) =>
             Effect.sync(() => {
-              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email tick failed");
+              log.warn({ err: errorMessage(err) }, "Onboarding email tick failed");
             }),
           ),
         );
@@ -448,7 +449,7 @@ export function makeSchedulerLive(
           return isExpertSchedulerEnabled();
         },
         catch: (err) => {
-          log.debug({ err: err instanceof Error ? err.message : String(err) }, "Expert scheduler module not available — skipping");
+          log.debug({ err: errorMessage(err) }, "Expert scheduler module not available — skipping");
           return false;
         },
       }).pipe(Effect.catchAll(() => Effect.succeed(false)));
@@ -467,7 +468,7 @@ export function makeSchedulerLive(
         }).pipe(
           Effect.catchAll((err) =>
             Effect.sync(() => {
-              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Expert scheduler tick failed");
+              log.warn({ err: errorMessage(err) }, "Expert scheduler tick failed");
             }),
           ),
         );
@@ -513,7 +514,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.warn(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "OAuth state cleanup tick failed",
             );
           }),
@@ -539,7 +540,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.warn(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "Rate limit cleanup tick failed",
             );
           }),
@@ -564,7 +565,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.error(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "Demo rate-limit cleanup tick failed",
             );
           }),
@@ -593,7 +594,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.warn(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "Abuse cleanup tick failed",
             );
           }),
@@ -622,7 +623,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.warn(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "Dashboard rate-limit cleanup tick failed",
             );
           }),
@@ -657,7 +658,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.warn(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "Conversation rate sweep tick failed",
             );
           }),
@@ -687,7 +688,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.error(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err: errorMessage(err) },
               "Unexpected error in share cleanup tick",
             );
           }),

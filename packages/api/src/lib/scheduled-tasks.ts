@@ -11,6 +11,7 @@
 
 import { Cron } from "croner";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   hasInternalDB,
   internalQuery,
@@ -60,7 +61,7 @@ function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
     }
   } catch (err) {
     log.error(
-      { taskId: r.id, err: err instanceof Error ? err.message : String(err) },
+      { taskId: r.id, err: errorMessage(err) },
       "Failed to parse recipients JSONB — task will have no delivery targets",
     );
   }
@@ -118,7 +119,7 @@ export function validateCronExpression(expr: string): { valid: boolean; error?: 
     job.stop();
     return { valid: true };
   } catch (err) {
-    return { valid: false, error: err instanceof Error ? err.message : String(err) };
+    return { valid: false, error: errorMessage(err) };
   }
 }
 
@@ -131,7 +132,7 @@ export function computeNextRun(expr: string, after?: Date): Date | null {
     return next;
   } catch (err) {
     log.warn(
-      { cronExpression: expr, err: err instanceof Error ? err.message : String(err) },
+      { cronExpression: expr, err: errorMessage(err) },
       "Failed to compute next run time — task will not be scheduled",
     );
     return null;
@@ -203,7 +204,7 @@ export async function createScheduledTask(opts: {
     if (rows.length === 0) return { ok: false, reason: "error" };
     return { ok: true, data: rowToScheduledTask(rows[0]) };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "createScheduledTask failed");
+    log.error({ err: errorMessage(err) }, "createScheduledTask failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -240,7 +241,7 @@ export async function getScheduledTask(
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     return { ok: true, data: rowToScheduledTask(rows[0]) };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getScheduledTask failed");
+    log.error({ err: errorMessage(err) }, "getScheduledTask failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -287,7 +288,7 @@ export async function listScheduledTasks(opts?: {
     const total = (countRows[0]?.total as number) ?? 0;
     return { tasks: dataRows.map(rowToScheduledTask), total };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "listScheduledTasks failed");
+    log.error({ err: errorMessage(err) }, "listScheduledTasks failed");
     return empty;
   }
 }
@@ -369,7 +370,7 @@ export async function updateScheduledTask(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "updateScheduledTask failed");
+    log.error({ err: errorMessage(err) }, "updateScheduledTask failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -390,7 +391,7 @@ export async function deleteScheduledTask(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "deleteScheduledTask failed");
+    log.error({ err: errorMessage(err) }, "deleteScheduledTask failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -409,7 +410,7 @@ export async function createTaskRun(taskId: string): Promise<string | null> {
     );
     return rows[0]?.id ?? null;
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), taskId }, "createTaskRun failed");
+    log.error({ err: errorMessage(err), taskId }, "createTaskRun failed");
     return null;
   }
 }
@@ -517,7 +518,7 @@ export async function listAllRuns(opts?: {
     }));
     return { runs, total };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "listAllRuns failed");
+    log.error({ err: errorMessage(err) }, "listAllRuns failed");
     return empty;
   }
 }
@@ -536,7 +537,7 @@ export async function listTaskRuns(
     );
     return rows.map(rowToScheduledTaskRun);
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), taskId }, "listTaskRuns failed");
+    log.error({ err: errorMessage(err), taskId }, "listTaskRuns failed");
     return [];
   }
 }
@@ -556,7 +557,7 @@ export async function getTasksDueForExecution(): Promise<ScheduledTask[]> {
     );
     return rows.map(rowToScheduledTask);
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getTasksDueForExecution failed");
+    log.error({ err: errorMessage(err) }, "getTasksDueForExecution failed");
     return [];
   }
 }
@@ -599,7 +600,7 @@ export async function lockTaskForExecution(taskId: string): Promise<boolean> {
     if (rows.length === 0) return false;
     return true;
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), taskId }, "lockTaskForExecution failed");
+    log.error({ err: errorMessage(err), taskId }, "lockTaskForExecution failed");
     return false;
   }
 }

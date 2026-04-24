@@ -11,6 +11,19 @@
  *      and pushes structured fields off the end of log-aggregation size
  *      limits. Truncated to 512 chars with an ellipsis suffix.
  *
+ * When NOT to use `errorMessage` (mark the raw ternary with
+ * `// @atlas-ok-ternary: <reason>` instead):
+ *
+ *   - The string is substring-matched or parsed to branch control flow
+ *     (`msg.includes("does not exist")`, regex extraction) — scrubbing +
+ *     truncation could alter match semantics.
+ *   - The string is concatenated into a thrown `new Error(...)` message —
+ *     per #1829, `throw` constructors are out of scope for the hygiene
+ *     sweep so the original error remains inspectable.
+ *   - It's an `Effect.tryPromise` catch normalizer that returns an
+ *     `Error` instance — the pino `err` serializer handles those with
+ *     full stack preservation.
+ *
  * `causeToError` walks an Effect `Cause` and returns the first underlying
  * error — typed failure, defect, or `undefined` for pure-interrupt causes.
  * Interrupts represent fiber cancellation (client disconnect, request

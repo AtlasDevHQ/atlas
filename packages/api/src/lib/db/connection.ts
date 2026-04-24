@@ -608,7 +608,7 @@ export class ConnectionRegistry {
       newConn = createConnection(baseEntry.dbType, orgConfig);
     } catch (err) {
       log.error(
-        { orgId, connectionId, err: err instanceof Error ? err.message : String(err) },
+        { orgId, connectionId, err: errorMessage(err) },
         "Failed to create org-scoped pool after LRU eviction",
       );
       throw err;
@@ -699,7 +699,7 @@ export class ConnectionRegistry {
       if (key.startsWith(prefix)) {
         keysToDelete.push(key);
         entry.conn.close().catch((err) => {
-          log.error({ key, err: err instanceof Error ? err.message : String(err) }, "Failed to close org pool — connections may be leaked");
+          log.error({ key, err: errorMessage(err) }, "Failed to close org pool — connections may be leaked");
         });
       }
     }
@@ -717,7 +717,7 @@ export class ConnectionRegistry {
         await entry.conn.query("SELECT 1", 5000);
       } catch (err) {
         failures++;
-        log.warn({ probe: i + 1, total: count, err: err instanceof Error ? err.message : String(err), ...context }, "Warmup probe failed");
+        log.warn({ probe: i + 1, total: count, err: errorMessage(err), ...context }, "Warmup probe failed");
       }
     }
     if (failures === count && count > 0) {
@@ -751,7 +751,7 @@ export class ConnectionRegistry {
       const oldestId = oldest.id;
       log.info({ connectionId: oldestId }, "Evicting LRU connection to free pool capacity");
       oldest.entry.conn.close().catch((err) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: oldestId }, "Failed to close evicted connection");
+        log.warn({ err: errorMessage(err), connectionId: oldestId }, "Failed to close evicted connection");
       });
       this.entries.delete(oldestId);
     }
@@ -790,7 +790,7 @@ export class ConnectionRegistry {
 
     if (existing) {
       existing.conn.close().catch((err) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close previous connection during re-registration");
+        log.warn({ err: errorMessage(err), connectionId: id }, "Failed to close previous connection during re-registration");
       });
     }
   }
@@ -824,7 +824,7 @@ export class ConnectionRegistry {
     });
     if (existing) {
       existing.conn.close().catch((err) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close previous connection during re-registration");
+        log.warn({ err: errorMessage(err), connectionId: id }, "Failed to close previous connection during re-registration");
       });
     }
   }
@@ -838,7 +838,7 @@ export class ConnectionRegistry {
     const entry = this.entries.get(id);
     if (!entry) return false;
     entry.conn.close().catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close connection during unregister");
+      log.warn({ err: errorMessage(err), connectionId: id }, "Failed to close connection during unregister");
     });
     this.entries.delete(id);
     _resetWhitelists();
@@ -1125,7 +1125,7 @@ export class ConnectionRegistry {
           await entry.conn.query("SELECT 1", 5000);
           ready++;
         } catch (err) {
-          log.warn({ connectionId: id, probe: i + 1, err: err instanceof Error ? err.message : String(err) }, "Pool warmup probe failed");
+          log.warn({ connectionId: id, probe: i + 1, err: errorMessage(err) }, "Pool warmup probe failed");
         }
       }
     }));
@@ -1192,7 +1192,7 @@ export class ConnectionRegistry {
     entry.lastDrainAt = Date.now();
 
     oldConn.close().catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close drained pool");
+      log.warn({ err: errorMessage(err), connectionId: id }, "Failed to close drained pool");
     });
   }
 
@@ -1279,7 +1279,7 @@ export class ConnectionRegistry {
       if (key.startsWith(prefix)) {
         closing.push(
           entry.conn.close().catch((err) => {
-            log.warn({ key, err: err instanceof Error ? err.message : String(err) }, "Failed to close org pool during drain");
+            log.warn({ key, err: errorMessage(err) }, "Failed to close org pool during drain");
           }),
         );
         this.orgEntries.delete(key);
@@ -1306,14 +1306,14 @@ export class ConnectionRegistry {
     for (const [id, entry] of this.entries.entries()) {
       closing.push(
         entry.conn.close().catch((err) => {
-          log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close connection during shutdown");
+          log.warn({ err: errorMessage(err), connectionId: id }, "Failed to close connection during shutdown");
         }),
       );
     }
     for (const [key, entry] of this.orgEntries.entries()) {
       closing.push(
         entry.conn.close().catch((err) => {
-          log.warn({ err: err instanceof Error ? err.message : String(err), orgPoolKey: key }, "Failed to close org pool during shutdown");
+          log.warn({ err: errorMessage(err), orgPoolKey: key }, "Failed to close org pool during shutdown");
         }),
       );
     }
@@ -1331,12 +1331,12 @@ export class ConnectionRegistry {
     this.drainCooldownExpiry.clear();
     for (const [id, entry] of this.entries.entries()) {
       entry.conn.close().catch((err) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close connection during registry reset");
+        log.warn({ err: errorMessage(err), connectionId: id }, "Failed to close connection during registry reset");
       });
     }
     for (const [key, entry] of this.orgEntries.entries()) {
       entry.conn.close().catch((err) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err), orgPoolKey: key }, "Failed to close org pool during registry reset");
+        log.warn({ err: errorMessage(err), orgPoolKey: key }, "Failed to close org pool during registry reset");
       });
     }
     this.entries.clear();
@@ -1390,7 +1390,7 @@ export async function isConnectionVisibleInMode(
     return rows.length > 0;
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err.message : String(err), orgId, connectionId, mode },
+      { err: errorMessage(err), orgId, connectionId, mode },
       "Connection visibility check failed — denying access (fail closed)",
     );
     return false;
@@ -1430,7 +1430,7 @@ export async function getRegionAwareConnection(
     }
     // EE module exists but failed to load — this is a real error.
     // Data residency cannot be guaranteed; refuse to silently downgrade.
-    log.error({ err: err instanceof Error ? err.message : String(err), orgId }, "Residency module failed to load — cannot guarantee data residency");
+    log.error({ err: errorMessage(err), orgId }, "Residency module failed to load — cannot guarantee data residency");
     throw err instanceof Error ? err : new Error(String(err));
   }
 
@@ -1440,7 +1440,7 @@ export async function getRegionAwareConnection(
     regionInfo = await Effect.runPromise(resolveRegionDatabaseUrlFn(orgId));
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err), orgId },
+      { err: errorMessage(err), orgId },
       "Region resolution failed — falling back to default datasource",
     );
     return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };

@@ -7,6 +7,7 @@
 
 import * as crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   hasInternalDB,
   internalQuery,
@@ -57,7 +58,7 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
         ? JSON.parse(r.chart_config)
         : (r.chart_config as DashboardChartConfig);
     } catch (err) {
-      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse chart_config JSONB");
+      log.warn({ cardId: r.id, err: errorMessage(err) }, "Failed to parse chart_config JSONB");
     }
   }
 
@@ -68,7 +69,7 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
         ? JSON.parse(r.cached_columns)
         : (r.cached_columns as string[]);
     } catch (err) {
-      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse cached_columns JSONB");
+      log.warn({ cardId: r.id, err: errorMessage(err) }, "Failed to parse cached_columns JSONB");
     }
   }
 
@@ -79,7 +80,7 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
         ? JSON.parse(r.cached_rows)
         : (r.cached_rows as Record<string, unknown>[]);
     } catch (err) {
-      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse cached_rows JSONB");
+      log.warn({ cardId: r.id, err: errorMessage(err) }, "Failed to parse cached_rows JSONB");
     }
   }
 
@@ -145,7 +146,7 @@ export async function createDashboard(opts: {
     if (rows.length === 0) return { ok: false, reason: "error" };
     return { ok: true, data: rowToDashboard(rows[0]) };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "createDashboard failed");
+    log.error({ err: errorMessage(err) }, "createDashboard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -180,7 +181,7 @@ export async function getDashboard(
       data: { ...rest, cards: cardRows.map(rowToCard) },
     };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getDashboard failed");
+    log.error({ err: errorMessage(err) }, "getDashboard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -223,7 +224,7 @@ export async function listDashboards(opts?: {
     const total = (countRows[0]?.total as number) ?? 0;
     return { ok: true, data: { dashboards: dataRows.map(rowToDashboard), total } };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "listDashboards failed");
+    log.error({ err: errorMessage(err) }, "listDashboards failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -271,7 +272,7 @@ export async function updateDashboard(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "updateDashboard failed");
+    log.error({ err: errorMessage(err) }, "updateDashboard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -292,7 +293,7 @@ export async function deleteDashboard(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "deleteDashboard failed");
+    log.error({ err: errorMessage(err) }, "deleteDashboard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -342,7 +343,7 @@ export async function addCard(opts: {
 
     return { ok: true, data: rowToCard(rows[0]) };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "addCard failed");
+    log.error({ err: errorMessage(err) }, "addCard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -390,7 +391,7 @@ export async function updateCard(
     internalExecute(`UPDATE dashboards SET updated_at = now() WHERE id = $1`, [dashboardId]);
     return { ok: true };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "updateCard failed");
+    log.error({ err: errorMessage(err) }, "updateCard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -410,7 +411,7 @@ export async function removeCard(
     internalExecute(`UPDATE dashboards SET updated_at = now() WHERE id = $1`, [dashboardId]);
     return { ok: true };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "removeCard failed");
+    log.error({ err: errorMessage(err) }, "removeCard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -434,7 +435,7 @@ export async function refreshCard(
     internalExecute(`UPDATE dashboards SET updated_at = now() WHERE id = $1`, [dashboardId]);
     return { ok: true };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "refreshCard failed");
+    log.error({ err: errorMessage(err) }, "refreshCard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -452,7 +453,7 @@ export async function getCard(
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     return { ok: true, data: rowToCard(rows[0]) };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getCard failed");
+    log.error({ err: errorMessage(err) }, "getCard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -532,7 +533,7 @@ export async function shareDashboard(
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     return { ok: true, data: { token: rows[0].share_token, expiresAt, shareMode } };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "shareDashboard failed");
+    log.error({ err: errorMessage(err) }, "shareDashboard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -553,7 +554,7 @@ export async function unshareDashboard(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "unshareDashboard failed");
+    log.error({ err: errorMessage(err) }, "unshareDashboard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -584,7 +585,7 @@ export async function getShareStatus(
       },
     };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getShareStatus failed");
+    log.error({ err: errorMessage(err) }, "getShareStatus failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -635,7 +636,7 @@ export async function getSharedDashboard(
       },
     };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getSharedDashboard failed");
+    log.error({ err: errorMessage(err) }, "getSharedDashboard failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -660,7 +661,7 @@ export async function getDashboardsDueForRefresh(): Promise<Dashboard[]> {
     );
     return rows.map(rowToDashboard);
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getDashboardsDueForRefresh failed");
+    log.error({ err: errorMessage(err) }, "getDashboardsDueForRefresh failed");
     return [];
   }
 }
@@ -703,7 +704,7 @@ export async function lockDashboardForRefresh(
     );
     return rows.length > 0;
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), dashboardId }, "lockDashboardForRefresh failed");
+    log.error({ err: errorMessage(err), dashboardId }, "lockDashboardForRefresh failed");
     return false;
   }
 }
@@ -751,7 +752,7 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
       if (result.ok) refreshed++;
       else failed++;
     } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), cardId: card.id }, "Auto-refresh: card query failed");
+      log.warn({ err: errorMessage(err), cardId: card.id }, "Auto-refresh: card query failed");
       failed++;
     }
   }
@@ -787,7 +788,7 @@ async function getDashboardUnscoped(
       data: { ...rest, cards: cardRows.map(rowToCard) },
     };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getDashboardUnscoped failed");
+    log.error({ err: errorMessage(err) }, "getDashboardUnscoped failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -824,7 +825,7 @@ export async function setRefreshSchedule(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "setRefreshSchedule failed");
+    log.error({ err: errorMessage(err) }, "setRefreshSchedule failed");
     return { ok: false, reason: "error" };
   }
 }

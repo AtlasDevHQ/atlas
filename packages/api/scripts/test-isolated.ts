@@ -2,7 +2,11 @@
  * Isolated test runner — spawns each test file in its own subprocess to
  * avoid bun's process-global mock.module() contamination.
  *
- * Usage: bun run scripts/test-isolated.ts [--concurrency N] [filter]
+ * Usage: bun run scripts/test-isolated.ts [--concurrency N] [--shard N/M] [filter]
+ *
+ * --shard N/M partitions the sorted file list round-robin (file index % M == N-1).
+ * Round-robin spreads slow files statistically across shards without a
+ * profiling pass — CI uses it to fan the api test suite across parallel jobs.
  */
 
 import { Glob } from "bun";
@@ -16,10 +20,27 @@ const SRC = resolve(ROOT, "src");
 const args = process.argv.slice(2);
 let concurrency = cpus().length;
 let filter: string | undefined;
+let shardIndex = 0;
+let shardTotal = 1;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--concurrency" && args[i + 1]) {
     concurrency = parseInt(args[i + 1], 10);
+    i++;
+  } else if (args[i] === "--shard" && args[i + 1]) {
+    const match = args[i + 1].match(/^(\d+)\/(\d+)$/);
+    if (!match) {
+      console.error(`Invalid --shard value: ${args[i + 1]}. Expected N/M.`);
+      process.exit(1);
+    }
+    const n = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10);
+    if (m < 1 || n < 1 || n > m) {
+      console.error(`Invalid --shard value: ${args[i + 1]}. Expected 1 <= N <= M.`);
+      process.exit(1);
+    }
+    shardIndex = n - 1;
+    shardTotal = m;
     i++;
   } else if (!args[i].startsWith("-")) {
     filter = args[i];
@@ -38,13 +59,20 @@ if (filter) {
   files = files.filter((f) => f.includes(filter));
 }
 
+const totalFiles = files.length;
+if (shardTotal > 1) {
+  files = files.filter((_, i) => i % shardTotal === shardIndex);
+}
+
 if (files.length === 0) {
   console.log("No test files found.");
   process.exit(0);
 }
 
+const shardLabel =
+  shardTotal > 1 ? ` (shard ${shardIndex + 1}/${shardTotal} of ${totalFiles} total)` : "";
 console.log(
-  `Running ${files.length} test files (concurrency: ${concurrency})\n`
+  `Running ${files.length} test files (concurrency: ${concurrency})${shardLabel}\n`,
 );
 
 // --- Run tests with bounded concurrency ---

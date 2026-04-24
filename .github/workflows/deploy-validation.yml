@@ -3,28 +3,8 @@ name: Deploy Validation
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "create-atlas/**"
-      - "examples/**"
-      - "packages/api/src/**"
-      - "packages/web/src/**"
-      - "packages/types/src/**"
-      - "packages/cli/bin/**"
-      - "packages/cli/data/**"
-      - "scripts/check-template-drift.sh"
-      - ".github/workflows/deploy-validation.yml"
   push:
     branches: [main]
-    paths:
-      - "create-atlas/**"
-      - "examples/**"
-      - "packages/api/src/**"
-      - "packages/web/src/**"
-      - "packages/types/src/**"
-      - "packages/cli/bin/**"
-      - "packages/cli/data/**"
-      - "scripts/check-template-drift.sh"
-      - ".github/workflows/deploy-validation.yml"
 
 permissions:
   contents: read
@@ -33,10 +13,50 @@ env:
   BUN_VERSION: "1.3.11"
 
 jobs:
+  # Detect whether scaffold-relevant paths changed so the expensive jobs
+  # (npm install from the registry + full Next.js / Docker builds) can skip
+  # when a PR doesn't touch templates, examples, or the workflow itself.
+  # GitHub treats skipped jobs as passed for required-check purposes, so
+  # gating here (vs. workflow-level paths:) keeps config-validation running
+  # on every PR without tripping branch protection.
+  changes:
+    name: Detect scaffold-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      scaffolds: ${{ steps.filter.outputs.scaffolds }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so $BASE_SHA is reachable from a PR fork point.
+          # Trade-off: slightly longer clone for a reliable diff range.
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="$BASE_SHA...$HEAD_SHA"
+          else
+            RANGE="HEAD~1...HEAD"
+          fi
+          # Keep the list short and explicit — if a PR touches any of these,
+          # the scaffold + standalone jobs run. Otherwise they're skipped.
+          if git diff --name-only "$RANGE" | grep -qE '^(create-atlas/|examples/|packages/api/src/|packages/web/src/|packages/types/src/|packages/cli/bin/|packages/cli/data/|scripts/(prepare-templates|check-template-drift)\.sh|\.github/workflows/deploy-validation\.yml)'; then
+            echo "scaffolds=true" >> "$GITHUB_OUTPUT"
+            echo "Scaffold-relevant paths changed — running scaffold jobs"
+          else
+            echo "scaffolds=false" >> "$GITHUB_OUTPUT"
+            echo "No scaffold-relevant paths changed — skipping scaffold jobs"
+          fi
+
   # Scaffold a project via create-atlas, install deps, and build.
   # Validates the full end-to-end scaffolding pipeline for each platform.
   scaffold-smoke:
     name: Scaffold (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.scaffolds == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -64,6 +84,8 @@ jobs:
   # Catches Next.js build failures from API/web source changes.
   standalone-build:
     name: Standalone Example Build
+    needs: changes
+    if: needs.changes.outputs.scaffolds == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

@@ -18,6 +18,7 @@ import {
 } from "@atlas/api/lib/security/abuse";
 import { getWorkspaceNamesByIds, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 
 const log = createLogger("admin-abuse");
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -59,6 +60,16 @@ const ReinstateResponseSchema = z.object({
   success: z.boolean(),
   workspaceId: z.string(),
   message: z.string(),
+  /**
+   * First-class flag (F-33 follow-up) indicating whether the
+   * `admin_action_log` row was attempted against a real internal DB.
+   * `false` when `!hasInternalDB()` (self-hosted without `DATABASE_URL`) —
+   * `logAdminAction` still emits a pino line but the SQL row is skipped.
+   * Always present in the response so non-UI clients (CLI, integrations,
+   * smoke tests) can trust a single boolean without parsing
+   * `warnings[]` strings.
+   */
+  auditPersisted: z.boolean(),
   warnings: z.array(z.string()).optional(),
 });
 
@@ -283,25 +294,46 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
     const { workspaceId } = c.req.valid("param");
     const actorId = user?.id ?? "unknown";
 
-    const success = reinstateWorkspace(workspaceId, actorId);
-    if (!success) {
+    const previousLevel = reinstateWorkspace(workspaceId, actorId);
+    // `== null` on purpose: the contract is `ReinstatedLevel | null` so only
+    // `null` is reachable today, but `== null` also catches an `undefined`
+    // that would slip in if a future refactor ever returns a bare `return`.
+    // Without this guard a contract drift silently audits with
+    // `previousLevel: undefined` — a ghost `workspace.reinstate_abuse` row
+    // for an org that was never actually flagged.
+    if (previousLevel == null) {
       return c.json(
         { error: "not_flagged", message: "Workspace is not currently flagged for abuse.", requestId },
         400,
       );
     }
 
+    // Dual-write the audit trail (F-33). `reinstateWorkspace` persists to
+    // `abuse_events` via `persistAbuseEvent`; `logAdminAction` persists to
+    // `admin_action_log` so compliance queries filtering by
+    // `action_type = 'workspace.reinstate_abuse'` see every reinstate
+    // without joining a second table. `previousLevel` on the metadata
+    // lets reviewers distinguish a low-impact un-warn from lifting a full
+    // suspension at read time.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.reinstateAbuse,
+      targetType: "workspace",
+      targetId: workspaceId,
+      scope: "platform",
+      metadata: { previousLevel },
+    });
+
     // In-memory throttling is lifted by this point — customer queries are
-    // already flowing. If we can't also persist an audit row, the operator
-    // needs to know before they move on. `internalExecute` is
-    // fire-and-forget by design (it returns before the write completes),
-    // so the only silent failure we can catch *synchronously* is "there's
-    // no internal DB to persist to" — which reduces to certainty that no
-    // audit row will ever exist for this reinstate. Async persist
-    // failures are caught by `persistAbuseEvent` (now logged at error)
-    // and by `internalExecute`'s circuit breaker.
+    // already flowing. On the no-internal-DB path the two sinks degrade
+    // asymmetrically: `logAdminAction` always emits a pino line (that is
+    // the only surviving audit artifact without a DB), while
+    // `persistAbuseEvent` short-circuits with no pino trail at all. Both
+    // DB rows are skipped, so the warning below + the first-class
+    // `auditPersisted: false` flag on the response let machine clients and
+    // UIs alike spot the degradation without having to parse `warnings[]`.
     const warnings: string[] = [];
-    if (!hasInternalDB()) {
+    const auditPersisted = hasInternalDB();
+    if (!auditPersisted) {
       log.error(
         { workspaceId, actorId, requestId },
         "reinstate: audit row not persisted — no internal DB configured",
@@ -314,9 +346,10 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
     return c.json({
       success: true,
       workspaceId,
-      message: warnings.length > 0
-        ? "Workspace reinstated, but audit trail could not be written — see warnings."
-        : "Workspace reinstated successfully.",
+      auditPersisted,
+      message: auditPersisted
+        ? "Workspace reinstated successfully."
+        : "Workspace reinstated, but audit trail could not be written — see warnings.",
       ...(warnings.length > 0 ? { warnings } : {}),
     }, 200);
   }), { label: "reinstate workspace" });

@@ -26,6 +26,17 @@ import {
   type AbuseThresholdConfig,
   type AbuseDetail,
 } from "@useatlas/types";
+
+/**
+ * A non-`"none"` abuse level — exactly the states a reinstate can lift
+ * (`"warning"` / `"throttled"` / `"suspended"`). Named here rather than
+ * inlining `Exclude<AbuseLevel, "none">` everywhere so the F-33 audit
+ * metadata shape (`metadata.previousLevel: ReinstatedLevel`) and the
+ * `reinstateWorkspace` return type stay in lockstep as `ABUSE_LEVELS`
+ * evolves — a new level gets picked up automatically by every
+ * consumer, no drift between mock fixtures and prod code.
+ */
+export type ReinstatedLevel = Exclude<AbuseLevel, "none">;
 import { errorRatePct, splitIntoInstances } from "./abuse-instances";
 
 const log = createLogger("abuse");
@@ -394,10 +405,23 @@ export async function getAbuseDetail(
   };
 }
 
-/** Manually reinstate a suspended or throttled workspace. */
-export function reinstateWorkspace(workspaceId: string, actorId: string): boolean {
+/**
+ * Manually reinstate a suspended or throttled workspace.
+ *
+ * Returns the previous level (one of "warning" / "throttled" / "suspended")
+ * on success so the caller can emit audit metadata capturing the delta
+ * without a second getter call, or `null` when the workspace is not
+ * currently flagged (404 signal for the route). Returning the level instead
+ * of a boolean closes the F-33 audit gap: the admin-action-log row carries
+ * `previousLevel` as a first-class field so reviewers can tell a low-impact
+ * un-warn from lifting a full suspension without joining `abuse_events`.
+ */
+export function reinstateWorkspace(
+  workspaceId: string,
+  actorId: string,
+): ReinstatedLevel | null {
   const state = workspaceState.get(workspaceId);
-  if (!state || state.level === "none") return false;
+  if (!state || state.level === "none") return null;
 
   const prevLevel = state.level;
   state.level = "none";
@@ -426,7 +450,7 @@ export function reinstateWorkspace(workspaceId: string, actorId: string): boolea
   );
 
   persistAbuseEvent(event);
-  return true;
+  return prevLevel;
 }
 
 // ---------------------------------------------------------------------------

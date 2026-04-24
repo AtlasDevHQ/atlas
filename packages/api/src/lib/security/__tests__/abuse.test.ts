@@ -51,9 +51,17 @@ function setInternalQuery<T>(impl: (sql: string, params?: unknown[]) => Promise<
   _internalQueryImpl = impl as typeof _internalQueryImpl;
 }
 
+// `internalExecute` captured at module scope so tests can assert the
+// `INSERT INTO abuse_events (...)` row actually fires from `persistAbuseEvent`
+// with the right parameter shape — the F-33 regression floor at the
+// lib layer. Without this, the route-level dual-write coverage only
+// proves the mocked `reinstateWorkspace` was called, not that the
+// abuse_events sink is actually written to.
+const mockInternalExecute = mock(() => {});
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => _hasInternalDB,
-  internalExecute: mock(() => {}),
+  internalExecute: mockInternalExecute,
   internalQuery: <T>(sql: string, params?: unknown[]) => _internalQueryImpl<T>(sql, params),
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
@@ -80,6 +88,7 @@ describe("Abuse Prevention Engine", () => {
     resetLogCalls();
     setInternalDB(false);
     setInternalQuery(async () => []);
+    mockInternalExecute.mockClear();
   });
 
   describe("getAbuseConfig()", () => {
@@ -227,13 +236,16 @@ describe("Abuse Prevention Engine", () => {
       expect(checkAbuseStatus("ws-reinstate").level).toBe("warning");
 
       const result = reinstateWorkspace("ws-reinstate", "admin-1");
-      expect(result).toBe(true);
+      // F-33: returns the previous level so the route can audit the delta
+      // without a second getter call. Here the workspace was warning-level
+      // so we get "warning" back (not a boolean).
+      expect(result).toBe("warning");
       expect(checkAbuseStatus("ws-reinstate").level).toBe("none");
     });
 
-    it("returns false for non-flagged workspaces", () => {
+    it("returns null for non-flagged workspaces", () => {
       const result = reinstateWorkspace("ws-nonexistent", "admin-1");
-      expect(result).toBe(false);
+      expect(result).toBeNull();
     });
 
     it("resets abuse counters on reinstate", () => {
@@ -242,15 +254,73 @@ describe("Abuse Prevention Engine", () => {
       for (let i = 0; i <= config.queryRateLimit + 10; i++) {
         recordQueryEvent("ws-counters", { success: true });
       }
-      expect(checkAbuseStatus("ws-counters").level).not.toBe("none");
+      const flaggedLevel = checkAbuseStatus("ws-counters").level;
+      // TS can't narrow `flaggedLevel` off the `not.toBe("none")` runtime
+      // assertion, so the inline guard narrows it to `ReinstatedLevel`
+      // before the structural comparison below.
+      if (flaggedLevel === "none") {
+        throw new Error("expected workspace to be flagged before reinstate");
+      }
 
-      reinstateWorkspace("ws-counters", "admin-1");
+      const result = reinstateWorkspace("ws-counters", "admin-1");
+      // F-33: pins that the returned `previousLevel` matches the actual
+      // escalation depth reached — proves a future refactor reading
+      // state.level *after* the reset (= "none") trips the suite.
+      expect(result).toBe(flaggedLevel);
 
       // Normal queries after reinstate should not re-trigger
       for (let i = 0; i < 5; i++) {
         recordQueryEvent("ws-counters", { success: true });
       }
       expect(checkAbuseStatus("ws-counters").level).toBe("none");
+    });
+
+    it("persists an abuse_events row with previousLevel metadata when DB is available (#1788, F-33)", () => {
+      // Route-level tests mock `reinstateWorkspace` wholesale, so without
+      // this assertion nothing pins that `persistAbuseEvent` actually
+      // fires the `INSERT INTO abuse_events` SQL with the right params.
+      // A regression that deletes the `persistAbuseEvent(event)` call in
+      // `reinstateWorkspace`, or drops `previousLevel` from the event
+      // metadata, would pass the route suite silently.
+      setInternalDB(true);
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-persist", { success: true });
+      }
+      // `recordQueryEvent` escalations emit their own abuse_events rows;
+      // clear so the assertion below only sees the reinstate INSERT.
+      mockInternalExecute.mockClear();
+
+      const result = reinstateWorkspace("ws-persist", "admin-1");
+      expect(result).toBe("warning");
+
+      expect(mockInternalExecute).toHaveBeenCalledTimes(1);
+      const call = mockInternalExecute.mock.calls[0] as unknown as [string, unknown[]];
+      expect(call[0]).toContain("INSERT INTO abuse_events");
+      const params = call[1];
+      // Columns: (id, workspace_id, level, trigger_type, message, metadata, actor, created_at)
+      expect(params[1]).toBe("ws-persist");
+      expect(params[2]).toBe("none");
+      expect(params[3]).toBe("manual");
+      expect(params[6]).toBe("admin-1");
+      const metadata = JSON.parse(params[5] as string) as Record<string, unknown>;
+      expect(metadata.previousLevel).toBe("warning");
+    });
+
+    it("skips the abuse_events INSERT when no internal DB is configured (#1788, F-33)", () => {
+      // Symmetric degradation with `logAdminAction` — both DB-backed
+      // writes bail when `hasInternalDB()` is false. The route surfaces
+      // this to the admin via `auditPersisted: false`.
+      setInternalDB(false);
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-no-db", { success: true });
+      }
+      mockInternalExecute.mockClear();
+
+      const result = reinstateWorkspace("ws-no-db", "admin-1");
+      expect(result).toBe("warning");
+      expect(mockInternalExecute).not.toHaveBeenCalled();
     });
   });
 

@@ -1552,7 +1552,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 
 | ID | Severity | Type | Surface | Issue | Status |
 |---|---|---|---|---|---|
-| F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 | fixed (PR pending) |
+| F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 | fixed (PR #1802) |
 | F-23 | P0 | Audit gap | SCIM management (`admin-scim.ts`) | #1778 | open |
 | F-24 | P0 | Audit gap | IP allowlist (`admin-ip-allowlist.ts`) | #1779 | fixed (PR #1797) |
 | F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 | fixed (PR #1800) |

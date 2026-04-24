@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(35);
+    expect(count).toBe(36);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -143,6 +143,7 @@ describe("runMigrations", () => {
         "0032_backups_status_check.sql",
         "0033_custom_domains_dns_verification.sql",
         "0034_share_mode_org_requires_org_id.sql",
+        "0035_admin_action_retention.sql",
       ],
     });
 
@@ -544,6 +545,71 @@ describe("0034_share_mode_org_requires_org_id.sql", () => {
       /DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi,
     ) ?? [];
     expect(idempotentBlocks.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0035_admin_action_retention.sql  (F-36 phase 1)
+// ---------------------------------------------------------------------------
+
+describe("0035_admin_action_retention.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0035_admin_action_retention.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("adds anonymized_at column to admin_action_log", () => {
+    // The column backs the GDPR erasure contract — its absence would silently
+    // break the anonymizeUserAdminActions promise (no positive scrubbed-row
+    // signal). Pin the exact column + type.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /ALTER\s+TABLE\s+admin_action_log\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+anonymized_at\s+TIMESTAMPTZ/i,
+    );
+  });
+
+  it("relaxes actor_id and actor_email to nullable (so erasure can write NULL)", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(/ALTER\s+COLUMN\s+actor_id\s+DROP\s+NOT\s+NULL/i);
+    expect(sql).toMatch(/ALTER\s+COLUMN\s+actor_email\s+DROP\s+NOT\s+NULL/i);
+  });
+
+  it("creates admin_action_retention_config mirroring audit_retention_config shape", () => {
+    // Parallel-table decision (D4 in the design doc) — schema shape must match
+    // so the library can reuse row-mapping conventions from the audit_log side.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+admin_action_retention_config/i);
+    expect(sql).toMatch(/org_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i);
+    expect(sql).toMatch(/retention_days\s+INTEGER/i);
+    expect(sql).toMatch(/hard_delete_delay_days\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+30/i);
+    expect(sql).toMatch(/last_purge_at\s+TIMESTAMPTZ/i);
+    expect(sql).toMatch(/last_purge_count\s+INTEGER/i);
+  });
+
+  it("creates partial index on admin_action_log.anonymized_at for scrubbed-row queries", () => {
+    // Forensic queries filtering anonymized rows need the partial index to
+    // stay fast as the table grows; a full-table index would bloat with
+    // NULL entries, which are the majority.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+idx_admin_action_log_anonymized_at[\s\S]*?WHERE\s+anonymized_at\s+IS\s+NOT\s+NULL/i,
+    );
+  });
+
+  it("creates org_id index on admin_action_retention_config", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+idx_admin_action_retention_config_org\s+ON\s+admin_action_retention_config\(org_id\)/i,
+    );
+  });
+
+  it("references the design doc and audit row in header comments", () => {
+    // Stops a future session from re-litigating the erasure option 1/2/3
+    // decision — pins a single doc as the canonical reference.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(/admin-action-log-retention\.md/);
+    expect(sql).toMatch(/F-36/);
   });
 });
 

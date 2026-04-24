@@ -44,8 +44,10 @@ import { platformActionsSearchParams } from "./search-params";
 const AdminActionSchema = z.object({
   id: z.string(),
   timestamp: z.string(),
-  actorId: z.string(),
-  actorEmail: z.string(),
+  // Nullable post-F-36: GDPR-erased rows have both columns NULL and
+  // `anonymizedAt` set. The table cell renders "(erased)" below.
+  actorId: z.string().nullable(),
+  actorEmail: z.string().nullable(),
   scope: z.enum(["platform", "workspace"]),
   orgId: z.string().nullable(),
   actionType: z.string(),
@@ -55,6 +57,7 @@ const AdminActionSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).nullable(),
   ipAddress: z.string().nullable(),
   requestId: z.string(),
+  anonymizedAt: z.string().nullable(),
 });
 
 const ActionsResponseSchema = z.object({
@@ -356,7 +359,13 @@ function ActionsPageContent() {
                   <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                     {formatTimestamp(action.timestamp)}
                   </TableCell>
-                  <TableCell className="text-sm">{action.actorEmail}</TableCell>
+                  <TableCell className="text-sm">
+                    {action.actorEmail ?? (
+                      <span className="italic text-muted-foreground" title="Actor identifier removed under GDPR / CCPA right-to-erasure.">
+                        (erased)
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
                       {action.actionType}

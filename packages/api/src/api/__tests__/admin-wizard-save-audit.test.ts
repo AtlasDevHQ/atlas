@@ -413,4 +413,33 @@ describe("wizard.ts vs admin-connections.ts — audit parity (F-29 + F-34)", () 
     expect(wizardMeta.name).toBe(adminMeta.name);
     expect(wizardMeta.dbType).toBe(adminMeta.dbType);
   });
+
+  it("wizard fallback dbType='unknown' never silently masquerades as admin-connections", async () => {
+    // Edge case: if the in-memory registry has no entry for the
+    // connectionId (e.g. pre-restart replay), wizard emits
+    // `dbType: "unknown"`. admin-connections POST always resolves a
+    // real dbType from the supplied URL. Regression we're guarding:
+    // a future parity test that *stages* the registry to return the
+    // same dbType for both surfaces would hide this divergence — this
+    // test keeps the fallback explicit so mismatches surface visibly.
+    mockConnectionDescribe.mockReturnValue([]);
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/wizard/save", {
+        connectionId: "warehouse",
+        entities: [{ tableName: "users", yaml: "table: users\n" }],
+      }),
+    );
+    expect(res.status).toBe(201);
+
+    const wizardUnknown = lastAuditCall();
+    expect(wizardUnknown.metadata).toMatchObject({ dbType: "unknown" });
+
+    // admin-connections would emit `dbType: "postgres"` for the same
+    // url — the two surfaces SHOULD diverge in the no-registry-entry
+    // case because the admin-connections path validates the URL
+    // directly. Pinning here so "wizard fallback accidentally claims
+    // the admin-connections dbType" never slips through.
+    expect(wizardUnknown.metadata?.dbType).not.toBe("postgres");
+  });
 });

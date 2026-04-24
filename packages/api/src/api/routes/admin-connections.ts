@@ -491,23 +491,23 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
     });
     const result = await connections.healthCheck(tempId);
     logAdminAction({
-      actionType: ADMIN_ACTIONS.connection.test,
+      actionType: ADMIN_ACTIONS.connection.probe,
       targetType: "connection",
       targetId: tempId,
       status: result.status === "healthy" ? "success" : "failure",
       ipAddress,
-      metadata: { ephemeral: true, success: result.status === "healthy", dbType, latencyMs: result.latencyMs },
+      metadata: { success: result.status === "healthy", dbType, latencyMs: result.latencyMs },
     });
     return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection test failed");
     logAdminAction({
-      actionType: ADMIN_ACTIONS.connection.test,
+      actionType: ADMIN_ACTIONS.connection.probe,
       targetType: "connection",
       targetId: tempId,
       status: "failure",
       ipAddress,
-      metadata: { ephemeral: true, success: false, dbType },
+      metadata: { success: false, dbType },
     });
     return c.json({
       error: "connection_failed",
@@ -540,19 +540,20 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
 
   const result = await connections.healthCheck(id);
 
-  // Shares action_type + metadata shape with the ephemeral probe
-  // (`POST /test`) so a compliance reviewer sees one event class per
-  // intent. `ephemeral: false` distinguishes targeted health checks
-  // from transient probes. See F-29 / F-34.
+  // `connection.health_check` is distinct from `connection.probe` (the
+  // ephemeral `POST /test` surface) so forensic queries can separately
+  // count privilege-escalation probes vs. routine health checks against
+  // a persisted datasource. Metadata shape matches probe: same success
+  // / dbType / latencyMs fields so downstream dashboards can union the
+  // two when appropriate. See F-29 / F-34.
   const registryEntry = connections.describe().find((entry) => entry.id === id);
   logAdminAction({
-    actionType: ADMIN_ACTIONS.connection.test,
+    actionType: ADMIN_ACTIONS.connection.healthCheck,
     targetType: "connection",
     targetId: id,
     status: result.status === "healthy" ? "success" : "failure",
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     metadata: {
-      ephemeral: false,
       success: result.status === "healthy",
       dbType: registryEntry?.dbType ?? "unknown",
       latencyMs: result.latencyMs,

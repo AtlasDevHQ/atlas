@@ -53,18 +53,16 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 }));
 
 // importFromDisk — the bulk-import handler dynamically imports it.
+const mockImportFromDisk: Mock<(orgId: string, opts?: { connectionId?: string }) => Promise<unknown>> = mock(
+  async () => ({ imported: 12, skipped: 3, total: 15, entries: [] }),
+);
 mock.module("@atlas/api/lib/semantic/sync", () => ({
   syncEntityToDisk: mock(async () => {}),
   syncEntityDeleteFromDisk: async () => {},
   syncAllEntitiesToDisk: async () => 0,
   getSemanticRoot: () => "/tmp/test-semantic",
   reconcileAllOrgs: async () => {},
-  importFromDisk: mock(async () => ({
-    imported: 12,
-    skipped: 3,
-    total: 15,
-    entries: [],
-  })),
+  importFromDisk: mockImportFromDisk,
 }));
 
 // Audit capture
@@ -120,6 +118,13 @@ beforeEach(() => {
   mockLogAdminAction.mockClear();
   mockChangePassword.mockClear();
   mockChangePassword.mockImplementation(async () => ({ success: true }));
+  mockImportFromDisk.mockClear();
+  mockImportFromDisk.mockImplementation(async () => ({
+    imported: 12,
+    skipped: 3,
+    total: 15,
+    entries: [],
+  }));
   mocks.mockInternalQuery.mockReset();
   mocks.mockInternalQuery.mockImplementation(async () => []);
   // Default auth: managed user "user-42" admin in org-alpha. Individual
@@ -242,6 +247,24 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
     expect(res.status).toBe(200);
     const entry = lastAuditCall();
     expect(entry.metadata).toMatchObject({ sourceRef: "disk:warehouse" });
+  });
+
+  it("does not emit when importFromDisk throws (500 + no audit row)", async () => {
+    // A throw from importFromDisk means zero entities were persisted.
+    // The audit trail must match the real world: no row for a
+    // non-event. The runHandler wrapper surfaces the throw as a 500
+    // with a requestId; the emission sits past the throw and never
+    // fires.
+    mockImportFromDisk.mockImplementation(async () => {
+      throw new Error("disk sync failed");
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/semantic/org/import", {}),
+    );
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 
   it("does not emit when no active org (400)", async () => {

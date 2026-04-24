@@ -772,11 +772,9 @@ wizard.openapi(saveRoute, async (c) => {
       // see datasource additions regardless of entry path. The row is
       // emitted AFTER the disk write + whitelist reset so the audit trail
       // only signals a successful onboarding (failures earlier short-circuit
-      // into the catch branch below without audit). The probe endpoint
-      // `POST /connection-test` (handled on `admin-connections`' `POST /test`)
-      // is deliberately NOT audited from wizard — probes are high-volume
-      // and low-forensic-signal, and the privileged probe surface already
-      // emits `connection.test` from admin-connections.
+      // into the catch branch below without audit). The wizard exposes no
+      // probe endpoint of its own — admin-connections' `POST /test` is the
+      // privileged probe surface and emits `connection.probe` there.
       const registryEntry = connections.describe().find((conn) => conn.id === connectionId);
       const resolvedDbType = registryEntry?.dbType ?? "unknown";
       logAdminAction({

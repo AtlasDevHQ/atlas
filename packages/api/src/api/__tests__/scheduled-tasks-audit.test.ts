@@ -182,6 +182,23 @@ describe("POST /api/v1/scheduled-tasks/:id/run — audit emission (F-29)", () =>
     expect(res.status).toBe(404);
     expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
+
+  it("does not emit when triggerTask rejects (500)", async () => {
+    // An engine-side rejection means the task didn't actually fire —
+    // the audit trail must not claim otherwise. runHandler surfaces
+    // the rejection as a 500; the emission sits past the await and
+    // never lands.
+    mockTriggerTask.mockImplementation(async () => {
+      throw new Error("engine unavailable");
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", `/api/v1/scheduled-tasks/${UUID_A}/run`),
+    );
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -302,5 +319,24 @@ describe("POST /api/v1/scheduled-tasks/tick — audit emission (F-29 + F-27 patt
 
     expect(res.status).toBe(401);
     expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("emits when CRON_SECRET is set and the bearer matches (auth happy path)", async () => {
+    // Without this test a regression to "emit without auth check"
+    // would slip past CI — the 401 case pins no-audit on wrong bearer,
+    // this pins emit-with-system-actor on right bearer.
+    process.env.CRON_SECRET = "top-secret";
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/scheduled-tasks/tick", undefined, {
+        Authorization: "Bearer top-secret",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("schedule.tick");
+    expect(entry.systemActor).toBe("system:scheduler");
   });
 });

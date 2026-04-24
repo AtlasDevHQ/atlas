@@ -2,8 +2,8 @@
  * Audit regression suite for `admin-connections.ts` — F-29 (#1784) + F-34 (#1789).
  *
  * Pins:
- *   - `POST /test` (ephemeral URL probe) → `connection.test` (ephemeral: true)
- *   - `POST /:id/test` (registered health check) → `connection.test` (ephemeral: false)
+ *   - `POST /test` (ephemeral URL probe) → `connection.probe`
+ *   - `POST /:id/test` (registered health check) → `connection.health_check`
  *   - `POST /pool/orgs/:orgId/drain` → `connection.pool_drain` (platform scope)
  *
  * The per-connection drain (`POST /:id/drain`) is NOT audited in this PR —
@@ -158,7 +158,7 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("POST /api/v1/admin/connections/test — audit emission (F-29/F-34)", () => {
-  it("emits connection.test with ephemeral: true + success metadata on healthy probe", async () => {
+  it("emits connection.probe with success metadata on healthy probe", async () => {
     const res = await app.fetch(
       adminRequest("POST", "/api/v1/admin/connections/test", {
         url: "postgresql://localhost/test",
@@ -168,19 +168,21 @@ describe("POST /api/v1/admin/connections/test — audit emission (F-29/F-34)", (
     expect(res.status).toBe(200);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = lastAuditCall();
-    expect(entry.actionType).toBe("connection.test");
+    expect(entry.actionType).toBe("connection.probe");
     expect(entry.targetType).toBe("connection");
     expect(entry.targetId).toMatch(/^_test_/); // temp id
     expect(entry.status ?? "success").toBe("success");
     expect(entry.metadata).toMatchObject({
-      ephemeral: true,
       success: true,
       dbType: "postgres",
     });
     expect(typeof entry.metadata?.latencyMs).toBe("number");
+    // Probe is distinct from health_check — compliance queries filter
+    // on action_type alone without parsing metadata discriminators.
+    expect(entry.actionType).not.toBe("connection.health_check");
   });
 
-  it("emits failure-status connection.test when healthCheck rejects", async () => {
+  it("emits failure-status connection.probe when healthCheck rejects", async () => {
     mockConnectionHealthCheck.mockImplementation(() =>
       Promise.reject(new Error("ECONNREFUSED")),
     );
@@ -194,9 +196,9 @@ describe("POST /api/v1/admin/connections/test — audit emission (F-29/F-34)", (
     expect(res.status).toBe(400);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = lastAuditCall();
-    expect(entry.actionType).toBe("connection.test");
+    expect(entry.actionType).toBe("connection.probe");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata).toMatchObject({ ephemeral: true, success: false });
+    expect(entry.metadata).toMatchObject({ success: false });
   });
 
   it("does not emit when the URL scheme is unsupported (400)", async () => {
@@ -215,7 +217,7 @@ describe("POST /api/v1/admin/connections/test — audit emission (F-29/F-34)", (
 // ---------------------------------------------------------------------------
 
 describe("POST /api/v1/admin/connections/:id/test — audit emission (F-29/F-34)", () => {
-  it("emits connection.test with ephemeral: false + registered id as target", async () => {
+  it("emits connection.health_check with registered id as target", async () => {
     const res = await app.fetch(
       adminRequest("POST", "/api/v1/admin/connections/warehouse/test"),
     );
@@ -223,14 +225,15 @@ describe("POST /api/v1/admin/connections/:id/test — audit emission (F-29/F-34)
     expect(res.status).toBe(200);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = lastAuditCall();
-    expect(entry.actionType).toBe("connection.test");
+    expect(entry.actionType).toBe("connection.health_check");
     expect(entry.targetType).toBe("connection");
     expect(entry.targetId).toBe("warehouse");
     expect(entry.metadata).toMatchObject({
-      ephemeral: false,
       success: true,
       dbType: "postgres",
     });
+    // Distinct from probe — filter on action_type alone.
+    expect(entry.actionType).not.toBe("connection.probe");
   });
 
   it("does not emit when the connection is not registered (404)", async () => {

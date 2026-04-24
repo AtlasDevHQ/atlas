@@ -70,10 +70,10 @@ class MockSSOEnforcementError extends Data.TaggedError("SSOEnforcementError")<{
   code: "no_provider" | "not_enterprise";
 }> {}
 
-const mockVerifyDomain: Mock<(providerId: string, orgId: string) => ReturnType<typeof Effect.succeed>> = mock(
+const mockVerifyDomain: Mock<(providerId: string, orgId: string) => Effect.Effect<unknown, unknown, never>> = mock(
   () => Effect.succeed({ status: "verified", message: "DNS record found." }),
 );
-const mockSetSSOEnforcement: Mock<(orgId: string, enforced: boolean) => ReturnType<typeof Effect.succeed>> = mock(
+const mockSetSSOEnforcement: Mock<(orgId: string, enforced: boolean) => Effect.Effect<unknown, unknown, never>> = mock(
   () => Effect.succeed({ enforced: true, orgId: "org-alpha" }),
 );
 
@@ -216,5 +216,28 @@ describe("PUT /api/v1/admin/sso/enforcement — audit emission (F-29)", () => {
     );
     expect(res.status).toBe(200);
     expect(lastAuditCall().metadata).toMatchObject({ enforced: false });
+  });
+
+  it("does not emit when setSSOEnforcement rejects with a domain error", async () => {
+    // `no_provider` is the motivating case: caller asks to enable
+    // enforcement but the workspace has no active SSO provider. The
+    // Effect domain error short-circuits before the audit emission,
+    // so no row lands — consistent with "don't log actions that
+    // didn't happen." Pinned so a future "emit failure rows for
+    // rejected enforcement toggles" change explicitly revisits the
+    // policy here instead of silently flipping behavior.
+    mockSetSSOEnforcement.mockImplementation(() =>
+      Effect.fail(new MockSSOEnforcementError({
+        message: "No active SSO provider",
+        code: "no_provider",
+      })),
+    );
+
+    const res = await app.fetch(
+      adminRequest("PUT", "/api/v1/admin/sso/enforcement", { enforced: true }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });

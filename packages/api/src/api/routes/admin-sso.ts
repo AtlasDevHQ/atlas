@@ -810,10 +810,12 @@ adminSso.openapi(verifyDomainRoute, async (c) => {
 
     // DNS TXT lookup that flips a provider to `verified` — the gate that
     // separates an unverified SSO config from one that can be enabled.
-    // Audit status mirrors the verifier result so compliance queries can
-    // distinguish successful verifications from failed attempts (the
-    // attempt itself is the auditable action; failure is still worth
-    // logging). See F-29.
+    // Emitted only when `verifyDomain` yielded a result (the lookup ran
+    // and returned a verdict). SSO domain errors (`not_found`, etc.)
+    // short-circuit the Effect before this point and do NOT emit —
+    // consistent with the approval-CRUD choice of "don't log actions
+    // that didn't happen." Audit status distinguishes verified vs.
+    // `failed` so compliance queries can count the verdict ratio.
     logAdminAction({
       actionType: ADMIN_ACTIONS.sso.verifyDomain,
       targetType: "sso",

@@ -1662,23 +1662,17 @@ admin.openapi(changePasswordRoute, async (c) => {
         headers: req.headers,
       });
 
-      // Clear the flag
-      if (hasInternalDB()) {
-        await internalQuery(
-          `UPDATE "user" SET password_change_required = false WHERE id = $1`,
-          [user.id],
-        );
-      }
-
-      log.info({ requestId, userId: user.id }, "Password changed and flag cleared");
-
       // Self-service password change: the actor IS the target. `targetId`
       // pins to the actor's user id so forensic queries can distinguish a
       // self-action from an admin rotating someone else's password (the
       // latter flows through Better Auth's admin API and fires other
       // `user.*` audit entries). Metadata deliberately omits any password
-      // material — the flag-clear ("passwordChangeRequiredCleared") is
-      // the only structured signal. See F-29.
+      // material. Emitted BEFORE the password_change_required flag clear:
+      // Better Auth has already committed the new password, so the audit
+      // row must land even if the subsequent `UPDATE "user"` query fails
+      // (DB pool exhausted, migration in flight). A flag-clear failure
+      // degrades to "next login will demand another change" — recoverable;
+      // a missing audit row for a successful rotation is not.
       logAdminAction({
         actionType: ADMIN_ACTIONS.user.passwordChange,
         targetType: "user",
@@ -1686,6 +1680,31 @@ admin.openapi(changePasswordRoute, async (c) => {
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
         metadata: { self: true },
       });
+
+      // Clear the flag. A failure here does NOT roll back the password
+      // change (Better Auth already committed) and does NOT drop the
+      // audit row (emitted above). We log-warn and keep going so the
+      // caller still sees success — the user will just hit the forced
+      // password change prompt again on next login.
+      if (hasInternalDB()) {
+        try {
+          await internalQuery(
+            `UPDATE "user" SET password_change_required = false WHERE id = $1`,
+            [user.id],
+          );
+        } catch (flagErr) {
+          log.warn(
+            {
+              err: flagErr instanceof Error ? flagErr.message : String(flagErr),
+              userId: user.id,
+              requestId,
+            },
+            "Password changed but password_change_required flag clear failed — user will be prompted again on next login",
+          );
+        }
+      }
+
+      log.info({ requestId, userId: user.id }, "Password changed");
 
       return c.json({ success: true }, 200);
     } catch (err) {

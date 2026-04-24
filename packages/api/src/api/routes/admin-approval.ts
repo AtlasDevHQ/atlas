@@ -362,10 +362,11 @@ adminApproval.openapi(createRuleRoute, async (c) => {
 
     const rule = yield* createApprovalRule(orgId!, input);
 
-    // Rule CRUD is the mechanism behind every approval gate. Silent rule
-    // changes let an admin disable the gate, run the action it was
-    // protecting, and re-enable — end-to-end invisible. Audit captures
-    // both the metadata (for semantic diff) and the actor. See F-29.
+    // Rule CRUD is the mechanism behind every approval gate. Silent
+    // rule changes let an admin disable the gate, run the action it
+    // was protecting, and re-enable — end-to-end invisible. Metadata
+    // captures `name` + `ruleType` on create; richer diff-style metadata
+    // lives on `ruleUpdate` where it has a before/after story. See F-29.
     logAdminAction({
       actionType: ADMIN_ACTIONS.approval.ruleCreate,
       targetType: "approval",
@@ -387,10 +388,11 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
 
     const rule = yield* updateApprovalRule(orgId!, ruleId, body);
 
-    // See `ruleCreate` above for the threat model. `keysChanged`
-    // captures which fields the admin touched without recording the
-    // values — pattern/threshold may themselves be sensitive shape data
-    // for a compromised admin mapping the approval surface.
+    // See `ruleCreate` above for the threat model. `keysChanged` is the
+    // semantic-diff signal — records WHICH fields the admin touched
+    // without recording the values, since pattern/threshold may
+    // themselves be sensitive shape data for a compromised admin
+    // mapping the approval surface.
     logAdminAction({
       actionType: ADMIN_ACTIONS.approval.ruleUpdate,
       targetType: "approval",
@@ -415,8 +417,7 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
     }
 
     // Emitted only when the delete succeeded (404 short-circuits above).
-    // Pending requests referencing this rule are not affected — the
-    // metadata holds the ruleId alone so compliance reviewers can
+    // Metadata holds the ruleId alone so compliance reviewers can
     // cross-reference the prior `ruleCreate` / `ruleUpdate` rows.
     logAdminAction({
       actionType: ADMIN_ACTIONS.approval.ruleDelete,

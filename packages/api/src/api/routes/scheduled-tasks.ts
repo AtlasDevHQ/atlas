@@ -28,6 +28,7 @@ import {
   validateCronExpression,
   type CrudFailReason,
 } from "@atlas/api/lib/scheduled-tasks";
+import type { TickResult } from "@atlas/api/lib/scheduler/engine";
 import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 import { type AuthEnv } from "./middleware";
@@ -356,48 +357,48 @@ scheduledTasks.openapi(tickRoute, async (c) => {
     // zero tasks or many. The absence of a row over a cadence window is
     // the signal that the scheduler stopped firing (mirrors F-27's
     // purge-cycle convention). Uses the reserved `system:scheduler`
-    // actor — enforced at logAdminAction call time so a typo or rename
-    // fails loudly rather than writing a malformed audit row.
-    const tickFailedInternally = "error" in tickOutcome && tickOutcome.error === "internal_error";
-    const tickHasEngineError = !tickFailedInternally && "error" in tickOutcome && typeof tickOutcome.error === "string";
-    const tickSucceeded = !tickFailedInternally && !tickHasEngineError;
-
-    if (tickSucceeded) {
-      const result = tickOutcome as import("@atlas/api/lib/scheduler/engine").TickResult;
+    // actor — validated against `SYSTEM_ACTOR_PATTERN` inside
+    // `logAdminAction`, which logs loudly and drops the row on typos
+    // rather than writing malformed audit data (see `lib/audit/admin.ts`).
+    //
+    // The outer `catchAll` replaces an unexpected throw with
+    // `{ error: "internal_error", requestId }`; engine-reported failures
+    // surface as `TickResult.error`. Both are failure shapes — one
+    // inline `"error" in …` discriminant collapses them into a single
+    // branch so the audit emission runs exactly once either way.
+    if ("error" in tickOutcome && typeof tickOutcome.error === "string") {
+      const errorLabel: string = tickOutcome.error;
       logAdminAction({
         actionType: ADMIN_ACTIONS.schedule.tick,
         targetType: "schedule",
         targetId: "scheduler",
+        status: "failure",
         scope: "platform",
         systemActor: "system:scheduler",
-        metadata: {
-          tasksProcessed: result.tasksDispatched,
-          successes: result.tasksCompleted,
-          failures: result.tasksFailed,
-        },
+        metadata: { tasksProcessed: 0, successes: 0, failures: 0, error: errorLabel },
       });
-      return c.json(tickOutcome, 200);
+      if (errorLabel === "internal_error") {
+        return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
+      }
+      return c.json({ error: "tick_failed", message: errorLabel, requestId }, 500);
     }
 
-    // Failure branches — both emit a `status: "failure"` audit row so a
-    // compliance reviewer can distinguish a silent drop-off from an
-    // errored run. Consistent with F-27's purge-cycle failure handling.
-    const errorLabel = tickFailedInternally
-      ? "internal_error"
-      : ((tickOutcome as { error: string }).error);
+    // Success path — `tickOutcome` narrowed to `TickResult` with no
+    // error string, so tasks* fields are safe to read.
+    const successOutcome = tickOutcome as TickResult;
     logAdminAction({
       actionType: ADMIN_ACTIONS.schedule.tick,
       targetType: "schedule",
       targetId: "scheduler",
-      status: "failure",
       scope: "platform",
       systemActor: "system:scheduler",
-      metadata: { tasksProcessed: 0, successes: 0, failures: 0, error: errorLabel },
+      metadata: {
+        tasksProcessed: successOutcome.tasksDispatched,
+        successes: successOutcome.tasksCompleted,
+        failures: successOutcome.tasksFailed,
+      },
     });
-    if (tickFailedInternally) {
-      return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
-    }
-    return c.json({ error: "tick_failed", message: errorLabel, requestId }, 500);
+    return c.json(successOutcome, 200);
   }), { label: "scheduler tick" });
 });
 

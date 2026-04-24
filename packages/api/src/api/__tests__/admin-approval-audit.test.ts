@@ -47,16 +47,19 @@ class MockApprovalError extends Data.TaggedError("ApprovalError")<{
 
 // Approval service mocks. Happy-path returns so the route reaches the
 // audit call. Per-test overrides exercise the 404 / failure branches.
-const mockCreateApprovalRule: Mock<(orgId: string, input: unknown) => ReturnType<typeof Effect.succeed>> = mock(
+// Return type widened to `Effect.Effect<unknown, unknown, never>` so
+// per-test overrides with `Effect.fail(new MockApprovalError(...))`
+// type-check without casting.
+const mockCreateApprovalRule: Mock<(orgId: string, input: unknown) => Effect.Effect<unknown, unknown, never>> = mock(
   () => Effect.succeed({ id: "rule-123", orgId: "org-alpha", ruleType: "cost", name: "Flag cost", enabled: true }),
 );
-const mockUpdateApprovalRule: Mock<(orgId: string, id: string, body: unknown) => ReturnType<typeof Effect.succeed>> = mock(
+const mockUpdateApprovalRule: Mock<(orgId: string, id: string, body: unknown) => Effect.Effect<unknown, unknown, never>> = mock(
   () => Effect.succeed({ id: "rule-123", orgId: "org-alpha", ruleType: "cost", name: "Flag cost (updated)", enabled: true }),
 );
-const mockDeleteApprovalRule: Mock<(orgId: string, id: string) => ReturnType<typeof Effect.succeed>> = mock(
+const mockDeleteApprovalRule: Mock<(orgId: string, id: string) => Effect.Effect<unknown, unknown, never>> = mock(
   () => Effect.succeed(true),
 );
-const mockExpireStaleRequests: Mock<(orgId: string) => ReturnType<typeof Effect.succeed>> = mock(
+const mockExpireStaleRequests: Mock<(orgId: string) => Effect.Effect<unknown, unknown, never>> = mock(
   () => Effect.succeed(0),
 );
 
@@ -183,6 +186,24 @@ describe("PUT /api/v1/admin/approval/rules/:id — audit emission (F-29)", () =>
     const keys = entry.metadata?.keysChanged;
     expect(Array.isArray(keys)).toBe(true);
     expect((keys as string[]).sort()).toEqual(["enabled", "name"]);
+  });
+
+  it("does not emit when the rule does not exist (404)", async () => {
+    mockUpdateApprovalRule.mockImplementation(() =>
+      Effect.fail(new MockApprovalError({
+        message: "Rule not found",
+        code: "not_found",
+      })),
+    );
+
+    const res = await app.fetch(
+      adminRequest("PUT", "/api/v1/admin/approval/rules/ghost", {
+        name: "Renamed",
+      }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });
 

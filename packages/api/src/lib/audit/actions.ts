@@ -79,24 +79,34 @@ export const ADMIN_ACTIONS = {
    * compliance query filtering `action_type = 'connection.create'` sees
    * datasource additions regardless of entry path.
    *
-   * `test` covers both ephemeral probes (`POST /test` — no persisted target)
-   * and health checks on a registered connection (`POST /:id/test`). Metadata
-   * carries `{ success, dbType, latencyMs }`; ephemeral probes use a placeholder
-   * target id with no persisted row. Audited because the endpoint returns a
-   * reachability verdict — a free oracle for a compromised admin probing
-   * internal network segments.
+   * `probe` covers the ephemeral `POST /test` endpoint: caller supplies a
+   * URL, the server registers it transiently, runs a health check, and
+   * tears it down. Audited because the endpoint returns a reachability
+   * verdict — a free oracle for a compromised admin probing internal
+   * network segments. Target id is the temporary `_test_*` id so
+   * forensic queries can count probes without conflating them with
+   * registered-connection health checks.
+   *
+   * `healthCheck` covers `POST /:id/test` on a registered connection —
+   * routine reachability checks against a persisted datasource. Kept
+   * distinct from `probe` so compliance queries can separately filter
+   * the privilege-escalation surface (`probe`) from operational health
+   * signal (`healthCheck`). Matches the `manualHardDelete` vs
+   * `hardDelete` / `archive` vs `archiveReconcile` pattern elsewhere in
+   * the catalog. Metadata for both: `{ success, dbType, latencyMs }`.
    *
    * `pool_drain` covers the org-wide pool drain (`POST /pool/orgs/{orgId}/drain`,
    * platform scope). Metadata: `{ orgId, drainedConnections }`. Pool drain is
    * an availability lever — without the audit row a platform admin can silently
    * disconnect every active session in an org. The per-connection drain path
-   * (`POST /:id/drain`) is out of scope for this PR (tracked separately).
+   * (`POST /:id/drain`) is tracked as an F-29 residual in #1784.
    */
   connection: {
     create: "connection.create",
     update: "connection.update",
     delete: "connection.delete",
-    test: "connection.test",
+    probe: "connection.probe",
+    healthCheck: "connection.health_check",
     poolDrain: "connection.pool_drain",
   },
   user: {

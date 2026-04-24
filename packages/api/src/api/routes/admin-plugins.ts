@@ -13,6 +13,7 @@ import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api/lib/plugins/settings";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -234,6 +235,7 @@ adminPlugins.openapi(enablePluginRoute, async (c) => {
 
   const plugin = plugins.get(id);
   if (!plugin) {
+    // 404 short-circuits before any state change — pre-handler rejection, no audit.
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
@@ -241,17 +243,34 @@ adminPlugins.openapi(enablePluginRoute, async (c) => {
 
   let persisted = false;
   let warning: string | undefined;
+  let persistError: string | undefined;
   if (hasInternalDB()) {
     try {
       await savePluginEnabled(id, true);
       persisted = true;
     } catch (err) {
+      persistError = err instanceof Error ? err.message : String(err);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin enabled state");
       warning = "Plugin enabled in memory but could not be persisted. State will reset on restart.";
     }
   } else {
     warning = "No internal database — state will reset on restart.";
   }
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.plugin.enable,
+    targetType: "plugin",
+    targetId: id,
+    scope: "platform",
+    status: persistError === undefined ? "success" : "failure",
+    metadata: {
+      pluginId: id,
+      pluginSlug: id,
+      enabled: true,
+      persisted,
+      ...(persistError !== undefined && { error: persistError }),
+    },
+  });
 
   return c.json({ id, enabled: true, status: plugins.getStatus(id) ?? null, persisted, warning }, 200);
 });
@@ -270,17 +289,34 @@ adminPlugins.openapi(disablePluginRoute, async (c) => {
 
   let persisted = false;
   let warning: string | undefined;
+  let persistError: string | undefined;
   if (hasInternalDB()) {
     try {
       await savePluginEnabled(id, false);
       persisted = true;
     } catch (err) {
+      persistError = err instanceof Error ? err.message : String(err);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin disabled state");
       warning = "Plugin disabled in memory but could not be persisted. State will reset on restart.";
     }
   } else {
     warning = "No internal database — state will reset on restart.";
   }
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.plugin.disable,
+    targetType: "plugin",
+    targetId: id,
+    scope: "platform",
+    status: persistError === undefined ? "success" : "failure",
+    metadata: {
+      pluginId: id,
+      pluginSlug: id,
+      enabled: false,
+      persisted,
+      ...(persistError !== undefined && { error: persistError }),
+    },
+  });
 
   return c.json({ id, enabled: false, status: plugins.getStatus(id) ?? null, persisted, warning }, 200);
 });
@@ -421,7 +457,35 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     }
   }
 
-  await savePluginConfig(id, body);
+  // Snapshot key names BEFORE persist so the audit row captures what the
+  // admin intended to change even if savePluginConfig throws. NEVER log
+  // values — the body may contain secrets (BigQuery service account JSON,
+  // Snowflake passwords).
+  const keysChanged = Object.keys(body).toSorted();
+
+  try {
+    await savePluginConfig(id, body);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.plugin.configUpdate,
+      targetType: "plugin",
+      targetId: id,
+      scope: "platform",
+      status: "failure",
+      metadata: { pluginId: id, pluginSlug: id, keysChanged, error: message },
+    });
+    throw err;
+  }
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.plugin.configUpdate,
+    targetType: "plugin",
+    targetId: id,
+    scope: "platform",
+    metadata: { pluginId: id, pluginSlug: id, keysChanged },
+  });
+
   log.info({ pluginId: id, requestId }, "Plugin config updated");
   return c.json({
     id,

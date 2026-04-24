@@ -131,6 +131,30 @@ export const ADMIN_ACTIONS = {
     assign: "role.assign",
   },
   /**
+   * Plugin lifecycle domain. `enable` / `disable` / `config_update` cover the
+   * platform-wide plugin registry; `install` / `uninstall` / `config_update`
+   * also cover per-workspace marketplace installs. `catalog_*` covers the
+   * platform-admin catalog CRUD. `catalog_cascade_uninstall` fires once per
+   * catalog delete that actually removed workspace installations — paired
+   * with `catalog_delete` so forensic queries can distinguish no-op deletes
+   * from the ones that yanked a data source out from every workspace.
+   *
+   * `config_update` metadata never includes values — only `keysChanged:
+   * string[]`. Plugin configs carry credentials (BigQuery service-account
+   * JSON, Snowflake passwords) and logging the values would defeat the point.
+   */
+  plugin: {
+    install: "plugin.install",
+    uninstall: "plugin.uninstall",
+    enable: "plugin.enable",
+    disable: "plugin.disable",
+    configUpdate: "plugin.config_update",
+    catalogCreate: "plugin.catalog_create",
+    catalogUpdate: "plugin.catalog_update",
+    catalogDelete: "plugin.catalog_delete",
+    catalogCascadeUninstall: "plugin.catalog_cascade_uninstall",
+  },
+  /**
    * Without these entries a compromised admin could shrink retentionDays
    * and hard-delete the audit trail leaving zero forensic record.
    */

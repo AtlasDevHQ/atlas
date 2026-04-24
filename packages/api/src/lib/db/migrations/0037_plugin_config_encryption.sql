@@ -1,0 +1,56 @@
+-- 0037 — Encrypt plugin config secrets at rest (F-42 phase 5)
+--
+-- Every plugin that declares `secret: true` fields in its config_schema
+-- previously stored those credentials verbatim inside the JSONB blob of
+-- either `plugin_settings.config` (platform-wide plugin config) or
+-- `workspace_plugins.config` (per-workspace marketplace installs). A DB
+-- dump exposed every plugin credential in plaintext — Slack workspace
+-- bot tokens, Salesforce OAuth secrets, BigQuery service-account keys,
+-- etc. Unlike F-41 (workspace integration credentials), these plugin
+-- secrets talk to customer-owned destinations, so a leak gives an
+-- attacker a foothold into the customer's systems, not just Atlas.
+--
+-- Design choice: **selective-field encryption within the JSONB value**.
+-- F-41 / migration 0036 shipped two shapes — a split `*_encrypted` TEXT
+-- column for simple bearer tokens (slack bot_token, telegram bot_token,
+-- etc.) and whole-blob ciphertext-as-TEXT for the two JSONB carriers
+-- (email_installations.config, sandbox_credentials.credentials) where
+-- every field in the blob is secret. Plugin config is neither: it's a
+-- heterogeneous bag where some keys are secret and others (region,
+-- port, debug, timeouts) must stay readable as plain JSONB so DB ops
+-- can still grep them. Encrypting the full blob would force a decrypt
+-- on every admin read and break operational tooling. Instead
+-- `plugins/secrets.ts::encryptSecretFields` walks the catalog's
+-- `config_schema` and wraps only the `secret: true` values with
+-- `encryptSecret` (`enc:v1:iv:authTag:ciphertext` AES-256-GCM).
+--
+-- As a result **this migration adds no columns**. The type is still
+-- `jsonb`; the transition from plaintext-strings to `enc:v1:…`-strings
+-- happens inside the blob itself, value-by-value. The companion script
+-- `backfill-plugin-config.ts` walks every row, loads its catalog
+-- schema, and idempotently encrypts secret fields that still look like
+-- plaintext (not starting with `enc:v1:`). Re-running the backfill is
+-- safe: already-encrypted values are skipped.
+--
+-- The `updated_at` bump + comment pins an on-database marker so audit
+-- scripts and future rotation migrations (F-47 / #1820) can find the
+-- F-42 transition point without reading git history.
+--
+-- Follow-up: unlike F-41 this migration has **no plaintext-column drop**
+-- to schedule — the plaintext→ciphertext transition is intra-value, so
+-- there is nothing separate to drop once the backfill completes. The
+-- soak item tracks a different thing: confirm no plaintext string
+-- remains in any row after the soak window (grep the JSONB for secret
+-- keys whose value does not start with `enc:v1:`), then tighten the
+-- write path if we ever choose to forbid plaintext passthrough.
+--
+-- Audit row: .claude/research/security-audit-1-2-3.md F-42
+-- Issue: #1816
+
+-- No schema change required — selective-field encryption is applied
+-- inside the JSONB value by app code (`plugins/secrets.ts`). Stamping a
+-- comment so the migration's on-database footprint is discoverable.
+COMMENT ON COLUMN plugin_settings.config IS
+  'Plugin platform-wide config (JSONB). secret:true fields stored as enc:v1:iv:authTag:ciphertext (F-42).';
+COMMENT ON COLUMN workspace_plugins.config IS
+  'Plugin per-workspace config (JSONB). secret:true fields stored as enc:v1:iv:authTag:ciphertext (F-42).';

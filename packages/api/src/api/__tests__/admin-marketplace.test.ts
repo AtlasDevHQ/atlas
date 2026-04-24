@@ -36,6 +36,20 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
+// F-42: admin-marketplace.ts imports errorMessage from audit/error-scrub.
+// The real module imports Cause/Option from "effect", which the shim below
+// doesn't export — load a minimal inline replica that just does the
+// "scrub userinfo + truncate" contract so decrypt-failure audit rows carry
+// usable strings.
+mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+  errorMessage: (err: unknown): string => {
+    const raw = err instanceof Error ? err.message : String(err);
+    const scrubbed = raw.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi, "$1://***@");
+    return scrubbed.length > 512 ? `${scrubbed.slice(0, 509)}...` : scrubbed;
+  },
+  causeToError: () => undefined,
+}));
+
 // --- Effect mock ---
 // Mock the Effect bridge so the route file can load and execute without
 // the full Effect runtime. Effect.gen + runEffect are shimmed to execute
@@ -262,6 +276,13 @@ function findCapturedQuery(pattern: string): { sql: string; params: unknown[] } 
   return capturedQueries.find((q) => q.sql.includes(pattern));
 }
 
+// F-42: secret-encryption.ts pulls getEncryptionKey from here. Mock returns
+// a fixed 32-byte buffer so encryptSecret/decryptSecret round-trip inside
+// the route code under test (the install and PUT config paths). Tests that
+// want to assert "encrypted at rest" read the captured UPDATE params and
+// confirm the `enc:v1:` prefix; tests that only care about the semantic
+// restore/passthrough behavior assert the decrypted plaintext.
+const testEncryptionKey = Buffer.alloc(32, 0x42);
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
@@ -282,6 +303,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
   getPendingAmendmentCount: mock(async () => 0),
+  getEncryptionKey: () => testEncryptionKey,
+  _resetEncryptionKeyCache: () => {},
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -298,6 +321,14 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const { platformCatalog, workspaceMarketplace } = await import("../routes/admin-marketplace");
 const { OpenAPIHono } = await import("@hono/zod-openapi");
+
+// F-42: pull the real decryptSecret after mocks are installed so assertions
+// against "persisted ciphertext decrypts to original plaintext" use the
+// same AES-GCM path the route just ran. getEncryptionKey in the db/internal
+// mock above returns testEncryptionKey so the module and the test share
+// the same key.
+const { decryptSecret } = await import("@atlas/api/lib/db/secret-encryption");
+const { isEncryptedSecret } = await import("@atlas/api/lib/plugins/secrets");
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -799,12 +830,16 @@ describe("Workspace Plugin Marketplace", () => {
       expect(res.status).toBe(200);
 
       // The persisted config blob is param[0] of the UPDATE (stringified JSON).
+      // F-42: the apiKey is stored as an `enc:v1:` ciphertext — assert the
+      // shape, then decrypt to verify the semantic F-43 behavior (placeholder
+      // round-trip preserves the prior secret) still holds.
       const updateCall = findCapturedQuery("UPDATE workspace_plugins");
       expect(updateCall).toBeDefined();
       const persisted = JSON.parse(updateCall!.params[0] as string) as Record<string, unknown>;
-      expect(persisted.apiKey).toBe("sk-live-12345"); // original preserved
-      expect(persisted.apiKey).not.toBe("••••••••");  // placeholder stripped
-      expect(persisted.region).toBe("eu-west-1");     // non-secret passed through
+      expect(isEncryptedSecret(persisted.apiKey)).toBe(true);    // encrypted at rest (F-42)
+      expect(decryptSecret(persisted.apiKey as string)).toBe("sk-live-12345"); // original preserved
+      expect(persisted.apiKey).not.toBe("••••••••");              // placeholder stripped
+      expect(persisted.region).toBe("eu-west-1");                 // non-secret passed through
     });
 
     it("rotates a secret when the admin submits a new value (not the placeholder)", async () => {
@@ -833,7 +868,9 @@ describe("Workspace Plugin Marketplace", () => {
       expect(res.status).toBe(200);
       const updateCall = findCapturedQuery("UPDATE workspace_plugins");
       const persisted = JSON.parse(updateCall!.params[0] as string) as Record<string, unknown>;
-      expect(persisted.apiKey).toBe("sk-new");
+      // F-42: the rotation value is freshly encrypted, not stored plaintext.
+      expect(isEncryptedSecret(persisted.apiKey)).toBe(true);
+      expect(decryptSecret(persisted.apiKey as string)).toBe("sk-new");
     });
 
     it("preserves a secret field omitted entirely by the UI — dirty-field saves must not wipe the credential (F-43 #1817)", async () => {
@@ -867,7 +904,9 @@ describe("Workspace Plugin Marketplace", () => {
       expect(res.status).toBe(200);
       const updateCall = findCapturedQuery("UPDATE workspace_plugins");
       const persisted = JSON.parse(updateCall!.params[0] as string) as Record<string, unknown>;
-      expect(persisted.apiKey).toBe("sk-live-12345");
+      // F-42: omit-to-preserve stores the prior value re-encrypted.
+      expect(isEncryptedSecret(persisted.apiKey)).toBe(true);
+      expect(decryptSecret(persisted.apiKey as string)).toBe("sk-live-12345");
       expect(persisted.region).toBe("eu-west-1");
     });
 
@@ -926,8 +965,195 @@ describe("Workspace Plugin Marketplace", () => {
       });
       expect(res.status).toBe(200);
       const persisted = JSON.parse(findCapturedQuery("UPDATE workspace_plugins")!.params[0] as string) as Record<string, unknown>;
-      expect(persisted.apiKey).toBe("sk-live");    // placeholder restored
-      expect(persisted.region).toBe("us-east-1");  // omitted → preserved
+      // F-42 on corrupt schema: fail-closed encrypts every non-empty string.
+      // Both apiKey (placeholder-restored) and region (omitted → preserved)
+      // are encrypted at rest; decrypt round-trips the F-43 semantics.
+      expect(isEncryptedSecret(persisted.apiKey)).toBe(true);
+      expect(decryptSecret(persisted.apiKey as string)).toBe("sk-live");
+      expect(isEncryptedSecret(persisted.region)).toBe(true);
+      expect(decryptSecret(persisted.region as string)).toBe("us-east-1");
+    });
+
+    it("encrypts `secret: true` fields at rest and leaves non-secret fields plaintext (F-42 #1816)", async () => {
+      // The write path must keep the JSONB blob grep-able for DB ops on the
+      // operational fields (region, port, debug) while never persisting a
+      // credential verbatim. Pre-SELECT returns an already-encrypted apiKey
+      // because it was stored by a prior PUT (or the backfill). The PUT
+      // rotates apiKey to a new plaintext value — the re-encrypt step must
+      // produce fresh ciphertext, and non-secrets must stay readable.
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "legacy-sk-old", region: "us-east-1" },
+          config_schema: [
+            { key: "apiKey", type: "string", secret: true },
+            { key: "region", type: "string" },
+          ],
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "sk-new-rotation", region: "eu-west-1" } }),
+      });
+      expect(res.status).toBe(200);
+      const persisted = JSON.parse(findCapturedQuery("UPDATE workspace_plugins")!.params[0] as string) as Record<string, unknown>;
+      expect(isEncryptedSecret(persisted.apiKey)).toBe(true);
+      expect(decryptSecret(persisted.apiKey as string)).toBe("sk-new-rotation");
+      expect(persisted.region).toBe("eu-west-1"); // non-secret stays plaintext
+    });
+
+    it("install encrypts `secret: true` fields from the initial catalog config (F-42 #1816)", async () => {
+      // POST /install path mirrors the PUT path: the catalog's config_schema
+      // drives which keys get encrypted. Submitting a plaintext apiKey on
+      // first install must land ciphertext in workspace_plugins.config.
+      // The 201 response body must come back masked — symmetric with the
+      // PUT response — so a round-tripping UI never re-submits raw
+      // ciphertext from the install response.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [{
+        ...sampleCatalogRow,
+        config_schema: [{ key: "apiKey", type: "string", secret: true }],
+      }]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", [{
+        id: "inst-new",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        // Returned row carries the encrypted config the INSERT wrote; the
+        // route must mask before responding.
+        config: { apiKey: "enc:v1:fake:fake:fake" },
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1", config: { apiKey: "sk-install-time" } }),
+      });
+      expect(res.status).toBe(201);
+      const insertCall = findCapturedQuery("INSERT INTO workspace_plugins");
+      expect(insertCall).toBeDefined();
+      // Config is param[3] of the INSERT — ciphertext on the wire to DB.
+      const persisted = JSON.parse(insertCall!.params[3] as string) as Record<string, unknown>;
+      expect(isEncryptedSecret(persisted.apiKey)).toBe(true);
+      expect(decryptSecret(persisted.apiKey as string)).toBe("sk-install-time");
+      // And masked on the 201 response — UI never sees ciphertext.
+      const body = await json(res);
+      expect(body.config.apiKey).toBe("••••••••");
+    });
+
+    it("decrypts stored ciphertext when the PUT body re-submits MASKED_PLACEHOLDER (F-42 #1816)", async () => {
+      // Pre-SELECT returns ciphertext (as the backfill/previous PUT would
+      // have left it). Placeholder round-trip must still yield the original
+      // plaintext on the final stored row — independently of whether it
+      // lives on the stored side plaintext-or-ciphertext.
+      const { encryptSecret } = await import("@atlas/api/lib/db/secret-encryption");
+      const storedCiphertext = encryptSecret("sk-live-stored");
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: storedCiphertext, region: "us-east-1" },
+          config_schema: [
+            { key: "apiKey", type: "string", secret: true },
+            { key: "region", type: "string" },
+          ],
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "••••••••", region: "eu-west-1" } }),
+      });
+      expect(res.status).toBe(200);
+      const persisted = JSON.parse(findCapturedQuery("UPDATE workspace_plugins")!.params[0] as string) as Record<string, unknown>;
+      expect(isEncryptedSecret(persisted.apiKey)).toBe(true);
+      expect(decryptSecret(persisted.apiKey as string)).toBe("sk-live-stored");
+      expect(persisted.region).toBe("eu-west-1");
+    });
+
+    it("masks the config field in the PUT response — UI never sees ciphertext (F-42 #1816)", async () => {
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "sk-live", region: "us" },
+          config_schema: [
+            { key: "apiKey", type: "string", secret: true },
+            { key: "region", type: "string" },
+          ],
+        },
+      ]);
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        // Route receives the encrypted row via RETURNING * and must re-mask
+        // before responding — assert masked on the wire.
+        config: { apiKey: "enc:v1:fake:fake:fake", region: "eu" },
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "sk-new", region: "eu" } }),
+      });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.config.apiKey).toBe("••••••••");
+      expect(body.config.region).toBe("eu"); // non-secret visible
+    });
+
+    it("returns 500 + failure audit when stored ciphertext can't be decrypted (F-42 #1816)", async () => {
+      // Corrupt ciphertext in the JSONB blob must surface loudly — a silent
+      // decrypt failure would otherwise mask a rotated encryption key or a
+      // truncated row and leave the plugin runtime holding a null credential.
+      setQueryResult("FROM workspace_plugins wp", [
+        {
+          config: { apiKey: "enc:v1:garbage:garbage:garbage" },
+          config_schema: [{ key: "apiKey", type: "string", secret: true }],
+        },
+      ]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { apiKey: "••••••••" } }),
+      });
+      expect(res.status).toBe(500);
+      const body = await json(res);
+      expect(body.error).toBe("internal_error");
+
+      const auditCalls = mockLogAdminAction.mock.calls.map((call) => call[0]);
+      const failure = auditCalls.find((e) =>
+        e.actionType === "plugin.config_update" && e.status === "failure",
+      );
+      expect(failure).toBeDefined();
+      expect(failure!.metadata!.decryptFailure).toBe(true);
     });
 
     it("returns 404 when the pre-fetch finds no installation", async () => {

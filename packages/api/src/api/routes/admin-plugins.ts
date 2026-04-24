@@ -13,6 +13,7 @@ import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api/lib/plugins/settings";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -234,6 +235,7 @@ adminPlugins.openapi(enablePluginRoute, async (c) => {
 
   const plugin = plugins.get(id);
   if (!plugin) {
+    // Not-found short-circuits — no state change, no audit event.
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
@@ -241,17 +243,34 @@ adminPlugins.openapi(enablePluginRoute, async (c) => {
 
   let persisted = false;
   let warning: string | undefined;
+  let persistError: string | undefined;
   if (hasInternalDB()) {
     try {
       await savePluginEnabled(id, true);
       persisted = true;
     } catch (err) {
+      persistError = err instanceof Error ? err.message : String(err);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin enabled state");
       warning = "Plugin enabled in memory but could not be persisted. State will reset on restart.";
     }
   } else {
     warning = "No internal database — state will reset on restart.";
   }
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.plugin.enable,
+    targetType: "plugin",
+    targetId: id,
+    scope: "platform",
+    status: persistError === undefined ? "success" : "failure",
+    metadata: {
+      pluginId: id,
+      pluginSlug: id,
+      enabled: true,
+      persisted,
+      ...(persistError !== undefined && { error: persistError }),
+    },
+  });
 
   return c.json({ id, enabled: true, status: plugins.getStatus(id) ?? null, persisted, warning }, 200);
 });
@@ -270,17 +289,34 @@ adminPlugins.openapi(disablePluginRoute, async (c) => {
 
   let persisted = false;
   let warning: string | undefined;
+  let persistError: string | undefined;
   if (hasInternalDB()) {
     try {
       await savePluginEnabled(id, false);
       persisted = true;
     } catch (err) {
+      persistError = err instanceof Error ? err.message : String(err);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin disabled state");
       warning = "Plugin disabled in memory but could not be persisted. State will reset on restart.";
     }
   } else {
     warning = "No internal database — state will reset on restart.";
   }
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.plugin.disable,
+    targetType: "plugin",
+    targetId: id,
+    scope: "platform",
+    status: persistError === undefined ? "success" : "failure",
+    metadata: {
+      pluginId: id,
+      pluginSlug: id,
+      enabled: false,
+      persisted,
+      ...(persistError !== undefined && { error: persistError }),
+    },
+  });
 
   return c.json({ id, enabled: false, status: plugins.getStatus(id) ?? null, persisted, warning }, 200);
 });
@@ -356,19 +392,23 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     return c.json({ error: "invalid_request", message: "Request body must be a JSON object." }, 400);
   }
 
-  // Validate against schema if plugin provides one
+  // Validate against schema if plugin provides one. `originals` is captured
+  // so we can (a) restore masked secret placeholders to their prior value
+  // and (b) compute an accurate `keysChanged` that excludes re-submitted
+  // placeholders — otherwise every admin save would report apiKey as
+  // rotated even when they only toggled `debug`.
   const MASKED_PLACEHOLDER = "••••••••";
+  let originals: Record<string, unknown> = {};
   if (typeof plugin.getConfigSchema === "function") {
     const schema = plugin.getConfigSchema();
     const schemaKeys = new Set(schema.map((f) => f.key));
     const errors: string[] = [];
 
-    // Restore masked secret values from original config
     const pluginConfig = plugin.config != null && typeof plugin.config === "object"
       ? (plugin.config as Record<string, unknown>)
       : {};
     const dbOverrides = await getPluginConfig(id);
-    const originals = { ...pluginConfig, ...dbOverrides };
+    originals = { ...pluginConfig, ...dbOverrides };
 
     for (const field of schema) {
       const value = body[field.key];
@@ -421,7 +461,37 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     }
   }
 
-  await savePluginConfig(id, body);
+  // Keys only — see ADMIN_ACTIONS.plugin JSDoc. Filter out keys whose final
+  // value equals the originals (happens when the admin re-submits the
+  // masked placeholder for a secret they didn't rotate). Snapshotted BEFORE
+  // persist so a savePluginConfig throw still emits the intended change set.
+  const keysChanged = Object.keys(body)
+    .filter((key) => body[key] !== originals[key])
+    .toSorted();
+
+  try {
+    await savePluginConfig(id, body);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.plugin.configUpdate,
+      targetType: "plugin",
+      targetId: id,
+      scope: "platform",
+      status: "failure",
+      metadata: { pluginId: id, pluginSlug: id, keysChanged, error: message },
+    });
+    throw err;
+  }
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.plugin.configUpdate,
+    targetType: "plugin",
+    targetId: id,
+    scope: "platform",
+    metadata: { pluginId: id, pluginSlug: id, keysChanged },
+  });
+
   log.info({ pluginId: id, requestId }, "Plugin config updated");
   return c.json({
     id,

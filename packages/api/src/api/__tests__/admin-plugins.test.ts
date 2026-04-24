@@ -15,6 +15,34 @@ import {
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
+// --- Audit capture ---
+// Intercept every logAdminAction emission so tests can assert audit shape
+// without booting the internal DB. Mocked at module level so the route
+// module binds to this mock when it's first imported below.
+
+interface CapturedAuditEntry {
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  status?: "success" | "failure";
+  metadata?: Record<string, unknown>;
+  scope?: "platform" | "workspace";
+  ipAddress?: string | null;
+}
+
+const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/audit", async () => {
+  const actual = await import("@atlas/api/lib/audit/actions");
+  return {
+    logAdminAction: mockLogAdminAction,
+    logAdminActionAwait: mock(async () => {}),
+    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+  };
+});
+
 // --- Unified mocks ---
 
 const mocks = createApiTestMocks({
@@ -143,6 +171,7 @@ beforeEach(() => {
   mockSavePluginEnabled.mockImplementation(() => Promise.resolve());
   mockSavePluginConfig.mockImplementation(() => Promise.resolve());
   mockGetPluginConfig.mockImplementation(() => Promise.resolve(null));
+  mockLogAdminAction.mockClear();
 });
 
 // ---------------------------------------------------------------------------
@@ -382,5 +411,222 @@ describe("POST /api/v1/admin/plugins/:id/enable — persistence warnings", () =>
     expect(body.enabled).toBe(true);
     expect(body.persisted).toBe(false);
     expect(body.warning).toContain("could not be persisted");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Audit emission
+// ---------------------------------------------------------------------------
+
+describe("audit emission — POST /api/v1/admin/plugins/:id/enable", () => {
+  it("emits exactly one plugin.enable audit on success", async () => {
+    mockPluginEnabled = false;
+    const res = await request("/api/v1/admin/plugins/test-plugin/enable", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("plugin.enable");
+    expect(entry.targetType).toBe("plugin");
+    expect(entry.targetId).toBe("test-plugin");
+    expect(entry.scope).toBe("platform");
+    expect(entry.status ?? "success").toBe("success");
+    expect(entry.metadata).toMatchObject({
+      pluginId: "test-plugin",
+      pluginSlug: "test-plugin",
+      enabled: true,
+      persisted: true,
+    });
+  });
+
+  it("emits plugin.enable with status=failure when persistence throws", async () => {
+    mockSavePluginEnabled.mockImplementation(() =>
+      Promise.reject(new Error("savePluginEnabled DB error")),
+    );
+    const res = await request("/api/v1/admin/plugins/test-plugin/enable", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("plugin.enable");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({
+      pluginId: "test-plugin",
+      pluginSlug: "test-plugin",
+      enabled: true,
+      persisted: false,
+    });
+    expect(entry.metadata!.error).toContain("savePluginEnabled DB error");
+  });
+
+  it("does not emit audit for unknown plugin (pre-handler rejection)", async () => {
+    const res = await request("/api/v1/admin/plugins/nonexistent/enable", {
+      method: "POST",
+    });
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("audit emission — POST /api/v1/admin/plugins/:id/disable", () => {
+  it("emits exactly one plugin.disable audit on success", async () => {
+    const res = await request("/api/v1/admin/plugins/test-plugin/disable", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("plugin.disable");
+    expect(entry.targetType).toBe("plugin");
+    expect(entry.targetId).toBe("test-plugin");
+    expect(entry.scope).toBe("platform");
+    expect(entry.metadata).toMatchObject({
+      pluginId: "test-plugin",
+      pluginSlug: "test-plugin",
+      enabled: false,
+      persisted: true,
+    });
+  });
+
+  it("emits plugin.disable with status=failure when persistence throws", async () => {
+    mockSavePluginEnabled.mockImplementation(() =>
+      Promise.reject(new Error("savePluginEnabled DB error on disable")),
+    );
+    const res = await request("/api/v1/admin/plugins/test-plugin/disable", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("plugin.disable");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata!.persisted).toBe(false);
+    expect(entry.metadata!.error).toContain("savePluginEnabled DB error on disable");
+  });
+});
+
+describe("audit emission — PUT /api/v1/admin/plugins/:id/config", () => {
+  it("emits exactly one plugin.config_update audit on success with keysChanged", async () => {
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "new-secret-value",
+        region: "eu-west",
+        debug: true,
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("plugin.config_update");
+    expect(entry.targetType).toBe("plugin");
+    expect(entry.targetId).toBe("test-plugin");
+    expect(entry.scope).toBe("platform");
+    expect(entry.metadata!.pluginId).toBe("test-plugin");
+    expect(entry.metadata!.pluginSlug).toBe("test-plugin");
+    // Key names are captured (sorted for deterministic diffs).
+    expect(entry.metadata!.keysChanged).toEqual(["apiKey", "debug", "region"]);
+  });
+
+  it("never includes config values in audit metadata", async () => {
+    await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "sk-super-secret-live-value",
+        region: "us-east",
+        debug: false,
+      }),
+    });
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    const serialized = JSON.stringify(entry);
+    expect(serialized).not.toContain("sk-super-secret-live-value");
+    // `metadata` must not carry the raw body. keysChanged is strings — the
+    // field-name check catches any refactor that accidentally swaps to the
+    // value map.
+    expect(entry.metadata).not.toHaveProperty("apiKey");
+    expect(entry.metadata).not.toHaveProperty("config");
+    expect(entry.metadata).not.toHaveProperty("values");
+    expect(entry.metadata).not.toHaveProperty("body");
+  });
+
+  it("emits plugin.config_update with status=failure when savePluginConfig throws", async () => {
+    mockSavePluginConfig.mockImplementation(() =>
+      Promise.reject(new Error("savePluginConfig DB error")),
+    );
+    // Originals are { apiKey: "sk-secret-123", region: "us-east", debug: false };
+    // sending `eu-west` guarantees region shows up as changed.
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "rotated", region: "eu-west" }),
+    });
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("plugin.config_update");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata!.keysChanged).toEqual(["apiKey", "region"]);
+    expect(entry.metadata!.error).toContain("savePluginConfig DB error");
+  });
+
+  it("does not emit audit on validation failure (pre-handler rejection)", async () => {
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ region: "us-east" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("does not emit audit for unknown plugin", async () => {
+    const res = await request("/api/v1/admin/plugins/nonexistent/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("sorts keysChanged alphabetically regardless of body insertion order", async () => {
+    // Reverse-alphabetical body — proves `.toSorted()` is load-bearing, not
+    // a coincidence of the other test cases picking alphabetical inputs.
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        region: "eu-west",
+        debug: true,
+        apiKey: "rotated",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.metadata!.keysChanged).toEqual(["apiKey", "debug", "region"]);
+  });
+
+  it("filters keysChanged to only fields that actually changed", async () => {
+    // Admin re-submits the masked placeholder for `apiKey` — the handler
+    // restores the original value, so `apiKey` is NOT a real change.
+    // `debug` gets sent with its original value (false). Only `region`
+    // actually changes. Without the filter, all three keys would leak
+    // into `keysChanged` and misrepresent the edit as a secret rotation.
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "••••••••",
+        region: "eu-west",
+        debug: false,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.metadata!.keysChanged).toEqual(["region"]);
   });
 });

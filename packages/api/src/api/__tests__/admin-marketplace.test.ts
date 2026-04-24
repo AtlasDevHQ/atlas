@@ -6,7 +6,35 @@
  * sub-router dependency.
  */
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+
+// --- Audit capture ---
+// Intercept every logAdminAction emission so tests can assert audit shape.
+// Mocked at module level so the route module binds to this mock when first
+// imported below.
+
+interface CapturedAuditEntry {
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  status?: "success" | "failure";
+  metadata?: Record<string, unknown>;
+  scope?: "platform" | "workspace";
+  ipAddress?: string | null;
+}
+
+const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/audit", async () => {
+  const actual = await import("@atlas/api/lib/audit/actions");
+  return {
+    logAdminAction: mockLogAdminAction,
+    logAdminActionAwait: mock(async () => {}),
+    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+  };
+});
 
 // --- Effect mock ---
 // Mock the Effect bridge so the route file can load and execute without
@@ -28,21 +56,77 @@ const fakeAuthContext = {
   },
 };
 
+// EffectPromise carries a list of error taps (side-effect handlers run before
+// the error propagates into the generator). `.pipe(Effect.tapError(fn))` on
+// the queryEffect return decorates this list so the catch block in runEffect
+// runs the taps before calling `gen.throw()`. Any operator beyond tapError
+// (map, catchAll, flatMap, zip, race) is not implemented — if a route starts
+// using one, extend the shim. For failure-path branching, routes use plain
+// try/catch around `yield* queryEffect(...)` which works under both real
+// Effect and this shim.
+interface TestEffectPromise {
+  _tag: "EffectPromise";
+  fn: () => Promise<unknown>;
+  errorTaps: Array<(err: unknown) => unknown>;
+}
+
+interface TestPipeable {
+  [Symbol.iterator]: () => Generator<unknown, unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pipe is variadic across operator types
+  pipe(...ops: Array<(source: TestPipeable) => any>): any;
+}
+
+function makePipeable(effectValue: TestEffectPromise): TestPipeable {
+  const pipeable: TestPipeable = {
+    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+      return yield effectValue;
+    },
+    pipe(...ops) {
+      let current: TestPipeable = pipeable;
+      for (const op of ops) current = op(current);
+      return current;
+    },
+  };
+  return pipeable;
+}
+
 mock.module("effect", () => {
   const Effect = {
     gen: (genFn: () => Generator) => {
       return { _tag: "EffectGen", genFn };
     },
     promise: (fn: () => Promise<unknown>) => {
-      return {
-        [Symbol.iterator]: function* (): Generator<unknown, unknown> {
-          return yield { _tag: "EffectPromise", fn };
-        },
-      };
+      const effectValue: TestEffectPromise = { _tag: "EffectPromise", fn, errorTaps: [] };
+      return makePipeable(effectValue);
     },
     // Support Effect.runPromise for routes that unwrap Effect-returning EE functions
     runPromise: (value: unknown) => {
       return Promise.resolve(value);
+    },
+    sync: (syncFn: () => unknown) => ({ _tag: "EffectSync", fn: syncFn }),
+    // tapError attaches a handler that runs before the error propagates.
+    // The handler returns another Effect (typically Effect.sync(...)) — if
+    // it's an EffectSync we run its fn inline for the side effect (test-only
+    // shim; real Effect composes them asynchronously).
+    tapError: (handler: (err: unknown) => unknown) => (source: TestPipeable) => {
+      const originalIterator = source[Symbol.iterator].bind(source);
+      const newPipeable: TestPipeable = {
+        [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+          const gen = originalIterator();
+          let next = gen.next();
+          while (!next.done) {
+            const value = next.value;
+            if (value && typeof value === "object" && (value as { _tag?: string })._tag === "EffectPromise") {
+              (value as TestEffectPromise).errorTaps.push(handler);
+            }
+            const piped = yield value;
+            next = gen.next(piped);
+          }
+          return next.value;
+        },
+        pipe: source.pipe.bind(source),
+      };
+      return newPipeable;
     },
   };
   return { Effect };
@@ -60,12 +144,32 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
     const gen = effect.genFn();
     let result = gen.next();
     while (!result.done) {
-      let value = result.value;
-      if (value && typeof value === "object" && "_tag" in value && value._tag === "EffectPromise") {
+      const value = result.value;
+      if (value && typeof value === "object" && (value as { _tag?: string })._tag === "EffectPromise") {
+        const promiseValue = value as TestEffectPromise;
         try {
-          value = await (value as unknown as { fn: () => Promise<unknown> }).fn();
-          result = gen.next(value);
+          const resolved = await promiseValue.fn();
+          result = gen.next(resolved);
         } catch (err) {
+          // Run any error taps attached via .pipe(Effect.tapError(...)) BEFORE
+          // the error enters the generator. Matches real Effect behavior
+          // observationally: tap runs, then error propagates. (Real Effect
+          // composes these in the error channel asynchronously; the shim
+          // inlines them — the end-state is the same for our assertions.)
+          for (const tap of promiseValue.errorTaps) {
+            try {
+              const tapResult = tap(err);
+              if (
+                tapResult &&
+                typeof tapResult === "object" &&
+                (tapResult as { _tag?: string })._tag === "EffectSync"
+              ) {
+                (tapResult as { fn: () => unknown }).fn();
+              }
+            } catch {
+              // tap failures must not swallow the original error
+            }
+          }
           result = gen.throw(err);
         }
       } else {
@@ -153,11 +257,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     on: () => {},
   }),
   internalQuery: (sql: string, _params?: unknown[]) => invokeInternalQueryMock(sql),
-  queryEffect: (sql: string) => ({
-    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
-      return yield { _tag: "EffectPromise", fn: () => invokeInternalQueryMock(sql) };
-    },
-  }),
+  queryEffect: (sql: string) => {
+    const effectValue: TestEffectPromise = {
+      _tag: "EffectPromise",
+      fn: () => invokeInternalQueryMock(sql),
+      errorTaps: [],
+    };
+    return makePipeable(effectValue);
+  },
   internalExecute: () => {},
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
@@ -347,6 +454,10 @@ describe("Platform Plugin Catalog", () => {
 
   describe("DELETE /catalog/:id", () => {
     it("deletes a catalog entry", async () => {
+      // Route fetches slug + count before the delete so the audit row
+      // captures both even after FK cascade wipes the row.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "bigquery" }]);
+      setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 0 }]);
       setQueryResult("DELETE FROM plugin_catalog", [{ id: "cat-1" }]);
 
       const app = buildPlatformApp();
@@ -357,7 +468,8 @@ describe("Platform Plugin Catalog", () => {
     });
 
     it("returns 404 for non-existent entry", async () => {
-      setQueryResult("DELETE FROM plugin_catalog", []);
+      // Pre-lookup returns zero rows — handler short-circuits before the DELETE.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", []);
 
       const app = buildPlatformApp();
       const res = await app.request("/catalog/nonexistent", { method: "DELETE" });
@@ -545,6 +657,566 @@ describe("Workspace Plugin Marketplace", () => {
         body: JSON.stringify({ config: {} }),
       });
       expect(res.status).toBe(404);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Audit emission across catalog + marketplace write routes
+// ---------------------------------------------------------------------------
+
+describe("audit emission — Platform catalog", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockQueryResults = new Map();
+    mockLogAdminAction.mockClear();
+  });
+
+  describe("POST /catalog — plugin.catalog_create", () => {
+    it("emits exactly one plugin.catalog_create audit on success", async () => {
+      setQueryResult("SELECT id FROM plugin_catalog WHERE slug", []);
+      setQueryResult("INSERT INTO plugin_catalog", [sampleCatalogRow]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "BigQuery",
+          slug: "bigquery",
+          type: "datasource",
+          npmPackage: "@useatlas/bigquery",
+        }),
+      });
+      expect(res.status).toBe(201);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_create");
+      expect(entry.targetType).toBe("plugin");
+      expect(entry.scope).toBe("platform");
+      expect(entry.metadata).toMatchObject({ pluginSlug: "bigquery" });
+      expect(entry.metadata!.pluginId).toBeString();
+    });
+
+    it("emits status=failure when INSERT throws", async () => {
+      setQueryResult("SELECT id FROM plugin_catalog WHERE slug", []);
+      setQueryResult("INSERT INTO plugin_catalog", new Error("db insert failed"));
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "X", slug: "x", type: "datasource" }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_create");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.pluginSlug).toBe("x");
+      expect(entry.metadata!.error).toContain("db insert failed");
+    });
+
+    it("does not emit audit on duplicate slug (pre-handler rejection)", async () => {
+      setQueryResult("SELECT id FROM plugin_catalog WHERE slug", [{ id: "existing" }]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "BigQuery", slug: "bigquery", type: "datasource" }),
+      });
+      expect(res.status).toBe(409);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("PUT /catalog/:id — plugin.catalog_update", () => {
+    it("emits exactly one plugin.catalog_update audit with keysChanged", async () => {
+      setQueryResult("UPDATE plugin_catalog", [{ ...sampleCatalogRow, name: "BigQuery v2" }]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "BigQuery v2", enabled: false }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_update");
+      expect(entry.targetId).toBe("cat-1");
+      expect(entry.scope).toBe("platform");
+      expect(entry.metadata!.pluginSlug).toBe("bigquery");
+      expect(entry.metadata!.keysChanged).toEqual(["enabled", "name"]);
+    });
+
+    it("emits status=failure when UPDATE throws — carries pluginSlug from pre-lookup", async () => {
+      // Pre-lookup succeeds, UPDATE fails. Failure audit includes the slug
+      // even though the UPDATE never returned a row.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "bigquery" }]);
+      setQueryResult("UPDATE plugin_catalog", new Error("db update failed"));
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "X" }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_update");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.pluginSlug).toBe("bigquery");
+      expect(entry.metadata!.keysChanged).toEqual(["name"]);
+    });
+
+    it("emits failure audit with priorLookupFailed when pre-lookup throws", async () => {
+      // Pre-lookup throws → degrade to priorLookupFailed sentinel and let
+      // the UPDATE throw its own failure (the pre-lookup isn't allowed to
+      // replace the UPDATE error channel). This keeps the audit trail honest
+      // even under pool-exhaustion attacks.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", new Error("pool exhausted"));
+      setQueryResult("UPDATE plugin_catalog", new Error("subsequent UPDATE failed"));
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "X" }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_update");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.priorLookupFailed).toBe(true);
+      expect(entry.metadata).not.toHaveProperty("pluginSlug");
+    });
+  });
+
+  describe("DELETE /catalog/:id — plugin.catalog_delete + cascade", () => {
+    it("emits only plugin.catalog_delete when no workspaces have it installed", async () => {
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "bigquery" }]);
+      setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 0 }]);
+      setQueryResult("DELETE FROM plugin_catalog", [{ id: "cat-1" }]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_delete");
+      expect(entry.targetId).toBe("cat-1");
+      expect(entry.metadata).toMatchObject({
+        pluginId: "cat-1",
+        pluginSlug: "bigquery",
+        affectedOrgCount: 0,
+      });
+    });
+
+    it("emits catalog_delete + catalog_cascade_uninstall when workspaces are affected", async () => {
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "bigquery" }]);
+      setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 7 }]);
+      setQueryResult("DELETE FROM plugin_catalog", [{ id: "cat-1" }]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(2);
+      const [first, second] = mockLogAdminAction.mock.calls.map((c) => c[0]);
+      expect(first!.actionType).toBe("plugin.catalog_delete");
+      expect(first!.metadata).toMatchObject({ pluginSlug: "bigquery", affectedOrgCount: 7 });
+      expect(second!.actionType).toBe("plugin.catalog_cascade_uninstall");
+      expect(second!.metadata).toMatchObject({
+        pluginSlug: "bigquery",
+        affectedOrgCount: 7,
+      });
+      // Ordering is meaningful — cascade is the follow-up to the delete.
+      expect(first!.targetId).toBe(second!.targetId);
+    });
+
+    it("emits status=failure when DELETE throws and no cascade event fires", async () => {
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "bigquery" }]);
+      setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 3 }]);
+      setQueryResult("DELETE FROM plugin_catalog", new Error("FK violation"));
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_delete");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.pluginSlug).toBe("bigquery");
+      expect(entry.metadata!.affectedOrgCount).toBe(3);
+      expect(entry.metadata!.error).toContain("FK violation");
+    });
+
+    it("does not emit audit when plugin not found (pre-handler rejection)", async () => {
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", []);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/nonexistent", { method: "DELETE" });
+      expect(res.status).toBe(404);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("emits failure audit with priorLookupFailed when pre-lookup throws", async () => {
+      // The critical silent-audit-miss path: pre-delete SELECT throws, the
+      // handler must still emit a failure audit so a compromised admin
+      // can't flood transient errors to hide attempted deletes.
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", new Error("pool exhausted"));
+      setQueryResult("DELETE FROM plugin_catalog", new Error("subsequent DELETE failed"));
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.catalog_delete");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.priorLookupFailed).toBe(true);
+      expect(entry.metadata).not.toHaveProperty("pluginSlug");
+    });
+  });
+});
+
+describe("audit emission — Workspace marketplace", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockQueryResults = new Map();
+    mockLogAdminAction.mockClear();
+  });
+
+  describe("POST /marketplace/install — plugin.install", () => {
+    it("emits exactly one plugin.install audit with orgId scope", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: null,
+      }]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.install");
+      expect(entry.targetType).toBe("plugin");
+      expect(entry.scope).toBe("workspace");
+      expect(entry.metadata).toMatchObject({
+        pluginId: "cat-1",
+        pluginSlug: "bigquery",
+        orgId: "org-1",
+      });
+    });
+
+    it("emits status=failure when INSERT throws", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", new Error("install failed"));
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.install");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.pluginSlug).toBe("bigquery");
+      expect(entry.metadata!.orgId).toBe("org-1");
+      expect(entry.metadata!.error).toContain("install failed");
+    });
+
+    it("does not emit audit on plan-ineligible (pre-handler rejection)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, min_plan: "business" },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(400);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("does not emit audit when catalog entry not found (404)", async () => {
+      // Prevents log flooding from attackers brute-forcing catalogId to probe
+      // which entries exist in this deployment.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "missing-cat" }),
+      });
+      expect(res.status).toBe(404);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("does not emit audit when plugin already installed (409)", async () => {
+      // Symmetric with the catalog-create duplicate-slug rejection — a
+      // workspace-level enumeration probe should not flood the audit trail.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", [{ id: "inst-existing" }]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(409);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("emits failure audit when pre-lookup SELECT throws (F-22 pattern)", async () => {
+      // Pre-lookup failure must not silently 500 — without the failure audit
+      // an attacker could flood transient errors to probe catalog IDs.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", new Error("pool exhausted"));
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.install");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.priorLookupFailed).toBe(true);
+      expect(entry.metadata!.orgId).toBe("org-1");
+      expect(entry.metadata!.error).toContain("pool exhausted");
+    });
+  });
+
+  describe("DELETE /marketplace/:id — plugin.uninstall", () => {
+    it("emits exactly one plugin.uninstall audit on success", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.uninstall");
+      expect(entry.targetType).toBe("plugin");
+      expect(entry.targetId).toBe("inst-1");
+      expect(entry.scope).toBe("workspace");
+      expect(entry.metadata).toMatchObject({
+        pluginId: "cat-1",
+        pluginSlug: "bigquery",
+        orgId: "org-1",
+      });
+    });
+
+    it("emits status=failure when DELETE throws", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", new Error("uninstall failed"));
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.uninstall");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.error).toContain("uninstall failed");
+    });
+
+    it("does not emit audit when installation not found (404)", async () => {
+      // 404 short-circuits after the DELETE returns zero rows — no state
+      // changed, no audit.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/missing-inst", { method: "DELETE" });
+      expect(res.status).toBe(404);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("emits audit without pluginSlug when catalog row raced away", async () => {
+      // catalog_delete cascade could fire concurrently and wipe the
+      // plugin_catalog row the subselect relies on. The audit still emits
+      // with pluginId + orgId so forensic reconstruction isn't completely
+      // blind even though the slug is gone.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: null },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.uninstall");
+      expect(entry.metadata).toMatchObject({ pluginId: "cat-1", orgId: "org-1" });
+      expect(entry.metadata).not.toHaveProperty("pluginSlug");
+    });
+  });
+
+  describe("PUT /marketplace/:id/config — plugin.config_update", () => {
+    it("emits exactly one plugin.config_update audit with keysChanged only", async () => {
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: null,
+      }]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: {
+            serviceAccountKey: "SECRET_JSON_BLOB",
+            projectId: "my-project",
+            location: "us-central1",
+          },
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.config_update");
+      expect(entry.targetId).toBe("inst-1");
+      expect(entry.scope).toBe("workspace");
+      expect(entry.metadata).toMatchObject({
+        pluginId: "cat-1",
+        pluginSlug: "bigquery",
+        orgId: "org-1",
+      });
+      expect(entry.metadata!.keysChanged).toEqual(["location", "projectId", "serviceAccountKey"]);
+    });
+
+    it("never includes config values in audit metadata", async () => {
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "Snowflake",
+        slug: "snowflake",
+        type: "datasource",
+        description: null,
+      }]);
+
+      await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: {
+            password: "SUPER_SECRET_SNOWFLAKE_PW",
+            account: "myacct",
+          },
+        }),
+      });
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain("SUPER_SECRET_SNOWFLAKE_PW");
+      expect(entry.metadata).not.toHaveProperty("password");
+      expect(entry.metadata).not.toHaveProperty("config");
+      expect(entry.metadata).not.toHaveProperty("values");
+    });
+
+    it("emits status=failure when UPDATE throws", async () => {
+      setQueryResult("UPDATE workspace_plugins", new Error("config update failed"));
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { key: "val" } }),
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.config_update");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata!.keysChanged).toEqual(["key"]);
+      expect(entry.metadata!.error).toContain("config update failed");
+    });
+
+    it("does not emit audit when installation not found (404)", async () => {
+      setQueryResult("UPDATE workspace_plugins", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/missing/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { key: "val" } }),
+      });
+      expect(res.status).toBe(404);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("sorts keysChanged alphabetically regardless of input order", async () => {
+      setQueryResult("UPDATE workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: null,
+      }]);
+
+      await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: { zzz: 1, mmm: 2, aaa: 3 },
+        }),
+      });
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.metadata!.keysChanged).toEqual(["aaa", "mmm", "zzz"]);
     });
   });
 });

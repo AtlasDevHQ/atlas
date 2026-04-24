@@ -15,6 +15,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   ErrorSchema,
@@ -332,10 +333,30 @@ platformCatalog.openapi(createCatalogRoute, async (c) => {
           body.minPlan,
           body.enabled,
         ],
-      );
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.catalogCreate,
+          targetType: "plugin",
+          targetId: id,
+          scope: "platform",
+          status: "failure",
+          metadata: {
+            pluginId: id,
+            pluginSlug: body.slug,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
       if (rows.length === 0) {
         return c.json({ error: "internal_error", message: "Failed to create catalog entry — no row returned.", requestId }, 500);
       }
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.catalogCreate,
+        targetType: "plugin",
+        targetId: id,
+        scope: "platform",
+        metadata: { pluginId: id, pluginSlug: body.slug },
+      });
       log.info({ catalogId: id, slug: body.slug }, "Plugin added to catalog");
       return c.json(catalogRowToJson(rows[0]!), 201);
     }),
@@ -376,17 +397,63 @@ platformCatalog.openapi(updateCatalogRoute, async (c) => {
       setClauses.push(`updated_at = now()`);
       params.push(id);
 
+      // Keys only — see ADMIN_ACTIONS.plugin JSDoc. configSchema may hint at
+      // secret shapes and `enabled: false` carries forensic signal that the
+      // key name alone conveys.
+      const keysChanged = Object.keys(body).toSorted();
+
+      // Pre-fetch slug so the failure-path audit row carries it even when
+      // the UPDATE throws. Lookup failure degrades to `priorLookupFailed`
+      // rather than 500ing with no audit — same rationale as catalog delete.
+      let priorLookup: { slug: string | null; failed: boolean };
+      try {
+        const priorRows = yield* queryEffect<{ slug: string }>(
+          "SELECT slug FROM plugin_catalog WHERE id = $1",
+          [id],
+        );
+        priorLookup = { slug: priorRows[0]?.slug ?? null, failed: false };
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), catalogId: id },
+          "catalog update pre-lookup failed; failure audit will lack slug",
+        );
+        priorLookup = { slug: null, failed: true };
+      }
+
       const rows = yield* queryEffect<CatalogRow>(
         `UPDATE plugin_catalog SET ${setClauses.join(", ")} WHERE id = $${paramIdx} RETURNING *`,
         params,
-      );
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.catalogUpdate,
+          targetType: "plugin",
+          targetId: id,
+          scope: "platform",
+          status: "failure",
+          metadata: {
+            pluginId: id,
+            ...(priorLookup.slug !== null && { pluginSlug: priorLookup.slug }),
+            ...(priorLookup.failed && { priorLookupFailed: true }),
+            keysChanged,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
 
       if (rows.length === 0) {
         return c.json({ error: "not_found", message: `Catalog entry "${id}" not found.`, requestId }, 404);
       }
 
+      const updatedRow = rows[0]!;
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.catalogUpdate,
+        targetType: "plugin",
+        targetId: id,
+        scope: "platform",
+        metadata: { pluginId: id, pluginSlug: updatedRow.slug, keysChanged },
+      });
       log.info({ catalogId: id }, "Catalog entry updated");
-      return c.json(catalogRowToJson(rows[0]!), 200);
+      return c.json(catalogRowToJson(updatedRow), 200);
     }),
     { label: "update catalog entry" },
   );
@@ -402,13 +469,101 @@ platformCatalog.openapi(deleteCatalogRoute, async (c) => {
       }
 
       const { id } = c.req.valid("param");
-      const rows = yield* queryEffect<{ id: string }>("DELETE FROM plugin_catalog WHERE id = $1 RETURNING id", [id]);
+
+      // Fetch slug and count installations BEFORE the cascade fires. Pre-lookup
+      // failures must not short-circuit the audit — if a pool error throws
+      // here and we rethrow, the request 500s with zero audit rows, letting
+      // an attacker flood transient errors to hide attempted deletes. Degrade
+      // to a sentinel (priorLookupFailed) and let the DELETE proceed; the
+      // failure audit on the DELETE path then carries the degraded metadata.
+      let priorLookup: { slug: string | null; notFound: boolean; failed: boolean };
+      try {
+        const priorRows = yield* queryEffect<{ slug: string }>(
+          "SELECT slug FROM plugin_catalog WHERE id = $1",
+          [id],
+        );
+        priorLookup = {
+          slug: priorRows[0]?.slug ?? null,
+          notFound: priorRows.length === 0,
+          failed: false,
+        };
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), catalogId: id },
+          "catalog delete pre-lookup failed; audit row will lack slug",
+        );
+        priorLookup = { slug: null, notFound: false, failed: true };
+      }
+      if (priorLookup.notFound) {
+        return c.json({ error: "not_found", message: `Catalog entry "${id}" not found.`, requestId }, 404);
+      }
+      const pluginSlug = priorLookup.slug;
+
+      let installCountLookup: { count: number; failed: boolean };
+      try {
+        const installCountRows = yield* queryEffect<{ count: string | number }>(
+          "SELECT COUNT(*)::int AS count FROM workspace_plugins WHERE catalog_id = $1",
+          [id],
+        );
+        installCountLookup = { count: Number(installCountRows[0]?.count ?? 0), failed: false };
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), catalogId: id },
+          "catalog delete install-count lookup failed; audit row will lack affectedOrgCount",
+        );
+        installCountLookup = { count: 0, failed: true };
+      }
+      const affectedOrgCount = installCountLookup.count;
+      const priorLookupFailed = priorLookup.failed || installCountLookup.failed;
+
+      const auditMetadataBase = {
+        pluginId: id,
+        ...(pluginSlug !== null && { pluginSlug }),
+        affectedOrgCount,
+        ...(priorLookupFailed && { priorLookupFailed: true }),
+      };
+
+      const rows = yield* queryEffect<{ id: string }>(
+        "DELETE FROM plugin_catalog WHERE id = $1 RETURNING id",
+        [id],
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.catalogDelete,
+          targetType: "plugin",
+          targetId: id,
+          scope: "platform",
+          status: "failure",
+          metadata: {
+            ...auditMetadataBase,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
 
       if (rows.length === 0) {
         return c.json({ error: "not_found", message: `Catalog entry "${id}" not found.`, requestId }, 404);
       }
 
-      log.info({ catalogId: id }, "Catalog entry deleted (cascaded to workspace installations)");
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.catalogDelete,
+        targetType: "plugin",
+        targetId: id,
+        scope: "platform",
+        metadata: auditMetadataBase,
+      });
+      // Cascade event fires only when workspaces actually lost the plugin —
+      // separate from catalog_delete so forensic queries can distinguish a
+      // cleanup delete from a mass uninstall.
+      if (affectedOrgCount > 0) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.catalogCascadeUninstall,
+          targetType: "plugin",
+          targetId: id,
+          scope: "platform",
+          metadata: auditMetadataBase,
+        });
+      }
+      log.info({ catalogId: id, affectedOrgCount, priorLookupFailed }, "Catalog entry deleted (cascaded to workspace installations)");
       return c.json({ deleted: true }, 200);
     }),
     { label: "delete catalog entry" },
@@ -572,11 +727,27 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       const { orgId } = c.var.orgContext;
       const body = c.req.valid("json");
 
-      // Fetch catalog entry
+      // Fetch catalog entry. A lookup failure at this point means we cannot
+      // know the slug, but we still want an audit row — a compromised admin
+      // could otherwise flood transient errors to probe for catalog IDs.
       const catalogRows = yield* queryEffect<CatalogRow>(
         "SELECT * FROM plugin_catalog WHERE id = $1 AND enabled = true",
         [body.catalogId],
-      );
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: body.catalogId,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            orgId,
+            priorLookupFailed: true,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
       if (catalogRows.length === 0) {
         return c.json({ error: "not_found", message: `Catalog entry "${body.catalogId}" not found or disabled.`, requestId }, 404);
       }
@@ -618,11 +789,36 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
                      (SELECT type FROM plugin_catalog WHERE id = $3) AS type,
                      (SELECT description FROM plugin_catalog WHERE id = $3) AS description`,
         [id, orgId, body.catalogId, JSON.stringify(body.config ?? {}), userId],
-      );
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            pluginSlug: catalogEntry.slug,
+            orgId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
 
       if (rows.length === 0) {
         return c.json({ error: "internal_error", message: "Failed to install plugin — no row returned.", requestId }, 500);
       }
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.install,
+        targetType: "plugin",
+        targetId: id,
+        scope: "workspace",
+        metadata: {
+          pluginId: body.catalogId,
+          pluginSlug: catalogEntry.slug,
+          orgId,
+        },
+      });
       log.info({ orgId, catalogId: body.catalogId, installationId: id }, "Plugin installed in workspace");
       return c.json(installRowToJson(rows[0]!), 201);
     }),
@@ -639,15 +835,49 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       const { orgId } = c.var.orgContext;
       const { id } = c.req.valid("param");
 
-      const rows = yield* queryEffect<{ id: string }>(
-        "DELETE FROM workspace_plugins WHERE id = $1 AND workspace_id = $2 RETURNING id",
+      // DELETE ... RETURNING exposes catalog_id from the deleted row tuple,
+      // which we scalar-lookup against plugin_catalog (untouched by this
+      // statement) to capture slug alongside the uninstall. The subselect
+      // can still return NULL if the catalog row was already gone (e.g. a
+      // catalog_delete cascade raced with this request).
+      const rows = yield* queryEffect<{ id: string; catalog_id: string; slug: string | null }>(
+        `DELETE FROM workspace_plugins WHERE id = $1 AND workspace_id = $2
+         RETURNING id, catalog_id, (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug`,
         [id, orgId],
-      );
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.uninstall,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: id,
+            orgId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
 
       if (rows.length === 0) {
         return c.json({ error: "not_found", message: `Installation "${id}" not found in this workspace.`, requestId }, 404);
       }
 
+      const deleted = rows[0]!;
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.uninstall,
+        targetType: "plugin",
+        targetId: id,
+        scope: "workspace",
+        metadata: {
+          pluginId: deleted.catalog_id,
+          // `!= null` covers both SQL NULL (from the subselect missing the
+          // catalog row) and an absent column (defense in depth against
+          // driver-shape drift). Aligned with the config_update guard below.
+          ...(deleted.slug != null && { pluginSlug: deleted.slug }),
+          orgId,
+        },
+      });
       log.info({ orgId, installationId: id }, "Plugin uninstalled from workspace");
       return c.json({ deleted: true }, 200);
     }),
@@ -665,6 +895,9 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
 
+      // Keys only — see ADMIN_ACTIONS.plugin JSDoc.
+      const keysChanged = Object.keys(body.config).toSorted();
+
       const rows = yield* queryEffect<WorkspacePluginRow>(
         `UPDATE workspace_plugins SET config = $1
          WHERE id = $2 AND workspace_id = $3
@@ -673,14 +906,44 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
                      (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
                      (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
         [JSON.stringify(body.config), id, orgId],
-      );
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.configUpdate,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: id,
+            orgId,
+            keysChanged,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
 
       if (rows.length === 0) {
         return c.json({ error: "not_found", message: `Installation "${id}" not found in this workspace.`, requestId }, 404);
       }
 
+      const updated = rows[0]!;
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.configUpdate,
+        targetType: "plugin",
+        targetId: id,
+        scope: "workspace",
+        metadata: {
+          pluginId: updated.catalog_id,
+          // See uninstall-path note — `!= null` covers both SQL NULL and
+          // absent-column shapes. The `pg` driver returns SQL NULL as JS
+          // null, not undefined, so `!== undefined` would have leaked null.
+          ...(updated.slug != null && { pluginSlug: updated.slug }),
+          orgId,
+          keysChanged,
+        },
+      });
       log.info({ orgId, installationId: id }, "Plugin config updated");
-      return c.json(installRowToJson(rows[0]!), 200);
+      return c.json(installRowToJson(updated), 200);
     }),
     { label: "update plugin config" },
   );

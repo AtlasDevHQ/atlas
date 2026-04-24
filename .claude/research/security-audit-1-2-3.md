@@ -1082,11 +1082,11 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-invitations.ts` | 2 | 1 | 🟡 | `user.invite` audited; **`DELETE /users/invitations/{id}` revoke is silent** — see F-29 |
 | `admin-ip-allowlist.ts` | 2 | 0 | ❌ | **Per phase-4 scope: CRITICAL** (F-24) |
 | `admin-learned-patterns.ts` | 3 | 3 | ✅ | `pattern.approve` / `pattern.reject` / `pattern.delete` |
-| `admin-marketplace.ts` | 6 | 0 | ❌ | **Per phase-4 scope: CRITICAL — plugin install/uninstall unaudited** (F-22) |
+| `admin-marketplace.ts` | 6 | 6 | ✅ | `plugin.catalog_create` / `catalog_update` / `catalog_delete` + `catalog_cascade_uninstall` / `plugin.install` / `plugin.uninstall` / `plugin.config_update` — F-22 fixed |
 | `admin-migrate.ts` | 1 | 0 | ❌ | Schema migration trigger (F-37) |
 | `admin-model-config.ts` | 3 | 0 | ❌ | **LLM API key storage + deletion unaudited** (F-30) |
 | `admin-orgs.ts` | 4 | 0 | ❌ | Post-F-08 this is platform-admin only — but still unaudited (F-31) |
-| `admin-plugins.ts` | 4 | 0 | ❌ | **Per phase-4 scope: CRITICAL — enable/disable/config unaudited** (F-22) |
+| `admin-plugins.ts` | 4 | 3 | ✅ | `plugin.enable` / `plugin.disable` / `plugin.config_update` audited; read-only health check stays silent — F-22 fixed |
 | `admin-prompts.ts` | 7 | 0 | ❌ | Content governance — collection + prompt CRUD (F-35) |
 | `admin-publish.ts` | 1 | 1 | ✅ | `mode.publish` |
 | `admin-residency.ts` | 4 | 0 | ❌ | **Workspace residency assign is permanent and unaudited** (F-32) |
@@ -1552,7 +1552,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 
 | ID | Severity | Type | Surface | Issue | Status |
 |---|---|---|---|---|---|
-| F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 | open |
+| F-22 | P0 | Audit gap | Plugin install/uninstall (`admin-plugins.ts`, `admin-marketplace.ts`) | #1777 | fixed (PR #1802) |
 | F-23 | P0 | Audit gap | SCIM management (`admin-scim.ts`) | #1778 | open |
 | F-24 | P0 | Audit gap | IP allowlist (`admin-ip-allowlist.ts`) | #1779 | fixed (PR #1797) |
 | F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 | fixed (PR #1800) |

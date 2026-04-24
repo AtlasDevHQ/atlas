@@ -10,6 +10,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -147,6 +148,10 @@ export async function saveDiscordInstallation(
   const guildName = opts?.guildName ?? null;
   const botToken = opts?.botToken ?? null;
   const botTokenEncrypted = botToken !== null ? encryptSecret(botToken) : null;
+  // Only stamp the key version when we actually wrote a ciphertext — a
+  // connect call that doesn't provide a token (BYOT-less OAuth path)
+  // leaves the existing column alone via COALESCE.
+  const botTokenKeyVersion = botTokenEncrypted !== null ? activeKeyVersion() : null;
   const applicationId = opts?.applicationId ?? null;
   const publicKey = opts?.publicKey ?? null;
 
@@ -154,19 +159,20 @@ export async function saveDiscordInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ guild_id: string }>(
-      `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token, bot_token_encrypted, application_id, public_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token, bot_token_encrypted, bot_token_key_version, application_id, public_key)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($8, 1), $6, $7)
        ON CONFLICT (guild_id) DO UPDATE SET
          org_id = COALESCE($2, discord_installations.org_id),
          guild_name = COALESCE($3, discord_installations.guild_name),
          bot_token = COALESCE($4, discord_installations.bot_token),
          bot_token_encrypted = COALESCE($5, discord_installations.bot_token_encrypted),
+         bot_token_key_version = COALESCE($8, discord_installations.bot_token_key_version),
          application_id = COALESCE($6, discord_installations.application_id),
          public_key = COALESCE($7, discord_installations.public_key),
          installed_at = now()
        WHERE discord_installations.org_id IS NULL OR discord_installations.org_id = $2
        RETURNING guild_id`,
-      [guildId, orgId, guildName, botToken, botTokenEncrypted, applicationId, publicKey],
+      [guildId, orgId, guildName, botToken, botTokenEncrypted, applicationId, publicKey, botTokenKeyVersion],
     );
 
     if (rows.length === 0) {

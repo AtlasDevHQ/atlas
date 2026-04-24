@@ -8,6 +8,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { GChatInstallation, GChatInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -128,22 +129,24 @@ export async function saveGChatInstallation(
 
   const orgId = opts.orgId ?? null;
   const credentialsJsonEncrypted = encryptSecret(opts.credentialsJson);
+  const keyVersion = activeKeyVersion();
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ project_id: string }>(
-      `INSERT INTO gchat_installations (project_id, service_account_email, credentials_json, credentials_json_encrypted, org_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO gchat_installations (project_id, service_account_email, credentials_json, credentials_json_encrypted, credentials_json_key_version, org_id)
+       VALUES ($1, $2, $3, $4, $6, $5)
        ON CONFLICT (project_id) DO UPDATE SET
          service_account_email = $2,
          credentials_json = $3,
          credentials_json_encrypted = $4,
+         credentials_json_key_version = $6,
          org_id = COALESCE($5, gchat_installations.org_id),
          installed_at = now()
        WHERE gchat_installations.org_id IS NULL OR gchat_installations.org_id = $5
        RETURNING project_id`,
-      [projectId, opts.serviceAccountEmail, opts.credentialsJson, credentialsJsonEncrypted, orgId],
+      [projectId, opts.serviceAccountEmail, opts.credentialsJson, credentialsJsonEncrypted, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

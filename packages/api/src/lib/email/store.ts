@@ -8,6 +8,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   EMAIL_PROVIDERS,
@@ -228,16 +229,18 @@ export async function saveEmailInstallation(
     // F-41 dual-write: plaintext JSONB for back-compat readers + encrypted
     // TEXT blob for at-rest protection. Follow-up PR drops plaintext.
     const configEncrypted = encryptSecret(configSerialized);
+    const keyVersion = activeKeyVersion();
     await internalQuery(
-      `INSERT INTO email_installations (provider, sender_address, config, config_encrypted, org_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO email_installations (provider, sender_address, config, config_encrypted, config_key_version, org_id)
+       VALUES ($1, $2, $3, $4, $6, $5)
        ON CONFLICT (org_id) DO UPDATE SET
          provider = $1,
          sender_address = $2,
          config = $3,
          config_encrypted = $4,
+         config_key_version = $6,
          installed_at = now()`,
-      [opts.provider, opts.senderAddress, configSerialized, configEncrypted, orgId],
+      [opts.provider, opts.senderAddress, configSerialized, configEncrypted, orgId, keyVersion],
     );
   } catch (err) {
     log.error(

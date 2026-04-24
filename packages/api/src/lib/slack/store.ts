@@ -11,6 +11,7 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -151,21 +152,23 @@ export async function saveInstallation(
   const workspaceName = opts?.workspaceName ?? null;
   const pool = getInternalDB();
   const botTokenEncrypted = encryptSecret(botToken);
+  const keyVersion = activeKeyVersion();
 
   // Atomic upsert with hijack protection — the WHERE clause rejects rows
   // bound to a different org in one statement (no TOCTOU race).
   const result = await pool.query(
-    `INSERT INTO slack_installations (team_id, bot_token, bot_token_encrypted, org_id, workspace_name)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO slack_installations (team_id, bot_token, bot_token_encrypted, bot_token_key_version, org_id, workspace_name)
+     VALUES ($1, $2, $3, $6, $4, $5)
      ON CONFLICT (team_id) DO UPDATE SET
        bot_token = $2,
        bot_token_encrypted = $3,
+       bot_token_key_version = $6,
        org_id = COALESCE($4, slack_installations.org_id),
        workspace_name = COALESCE($5, slack_installations.workspace_name),
        installed_at = now()
      WHERE slack_installations.org_id IS NULL OR slack_installations.org_id = $4
      RETURNING team_id`,
-    [teamId, botToken, botTokenEncrypted, orgId, workspaceName],
+    [teamId, botToken, botTokenEncrypted, orgId, workspaceName, keyVersion],
   );
 
   if (result.rows.length === 0) {

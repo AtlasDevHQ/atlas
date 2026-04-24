@@ -315,6 +315,10 @@ export function createApiTestMocks(
     encryptUrl: (url: string) => url,
     decryptUrl: (url: string) => url,
     getEncryptionKey: () => null,
+    // F-47 keyset resolver — mocked as `null` so the passthrough contract
+    // in `encryptUrl` / `encryptSecret` still holds under
+    // `mock.module("@atlas/api/lib/db/internal", ...)` partial mocks.
+    getEncryptionKeyset: () => null,
     isPlaintextUrl: (value: string) =>
       /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
     _resetEncryptionKeyCache: mock(() => {}),

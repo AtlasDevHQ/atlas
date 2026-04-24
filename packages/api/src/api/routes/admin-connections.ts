@@ -12,6 +12,7 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { runHandler } from "@atlas/api/lib/effect/hono";
@@ -669,17 +670,18 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   const status = getAtlasMode(c) === "developer" ? "draft" : "published";
 
   try {
+    const urlKeyVersion = activeKeyVersion();
     if (revivingArchived) {
       // The archived row owns the PK — revive it in place so we preserve
       // audit/version history rather than stranding it.
       await internalQuery(
-        `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, status = $5, updated_at = now() WHERE id = $6 AND org_id = $7`,
-        [encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, status, id, orgId],
+        `UPDATE connections SET url = $1, url_key_version = $8, type = $2, description = $3, schema_name = $4, status = $5, updated_at = now() WHERE id = $6 AND org_id = $7`,
+        [encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, status, id, orgId, urlKeyVersion],
       );
     } else {
       await internalQuery(
-        `INSERT INTO connections (id, url, type, description, schema_name, org_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status],
+        `INSERT INTO connections (id, url, url_key_version, type, description, schema_name, org_id, status) VALUES ($1, $2, $8, $3, $4, $5, $6, $7)`,
+        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status, urlKeyVersion],
       );
     }
   } catch (err) {
@@ -826,9 +828,10 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   }
 
   try {
+    const urlKeyVersion = activeKeyVersion();
     await internalQuery(
-      `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5 AND org_id = $6`,
-      [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId],
+      `UPDATE connections SET url = $1, url_key_version = $7, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5 AND org_id = $6`,
+      [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId, urlKeyVersion],
     );
   } catch (err) {
     let rollbackFailed = false;

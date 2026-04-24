@@ -9,6 +9,7 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
@@ -148,22 +149,27 @@ export async function saveTeamsInstallation(
   // Encrypt only when we actually have a password to store; admin-consent
   // installs pass undefined and should leave both columns NULL.
   const appPasswordEncrypted = appPassword !== null ? encryptSecret(appPassword) : null;
+  // Only stamp the key version when we actually wrote a ciphertext; a
+  // COALESCE on the column preserves whatever was there for OAuth-only
+  // installs that never pass a password.
+  const appPasswordKeyVersion = appPasswordEncrypted !== null ? activeKeyVersion() : null;
 
   try {
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ tenant_id: string }>(
-      `INSERT INTO teams_installations (tenant_id, org_id, tenant_name, app_password, app_password_encrypted)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO teams_installations (tenant_id, org_id, tenant_name, app_password, app_password_encrypted, app_password_key_version)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 1))
        ON CONFLICT (tenant_id) DO UPDATE SET
          org_id = COALESCE($2, teams_installations.org_id),
          tenant_name = COALESCE($3, teams_installations.tenant_name),
          app_password = COALESCE($4, teams_installations.app_password),
          app_password_encrypted = COALESCE($5, teams_installations.app_password_encrypted),
+         app_password_key_version = COALESCE($6, teams_installations.app_password_key_version),
          installed_at = now()
        WHERE teams_installations.org_id IS NULL OR teams_installations.org_id = $2
        RETURNING tenant_id`,
-      [tenantId, orgId, tenantName, appPassword, appPasswordEncrypted],
+      [tenantId, orgId, tenantName, appPassword, appPasswordEncrypted, appPasswordKeyVersion],
     );
 
     if (rows.length === 0) {

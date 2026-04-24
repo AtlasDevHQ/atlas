@@ -21,6 +21,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, queryEffect, encryptUrl } from "@atlas/api/lib/db/internal";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
@@ -547,14 +548,15 @@ onboarding.openapi(
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
+      const urlKeyVersion = activeKeyVersion();
       // Org-scoped upsert: composite PK (id, org_id) ensures each org has its own namespace
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
-          `INSERT INTO connections (id, url, type, description, org_id)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, updated_at = NOW()
+          `INSERT INTO connections (id, url, url_key_version, type, description, org_id)
+           VALUES ($1, $2, $6, $3, $4, $5)
+           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, updated_at = NOW()
            RETURNING id`,
-          [id, encryptedUrl, dbType, `${dbType} datasource`, orgId],
+          [id, encryptedUrl, dbType, `${dbType} datasource`, orgId, urlKeyVersion],
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
@@ -668,13 +670,14 @@ onboarding.openapi(
       }
 
       const demoLabel = DEMO_LABELS[demoType];
+      const urlKeyVersion = activeKeyVersion();
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
-          `INSERT INTO connections (id, url, type, description, org_id, status)
-           VALUES ($1, $2, $3, $4, $5, 'published')
-           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, description = $4, status = 'published', updated_at = NOW()
+          `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status)
+           VALUES ($1, $2, $6, $3, $4, $5, 'published')
+           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, description = $4, status = 'published', updated_at = NOW()
            RETURNING id`,
-          [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, orgId],
+          [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, orgId, urlKeyVersion],
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {

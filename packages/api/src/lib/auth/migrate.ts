@@ -8,6 +8,7 @@
 
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -305,11 +306,12 @@ async function seedDemoData(orgId: string): Promise<void> {
   // Encrypt and persist connection
   try {
     const encryptedUrl = encryptUrl(url);
+    const urlKeyVersion = activeKeyVersion();
     await internalQuery(
-      `INSERT INTO connections (id, url, type, description, org_id)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, updated_at = NOW()`,
-      ["default", encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId],
+      `INSERT INTO connections (id, url, url_key_version, type, description, org_id)
+       VALUES ($1, $2, $6, $3, $4, $5)
+       ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, updated_at = NOW()`,
+      ["default", encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId, urlKeyVersion],
     );
 
     // Register in runtime

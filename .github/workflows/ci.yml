@@ -100,6 +100,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # @useatlas/types resolves to packages/types/dist via its "exports" field,
+      # so api tests can't import it until the package has been built.
+      - name: Build @useatlas/types
+        run: bun run --filter '@useatlas/types' build
+
       - name: Test @atlas/api (shard ${{ matrix.shard }}/4)
         working-directory: packages/api
         run: bun run scripts/test-isolated.ts --shard ${{ matrix.shard }}/4

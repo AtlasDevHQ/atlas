@@ -3,7 +3,13 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "deploy/docs/Dockerfile",
-    "dockerfileContext": "../.."
+    "dockerfileContext": "../..",
+    "watchPatterns": [
+      "bun.lock",
+      "brand.css",
+      "apps/docs/**",
+      "deploy/docs/**"
+    ]
   },
   "deploy": {
     "healthcheckPath": "/",

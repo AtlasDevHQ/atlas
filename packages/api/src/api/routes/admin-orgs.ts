@@ -608,9 +608,10 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
     if (workspace.workspace_status === "suspended") return c.json({ error: "conflict", message: "Workspace is already suspended." }, 409);
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "suspended"));
-    if (connections.isOrgPoolingEnabled()) yield* Effect.promise(() => connections.drainOrg(orgId));
-
-    log.info({ orgId, requestId, admin: user?.id }, "Workspace suspended");
+    // Audit the mutation commit BEFORE the pool drain — a transient
+    // `drainOrg` rejection must not silently drop the audit row after
+    // the DB already flipped to suspended. Drain failure still fails
+    // the response (the caller retries); the audit trail persists.
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.suspend,
       targetType: "workspace",
@@ -618,6 +619,9 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
       scope: "platform",
       ipAddress: clientIpFor(c),
     });
+    if (connections.isOrgPoolingEnabled()) yield* Effect.promise(() => connections.drainOrg(orgId));
+
+    log.info({ orgId, requestId, admin: user?.id }, "Workspace suspended");
     const updated = yield* Effect.promise(() => getWorkspaceDetails(orgId));
     return c.json({ message: "Workspace suspended. All queries are blocked until reactivation.", organization: updated }, 200);
   }), { label: "suspend workspace" });
@@ -638,9 +642,10 @@ adminOrgs.openapi(activateOrgRoute, async (c) => {
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "active"));
     log.info({ orgId, requestId, admin: user?.id }, "Workspace activated");
-    // Canonical action_type is `workspace.unsuspend` — matches
-    // platform-admin.ts so compliance queries see one row shape per
-    // intent, not two (F-31, #1786).
+    // Canonical action_type is `workspace.unsuspend` (not
+    // `workspace.activate`) — the endpoint path deliberately differs
+    // from the audit event so compliance queries filtering on a single
+    // action_type catch both the platform-admin and admin-orgs paths.
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.unsuspend,
       targetType: "workspace",
@@ -696,11 +701,8 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     });
 
     log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings }, "Workspace soft-deleted with cascading cleanup");
-    // `cleanup` key mirrors platform-admin.ts exactly. `poolsDrained` /
-    // `warnings` are admin-orgs-specific (pool drain has no equivalent
-    // in platform-admin.ts) but are additive — the parity contract is
-    // "same action_type + same `cleanup` subshape", not "identical
-    // metadata keyset".
+    // `cleanup` mirrors platform-admin.ts. `poolsDrained`/`warnings`
+    // are additive — admin-orgs drains pools, platform-admin doesn't.
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.delete,
       targetType: "workspace",

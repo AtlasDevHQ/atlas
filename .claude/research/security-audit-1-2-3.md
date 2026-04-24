@@ -1085,7 +1085,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-marketplace.ts` | 6 | 6 | ✅ | `plugin.catalog_create` / `catalog_update` / `catalog_delete` + `catalog_cascade_uninstall` / `plugin.install` / `plugin.uninstall` / `plugin.config_update` — F-22 fixed |
 | `admin-migrate.ts` | 1 | 0 | ❌ | Schema migration trigger (F-37) |
 | `admin-model-config.ts` | 3 | 0 | ❌ | **LLM API key storage + deletion unaudited** (F-30) |
-| `admin-orgs.ts` | 4 | 4 | ✅ | F-31 fixed (PR for #1786, option b) — `workspace.suspend` / `workspace.unsuspend` / `workspace.change_plan` / `workspace.delete` emitted with `scope: "platform"`, matching `platform-admin.ts` contract exactly (same action_type, same metadata shape). Regression test locks canonical action types + parity with `/api/v1/platform/workspaces` endpoints |
+| `admin-orgs.ts` | 4 | 4 | ✅ | F-31 fixed (PR #1804) — `workspace.suspend` / `workspace.unsuspend` / `workspace.change_plan` / `workspace.delete` emitted with `scope: "platform"`, matching `platform-admin.ts` canonical fields exactly. Regression test compares entries directly across both surfaces |
 | `admin-plugins.ts` | 4 | 3 | ✅ | `plugin.enable` / `plugin.disable` / `plugin.config_update` audited; read-only health check stays silent — F-22 fixed |
 | `admin-prompts.ts` | 7 | 0 | ❌ | Content governance — collection + prompt CRUD (F-35) |
 | `admin-publish.ts` | 1 | 1 | ✅ | `mode.publish` |
@@ -1359,7 +1359,7 @@ None of these six routes call `logAdminAction`. All six write or test credential
 
 ---
 
-**F-31 — `admin-orgs.ts` is platform-gated post-F-08 but still emits no audit** — P1 — **FIXED (option b)**
+**F-31 — `admin-orgs.ts` is platform-gated post-F-08 but still emits no audit** — P1
 
 **Repro:** Phase-2 F-08 (PR #1762) moved workspace CRUD under `createPlatformRouter`. The role gate was fixed; the audit gap was not. Four writes remain silent: suspend / activate / delete / change plan.
 
@@ -1367,19 +1367,11 @@ Overlap with `platform-admin.ts` — which DOES audit `workspace.suspend` / `uns
 
 **Fix sketch:** Either (a) delete the overlap — route every admin-orgs mutation through `platform-admin.ts` internally — or (b) add `logAdminAction` calls to `admin-orgs.ts` matching the `platform-admin.ts` contract. Option (a) is preferred: a single workspace-mutation surface reduces the chance of future drift.
 
-**Fix:** Option (b) shipped. `admin-orgs.ts` now emits `logAdminAction` at all four writes, reusing the `ADMIN_ACTIONS.workspace.*` catalog values unchanged (no new action types added — stays compatible with F-30 / F-32 parallel work). Canonical mapping:
-- `PATCH /:id/suspend` → `workspace.suspend`
-- `PATCH /:id/activate` → `workspace.unsuspend` (same action_type as platform-admin `POST /unsuspend`)
-- `PATCH /:id/plan` → `workspace.change_plan` with `metadata: { previousPlan, newPlan }`
-- `DELETE /:id` → `workspace.delete` with `metadata: { cleanup, poolsDrained, warnings? }`
-
-All emissions carry `scope: "platform"` and the same `x-forwarded-for`/`x-real-ip` IP extraction as `platform-admin.ts`. Regression test (`admin-orgs-audit.test.ts`) parametrises both surfaces and asserts identical action_type + scope + target for each, so a future divergence on either side breaks the suite.
-
-**Follow-up:** Option (a) — collapse the two workspace-mutation surfaces into a shared `lib/workspace-mutations.ts` helper so the drift window closes at the write layer, not just the audit layer — remains a candidate refactor. The parity test makes future drift observable but does not prevent it; a dedicated `refactor` issue should be filed separately if we want to pursue consolidation.
-
 **Severity:** P1 — drift between two parallel admin surfaces is a classic compliance pitfall. The write path exists, the audit path is forgotten.
 
 **Issue:** #1786.
+
+**Status:** fixed (PR #1804, closes #1786). Option (b) shipped — no new `ADMIN_ACTIONS` entries, stays compatible with F-30 / F-32 parallel work. Canonical mapping: `PATCH /:id/suspend` → `workspace.suspend`; `PATCH /:id/activate` → `workspace.unsuspend` (same action_type as platform-admin `POST /unsuspend` — the endpoint path `/activate` deliberately differs from the canonical action_type so compliance queries filtering `action_type = 'workspace.unsuspend'` see one row shape per intent, not two); `PATCH /:id/plan` → `workspace.change_plan` with `metadata: { previousPlan, newPlan }` captured from the pre-mutation fetch; `DELETE /:id` → `workspace.delete` with `metadata: { cleanup, poolsDrained, warnings? }` where `cleanup` mirrors platform-admin's shape verbatim and `poolsDrained`/`warnings` are admin-orgs-specific additives (platform-admin does no pool drain). All emissions carry `scope: "platform"` and a `clientIpFor(c)` helper reusing the `x-forwarded-for`/`x-real-ip` extraction from `platform-admin.ts`. Suspend emits audit BEFORE the drain call so a transient `drainOrg` rejection doesn't silently drop the row after the DB mutation already committed. Regression suite (`admin-orgs-audit.test.ts`) parametrises all four surfaces, calls the admin-orgs and platform-admin equivalents back-to-back with the same workspace stub, and compares canonical audit fields directly between entries (not against literal expectations) — a one-sided regression where both surfaces silently agree on the wrong value still breaks the suite. Pool-drain enabled path covered: `isOrgPoolingEnabled()` + `drainOrg()` overrides exercise both the success (`poolsDrained: N`) and failure (`warnings: ["pool_drain_failed: ..."]`) branches so a future rename of those metadata keys fails the suite. Option (a) — consolidating both surfaces into a shared `lib/workspace-mutations.ts` helper so the drift window closes at the write layer, not just the audit layer — remains a candidate refactor; the parity test makes future drift observable but does not prevent it.
 
 ---
 
@@ -1571,7 +1563,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | fixed (PR #1801) |
 | F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 | open |
 | F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | open |
-| F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | fixed (PR for #1786, option b) |
+| F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | fixed (PR #1804) |
 | F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | open |
 | F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | open |
 | F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 | open |

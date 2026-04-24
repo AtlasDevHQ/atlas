@@ -18,6 +18,7 @@ import {
   ModelConfigError,
 } from "@atlas/ee/platform/model-routing";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
@@ -188,12 +189,44 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
       }
     }
 
+    // Audit metadata NEVER includes apiKey / baseUrl values — `hasSecret`
+    // distinguishes a rotation from a metadata-only edit. Keeping the raw
+    // key out of admin_action_log is the whole point of the `model_config.*`
+    // catalog entries; do not relax this without a security review.
+    const auditBase = {
+      provider: body.provider,
+      model: body.model,
+      hasSecret: body.apiKey !== undefined,
+    };
     const config = yield* setWorkspaceModelConfig(orgId, {
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
+    }).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.model_config.update,
+            targetType: "model_config",
+            targetId: orgId,
+            status: "failure",
+            metadata: {
+              ...auditBase,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          }),
+        ),
+      ),
+    );
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.model_config.update,
+      targetType: "model_config",
+      targetId: orgId,
+      metadata: auditBase,
     });
+
     return c.json({ config }, 200);
   }), { label: "set workspace model config", domainErrors: [modelConfigDomainError] });
 });
@@ -212,10 +245,31 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const deleted = yield* deleteWorkspaceModelConfig(orgId);
+    const deleted = yield* deleteWorkspaceModelConfig(orgId).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.model_config.delete,
+            targetType: "model_config",
+            targetId: orgId,
+            status: "failure",
+            metadata: { error: err instanceof Error ? err.message : String(err) },
+          }),
+        ),
+      ),
+    );
     if (!deleted) {
+      // No-op delete: no state change → no audit row (matches the
+      // pre-handler-rejection pattern used on unknown-target writes).
       return c.json({ error: "not_found", message: "No custom model configuration found." }, 404);
     }
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.model_config.delete,
+      targetType: "model_config",
+      targetId: orgId,
+    });
+
     return c.json({ message: "Model configuration reset to platform default." }, 200);
   }), { label: "delete workspace model config", domainErrors: [modelConfigDomainError] });
 });
@@ -232,12 +286,45 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
 
     const body = c.req.valid("json");
 
+    // Every /test is audited. Without an audit row an attacker with admin
+    // credentials can replay stolen apiKeys here and read pass/fail from
+    // the response body with zero forensic trail — the credential-oracle
+    // threat. Metadata excludes apiKey / baseUrl values by construction.
+    const auditBase = { provider: body.provider, model: body.model };
     const result = yield* testModelConfig({
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
+    }).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.model_config.test,
+            targetType: "model_config",
+            targetId: orgId,
+            status: "failure",
+            metadata: {
+              ...auditBase,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          }),
+        ),
+      ),
+    );
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.model_config.test,
+      targetType: "model_config",
+      targetId: orgId,
+      status: result.success ? "success" : "failure",
+      metadata: {
+        ...auditBase,
+        success: result.success,
+        ...(result.success ? {} : { error: result.message }),
+      },
     });
+
     return c.json(result, 200);
   }), { label: "test model config", domainErrors: [modelConfigDomainError] });
 });

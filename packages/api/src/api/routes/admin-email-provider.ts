@@ -26,6 +26,7 @@ import {
   type EmailProvider,
   type ProviderConfig,
 } from "@atlas/api/lib/integrations/types";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -361,13 +362,37 @@ adminEmailProvider.openapi(setConfigRoute, async (c) => {
       }, 400);
     }
 
+    // NEVER log credential material here — the `hasSecret: true` marker is
+    // the load-bearing signal; the raw apiKey / password / secretAccessKey
+    // must not leak into admin_action_log metadata.
+    const fromAddress = body.fromAddress.trim();
+    const auditBase = { provider: body.provider, fromAddress, hasSecret: true };
     yield* Effect.tryPromise({
       try: () => saveEmailInstallation(orgId, {
         provider: body.provider,
-        senderAddress: body.fromAddress.trim(),
+        senderAddress: fromAddress,
         config: validated.config,
       }),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.email_provider.update,
+            targetType: "email_provider",
+            targetId: orgId,
+            status: "failure",
+            metadata: { ...auditBase, error: err.message },
+          }),
+        ),
+      ),
+    );
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.email_provider.update,
+      targetType: "email_provider",
+      targetId: orgId,
+      metadata: auditBase,
     });
 
     const saved = yield* Effect.tryPromise({
@@ -403,9 +428,50 @@ adminEmailProvider.openapi(deleteConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = c.get("orgContext");
 
+    // Capture the prior provider BEFORE the row is gone so the audit trail
+    // records which BYOT credential was removed. A pool failure here
+    // degrades to `provider: null` in metadata rather than blocking the
+    // delete — the deletion itself is still the load-bearing event. The
+    // swallow is intentional: we log a breadcrumb so ops can correlate the
+    // null-provider audit row to the underlying store error without having
+    // to join two unrelated log lines by requestId.
+    const prior = yield* Effect.tryPromise({
+      try: () => getEmailInstallationByOrg(orgId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) =>
+        Effect.sync(() => {
+          log.warn(
+            { orgId, err: err.message },
+            "prior email install lookup failed in delete path — audit will record provider: null",
+          );
+          return null;
+        }),
+      ),
+    );
+
     yield* Effect.tryPromise({
       try: () => deleteEmailInstallationByOrg(orgId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.email_provider.delete,
+            targetType: "email_provider",
+            targetId: orgId,
+            status: "failure",
+            metadata: { provider: prior?.provider ?? null, error: err.message },
+          }),
+        ),
+      ),
+    );
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.email_provider.delete,
+      targetType: "email_provider",
+      targetId: orgId,
+      metadata: { provider: prior?.provider ?? null },
     });
 
     return c.json({ message: "Email provider override removed." }, 200);
@@ -439,38 +505,73 @@ adminEmailProvider.openapi(testConfigRoute, async (c) => {
       }, 400);
     }
 
+    // All delivery branches share one audit shape: every probe records the
+    // provider that was actually exercised + success/failure + the
+    // recipient. The apiKey / password / secretAccessKey in body.config
+    // MUST NOT land in the audit row — an attacker with admin would
+    // otherwise use this endpoint as a credential oracle.
+    //
+    // `emitFailureAudit` is shared by both the fresh-creds and saved-creds
+    // branches so an unexpected throw from the delivery helper (pool failure,
+    // unwrapped provider SDK error) still lands a forensic row before the
+    // error bubbles out via `runEffect`.
+    const emitFailureAudit = (err: Error, provider: string | null) =>
+      Effect.sync(() =>
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.email_provider.test,
+          targetType: "email_provider",
+          targetId: orgId,
+          status: "failure",
+          metadata: {
+            provider,
+            success: false,
+            recipientEmail: body.recipientEmail,
+            error: err.message,
+          },
+        }),
+      );
+
+    let result: { success: boolean; provider: string; error?: string };
     if (hasProvider && hasConfig) {
       const validated = validateProviderConfig(body.provider!, body.config!);
       if (!validated.ok) {
         return c.json({ error: "validation", message: validated.error, requestId }, 400);
       }
       const fromAddress = body.fromAddress?.trim() || BASELINE_FROM_ADDRESS;
-      const result = yield* Effect.tryPromise({
+      result = yield* Effect.tryPromise({
         try: () => sendEmailWithTransport(testMessage, {
           provider: body.provider!,
           senderAddress: fromAddress,
           config: validated.config,
         }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(Effect.tapError((err) => emitFailureAudit(err, body.provider!)));
       if (!result.success) {
         log.warn({ requestId, orgId, provider: result.provider, err: result.error }, "Test email delivery failed (fresh creds)");
       }
-      return c.json(
-        result.success
-          ? { success: true, message: `Test email sent successfully via ${result.provider}.` }
-          : { success: false, message: result.error ?? `Email delivery failed via ${result.provider}.` },
-        200,
-      );
+    } else {
+      result = yield* Effect.tryPromise({
+        try: () => sendEmail(testMessage, orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.tapError((err) => emitFailureAudit(err, null)));
+      if (!result.success) {
+        log.warn({ requestId, orgId, provider: result.provider, err: result.error }, "Test email delivery failed (saved config)");
+      }
     }
 
-    const result = yield* Effect.tryPromise({
-      try: () => sendEmail(testMessage, orgId),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.email_provider.test,
+      targetType: "email_provider",
+      targetId: orgId,
+      status: result.success ? "success" : "failure",
+      metadata: {
+        provider: result.provider,
+        success: result.success,
+        recipientEmail: body.recipientEmail,
+        ...(result.success ? {} : { error: result.error ?? "delivery failed" }),
+      },
     });
-    if (!result.success) {
-      log.warn({ requestId, orgId, provider: result.provider, err: result.error }, "Test email delivery failed (saved config)");
-    }
+
     return c.json(
       result.success
         ? { success: true, message: `Test email sent successfully via ${result.provider}.` }

@@ -164,6 +164,31 @@ export const ADMIN_ACTIONS = {
     manualPurge: "audit_retention.manual_purge",
     manualHardDelete: "audit_retention.manual_hard_delete",
   },
+  /**
+   * BYOT email-provider mutations — workspace admin swaps the outbound
+   * email transport (current providers live in `EMAIL_PROVIDERS`). Without
+   * these entries an admin could swap the workspace sender to a
+   * phishing-friendly domain (or harvest working API keys via the /test
+   * route) with zero forensic record. Metadata never carries credential
+   * material — `hasSecret: true` is the marker that a secret was supplied.
+   */
+  email_provider: {
+    update: "email_provider.update",
+    delete: "email_provider.delete",
+    test: "email_provider.test",
+  },
+  /**
+   * BYOT workspace LLM model-config mutations. Same threat as
+   * `email_provider.*`: the test route accepts an apiKey in the body and
+   * returns a delivery result, making it a free credential oracle for an
+   * attacker with admin. Metadata never includes `apiKey` — use
+   * `hasSecret: true` as the marker.
+   */
+  model_config: {
+    update: "model_config.update",
+    delete: "model_config.delete",
+    test: "model_config.test",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

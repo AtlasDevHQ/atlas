@@ -1077,14 +1077,14 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-compliance.ts` | 2 | 0 | ❌ | PUT retention policy + DELETE PII config (F-32) |
 | `admin-connections.ts` | 7 | 3 | 🟡 | Create/update/delete audited; **test / /:id/test / pool drain unaudited** (F-34) |
 | `admin-domains.ts` | 4 | 0 | ❌ | Workspace custom domain + verify (F-32) |
-| `admin-email-provider.ts` | 3 | 0 | ❌ | **BYOT credential mgmt unaudited** (F-30) |
+| `admin-email-provider.ts` | 3 | 3 | ✅ | F-30 fixed (PR for #1785) — `email_provider.update` / `delete` / `test` emitted with success + failure paths; update carries `hasSecret: true` marker, delete captures prior provider pre-delete, test includes recipient + delivery outcome |
 | `admin-integrations.ts` | 19 | 18 | 🟡 | Most install/uninstall emit `integration.*`; **one handler missing an audit call** — see F-29 |
 | `admin-invitations.ts` | 2 | 1 | 🟡 | `user.invite` audited; **`DELETE /users/invitations/{id}` revoke is silent** — see F-29 |
 | `admin-ip-allowlist.ts` | 2 | 0 | ❌ | **Per phase-4 scope: CRITICAL** (F-24) |
 | `admin-learned-patterns.ts` | 3 | 3 | ✅ | `pattern.approve` / `pattern.reject` / `pattern.delete` |
 | `admin-marketplace.ts` | 6 | 6 | ✅ | `plugin.catalog_create` / `catalog_update` / `catalog_delete` + `catalog_cascade_uninstall` / `plugin.install` / `plugin.uninstall` / `plugin.config_update` — F-22 fixed |
 | `admin-migrate.ts` | 1 | 0 | ❌ | Schema migration trigger (F-37) |
-| `admin-model-config.ts` | 3 | 0 | ❌ | **LLM API key storage + deletion unaudited** (F-30) |
+| `admin-model-config.ts` | 3 | 3 | ✅ | F-30 fixed (PR for #1785) — `model_config.update` / `delete` / `test` emitted with success + failure paths; metadata carries `hasSecret` marker and never the apiKey value; test route audits success + failure to close the credential-oracle gap |
 | `admin-orgs.ts` | 4 | 4 | ✅ | F-31 fixed (PR #1804) — `workspace.suspend` / `workspace.unsuspend` / `workspace.change_plan` / `workspace.delete` emitted with `scope: "platform"`, matching `platform-admin.ts` canonical fields exactly. Regression test compares entries directly across both surfaces |
 | `admin-plugins.ts` | 4 | 3 | ✅ | `plugin.enable` / `plugin.disable` / `plugin.config_update` audited; read-only health check stays silent — F-22 fixed |
 | `admin-prompts.ts` | 7 | 0 | ❌ | Content governance — collection + prompt CRUD (F-35) |
@@ -1562,7 +1562,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 | open |
 | F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | fixed (PR #1801) |
 | F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 | open |
-| F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | open |
+| F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | fixed (PR for #1785) |
 | F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | fixed (PR #1804) |
 | F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | open |
 | F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | open |

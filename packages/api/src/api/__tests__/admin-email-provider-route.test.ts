@@ -305,12 +305,35 @@ mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthServer: mock(() => ({ handler: mock(() => Promise.resolve(new Response("{}"))) })),
 }));
 
-mock.module("@atlas/api/lib/audit", () => ({
-  logAdminAction: mock(() => {}),
-  logAdminActionAwait: mock(async () => {}),
-  ADMIN_ACTIONS: new Proxy({}, { get: () => new Proxy({}, { get: () => "noop" }) }),
-  _resetAuditLog: () => {},
-}));
+// --- Audit capture ---
+// Intercept every logAdminAction so tests can assert audit shape without
+// booting the internal DB. The real ADMIN_ACTIONS catalog is re-exported so
+// route emissions use the canonical string values — a drift catches both
+// the route and the catalog at once.
+
+interface CapturedAuditEntry {
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  status?: "success" | "failure";
+  metadata?: Record<string, unknown>;
+  scope?: "platform" | "workspace";
+  ipAddress?: string | null;
+}
+
+const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/audit", async () => {
+  const actual = await import("@atlas/api/lib/audit/actions");
+  return {
+    logAdminAction: mockLogAdminAction,
+    logAdminActionAwait: mock(async () => {}),
+    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+    _resetAuditLog: () => {},
+  };
+});
 
 mock.module("@atlas/api/lib/scheduler-store", () => ({
   listScheduledTasks: mock(async () => []),
@@ -369,6 +392,7 @@ describe("admin email-provider route", () => {
     mockHasInternalDB = true;
     delete process.env.ATLAS_SMTP_URL;
     mockInternalQuery.mockClear();
+    mockLogAdminAction.mockClear();
     mockSaveEmailInstallation.mockReset();
     mockSaveEmailInstallation.mockImplementation(async () => {});
     mockGetEmailInstallationByOrg.mockReset();
@@ -830,6 +854,320 @@ describe("admin email-provider route", () => {
         recipientEmail: "you@example.com",
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ─── Audit emission — BYOT credential redaction ───────────────────
+  // Every write route — PUT, DELETE, POST /test — must emit an audit row.
+  // The test route is especially material: an attacker with admin can use
+  // it as a free credential oracle without these entries.
+
+  describe("audit emission — PUT /email-provider", () => {
+    it("emits email_provider.update with hasSecret marker but no secret value", async () => {
+      mockGetEmailInstallationByOrg
+        .mockImplementationOnce(async () => null)
+        .mockImplementationOnce(async () => ({
+          config_id: "cfg-1",
+          provider: "resend",
+          sender_address: "Acme <noreply@acme.com>",
+          config: { provider: "resend", apiKey: "re_abcdefghijklmnop" },
+          org_id: "org-1",
+          installed_at: "2026-04-18T00:00:00Z",
+        }));
+
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "resend",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { provider: "resend", apiKey: "re_super_secret_live_value" },
+      });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.update");
+      expect(entry.targetType).toBe("email_provider");
+      expect(entry.scope ?? "workspace").toBe("workspace");
+      expect(entry.metadata).toMatchObject({
+        provider: "resend",
+        fromAddress: "Acme <noreply@acme.com>",
+        hasSecret: true,
+      });
+      // Redaction invariant: no credential material anywhere in the entry.
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain("re_super_secret_live_value");
+      expect(entry.metadata).not.toHaveProperty("apiKey");
+      expect(entry.metadata).not.toHaveProperty("password");
+      expect(entry.metadata).not.toHaveProperty("secretAccessKey");
+      expect(entry.metadata).not.toHaveProperty("serverToken");
+      expect(entry.metadata).not.toHaveProperty("config");
+    });
+
+    it("redacts SMTP password + SES secret from metadata", async () => {
+      process.env.ATLAS_SMTP_URL = "https://bridge.example.com";
+      const smtpPassword = "super-long-smtp-password-9999";
+      await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "smtp",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: {
+          provider: "smtp",
+          host: "smtp.example.com",
+          port: 587,
+          username: "user@company.com",
+          password: smtpPassword,
+          tls: true,
+        },
+      });
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const smtpEntry = mockLogAdminAction.mock.calls[0]![0];
+      expect(smtpEntry.metadata!.hasSecret).toBe(true);
+      const smtpSerialized = JSON.stringify(smtpEntry);
+      expect(smtpSerialized).not.toContain(smtpPassword);
+      expect(smtpSerialized).not.toContain("user@company.com");
+
+      mockLogAdminAction.mockClear();
+      const sesSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+      const sesKeyId = "AKIAIOSFODNN7EXAMPLE";
+      await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "ses",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { provider: "ses", region: "us-east-1", accessKeyId: sesKeyId, secretAccessKey: sesSecret },
+      });
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const sesEntry = mockLogAdminAction.mock.calls[0]![0];
+      expect(sesEntry.metadata!.hasSecret).toBe(true);
+      const sesSerialized = JSON.stringify(sesEntry);
+      expect(sesSerialized).not.toContain(sesSecret);
+      // accessKeyId pairs with the secret and leaks identity/tenancy — AWS
+      // treats it as semi-sensitive. Lock in that it stays out of audit
+      // metadata even though it's not a "secret" strictly speaking.
+      expect(sesSerialized).not.toContain(sesKeyId);
+    });
+
+    it("does not emit audit when validation short-circuits the handler", async () => {
+      // provider: smtp without ATLAS_SMTP_URL returns 400 before any state change
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "smtp",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { provider: "smtp", host: "smtp.example.com", port: 587, username: "u", password: "p", tls: true },
+      });
+      expect(res.status).toBe(400);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("emits email_provider.update with status=failure when save throws", async () => {
+      mockSaveEmailInstallation.mockImplementation(async () => {
+        throw new Error("saveEmailInstallation DB error");
+      });
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "resend",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { provider: "resend", apiKey: "re_abcdefghijklmnop" },
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.update");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata).toMatchObject({
+        provider: "resend",
+        fromAddress: "Acme <noreply@acme.com>",
+        hasSecret: true,
+      });
+      expect(entry.metadata!.error).toContain("saveEmailInstallation DB error");
+    });
+  });
+
+  describe("audit emission — DELETE /email-provider", () => {
+    it("emits email_provider.delete with the prior provider when one existed", async () => {
+      mockGetEmailInstallationByOrg.mockImplementation(async () => ({
+        config_id: "cfg-sg",
+        provider: "sendgrid",
+        sender_address: "Acme <noreply@acme.com>",
+        config: { provider: "sendgrid", apiKey: "SG.abcdefghijklmnop" },
+        org_id: "org-1",
+        installed_at: "2026-04-18T00:00:00Z",
+      }));
+
+      const res = await request("/api/v1/admin/email-provider", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.delete");
+      expect(entry.targetType).toBe("email_provider");
+      expect(entry.scope ?? "workspace").toBe("workspace");
+      expect(entry.metadata).toMatchObject({ provider: "sendgrid" });
+      // No credential keys leak even when reading the prior install row.
+      expect(entry.metadata).not.toHaveProperty("apiKey");
+      expect(entry.metadata).not.toHaveProperty("config");
+    });
+
+    it("emits email_provider.delete with null provider when no override existed", async () => {
+      mockGetEmailInstallationByOrg.mockImplementation(async () => null);
+      mockDeleteEmailInstallationByOrg.mockImplementation(async () => false);
+      const res = await request("/api/v1/admin/email-provider", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.delete");
+      expect(entry.metadata).toMatchObject({ provider: null });
+    });
+
+    it("emits email_provider.delete with status=failure when deleteEmailInstallationByOrg throws", async () => {
+      mockGetEmailInstallationByOrg.mockImplementation(async () => ({
+        config_id: "cfg-sg",
+        provider: "sendgrid",
+        sender_address: "Acme <noreply@acme.com>",
+        config: { provider: "sendgrid", apiKey: "SG.abc" },
+        org_id: "org-1",
+        installed_at: "2026-04-18T00:00:00Z",
+      }));
+      mockDeleteEmailInstallationByOrg.mockImplementation(async () => {
+        throw new Error("deleteEmailInstallationByOrg DB error");
+      });
+      const res = await request("/api/v1/admin/email-provider", { method: "DELETE" });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.delete");
+      expect(entry.status).toBe("failure");
+      // Prior provider still captured before the delete failed — key
+      // forensic signal if a hostile admin tries to force delete and fail.
+      expect(entry.metadata).toMatchObject({ provider: "sendgrid" });
+      expect(entry.metadata!.error).toContain("deleteEmailInstallationByOrg DB error");
+    });
+
+    it("degrades to provider:null when prior-lookup throws before delete", async () => {
+      // The route's catchAll wraps the pre-delete lookup so a pool failure
+      // doesn't block the deletion. The audit row must still fire with
+      // provider:null rather than either (a) silently skipping audit or
+      // (b) crashing the whole request.
+      mockGetEmailInstallationByOrg.mockImplementation(async () => {
+        throw new Error("lookup pool timeout");
+      });
+      mockDeleteEmailInstallationByOrg.mockImplementation(async () => true);
+      const res = await request("/api/v1/admin/email-provider", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.delete");
+      expect(entry.metadata).toMatchObject({ provider: null });
+    });
+  });
+
+  describe("audit emission — POST /email-provider/test", () => {
+    it("emits email_provider.test with success + recipient when fresh-creds path succeeds", async () => {
+      mockSendEmailWithTransport.mockImplementation(async () => ({
+        success: true,
+        provider: "resend",
+      }));
+      const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
+        recipientEmail: "you@example.com",
+        provider: "resend",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { provider: "resend", apiKey: "re_test_live_value_99" },
+      });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.test");
+      expect(entry.scope ?? "workspace").toBe("workspace");
+      expect(entry.metadata).toMatchObject({
+        provider: "resend",
+        success: true,
+        recipientEmail: "you@example.com",
+      });
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain("re_test_live_value_99");
+      expect(entry.metadata).not.toHaveProperty("apiKey");
+      expect(entry.metadata).not.toHaveProperty("config");
+    });
+
+    it("emits email_provider.test with success=false on delivery failure", async () => {
+      // The credential-oracle threat: without this emission an attacker can
+      // call /test with stolen creds and read the pass/fail from the body
+      // without leaving a trace. Make the failing branch loud.
+      mockSendEmail.mockImplementation(async () => ({
+        success: false,
+        provider: "resend",
+        error: "auth failed",
+      }));
+      const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
+        recipientEmail: "you@example.com",
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { success: boolean };
+      expect(body.success).toBe(false);
+
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.test");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata).toMatchObject({
+        provider: "resend",
+        success: false,
+        recipientEmail: "you@example.com",
+      });
+    });
+
+    it("does not emit audit on wire-schema validation (422) — body never reached the handler", async () => {
+      const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
+        recipientEmail: "you@example.com",
+        provider: "smtp",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { apiKey: "re_wrong_shape" },
+      });
+      expect(res.status).toBe(422);
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("emits email_provider.test with status=failure when the delivery helper throws", async () => {
+      // Unlike `success: false` (structured provider error), an actual
+      // throw from sendEmailWithTransport / sendEmail bypasses the trailing
+      // logAdminAction call. The Effect.tapError wrap must catch it so
+      // the credential oracle stays closed even on pool / SDK failures.
+      mockSendEmailWithTransport.mockImplementation(async () => {
+        throw new Error("transport pool exhausted");
+      });
+      const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
+        recipientEmail: "you@example.com",
+        provider: "resend",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { provider: "resend", apiKey: "re_stolen_key_for_oracle" },
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.test");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata).toMatchObject({
+        provider: "resend",
+        success: false,
+        recipientEmail: "you@example.com",
+      });
+      expect(entry.metadata!.error).toContain("transport pool exhausted");
+      // The apiKey must not leak even on the throw path.
+      expect(JSON.stringify(entry)).not.toContain("re_stolen_key_for_oracle");
+    });
+
+    it("emits email_provider.test with status=failure when saved-config path throws", async () => {
+      // Saved-config branch uses `sendEmail` and takes no request body
+      // credentials, but still must emit on throw so the failed-probe
+      // signal isn't lost.
+      mockSendEmail.mockImplementation(async () => {
+        throw new Error("saved config fetch failed");
+      });
+      const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
+        recipientEmail: "you@example.com",
+      });
+      expect(res.status).toBe(500);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("email_provider.test");
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata).toMatchObject({
+        success: false,
+        recipientEmail: "you@example.com",
+      });
+      expect(entry.metadata!.error).toContain("saved config fetch failed");
     });
   });
 });

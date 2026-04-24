@@ -40,10 +40,13 @@ export interface AdminActionEntry {
   ipAddress?: string | null;
   /**
    * Reserved actor for system-initiated writes with no HTTP request context
-   * (schedulers, background jobs). Must match `^system:[a-z0-9_-]+$`; when
-   * set the string is used as both actor_id and actor_email, overriding any
-   * user-from-context. Prevents unlabeled null/"unknown" actors on the audit
-   * row for system writes. See F-27 in .claude/research/security-audit-1-2-3.md.
+   * (schedulers, background jobs). Must match `SYSTEM_ACTOR_PATTERN`
+   * (`^system:[a-z0-9][a-z0-9_-]*$`, where the leading char must be
+   * alphanumeric). When set, the string is used as both actor_id and
+   * actor_email (overriding any user-from-context), seeds `request_id` when
+   * no request context is present, and defaults `scope` to "platform".
+   * Prevents unlabeled null/"unknown" actors on the audit row for system
+   * writes. See F-27 in .claude/research/security-audit-1-2-3.md.
    */
   systemActor?: string;
 }
@@ -71,10 +74,31 @@ function assertSystemActor(value: string): void {
  * the AsyncLocalStorage request context. The caller provides the
  * action-specific fields.
  *
- * This function NEVER throws — it is safe to call fire-and-forget.
+ * This function NEVER throws — it is safe to call fire-and-forget. A
+ * malformed `systemActor` is a programmer error: we log a warning and
+ * drop the row rather than crash the caller (preserving the contract
+ * every non-awaited call site relies on). The awaitable variant
+ * `logAdminActionAwait` surfaces the TypeError to its caller instead.
  */
 export function logAdminAction(entry: AdminActionEntry): void {
-  const resolved = resolveEntry(entry);
+  let resolved: ResolvedEntry;
+  try {
+    resolved = resolveEntry(entry);
+  } catch (err: unknown) {
+    // The only synchronous throw path through resolveEntry is a
+    // malformed systemActor. Log loudly; skip the row. Callers treat
+    // this as fire-and-forget, so we can't let a typo crash the
+    // scheduler loop or any other programmatic path.
+    log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        actionType: entry.actionType,
+        targetId: entry.targetId,
+      },
+      "admin_action dropped — resolveEntry rejected (likely malformed systemActor)",
+    );
+    return;
+  }
   emitPino(resolved);
 
   // Insert into admin_action_log when internal DB is available.

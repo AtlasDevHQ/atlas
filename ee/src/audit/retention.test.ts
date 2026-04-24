@@ -66,6 +66,11 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
+// NOTE: this literal must stay in sync with the real
+// AUDIT_PURGE_SCHEDULER_ACTOR exported by purge-scheduler.ts.
+// `purge-scheduler.test.ts` pins the production literal directly, so a
+// rename of the constant fails that test first — update both places
+// together. See F-27.
 mock.module("./purge-scheduler", () => ({
   AUDIT_PURGE_SCHEDULER_ACTOR: "system:audit-purge-scheduler",
 }));
@@ -496,17 +501,31 @@ describe("hardDeleteExpired — library self-audit (F-27)", () => {
 
   it("emits hard_delete audit row when count > 0 outside HTTP context", async () => {
     queryResults = [
-      [{ org_id: "org-1", hard_delete_delay_days: 30 }],
+      [
+        { org_id: "org-1", hard_delete_delay_days: 30 },
+        { org_id: "org-2", hard_delete_delay_days: 30 },
+      ],
     ];
     mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 4 }] }));
 
     const result = await run(hardDeleteExpired());
-    expect(result.deletedCount).toBe(4);
+    expect(result.deletedCount).toBe(8);
     const hardRows = auditCalls.filter((c) => c.actionType === "audit_retention.hard_delete");
     expect(hardRows).toHaveLength(1);
     expect(hardRows[0].systemActor).toBe("system:audit-purge-scheduler");
     expect(hardRows[0].scope).toBe("platform");
-    expect((hardRows[0].metadata as { deletedCount: number }).deletedCount).toBe(4);
+    const meta = hardRows[0].metadata as {
+      deletedCount: number;
+      orgCount: number;
+      affectedOrgs: Array<{ orgId: string; deletedCount: number }>;
+    };
+    expect(meta.deletedCount).toBe(8);
+    expect(meta.orgCount).toBe(2);
+    // Per-org breakdown lets a reviewer answer "which tenants lost data?"
+    expect(meta.affectedOrgs).toEqual([
+      { orgId: "org-1", deletedCount: 4 },
+      { orgId: "org-2", deletedCount: 4 },
+    ]);
   });
 
   it("emits NO audit row when count === 0 (zero-row floods would dwarf cycle rows)", async () => {

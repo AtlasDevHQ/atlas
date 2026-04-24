@@ -14,6 +14,7 @@ let purgeReturn: Array<{ orgId: string; softDeletedCount: number }> = [];
 let hardDeleteReturn: { deletedCount: number } = { deletedCount: 0 };
 let hardDeleteThrow: Error | null = null;
 let auditCalls: Array<Record<string, unknown>> = [];
+let auditShouldThrow: Error | null = null;
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -75,6 +76,7 @@ mock.module("./retention", () => ({
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
+    if (auditShouldThrow) throw auditShouldThrow;
   },
   ADMIN_ACTIONS: {
     audit_log: { purgeCycle: "audit_log.purge_cycle" },
@@ -110,6 +112,7 @@ describe("purge scheduler", () => {
     hardDeleteReturn = { deletedCount: 0 };
     hardDeleteThrow = null;
     auditCalls = [];
+    auditShouldThrow = null;
   });
 
   it("starts and reports running", () => {
@@ -171,6 +174,7 @@ describe("runPurgeCycle self-audit (F-27)", () => {
     hardDeleteReturn = { deletedCount: 0 };
     hardDeleteThrow = null;
     auditCalls = [];
+    auditShouldThrow = null;
   });
 
   it("emits exactly one purge_cycle audit row per cycle on a zero-row cycle", async () => {
@@ -224,5 +228,21 @@ describe("runPurgeCycle self-audit (F-27)", () => {
     // A rename of this literal would silently break every forensic query
     // that filters on `actor_id = 'system:audit-purge-scheduler'`. Pin it.
     expect("system:audit-purge-scheduler").toMatch(/^system:[a-z0-9][a-z0-9_-]*$/);
+  });
+
+  it("cycle completes without rejecting when logAdminAction throws synchronously", async () => {
+    // Load-bearing invariant: a programmer error in the audit helper
+    // (e.g., future contract regression that lets a malformed actor
+    // escape) must not crash the scheduler loop. Prior to the
+    // failure-path try/catch + runCycleWithDefectGuard, a throw here
+    // would bypass `Effect.catchAll` (which only maps Effect failures,
+    // not sync defects in its handler) and emit an unhandled rejection.
+    auditShouldThrow = new TypeError("synthetic audit crash");
+    await expect(Effect.runPromise(runPurgeCycle())).resolves.toBeUndefined();
+    // Two attempts: one from the success path (inside tryPromise.try)
+    // and one from the failure-row emission (inside Effect.catchAll).
+    // Both pushed-then-threw. Neither should crash the cycle.
+    expect(auditCalls).toHaveLength(2);
+    expect(auditCalls[1].status).toBe("failure");
   });
 });

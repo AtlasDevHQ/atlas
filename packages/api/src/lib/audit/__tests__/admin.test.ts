@@ -389,7 +389,10 @@ describe("logAdminAction() — system actor (F-27)", () => {
     expect(params[10]).toBe("req-1");
   });
 
-  it("rejects malformed systemActor strings (no prefix)", () => {
+  it("drops the row on malformed systemActor (no prefix) without throwing", () => {
+    // Fire-and-forget contract: a malformed actor is a programmer error
+    // but must never crash the caller. We log and drop so a typo can't
+    // take down a scheduler loop.
     enableInternalDB();
 
     expect(() =>
@@ -399,11 +402,11 @@ describe("logAdminAction() — system actor (F-27)", () => {
         targetId: "scheduler",
         systemActor: "audit-purge-scheduler", // missing "system:" prefix
       }),
-    ).toThrow(TypeError);
+    ).not.toThrow();
     expect(queryCalls).toHaveLength(0);
   });
 
-  it("rejects systemActor with spaces or uppercase", () => {
+  it("drops the row on systemActor with spaces or uppercase without throwing", () => {
     enableInternalDB();
 
     expect(() =>
@@ -413,7 +416,21 @@ describe("logAdminAction() — system actor (F-27)", () => {
         targetId: "scheduler",
         systemActor: "system:Audit Purge",
       }),
-    ).toThrow(TypeError);
+    ).not.toThrow();
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  it("logAdminActionAwait surfaces TypeError so explicit-await callers see it", async () => {
+    enableInternalDB();
+
+    await expect(
+      logAdminActionAwait({
+        actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+        targetType: "audit_log",
+        targetId: "scheduler",
+        systemActor: "BAD:actor",
+      }),
+    ).rejects.toThrow(TypeError);
     expect(queryCalls).toHaveLength(0);
   });
 

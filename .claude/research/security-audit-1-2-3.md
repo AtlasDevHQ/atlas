@@ -956,9 +956,9 @@ function blocklist keyed by dialect.
 
 | ID | Severity | Type | Surface | Issue | Status |
 |---|---|---|---|---|---|
-| F-17 | P1 | Validator bypass | MySQL `/*!NNNNN */` executable comments | #1772 | Fixed in phase-3-followup PR |
-| F-18 | P2 | Validator bypass | PG `SELECT INTO` | #1773 | Fixed in phase-3-followup PR |
-| F-19 | P2 | Validator bypass | MySQL `INTO DUMPFILE` | #1774 | Fixed in phase-3-followup PR |
+| F-17 | P1 | Validator bypass | MySQL `/*!NNNNN */` executable comments | #1772 | Fixed in PR #1776 |
+| F-18 | P2 | Validator bypass | PG `SELECT INTO` | #1773 | Fixed in PR #1776 |
+| F-19 | P2 | Validator bypass | MySQL `INTO DUMPFILE` | #1774 | Fixed in PR #1776 |
 | F-20 | P3 | Normalization | Case-sensitive quoted identifier | — (stays in doc) | Deferred |
 | F-21 | P3 | Known limitation | Dangerous dialect functions | — (stays in doc) | Deferred |
 
@@ -999,7 +999,7 @@ function blocklist keyed by dialect.
   match.
 - **This audit section.**
 
-Fixes for F-17/F-18/F-19 shipped in a single follow-up PR (branch
+Fixes for F-17/F-18/F-19 shipped in PR #1776 (branch
 `security/1.2.3-phase-3-validator-fixes`, closes #1772 / #1773 / #1774)
 — intentional separation from the audit PR so findings land with dedicated
 review + regression coverage, following the phase-1/phase-2 pattern. The
@@ -1069,27 +1069,27 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 |---|---:|---:|---|---|
 | `actions.ts` | 4 | 0 | ✳︎ | User action approve/deny is user-content not admin; approvals are audited via `admin-approval.ts` when admin-reviewed |
 | `admin-abuse.ts` | 1 | 0 | 🟡 | Writes to `abuse_events` via lib — split trail (F-33) |
-| `admin-approval.ts` | 5 | 1 | 🟡 | Approve/deny audited; **rule CRUD + expire unaudited** (F-30) |
+| `admin-approval.ts` | 5 | 1 | 🟡 | Approve/deny audited; **rule CRUD + expire unaudited** (F-29) |
 | `admin-archive.ts` | 2 | 2 | ✅ | `mode.archive` / `mode.archive_reconcile` / `mode.restore` |
 | `admin-audit-retention.ts` | 4 | 4 | ✅ | F-26 fixed (PR for #1781) — `audit_retention.policy_update` / `export` / `manual_purge` / `manual_hard_delete` emitted with success + failure paths; policy_update captures previous values |
-| `admin-branding.ts` | 2 | 2 | ✅ | F-32 fixed (PR for #1787) — `branding.update` / `branding.delete` emitted on success; `update` metadata preserves admin intent (only request-body fields present); `delete` intentionally silent on no-op (404 "no branding found") |
+| `admin-branding.ts` | 2 | 2 | ✅ | F-32 fixed (PR #1806) — `branding.update` / `branding.delete` emitted on success; `update` metadata preserves admin intent (only request-body fields present); `delete` intentionally silent on no-op (404 "no branding found") |
 | `admin-cache.ts` | 1 | 0 | ❌ | DELETE purge (F-37) |
-| `admin-compliance.ts` | 2 | 2 | ✅ | F-32 fixed (PR for #1787) — `compliance.pii_config_update` / `compliance.pii_config_delete` emitted on success; update metadata captures only the admin's intent (request-body fields present) so compliance review can distinguish a masking-strategy shrink from a dismiss. Deliberately named distinct from `audit_retention.*` — these control PII-masking enforcement, not retention windows |
+| `admin-compliance.ts` | 2 | 2 | ✅ | F-32 fixed (PR #1806) — `compliance.pii_config_update` / `compliance.pii_config_delete` emitted on success; update metadata captures only the admin's intent (request-body fields present) so compliance review can distinguish a masking-strategy shrink from a dismiss. Deliberately named distinct from `audit_retention.*` — these control PII-masking enforcement, not retention windows |
 | `admin-connections.ts` | 7 | 3 | 🟡 | Create/update/delete audited; **test / /:id/test / pool drain unaudited** (F-34) |
-| `admin-domains.ts` | 4 | 4 | ✅ | F-32 fixed (PR for #1787) — `domain.workspace_register` / `workspace_remove` / `workspace_verify` / `workspace_verify_dns` emitted on success; verify paths short-circuit 404 before audit emission when no domain is configured (probes don't land stale rows) |
-| `admin-email-provider.ts` | 3 | 3 | ✅ | F-30 fixed (PR for #1785) — `email_provider.update` / `delete` / `test` emitted with success + failure paths; update carries `hasSecret: true` marker, delete captures prior provider pre-delete, test includes recipient + delivery outcome |
+| `admin-domains.ts` | 4 | 4 | ✅ | F-32 fixed (PR #1806) — `domain.workspace_register` / `workspace_remove` / `workspace_verify` / `workspace_verify_dns` emitted on success; verify paths short-circuit 404 before audit emission when no domain is configured (probes don't land stale rows) |
+| `admin-email-provider.ts` | 3 | 3 | ✅ | F-30 fixed (PR #1805) — `email_provider.update` / `delete` / `test` emitted with success + failure paths; update carries `hasSecret: true` marker, delete captures prior provider pre-delete, test includes recipient + delivery outcome |
 | `admin-integrations.ts` | 19 | 18 | 🟡 | Most install/uninstall emit `integration.*`; **one handler missing an audit call** — see F-29 |
 | `admin-invitations.ts` | 2 | 1 | 🟡 | `user.invite` audited; **`DELETE /users/invitations/{id}` revoke is silent** — see F-29 |
 | `admin-ip-allowlist.ts` | 2 | 0 | ❌ | **Per phase-4 scope: CRITICAL** (F-24) |
 | `admin-learned-patterns.ts` | 3 | 3 | ✅ | `pattern.approve` / `pattern.reject` / `pattern.delete` |
 | `admin-marketplace.ts` | 6 | 6 | ✅ | `plugin.catalog_create` / `catalog_update` / `catalog_delete` + `catalog_cascade_uninstall` / `plugin.install` / `plugin.uninstall` / `plugin.config_update` — F-22 fixed |
 | `admin-migrate.ts` | 1 | 0 | ❌ | Schema migration trigger (F-37) |
-| `admin-model-config.ts` | 3 | 3 | ✅ | F-30 fixed (PR for #1785) — `model_config.update` / `delete` / `test` emitted with success + failure paths; metadata carries `hasSecret` marker and never the apiKey value; test route audits success + failure to close the credential-oracle gap |
+| `admin-model-config.ts` | 3 | 3 | ✅ | F-30 fixed (PR #1805) — `model_config.update` / `delete` / `test` emitted with success + failure paths; metadata carries `hasSecret` marker and never the apiKey value; test route audits success + failure to close the credential-oracle gap |
 | `admin-orgs.ts` | 4 | 4 | ✅ | F-31 fixed (PR #1804) — `workspace.suspend` / `workspace.unsuspend` / `workspace.change_plan` / `workspace.delete` emitted with `scope: "platform"`, matching `platform-admin.ts` canonical fields exactly. Regression test compares entries directly across both surfaces |
 | `admin-plugins.ts` | 4 | 3 | ✅ | `plugin.enable` / `plugin.disable` / `plugin.config_update` audited; read-only health check stays silent — F-22 fixed |
 | `admin-prompts.ts` | 7 | 0 | ❌ | Content governance — collection + prompt CRUD (F-35) |
 | `admin-publish.ts` | 1 | 1 | ✅ | `mode.publish` |
-| `admin-residency.ts` | 4 | 4 | ✅ | F-32 fixed (PR for #1787) — `residency.workspace_assign` / `migration_request` / `migration_retry` / `migration_cancel` emitted. `workspace_assign` metadata carries explicit `permanent: true` so triage flags the irreversibility, and emits failure-status audits on validation / conflict errors so 409 probes for the current region leave a trail |
+| `admin-residency.ts` | 4 | 4 | ✅ | F-32 fixed (PR #1806) — `residency.workspace_assign` / `migration_request` / `migration_retry` / `migration_cancel` emitted. `workspace_assign` metadata carries explicit `permanent: true` so triage flags the irreversibility, and emits failure-status audits on validation / conflict errors so 409 probes for the current region leave a trail |
 | `admin-roles.ts` | 4 | 4 | ✅ | F-25 fixed (PR #1800) — `role.create` / `role.update` / `role.delete` / `role.assign` emitted with success + failure paths; update captures previousPermissions, delete pre-fetches so metadata retains the deleted role, assign captures previousRole |
 | `admin-sandbox.ts` | 2 | 0 | ❌ | Connect/disconnect BYOC sandbox (F-37) |
 | `admin-scim.ts` | 3 | 3 | ✅ | `scim.connection_delete` / `scim.group_mapping_create` / `scim.group_mapping_delete` — F-23 fixed |
@@ -1562,9 +1562,9 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 | open |
 | F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | fixed (PR #1801) |
 | F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 | open |
-| F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | fixed (PR for #1785) |
+| F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | fixed (PR #1805) |
 | F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | fixed (PR #1804) |
-| F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | fixed (PR for #1787) |
+| F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | fixed (PR #1806) |
 | F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | open |
 | F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 | open |
 | F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 | open |

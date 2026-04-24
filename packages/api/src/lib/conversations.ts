@@ -11,6 +11,7 @@
 
 import * as crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   hasInternalDB,
   internalQuery,
@@ -163,7 +164,7 @@ export async function createConversation(opts: {
         );
     return rows[0] ?? null;
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "createConversation failed");
+    log.error({ err: errorMessage(err) }, "createConversation failed");
     return null;
   }
 }
@@ -218,7 +219,7 @@ export function persistAssistantSteps(opts: {
     })
     .catch((err: unknown) => {
       log.error(
-        { err: err instanceof Error ? err.message : String(err), conversationId },
+        { err: errorMessage(err), conversationId },
         "[%s] Agent stream failed — assistant response not available",
         label,
       );
@@ -286,7 +287,7 @@ export async function getConversation(
       },
     };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getConversation failed");
+    log.error({ err: errorMessage(err) }, "getConversation failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -344,7 +345,7 @@ export async function listConversations(opts?: {
       total,
     };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "listConversations failed");
+    log.error({ err: errorMessage(err) }, "listConversations failed");
     return empty;
   }
 }
@@ -366,7 +367,7 @@ export async function starConversation(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "starConversation failed");
+    log.error({ err: errorMessage(err) }, "starConversation failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -388,7 +389,7 @@ export async function updateNotebookState(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "updateNotebookState failed");
+    log.error({ err: errorMessage(err) }, "updateNotebookState failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -472,7 +473,7 @@ export async function forkConversation(opts: {
 
     return { ok: true, data: { id: newId, messageCount: copyResult.length } };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), sourceId: opts.sourceId }, "forkConversation failed");
+    log.error({ err: errorMessage(err), sourceId: opts.sourceId }, "forkConversation failed");
     // Clean up partially-created conversation to avoid orphans
     if (newId) {
       try {
@@ -533,7 +534,7 @@ export async function deleteBranch(opts: {
 
     return { ok: true };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), rootId: opts.rootId, branchId: opts.branchId }, "deleteBranch failed");
+    log.error({ err: errorMessage(err), rootId: opts.rootId, branchId: opts.branchId }, "deleteBranch failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -575,7 +576,7 @@ export async function renameBranch(opts: {
 
     return { ok: true };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), rootId: opts.rootId, branchId: opts.branchId }, "renameBranch failed");
+    log.error({ err: errorMessage(err), rootId: opts.rootId, branchId: opts.branchId }, "renameBranch failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -633,7 +634,7 @@ export async function convertToNotebook(opts: {
 
     return { ok: true, data: { id: newId, messageCount: copyResult.length } };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), sourceId: opts.sourceId }, "convertToNotebook failed");
+    log.error({ err: errorMessage(err), sourceId: opts.sourceId }, "convertToNotebook failed");
     // Clean up partially-created conversation to avoid orphans
     if (newId) {
       try {
@@ -661,7 +662,7 @@ export async function deleteConversation(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "deleteConversation failed");
+    log.error({ err: errorMessage(err) }, "deleteConversation failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -741,7 +742,7 @@ export async function shareConversation(
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     return { ok: true, data: { token: rows[0].share_token, expiresAt, shareMode } };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "shareConversation failed");
+    log.error({ err: errorMessage(err) }, "shareConversation failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -762,7 +763,7 @@ export async function unshareConversation(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "unshareConversation failed");
+    log.error({ err: errorMessage(err) }, "unshareConversation failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -795,7 +796,7 @@ export async function getShareStatus(
     }
     return { ok: true, data: { shared: true, token, expiresAt, shareMode } };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getShareStatus failed");
+    log.error({ err: errorMessage(err) }, "getShareStatus failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -820,7 +821,7 @@ export async function cleanupExpiredShares(): Promise<number> {
     }
     return count;
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "cleanupExpiredShares failed");
+    log.error({ err: errorMessage(err) }, "cleanupExpiredShares failed");
     return -1;
   }
 }
@@ -889,7 +890,7 @@ export async function getSharedConversation(
       },
     };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "getSharedConversation failed");
+    log.error({ err: errorMessage(err) }, "getSharedConversation failed");
     return { ok: false, reason: "error" };
   }
 }

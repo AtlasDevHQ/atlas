@@ -23,6 +23,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
 import { getSemanticRoot, ensureOrgModeSemanticRoot } from "@atlas/api/lib/semantic/sync";
@@ -45,7 +46,7 @@ async function createBashBackend(
   try {
     ({ Bash, OverlayFs } = await import("just-bash"));
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     log.error({ err: detail }, "Failed to import just-bash");
     throw new Error(
       "Failed to load the just-bash runtime for the explore tool. " +
@@ -101,7 +102,7 @@ function useNsjail(): boolean {
       _nsjailAvailable = false;
     } else {
       log.error(
-        { error: err instanceof Error ? err.message : String(err) },
+        { error: errorMessage(err) },
         "Unexpected error loading nsjail module",
       );
       _nsjailAvailable = false;
@@ -188,7 +189,7 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
         const { createSandboxBackend } = await import("./explore-sandbox");
         return createSandboxBackend(semanticRoot);
       } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = errorMessage(err);
         log.warn(
           { error: detail },
           "vercel-sandbox backend failed to initialize — trying next in priority",
@@ -209,7 +210,7 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
         });
       } catch (err) {
         _nsjailFailed = true;
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = errorMessage(err);
         log.warn(
           { error: detail },
           "nsjail backend failed to initialize — trying next in priority",
@@ -229,7 +230,7 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
         return createSidecarBackend(sidecarUrl, { semanticRoot });
       } catch (err) {
         _sidecarFailed = true;
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = errorMessage(err);
         log.warn(
           { error: detail },
           "sidecar backend failed to initialize — trying next in priority",
@@ -318,7 +319,7 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
               return result.backend as ExploreBackend;
             }
           } catch (err) {
-            const detail = err instanceof Error ? err.message : String(err);
+            const detail = errorMessage(err);
             log.warn(
               { backend: wsOverride, orgId, err: detail },
               "Workspace sandbox plugin override %s failed — falling through to default",
@@ -347,7 +348,7 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
             return result.backend as ExploreBackend;
           }
         } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
+          const detail = errorMessage(err);
           const isModuleError = err != null && typeof err === "object" && "code" in err
             && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
           if (isModuleError) {
@@ -412,6 +413,8 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
             onNsjailFailed: markNsjailFailed,
           });
         } catch (err) {
+          // @atlas-ok-ternary: detail is concatenated into a thrown Error message
+          // — per #1829 non-goal, don't modify throw new Error(...) constructors.
           const detail = err instanceof Error ? err.message : String(err);
           throw new Error(
             "nsjail was explicitly requested (ATLAS_SANDBOX=nsjail) but failed to initialize: " +
@@ -438,7 +441,7 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
             onNsjailFailed: markNsjailFailed,
           });
         } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
+          const detail = errorMessage(err);
           _nsjailFailed = true;
           log.error(
             { error: detail, fallback: "just-bash" },
@@ -511,7 +514,7 @@ Always start by listing the root directory to see what sources are available.`,
         ? await ensureOrgModeSemanticRoot(orgId, atlasMode)
         : getSemanticRoot();
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorMessage(err);
       log.error({ err: detail, orgId, atlasMode }, "Failed to prepare org semantic root for explore");
       return `Error: Explore tool is unavailable — ${detail}`;
     }
@@ -520,7 +523,7 @@ Always start by listing the root directory to see what sources are available.`,
     try {
       backend = await getExploreBackend(semanticRoot, orgId);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorMessage(err);
       log.error({ err: detail, orgId }, "Explore backend initialization failed");
       return `Error: Explore tool is unavailable — ${detail}`;
     }
@@ -536,7 +539,7 @@ Always start by listing the root directory to see what sources are available.`,
           "command",
         );
       } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = errorMessage(err);
         log.warn({ err: detail, command }, "Explore command rejected by plugin");
         return `Error: Command rejected by plugin: ${detail}`;
       }
@@ -573,7 +576,7 @@ Always start by listing the root directory to see what sources are available.`,
 
       return output;
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorMessage(err);
       log.error({ err: detail, command }, "Explore command failed");
       return `Error: ${detail}`;
     }

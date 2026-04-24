@@ -9,6 +9,7 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -637,14 +638,14 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
               headers: { Authorization: `Bearer ${botToken}`, "Content-Type": "application/x-www-form-urlencoded" },
             });
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Slack auth.test fetch failed");
+            log.warn({ err: errorMessage(err) }, "Slack auth.test fetch failed");
             return { ok: false as const, error: "Could not reach Slack API. Please try again." };
           }
           let data: { ok: boolean; team_id?: string; team?: string; error?: string };
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Slack auth.test response parse failed");
+            log.warn({ err: errorMessage(err) }, "Slack auth.test response parse failed");
             return { ok: false as const, error: "Slack API returned an invalid response" };
           }
           if (!data.ok) {
@@ -794,14 +795,14 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
               },
             );
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Azure AD token fetch failed");
+            log.warn({ err: errorMessage(err) }, "Azure AD token fetch failed");
             return { ok: false as const, error: "Could not reach Azure AD. Please try again." };
           }
           let data: { access_token?: string; error?: string; error_description?: string };
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Azure AD token response parse failed");
+            log.warn({ err: errorMessage(err) }, "Azure AD token response parse failed");
             return { ok: false as const, error: "Azure AD returned an invalid response" };
           }
           if (!data.access_token) {
@@ -942,7 +943,7 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
               headers: { Authorization: `Bot ${botToken}` },
             });
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Discord /users/@me fetch failed");
+            log.warn({ err: errorMessage(err) }, "Discord /users/@me fetch failed");
             return { ok: false as const, error: "Could not reach Discord API. Please try again." };
           }
           if (!res.ok) {
@@ -959,7 +960,7 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Discord /users/@me response parse failed");
+            log.warn({ err: errorMessage(err) }, "Discord /users/@me response parse failed");
             return { ok: false as const, error: "Discord API returned an invalid response" };
           }
           if (!data.id) {
@@ -1334,7 +1335,7 @@ adminIntegrations.openapi(connectGChatRoute, async (c) => {
       try {
         parsed = JSON.parse(credentialsJson) as typeof parsed;
       } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Google Chat credentials JSON parse failed");
+        log.warn({ err: errorMessage(err) }, "Google Chat credentials JSON parse failed");
         return c.json(
           { error: "invalid_credentials", message: "Invalid JSON. Paste the full service account key file contents." },
           400,
@@ -1583,7 +1584,7 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
               },
             });
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "GitHub /user fetch failed");
+            log.warn({ err: errorMessage(err) }, "GitHub /user fetch failed");
             return { ok: false as const, error: "Could not reach GitHub API. Please try again." };
           }
           if (!res.ok) {
@@ -1600,7 +1601,7 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "GitHub /user response parse failed");
+            log.warn({ err: errorMessage(err) }, "GitHub /user response parse failed");
             return { ok: false as const, error: "GitHub API returned an invalid response" };
           }
           if (!data.id) {
@@ -1837,7 +1838,7 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
               signal: AbortSignal.timeout(10_000),
             });
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Linear GraphQL fetch failed");
+            log.warn({ err: errorMessage(err) }, "Linear GraphQL fetch failed");
             return { ok: false as const, error: "Could not reach Linear API. Please try again." };
           }
           if (!res.ok) {
@@ -1854,7 +1855,7 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Linear GraphQL response parse failed");
+            log.warn({ err: errorMessage(err) }, "Linear GraphQL response parse failed");
             return { ok: false as const, error: "Linear API returned an invalid response" };
           }
           if (data.errors?.length) {
@@ -2104,7 +2105,7 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
               signal: AbortSignal.timeout(10_000),
             });
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "WhatsApp Graph API fetch failed");
+            log.warn({ err: errorMessage(err) }, "WhatsApp Graph API fetch failed");
             return { ok: false as const, error: "Could not reach Meta API. Please try again." };
           }
           if (!res.ok) {
@@ -2121,7 +2122,7 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "WhatsApp Graph API response parse failed");
+            log.warn({ err: errorMessage(err) }, "WhatsApp Graph API response parse failed");
             return { ok: false as const, error: "Meta API returned an invalid response" };
           }
           if (!data.id) {
@@ -2729,7 +2730,7 @@ async function sendSendGridTestEmail(
     }
     return { success: true };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    return { success: false, error: errorMessage(err) };
   }
 }
 
@@ -2762,7 +2763,7 @@ async function sendPostmarkTestEmail(
     }
     return { success: true };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    return { success: false, error: errorMessage(err) };
   }
 }
 
@@ -2799,7 +2800,7 @@ async function sendSmtpTestEmail(
     }
     return { success: true };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    return { success: false, error: errorMessage(err) };
   }
 }
 
@@ -2835,7 +2836,7 @@ async function sendSesTestEmail(
     }
     return { success: true };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    return { success: false, error: errorMessage(err) };
   }
 }
 
@@ -2863,7 +2864,7 @@ async function sendResendTestEmail(
     }
     return { success: true };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    return { success: false, error: errorMessage(err) };
   }
 }
 

@@ -17,6 +17,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getSemanticRoot as getBaseSemanticRoot } from "./files";
 
 const log = createLogger("semantic-sync");
@@ -131,7 +132,7 @@ export async function syncEntityToDisk(
     log.debug({ orgId, name, type, filePath }, "Synced entity to disk");
   } catch (err) {
     log.error(
-      { orgId, name, type, filePath, err: err instanceof Error ? err.message : String(err) },
+      { orgId, name, type, filePath, err: errorMessage(err) },
       "Failed to sync entity to disk — DB is authoritative, disk may be stale",
     );
     // Don't re-throw — DB write already succeeded, disk sync failure is
@@ -158,7 +159,7 @@ export async function syncEntityDeleteFromDisk(
       return;
     }
     log.error(
-      { orgId, name, type, filePath, err: err instanceof Error ? err.message : String(err) },
+      { orgId, name, type, filePath, err: errorMessage(err) },
       "Failed to delete entity from disk",
     );
   }
@@ -188,7 +189,7 @@ export async function syncAllEntitiesToDisk(orgId: string): Promise<number> {
   if (existing) {
     await existing.catch((err) => {
       log.debug(
-        { orgId, err: err instanceof Error ? err.message : String(err) },
+        { orgId, err: errorMessage(err) },
         "Prior rebuild for org failed — proceeding with fresh rebuild attempt",
       );
     });
@@ -230,7 +231,7 @@ async function _doSyncAllEntitiesToDisk(orgId: string): Promise<number> {
       synced++;
     } catch (err) {
       log.error(
-        { orgId, name: row.name, type: row.entity_type, err: err instanceof Error ? err.message : String(err) },
+        { orgId, name: row.name, type: row.entity_type, err: errorMessage(err) },
         "Failed to write entity during full sync",
       );
     }
@@ -273,14 +274,14 @@ async function _cleanStaleFiles(root: string, expectedFiles: Set<string>): Promi
             log.debug({ path: fullPath }, "Removed stale entity file");
           } catch (err) {
             if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-              log.warn({ path: fullPath, err: err instanceof Error ? err.message : String(err) }, "Failed to remove stale file");
+              log.warn({ path: fullPath, err: errorMessage(err) }, "Failed to remove stale file");
             }
           }
         }
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        log.warn({ dir, err: err instanceof Error ? err.message : String(err) }, "Failed to scan directory for stale files");
+        log.warn({ dir, err: errorMessage(err) }, "Failed to scan directory for stale files");
       }
     }
   }
@@ -301,7 +302,7 @@ export async function cleanupOrgDirectory(orgId: string): Promise<void> {
     log.info({ orgId, path: root }, "Cleaned up org semantic directory");
   } catch (err) {
     log.error(
-      { orgId, path: root, err: err instanceof Error ? err.message : String(err) },
+      { orgId, path: root, err: errorMessage(err) },
       "Failed to clean up org directory",
     );
   }
@@ -440,7 +441,7 @@ async function _buildOrgModeRoot(
     } catch (err) {
       failed++;
       log.error(
-        { orgId, mode, name: row.name, type: row.entity_type, err: err instanceof Error ? err.message : String(err) },
+        { orgId, mode, name: row.name, type: row.entity_type, err: errorMessage(err) },
         "Failed to write mode-specific entity file",
       );
     }
@@ -523,11 +524,11 @@ export async function importFromDisk(
         connectionId: options?.connectionId,
       });
     } catch (err) {
-      errors.push({ file: "glossary.yml", reason: `Invalid YAML: ${err instanceof Error ? err.message : String(err)}` });
+      errors.push({ file: "glossary.yml", reason: `Invalid YAML: ${errorMessage(err)}` });
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      errors.push({ file: "glossary.yml", reason: err instanceof Error ? err.message : String(err) });
+      errors.push({ file: "glossary.yml", reason: errorMessage(err) });
     }
     // ENOENT is fine — glossary is optional
   }
@@ -581,7 +582,7 @@ async function _scanYamlDir(
     files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith(".yml"));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // dir doesn't exist — fine
-    errors.push({ file: dir, reason: err instanceof Error ? err.message : String(err) });
+    errors.push({ file: dir, reason: errorMessage(err) });
     return;
   }
 
@@ -602,7 +603,7 @@ async function _scanYamlDir(
 
       out.push({ entityType, name, yamlContent: content, connectionId });
     } catch (err) {
-      errors.push({ file, reason: err instanceof Error ? err.message : String(err) });
+      errors.push({ file, reason: errorMessage(err) });
     }
   }
 }
@@ -629,6 +630,8 @@ export async function reconcileAllOrgs(): Promise<void> {
         "SELECT DISTINCT org_id FROM semantic_entities",
       );
     } catch (err) {
+      // @atlas-ok-ternary: msg is substring-matched on "does not exist" / "no such table"
+      // — errorMessage() would scrub+truncate, altering match semantics.
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("does not exist") || msg.includes("no such table")) {
         log.info("semantic_entities table not found — first boot before migration, skipping reconciliation");
@@ -661,7 +664,7 @@ export async function reconcileAllOrgs(): Promise<void> {
           needsRebuild = true;
         } else {
           log.warn(
-            { orgId, err: err instanceof Error ? err.message : String(err) },
+            { orgId, err: errorMessage(err) },
             "Unexpected error reading org entities directory — attempting rebuild",
           );
           needsRebuild = true;
@@ -674,7 +677,7 @@ export async function reconcileAllOrgs(): Promise<void> {
           log.info({ orgId, synced }, "Boot reconciliation: rebuilt org directory");
         } catch (err) {
           log.error(
-            { orgId, err: err instanceof Error ? err.message : String(err) },
+            { orgId, err: errorMessage(err) },
             "Boot reconciliation failed for org — explore may not work for this org until next restart",
           );
         }
@@ -684,7 +687,7 @@ export async function reconcileAllOrgs(): Promise<void> {
     }
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: errorMessage(err) },
       "Boot reconciliation failed — org semantic layers may be incomplete",
     );
   }
@@ -707,7 +710,7 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
       .map((d) => d.name);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // no .orgs/ dir — nothing to import
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Could not scan .orgs/ for auto-import — skipping");
+    log.warn({ err: errorMessage(err) }, "Could not scan .orgs/ for auto-import — skipping");
     return;
   }
 
@@ -721,7 +724,7 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
         log.warn(
-          { orgId, err: err instanceof Error ? err.message : String(err) },
+          { orgId, err: errorMessage(err) },
           "Cannot read entities dir for auto-import — skipping org",
         );
       }
@@ -740,7 +743,7 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
       );
     } catch (err) {
       log.error(
-        { orgId, err: err instanceof Error ? err.message : String(err) },
+        { orgId, err: errorMessage(err) },
         "Auto-import from disk failed for org",
       );
     }

@@ -13,6 +13,7 @@ import { maskConnectionUrl } from "./security";
 import { getDefaultProvider } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { createLogger } from "./logger";
+import { errorMessage } from "./audit/error-scrub";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./semantic/files";
 
 const log = createLogger("startup");
@@ -196,7 +197,7 @@ function checkSemanticLayerPresence(errors: DiagnosticError[]): void {
     if (code !== "ENOENT") {
       errors.push({
         code: "MISSING_SEMANTIC_LAYER",
-        message: `Could not read semantic layer directory: ${err instanceof Error ? err.message : String(err)}. Check file permissions.`,
+        message: `Could not read semantic layer directory: ${errorMessage(err)}. Check file permissions.`,
       });
       hasEntities = true; // prevent duplicate "no semantic layer" error below
     }
@@ -218,7 +219,7 @@ async function checkDatasourceConnectivity(
   try {
     dbType = detectDBType(resolvedDatasourceUrl);
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     log.error({ err: detail }, "Unsupported datasource URL");
     errors.push({ code: "DB_UNREACHABLE", message: detail });
   }
@@ -309,7 +310,7 @@ async function checkMysqlConnectivity(
   } finally {
     if (pool) {
       await pool.end().catch((err: unknown) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Pool cleanup warning");
+        log.warn({ err: errorMessage(err) }, "Pool cleanup warning");
       });
     }
   }
@@ -406,7 +407,7 @@ async function checkPostgresConnectivity(
     errors.push({ code: "DB_UNREACHABLE", message });
   } finally {
     await pool.end().catch((err: unknown) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Pool cleanup warning");
+      log.warn({ err: errorMessage(err) }, "Pool cleanup warning");
     });
   }
 }
@@ -447,7 +448,7 @@ async function checkInternalDbConnectivity(errors: DiagnosticError[]): Promise<v
         errors.push({ code: "INTERNAL_DB_UNREACHABLE", message });
       } finally {
         await pool.end().catch((err: unknown) => {
-          log.warn({ err: err instanceof Error ? err.message : String(err) }, "Internal DB pool cleanup warning");
+          log.warn({ err: errorMessage(err) }, "Internal DB pool cleanup warning");
         });
       }
     }
@@ -467,7 +468,7 @@ async function checkConfigFile(errors: DiagnosticError[]): Promise<void> {
       await configMod.loadConfig();
     }
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     log.error({ err: detail }, "Config validation failed");
     errors.push({ code: "INVALID_CONFIG", message: detail });
   }
@@ -610,7 +611,7 @@ async function checkByotAuthMode(errors: DiagnosticError[]): Promise<void> {
         if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       }
     } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), jwksUrl }, "JWKS endpoint unreachable during startup check");
+      log.warn({ err: errorMessage(err), jwksUrl }, "JWKS endpoint unreachable during startup check");
     }
   }
 
@@ -680,7 +681,7 @@ async function checkActionFramework(errors: DiagnosticError[], authMode: string)
     }
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: errorMessage(err) },
       "Could not validate action credentials at startup",
     );
   }
@@ -712,7 +713,7 @@ async function checkActionFramework(errors: DiagnosticError[], authMode: string)
     }
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: errorMessage(err) },
       "Could not validate action config at startup",
     );
   }
@@ -737,7 +738,7 @@ async function logSandboxPlugins(): Promise<void> {
       }
     } catch (err) {
       log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err: errorMessage(err) },
         "Failed to enumerate sandbox plugins",
       );
     }
@@ -762,7 +763,7 @@ async function checkSandboxPreFlight(): Promise<void> {
       && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
     if (!isModuleErr) {
       log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err: errorMessage(err) },
         "Failed to read sandbox priority from config",
       );
     }
@@ -811,7 +812,7 @@ async function checkExplicitNsjail(): Promise<void> {
       if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     }
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     log.warn({ err: detail }, "Sandbox pre-flight check skipped");
   }
 }
@@ -837,7 +838,7 @@ async function checkSidecarHealth(): Promise<void> {
     }
   } catch (err) {
     markSidecarFailed();
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     const msg =
       `Sidecar unreachable at ${sidecarUrl}: ${detail}. ` +
       "The sidecar may not be running yet — explore will retry on first use.";
@@ -872,7 +873,7 @@ async function autoDetectNsjail(): Promise<void> {
       }
     }
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     log.warn({ err: detail }, "Sandbox pre-flight check skipped");
   }
 

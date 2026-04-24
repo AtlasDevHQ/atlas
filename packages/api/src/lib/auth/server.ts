@@ -21,6 +21,7 @@ import { stripe as stripePlugin } from "@better-auth/stripe";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
@@ -393,7 +394,7 @@ export async function _sendVerificationEmail(opts: { to: string; url: string }):
     }
   } catch (err) {
     log.warn(
-      { to: opts.to, err: err instanceof Error ? err.message : String(err) },
+      { to: opts.to, err: errorMessage(err) },
       "Email verification dispatch crashed — signup response is still 200 to preserve enumeration protection; user may need to retry via /send-verification-email",
     );
   }
@@ -454,7 +455,7 @@ function buildPlugins() {
           });
         } catch (err) {
           log.debug(
-            { err: err instanceof Error ? err.message : String(err) },
+            { err: errorMessage(err) },
             "Onboarding hook not available — non-blocking",
           );
         }
@@ -515,7 +516,7 @@ function buildPlugins() {
                     log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
                   } catch (err) {
                     log.error(
-                      { err: err instanceof Error ? err.message : String(err), orgId, plan: plan.name },
+                      { err: errorMessage(err), orgId, plan: plan.name },
                       "Failed to sync plan tier on subscription activation — Stripe will retry webhook",
                     );
                     throw err;
@@ -531,7 +532,7 @@ function buildPlugins() {
                     log.info({ orgId }, "Subscription canceled — downgraded to free tier");
                   } catch (err) {
                     log.error(
-                      { err: err instanceof Error ? err.message : String(err), orgId },
+                      { err: errorMessage(err), orgId },
                       "Failed to downgrade plan on subscription cancel — Stripe will retry webhook",
                     );
                     throw err;
@@ -571,7 +572,7 @@ function buildPlugins() {
                   );
                 } catch (err) {
                   billingLog.error(
-                    { err: err instanceof Error ? err.message : String(err), orgId, newTier, priceId },
+                    { err: errorMessage(err), orgId, newTier, priceId },
                     "Failed to sync plan tier on subscription update — Stripe will retry webhook",
                   );
                   throw err;
@@ -586,7 +587,7 @@ function buildPlugins() {
                     log.info({ orgId }, "Subscription deleted — downgraded to free tier");
                   } catch (err) {
                     log.error(
-                      { err: err instanceof Error ? err.message : String(err), orgId },
+                      { err: errorMessage(err), orgId },
                       "Failed to downgrade plan on subscription delete — Stripe will retry webhook",
                     );
                     throw err;
@@ -639,7 +640,7 @@ function buildPlugins() {
                     }
                   } catch (err) {
                     billingLog.error(
-                      { err: err instanceof Error ? err.message : String(err), subscriptionId, attemptCount },
+                      { err: errorMessage(err), subscriptionId, attemptCount },
                       "Failed to suspend workspace after repeated payment failures",
                     );
                     // Do not re-throw — the onEvent handler should not cause Stripe to retry
@@ -654,7 +655,7 @@ function buildPlugins() {
         log.info("Stripe billing plugin enabled");
       } catch (err) {
         log.error(
-          { err: err instanceof Error ? err.message : String(err) },
+          { err: errorMessage(err) },
           "Failed to initialize Stripe billing plugin — billing features will be unavailable",
         );
       }
@@ -822,7 +823,7 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
       // exceptions from checkResourceLimit. Fail open: blocking SSO login
       // is worse than transient over-provisioning.
       log.warn(
-        { err: err instanceof Error ? err.message : String(err), errName: err instanceof Error ? err.name : "unknown", userId: user.id, orgId },
+        { err: errorMessage(err), errName: err instanceof Error ? err.name : "unknown", userId: user.id, orgId },
         "SSO auto-provisioning: member limit check failed — allowing provisioning",
       );
     }
@@ -840,7 +841,7 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
     );
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err), userId: user.id, email: user.email },
+      { err: errorMessage(err), userId: user.id, email: user.email },
       "SSO auto-provisioning failed — user created but not auto-joined to org",
     );
   }
@@ -962,7 +963,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
         // a 500-vs-200 side channel.
         sendVerification({ to: user.email, url }).catch((err: unknown) => {
           log.warn(
-            { to: user.email, err: err instanceof Error ? err.message : String(err) },
+            { to: user.email, err: errorMessage(err) },
             "Verification email dispatch threw — signup response is still 200 to preserve enumeration protection",
           );
         });
@@ -1019,7 +1020,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
               );
             } catch (err) {
               log.warn(
-                { err: err instanceof Error ? err.message : String(err), userId: member.userId },
+                { err: errorMessage(err), userId: member.userId },
                 "Failed to promote org owner to admin — Better Auth admin APIs may return 403",
               );
             }
@@ -1061,7 +1062,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
               };
             } catch (err) {
               log.warn(
-                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
+                { err: errorMessage(err), userId: session.userId },
                 "Failed to auto-set active org — user may need to switch manually",
               );
             }
@@ -1097,7 +1098,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             } catch (err) {
               // intentionally best-effort — never block sign-in on metering
               log.debug(
-                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
+                { err: errorMessage(err), userId: session.userId },
                 "Login event emission skipped",
               );
             }
@@ -1140,7 +1141,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
               // silently lock out the operator with one opaque log line.
               log.error(
                 {
-                  err: err instanceof Error ? err.message : String(err),
+                  err: errorMessage(err),
                   email: user.email,
                   hasAdminEmail: !!adminEmail,
                   allowFirstSignupAdmin,
@@ -1171,7 +1172,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
                   onUserSignup({ userId: user.id, email: userEmail, orgId });
                 } catch (err) {
                   log.warn(
-                    { userId: user.id, err: err instanceof Error ? err.message : String(err) },
+                    { userId: user.id, err: errorMessage(err) },
                     "Failed to trigger welcome email — non-blocking",
                   );
                 }

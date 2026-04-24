@@ -2154,6 +2154,7 @@ admin.openapi(deleteUserRoute, async (c) => {
 admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessions", async () => {
 
   const { id: userId } = c.req.valid("param");
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
   const { authResult, requestId } = await adminAuthAndContext(c);
 
@@ -2167,12 +2168,54 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
     return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
-  await adminApi.revokeSessions({
-    body: { userId },
-    headers: c.req.raw.headers,
-  });
-  log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
-  return c.json({ success: true }, 200);
+  // Pre-count live sessions so the audit row carries `count` — better-auth's
+  // `revokeSessions` doesn't return how many it invalidated, but the read
+  // immediately before the call is a faithful approximation (the only race
+  // window is concurrent writes from the target user, which is the interval
+  // we're closing). If the internal DB is absent, the count is unknown.
+  let count: number | null = null;
+  if (hasInternalDB()) {
+    try {
+      const rows = await internalQuery<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM session WHERE "userId" = $1`,
+        [userId],
+      );
+      count = parseInt(String(rows[0]?.count ?? "0"), 10);
+    } catch (err: unknown) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), requestId, userId },
+        "Session pre-count failed; audit row will lack count",
+      );
+    }
+  }
+
+  try {
+    await adminApi.revokeSessions({
+      body: { userId },
+      headers: c.req.raw.headers,
+    });
+    log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.sessionRevokeAll,
+      targetType: "user",
+      targetId: userId,
+      ipAddress,
+      metadata: { targetUserId: userId, ...(count !== null && { count }) },
+    });
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, userId }, "Failed to revoke user sessions");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.sessionRevokeAll,
+      targetType: "user",
+      targetId: userId,
+      status: "failure",
+      ipAddress,
+      metadata: { targetUserId: userId, error: message },
+    });
+    return c.json({ error: "internal_error", message: "Failed to revoke sessions.", requestId }, 500);
+  }
 }));
 
 // -- Settings ---------------------------------------------------------------

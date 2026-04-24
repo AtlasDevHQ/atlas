@@ -1095,11 +1095,11 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-scim.ts` | 3 | 3 | ✅ | `scim.connection_delete` / `scim.group_mapping_create` / `scim.group_mapping_delete` — F-23 fixed |
 | `admin-semantic-improve.ts` | 4 | 0 | ❌ | AI-assisted semantic layer edits (F-35) |
 | `admin-semantic.ts` | 3 | 3 | ✅ | `semantic.update_entity` / `semantic.delete_entity` |
-| `admin-sessions.ts` | 2 | 0 | ❌ | **Session revocation unaudited** (F-28) — pino-only, not in `admin_action_log` |
+| `admin-sessions.ts` | 2 | 2 | ✅ | F-28 fixed (PR for #1783) — `user.session_revoke` / `user.session_revoke_all` emitted with success + failure paths; single-session path pre-fetches target userId and records `wasCurrentUser` |
 | `admin-sso.ts` | 6 | 4 | 🟡 | Configure / update / delete / test audited; **`POST /providers/{id}/verify` + `PUT /enforcement` unaudited** (F-29) |
 | `admin-starter-prompts.ts` | 4 | 0 | ❌ | Queue moderation — approve/hide/unhide/author (F-36) |
 | `admin-suggestions.ts` | 1 | 0 | ❌ | DELETE suggestion (F-37) |
-| `admin.ts` | 12 | 9 | 🟡 | User role / ban / unban / remove-membership / delete-user / settings update + delete + semantic put/delete audited; **`POST /me/password`, `POST /semantic/org/import`, `POST /users/{id}/revoke-sessions` unaudited** — first two tracked in F-29, third in F-28 |
+| `admin.ts` | 12 | 10 | 🟡 | User role / ban / unban / remove-membership / delete-user / revoke-sessions / settings update + delete + semantic put/delete audited; **`POST /me/password`, `POST /semantic/org/import` unaudited** — tracked in F-29. `POST /users/{id}/revoke-sessions` now emits `user.session_revoke_all` (F-28 fixed, PR #NNNN) |
 | `billing.ts` | 2 | 0 | ✳︎ | Stripe portal redirects — Stripe event log is the authoritative trail; both routes are admin-gated |
 | `chat.ts` | 1 | 0 | ✳︎ | Agent messages; SQL executed via the tool is audited in `audit_log` |
 | `conversations.ts` | 9 | 0 | ✳︎ | User content — out of scope for phase-4 |
@@ -1316,7 +1316,7 @@ Several files have *most* of their writes covered but leave stragglers. Coverage
 - `admin-connections.ts` (3/7 audited): `POST /test` (ephemeral URL), `POST /{id}/test` (health check), `POST /{id}/drain` (single pool drain, line 172), and `POST /pool/orgs/{orgId}/drain` (all pools for an org, line 149) — no audit. The 3 present calls cover create / update / delete.
 - `scheduled-tasks.ts` (4/6 audited): `POST /{id}/run` (trigger immediate execution), `POST /{id}/preview` (dry-run), `POST /tick` (scheduler tick) — no audit. `schedule.toggle` fires from a branch inside the PUT update handler when only `enabled` changes, not a discrete route.
 - `admin-approval.ts` (1/5 audited): `POST /rules`, `PUT /rules/{id}`, `DELETE /rules/{id}`, `POST /expire` — no audit. The 1 present call covers review (approve/deny).
-- `admin.ts` (9/12 audited): `POST /me/password` (change password), `POST /semantic/org/import` (bulk import) — no audit. (`POST /users/{id}/revoke-sessions` is the third gap and is tracked separately under F-28.)
+- `admin.ts` (10/12 audited): `POST /me/password` (change password), `POST /semantic/org/import` (bulk import) — no audit. (`POST /users/{id}/revoke-sessions` was the third gap, fixed under F-28 and now emits `user.session_revoke_all`.)
 - `admin-integrations.ts` (18/19 audited): one install/uninstall handler around lines 2353 (POST) or 2458 (DELETE) is missing its `logAdminAction` call. Cross-reference the 19 `method:` declarations against the 18 `logAdminAction({` call sites to find the orphaned write.
 - `admin-invitations.ts` (1/2 audited): `DELETE /users/invitations/{id}` at line 313 runs `UPDATE invitations SET status = 'revoked'` with only `log.info` — no admin-action row. The route ships no `user.remove` or `user.revoke_invitation` audit despite being the primary invitation-revocation path.
 - `platform-sla.ts` (2/3 audited): `POST /evaluate` (`evaluateAlertsRoute`, line 157) triggers alert evaluation across SLA targets without an audit row.
@@ -1558,7 +1558,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-25 | P0 | Audit gap | EE custom-role CRUD + assignment (`admin-roles.ts`) | #1780 | open |
 | F-26 | P0 | Meta-audit | Audit retention config + manual purge / hard-delete / export (`admin-audit-retention.ts`) | #1781 | fixed (PR #1799) |
 | F-27 | P1 | Self-audit | EE purge scheduler + retention mutations (`ee/audit/*`) | #1782 | open |
-| F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | open |
+| F-28 | P1 | Audit gap | Admin session revocation (`admin-sessions.ts`, `admin.ts`) | #1783 | fixed (PR #NNNN) |
 | F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 | open |
 | F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | open |
 | F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | open |

@@ -11,6 +11,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { plugins } from "@atlas/api/lib/plugins/registry";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api/lib/plugins/settings";
+import { MASKED_PLACEHOLDER } from "@atlas/api/lib/plugins/secrets";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -342,8 +343,10 @@ adminPlugins.openapi(getPluginSchemaRoute, async (c) => {
   const dbOverrides = await getPluginConfig(id);
   const merged = { ...pluginConfig, ...dbOverrides };
 
-  // Mask secret values
-  const MASKED_PLACEHOLDER = "••••••••";
+  // Mask secret values. MASKED_PLACEHOLDER is shared with every admin
+  // plugin surface via @atlas/api/lib/plugins/secrets — the write paths
+  // there round-trip this exact string on save, so drift here would
+  // corrupt live credentials.
   const maskedValues: Record<string, unknown> = {};
   const secretKeys = new Set(schema.filter((f) => f.secret).map((f) => f.key));
   for (const [key, value] of Object.entries(merged)) {
@@ -397,7 +400,6 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
   // and (b) compute an accurate `keysChanged` that excludes re-submitted
   // placeholders — otherwise every admin save would report apiKey as
   // rotated even when they only toggled `debug`.
-  const MASKED_PLACEHOLDER = "••••••••";
   let originals: Record<string, unknown> = {};
   if (typeof plugin.getConfigSchema === "function") {
     const schema = plugin.getConfigSchema();

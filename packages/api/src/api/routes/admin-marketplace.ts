@@ -16,6 +16,7 @@ import { RequestContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { maskSecretFields, parseConfigSchema, restoreMaskedSecrets } from "@atlas/api/lib/plugins/secrets";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   ErrorSchema,
@@ -699,16 +700,30 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       );
       const installedMap = new Map(installations.map((i) => [i.catalog_id, { id: i.id, config: i.config }]));
 
-      // Filter by plan eligibility
+      // Filter by plan eligibility, masking any installedConfig field marked
+      // `secret: true` in the catalog's config_schema. A workspace admin
+      // would otherwise GET /available and read every live credential
+      // (#1817); the UI round-trips the placeholder on save via the write
+      // path's restoreMaskedSecrets() guard. A catalog row with a malformed
+      // config_schema (DB drift, migration typo) falls through parseConfigSchema
+      // as `state: "corrupt"` — maskSecretFields then fail-closes by masking
+      // every string value and we log so operators see the drift.
       const available = catalog
         .filter((entry) => isPlanEligible(plan, entry.min_plan))
         .map((entry) => {
           const inst = installedMap.get(entry.id);
+          const schema = parseConfigSchema(entry.config_schema);
+          if (schema.state === "corrupt" && inst) {
+            log.warn(
+              { pluginId: entry.id, slug: entry.slug, reason: schema.reason },
+              "plugin_catalog.config_schema unreadable — masking all string values in installedConfig defensively",
+            );
+          }
           return {
             ...catalogRowToJson(entry),
             installed: !!inst,
             installationId: inst?.id ?? null,
-            installedConfig: inst?.config ?? null,
+            installedConfig: inst ? maskSecretFields(inst.config, schema) : null,
           };
         });
 
@@ -898,6 +913,53 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
       // Keys only — see ADMIN_ACTIONS.plugin JSDoc.
       const keysChanged = Object.keys(body.config).toSorted();
 
+      // Pre-fetch current config + catalog schema so we can swap any
+      // MASKED_PLACEHOLDER echoed back by the admin UI for the original
+      // persisted value — and preserve any secret field the UI omitted
+      // entirely (dirty-field saves from forms that only send changed
+      // inputs). Without this step, a UI that rendered the masked GET
+      // /available response would silently wipe live secrets the first
+      // time an admin saved any other field.
+      //
+      // Pre-SELECT failures emit their own failure audit: the admin triggered
+      // a config update attempt and it failed; an auditor investigating a
+      // credential rotation gap needs to see the attempt row even when the
+      // DB was down before the UPDATE ran.
+      const existing = yield* queryEffect<{ config: unknown; config_schema: unknown }>(
+        `SELECT wp.config, pc.config_schema
+         FROM workspace_plugins wp
+         LEFT JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+         WHERE wp.id = $1 AND wp.workspace_id = $2`,
+        [id, orgId],
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.configUpdate,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: id,
+            orgId,
+            keysChanged,
+            priorLookupFailed: true,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      })));
+      if (existing.length === 0) {
+        return c.json({ error: "not_found", message: `Installation "${id}" not found in this workspace.`, requestId }, 404);
+      }
+      const originalConfig = (existing[0]!.config ?? {}) as Record<string, unknown>;
+      const schema = parseConfigSchema(existing[0]!.config_schema);
+      if (schema.state === "corrupt") {
+        log.warn(
+          { installationId: id, orgId, reason: schema.reason },
+          "plugin_catalog.config_schema unreadable on PUT — restoring every stored key to prevent secret loss",
+        );
+      }
+      const sanitizedConfig = restoreMaskedSecrets(body.config, originalConfig, schema);
+
       const rows = yield* queryEffect<WorkspacePluginRow>(
         `UPDATE workspace_plugins SET config = $1
          WHERE id = $2 AND workspace_id = $3
@@ -905,7 +967,7 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
                      (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug,
                      (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
                      (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
-        [JSON.stringify(body.config), id, orgId],
+        [JSON.stringify(sanitizedConfig), id, orgId],
       ).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.configUpdate,

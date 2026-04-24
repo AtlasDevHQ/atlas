@@ -1072,11 +1072,11 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-approval.ts` | 5 | 1 | 🟡 | Approve/deny audited; **rule CRUD + expire unaudited** (F-30) |
 | `admin-archive.ts` | 2 | 2 | ✅ | `mode.archive` / `mode.archive_reconcile` / `mode.restore` |
 | `admin-audit-retention.ts` | 4 | 4 | ✅ | F-26 fixed (PR for #1781) — `audit_retention.policy_update` / `export` / `manual_purge` / `manual_hard_delete` emitted with success + failure paths; policy_update captures previous values |
-| `admin-branding.ts` | 2 | 0 | ❌ | PUT / DELETE (F-32) |
+| `admin-branding.ts` | 2 | 2 | ✅ | F-32 fixed (PR for #1787) — `branding.update` / `branding.delete` emitted on success; `update` metadata preserves admin intent (only request-body fields present); `delete` intentionally silent on no-op (404 "no branding found") |
 | `admin-cache.ts` | 1 | 0 | ❌ | DELETE purge (F-37) |
-| `admin-compliance.ts` | 2 | 0 | ❌ | PUT retention policy + DELETE PII config (F-32) |
+| `admin-compliance.ts` | 2 | 2 | ✅ | F-32 fixed (PR for #1787) — `compliance.retention_update` / `compliance.pii_config_delete` emitted on success; update metadata captures only the admin's intent (request-body fields present) so compliance review can distinguish a masking-strategy shrink from a dismiss |
 | `admin-connections.ts` | 7 | 3 | 🟡 | Create/update/delete audited; **test / /:id/test / pool drain unaudited** (F-34) |
-| `admin-domains.ts` | 4 | 0 | ❌ | Workspace custom domain + verify (F-32) |
+| `admin-domains.ts` | 4 | 4 | ✅ | F-32 fixed (PR for #1787) — `domain.workspace_register` / `workspace_remove` / `workspace_verify` / `workspace_verify_dns` emitted on success; verify paths short-circuit 404 before audit emission when no domain is configured (probes don't land stale rows) |
 | `admin-email-provider.ts` | 3 | 3 | ✅ | F-30 fixed (PR for #1785) — `email_provider.update` / `delete` / `test` emitted with success + failure paths; update carries `hasSecret: true` marker, delete captures prior provider pre-delete, test includes recipient + delivery outcome |
 | `admin-integrations.ts` | 19 | 18 | 🟡 | Most install/uninstall emit `integration.*`; **one handler missing an audit call** — see F-29 |
 | `admin-invitations.ts` | 2 | 1 | 🟡 | `user.invite` audited; **`DELETE /users/invitations/{id}` revoke is silent** — see F-29 |
@@ -1089,7 +1089,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-plugins.ts` | 4 | 3 | ✅ | `plugin.enable` / `plugin.disable` / `plugin.config_update` audited; read-only health check stays silent — F-22 fixed |
 | `admin-prompts.ts` | 7 | 0 | ❌ | Content governance — collection + prompt CRUD (F-35) |
 | `admin-publish.ts` | 1 | 1 | ✅ | `mode.publish` |
-| `admin-residency.ts` | 4 | 0 | ❌ | **Workspace residency assign is permanent and unaudited** (F-32) |
+| `admin-residency.ts` | 4 | 4 | ✅ | F-32 fixed (PR for #1787) — `residency.workspace_assign` / `migration_request` / `migration_retry` / `migration_cancel` emitted. `workspace_assign` metadata carries explicit `permanent: true` so triage flags the irreversibility, and emits failure-status audits on validation / conflict errors so 409 probes for the current region leave a trail |
 | `admin-roles.ts` | 4 | 4 | ✅ | F-25 fixed (PR #1800) — `role.create` / `role.update` / `role.delete` / `role.assign` emitted with success + failure paths; update captures previousPermissions, delete pre-fetches so metadata retains the deleted role, assign captures previousRole |
 | `admin-sandbox.ts` | 2 | 0 | ❌ | Connect/disconnect BYOC sandbox (F-37) |
 | `admin-scim.ts` | 3 | 3 | ✅ | `scim.connection_delete` / `scim.group_mapping_create` / `scim.group_mapping_delete` — F-23 fixed |
@@ -1375,7 +1375,7 @@ Overlap with `platform-admin.ts` — which DOES audit `workspace.suspend` / `uns
 
 ---
 
-**F-32 — Workspace-scoped enterprise config writes (domains, branding, residency, compliance) are unaudited** — P1
+**F-32 — Workspace-scoped enterprise config writes (domains, branding, residency, compliance) are unaudited** — P1 — **FIXED**
 
 Four admin files with explicit enterprise-gated config surfaces and zero audit coverage:
 
@@ -1390,7 +1390,7 @@ Four admin files with explicit enterprise-gated config surfaces and zero audit c
 
 **Severity:** P1 — workspace-identity and data-residency changes are compliance-critical.
 
-**Issue:** #1787.
+**Issue:** #1787. Fixed in PR for #1787 — all 12 writes now emit `logAdminAction`. `residency.workspace_assign` metadata carries `permanent: true` and emits failure-status audits on conflict / validation paths (409 probes for the current region leave evidence). Branding / compliance / residency read endpoints intentionally stay silent. Regression coverage: `admin-domains.test.ts`, `admin-branding.test.ts`, `admin-residency.test.ts`, and new `admin-compliance.test.ts`.
 
 ---
 
@@ -1564,7 +1564,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-29 | P2 | Partial coverage | `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts` stragglers | #1784 | open |
 | F-30 | P1 | Credential-provenance | Email provider + model config (`admin-email-provider.ts`, `admin-model-config.ts`) | #1785 | fixed (PR for #1785) |
 | F-31 | P1 | Audit gap | Platform-admin workspace CRUD via `admin-orgs.ts` (post-F-08 drift) | #1786 | fixed (PR #1804) |
-| F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | open |
+| F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | fixed (PR for #1787) |
 | F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | open |
 | F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 | open |
 | F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 | open |

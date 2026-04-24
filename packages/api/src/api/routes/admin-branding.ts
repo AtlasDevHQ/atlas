@@ -7,8 +7,10 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import {
   getWorkspaceBranding,
   setWorkspaceBranding,
@@ -20,6 +22,10 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const brandingDomainError = domainError(BrandingError, { validation: 400, not_found: 404 });
+
+function clientIP(c: Context): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+}
 
 // `BrandingSchema` is re-exported under its prior local alias from
 // `@useatlas/schemas` so the existing route definitions below don't need
@@ -209,10 +215,11 @@ adminBranding.openapi(getBrandingRoute, async (c) => {
 
 // PUT / — set workspace branding
 adminBranding.openapi(setBrandingRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const body = c.req.valid("json");
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-
-    const body = c.req.valid("json");
 
     const branding = yield* setWorkspaceBranding(orgId!, {
       logoUrl: body.logoUrl,
@@ -221,19 +228,47 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
       faviconUrl: body.faviconUrl,
       hideAtlasBranding: body.hideAtlasBranding,
     });
+    // Metadata mirrors the request body so compliance review can distinguish a
+    // cosmetic tweak (primaryColor) from a white-label takeover
+    // (hideAtlasBranding: true). Only fields the admin actually set show up —
+    // a future refactor that spreads `branding` itself would echo
+    // post-state defaults and obscure the admin's intent.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.branding.update,
+      targetType: "branding",
+      targetId: orgId!,
+      ipAddress,
+      metadata: {
+        ...(body.logoUrl !== undefined && { logoUrl: body.logoUrl }),
+        ...(body.logoText !== undefined && { logoText: body.logoText }),
+        ...(body.primaryColor !== undefined && { primaryColor: body.primaryColor }),
+        ...(body.faviconUrl !== undefined && { faviconUrl: body.faviconUrl }),
+        ...(body.hideAtlasBranding !== undefined && { hideAtlasBranding: body.hideAtlasBranding }),
+      },
+    });
     return c.json({ branding }, 200);
   }), { label: "save workspace branding", domainErrors: [brandingDomainError] });
 });
 
 // DELETE / — reset workspace branding
 adminBranding.openapi(deleteBrandingRoute, async (c) => {
+  const ipAddress = clientIP(c);
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     const deleted = yield* deleteWorkspaceBranding(orgId!);
     if (!deleted) {
+      // No-op deletes don't audit — nothing was reset, so emitting a row
+      // would pollute forensic queries that count actual branding changes.
       return c.json({ error: "not_found", message: "No custom branding found." }, 404);
     }
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.branding.delete,
+      targetType: "branding",
+      targetId: orgId!,
+      ipAddress,
+    });
     return c.json({ message: "Branding reset to Atlas defaults." }, 200);
   }), { label: "reset workspace branding", domainErrors: [brandingDomainError] });
 });

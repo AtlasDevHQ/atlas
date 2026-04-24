@@ -7,6 +7,9 @@
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 
+// Real ADMIN_ACTIONS values so assertions pin to the canonical strings.
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+
 // --- Effect mock ---
 // Mock the Effect bridge so the route file can load and execute without
 // the full Effect runtime. Effect.gen + runEffect are shimmed to execute
@@ -27,9 +30,58 @@ const fakeAuthContext = {
   },
 };
 
-// Minimal Effect shim — supports gen, promise, tryPromise, succeed, fail
+// Minimal Effect shim — supports gen, promise, tryPromise, succeed, fail.
+// Also handles `.pipe(Effect.tapError(fn))` so admin-residency.ts can emit
+// failure audits (F-32): the tapError hook fires when the wrapped Effect
+// throws, before the throw propagates to the outer generator.
+interface TapErrorMarker {
+  readonly _tag: "TapError";
+  readonly fn: (err: unknown) => unknown;
+}
+
+function isTapError(v: unknown): v is TapErrorMarker {
+  return typeof v === "object" && v !== null && (v as { _tag?: unknown })._tag === "TapError";
+}
+
+// Wrap an iterable so that when Symbol.iterator's first `next()` throws, the
+// tapError hooks fire with the error before the throw propagates. Success
+// path is a passthrough — hooks only run on failure.
+interface PipedIterable {
+  [Symbol.iterator]: () => Iterator<unknown, unknown>;
+  pipe: (...ops: unknown[]) => PipedIterable;
+}
+
+function withPipe(iter: { [Symbol.iterator]: () => Iterator<unknown, unknown> }): PipedIterable {
+  const piped = iter as PipedIterable;
+  piped.pipe = (...ops: unknown[]) => {
+    const hooks = ops.filter(isTapError);
+    return withPipe({
+      [Symbol.iterator]() {
+        const inner = iter[Symbol.iterator]();
+        let firstCall = true;
+        return {
+          next(value?: unknown): IteratorResult<unknown, unknown> {
+            try {
+              return firstCall ? (firstCall = false, inner.next()) : inner.next(value);
+            } catch (err) {
+              for (const h of hooks) {
+                // Side-effect hooks return Effect.sync which has already
+                // executed by the time we get here. Swallow errors from
+                // the hook so the original failure still surfaces.
+                try { h.fn(err); } catch { /* intentionally ignored */ }
+              }
+              throw err;
+            }
+          },
+        };
+      },
+    });
+  };
+  return piped;
+}
+
 function mockEffectIterable(value: unknown) {
-  return { [Symbol.iterator]: () => ({ next: () => ({ done: true, value }) }) };
+  return withPipe({ [Symbol.iterator]: () => ({ next: () => ({ done: true, value }) }) });
 }
 
 mock.module("effect", () => {
@@ -37,19 +89,23 @@ mock.module("effect", () => {
     gen: (genFn: () => Generator) => {
       return { _tag: "EffectGen", genFn };
     },
-    promise: (fn: () => Promise<unknown>) => ({
+    promise: (fn: () => Promise<unknown>) => withPipe({
       [Symbol.iterator]: function* (): Generator<unknown, unknown> {
         return yield { _tag: "EffectPromise", fn };
       },
     }),
-    tryPromise: (opts: { try: () => Promise<unknown>; catch: (err: unknown) => unknown }) => ({
+    tryPromise: (opts: { try: () => Promise<unknown>; catch: (err: unknown) => unknown }) => withPipe({
       [Symbol.iterator]: function* (): Generator<unknown, unknown> {
         return yield { _tag: "EffectPromise", fn: opts.try };
       },
     }),
     succeed: (value: unknown) => mockEffectIterable(value),
-    fail: (error: unknown) => ({ [Symbol.iterator]: () => ({ next: () => { throw error; } }) }),
+    fail: (error: unknown) => withPipe({ [Symbol.iterator]: () => ({ next: () => { throw error; } }) }),
     void: mockEffectIterable(undefined),
+    // Executes the side effect synchronously so audit emission lands before
+    // the throw unwinds. Returns an iterable that resolves to undefined.
+    sync: (fn: () => unknown) => { fn(); return mockEffectIterable(undefined); },
+    tapError: (fn: (err: unknown) => unknown): TapErrorMarker => ({ _tag: "TapError", fn }),
     runPromise: (value: unknown) => Promise.resolve(value),
   };
   return { Effect };
@@ -202,7 +258,11 @@ mock.module("@atlas/ee/platform/residency", () => ({
   },
   getWorkspaceRegionAssignment: () => mockEffectIterable(mockAssignment),
   assignWorkspaceRegion: () => {
-    if (mockAssignError) return { [Symbol.iterator]: () => ({ next: () => { throw mockAssignError; } }) };
+    if (mockAssignError) {
+      return withPipe({
+        [Symbol.iterator]: () => ({ next: () => { throw mockAssignError; } }),
+      });
+    }
     return mockEffectIterable(mockAssignResult);
   },
   ResidencyError: MockResidencyError,
@@ -228,6 +288,29 @@ mock.module("@atlas/api/lib/logger", () => ({
     debug: () => {},
   }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getRequestContext: () => null,
+}));
+
+// --- Audit mock — capture every logAdminAction emission ---
+
+interface CapturedAuditEntry {
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  status?: "success" | "failure";
+  metadata?: Record<string, unknown>;
+  scope?: "platform" | "workspace";
+  ipAddress?: string | null;
+}
+
+const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
+
+mock.module("@atlas/api/lib/audit", () => ({
+  logAdminAction: mockLogAdminAction,
+  logAdminActionAwait: mock(async () => {}),
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: () => undefined,
 }));
 
 // --- Migration executor mock ---
@@ -278,6 +361,7 @@ function resetMocks() {
     activeOrganizationId: "org-1",
     orgId: "org-1",
   };
+  mockLogAdminAction.mockClear();
   mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
@@ -686,6 +770,132 @@ describe("POST /migrate/:id/cancel", () => {
     mockHasInternalDB = false;
     const res = await request("POST", "/migrate/mig-1/cancel");
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-32 audit-emission regression tests — admin-residency
+//
+// Residency is the highest-stakes class in this file. `workspace_assign` is
+// permanent — its metadata MUST carry `permanent: true` so triage flags the
+// permanence on the audit row. Migration request / retry / cancel are not
+// permanent but are still compliance-critical (cross-region data movement).
+// ---------------------------------------------------------------------------
+
+describe("admin residency — F-32 audit emission", () => {
+  beforeEach(resetMocks);
+
+  it("PUT / emits residency.workspace_assign with permanent:true on success", async () => {
+    mockAssignResult = {
+      workspaceId: "org-1",
+      region: "eu-west",
+      assignedAt: "2026-04-23T00:00:00Z",
+    };
+    const res = await request("PUT", "/", { region: "eu-west" });
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.workspace_assign");
+    expect(entry.targetType).toBe("residency");
+    expect(entry.targetId).toBe("org-1");
+    expect(entry.metadata?.region).toBe("eu-west");
+    // F-32 acceptance criteria: `permanent: true` must be in metadata so
+    // compliance triage knows this row represents an irreversible state
+    // change, not a routine config tweak.
+    expect(entry.metadata?.permanent).toBe(true);
+  });
+
+  it("PUT / emits residency.workspace_assign with status=failure when assignment throws", async () => {
+    // Permanent decisions deserve failure audits — the attempt itself is
+    // useful evidence. Without this, a 409 "already assigned" probe that
+    // reveals the current region leaves no forensic record.
+    mockAssignError = new MockResidencyError(
+      'Workspace is already assigned to region "us-east".',
+      "already_assigned",
+    );
+    const res = await request("PUT", "/", { region: "eu-west" });
+    expect(res.status).toBe(409);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.workspace_assign");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata?.region).toBe("eu-west");
+    expect(entry.metadata?.permanent).toBe(true);
+  });
+
+  it("POST /migrate emits residency.migration_request with source/target regions", async () => {
+    mockAssignment = {
+      workspaceId: "org-1",
+      region: "us-east",
+      assignedAt: "2026-04-01T00:00:00Z",
+    };
+    // Two internalQuery calls follow (existing + rate-limit) then INSERT;
+    // empty rows flow through the handler to the audit emit.
+    mockInternalQueryResult = [];
+    const res = await request("POST", "/migrate", { targetRegion: "eu-west" });
+    expect(res.status).toBe(201);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.migration_request");
+    expect(entry.targetType).toBe("residency");
+    expect(entry.metadata?.sourceRegion).toBe("us-east");
+    expect(entry.metadata?.targetRegion).toBe("eu-west");
+  });
+
+  it("POST /migrate/:id/retry emits residency.migration_retry on success", async () => {
+    mockInternalQueryResult = [
+      {
+        id: "mig-1",
+        workspace_id: "org-1",
+        source_region: "us-east",
+        target_region: "eu-west",
+        status: "pending",
+        requested_by: "admin-1",
+        requested_at: "2026-04-01T00:00:00Z",
+        completed_at: null,
+        error_message: null,
+      },
+    ];
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.migration_retry");
+    expect(entry.targetType).toBe("residency");
+    expect(entry.targetId).toBe("mig-1");
+  });
+
+  it("POST /migrate/:id/retry does NOT emit audit when retry is rejected", async () => {
+    // Pre-handler rejection (resetMigrationForRetry returned ok:false) should
+    // not land an audit row — the migration wasn't actually retried, and
+    // emitting would pollute the forensic record with no-op retry attempts.
+    mockResetResult = { ok: false, reason: "invalid_status", error: "Cannot retry" };
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("POST /migrate/:id/cancel emits residency.migration_cancel on success", async () => {
+    const res = await request("POST", "/migrate/mig-1/cancel");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.migration_cancel");
+    expect(entry.targetType).toBe("residency");
+    expect(entry.targetId).toBe("mig-1");
+  });
+
+  it("GET / does not emit an audit row (read endpoint)", async () => {
+    const res = await request("GET");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("GET /migration does not emit an audit row (read endpoint)", async () => {
+    mockInternalQueryResult = [];
+    const res = await request("GET", "/migration");
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });
 

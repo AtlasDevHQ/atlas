@@ -1087,17 +1087,17 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-model-config.ts` | 3 | 3 | ✅ | F-30 fixed (PR #1805) — `model_config.update` / `delete` / `test` emitted with success + failure paths; metadata carries `hasSecret` marker and never the apiKey value; test route audits success + failure to close the credential-oracle gap |
 | `admin-orgs.ts` | 4 | 4 | ✅ | F-31 fixed (PR #1804) — `workspace.suspend` / `workspace.unsuspend` / `workspace.change_plan` / `workspace.delete` emitted with `scope: "platform"`, matching `platform-admin.ts` canonical fields exactly. Regression test compares entries directly across both surfaces |
 | `admin-plugins.ts` | 4 | 3 | ✅ | `plugin.enable` / `plugin.disable` / `plugin.config_update` audited; read-only health check stays silent — F-22 fixed |
-| `admin-prompts.ts` | 7 | 0 | ❌ | Content governance — collection + prompt CRUD (F-35) |
+| `admin-prompts.ts` | 7 | 7 | ✅ | F-35 fixed — `prompt.collection_create` / `collection_update` / `collection_delete` + `prompt.create` / `update` / `delete` / `reorder` emitted. Delete handlers pre-fetch the row so metadata carries the name after deletion. Reorder carries the full `newOrder: string[]` for drag-and-drop forensics |
 | `admin-publish.ts` | 1 | 1 | ✅ | `mode.publish` |
 | `admin-residency.ts` | 4 | 4 | ✅ | F-32 fixed (PR #1806) — `residency.workspace_assign` / `migration_request` / `migration_retry` / `migration_cancel` emitted. `workspace_assign` metadata carries explicit `permanent: true` so triage flags the irreversibility, and emits failure-status audits on validation / conflict errors so 409 probes for the current region leave a trail |
 | `admin-roles.ts` | 4 | 4 | ✅ | F-25 fixed (PR #1800) — `role.create` / `role.update` / `role.delete` / `role.assign` emitted with success + failure paths; update captures previousPermissions, delete pre-fetches so metadata retains the deleted role, assign captures previousRole |
 | `admin-sandbox.ts` | 2 | 0 | ❌ | Connect/disconnect BYOC sandbox (F-37) |
 | `admin-scim.ts` | 3 | 3 | ✅ | `scim.connection_delete` / `scim.group_mapping_create` / `scim.group_mapping_delete` — F-23 fixed |
-| `admin-semantic-improve.ts` | 4 | 0 | ❌ | AI-assisted semantic layer edits (F-35) |
+| `admin-semantic-improve.ts` | 4 | 4 | ✅ | F-35 fixed — `semantic.improve_draft` on `/chat`, `semantic.improve_accept` / `improve_reject` on `/proposals/{id}/approve+reject`, `semantic.improve_apply` (approved) / `improve_reject` (rejected) on `/amendments/{id}/review`. Rejection branches on the DB-backed route collapse to `improve_reject` so forensic queries catch both surfaces |
 | `admin-semantic.ts` | 3 | 3 | ✅ | `semantic.update_entity` / `semantic.delete_entity` |
 | `admin-sessions.ts` | 2 | 2 | ✅ | F-28 fixed (PR for #1783) — `user.session_revoke` / `user.session_revoke_all` emitted with success + failure paths; single-session path pre-fetches target userId and records `wasCurrentUser` |
 | `admin-sso.ts` | 6 | 4 | 🟡 | Configure / update / delete / test audited; **`POST /providers/{id}/verify` + `PUT /enforcement` unaudited** (F-29) |
-| `admin-starter-prompts.ts` | 4 | 0 | ❌ | Queue moderation — approve/hide/unhide/author (F-36) |
+| `admin-starter-prompts.ts` | 4 | 4 | ✅ | F-35 fixed — `starter_prompt.approve` / `hide` / `unhide` emit on successful moderation outcomes (gated on `outcome.status === "ok"` so 403/404 paths do not produce audit rows); `starter_prompt.author_update` emits on the admin-authored seed path with the new suggestion id + text |
 | `admin-suggestions.ts` | 1 | 0 | ❌ | DELETE suggestion (F-37) |
 | `admin.ts` | 12 | 10 | 🟡 | User role / ban / unban / remove-membership / delete-user / revoke-sessions / settings update + delete + semantic put/delete audited; **`POST /me/password`, `POST /semantic/org/import` unaudited** — tracked in F-29. `POST /users/{id}/revoke-sessions` now emits `user.session_revoke_all` (F-28 fixed, PR #1801) |
 | `billing.ts` | 2 | 0 | ✳︎ | Stripe portal redirects — Stripe event log is the authoritative trail; both routes are admin-gated |
@@ -1437,7 +1437,7 @@ POST /api/v1/admin/connections/pool/orgs/{orgId}/drain → drain org pools, no a
 
 ---
 
-**F-35 — Prompt library + semantic-improve + starter-prompt moderation writes unaudited** — P2
+**F-35 — Prompt library + semantic-improve + starter-prompt moderation writes unaudited** — P2 — **FIXED**
 
 Bundled class — content-governance admin writes:
 
@@ -1447,7 +1447,16 @@ Bundled class — content-governance admin writes:
 
 **Impact:** Content-governance actions that affect every user of the workspace (starter prompts surfaced on first-run, prompts in the library, semantic drafts that reshape agent SQL). No trail of who approved / hid / applied. Same shape as the learned-patterns surface that IS audited (`pattern.approve` / `pattern.reject` / `pattern.delete` in `admin-learned-patterns.ts`).
 
-**Fix sketch:** Model on `admin-learned-patterns.ts`. Add `prompt.create` / `prompt.update` / `prompt.delete` / `prompt_collection.*`, `semantic.improve_draft` / `semantic.improve_apply`, `starter_prompt.approve` / `starter_prompt.hide` / `starter_prompt.unhide` / `starter_prompt.author_update`.
+**Resolution:** 15 new action types added to `ADMIN_ACTIONS` — `prompt.{collection_create, collection_update, collection_delete, create, update, delete, reorder}`, `semantic.{improve_draft, improve_apply, improve_accept, improve_reject}`, `starter_prompt.{approve, hide, unhide, author_update}`. Each of the 15 write routes emits `logAdminAction` on success. Metadata contracts:
+
+- Content items: `{ id, name }` (collection create additionally carries `industry` + `status`; prompt items carry `collectionId`).
+- Moderation decisions: `{ id, name }` for starter-prompt approve/hide/unhide/author; `{ id, decision }` for amendment review.
+- Reorder: `{ collectionId, newOrder: string[] }` — the full ordered id list so drag-and-drop forensics can replay the admin's intent.
+- `semantic.improve_*` carries `{ sessionId, proposalIndex, entityName, amendmentType }` where available; the `/chat` draft row additionally marks `resumed: boolean` so a resumed session is distinguishable from a fresh one.
+
+Rejection paths on `POST /amendments/{id}/review` collapse to `semantic.improve_reject` (rather than keeping the route-anchored `improve_apply`) so forensic queries can filter on a single action_type regardless of which surface — in-memory session or DB-backed amendment — rejected a proposal. Delete handlers pre-fetch `{ id, name }` so the audit row survives the row's removal (matches the F-25 role-delete pattern).
+
+Starter-prompt moderation emits are gated on `outcome.status === "ok"`: 403/404 outcomes do not emit, keeping the trail clean of probe attempts (the 403 boundary is already covered by the `adminAuth` middleware and the test suite pins the non-emission on the forbidden/not-found branches).
 
 **Severity:** P2 — content-governance trail gap. Less privileged than F-22/F-25 but same class of "admin mutations visible to end users, invisible in audit."
 
@@ -1567,7 +1576,7 @@ Grep every `metadata: { ... }` literal on the admin-audit call sites. Sampled pa
 | F-32 | P1 | Audit gap | Workspace enterprise config (`admin-domains.ts`, `admin-branding.ts`, `admin-residency.ts`, `admin-compliance.ts`) | #1787 | fixed (PR #1806) |
 | F-33 | P2 | Split trail | Abuse reinstate writes to `abuse_events`, not `admin_action_log` | #1788 | open |
 | F-34 | P2 | Audit gap | Wizard connection path bypasses `connection.create` (`wizard.ts`, plus connection test/drain in `admin-connections.ts`) | #1789 | open |
-| F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 | open |
+| F-35 | P2 | Audit gap | Prompt / semantic-improve / starter-prompt moderation | #1790 | fixed |
 | F-36 | P2 | Retention | `admin_action_log` unbounded, no purge, no GDPR erasure path | #1791 | open |
 | F-37 | P3 | Audit gap | Low-signal admin writes (cache / migrate / suggestions / sandbox / onboarding) | — (stays in doc) | deferred |
 | F-38 | P3 | Audit gap | OAuth-callback install path not mirrored in `admin_action_log` | — (stays in doc) | deferred |

@@ -31,10 +31,16 @@ import {
   SUGGESTION_TEXT_MAX_LENGTH,
 } from "@atlas/api/lib/suggestions/approval-store";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import type { Context as HonoContext } from "hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-starter-prompts");
+
+function clientIpFor(c: HonoContext): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -393,6 +399,15 @@ adminStarterPrompts.openapi(approveRoute, async (c) =>
 
     try {
       const outcome = await approveSuggestion({ id, orgId, userId, mode: atlasMode });
+      if (outcome.status === "ok") {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.starter_prompt.approve,
+          targetType: "starter_prompt",
+          targetId: id,
+          ipAddress: clientIpFor(c),
+          metadata: { id, name: outcome.suggestion.description },
+        });
+      }
       return respondApprovalResult(c, outcome, requestId, "approve");
     } catch (err) {
       log.error(
@@ -417,6 +432,15 @@ adminStarterPrompts.openapi(hideRoute, async (c) =>
 
     try {
       const outcome = await hideSuggestion({ id, orgId, mode: atlasMode });
+      if (outcome.status === "ok") {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.starter_prompt.hide,
+          targetType: "starter_prompt",
+          targetId: id,
+          ipAddress: clientIpFor(c),
+          metadata: { id, name: outcome.suggestion.description },
+        });
+      }
       return respondApprovalResult(c, outcome, requestId, "hide");
     } catch (err) {
       log.error(
@@ -441,6 +465,15 @@ adminStarterPrompts.openapi(unhideRoute, async (c) =>
 
     try {
       const outcome = await unhideSuggestion({ id, orgId, mode: atlasMode });
+      if (outcome.status === "ok") {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.starter_prompt.unhide,
+          targetType: "starter_prompt",
+          targetId: id,
+          ipAddress: clientIpFor(c),
+          metadata: { id, name: outcome.suggestion.description },
+        });
+      }
       return respondApprovalResult(c, outcome, requestId, "unhide");
     } catch (err) {
       log.error(
@@ -467,6 +500,13 @@ adminStarterPrompts.openapi(authorRoute, async (c) =>
 
     try {
       const suggestion = await createApprovedSuggestion({ orgId, userId, text, mode: atlasMode });
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.starter_prompt.authorUpdate,
+        targetType: "starter_prompt",
+        targetId: suggestion.id,
+        ipAddress: clientIpFor(c),
+        metadata: { id: suggestion.id, name: suggestion.description },
+      });
       return c.json({ suggestion }, 200);
     } catch (err) {
       if (err instanceof InvalidSuggestionTextError) {

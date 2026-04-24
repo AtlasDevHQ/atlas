@@ -7,8 +7,10 @@
  */
 
 import { Effect } from "effect";
+import type { Context as HonoContext } from "hono";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
@@ -476,6 +478,10 @@ export const adminPrompts = createAdminRouter();
 
 adminPrompts.use(requireOrgContext());
 
+function clientIpFor(c: HonoContext): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+}
+
 // Helper to look up collection with org scoping
 async function findCollection(orgId: string | undefined, collectionId: string) {
   if (orgId) {
@@ -526,7 +532,15 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
     const status = atlasMode === "developer" ? "draft" : "published";
 
     const rows = yield* queryEffect<Record<string, unknown>>(`INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin, status) VALUES ($1, $2, $3, $4, false, $5) RETURNING *`, [orgId ?? null, name, industry, description, status]);
-    return c.json(toPromptCollection(rows[0]), 201);
+    const created = toPromptCollection(rows[0]);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.prompt.collectionCreate,
+      targetType: "prompt",
+      targetId: created.id,
+      ipAddress: clientIpFor(c),
+      metadata: { id: created.id, name: created.name, industry: created.industry, status },
+    });
+    return c.json(created, 201);
   }), { label: "create prompt collection" });
 });
 
@@ -564,7 +578,15 @@ adminPrompts.openapi(updateCollectionRoute, async (c) => {
 
     const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE prompt_collections SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Collection was deleted before update completed." }, 404);
-    return c.json(toPromptCollection(updated[0]), 200);
+    const collection = toPromptCollection(updated[0]);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.prompt.collectionUpdate,
+      targetType: "prompt",
+      targetId: collection.id,
+      ipAddress: clientIpFor(c),
+      metadata: { id: collection.id, name: collection.name },
+    });
+    return c.json(collection, 200);
   }), { label: "update prompt collection" });
 });
 
@@ -580,6 +602,13 @@ adminPrompts.openapi(deleteCollectionRoute, async (c) => {
     if (existing[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
     yield* queryEffect(`DELETE FROM prompt_collections WHERE id = $1`, [id]);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.prompt.collectionDelete,
+      targetType: "prompt",
+      targetId: id,
+      ipAddress: clientIpFor(c),
+      metadata: { id, name: existing[0].name as string },
+    });
     return c.json({ deleted: true }, 200);
   }), { label: "delete prompt collection" });
 });
@@ -614,7 +643,15 @@ adminPrompts.openapi(createItemRoute, async (c) => {
     }
 
     const rows = yield* queryEffect<Record<string, unknown>>(`INSERT INTO prompt_items (collection_id, question, description, category, sort_order) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [collectionId, question, description, category, sortOrder]);
-    return c.json(toPromptItem(rows[0]), 201);
+    const item = toPromptItem(rows[0]);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.prompt.create,
+      targetType: "prompt",
+      targetId: item.id,
+      ipAddress: clientIpFor(c),
+      metadata: { id: item.id, name: item.question, collectionId },
+    });
+    return c.json(item, 201);
   }), { label: "create prompt item" });
 });
 
@@ -655,7 +692,15 @@ adminPrompts.openapi(updateItemRoute, async (c) => {
 
     const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE prompt_items SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Item was deleted before update completed." }, 404);
-    return c.json(toPromptItem(updated[0]), 200);
+    const item = toPromptItem(updated[0]);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.prompt.update,
+      targetType: "prompt",
+      targetId: item.id,
+      ipAddress: clientIpFor(c),
+      metadata: { id: item.id, name: item.question, collectionId },
+    });
+    return c.json(item, 200);
   }), { label: "update prompt item" });
 });
 
@@ -670,10 +715,20 @@ adminPrompts.openapi(deleteItemRoute, async (c) => {
     if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
-    const existingItem = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]);
+    // Pre-fetch `question` (not just `id`) so the audit row retains the
+    // item name after the row is gone — matches the pattern F-25
+    // established for role-delete in admin-roles.ts.
+    const existingItem = yield* queryEffect<Record<string, unknown>>(`SELECT id, question FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]);
     if (existingItem.length === 0) return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
 
     yield* queryEffect(`DELETE FROM prompt_items WHERE id = $1`, [itemId]);
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.prompt.delete,
+      targetType: "prompt",
+      targetId: itemId,
+      ipAddress: clientIpFor(c),
+      metadata: { id: itemId, name: existingItem[0].question as string, collectionId },
+    });
     return c.json({ deleted: true }, 200);
   }), { label: "delete prompt item" });
 });
@@ -706,9 +761,31 @@ adminPrompts.openapi(reorderItemsRoute, async (c) => {
     if (existingIds.size !== providedIds.size) return c.json({ error: "bad_request", message: `itemIds count (${providedIds.size}) does not match existing items count (${existingIds.size}). All items must be included.` }, 400);
     for (const id of itemIds) { if (!existingIds.has(id)) return c.json({ error: "bad_request", message: `Item ID "${id}" does not belong to this collection.` }, 400); }
 
+    // One UPDATE per row was non-atomic — a mid-loop failure left the
+    // collection in a partial reorder state with no audit row. Collapse to
+    // a single statement via a VALUES clause so the reorder either lands
+    // whole or not at all.
+    const valuesClause = itemIds
+      .map((_id, i) => `($${i * 2 + 2}::text, $${i * 2 + 3}::int)`)
+      .join(", ");
+    const reorderParams: unknown[] = [collectionId];
     for (let i = 0; i < itemIds.length; i++) {
-      yield* queryEffect(`UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`, [i, itemIds[i]]);
+      reorderParams.push(itemIds[i], i);
     }
+    yield* queryEffect(
+      `UPDATE prompt_items pi
+       SET sort_order = v.ord, updated_at = now()
+       FROM (VALUES ${valuesClause}) AS v(id, ord)
+       WHERE pi.collection_id = $1 AND pi.id = v.id`,
+      reorderParams,
+    );
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.prompt.reorder,
+      targetType: "prompt",
+      targetId: collectionId,
+      ipAddress: clientIpFor(c),
+      metadata: { collectionId, newOrder: itemIds },
+    });
     return c.json({ reordered: true }, 200);
   }), { label: "reorder prompt items" });
 });

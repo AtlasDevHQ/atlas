@@ -13,7 +13,9 @@ import {
   type UIMessage,
 } from "ai";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import type { Context as HonoContext } from "hono";
 import { runAgent } from "@atlas/api/lib/agent";
 import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
 import {
@@ -45,6 +47,10 @@ const sessions = new Map<string, StoredSession>();
 
 function generateId(): string {
   return crypto.randomUUID();
+}
+
+function clientIpFor(c: HonoContext): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +417,7 @@ Analyze the semantic layer and propose improvements. For each finding:
       });
 
       // Create session if not existing
+      const wasNewSession = !stored;
       if (!stored) {
         sessionId = generateId();
         stored = {
@@ -423,6 +430,19 @@ Analyze the semantic layer and propose improvements. For each finding:
         sessions.set(sessionId, stored);
       }
       stored.updatedAt = new Date();
+
+      // Audit the draft surface: starting or continuing an expert-agent
+      // session that can propose amendments via `proposeAmendment`. The
+      // tool may persist a pending `semantic_amendments` row mid-stream,
+      // so the audit row is the single anchor for "admin opened the
+      // improve chat at time T" even if the stream errors later.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.semantic.improveDraft,
+        targetType: "semantic",
+        targetId: stored.id,
+        ipAddress: clientIpFor(c),
+        metadata: { sessionId: stored.id, resumed: !wasNewSession },
+      });
 
       const stream = createUIMessageStream({
         execute: ({ writer }) => {
@@ -545,6 +565,20 @@ adminSemanticImprove.openapi(approveProposalRoute, async (c) =>
     // Record decision in session state (separate from YAML apply)
     advanceAndRecord(stored, proposalIndex, "accepted");
 
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.semantic.improveAccept,
+      targetType: "semantic",
+      targetId: stored.id,
+      ipAddress: clientIpFor(c),
+      metadata: {
+        id: stored.id,
+        sessionId: stored.id,
+        proposalIndex,
+        entityName: proposal.entityName,
+        amendmentType: proposal.amendmentType,
+      },
+    });
+
     log.info({ requestId, orgId, proposalIndex, entity: proposal.entityName }, "Proposal approved");
     return c.json({ ok: true, proposalIndex, decision: "accepted" }, 200);
   }),
@@ -571,6 +605,19 @@ adminSemanticImprove.openapi(rejectProposalRoute, async (c) =>
     }
 
     advanceAndRecord(match.stored, proposalIndex, "rejected");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.semantic.improveReject,
+      targetType: "semantic",
+      targetId: match.stored.id,
+      ipAddress: clientIpFor(c),
+      metadata: {
+        id: match.stored.id,
+        sessionId: match.stored.id,
+        proposalIndex,
+        entityName: match.proposal.entityName,
+      },
+    });
 
     log.info({ requestId, orgId, proposalIndex }, "Proposal rejected");
     return c.json({ ok: true, proposalIndex, decision: "rejected" }, 200);
@@ -834,6 +881,22 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
     if (!reviewed) {
       return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
     }
+
+    // Action type reflects the intent, not the route path — an approved
+    // review fires `improve_apply` (YAML was written); a rejected review
+    // fires `improve_reject` so compliance queries filtering on a single
+    // action_type catch both in-memory (proposals) and DB-backed
+    // (amendments) rejections.
+    logAdminAction({
+      actionType:
+        decision === "approved"
+          ? ADMIN_ACTIONS.semantic.improveApply
+          : ADMIN_ACTIONS.semantic.improveReject,
+      targetType: "semantic",
+      targetId: id,
+      ipAddress: clientIpFor(c),
+      metadata: { id, decision },
+    });
 
     log.info({ requestId, orgId, id, decision }, "Amendment reviewed");
     return c.json({ ok: true, id, decision }, 200);

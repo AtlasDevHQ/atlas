@@ -17068,6 +17068,7 @@
             "schema": {
               "type": "string",
               "minLength": 1,
+              "maxLength": 255,
               "example": "sess_abc123"
             },
             "required": true,
@@ -17193,6 +17194,7 @@
             "schema": {
               "type": "string",
               "minLength": 1,
+              "maxLength": 255,
               "example": "user_abc123"
             },
             "required": true,

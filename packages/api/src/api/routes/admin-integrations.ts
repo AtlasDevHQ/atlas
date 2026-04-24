@@ -669,16 +669,30 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
             workspaceName: authResult.workspaceName ?? undefined,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.integration.enable,
+              targetType: "integration",
+              targetId: orgId,
+              status: "failure",
+              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+              metadata: { platform: "slack", mode: "byot", hasSecret: true, error: err.message },
+            }),
+          ),
+        ),
+      );
 
       log.info({ orgId, teamId: authResult.teamId, workspaceName: authResult.workspaceName }, "Slack BYOT installation saved by admin");
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "slack", mode: "byot" },
+        // `hasSecret: true` is the load-bearing compliance-query marker.
+        metadata: { platform: "slack", mode: "byot", hasSecret: true },
       });
 
       return c.json(
@@ -813,16 +827,29 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
             appPassword,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.integration.enable,
+              targetType: "integration",
+              targetId: orgId,
+              status: "failure",
+              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+              metadata: { platform: "teams", mode: "byot", hasSecret: true, error: err.message },
+            }),
+          ),
+        ),
+      );
 
       log.info({ orgId, appId }, "Teams BYOT installation saved by admin");
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "teams", mode: "byot" },
+        metadata: { platform: "teams", mode: "byot", hasSecret: true },
       });
 
       return c.json(
@@ -962,16 +989,29 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
             publicKey,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.integration.enable,
+              targetType: "integration",
+              targetId: orgId,
+              status: "failure",
+              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+              metadata: { platform: "discord", mode: "byot", hasSecret: true, error: err.message },
+            }),
+          ),
+        ),
+      );
 
       log.info({ orgId, applicationId, botUsername: meResult.botUsername }, "Discord BYOT installation saved by admin");
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "discord", mode: "byot" },
+        metadata: { platform: "discord", mode: "byot", hasSecret: true },
       });
 
       return c.json(
@@ -1096,16 +1136,29 @@ adminIntegrations.openapi(connectTelegramRoute, async (c) => {
             botToken,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.integration.enable,
+              targetType: "integration",
+              targetId: orgId,
+              status: "failure",
+              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+              metadata: { platform: "telegram", hasSecret: true, error: err.message },
+            }),
+          ),
+        ),
+      );
 
       log.info({ orgId, botId: getMeResult.botId, botUsername: getMeResult.botUsername }, "Telegram installation saved by admin");
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "telegram" },
+        metadata: { platform: "telegram", hasSecret: true },
       });
 
       return c.json(
@@ -1328,6 +1381,14 @@ adminIntegrations.openapi(connectGChatRoute, async (c) => {
       );
 
       if (!saveResult.ok) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.integration.enable,
+          targetType: "integration",
+          targetId: orgId,
+          status: "failure",
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          metadata: { platform: "gchat", hasSecret: true, error: saveResult.message },
+        });
         return c.json(
           { error: "conflict", message: saveResult.message },
           409,
@@ -1339,9 +1400,9 @@ adminIntegrations.openapi(connectGChatRoute, async (c) => {
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "gchat" },
+        metadata: { platform: "gchat", hasSecret: true },
       });
 
       return c.json(
@@ -1571,6 +1632,14 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
       );
 
       if (!saveResult.ok) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.integration.enable,
+          targetType: "integration",
+          targetId: orgId,
+          status: "failure",
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          metadata: { platform: "github", hasSecret: true, error: saveResult.message },
+        });
         return c.json(
           { error: "conflict", message: saveResult.message },
           409,
@@ -1582,9 +1651,9 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "github" },
+        metadata: { platform: "github", hasSecret: true },
       });
 
       return c.json(
@@ -1831,6 +1900,14 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
       );
 
       if (!saveResult.ok) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.integration.enable,
+          targetType: "integration",
+          targetId: orgId,
+          status: "failure",
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          metadata: { platform: "linear", hasSecret: true, error: saveResult.message },
+        });
         return c.json(
           { error: "conflict", message: saveResult.message },
           409,
@@ -1842,9 +1919,9 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "linear" },
+        metadata: { platform: "linear", hasSecret: true },
       });
 
       return c.json(
@@ -2081,6 +2158,14 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
       );
 
       if (!saveResult.ok) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.integration.enable,
+          targetType: "integration",
+          targetId: orgId,
+          status: "failure",
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          metadata: { platform: "whatsapp", hasSecret: true, error: saveResult.message },
+        });
         return c.json(
           { error: "conflict", message: saveResult.message },
           409,
@@ -2092,9 +2177,9 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "whatsapp" },
+        metadata: { platform: "whatsapp", hasSecret: true },
       });
 
       return c.json(
@@ -2328,16 +2413,29 @@ adminIntegrations.openapi(connectEmailRoute, async (c) => {
             config,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.integration.configure,
+              targetType: "integration",
+              targetId: orgId,
+              status: "failure",
+              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+              metadata: { platform: "email", provider, hasSecret: true, error: err.message },
+            }),
+          ),
+        ),
+      );
 
       log.info({ orgId, provider, senderAddress }, "Email installation saved by admin");
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.configure,
         targetType: "integration",
-        targetId: orgId!,
+        targetId: orgId,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "email", provider },
+        metadata: { platform: "email", provider, hasSecret: true },
       });
 
       return c.json(
@@ -2434,6 +2532,40 @@ adminIntegrations.openapi(testEmailRoute, async (c) => {
       const result = yield* Effect.tryPromise({
         try: () => sendTestEmail(install, recipientEmail),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.integration.test,
+              targetType: "integration",
+              targetId: orgId,
+              status: "failure",
+              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+              metadata: {
+                platform: "email",
+                provider: install.provider,
+                success: false,
+                error: err.message,
+              },
+            }),
+          ),
+        ),
+      );
+
+      // result.success:false is a provider-side delivery failure; audit as
+      // failure so the row counts toward credential-oracle attempts.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.test,
+        targetType: "integration",
+        targetId: orgId,
+        status: result.success ? "success" : "failure",
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: {
+          platform: "email",
+          provider: install.provider,
+          success: result.success,
+          ...(result.success ? {} : { error: result.error ?? "delivery failed" }),
+        },
       });
 
       if (!result.success) {

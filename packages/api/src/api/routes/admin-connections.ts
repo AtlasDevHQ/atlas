@@ -405,11 +405,6 @@ adminConnections.openapi(drainOrgPoolRoute, async (c) => runHandler(c, "drain or
     const result = await connections.drainOrg(targetOrgId);
     log.info({ orgId: targetOrgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
 
-    // Pool drain is an availability lever: it disconnects every active
-    // session to every connection in an org. Emitted on success with
-    // platform scope (the mutation affects pool state, not a workspace row).
-    // See F-29 / F-34. Per-connection drain (`POST /:id/drain`) is out of
-    // scope for this PR and tracked in F-29's remaining backlog.
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.poolDrain,
       targetType: "connection",
@@ -449,9 +444,28 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "d
       return c.json({ drained: false, message: result.message }, 409);
     }
     log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.poolDrain,
+      targetType: "connection",
+      targetId: id,
+      scope: "workspace",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { connectionId: id },
+    });
+
     return c.json({ drained: true, message: result.message }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.poolDrain,
+      targetType: "connection",
+      targetId: id,
+      scope: "workspace",
+      status: "failure",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { connectionId: id, error: errorMessage(err) },
+    });
     return c.json({ error: "drain_failed", message: errorMessage(err), requestId }, 500);
   }
 }));

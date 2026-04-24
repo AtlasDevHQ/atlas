@@ -358,7 +358,33 @@ platformSLA.openapi(evaluateAlertsRoute, async (c) => {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const newAlerts = yield* sla.evaluateAlerts();
+    // `newAlertCount` is logged instead of the alert payload — alert bodies
+    // carry workspace names that are PII-adjacent at the platform scope.
+    const newAlerts = yield* sla.evaluateAlerts().pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.sla.evaluate,
+            targetType: "sla",
+            targetId: "default",
+            scope: "platform",
+            status: "failure",
+            metadata: { error: err instanceof Error ? err.message : String(err) },
+            ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          }),
+        ),
+      ),
+    );
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sla.evaluate,
+      targetType: "sla",
+      targetId: "default",
+      scope: "platform",
+      metadata: { newAlertCount: newAlerts.length },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({ newAlerts }, 200);
   }), { label: "evaluate SLA alerts" });
 });

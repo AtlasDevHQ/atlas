@@ -60,6 +60,7 @@ export const ADMIN_ACTIONS = {
   sla: {
     updateThresholds: "sla.update_thresholds",
     acknowledgeAlert: "sla.acknowledge_alert",
+    evaluate: "sla.evaluate",
   },
   backup: {
     create: "backup.create",
@@ -116,6 +117,7 @@ export const ADMIN_ACTIONS = {
     ban: "user.ban",
     unban: "user.unban",
     removeFromWorkspace: "user.remove_from_workspace",
+    revokeInvitation: "user.revoke_invitation",
     /**
      * Bulk revocation (`session_revoke_all`) is emitted by two admin
      * surfaces — the dedicated session route and the users route — so
@@ -197,10 +199,15 @@ export const ADMIN_ACTIONS = {
     reject: "pattern.reject",
     delete: "pattern.delete",
   },
+  /**
+   * `test` is distinct from `email_provider.test` so compliance queries
+   * filtering by surface don't have to parse `targetId`.
+   */
   integration: {
     enable: "integration.enable",
     disable: "integration.disable",
     configure: "integration.configure",
+    test: "integration.test",
   },
   /**
    * Scheduled-task lifecycle. `create` / `update` / `delete` / `toggle`

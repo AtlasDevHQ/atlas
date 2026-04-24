@@ -9,8 +9,17 @@
 import { Hono, type Context } from "hono";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { normalizeSignupResponseBody } from "@atlas/api/lib/auth/signup-response";
 
 const log = createLogger("auth-route");
+
+/**
+ * Better Auth path (relative to the `/api/auth` catch-all mount) that
+ * must be intercepted to close the F-P3 / #1792 enumeration oracle.
+ * Only the success response for this path is rewritten — every other
+ * auth route streams through untouched.
+ */
+const SIGNUP_EMAIL_PATH = "/sign-up/email";
 
 /**
  * Custom header Better Auth reads for rate-limit IP bucketing.
@@ -40,7 +49,8 @@ auth.all("/*", async (c) => {
     const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
     const authInstance = getAuthInstance();
     const authRequest = withClientIpHeader(c);
-    const response = await authInstance.handler(authRequest);
+    const upstream = await authInstance.handler(authRequest);
+    const response = await maybeNormalizeSignupResponse(c, upstream);
 
     // Better Auth returns a raw Response, bypassing Hono's response
     // pipeline. Copy CORS headers set by the upstream middleware so
@@ -72,6 +82,80 @@ auth.all("/*", async (c) => {
     );
   }
 });
+
+/**
+ * When the upstream Better Auth response is a success envelope for
+ * `/sign-up/email`, rewrite it so `user.image` is always present (as
+ * `null`) regardless of whether the signup body supplied one.
+ *
+ * Closes F-P3 / #1792 — the real-vs-synthetic response asymmetry that
+ * let a client distinguish new from existing emails by checking
+ * `"image" in body.user`. The transformation is a no-op for every
+ * other auth route, every non-2xx status, and every non-JSON body.
+ *
+ * Scope-guards (any one failing = pass-through unchanged):
+ *   1. Path must end with `/sign-up/email`. Signup is the only route
+ *      where Better Auth emits the synthetic-existing envelope.
+ *   2. Status must be 2xx. Error envelopes (400/422/429/500) follow a
+ *      different schema and rewriting them could corrupt legitimate
+ *      error payloads.
+ *   3. Content-Type must be `application/json`. Non-JSON bodies
+ *      (redirect HTML, empty 204s) are passed through.
+ *   4. Body must parse as JSON. A parse failure logs warn and returns
+ *      the original response untouched — the security boundary fails
+ *      open here because the underlying response is still Better
+ *      Auth's (untampered) output.
+ *
+ * The rewrite preserves every upstream header (including Set-Cookie
+ * for verification tokens) because it copies `upstream.headers` into
+ * the new Response; only the body bytes change.
+ *
+ * Rip this workaround out once better-auth/better-auth lands a
+ * symmetric `parseUserOutput` — linked in the PR body that introduces
+ * this helper so the follow-up is discoverable.
+ */
+async function maybeNormalizeSignupResponse(
+  c: Context,
+  upstream: Response,
+): Promise<Response> {
+  if (!c.req.path.endsWith(SIGNUP_EMAIL_PATH)) return upstream;
+  if (upstream.status < 200 || upstream.status >= 300) return upstream;
+  const contentType = upstream.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) return upstream;
+
+  const raw = await upstream.clone().text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Signup response advertised application/json but did not parse — "
+        + "skipping F-P3 normalization and forwarding upstream body unchanged.",
+    );
+    return upstream;
+  }
+
+  const normalized = normalizeSignupResponseBody(parsed);
+  // Fast path: the real body already had `user.image` (e.g. the
+  // caller supplied one, or we're on the synthetic branch). Return
+  // the original Response so we don't burn an allocation on an
+  // identical serialization.
+  if (normalized === parsed) return upstream;
+
+  // The rewritten body is longer by one `"image":null,` key — the
+  // upstream Content-Length (if set) is now stale and would make a
+  // strict client truncate the trailing bytes. Drop it and let the
+  // runtime recompute on send.
+  const headers = new Headers(upstream.headers);
+  headers.delete("content-length");
+
+  return new Response(JSON.stringify(normalized), {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  });
+}
 
 /**
  * Resolve the real client IP and attach it to {@link CLIENT_IP_HEADER}

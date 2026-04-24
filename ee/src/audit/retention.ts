@@ -23,9 +23,28 @@ import {
   internalQuery,
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { AUDIT_PURGE_SCHEDULER_ACTOR } from "./purge-scheduler";
 
 const log = createLogger("ee:audit-retention");
+
+/**
+ * Dedup gate for library-layer audit emissions. The HTTP route handler
+ * at `packages/api/src/api/routes/admin-audit-retention.ts` emits richer
+ * `audit_retention.*` rows (previous values, ipAddress, read-before-write
+ * failure paths) via its own `emitAudit` helper on every mutation. If the
+ * library also emitted under HTTP, every admin action would produce two
+ * rows. We therefore emit from the library only when there is NO
+ * authenticated user in the request context — i.e. the caller is the
+ * scheduler or a programmatic (CLI, direct service call) path that has
+ * no route-level audit attached. If the route layer is ever refactored
+ * to stop emitting, the library-layer row must become the sole emission:
+ * update this gate together with that change.
+ */
+function isHttpContext(): boolean {
+  return !!getRequestContext()?.user;
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -197,6 +216,24 @@ export const setRetentionPolicy = (
       "Audit retention policy updated",
     );
 
+    // Library-layer self-audit for non-HTTP callers. The HTTP route path
+    // emits its own richer row (previousValues, ipAddress); suppressing
+    // here prevents a double-audit when Route → setRetentionPolicy.
+    if (!isHttpContext()) {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.audit_retention.policyUpdate,
+        targetType: "audit_retention",
+        targetId: orgId,
+        scope: "platform",
+        systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
+        metadata: {
+          retentionDays: input.retentionDays,
+          hardDeleteDelayDays: hardDeleteDelay,
+          via: "library",
+        },
+      });
+    }
+
     return rowToPolicy(rows[0]);
   });
 
@@ -290,6 +327,12 @@ export const hardDeleteExpired = (orgId?: string): Effect.Effect<HardDeleteResul
         ));
 
     let totalDeleted = 0;
+    // Per-org breakdown (only orgs that actually lost rows) for the
+    // durable audit metadata. A single cross-org cycle row without this
+    // list leaves a reviewer unable to answer "which tenants lost data
+    // on this tick?" — pino log.info lines below carry it but those are
+    // not the forensic store.
+    const affectedOrgs: Array<{ orgId: string; deletedCount: number }> = [];
 
     for (const config of configs) {
       const result = yield* Effect.promise(() => pool.query(
@@ -307,11 +350,34 @@ export const hardDeleteExpired = (orgId?: string): Effect.Effect<HardDeleteResul
       totalDeleted += count;
 
       if (count > 0) {
+        affectedOrgs.push({ orgId: config.org_id, deletedCount: count });
         log.info(
           { orgId: config.org_id, hardDeletedCount: count, delayDays: config.hard_delete_delay_days },
           "Audit log entries permanently deleted",
         );
       }
+    }
+
+    // Library-layer self-audit. Emitted only when count > 0 (zero-row
+    // hard-deletes would flood the admin_action_log on every scheduler
+    // tick; the outer purge_cycle row already proves the scheduler is
+    // alive at count === 0). Suppressed under HTTP context — the manual
+    // hard-delete route emits `audit_retention.manual_hard_delete`, a
+    // distinct action type so forensic queries can tell a scheduled
+    // erasure from an admin-triggered one.
+    if (totalDeleted > 0 && !isHttpContext()) {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.audit_retention.hardDelete,
+        targetType: "audit_retention",
+        targetId: orgId ?? "all",
+        scope: "platform",
+        systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
+        metadata: {
+          deletedCount: totalDeleted,
+          orgCount: affectedOrgs.length,
+          affectedOrgs,
+        },
+      });
     }
 
     return { deletedCount: totalDeleted };

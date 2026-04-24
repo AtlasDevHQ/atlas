@@ -12,11 +12,20 @@ import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 
 const log = createLogger("ee:audit-purge");
 
 /** Default purge interval: 24 hours in milliseconds. */
 const DEFAULT_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Reserved system-actor string for every audit row written by the purge
+ * scheduler (cycle rows + any library-layer hard-delete rows triggered from
+ * within a cycle). Exported so retention.ts and tests can pin the format
+ * rather than duplicate the literal. See F-27.
+ */
+export const AUDIT_PURGE_SCHEDULER_ACTOR = "system:audit-purge-scheduler" as const;
 
 let _timer: ReturnType<typeof setInterval> | null = null;
 let _running = false;
@@ -46,10 +55,51 @@ export const runPurgeCycle = (): Effect.Effect<void> =>
         if (hardResult.deletedCount > 0) {
           log.info({ deletedCount: hardResult.deletedCount }, "Audit purge cycle: hard-delete complete");
         }
+
+        // Self-audit the cycle (F-27). Emitted even at zero rows — the
+        // *absence* of a cycle row over a retention window is itself
+        // evidence the scheduler stopped, which a compliance reviewer must
+        // be able to detect. `logAdminAction` is fire-and-forget and never
+        // throws, so an audit miss can't break the cycle loop.
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+          targetType: "audit_log",
+          targetId: "scheduler",
+          scope: "platform",
+          systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
+          metadata: {
+            softDeleted: totalSoftDeleted,
+            hardDeleted: hardResult.deletedCount,
+            orgs: softResults.length,
+          },
+        });
       },
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(
       Effect.catchAll((err) => {
+        // Emit a failure cycle row so a compliance reviewer can tell a
+        // silent drop-off from a run that started and errored. Zeros for
+        // soft/hard/orgs — the point of the row is the failure signal, not
+        // the (unknown) partial counts. logAdminAction is fire-and-forget
+        // but we still belt-and-brace with a try/catch so any future
+        // contract regression can't turn the failure-path emission into
+        // an unhandled defect that nukes the cycle with NO trail at all.
+        try {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+            targetType: "audit_log",
+            targetId: "scheduler",
+            scope: "platform",
+            systemActor: AUDIT_PURGE_SCHEDULER_ACTOR,
+            status: "failure",
+            metadata: { error: err.message, softDeleted: 0, hardDeleted: 0, orgs: 0 },
+          });
+        } catch (auditErr: unknown) {
+          log.error(
+            { err: auditErr instanceof Error ? auditErr.message : String(auditErr) },
+            "Audit purge cycle failure-row emission itself threw — original error preserved below",
+          );
+        }
         log.error(
           { err: err.message },
           "Audit purge cycle failed — will retry next interval",
@@ -58,6 +108,23 @@ export const runPurgeCycle = (): Effect.Effect<void> =>
       }),
     );
   });
+
+/**
+ * Wrap `void Effect.runPromise(runPurgeCycle())` so a defect escaping the
+ * Effect.catchAll above (e.g., a future logAdminAction regression) lands as
+ * a pino error line instead of a silently swallowed unhandled rejection.
+ * The scheduler's forensic contract says "absence of a cycle row over the
+ * retention window means the scheduler stopped" — without this guard, a
+ * defect could leave neither a cycle row NOR any log line.
+ */
+function runCycleWithDefectGuard(): void {
+  Effect.runPromise(runPurgeCycle()).catch((err: unknown) => {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Audit purge cycle defected past catchAll — cycle row NOT emitted",
+    );
+  });
+}
 
 /**
  * Start the audit purge scheduler.
@@ -87,11 +154,11 @@ export function startAuditPurgeScheduler(intervalMs?: number): void {
   log.info({ intervalMs: interval }, "Starting audit purge scheduler");
 
   // Run initial purge cycle (non-blocking)
-  void Effect.runPromise(runPurgeCycle());
+  runCycleWithDefectGuard();
 
   // Schedule recurring purge
   _timer = setInterval(() => {
-    void Effect.runPromise(runPurgeCycle());
+    runCycleWithDefectGuard();
   }, interval);
 
   // Don't prevent process exit

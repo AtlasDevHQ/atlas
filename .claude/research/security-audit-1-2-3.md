@@ -2455,7 +2455,7 @@ Same convention as Phase 4. Legend:
 | `*    /api/v1/discord/*` | admin | g | n | OAuth-only outbound; no inbound webhook |
 | `POST /webhook/:channelId` (plugin) | inline (HMAC / API-key) | n | n | Webhook plugin entrypoint — **no replay protection (F-75), no per-channel rate limit (F-76)** |
 
-Total mounted route prefixes: 36 distinct app-level mounts. The `admin` / `platform` mounts each fan out into ~50 / ~25 inner routes respectively — those inherit the parent's auth + RL posture. `withSourceSlot` rate limit applies to every SQL execution path regardless of which route invoked it, so it's a defense-in-depth layer below the table.
+Total mounted route prefixes: 40 distinct `app.route(...)` mounts in `packages/api/src/api/index.ts`. The `admin` / `platform` mounts each fan out into ~50 / ~25 inner routes respectively — those inherit the parent's auth + RL posture. `withSourceSlot` rate limit applies to every SQL execution path regardless of which route invoked it, so it's a defense-in-depth layer below the table.
 
 ### Unauthenticated route inventory
 
@@ -2704,7 +2704,7 @@ intent.
 `ATLAS_PYTHON_TIMEOUT` for the per-execution timeout but does not
 configure a memory limit. Vercel's runtime applies its own caps; nsjail
 sets `--rlimit_as 512` (default 512MB,
-`packages/api/src/lib/tools/python-nsjail.ts:78`). Operators relying
+`packages/api/src/lib/tools/python-nsjail.ts:117`). Operators relying
 on Vercel get whatever Vercel applies (typically 1024MB default for
 the sandbox runtime; not surfaced in `@vercel/sandbox` API).
 
@@ -2812,7 +2812,7 @@ Verified-clean.
 
 **F-87 — SQL row LIMIT + per-statement timeout enforced at driver layer for both PG and MySQL**
 
-`packages/api/src/lib/tools/sql.ts:1207-1212` auto-appends `LIMIT
+`packages/api/src/lib/tools/sql.ts:1210-1211` auto-appends `LIMIT
 ${rowLimit}` when not present (`ATLAS_ROW_LIMIT` default 1000).
 `packages/api/src/lib/db/connection.ts:281` runs `SET
 statement_timeout = ${timeoutMs}` per Postgres connection acquisition;
@@ -2932,7 +2932,7 @@ nsjail `-u 65534 -g 65534` runs as nobody. Verified-clean.
 | F-91 | — | Verified-clean | Internal migrate timing-safe compare + 503 on missing secret | — | n/a | verified |
 | F-92 | — | Verified-clean | nsjail Python timeout + memory + nproc + fsize + nofile caps | — | n/a | verified |
 
-**Totals:** P0 = 0, P1 = 1 (F-73), P2 = 4 (F-74 / F-75 / F-76 / F-77), P3 = 4 noted-only (F-78 / F-79 / F-80 / F-81), 11 verified-clean rows (F-82 – F-92). Pool-exhaustion behavior verified by code-read (load testing out of scope per the prompt). Numbering note: Phase 7 (parallel session) claimed F-73–F-80 first via tracker #1718; Phase 6 picked up at F-73 to avoid the clash. Phase 5 P3 notes (F-48–F-52) and Phase 7 (F-73–F-80) sit between.
+**Totals:** P0 = 0, P1 = 1 (F-73), P2 = 4 (F-74 / F-75 / F-76 / F-77), P3 = 4 noted-only (F-78 / F-79 / F-80 / F-81), 11 verified-clean rows (F-82 – F-92). Pool-exhaustion behavior verified by code-read (load testing out of scope per the prompt). Numbering note: Phase 7 (parallel session) claimed F-53–F-60 first via tracker #1718; Phase 6 picked up at F-73 to avoid the clash. Phase 5 P3 notes (F-48–F-52) and Phase 7 (F-53–F-60) sit between.
 
 ### Deliverables this PR
 
@@ -2961,6 +2961,6 @@ nsjail `-u 65534 -g 65534` runs as nobody. Verified-clean.
 | 4 | Audit-log coverage on write routes | complete | 5 / 5 / 5 / 3 | #1777 – #1791 | 15 findings; 9 fixed in-milestone (PR #1797–#1809) |
 | 5 | Secrets + error surfaces + plugin credentials | complete | 0 / 3 / 3 / 4 + 1 verified-clean | 6 P1/P2 issues filed | encryption-at-rest gap is the dominant pattern; no P0 |
 | 6 | Rate limiting + DoS | complete | 0 / 1 / 4 / 4 + 11 verified-clean | #1844 – #1848 | F-73 is the only live finding; webhook plugin cluster (F-75 / F-76) is P2 hardening. Numbering jumps to F-73 because Phase 7 (parallel session) claimed F-53–F-60 first |
-| 7 | Enterprise governance paths | parallel session — see #1718 | — | #1849 – #1853 | Parallel-session audit; F-53–F-60 used by Phase 7 |
+| 7 | Enterprise governance paths | complete (parallel session) | 0 / 2 / 3 / 3 | #1849 – #1853 | Custom-role enforcement + approval-workflow bypasses (F-53 / F-54 P1); SSO / SCIM hardening P2s; F-IDs F-53..F-60 |
 
-**Cross-phase totals (phases 1–6, plus Phase 7 sibling):** P0 = 8, P1 = 13, P2 = 22, P3 = 19 (Phase 6 alone). Phase 7 totals as reported in tracker #1718. No current P0 open; remediation for Phase 5 P1/P2 + Phase 6 P1/P2 clustered into follow-up PRs after each audit lands.
+**Cross-phase totals (phases 1–7):** P0 = 8, P1 = 15, P2 = 25, P3 = 22. No current P0 open; remediation for Phase 5 P1/P2 + Phase 6 P1/P2 + Phase 7 P1/P2 clustered into follow-up PRs after each audit lands.

@@ -190,8 +190,8 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     }
 
     // Audit metadata NEVER includes apiKey / baseUrl values — `hasSecret`
-    // distinguishes a rotation from a metadata-only edit (F-30). Keeping
-    // the raw key out of admin_action_log is the whole point of the F-30
+    // distinguishes a rotation from a metadata-only edit. Keeping the raw
+    // key out of admin_action_log is the whole point of the `model_config.*`
     // catalog entries; do not relax this without a security review.
     const auditBase = {
       provider: body.provider,
@@ -259,8 +259,8 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
       ),
     );
     if (!deleted) {
-      // No-op delete: no state change → no audit row (matches the F-22
-      // pre-handler-rejection pattern for plugin.enable on unknown id).
+      // No-op delete: no state change → no audit row (matches the
+      // pre-handler-rejection pattern used on unknown-target writes).
       return c.json({ error: "not_found", message: "No custom model configuration found." }, 404);
     }
 
@@ -288,8 +288,8 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
 
     // Every /test is audited. Without an audit row an attacker with admin
     // credentials can replay stolen apiKeys here and read pass/fail from
-    // the response body with zero forensic trail (F-30 credential oracle).
-    // Metadata excludes apiKey / baseUrl values by construction.
+    // the response body with zero forensic trail — the credential-oracle
+    // threat. Metadata excludes apiKey / baseUrl values by construction.
     const auditBase = { provider: body.provider, model: body.model };
     const result = yield* testModelConfig({
       provider: body.provider,

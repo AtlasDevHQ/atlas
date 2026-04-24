@@ -165,8 +165,9 @@ export const ADMIN_ACTIONS = {
     manualHardDelete: "audit_retention.manual_hard_delete",
   },
   /**
-   * BYOT email provider mutations (Resend / SendGrid / Postmark / SMTP / SES).
-   * Without these entries an admin could swap the workspace sender to a
+   * BYOT email-provider mutations — workspace admin swaps the outbound
+   * email transport (current providers live in `EMAIL_PROVIDERS`). Without
+   * these entries an admin could swap the workspace sender to a
    * phishing-friendly domain (or harvest working API keys via the /test
    * route) with zero forensic record. Metadata never carries credential
    * material — `hasSecret: true` is the marker that a secret was supplied.

@@ -1,5 +1,5 @@
 /**
- * Tests for admin workspace model-config route audit emission (F-30).
+ * Tests for admin workspace model-config route audit emission.
  *
  * The three write routes (PUT, DELETE, POST /test) each mutate or probe
  * BYOT credential material. The /test route is especially material —
@@ -214,6 +214,26 @@ describe("audit emission — PUT /api/v1/admin/model-config", () => {
     expect(entry.metadata).not.toHaveProperty("secretAccessKey");
   });
 
+  it("does not leak baseUrl into audit metadata (self-hosted endpoint disclosure)", async () => {
+    // Self-hosted OpenAI-compatible deployments supply `baseUrl`. Even if
+    // it's not a "secret" by the strict definition, an internal URL in
+    // the audit trail leaks infrastructure topology (VPN endpoints,
+    // internal DNS names) — keep it out.
+    const internalBaseUrl = "https://llm.internal.corp.example/v1";
+    await app.fetch(
+      adminRequest("PUT", "/api/v1/admin/model-config", {
+        provider: "custom",
+        model: "custom-llm",
+        apiKey: "sk-anything",
+        baseUrl: internalBaseUrl,
+      }),
+    );
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(JSON.stringify(entry)).not.toContain(internalBaseUrl);
+    expect(entry.metadata).not.toHaveProperty("baseUrl");
+  });
+
   it("records hasSecret:false when apiKey is omitted (key-preservation path)", async () => {
     // Caller submits an update WITHOUT apiKey → server keeps the existing
     // encrypted key. The audit row must mark this case distinctly so
@@ -297,9 +317,22 @@ describe("audit emission — DELETE /api/v1/admin/model-config", () => {
     mockDeleteWorkspaceModelConfig.mockImplementation(() => Effect.succeed(false));
     const res = await app.fetch(adminRequest("DELETE", "/api/v1/admin/model-config"));
     expect(res.status).toBe(404);
-    // No-op delete → no state change → no audit row. This matches the
-    // `plugin.enable` pre-handler-rejection pattern in F-22.
+    // No-op delete → no state change → no audit row. Matches the
+    // pre-handler-rejection pattern used on unknown-target writes.
     expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("emits model_config.delete with status=failure when deleteWorkspaceModelConfig fails", async () => {
+    mockDeleteWorkspaceModelConfig.mockImplementation(() =>
+      Effect.fail(new MockModelConfigError("internal DB unreachable", "validation")),
+    );
+    const res = await app.fetch(adminRequest("DELETE", "/api/v1/admin/model-config"));
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("model_config.delete");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata!.error).toContain("internal DB unreachable");
   });
 });
 

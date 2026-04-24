@@ -8,7 +8,7 @@
  * or residency is not configured.
  */
 
-import { Cause, Effect, Option } from "effect";
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -16,6 +16,7 @@ import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import {
   triggerMigrationExecution,
   failStaleMigrations,
@@ -29,35 +30,6 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
-}
-
-// Local `errorMessage` — mirrors the helper in `admin-roles.ts` (F-25) so
-// residency failure audits never leak connection-string credentials. Inlined
-// rather than imported from `@atlas/api/lib/audit` so existing admin tests
-// that partial-mock the audit module don't break on a new load-bearing
-// export (per CLAUDE.md: "mock.module() must cover every named export").
-const ERROR_MESSAGE_MAX = 512;
-function errorMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const scrubbed = raw.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi, "$1://***@");
-  return scrubbed.length > ERROR_MESSAGE_MAX
-    ? `${scrubbed.slice(0, ERROR_MESSAGE_MAX - 3)}...`
-    : scrubbed;
-}
-
-// Extract the primary error from an Effect `Cause` — covers typed failures
-// AND defects (rejected `Effect.promise`, `Effect.die`). `Effect.tapError`
-// misses defects entirely, so `assignWorkspaceRegion` (which wraps a DB
-// write in `Effect.promise`) would silently drop the failure-audit row on
-// pool-exhaustion or network drops. `tapErrorCause` + `causeToError`
-// closes that gap — the same pattern `admin-roles.ts` uses.
-// Returns undefined on pure interrupts (fiber cancellation).
-function causeToError(cause: Cause.Cause<unknown>): unknown | undefined {
-  if (Cause.isInterruptedOnly(cause)) return undefined;
-  const failure = Cause.failureOption(cause);
-  if (Option.isSome(failure)) return failure.value;
-  for (const defect of Cause.defects(cause)) return defect;
-  return undefined;
 }
 
 const log = createLogger("admin-residency");

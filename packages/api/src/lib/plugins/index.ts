@@ -12,3 +12,5 @@ export { dispatchHook } from "./hooks";
 export { getPluginTools, setPluginTools, getContextFragments, setContextFragments } from "./tools";
 export { loadPluginSettings, savePluginEnabled, savePluginConfig, getPluginConfig, getAllPluginSettings } from "./settings";
 export type { PluginSettings } from "./settings";
+export { MASKED_PLACEHOLDER, maskSecretFields, restoreMaskedSecrets, parseConfigSchema } from "./secrets";
+export type { ConfigSchema } from "./secrets";

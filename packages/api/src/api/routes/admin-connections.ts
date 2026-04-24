@@ -9,6 +9,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
@@ -383,7 +384,7 @@ adminConnections.openapi(getOrgPoolMetricsRoute, async (c) => runHandler(c, "get
     }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
-    return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics", requestId }, 500);
+    return c.json({ error: "metrics_failed", message: errorMessage(err), requestId }, 500);
   }
 }));
 
@@ -420,7 +421,7 @@ adminConnections.openapi(drainOrgPoolRoute, async (c) => runHandler(c, "drain or
     return c.json(result, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId: targetOrgId, requestId }, "Org pool drain failed");
-    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed", requestId }, 500);
+    return c.json({ error: "drain_failed", message: errorMessage(err), requestId }, 500);
   }
 }));
 
@@ -450,7 +451,7 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "d
     return c.json({ drained: true, message: result.message }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
-    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed", requestId }, 500);
+    return c.json({ error: "drain_failed", message: errorMessage(err), requestId }, 500);
   }
 }));
 
@@ -459,7 +460,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
   const { requestId } = c.get("orgContext");
 
   const body = await c.req.json().catch((err: unknown) => {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
+    log.warn({ err: errorMessage(err), requestId }, "Failed to parse JSON body in test connection request");
     return null;
   });
   if (!body || typeof body !== "object") {
@@ -475,7 +476,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
   try {
     dbType = detectDBType(url);
   } catch (err) {
-    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+    return c.json({ error: "invalid_request", message: errorMessage(err), requestId }, 400);
   }
 
   const tempId = `_test_${Date.now()}`;
@@ -500,7 +501,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
     });
     return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection test failed");
+    log.warn({ err: errorMessage(err), requestId }, "Connection test failed");
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.probe,
       targetType: "connection",
@@ -511,7 +512,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
     });
     return c.json({
       error: "connection_failed",
-      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+      message: `Connection test failed: ${errorMessage(err)}`,
       requestId,
     }, 400);
   } finally {
@@ -584,7 +585,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   }
 
   const body = await c.req.json().catch((err: unknown) => {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in create connection request");
+    log.warn({ err: errorMessage(err), requestId }, "Failed to parse JSON body in create connection request");
     return null;
   });
 
@@ -608,7 +609,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   try {
     dbType = detectDBType(url);
   } catch (err) {
-    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+    return c.json({ error: "invalid_request", message: errorMessage(err), requestId }, 400);
   }
 
   if (connections.has(id)) {
@@ -627,7 +628,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
       [id, orgId],
     );
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to check for existing connection row before create");
+    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to check for existing connection row before create");
     return c.json({ error: "internal_error", message: "Failed to check for existing connection. Try again.", requestId }, 500);
   }
   if (existingRow.length > 0 && existingRow[0].status !== "archived") {
@@ -647,7 +648,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     connections.unregister(id);
     return c.json({
       error: "connection_failed",
-      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
+      message: `Connection test failed: ${errorMessage(err)}. Fix the URL and try again.`,
       requestId,
     }, 400);
   }
@@ -658,7 +659,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     encryptedUrl = encryptUrl(url);
   } catch (err) {
     connections.unregister(id);
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
+    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
     return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
   }
 
@@ -683,14 +684,14 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     }
   } catch (err) {
     connections.unregister(id);
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to persist connection");
+    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to persist connection");
     return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
   }
 
   try {
     _resetWhitelists();
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to reset whitelists after connection create");
+    log.warn({ err: errorMessage(err), requestId }, "Failed to reset whitelists after connection create");
   }
 
   log.info({ requestId, connectionId: id, dbType, orgId, actorId: authResult.user?.id }, "Connection created");
@@ -742,7 +743,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   }
 
   const body = await c.req.json().catch((err: unknown) => {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in update connection request");
+    log.warn({ err: errorMessage(err), requestId }, "Failed to parse JSON body in update connection request");
     return null;
   });
 
@@ -757,7 +758,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   try {
     currentUrl = decryptUrl(current.url);
   } catch (err) {
-    log.error({ connectionId: id, requestId, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
+    log.error({ connectionId: id, requestId, err: errorMessage(err) }, "Failed to decrypt stored connection URL");
     return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed.", requestId }, 500);
   }
 
@@ -771,7 +772,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     try {
       dbType = detectDBType(newUrl);
     } catch (err) {
-      return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+      return c.json({ error: "invalid_request", message: errorMessage(err), requestId }, 400);
     }
   }
 
@@ -786,10 +787,10 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
         connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
       } catch (restoreErr) {
         rollbackFailed = true;
-        log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
+        log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
         connections.unregister(id);
       }
-      const baseMsg = `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`;
+      const baseMsg = `Connection test failed: ${errorMessage(err)}. Fix the URL and try again.`;
       if (rollbackFailed) {
         return c.json({ error: "internal_error", message: `${baseMsg} The connection may need a server restart to restore.`, requestId }, 500);
       }
@@ -799,7 +800,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     try {
       connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
     } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to re-register connection with updated metadata");
+      log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to re-register connection with updated metadata");
       return c.json({ error: "internal_error", message: "Failed to update connection.", requestId }, 500);
     }
   }
@@ -817,7 +818,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
       connections.unregister(id);
     }
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
+    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
     const encMsg = rollbackFailed
       ? "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET. The connection may need a server restart to restore."
       : "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.";
@@ -838,7 +839,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
       connections.unregister(id);
     }
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to update connection in DB");
+    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to update connection in DB");
     const updateMsg = rollbackFailed
       ? "Failed to update connection. The connection may need a server restart to restore."
       : "Failed to update connection.";
@@ -848,7 +849,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   try {
     _resetWhitelists();
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to reset whitelists after connection update");
+    log.warn({ err: errorMessage(err), requestId }, "Failed to reset whitelists after connection update");
   }
 
   log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
@@ -912,7 +913,7 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     // Only ignore "relation does not exist" (42P01) — scheduled_tasks table may not exist yet
     const isTableMissing = err instanceof Error && "code" in err && (err as { code: string }).code === "42P01";
     if (!isTableMissing) {
-      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to check scheduled task references");
+      log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to check scheduled task references");
       return c.json({ error: "internal_error", message: "Failed to verify scheduled task references before deletion. Try again or contact your administrator.", requestId }, 500);
     }
     log.warn({ connectionId: id, requestId }, "Scheduled tasks table does not exist — skipping reference check");
@@ -926,14 +927,14 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
       [id, orgId],
     );
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to archive connection");
+    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to archive connection");
     return c.json({ error: "internal_error", message: "Failed to archive connection.", requestId }, 500);
   }
 
   try {
     connections.unregister(id);
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to unregister connection from in-memory registry — will reconcile on restart");
+    log.warn({ err: errorMessage(err), connectionId: id, requestId }, "Failed to unregister connection from in-memory registry — will reconcile on restart");
   }
 
   log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection archived");
@@ -989,7 +990,7 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
         }
       }
     } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to fetch connection details from internal DB");
+      log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to fetch connection details from internal DB");
       return c.json({ error: "internal_error", message: "Failed to fetch connection details from internal database.", requestId }, 500);
     }
   }

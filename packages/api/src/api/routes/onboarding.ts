@@ -17,6 +17,7 @@ import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, queryEffect, encryptUrl } from "@atlas/api/lib/db/internal";
@@ -132,7 +133,7 @@ async function seedDemoPromptCollections(orgId: string, industry: string): Promi
       ));
     } catch (err) {
       log.warn(
-        { err: err instanceof Error ? err.message : String(err), collection: builtin.name, orgId },
+        { err: errorMessage(err), collection: builtin.name, orgId },
         "Failed to seed demo prompt collection — skipping to next",
       );
     }
@@ -416,7 +417,7 @@ onboarding.openapi(
       try {
         dbType = detectDBType(url);
       } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Invalid database URL scheme");
+        log.warn({ err: errorMessage(err), requestId }, "Invalid database URL scheme");
         return c.json({
           error: "invalid_url",
           message: "Unsupported database URL scheme. Use postgresql:// or mysql://.",
@@ -505,7 +506,7 @@ onboarding.openapi(
       try {
         dbType = detectDBType(url);
       } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Invalid database URL scheme");
+        log.warn({ err: errorMessage(err), requestId }, "Invalid database URL scheme");
         return c.json({
           error: "invalid_url",
           message: "Unsupported database URL scheme. Use postgresql:// or mysql://.",
@@ -542,7 +543,7 @@ onboarding.openapi(
       try {
         encryptedUrl = encryptUrl(url);
       } catch (err) {
-        log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to encrypt connection URL during onboarding");
+        log.error({ err: errorMessage(err), requestId }, "Failed to encrypt connection URL during onboarding");
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
@@ -574,7 +575,7 @@ onboarding.openapi(
         if (connections.has(id)) connections.unregister(id);
         connections.register(id, { url, description: `${dbType} datasource` });
       } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection saved but runtime registration failed — will load on next restart");
+        log.warn({ err: errorMessage(err), requestId }, "Connection saved but runtime registration failed — will load on next restart");
       }
 
       _resetWhitelists();
@@ -653,7 +654,7 @@ onboarding.openapi(
       try {
         dbType = detectDBType(url);
       } catch (err) {
-        log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Demo datasource URL has unsupported scheme");
+        log.error({ err: errorMessage(err), requestId }, "Demo datasource URL has unsupported scheme");
         return c.json({ error: "invalid_datasource", message: "Demo datasource URL has an unsupported scheme." }, 500);
       }
 
@@ -662,7 +663,7 @@ onboarding.openapi(
       try {
         encryptedUrl = encryptUrl(url);
       } catch (err) {
-        log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to encrypt demo connection URL");
+        log.error({ err: errorMessage(err), requestId }, "Failed to encrypt demo connection URL");
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
@@ -694,7 +695,7 @@ onboarding.openapi(
         if (connections.has(id)) connections.unregister(id);
         connections.register(id, { url, description: `${demoLabel} — demo ${dbType} datasource` });
       } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Demo connection saved but runtime registration failed");
+        log.warn({ err: errorMessage(err), requestId }, "Demo connection saved but runtime registration failed");
       }
 
       // Resolve and import the semantic layer for the chosen demo dataset
@@ -702,7 +703,7 @@ onboarding.openapi(
       try {
         semanticDir = getDemoSemanticDir(demoType);
       } catch (err) {
-        log.error({ err: err instanceof Error ? err.message : String(err), requestId, demoType }, "Semantic layer not found for demo type");
+        log.error({ err: errorMessage(err), requestId, demoType }, "Semantic layer not found for demo type");
         return c.json({
           error: "demo_not_available",
           message: `Demo dataset "${demoType}" is not installed on this server. Contact the platform administrator.`,

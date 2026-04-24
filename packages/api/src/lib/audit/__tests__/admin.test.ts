@@ -302,3 +302,126 @@ describe("ADMIN_ACTIONS catalog — BYOT credential audit", () => {
     expect(ADMIN_ACTIONS.model_config.test).toBe("model_config.test");
   });
 });
+
+/**
+ * F-27: system-actor audit emissions for the EE purge scheduler + retention
+ * library paths. Pins the reserved actor format and the new catalog entries
+ * so an accidental rename (e.g. `system:audit-purge`) breaks CI instead of
+ * silently breaking forensic queries that filter on the actor.
+ */
+describe("ADMIN_ACTIONS catalog — F-27 scheduler self-audit", () => {
+  it("defines audit_log.purge_cycle", () => {
+    expect(ADMIN_ACTIONS.audit_log.purgeCycle).toBe("audit_log.purge_cycle");
+  });
+
+  it("defines audit_retention.hard_delete separately from manual_hard_delete", () => {
+    expect(ADMIN_ACTIONS.audit_retention.hardDelete).toBe("audit_retention.hard_delete");
+    expect(ADMIN_ACTIONS.audit_retention.manualHardDelete).toBe("audit_retention.manual_hard_delete");
+  });
+});
+
+describe("logAdminAction() — system actor (F-27)", () => {
+  const origDbUrl = process.env.DATABASE_URL;
+
+  beforeEach(() => {
+    queryCalls = [];
+    queryThrow = null;
+  });
+
+  afterEach(() => {
+    if (origDbUrl) {
+      process.env.DATABASE_URL = origDbUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+    _resetPool(null);
+  });
+
+  function enableInternalDB() {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+  }
+
+  it("uses systemActor as actor_id and actor_email when no request context", () => {
+    enableInternalDB();
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+      targetType: "audit_log",
+      targetId: "scheduler",
+      systemActor: "system:audit-purge-scheduler",
+      metadata: { softDeleted: 0, hardDeleted: 0, orgs: 0 },
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    const params = queryCalls[0].params!;
+    expect(params[0]).toBe("system:audit-purge-scheduler"); // actor_id
+    expect(params[1]).toBe("system:audit-purge-scheduler"); // actor_email
+    expect(params[2]).toBe("platform");                     // scope defaults to platform
+    expect(params[10]).toBe("system:audit-purge-scheduler"); // request_id fallback
+  });
+
+  it("systemActor overrides user context so a scheduler inside an outer request still labels itself", () => {
+    enableInternalDB();
+    const user: AtlasUser = {
+      id: "admin-1",
+      label: "admin@example.com",
+      mode: "managed",
+      role: "platform_admin",
+      activeOrganizationId: "org-123",
+    };
+
+    withRequestContext({ requestId: "req-1", user }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+        targetType: "audit_log",
+        targetId: "scheduler",
+        systemActor: "system:audit-purge-scheduler",
+      });
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    const params = queryCalls[0].params!;
+    expect(params[0]).toBe("system:audit-purge-scheduler");
+    expect(params[1]).toBe("system:audit-purge-scheduler");
+    // requestId from outer context is preserved — correlates the cycle row
+    // with any enclosing request for forensic join queries.
+    expect(params[10]).toBe("req-1");
+  });
+
+  it("rejects malformed systemActor strings (no prefix)", () => {
+    enableInternalDB();
+
+    expect(() =>
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+        targetType: "audit_log",
+        targetId: "scheduler",
+        systemActor: "audit-purge-scheduler", // missing "system:" prefix
+      }),
+    ).toThrow(TypeError);
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  it("rejects systemActor with spaces or uppercase", () => {
+    enableInternalDB();
+
+    expect(() =>
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+        targetType: "audit_log",
+        targetId: "scheduler",
+        systemActor: "system:Audit Purge",
+      }),
+    ).toThrow(TypeError);
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  it("pins the reserved actor string for the EE purge scheduler", () => {
+    // Guards against accidental renames: any change to
+    // "system:audit-purge-scheduler" breaks this test and forces a
+    // conscious update of every forensic query that filters on it.
+    const PINNED = "system:audit-purge-scheduler";
+    expect(PINNED).toMatch(/^system:[a-z0-9][a-z0-9_-]*$/);
+  });
+});

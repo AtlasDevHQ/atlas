@@ -18,6 +18,8 @@ let mockInternalDB = true;
 let queryResults: Record<string, unknown>[][] = [];
 let queryCallIndex = 0;
 let capturedQueries: { sql: string; params?: unknown[] }[] = [];
+let auditCalls: Array<Record<string, unknown>> = [];
+let mockHasRequestUser = false;
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -39,6 +41,33 @@ mock.module("@atlas/api/lib/logger", () => ({
     error: () => {},
     debug: () => {},
   }),
+  // Shaped like the real getRequestContext return. The library suppresses
+  // its self-audit when an HTTP user is in context (F-26 route handles it).
+  getRequestContext: () =>
+    mockHasRequestUser
+      ? { requestId: "req-test", user: { id: "admin-1", label: "admin@test.com" } }
+      : undefined,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+}));
+
+mock.module("@atlas/api/lib/audit", () => ({
+  logAdminAction: (entry: Record<string, unknown>) => {
+    auditCalls.push(entry);
+  },
+  ADMIN_ACTIONS: {
+    audit_log: { purgeCycle: "audit_log.purge_cycle" },
+    audit_retention: {
+      policyUpdate: "audit_retention.policy_update",
+      export: "audit_retention.export",
+      manualPurge: "audit_retention.manual_purge",
+      manualHardDelete: "audit_retention.manual_hard_delete",
+      hardDelete: "audit_retention.hard_delete",
+    },
+  },
+}));
+
+mock.module("./purge-scheduler", () => ({
+  AUDIT_PURGE_SCHEDULER_ACTOR: "system:audit-purge-scheduler",
 }));
 
 const mockPool = {
@@ -98,6 +127,8 @@ describe("getRetentionPolicy", () => {
     queryResults = [];
     queryCallIndex = 0;
     capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
     mockPool.query.mockClear();
   });
 
@@ -146,6 +177,8 @@ describe("setRetentionPolicy", () => {
     queryResults = [];
     queryCallIndex = 0;
     capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
     mockPool.query.mockClear();
   });
 
@@ -224,6 +257,8 @@ describe("purgeExpiredEntries", () => {
     queryResults = [];
     queryCallIndex = 0;
     capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
     mockPool.query.mockClear();
   });
 
@@ -264,6 +299,8 @@ describe("hardDeleteExpired", () => {
     queryResults = [];
     queryCallIndex = 0;
     capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
     mockPool.query.mockClear();
   });
 
@@ -296,6 +333,8 @@ describe("exportAuditLog", () => {
     queryResults = [];
     queryCallIndex = 0;
     capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
     mockPool.query.mockClear();
   });
 
@@ -384,5 +423,114 @@ describe("exportAuditLog", () => {
     await expect(
       run(exportAuditLog({ orgId: "org-1", format: "json" })),
     ).rejects.toThrow("Internal database required");
+  });
+});
+
+/**
+ * F-27 — library-layer self-audit emissions. The library emits an audit row
+ * only when called WITHOUT an HTTP request context (scheduler, CLI). The
+ * HTTP route path emits its own richer row (F-26), so we suppress here to
+ * avoid a double-audit when Route → setRetentionPolicy/hardDeleteExpired.
+ */
+describe("setRetentionPolicy — library self-audit (F-27)", () => {
+  beforeEach(() => {
+    mockEnterpriseEnabled = true;
+    mockLicenseKey = "test-key";
+    mockInternalDB = true;
+    queryResults = [];
+    queryCallIndex = 0;
+    capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
+    mockPool.query.mockClear();
+  });
+
+  it("emits policy_update audit row when called without HTTP context", async () => {
+    queryResults = [[{
+      id: "cfg-1",
+      org_id: "org-1",
+      retention_days: 90,
+      hard_delete_delay_days: 30,
+      updated_at: "2026-03-20T00:00:00Z",
+      updated_by: null,
+      last_purge_at: null,
+      last_purge_count: null,
+    }]];
+    await run(setRetentionPolicy("org-1", { retentionDays: 90 }, null));
+    expect(auditCalls).toHaveLength(1);
+    expect(auditCalls[0].actionType).toBe("audit_retention.policy_update");
+    expect(auditCalls[0].systemActor).toBe("system:audit-purge-scheduler");
+    expect(auditCalls[0].scope).toBe("platform");
+    expect(auditCalls[0].targetId).toBe("org-1");
+  });
+
+  it("suppresses library emission when an HTTP user is in request context (dedup vs F-26 route)", async () => {
+    mockHasRequestUser = true;
+    queryResults = [[{
+      id: "cfg-1",
+      org_id: "org-1",
+      retention_days: 90,
+      hard_delete_delay_days: 30,
+      updated_at: "2026-03-20T00:00:00Z",
+      updated_by: "user-1",
+      last_purge_at: null,
+      last_purge_count: null,
+    }]];
+    await run(setRetentionPolicy("org-1", { retentionDays: 90 }, "user-1"));
+    expect(auditCalls).toHaveLength(0);
+  });
+});
+
+describe("hardDeleteExpired — library self-audit (F-27)", () => {
+  beforeEach(() => {
+    mockEnterpriseEnabled = true;
+    mockLicenseKey = "test-key";
+    mockInternalDB = true;
+    queryResults = [];
+    queryCallIndex = 0;
+    capturedQueries = [];
+    auditCalls = [];
+    mockHasRequestUser = false;
+    mockPool.query.mockClear();
+  });
+
+  it("emits hard_delete audit row when count > 0 outside HTTP context", async () => {
+    queryResults = [
+      [{ org_id: "org-1", hard_delete_delay_days: 30 }],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 4 }] }));
+
+    const result = await run(hardDeleteExpired());
+    expect(result.deletedCount).toBe(4);
+    const hardRows = auditCalls.filter((c) => c.actionType === "audit_retention.hard_delete");
+    expect(hardRows).toHaveLength(1);
+    expect(hardRows[0].systemActor).toBe("system:audit-purge-scheduler");
+    expect(hardRows[0].scope).toBe("platform");
+    expect((hardRows[0].metadata as { deletedCount: number }).deletedCount).toBe(4);
+  });
+
+  it("emits NO audit row when count === 0 (zero-row floods would dwarf cycle rows)", async () => {
+    queryResults = [
+      [{ org_id: "org-1", hard_delete_delay_days: 30 }],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 0 }] }));
+
+    const result = await run(hardDeleteExpired());
+    expect(result.deletedCount).toBe(0);
+    const hardRows = auditCalls.filter((c) => c.actionType === "audit_retention.hard_delete");
+    expect(hardRows).toHaveLength(0);
+  });
+
+  it("suppresses library emission under HTTP context (route emits manual_hard_delete instead)", async () => {
+    mockHasRequestUser = true;
+    queryResults = [
+      [{ org_id: "org-1", hard_delete_delay_days: 30 }],
+    ];
+    mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 2 }] }));
+
+    const result = await run(hardDeleteExpired("org-1"));
+    expect(result.deletedCount).toBe(2);
+    const hardRows = auditCalls.filter((c) => c.actionType === "audit_retention.hard_delete");
+    expect(hardRows).toHaveLength(0);
   });
 });

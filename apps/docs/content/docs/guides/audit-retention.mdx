@@ -91,6 +91,25 @@ Audit log entries soft-deleted { orgId: "org-1", softDeletedCount: 142, retentio
 Audit log entries permanently deleted { orgId: "org-1", hardDeletedCount: 85, delayDays: 30 }
 ```
 
+### Scheduler self-audit
+
+The purge scheduler also writes a row to `admin_action_log` for every tick
+so compliance reviewers can distinguish a scheduled purge from a manual
+one — and detect a scheduler that stopped running.
+
+| Action type | When | Metadata |
+|---|---|---|
+| `audit_log.purge_cycle` | Every 24 h tick, including zero-row cycles | `{ softDeleted, hardDeleted, orgs }` |
+| `audit_retention.hard_delete` | Only when a cycle actually removes rows (`count > 0`) | `{ deletedCount, orgs }` |
+
+Both rows use the reserved actor `system:audit-purge-scheduler` and
+`scope = "platform"`. A failed cycle writes a `status: "failure"` row
+with the error message so the absence of successful cycle rows over the
+retention window is always attributable. Manual purges from the admin
+surface emit `audit_retention.manual_purge` / `manual_hard_delete`
+instead — the distinct action types let forensic queries tell a routine
+retention purge from an admin-triggered one.
+
 ---
 
 ## Compliance Export

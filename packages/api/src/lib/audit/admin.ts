@@ -34,10 +34,34 @@ export interface AdminActionEntry {
   status?: "success" | "failure";
   /** Action-specific details stored as JSONB. */
   metadata?: Record<string, unknown>;
-  /** "platform" or "workspace". Defaults to "workspace". */
+  /** "platform" or "workspace". Defaults to "workspace" — or "platform" when systemActor is set. */
   scope?: "platform" | "workspace";
   /** Client IP address (extracted from request headers by caller). */
   ipAddress?: string | null;
+  /**
+   * Reserved actor for system-initiated writes with no HTTP request context
+   * (schedulers, background jobs). Must match `^system:[a-z0-9_-]+$`; when
+   * set the string is used as both actor_id and actor_email, overriding any
+   * user-from-context. Prevents unlabeled null/"unknown" actors on the audit
+   * row for system writes. See F-27 in .claude/research/security-audit-1-2-3.md.
+   */
+  systemActor?: string;
+}
+
+/**
+ * Pinned at module scope so a typo in a caller (`audit-purge` vs
+ * `audit-purge-scheduler`) or a rename of the scheduler module can't
+ * silently break the forensic queries that filter on the actor. Validated
+ * against this regex by `assertSystemActor`.
+ */
+const SYSTEM_ACTOR_PATTERN = /^system:[a-z0-9][a-z0-9_-]*$/;
+
+function assertSystemActor(value: string): void {
+  if (!SYSTEM_ACTOR_PATTERN.test(value)) {
+    throw new TypeError(
+      `Invalid systemActor "${value}" — must match ${SYSTEM_ACTOR_PATTERN}. See logAdminAction() docs.`,
+    );
+  }
 }
 
 /**
@@ -98,11 +122,17 @@ interface ResolvedEntry {
 
 function resolveEntry(entry: AdminActionEntry): ResolvedEntry {
   const ctx = getRequestContext();
-  const actorId = ctx?.user?.id ?? "unknown";
-  const actorEmail = ctx?.user?.label ?? "unknown";
+  // systemActor wins over request-context user so a scheduler inside an
+  // outer request (e.g., a test wrapped in withRequestContext) still
+  // labels itself correctly. Validated up front — a bad format throws
+  // synchronously rather than writing a malformed row.
+  if (entry.systemActor !== undefined) assertSystemActor(entry.systemActor);
+  const useSystemActor = entry.systemActor !== undefined;
+  const actorId = useSystemActor ? entry.systemActor! : (ctx?.user?.id ?? "unknown");
+  const actorEmail = useSystemActor ? entry.systemActor! : (ctx?.user?.label ?? "unknown");
   const orgId = ctx?.user?.activeOrganizationId ?? null;
-  const requestId = ctx?.requestId ?? "unknown";
-  const scope = entry.scope ?? "workspace";
+  const requestId = ctx?.requestId ?? (useSystemActor ? entry.systemActor! : "unknown");
+  const scope = entry.scope ?? (useSystemActor ? "platform" : "workspace");
   const status = entry.status ?? "success";
   const params: unknown[] = [
     actorId,

@@ -10,6 +10,10 @@ let mockLicenseKey: string | undefined = "test-key";
 let mockInternalDB = true;
 let purgeCalled = false;
 let hardDeleteCalled = false;
+let purgeReturn: Array<{ orgId: string; softDeletedCount: number }> = [];
+let hardDeleteReturn: { deletedCount: number } = { deletedCount: 0 };
+let hardDeleteThrow: Error | null = null;
+let auditCalls: Array<Record<string, unknown>> = [];
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -47,11 +51,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 mock.module("./retention", () => ({
   purgeExpiredEntries: () => {
     purgeCalled = true;
-    return Effect.succeed([]);
+    return Effect.succeed(purgeReturn);
   },
   hardDeleteExpired: () => {
     hardDeleteCalled = true;
-    return Effect.succeed({ deletedCount: 0 });
+    if (hardDeleteThrow) return Effect.fail(hardDeleteThrow);
+    return Effect.succeed(hardDeleteReturn);
   },
   getRetentionPolicy: () => Effect.succeed(null),
   setRetentionPolicy: () => Effect.succeed({}),
@@ -64,6 +69,19 @@ mock.module("./retention", () => ({
       super(message);
       this.code = code;
     }
+  },
+}));
+
+mock.module("@atlas/api/lib/audit", () => ({
+  logAdminAction: (entry: Record<string, unknown>) => {
+    auditCalls.push(entry);
+  },
+  ADMIN_ACTIONS: {
+    audit_log: { purgeCycle: "audit_log.purge_cycle" },
+    audit_retention: {
+      policyUpdate: "audit_retention.policy_update",
+      hardDelete: "audit_retention.hard_delete",
+    },
   },
 }));
 
@@ -88,6 +106,10 @@ describe("purge scheduler", () => {
     mockInternalDB = true;
     purgeCalled = false;
     hardDeleteCalled = false;
+    purgeReturn = [];
+    hardDeleteReturn = { deletedCount: 0 };
+    hardDeleteThrow = null;
+    auditCalls = [];
   });
 
   it("starts and reports running", () => {
@@ -131,5 +153,76 @@ describe("purge scheduler", () => {
     await Effect.runPromise(runPurgeCycle());
     expect(purgeCalled).toBe(false);
     expect(hardDeleteCalled).toBe(false);
+  });
+});
+
+// F-27 — the cycle must emit a self-audit row every tick, even on a zero-row
+// cycle. The *absence* of the cycle row over a retention window is the signal
+// that the scheduler stopped; zero counts still prove it ran.
+describe("runPurgeCycle self-audit (F-27)", () => {
+  beforeEach(() => {
+    _resetPurgeScheduler();
+    mockEnterpriseEnabled = true;
+    mockLicenseKey = "test-key";
+    mockInternalDB = true;
+    purgeCalled = false;
+    hardDeleteCalled = false;
+    purgeReturn = [];
+    hardDeleteReturn = { deletedCount: 0 };
+    hardDeleteThrow = null;
+    auditCalls = [];
+  });
+
+  it("emits exactly one purge_cycle audit row per cycle on a zero-row cycle", async () => {
+    await Effect.runPromise(runPurgeCycle());
+    const cycleRows = auditCalls.filter((c) => c.actionType === "audit_log.purge_cycle");
+    expect(cycleRows).toHaveLength(1);
+    expect(cycleRows[0].targetType).toBe("audit_log");
+    expect(cycleRows[0].targetId).toBe("scheduler");
+    expect(cycleRows[0].scope).toBe("platform");
+    expect(cycleRows[0].systemActor).toBe("system:audit-purge-scheduler");
+    expect(cycleRows[0].metadata).toEqual({
+      softDeleted: 0,
+      hardDeleted: 0,
+      orgs: 0,
+    });
+  });
+
+  it("records soft/hard/org counts in metadata on a non-empty cycle", async () => {
+    purgeReturn = [
+      { orgId: "org-1", softDeletedCount: 5 },
+      { orgId: "org-2", softDeletedCount: 3 },
+    ];
+    hardDeleteReturn = { deletedCount: 2 };
+    await Effect.runPromise(runPurgeCycle());
+    const cycleRow = auditCalls.find((c) => c.actionType === "audit_log.purge_cycle");
+    expect(cycleRow).toBeDefined();
+    expect(cycleRow!.metadata).toEqual({
+      softDeleted: 8,
+      hardDeleted: 2,
+      orgs: 2,
+    });
+  });
+
+  it("emits a failure cycle row when the underlying purge throws", async () => {
+    hardDeleteThrow = new Error("boom");
+    await Effect.runPromise(runPurgeCycle());
+    const cycleRows = auditCalls.filter((c) => c.actionType === "audit_log.purge_cycle");
+    expect(cycleRows).toHaveLength(1);
+    expect(cycleRows[0].status).toBe("failure");
+    expect((cycleRows[0].metadata as { error: string }).error).toContain("boom");
+  });
+
+  it("emits no audit row when enterprise is disabled (cycle is a no-op)", async () => {
+    mockEnterpriseEnabled = false;
+    mockLicenseKey = undefined;
+    await Effect.runPromise(runPurgeCycle());
+    expect(auditCalls).toHaveLength(0);
+  });
+
+  it("pins the reserved system-actor string", () => {
+    // A rename of this literal would silently break every forensic query
+    // that filters on `actor_id = 'system:audit-purge-scheduler'`. Pin it.
+    expect("system:audit-purge-scheduler").toMatch(/^system:[a-z0-9][a-z0-9_-]*$/);
   });
 });

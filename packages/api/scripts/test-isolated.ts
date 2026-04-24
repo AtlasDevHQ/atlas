@@ -66,7 +66,19 @@ for (let i = 0; i < args.length; i++) {
 // --- Affected-mode helpers ---
 async function gitDiffNames(...cmd: string[]): Promise<string[]> {
   const proc = Bun.spawn(cmd, { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
-  const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+  const [out, err] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (proc.exitCode !== 0) {
+    // Fail loud. A silent empty result here would make --affected report
+    // "nothing to test" and exit 0 — hiding the real problem (unfetched
+    // base ref, shallow clone, typo in --since).
+    throw new Error(
+      `git ${cmd.slice(1).join(" ")} failed (exit ${proc.exitCode}): ${err.trim() || "<no stderr>"}`,
+    );
+  }
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
@@ -114,13 +126,15 @@ function collectAffectedTests(changed: string[], allTests: Set<string>): string[
       // Full stem from src root (`lib/audit/admin`)
       if (stemBase !== "index") sourceTokens.add(relFromSrc);
       // Parent dir stem for barrel imports (`lib/audit`) — applies to
-      // both regular files and index.ts files
+      // both regular files and index.ts files. Skip the bare parent
+      // basename (e.g. `audit`) because short, generic names like `db`,
+      // `types`, `config`, `utils`, `middleware`, `errors`, `auth` would
+      // match nearly every test in the suite via `@scope/pkg/.../db` etc.
+      // The full parent stem (`lib/db`) still catches fully-qualified
+      // barrel imports without the over-match.
       if (segments.length >= 2) {
         const parentStem = segments.slice(0, -1).join("/");
         sourceTokens.add(parentStem);
-        // Parent basename alone catches `from "@scope/pkg/lib/audit"` when
-        // only the trailing segment happens to match a source path.
-        sourceTokens.add(segments[segments.length - 2]);
       }
     }
   }

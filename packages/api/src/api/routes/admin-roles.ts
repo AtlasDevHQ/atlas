@@ -12,12 +12,13 @@
  * trail. See F-25 in .claude/research/security-audit-1-2-3.md.
  */
 
-import { Array as Arr, Cause, Effect, Option } from "effect";
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
   listRoles,
@@ -36,33 +37,6 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
-}
-
-const ERROR_MESSAGE_MAX = 512;
-
-// Strip credential-bearing URI userinfo so pg error text that leaks a
-// connection string can't land in `admin_action_log.metadata`. Bounded so
-// JSONB rows stay small.
-function errorMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const scrubbed = raw.replace(
-    /\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi,
-    "$1://***@",
-  );
-  return scrubbed.length > ERROR_MESSAGE_MAX
-    ? `${scrubbed.slice(0, ERROR_MESSAGE_MAX - 3)}...`
-    : scrubbed;
-}
-
-// Extract the primary error from an Effect Cause — covers typed failures
-// AND defects (rejected `Effect.promise`, `Effect.die`). Returns undefined
-// on pure interrupts (no error to report).
-function causeToError(cause: Cause.Cause<unknown>): unknown | undefined {
-  if (Cause.isInterruptedOnly(cause)) return undefined;
-  const failure = Cause.failureOption(cause);
-  if (Option.isSome(failure)) return failure.value;
-  const defects = Arr.fromIterable(Cause.defects(cause));
-  return defects[0];
 }
 
 const roleDomainError = domainError(RoleError, { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 });

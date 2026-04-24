@@ -1697,7 +1697,7 @@ provider BYOT). Matches #1724 scope list verbatim.
 | Effect-level logs | whole repo | zero `Effect.logXxx` sites — N/A |
 | Client bundle env | `next.config.ts`, every `packages/web/src/**` tsx/ts with `process.env` | four `NEXT_PUBLIC_*` vars (ATLAS_API_URL, ATLAS_AUTH_MODE, OPENSTATUS_SLUG, STATUS_URL) all public-safe; one hygiene note (F-50) |
 | Widget bundle | `widget-entry.ts`, `tsup.config.ts` (widget target) | 20-line entry, bundles React + AtlasChat + setTheme; no env reads — verified |
-| Plugin config storage | `lib/plugins/settings.ts`, `schema.ts:324-331` (`plugin_settings`), migrations `0014_plugin_marketplace.sql` (`workspace_plugins`), `admin-plugins.ts`, `admin-marketplace.ts` | both tables plaintext JSONB; platform plugin surface masks on GET, marketplace surface does not (F-42 + F-43) |
+| Plugin config storage | `lib/plugins/settings.ts`, `schema.ts:324-330` (`plugin_settings`), migrations `0014_plugin_marketplace.sql` (`workspace_plugins`), `admin-plugins.ts`, `admin-marketplace.ts` | both tables plaintext JSONB; platform plugin surface masks on GET, marketplace surface does not (F-42 + F-43) |
 | Integration secret storage | `slack_installations.bot_token`, `teams_installations.app_password`, `discord_installations.bot_token`, `telegram_installations.bot_token`, `gchat_installations`, `github_installations`, `linear_installations.api_key`, `whatsapp_installations`, `email_installations.config`, `sandbox_credentials.credentials` | every column plaintext (F-41) |
 | BYOT audit-metadata coverage | 18 `logAdminAction` sites in `admin-integrations.ts` | `{ platform, mode: "byot" }` emitted; `hasSecret: true` missing on every platform vs. F-30 precedent (F-46) |
 | AI provider keys | `settings.ts:393-413` (ANTHROPIC_API_KEY, OPENAI_API_KEY), `admin.ts:2323` (secret settings read-only from UI), `ee/platform/model-routing.ts:216-251` (workspace BYOT — `api_key_encrypted`) | platform keys env-only (never persisted); workspace BYOT keys encrypted via `encryptUrl`; no leakage on test/update/delete paths |
@@ -2117,7 +2117,9 @@ server.ts:266                    — runtime bootstrap; defects are fatal, respo
 admin-publish.ts:226             — runPublishPhases; caught by outer try/catch; response is generic "publish_failed"
 admin-ip-allowlist.ts:190        — list; never fails with a tagged error; pattern intact for list path
 db/internal.ts:269,463,596,1542,1627  — read-layer helpers; caller owns classification
+db/connection.ts:1433            — region-database-URL resolution; outer try/catch falls back to default datasource
 agent.ts:521,541                 — background work; no route response
+scheduler/engine.ts:404          — scheduler-tick entrypoint (`runTick`); caller owns scheduler-level error surface
 scheduler/executor.ts:83         — scheduler path; separate audit
 scheduler/delivery.ts:314        — scheduler path
 tools/sql.ts:1019,1049,1052,1239 — approval path + validator; errors surface via catchTag earlier, not tagged-to-FiberFailure
@@ -2126,6 +2128,8 @@ semantic/entities.ts:419         — admin surface; outer try/catch generic
 auth/middleware.ts:198           — SSO enforcement; failure already handled with generic "fail-closed"
 email/engine.ts:332              — scheduler
 ```
+
+All 13 locations verified by `grep -rn "Effect.runPromise" packages/api/src --include="*.ts"` against the checked-in codebase on the PR branch. None surface a tagged error through a FiberFailure to a route-level classifier.
 
 Most of these don't expose a tagged error through a FiberFailure to a
 route-level classifier — either the inner effect doesn't fail with a
@@ -2222,8 +2226,26 @@ field-name redact rules stay in lockstep.
 - **Non-`NEXT_PUBLIC_*` env read in `shared/lib.ts`** — runtime-safe
   (resolves to `undefined` in the browser); see F-50 rationale.
 - **`Effect.runPromise` sites in `db/internal.ts`, `agent.ts`,
-  `scheduler/*`** — none surface tagged errors through a FiberFailure
-  to a route-level classifier; see F-52 rationale.
+  `scheduler/*`, `db/connection.ts:1433`** — none surface tagged errors
+  through a FiberFailure to a route-level classifier; see F-52
+  rationale.
+- **OAuth state nonces (`oauth_state` table)** — phase-1 F-04 / PR #1748
+  covered the auth-gap on Slack/Teams/Discord install routes and
+  confirmed the single-use `DELETE ... RETURNING` consume. The state
+  payload is `{ orgId, provider }` — no credential material, no bearer
+  token. Plaintext storage is acceptable; no phase-5 concern.
+- **Better Auth session tokens** — session cookies are set by Better
+  Auth, flagged `httpOnly + secure + sameSite=lax` per phase-1. The
+  token value never appears in application code (Better Auth owns
+  `/api/auth/*` and the cookie jar). Pino redact covers `authorization`
+  + `cookie` is a P3 gap folded into F-44's redact-path hygiene list.
+  No standalone finding.
+- **Stripe webhook secret handling** — `STRIPE_WEBHOOK_SECRET` is
+  env-only, consumed once in the webhook handler's signature verify
+  step (`stripe.webhooks.constructEvent`), and never persisted.
+  Mirrors the AI provider key posture (env-only, `settings.ts`
+  `secret: true`, admin UI `admin.ts:2323` read-only guard). No
+  leakage path.
 
 ### Findings summary
 

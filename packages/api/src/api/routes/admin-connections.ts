@@ -448,9 +448,35 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "d
       return c.json({ drained: false, message: result.message }, 409);
     }
     log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
+
+    // Per-connection pool drain. Uses the same `connection.pool_drain`
+    // action name as the org-wide drain (F-29 shipped with #1823) —
+    // disambiguated by scope: "workspace" vs "platform" and by targetId
+    // (connection id vs org id). Forensic queries filter on action_type
+    // + scope to separate the two blast radii. See F-29 residuals (#1828).
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.poolDrain,
+      targetType: "connection",
+      targetId: id,
+      scope: "workspace",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { connectionId: id },
+    });
+
     return c.json({ drained: true, message: result.message }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
+    // Failure-path emission: the drain was attempted and may have
+    // partially taken effect. Forensic evidence beats silent failure.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.poolDrain,
+      targetType: "connection",
+      targetId: id,
+      scope: "workspace",
+      status: "failure",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { connectionId: id, error: errorMessage(err) },
+    });
     return c.json({ error: "drain_failed", message: errorMessage(err), requestId }, 500);
   }
 }));

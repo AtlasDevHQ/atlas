@@ -57,9 +57,20 @@ export const ADMIN_ACTIONS = {
     migrationRetry: "residency.migration_retry",
     migrationCancel: "residency.migration_cancel",
   },
+  /**
+   * SLA monitoring mutations. `update_thresholds` + `acknowledge_alert`
+   * cover the write surface; `evaluate` covers `POST /evaluate` — the
+   * platform-admin on-demand alert evaluation trigger. Without this entry
+   * a compromised platform admin could fire the alert-evaluation pipeline
+   * repeatedly to burn budget on SLA workers or probe downstream side
+   * effects (notifier, webhook) with zero forensic trace. Scope is
+   * "platform"; metadata carries `{ newAlertCount, targetSLAConfigId }`
+   * — never the full alert payload, which may be PII-adjacent. See F-29.
+   */
   sla: {
     updateThresholds: "sla.update_thresholds",
     acknowledgeAlert: "sla.acknowledge_alert",
+    evaluate: "sla.evaluate",
   },
   backup: {
     create: "backup.create",
@@ -116,6 +127,17 @@ export const ADMIN_ACTIONS = {
     ban: "user.ban",
     unban: "user.unban",
     removeFromWorkspace: "user.remove_from_workspace",
+    /**
+     * Invitation revoke via `DELETE /users/invitations/:id`. Pairs with
+     * `user.invite` (sent) / the Better-Auth `accepted` write so the full
+     * lifecycle — sent → revoked | accepted — is queryable from
+     * `admin_action_log` alone. Metadata pre-fetches `invitedEmail` + `role`
+     * from the row BEFORE the UPDATE, so a forensic query after revoke can
+     * still see who the pending invite was for. `previousStatus` is always
+     * `"pending"` (the route's WHERE clause filters that) but recorded for
+     * completeness. See F-29.
+     */
+    revokeInvitation: "user.revoke_invitation",
     /**
      * Bulk revocation (`session_revoke_all`) is emitted by two admin
      * surfaces — the dedicated session route and the users route — so
@@ -197,10 +219,25 @@ export const ADMIN_ACTIONS = {
     reject: "pattern.reject",
     delete: "pattern.delete",
   },
+  /**
+   * Workspace integration lifecycle. `enable` / `disable` / `configure`
+   * cover the BYOT + OAuth connect/disconnect surface in
+   * `admin-integrations.ts`. `test` covers the orphaned email delivery
+   * test path (`POST /email/test`) — it exercises the workspace's saved
+   * email-provider credential end-to-end and returns a success verdict,
+   * making it a credential oracle in the same shape as `email_provider.test`
+   * (which covers the dedicated `/admin/email-provider` surface). The two
+   * action types stay distinct so compliance queries can separately filter
+   * the integrations surface from the dedicated email-provider surface
+   * without parsing the target id. BYOT / install emissions carry
+   * `hasSecret: true` (F-46) — the test emission does not, since the
+   * request body carries only `recipientEmail` and no credential.
+   */
   integration: {
     enable: "integration.enable",
     disable: "integration.disable",
     configure: "integration.configure",
+    test: "integration.test",
   },
   /**
    * Scheduled-task lifecycle. `create` / `update` / `delete` / `toggle`

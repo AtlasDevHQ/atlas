@@ -323,6 +323,15 @@ export function registerInvitationRoutes(
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
+    // Pre-fetch the invitation row so the audit metadata can carry
+    // invitedEmail + role even after the UPDATE flips status. Without this,
+    // a forensic query after revoke would need to join on the invitations
+    // table — but the table may itself be retention-purged later.
+    const pre = await internalQuery<{ email: string; role: string; status: string }>(
+      `SELECT email, role, status FROM invitations WHERE id = $1 AND org_id = $2 LIMIT 1`,
+      [invitationId, orgId],
+    );
+
     const result = await internalQuery<{ id: string }>(
       `UPDATE invitations SET status = 'revoked' WHERE id = $1 AND org_id = $2 AND status = 'pending' RETURNING id`,
       [invitationId, orgId],
@@ -333,6 +342,19 @@ export function registerInvitationRoutes(
     }
 
     log.info({ requestId, invitationId, orgId, actorId: authResult.user?.id }, "Invitation revoked");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.revokeInvitation,
+      targetType: "user",
+      targetId: invitationId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: {
+        invitedEmail: pre[0]?.email ?? null,
+        role: pre[0]?.role ?? null,
+        previousStatus: pre[0]?.status ?? "pending",
+      },
+    });
+
     return c.json({ success: true }, 200);
   }));
 }

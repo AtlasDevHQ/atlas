@@ -495,6 +495,12 @@ describe("Admin routes — user invitations", () => {
 
   describe("DELETE /users/invitations/:id", () => {
     it("revokes a pending invitation", async () => {
+      // Two queries in sequence: SELECT (pre-fetch for audit metadata)
+      // then UPDATE RETURNING id. See `admin-invitations-audit.test.ts`
+      // for the audit-row assertion.
+      mockInternalQuery.mockResolvedValueOnce([
+        { email: "pending@test.com", role: "admin", status: "pending" },
+      ]);
       mockInternalQuery.mockResolvedValueOnce([{ id: "inv-1" }]);
 
       const res = await app.fetch(
@@ -506,7 +512,8 @@ describe("Admin routes — user invitations", () => {
     });
 
     it("returns 404 for non-existent invitation", async () => {
-      mockInternalQuery.mockResolvedValueOnce([]);
+      mockInternalQuery.mockResolvedValueOnce([]); // pre-fetch: nothing
+      mockInternalQuery.mockResolvedValueOnce([]); // UPDATE: zero rows
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invitations/inv-nonexistent", "DELETE"),

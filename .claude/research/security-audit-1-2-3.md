@@ -1333,6 +1333,8 @@ Several files have *most* of their writes covered but leave stragglers. Coverage
 
 **Shipped (batched with F-34):** Fixed the five primary subrouters called out above — `admin-sso.ts`, `admin-connections.ts`, `scheduled-tasks.ts`, `admin-approval.ts`, `admin.ts`. New `ADMIN_ACTIONS` entries (catalog growth): `sso.verify_domain`, `sso.enforcement_update`; `connection.probe` (ephemeral `POST /test` URL probes) + `connection.health_check` (registered `POST /:id/test` routine health checks) — split into two distinct action types per type-design review so compliance queries can separately count the privilege-escalation probe surface vs. routine operational signal without parsing a metadata discriminator (matches the `manualHardDelete` vs `hardDelete` / `archive` vs `archiveReconcile` pattern already in the catalog); `connection.pool_drain` (platform scope, covers org-wide drain only — per-connection `POST /:id/drain` remains in F-29 backlog); `schedule.trigger`, `schedule.preview`, `schedule.tick`; `approval.rule_create`, `approval.rule_update` (metadata holds `keysChanged: string[]` — never pattern / threshold values, those may be sensitive shape data for a compromised admin mapping the approval surface), `approval.rule_delete`, `approval.expire_sweep`; `user.password_change` (self-action, `targetId: actorId` pinned in regression test; emitted BEFORE the post-Better-Auth `password_change_required` flag clear so a flag-clear failure doesn't lose the audit row — Better Auth has already committed the new password, so the route now log-warns + returns success on flag-clear errors rather than 500-ing and dropping both the row and the user's trust); `semantic.bulk_import`. `schedule.tick` uses the F-27 `system:scheduler` reserved actor, emits even at zero tasks, and fires a failure-status row on engine errors so scheduler drop-off is distinguishable from healthy silence (absence of a row is the signal). Prompt originally called for `sso.group_mapping_update` — corrected to `sso.enforcement_update` since no `group-mappings` route exists on `admin-sso.ts` (group mappings live on `admin-scim.ts`; cross-check with the F-29 PR-status table row above). Per-file regression coverage landed in five new test files mirroring the F-31 `admin-orgs-audit.test.ts` pattern: `admin-sso-audit.test.ts`, `admin-connections-audit.test.ts`, `scheduled-tasks-audit.test.ts`, `admin-approval-audit.test.ts`, `admin-password-semantic-import-audit.test.ts`, plus `admin-wizard-save-audit.test.ts` carrying the parity pin. Multi-agent review pass added: silent-failure-hunter flagged the password flag-clear gap (fixed), comment-analyzer caught a dead `POST /connection-test` reference in the wizard comment + "this PR" language rot (both tightened), type-design-analyzer prompted the probe/health-check split (shipped). Remaining in F-29 backlog (open): `admin-integrations.ts` (1 orphaned write), `admin-invitations.ts` (invitation-revoke), `platform-sla.ts` (`POST /evaluate`), and `admin-connections.ts`' per-connection `POST /:id/drain` path — tracked as F-29 residuals in #1784.
 
+**F-29 residuals shipped (bundled with F-46, see below):** All four remaining routes audited (#1828). `admin-integrations.ts` `POST /email/test` → new `integration.test` action (`hasSecret` omitted — request body carries only `recipientEmail`; the test exercises stored creds, not new ones). `admin-invitations.ts` `DELETE /users/invitations/:id` → new `user.revoke_invitation` action with pre-fetched `invitedEmail` + `role` + `previousStatus` so the forensic context survives a future retention-purge of the invitations table. `platform-sla.ts` `POST /evaluate` → new `sla.evaluate` action at platform scope; metadata carries only `newAlertCount` (alert payloads are PII-adjacent across workspaces). `admin-connections.ts` `POST /:id/drain` → reuses the org-wide `connection.pool_drain` action with `scope: "workspace"` + `targetId: connectionId`; failure-path emission on throw so a mid-flight pool-drain error still lands a forensic row. Per-file regression tests: `admin-integrations-audit.test.ts`, `admin-invitations-audit.test.ts`, `platform-sla-audit.test.ts`, and an extension to `admin-connections-audit.test.ts` covering the per-id path.
+
 ---
 
 **F-30 — BYOT credential management (email provider, LLM model config) is unaudited** — P1
@@ -1982,6 +1984,20 @@ handlers).
 
 **Issue:** #1819.
 
+**Shipped (bundled with F-29 residuals):** `hasSecret: true` landed on all
+8 BYOT / connect audit emissions listed above. Additive metadata-shape
+change only. `admin-integrations-audit.test.ts` pins the marker per
+platform so a future emission drift (e.g., a new BYOT path missing the
+flag) turns the suite red. The `integration.test` action newly added for
+F-29 residuals deliberately *omits* the marker — the test endpoint
+accepts only `recipientEmail` in the body; the credential exercised
+is the saved one, consistent with `email_provider.test`'s precedent.
+Noted follow-up: `admin-integrations.ts` `POST /email` (install at
+line 2335) writes a credential-bearing config JSONB (SMTP password /
+SendGrid apiKey / Postmark serverToken / SES access key / Resend
+apiKey) but its emission stayed at `{ platform, provider }` since the
+issue body explicitly enumerated 8 handlers — trivial follow-up.
+
 ---
 
 **F-47 — No key-rotation path for `ATLAS_ENCRYPTION_KEY`** — P2
@@ -2272,7 +2288,7 @@ field-name redact rules stay in lockstep.
 | F-43 | P1 | Live disclosure | Marketplace `GET /available` returns `installedConfig` raw (no secret mask) | SOC 2 CC6.7 (logical access) | #1817 | open |
 | F-44 | P2 | Log redaction | pino `err.message` passes through driver-echoed connection strings | SOC 2 CC7.2 (monitoring) | #1818 | open |
 | F-45 | P3 | Hygiene | Duplicate `errorMessage`/`causeToError` helpers in 3 routes | — | merged into F-44 (#1818) | deferred |
-| F-46 | P2 | Audit-metadata coverage | BYOT integration paths don't emit `hasSecret: true` | SOC 2 CC7.2 | #1819 | open |
+| F-46 | P2 | Audit-metadata coverage | BYOT integration paths don't emit `hasSecret: true` | SOC 2 CC7.2 | #1819 | fixed (bundled with F-29 residuals — see F-46 shipped note) |
 | F-47 | P2 | Operations | No key-rotation path for `ATLAS_ENCRYPTION_KEY`; fallback entangles with Better Auth signing key | SOC 2 CC6.1 (key management) | #1820 | open |
 | F-48 | — | Verified no leak | `@useatlas/react` widget entry | — | n/a | verified |
 | F-49 | P3 | Doc-fix | `#1724` scope list references missing `classify.ts` | — | — | noted |

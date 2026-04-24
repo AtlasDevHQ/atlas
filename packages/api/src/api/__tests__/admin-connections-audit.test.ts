@@ -1,14 +1,20 @@
 /**
- * Audit regression suite for `admin-connections.ts` — F-29 (#1784) + F-34 (#1789).
+ * Audit regression suite for `admin-connections.ts` — F-29 (#1784) +
+ * F-29 residuals (#1828) + F-34 (#1789).
  *
  * Pins:
  *   - `POST /test` (ephemeral URL probe) → `connection.probe`
  *   - `POST /:id/test` (registered health check) → `connection.health_check`
  *   - `POST /pool/orgs/:orgId/drain` → `connection.pool_drain` (platform scope)
+ *   - `POST /:id/drain` → `connection.pool_drain` (workspace scope) — F-29 residuals
  *
- * The per-connection drain (`POST /:id/drain`) is NOT audited in this PR —
- * tracked in F-29's remaining backlog. The parity with wizard `/save` is
- * covered in `admin-wizard-save-audit.test.ts`.
+ * Per-id drain shares the `connection.pool_drain` action name with the
+ * org-wide drain (shipped in #1823); the two are disambiguated by `scope`
+ * (workspace vs platform) and by `targetId` (connection id vs org id) on
+ * the audit row. Compliance queries that separately count per-connection
+ * vs org-wide drain events filter on scope — the action name stays
+ * uniform so "all pool drains this quarter" is a single filter. The
+ * parity with wizard `/save` is covered in `admin-wizard-save-audit.test.ts`.
  */
 
 import {
@@ -292,6 +298,82 @@ describe("POST /api/v1/admin/connections/pool/orgs/:orgId/drain — audit emissi
     );
 
     expect(res.status).toBe(500);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/drain — per-connection pool drain (F-29 residuals)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/admin/connections/:id/drain — audit emission (F-29 residuals)", () => {
+  it("emits connection.pool_drain with workspace scope + connectionId metadata", async () => {
+    mockConnectionDrain.mockResolvedValueOnce({ drained: true, message: "ok" });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/connections/warehouse/drain"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("connection.pool_drain");
+    expect(entry.targetType).toBe("connection");
+    expect(entry.targetId).toBe("warehouse");
+    expect(entry.scope).toBe("workspace");
+    expect(entry.status ?? "success").toBe("success");
+    expect(entry.metadata).toMatchObject({ connectionId: "warehouse" });
+  });
+
+  it("does not emit when the drain returns drained:false (409)", async () => {
+    // The underlying pool refused to drain (already draining / in use).
+    // The mutation did not take effect — per the "don't log actions that
+    // didn't happen" policy, no audit row lands. Pinned so a future
+    // behavior change (e.g. logging the 409 as a distinct action) is an
+    // explicit decision, not an accidental regression.
+    mockConnectionDrain.mockResolvedValueOnce({
+      drained: false,
+      message: "pool already draining",
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/connections/warehouse/drain"),
+    );
+
+    expect(res.status).toBe(409);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("emits failure-status connection.pool_drain when drain rejects (500)", async () => {
+    // Failure-path emission — the drain was attempted and may have
+    // partially taken effect before the throw. Forensic evidence is
+    // worth a row even when the mutation errored mid-flight.
+    mockConnectionDrain.mockRejectedValueOnce(new Error("connection pool exploded"));
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/connections/warehouse/drain"),
+    );
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("connection.pool_drain");
+    expect(entry.targetType).toBe("connection");
+    expect(entry.targetId).toBe("warehouse");
+    expect(entry.scope).toBe("workspace");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({ connectionId: "warehouse" });
+    expect(typeof entry.metadata?.error).toBe("string");
+  });
+
+  it("does not emit when the connection is unknown (404)", async () => {
+    mockConnectionHas.mockReturnValueOnce(false);
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/connections/ghost/drain"),
+    );
+
+    expect(res.status).toBe(404);
     expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });

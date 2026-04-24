@@ -673,12 +673,16 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
 
       log.info({ orgId, teamId: authResult.teamId, workspaceName: authResult.workspaceName }, "Slack BYOT installation saved by admin");
 
+      // `hasSecret: true` marks the audit row as credential-bearing so
+      // compliance queries filtering on `metadata.hasSecret` catch every
+      // integration install / rotate. Mirrors the F-30 precedent in
+      // `admin-email-provider.ts` + `admin-model-config.ts`. See F-46.
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "slack", mode: "byot" },
+        metadata: { platform: "slack", mode: "byot", hasSecret: true },
       });
 
       return c.json(
@@ -822,7 +826,7 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "teams", mode: "byot" },
+        metadata: { platform: "teams", mode: "byot", hasSecret: true },
       });
 
       return c.json(
@@ -971,7 +975,7 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "discord", mode: "byot" },
+        metadata: { platform: "discord", mode: "byot", hasSecret: true },
       });
 
       return c.json(
@@ -1105,7 +1109,7 @@ adminIntegrations.openapi(connectTelegramRoute, async (c) => {
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "telegram" },
+        metadata: { platform: "telegram", hasSecret: true },
       });
 
       return c.json(
@@ -1341,7 +1345,7 @@ adminIntegrations.openapi(connectGChatRoute, async (c) => {
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "gchat" },
+        metadata: { platform: "gchat", hasSecret: true },
       });
 
       return c.json(
@@ -1584,7 +1588,7 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "github" },
+        metadata: { platform: "github", hasSecret: true },
       });
 
       return c.json(
@@ -1844,7 +1848,7 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "linear" },
+        metadata: { platform: "linear", hasSecret: true },
       });
 
       return c.json(
@@ -2094,7 +2098,7 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
         targetType: "integration",
         targetId: orgId!,
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "whatsapp" },
+        metadata: { platform: "whatsapp", hasSecret: true },
       });
 
       return c.json(
@@ -2431,9 +2435,50 @@ adminIntegrations.openapi(testEmailRoute, async (c) => {
         );
       }
 
+      // `sendTestEmail` can reject on transport errors (fetch aborts,
+      // SMTP bridge missing). Wrap in `Effect.tryPromise` so a throw
+      // still emits a failure-status audit row before the error bubbles
+      // out via `runEffect` (the test exercises the stored credential —
+      // forensic evidence beats silent failure). See F-29 residuals.
       const result = yield* Effect.tryPromise({
         try: () => sendTestEmail(install, recipientEmail),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.integration.test,
+              targetType: "integration",
+              targetId: orgId,
+              status: "failure",
+              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+              metadata: {
+                platform: "email",
+                provider: install.provider,
+                success: false,
+                error: err.message,
+              },
+            }),
+          ),
+        ),
+      );
+
+      // Success path audit on both result.success and result.success:false —
+      // a provider-side delivery failure (4xx response, bad API key) still
+      // lands the row as `status: "failure"` so compliance queries counting
+      // credential-oracle attempts see every call.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.test,
+        targetType: "integration",
+        targetId: orgId,
+        status: result.success ? "success" : "failure",
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: {
+          platform: "email",
+          provider: install.provider,
+          success: result.success,
+          ...(result.success ? {} : { error: result.error ?? "delivery failed" }),
+        },
       });
 
       if (!result.success) {

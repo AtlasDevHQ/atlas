@@ -12,10 +12,17 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-sessions");
+
+// Identifier upper bound for route params — better-auth session / user ids
+// are ~32-64 chars in practice. Capping prevents adversarial inputs from
+// bloating `admin_action_log.metadata` on the `found: false` emission paths.
+const ID_MAX_LEN = 255;
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -73,7 +80,7 @@ const deleteSessionRoute = createRoute({
   description: "Revokes a single session by ID. Must belong to a member of the active organization.",
   request: {
     params: z.object({
-      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "sess_abc123" }),
+      id: z.string().min(1).max(ID_MAX_LEN).openapi({ param: { name: "id", in: "path" }, example: "sess_abc123" }),
     }),
   },
   responses: {
@@ -97,7 +104,7 @@ const deleteUserSessionsRoute = createRoute({
   description: "Revokes all sessions for a specific user. User must be a member of the active organization.",
   request: {
     params: z.object({
-      userId: z.string().min(1).openapi({ param: { name: "userId", in: "path" }, example: "user_abc123" }),
+      userId: z.string().min(1).max(ID_MAX_LEN).openapi({ param: { name: "userId", in: "path" }, example: "user_abc123" }),
     }),
   },
   responses: {
@@ -240,16 +247,45 @@ adminSessions.openapi(getSessionStatsRoute, async (c) => {
 
 // DELETE /:id — revoke a single session (must belong to org member)
 adminSessions.openapi(deleteSessionRoute, async (c) => {
+  const { id: sessionId } = c.req.valid("param");
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
     const { requestId } = c.get("orgContext");
-    const { id: sessionId } = c.req.valid("param");
 
     if (detectAuthMode() !== "managed") {
       return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
     }
 
-    // Only delete if the session belongs to a member of the active org
+    // Pre-fetch so the audit row records `targetUserId` — once the DELETE
+    // runs the row is gone and the audit entry would be left with only the
+    // opaque `sessionId`. Scoped to the active org with the same filter as
+    // the DELETE to prevent probing sessions outside the caller's workspace.
+    const prior = yield* queryEffect<{ id: string; userId: string }>(
+      `SELECT s.id, s."userId" AS "userId"
+       FROM session s
+       JOIN member m ON m."userId" = s."userId"
+       WHERE s.id = $1 AND m."organizationId" = $2`,
+      [sessionId, orgId],
+    );
+
+    if (prior.length === 0) {
+      // Attempt still recorded — an admin targeting a missing / out-of-org
+      // session is a forensic signal, not a failure state.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.user.sessionRevoke,
+        targetType: "user",
+        targetId: sessionId,
+        ipAddress,
+        metadata: { sessionId, found: false },
+      });
+      return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
+    }
+
+    const targetUserId = prior[0]!.userId;
+    const wasCurrentUser = targetUserId === user?.id;
+
     const deleted = yield* queryEffect<{ id: string }>(
       `DELETE FROM session s
        USING member m
@@ -260,20 +296,60 @@ adminSessions.openapi(deleteSessionRoute, async (c) => {
       [sessionId, orgId],
     );
     if (deleted.length === 0) {
+      // Race: the row vanished between the pre-fetch and the DELETE. Carry
+      // forward the `targetUserId` we already captured — dropping it would
+      // discard forensic context we paid for.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.user.sessionRevoke,
+        targetType: "user",
+        targetId: sessionId,
+        ipAddress,
+        metadata: { sessionId, targetUserId, found: false, race: true },
+      });
       return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
     }
 
     log.info({ requestId, sessionId, actorId: user?.id }, "Session revoked");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.sessionRevoke,
+      targetType: "user",
+      targetId: sessionId,
+      ipAddress,
+      metadata: { sessionId, targetUserId, wasCurrentUser },
+    });
     return c.json({ success: true }, 200);
-  }), { label: "revoke session" });
+  }).pipe(
+    // Pure-interrupt causes (fiber cancelled — client disconnect, shutdown)
+    // leave the outcome indeterminate and are intentionally not audited, in
+    // line with F-23's SCIM precedent. All other failures (typed + defect)
+    // emit a status:"failure" row. `Effect.ignoreLogged` guards against a
+    // future regression that makes logAdminAction throw — the original 500
+    // still flows through to the caller instead of being masked.
+    Effect.tapErrorCause((cause) => {
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.user.sessionRevoke,
+          targetType: "user",
+          targetId: sessionId,
+          status: "failure",
+          ipAddress,
+          metadata: { sessionId, error: errorMessage(err) },
+        }),
+      ).pipe(Effect.ignoreLogged);
+    }),
+  ), { label: "revoke session" });
 });
 
 // DELETE /user/:userId — revoke all sessions for a user (must be org member)
 adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
+  const { userId } = c.req.valid("param");
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
     const { requestId } = c.get("orgContext");
-    const { userId } = c.req.valid("param");
 
     if (detectAuthMode() !== "managed") {
       return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
@@ -290,13 +366,45 @@ adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
       [userId, orgId],
     );
     if (deleted.length === 0) {
+      // Still record the attempt — a 0-count bulk revoke is a forensic
+      // signal (admin probed for sessions that weren't there).
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.user.sessionRevokeAll,
+        targetType: "user",
+        targetId: userId,
+        ipAddress,
+        metadata: { targetUserId: userId, count: 0 },
+      });
       return c.json({ error: "not_found", message: "No sessions found for this user.", requestId }, 404);
     }
 
     const count = deleted.length;
     log.info({ requestId, targetUserId: userId, count, actorId: user?.id }, "All user sessions revoked");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.sessionRevokeAll,
+      targetType: "user",
+      targetId: userId,
+      ipAddress,
+      metadata: { targetUserId: userId, count },
+    });
     return c.json({ success: true, count }, 200);
-  }), { label: "revoke user sessions" });
+  }).pipe(
+    // Same interrupt / ignoreLogged rationale as the single-session path.
+    Effect.tapErrorCause((cause) => {
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.user.sessionRevokeAll,
+          targetType: "user",
+          targetId: userId,
+          status: "failure",
+          ipAddress,
+          metadata: { targetUserId: userId, error: errorMessage(err) },
+        }),
+      ).pipe(Effect.ignoreLogged);
+    }),
+  ), { label: "revoke user sessions" });
 });
 
 export { adminSessions };

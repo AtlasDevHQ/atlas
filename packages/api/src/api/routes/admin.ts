@@ -18,6 +18,7 @@ import { withRequestId, resolveMode, parseModeFromCookie } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { plugins } from "@atlas/api/lib/plugins/registry";
@@ -2154,6 +2155,7 @@ admin.openapi(deleteUserRoute, async (c) => {
 admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessions", async () => {
 
   const { id: userId } = c.req.valid("param");
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
   const { authResult, requestId } = await adminAuthAndContext(c);
 
@@ -2167,12 +2169,95 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
     return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
-  await adminApi.revokeSessions({
-    body: { userId },
-    headers: c.req.raw.headers,
-  });
-  log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
-  return c.json({ success: true }, 200);
+  // Pre-count live sessions so the audit row carries `count` — better-auth's
+  // `revokeSessions` doesn't return how many it invalidated. Best-effort:
+  // concurrent logins, a parallel admin, or TTL expiry can shift the true
+  // number in the window between this read and the revoke. If the internal
+  // DB is absent or the read fails, `count` stays null and
+  // `countLookupFailed: true` is stamped into the audit row so a reviewer
+  // can distinguish "zero sessions" from "pre-count errored".
+  let count: number | null = null;
+  let countLookupFailed = false;
+  if (hasInternalDB()) {
+    try {
+      const rows = await internalQuery<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM session WHERE "userId" = $1`,
+        [userId],
+      );
+      const parsed = parseInt(String(rows[0]?.count ?? "0"), 10);
+      count = Number.isFinite(parsed) ? parsed : null;
+      if (count === null) countLookupFailed = true;
+    } catch (err: unknown) {
+      countLookupFailed = true;
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), requestId, userId },
+        "Session pre-count failed; audit row will record countLookupFailed",
+      );
+    }
+  } else {
+    countLookupFailed = true;
+  }
+
+  // Cap the upstream revoke so better-auth hanging (pool exhaustion, network
+  // stall) can't leave the route waiting until the proxy times the client
+  // out with zero audit trail. 30s is generous enough for a bulk revoke
+  // against a managed auth provider and short enough that a genuine hang
+  // becomes a `status: "failure"` audit row within one human-observable window.
+  const REVOKE_TIMEOUT_MS = 30_000;
+  async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        p,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`revokeSessions timed out after ${ms}ms`)),
+            ms,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  try {
+    await withTimeout(
+      adminApi.revokeSessions({
+        body: { userId },
+        headers: c.req.raw.headers,
+      }),
+      REVOKE_TIMEOUT_MS,
+    );
+    log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.sessionRevokeAll,
+      targetType: "user",
+      targetId: userId,
+      ipAddress,
+      metadata: {
+        targetUserId: userId,
+        ...(count !== null && { count }),
+        ...(countLookupFailed && { countLookupFailed: true }),
+      },
+    });
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, userId }, "Failed to revoke user sessions");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.sessionRevokeAll,
+      targetType: "user",
+      targetId: userId,
+      status: "failure",
+      ipAddress,
+      metadata: {
+        targetUserId: userId,
+        error: errorMessage(err),
+        ...(countLookupFailed && { countLookupFailed: true }),
+      },
+    });
+    return c.json({ error: "internal_error", message: "Failed to revoke sessions.", requestId }, 500);
+  }
 }));
 
 // -- Settings ---------------------------------------------------------------

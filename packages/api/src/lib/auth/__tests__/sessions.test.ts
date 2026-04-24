@@ -349,9 +349,13 @@ describe("Admin session routes", () => {
 
   describe("DELETE /api/v1/admin/sessions/:id", () => {
     it("revokes a session", async () => {
-      mockInternalQuery.mockImplementationOnce(() =>
-        Promise.resolve([{ id: "sess-1" }]), // DELETE RETURNING
-      );
+      mockInternalQuery
+        .mockImplementationOnce(() =>
+          Promise.resolve([{ id: "sess-1", userId: "user-1" }]), // pre-fetch SELECT
+        )
+        .mockImplementationOnce(() =>
+          Promise.resolve([{ id: "sess-1" }]), // DELETE RETURNING
+        );
 
       const res = await del("/api/v1/admin/sessions/sess-1");
       expect(res.status).toBe(200);

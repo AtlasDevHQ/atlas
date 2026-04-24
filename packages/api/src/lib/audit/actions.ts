@@ -50,6 +50,14 @@ export const ADMIN_ACTIONS = {
     ban: "user.ban",
     unban: "user.unban",
     removeFromWorkspace: "user.remove_from_workspace",
+    /**
+     * Bulk revocation (`session_revoke_all`) is emitted by two admin
+     * surfaces — the dedicated session route and the users route — so
+     * downstream queries filtering on `action_type` see one event shape
+     * per admin intent, not two.
+     */
+    sessionRevoke: "user.session_revoke",
+    sessionRevokeAll: "user.session_revoke_all",
   },
   sso: {
     configure: "sso.configure",

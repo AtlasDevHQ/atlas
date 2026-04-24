@@ -222,16 +222,17 @@ export const ADMIN_ACTIONS = {
     delete: "branding.delete",
   },
   /**
-   * Compliance / PII-classification mutations. `retention_update` covers
+   * Compliance / PII-classification mutations. `pii_config_update` covers
    * the PUT /classifications/{id} path (category / masking-strategy /
-   * dismissed / reviewed changes — each of which controls how long / in
-   * what form PII is retained in audit + query-result storage).
+   * dismissed / reviewed changes on a single classification row).
    * `pii_config_delete` covers the DELETE /classifications/{id} path that
-   * drops a classification row and cache entry. See F-32 in
-   * .claude/research/security-audit-1-2-3.md.
+   * drops a classification row and its cache entry. Deliberately distinct
+   * from the `audit_retention.*` domain — these do NOT control retention
+   * windows, only the shape of PII-masking enforcement on query results.
+   * See F-32 in .claude/research/security-audit-1-2-3.md.
    */
   compliance: {
-    retentionUpdate: "compliance.retention_update",
+    piiConfigUpdate: "compliance.pii_config_update",
     piiConfigDelete: "compliance.pii_config_delete",
   },
 } as const;

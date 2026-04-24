@@ -330,6 +330,54 @@ describe("admin branding — F-32 audit emission", () => {
     expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 
+  it("PUT / scrubs URI credentials from logoUrl/faviconUrl in audit metadata", async () => {
+    // An admin who pastes `https://user:pass@cdn/logo.png` into the logo
+    // URL field shouldn't accidentally write credentials into the audit
+    // trail. Userinfo must be scrubbed before the row lands in JSONB.
+    mockSetResult = {
+      id: "brand_1",
+      orgId: "org-1",
+      logoUrl: "https://user:p4ss@cdn.example.com/logo.png",
+      logoText: null,
+      primaryColor: null,
+      faviconUrl: "https://tok:s3cret@cdn.example.com/favicon.ico",
+      hideAtlasBranding: false,
+      createdAt: "2026-04-23T00:00:00Z",
+      updatedAt: "2026-04-23T00:00:00Z",
+    };
+    await request("PUT", {
+      logoUrl: "https://user:p4ss@cdn.example.com/logo.png",
+      faviconUrl: "https://tok:s3cret@cdn.example.com/favicon.ico",
+    });
+    const meta = mockLogAdminAction.mock.calls[0]![0].metadata!;
+    expect(meta.logoUrl).toBe("https://***@cdn.example.com/logo.png");
+    expect(meta.faviconUrl).toBe("https://***@cdn.example.com/favicon.ico");
+    // Defense in depth: serialized row shouldn't contain the secrets.
+    const serialized = JSON.stringify(mockLogAdminAction.mock.calls[0]![0]);
+    expect(serialized).not.toContain("p4ss");
+    expect(serialized).not.toContain("s3cret");
+  });
+
+  it("PUT / passes null URL values through unchanged (null = clear the field)", async () => {
+    // `null` is a semantically meaningful request-body value — it clears
+    // the field. Scrubbing must not coerce null into a string.
+    mockSetResult = {
+      id: "brand_1",
+      orgId: "org-1",
+      logoUrl: null,
+      logoText: "Acme",
+      primaryColor: null,
+      faviconUrl: null,
+      hideAtlasBranding: false,
+      createdAt: "2026-04-23T00:00:00Z",
+      updatedAt: "2026-04-23T00:00:00Z",
+    };
+    await request("PUT", { logoUrl: null, faviconUrl: null, logoText: "Acme" });
+    const meta = mockLogAdminAction.mock.calls[0]![0].metadata!;
+    expect(meta.logoUrl).toBeNull();
+    expect(meta.faviconUrl).toBeNull();
+  });
+
   it("GET / does not emit an audit row (read endpoint)", async () => {
     mockBranding = null;
     const res = await request("GET");

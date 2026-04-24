@@ -1074,7 +1074,7 @@ Totals at the file level; individual uncovered writes are enumerated under the f
 | `admin-audit-retention.ts` | 4 | 4 | ✅ | F-26 fixed (PR for #1781) — `audit_retention.policy_update` / `export` / `manual_purge` / `manual_hard_delete` emitted with success + failure paths; policy_update captures previous values |
 | `admin-branding.ts` | 2 | 2 | ✅ | F-32 fixed (PR for #1787) — `branding.update` / `branding.delete` emitted on success; `update` metadata preserves admin intent (only request-body fields present); `delete` intentionally silent on no-op (404 "no branding found") |
 | `admin-cache.ts` | 1 | 0 | ❌ | DELETE purge (F-37) |
-| `admin-compliance.ts` | 2 | 2 | ✅ | F-32 fixed (PR for #1787) — `compliance.retention_update` / `compliance.pii_config_delete` emitted on success; update metadata captures only the admin's intent (request-body fields present) so compliance review can distinguish a masking-strategy shrink from a dismiss |
+| `admin-compliance.ts` | 2 | 2 | ✅ | F-32 fixed (PR for #1787) — `compliance.pii_config_update` / `compliance.pii_config_delete` emitted on success; update metadata captures only the admin's intent (request-body fields present) so compliance review can distinguish a masking-strategy shrink from a dismiss. Deliberately named distinct from `audit_retention.*` — these control PII-masking enforcement, not retention windows |
 | `admin-connections.ts` | 7 | 3 | 🟡 | Create/update/delete audited; **test / /:id/test / pool drain unaudited** (F-34) |
 | `admin-domains.ts` | 4 | 4 | ✅ | F-32 fixed (PR for #1787) — `domain.workspace_register` / `workspace_remove` / `workspace_verify` / `workspace_verify_dns` emitted on success; verify paths short-circuit 404 before audit emission when no domain is configured (probes don't land stale rows) |
 | `admin-email-provider.ts` | 3 | 3 | ✅ | F-30 fixed (PR for #1785) — `email_provider.update` / `delete` / `test` emitted with success + failure paths; update carries `hasSecret: true` marker, delete captures prior provider pre-delete, test includes recipient + delivery outcome |
@@ -1386,7 +1386,7 @@ Four admin files with explicit enterprise-gated config surfaces and zero audit c
 
 **Impact:** Custom-domain + residency in particular are permanent or semi-permanent workspace-identity changes. A workspace that migrates regions then experiences a data-export subpoena has no way to prove which region hosted what data when. Branding is lower risk but still governance-relevant — an admin can silently white-label the product before phishing tenant users. Compliance retention-policy changes share the class of F-26 (audit-about-audit).
 
-**Fix sketch:** Add `domain.workspace_*` (register / remove / verify / verify_dns), `branding.update` / `branding.delete`, `residency.workspace_assign` / `migration_request` / `migration_retry` / `migration_cancel`, `compliance.retention_update` / `compliance.pii_config_delete`.
+**Fix sketch:** Add `domain.workspace_*` (register / remove / verify / verify_dns), `branding.update` / `branding.delete`, `residency.workspace_assign` / `migration_request` / `migration_retry` / `migration_cancel`, `compliance.pii_config_update` / `compliance.pii_config_delete` (originally drafted as `compliance.retention_update` but renamed to avoid semantic collision with the existing `audit_retention.*` domain — the PUT route updates PII-masking enforcement on a single classification, not a retention window).
 
 **Severity:** P1 — workspace-identity and data-residency changes are compliance-critical.
 

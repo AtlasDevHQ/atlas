@@ -163,7 +163,7 @@ adminCompliance.openapi(updateRoute, async (c) => {
     // the admin's *intent* (shrinking mask from `full` to `redact` is the
     // high-stakes signal compliance review pivots on).
     logAdminAction({
-      actionType: ADMIN_ACTIONS.compliance.retentionUpdate,
+      actionType: ADMIN_ACTIONS.compliance.piiConfigUpdate,
       targetType: "compliance",
       targetId: id,
       ipAddress,

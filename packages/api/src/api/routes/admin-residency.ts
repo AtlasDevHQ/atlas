@@ -8,7 +8,7 @@
  * or residency is not configured.
  */
 
-import { Effect } from "effect";
+import { Cause, Effect, Option } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -31,14 +31,11 @@ function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 }
 
-// Local `errorMessage` — matches the helper in `admin-roles.ts` so residency
-// failure audits never leak connection-string credentials. Inlined rather
-// than imported from `@atlas/api/lib/audit` because other admin test files
-// only mock the handful of audit exports they need and adding a new load-
-// bearing import would cascade module-resolution errors across ~8 test
-// files (per CLAUDE.md: "mock.module() must cover every named export").
-// If/when the audit-mock drift is cleaned up project-wide, swap this back
-// for the shared helper.
+// Local `errorMessage` — mirrors the helper in `admin-roles.ts` (F-25) so
+// residency failure audits never leak connection-string credentials. Inlined
+// rather than imported from `@atlas/api/lib/audit` so existing admin tests
+// that partial-mock the audit module don't break on a new load-bearing
+// export (per CLAUDE.md: "mock.module() must cover every named export").
 const ERROR_MESSAGE_MAX = 512;
 function errorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
@@ -46,6 +43,21 @@ function errorMessage(err: unknown): string {
   return scrubbed.length > ERROR_MESSAGE_MAX
     ? `${scrubbed.slice(0, ERROR_MESSAGE_MAX - 3)}...`
     : scrubbed;
+}
+
+// Extract the primary error from an Effect `Cause` — covers typed failures
+// AND defects (rejected `Effect.promise`, `Effect.die`). `Effect.tapError`
+// misses defects entirely, so `assignWorkspaceRegion` (which wraps a DB
+// write in `Effect.promise`) would silently drop the failure-audit row on
+// pool-exhaustion or network drops. `tapErrorCause` + `causeToError`
+// closes that gap — the same pattern `admin-roles.ts` uses.
+// Returns undefined on pure interrupts (fiber cancellation).
+function causeToError(cause: Cause.Cause<unknown>): unknown | undefined {
+  if (Cause.isInterruptedOnly(cause)) return undefined;
+  const failure = Cause.failureOption(cause);
+  if (Option.isSome(failure)) return failure.value;
+  for (const defect of Cause.defects(cause)) return defect;
+  return undefined;
 }
 
 const log = createLogger("admin-residency");
@@ -572,24 +584,31 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment." }, 404);
       }
 
-      // Inline failure audit via `.pipe(tapError)` keeps the emission close
-      // to the yield that can fail. Failure audits on
+      // Inline failure audit via `.pipe(tapErrorCause)` keeps the emission
+      // close to the yield that can fail. Failure audits on
       // residency.workspaceAssign are not optional: the attempt itself is
       // compliance-relevant (a 409 reveals the current region; repeated
-      // 400s fingerprint a probe for configured regions).
+      // 400s fingerprint a probe for configured regions). `tapErrorCause`
+      // covers both typed `ResidencyError` failures AND defects from
+      // `Effect.promise` (rejected DB promises — pool exhaustion, network
+      // drops). `tapError` alone would miss defects, dropping the audit
+      // row on exactly the infrastructure-failure mode an attacker would
+      // probe for.
       const result = yield* mod.assignWorkspaceRegion(orgId!, region as string).pipe(
-        Effect.tapError((err) =>
-          Effect.sync(() =>
+        Effect.tapErrorCause((cause) => {
+          const err = causeToError(cause);
+          if (err === undefined) return Effect.void;
+          return Effect.sync(() =>
             logAdminAction({
               actionType: ADMIN_ACTIONS.residency.workspaceAssign,
               targetType: "residency",
-              targetId: orgId ?? "unknown",
+              targetId: orgId!,
               status: "failure",
               ipAddress,
               metadata: { region, permanent: true, error: errorMessage(err) },
             }),
-          ),
-        ),
+          );
+        }),
       );
       log.info({ orgId, region }, "Workspace region assigned via self-serve");
       // Permanent decision — `permanent: true` surfaces the irreversibility

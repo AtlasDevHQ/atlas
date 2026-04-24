@@ -2,13 +2,13 @@
  * Tests for admin compliance API endpoints — F-32 audit emission.
  *
  * Covers the two write routes under /api/v1/admin/compliance:
- *   - PUT    /classifications/{id}    (compliance.retention_update)
+ *   - PUT    /classifications/{id}    (compliance.pii_config_update)
  *   - DELETE /classifications/{id}    (compliance.pii_config_delete)
  *
- * Retention / PII-config changes are the same forensic class as F-26
- * (audit-about-audit): an admin who shrinks masking strategy from `full`
- * to `redact` on a Social Security Number column has silently relaxed the
- * workspace's PII posture, and without these rows there's no trail.
+ * PII-config changes are the same forensic class as F-26 (audit-about-audit):
+ * an admin who shrinks masking strategy from `full` to `redact` on a Social
+ * Security Number column has silently relaxed the workspace's PII posture,
+ * and without these rows there's no trail.
  *
  * Tests the adminCompliance sub-router directly so we can drive the EE
  * compliance service via mocks without booting every adjacent admin
@@ -223,7 +223,7 @@ function resetMocks(): void {
 describe("admin compliance — F-32 audit emission", () => {
   beforeEach(resetMocks);
 
-  it("PUT /classifications/:id emits compliance.retention_update on success", async () => {
+  it("PUT /classifications/:id emits compliance.pii_config_update on success", async () => {
     mockUpdateResult = makeClassification({
       id: "cls_1",
       maskingStrategy: "redact",
@@ -236,7 +236,7 @@ describe("admin compliance — F-32 audit emission", () => {
     expect(res.status).toBe(200);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = mockLogAdminAction.mock.calls[0]![0];
-    expect(entry.actionType).toBe("compliance.retention_update");
+    expect(entry.actionType).toBe("compliance.pii_config_update");
     expect(entry.targetType).toBe("compliance");
     expect(entry.targetId).toBe("cls_1");
     expect(entry.metadata?.maskingStrategy).toBe("redact");

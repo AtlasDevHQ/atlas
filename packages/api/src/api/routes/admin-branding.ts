@@ -27,6 +27,16 @@ function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 }
 
+// Strip `user:pass@` userinfo from an admin-supplied URL before it lands in
+// `admin_action_log.metadata`. An admin who pastes
+// `https://u:tok@cdn/logo.png` into the logo URL field shouldn't accidentally
+// write their credentials into the audit trail compliance reviewers read.
+// `null` passes through unchanged (null means "clear the field").
+function scrubUrl(url: string | null | undefined): string | null | undefined {
+  if (url === null || url === undefined) return url;
+  return url.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi, "$1://***@");
+}
+
 // `BrandingSchema` is re-exported under its prior local alias from
 // `@useatlas/schemas` so the existing route definitions below don't need
 // to change — single source of truth for the workspace-branding wire shape.
@@ -239,10 +249,10 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
       targetId: orgId!,
       ipAddress,
       metadata: {
-        ...(body.logoUrl !== undefined && { logoUrl: body.logoUrl }),
+        ...(body.logoUrl !== undefined && { logoUrl: scrubUrl(body.logoUrl) }),
         ...(body.logoText !== undefined && { logoText: body.logoText }),
         ...(body.primaryColor !== undefined && { primaryColor: body.primaryColor }),
-        ...(body.faviconUrl !== undefined && { faviconUrl: body.faviconUrl }),
+        ...(body.faviconUrl !== undefined && { faviconUrl: scrubUrl(body.faviconUrl) }),
         ...(body.hideAtlasBranding !== undefined && { hideAtlasBranding: body.hideAtlasBranding }),
       },
     });

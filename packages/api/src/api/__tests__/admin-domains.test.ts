@@ -323,4 +323,13 @@ describe("admin custom domain — F-32 audit emission", () => {
     expect(res.status).toBe(404);
     expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
+
+  it("POST /verify-dns on an un-configured workspace does not emit (404 short-circuit)", async () => {
+    // Symmetric to /verify — verify-dns has the same "no domain configured"
+    // pre-handler guard and must not land a stale `workspace_verify_dns` row.
+    enableEe({ listDomains: [] });
+    const res = await request("/verify-dns", "POST");
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
 });

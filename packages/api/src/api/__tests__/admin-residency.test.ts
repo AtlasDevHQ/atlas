@@ -31,21 +31,36 @@ const fakeAuthContext = {
 };
 
 // Minimal Effect shim — supports gen, promise, tryPromise, succeed, fail.
-// Also handles `.pipe(Effect.tapError(fn))` so admin-residency.ts can emit
-// failure audits (F-32): the tapError hook fires when the wrapped Effect
-// throws, before the throw propagates to the outer generator.
-interface TapErrorMarker {
-  readonly _tag: "TapError";
-  readonly fn: (err: unknown) => unknown;
+// Also handles `.pipe(Effect.tapErrorCause(fn))` so admin-residency.ts can
+// emit failure audits (F-32). `tapErrorCause` (vs `tapError`) also fires on
+// defects — the route uses the Cause variant so a rejected `Effect.promise`
+// (DB pool exhaustion, network drops) still lands a failure-audit row.
+interface TapErrorCauseMarker {
+  readonly _tag: "TapErrorCause";
+  readonly fn: (cause: MockCause) => unknown;
 }
 
-function isTapError(v: unknown): v is TapErrorMarker {
-  return typeof v === "object" && v !== null && (v as { _tag?: unknown })._tag === "TapError";
+// Minimal `Cause` shape the route's `causeToError` can walk via the
+// shimmed `Cause.isInterruptedOnly` / `Cause.failureOption` / `Cause.defects`
+// helpers. `_mockKind` distinguishes a typed failure from a defect so tests
+// can exercise either branch by flipping `mockAssignCauseKind` before the
+// throw.
+interface MockCause {
+  readonly _mockKind: "fail" | "defect";
+  readonly error: unknown;
 }
 
-// Wrap an iterable so that when Symbol.iterator's first `next()` throws, the
-// tapError hooks fire with the error before the throw propagates. Success
-// path is a passthrough — hooks only run on failure.
+function isTapErrorCause(v: unknown): v is TapErrorCauseMarker {
+  return typeof v === "object" && v !== null && (v as { _tag?: unknown })._tag === "TapErrorCause";
+}
+
+// Controls whether the synthesized Cause in withPipe's catch is a typed
+// failure or a defect. `"fail"` matches `mod.assignWorkspaceRegion` returning
+// `Effect.fail(ResidencyError)`; `"defect"` simulates a rejected
+// `Effect.promise` (the exact infrastructure-failure path `tapError` would
+// miss and `tapErrorCause` + `causeToError` closes).
+let mockAssignCauseKind: "fail" | "defect" = "fail";
+
 interface PipedIterable {
   [Symbol.iterator]: () => Iterator<unknown, unknown>;
   pipe: (...ops: unknown[]) => PipedIterable;
@@ -54,7 +69,7 @@ interface PipedIterable {
 function withPipe(iter: { [Symbol.iterator]: () => Iterator<unknown, unknown> }): PipedIterable {
   const piped = iter as PipedIterable;
   piped.pipe = (...ops: unknown[]) => {
-    const hooks = ops.filter(isTapError);
+    const hooks = ops.filter(isTapErrorCause);
     return withPipe({
       [Symbol.iterator]() {
         const inner = iter[Symbol.iterator]();
@@ -64,11 +79,13 @@ function withPipe(iter: { [Symbol.iterator]: () => Iterator<unknown, unknown> })
             try {
               return firstCall ? (firstCall = false, inner.next()) : inner.next(value);
             } catch (err) {
+              const cause: MockCause = { _mockKind: mockAssignCauseKind, error: err };
               for (const h of hooks) {
-                // Side-effect hooks return Effect.sync which has already
-                // executed by the time we get here. Swallow errors from
-                // the hook so the original failure still surfaces.
-                try { h.fn(err); } catch { /* intentionally ignored */ }
+                // Each hook invokes `Effect.sync(() => logAdminAction(...))`;
+                // in the mock `Effect.sync` executes its callback on
+                // invocation, so the audit emission lands before we re-throw.
+                // Swallow hook errors so the original failure still surfaces.
+                try { h.fn(cause); } catch { /* intentionally ignored */ }
               }
               throw err;
             }
@@ -83,6 +100,22 @@ function withPipe(iter: { [Symbol.iterator]: () => Iterator<unknown, unknown> })
 function mockEffectIterable(value: unknown) {
   return withPipe({ [Symbol.iterator]: () => ({ next: () => ({ done: true, value }) }) });
 }
+
+// Shim `Cause` + `Option` namespaces so `causeToError` in the route file
+// can walk the synthesized MockCause. Real Effect's `Cause` helpers return
+// richer types; the mock returns what `causeToError` actually reads.
+const mockCause = {
+  isInterruptedOnly: (_c: unknown) => false,
+  failureOption: (c: MockCause) =>
+    c._mockKind === "fail" ? { _tag: "Some" as const, value: c.error } : { _tag: "None" as const },
+  defects: (c: MockCause): Iterable<unknown> =>
+    c._mockKind === "defect" ? [c.error] : [],
+};
+
+const mockOption = {
+  isSome: (opt: { _tag: "Some" | "None" }): opt is { _tag: "Some"; value: unknown } =>
+    opt._tag === "Some",
+};
 
 mock.module("effect", () => {
   const Effect = {
@@ -102,13 +135,16 @@ mock.module("effect", () => {
     succeed: (value: unknown) => mockEffectIterable(value),
     fail: (error: unknown) => withPipe({ [Symbol.iterator]: () => ({ next: () => { throw error; } }) }),
     void: mockEffectIterable(undefined),
-    // Executes the side effect synchronously so audit emission lands before
-    // the throw unwinds. Returns an iterable that resolves to undefined.
+    // `Effect.sync(fn)` runs `fn` on invocation so the audit emission lands
+    // before the throw unwinds. Returns an iterable that resolves to undefined.
     sync: (fn: () => unknown) => { fn(); return mockEffectIterable(undefined); },
-    tapError: (fn: (err: unknown) => unknown): TapErrorMarker => ({ _tag: "TapError", fn }),
+    tapErrorCause: (fn: (cause: MockCause) => unknown): TapErrorCauseMarker => ({
+      _tag: "TapErrorCause",
+      fn,
+    }),
     runPromise: (value: unknown) => Promise.resolve(value),
   };
-  return { Effect };
+  return { Effect, Cause: mockCause, Option: mockOption };
 });
 
 mock.module("@atlas/api/lib/effect/services", () => ({
@@ -149,7 +185,13 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
           }
         }
       }
-      throw err;
+      // Unknown / defect errors land as 500 in production. Return the same
+      // shape so tests exercising the defect audit path see the realistic
+      // 500 response rather than a raw throw.
+      return new Response(
+        JSON.stringify({ error: "internal_error", message: "Internal server error", requestId: "test-req-1" }),
+        { status: 500 },
+      );
     }
   },
   DomainErrorMapping: Array,
@@ -353,6 +395,7 @@ function resetMocks() {
   mockInternalQueryResult = [];
   mockResetResult = { ok: true };
   mockCancelResult = { ok: true };
+  mockAssignCauseKind = "fail";
   mockEffectUser = {
     id: "admin-1",
     mode: "simple-key",
@@ -805,7 +848,7 @@ describe("admin residency — F-32 audit emission", () => {
     expect(entry.metadata?.permanent).toBe(true);
   });
 
-  it("PUT / emits residency.workspace_assign with status=failure when assignment throws", async () => {
+  it("PUT / emits residency.workspace_assign with status=failure on typed failure (409 probe)", async () => {
     // Permanent decisions deserve failure audits — the attempt itself is
     // useful evidence. Without this, a 409 "already assigned" probe that
     // reveals the current region leaves no forensic record.
@@ -821,6 +864,47 @@ describe("admin residency — F-32 audit emission", () => {
     expect(entry.status).toBe("failure");
     expect(entry.metadata?.region).toBe("eu-west");
     expect(entry.metadata?.permanent).toBe(true);
+    // metadata.error must carry the conflict reason so forensic queries
+    // can distinguish a probe from a legitimate misconfiguration without
+    // cross-referencing pino logs.
+    expect(entry.metadata?.error).toContain("already assigned");
+  });
+
+  it("PUT / emits failure audit on DEFECT path (rejected Effect.promise, not typed failure)", async () => {
+    // `assignWorkspaceRegion` wraps `setWorkspaceRegion` in `Effect.promise`,
+    // so pg pool exhaustion / network drops surface as defects, not typed
+    // failures. `Effect.tapError` alone would drop the audit row on the
+    // exact infrastructure-failure path a malicious admin would probe for.
+    // `tapErrorCause` + `causeToError` closes that gap.
+    mockAssignCauseKind = "defect";
+    mockAssignError = new Error("pg connection refused");
+    const res = await request("PUT", "/", { region: "eu-west" });
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.workspace_assign");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata?.permanent).toBe(true);
+    expect(entry.metadata?.error).toContain("pg connection refused");
+  });
+
+  it("PUT / failure audit scrubs URI credentials from error metadata", async () => {
+    // pg error text routinely echoes the connection string. If that lands
+    // verbatim in admin_action_log.metadata, the DB password leaks into the
+    // audit row compliance reviewers read directly. The local
+    // `errorMessage` helper must scrub `proto://user:pass@host` userinfo.
+    mockAssignError = new MockResidencyError(
+      "setWorkspaceRegion failed: postgresql://admin:s3cret@db.internal/atlas — timeout",
+      "invalid_region",
+    );
+    await request("PUT", "/", { region: "eu-west" });
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    const errText = entry.metadata?.error;
+    expect(typeof errText).toBe("string");
+    expect(errText).toContain("postgresql://***@");
+    expect(errText).not.toContain("s3cret");
+    expect(errText).not.toContain("admin:s3cret");
   });
 
   it("POST /migrate emits residency.migration_request with source/target regions", async () => {
@@ -883,6 +967,19 @@ describe("admin residency — F-32 audit emission", () => {
     expect(entry.actionType).toBe("residency.migration_cancel");
     expect(entry.targetType).toBe("residency");
     expect(entry.targetId).toBe("mig-1");
+  });
+
+  it("POST /migrate/:id/cancel does NOT emit audit when cancel is rejected", async () => {
+    // Symmetric to the retry case — pre-handler rejection means the migration
+    // wasn't actually cancelled, so no audit row should land.
+    mockCancelResult = {
+      ok: false,
+      reason: "invalid_status",
+      error: "Cannot cancel in_progress migration",
+    };
+    const res = await request("POST", "/migrate/mig-1/cancel");
+    expect(res.status).toBe(400);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 
   it("GET / does not emit an audit row (read endpoint)", async () => {

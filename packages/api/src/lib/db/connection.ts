@@ -19,6 +19,7 @@ import { matchError } from "@useatlas/types";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { Data, Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
@@ -1021,8 +1022,14 @@ export class ConnectionRegistry {
       return result;
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start);
-      const rawMessage = err instanceof Error ? err.message : String(err);
-      log.warn({ err: err instanceof Error ? err : new Error(rawMessage), connectionId: id, latencyMs }, "Health check failed");
+      // `errorMessage` scrubs driver-echoed DSN userinfo (`postgres://u:p@h/db`)
+      // so the `HealthCheckResult.message` surfaced to admin UI / API
+      // consumers can't leak credentials. The log line passes the original
+      // `err` through so the pino err serializer preserves
+      // `{type, message, stack}` — the stack is useful for triage; scrubbing
+      // there is handled centrally by `scrubErrSerializer` in `lib/logger.ts`.
+      const scrubbedMessage = errorMessage(err);
+      log.warn({ err, connectionId: id, latencyMs }, "Health check failed");
       entry.consecutiveFailures++;
       if (entry.firstFailureAt === null) {
         entry.firstFailureAt = Date.now();
@@ -1040,7 +1047,7 @@ export class ConnectionRegistry {
       const result: HealthCheckResult = {
         status,
         latencyMs,
-        message: matched?.message ?? rawMessage,
+        message: matched?.message ?? scrubbedMessage,
         checkedAt: new Date(),
       };
       entry.lastHealth = result;

@@ -8,6 +8,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
@@ -23,6 +24,7 @@ import {
 import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
@@ -511,6 +513,15 @@ const updatePlanRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
+/**
+ * Extract the client IP the same way platform-admin.ts does so both
+ * surfaces stamp `admin_action_log.ip_address` identically — required
+ * for F-31 parity (#1786).
+ */
+function clientIpFor(c: Context): string | null {
+  return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+}
+
 const adminOrgs = createPlatformRouter();
 
 // GET / — list all organizations
@@ -600,6 +611,13 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
     if (connections.isOrgPoolingEnabled()) yield* Effect.promise(() => connections.drainOrg(orgId));
 
     log.info({ orgId, requestId, admin: user?.id }, "Workspace suspended");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.suspend,
+      targetType: "workspace",
+      targetId: orgId,
+      scope: "platform",
+      ipAddress: clientIpFor(c),
+    });
     const updated = yield* Effect.promise(() => getWorkspaceDetails(orgId));
     return c.json({ message: "Workspace suspended. All queries are blocked until reactivation.", organization: updated }, 200);
   }), { label: "suspend workspace" });
@@ -620,6 +638,16 @@ adminOrgs.openapi(activateOrgRoute, async (c) => {
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "active"));
     log.info({ orgId, requestId, admin: user?.id }, "Workspace activated");
+    // Canonical action_type is `workspace.unsuspend` — matches
+    // platform-admin.ts so compliance queries see one row shape per
+    // intent, not two (F-31, #1786).
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.unsuspend,
+      targetType: "workspace",
+      targetId: orgId,
+      scope: "platform",
+      ipAddress: clientIpFor(c),
+    });
     const updated = yield* Effect.promise(() => getWorkspaceDetails(orgId));
     return c.json({ message: "Workspace activated. Normal operations resumed.", organization: updated }, 200);
   }), { label: "activate workspace" });
@@ -668,6 +696,23 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     });
 
     log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings }, "Workspace soft-deleted with cascading cleanup");
+    // `cleanup` key mirrors platform-admin.ts exactly. `poolsDrained` /
+    // `warnings` are admin-orgs-specific (pool drain has no equivalent
+    // in platform-admin.ts) but are additive — the parity contract is
+    // "same action_type + same `cleanup` subshape", not "identical
+    // metadata keyset".
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.delete,
+      targetType: "workspace",
+      targetId: orgId,
+      scope: "platform",
+      metadata: {
+        cleanup: cascade,
+        poolsDrained,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      },
+      ipAddress: clientIpFor(c),
+    });
     return c.json({
       message: warnings.length > 0
         ? "Workspace deleted, but cleanup was partial — see warnings."
@@ -714,9 +759,18 @@ adminOrgs.openapi(updatePlanRoute, async (c) => {
     if (!workspace) return c.json({ error: "not_found", message: "Organization not found." }, 404);
     if (workspace.workspace_status === "deleted") return c.json({ error: "conflict", message: "Cannot update plan for a deleted workspace." }, 409);
 
+    const previousPlan = workspace.plan_tier;
     yield* Effect.promise(() => updateWorkspacePlanTier(orgId, body.planTier as PlanTier));
     invalidatePlanCache(orgId);
     log.info({ orgId, requestId, admin: user?.id, planTier: body.planTier }, "Workspace plan tier updated");
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.changePlan,
+      targetType: "workspace",
+      targetId: orgId,
+      scope: "platform",
+      metadata: { previousPlan, newPlan: body.planTier },
+      ipAddress: clientIpFor(c),
+    });
 
     const updated = yield* Effect.promise(() => getWorkspaceDetails(orgId));
     return c.json({ message: `Plan tier updated to ${body.planTier}.`, organization: updated }, 200);

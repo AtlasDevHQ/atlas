@@ -59,6 +59,21 @@ describe("maybeNormalizeSignupResponse — scope guards", () => {
     expect(result).toBe(upstream);
   });
 
+  it("does not match a sub-path that tail-ends with /sign-up/email", async () => {
+    // Strict `===` equality (not `endsWith`) keeps a plugin-registered
+    // path like `/api/auth/plugin/sign-up/email` out of the rewrite
+    // branch. Better Auth would 404 such a path today and the 2xx
+    // guard would catch it anyway — but the explicit match pins the
+    // scope contract so a future Better Auth route-registration bug
+    // can't silently reopen the rewrite on a sibling path.
+    const upstream = jsonResponse({ user: { email: "a@example.com" } });
+    const result = await maybeNormalizeSignupResponse(
+      makeCtx("/api/auth/plugin/sign-up/email"),
+      upstream,
+    );
+    expect(result).toBe(upstream);
+  });
+
   it("returns the upstream Response ref unchanged for non-2xx signup status", async () => {
     // Better Auth's error envelopes (422 USER_ALREADY_EXISTS, 429
     // RATE_LIMITED, 400 VALIDATION) have a different schema — rewriting

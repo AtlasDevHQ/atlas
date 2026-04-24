@@ -15,12 +15,19 @@ import { normalizeSignupResponseBody } from "@atlas/api/lib/auth/signup-response
 const log = createLogger("auth-route");
 
 /**
- * Better Auth path (relative to the `/api/auth` catch-all mount) that
- * must be intercepted to close the F-P3 / #1792 enumeration oracle.
- * Only the success response for this path is rewritten — every other
+ * Full Better Auth signup path (mount `/api/auth` + route `/sign-up/email`)
+ * that must be intercepted to close the F-P3 / #1792 enumeration oracle.
+ * Only the success response for this exact path is rewritten — every other
  * auth route streams through untouched.
+ *
+ * Matched with strict `===` rather than `endsWith` so an unrelated sub-path
+ * like `/api/auth/plugin/sign-up/email` can't accidentally slip into the
+ * rewrite branch. Better Auth owns the `/sign-up/email` segment, so any
+ * such path would 404 and the 2xx guard would catch it — but the explicit
+ * match makes the scope contract visible to a future reader and removes
+ * one layer of reliance on defense-in-depth.
  */
-const SIGNUP_EMAIL_PATH = "/sign-up/email";
+const SIGNUP_EMAIL_PATH = "/api/auth/sign-up/email";
 
 /**
  * Custom header Better Auth reads for rate-limit IP bucketing.
@@ -95,8 +102,11 @@ auth.all("/*", async (c) => {
  * other auth route, every non-2xx status, and every non-JSON body.
  *
  * Scope-guards (any one failing = pass-through unchanged):
- *   1. Path must end with `/sign-up/email`. Signup is the only route
- *      where Better Auth emits the synthetic-existing envelope.
+ *   1. Path must be exactly `/api/auth/sign-up/email`. Signup is the
+ *      only route where Better Auth emits the synthetic-existing
+ *      envelope, and strict equality keeps the rewrite out of any
+ *      plugin-registered sibling routes that happen to share the
+ *      trailing segment.
  *   2. Status must be 2xx. Error envelopes (400/422/429/500) follow a
  *      different schema and rewriting them could corrupt legitimate
  *      error payloads.
@@ -120,7 +130,7 @@ export async function maybeNormalizeSignupResponse(
   c: Context,
   upstream: Response,
 ): Promise<Response> {
-  if (!c.req.path.endsWith(SIGNUP_EMAIL_PATH)) return upstream;
+  if (c.req.path !== SIGNUP_EMAIL_PATH) return upstream;
   if (upstream.status < 200 || upstream.status >= 300) return upstream;
   const contentType = upstream.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) return upstream;

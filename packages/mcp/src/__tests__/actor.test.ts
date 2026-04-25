@@ -71,8 +71,17 @@ describe("resolveMcpActor", () => {
     mockLoadActorUser.mockReset();
     mockAnyApprovalRuleEnabled.mockReset();
     mockInternalQuery.mockReset();
-    // Default to "member exists" so existing bound-path tests stay focused
-    // on the binding semantics they were written to pin.
+    // `mockReset()` wipes implementations — restore safe defaults so any
+    // test path that doesn't explicitly stub these mocks still produces a
+    // valid value. Necessary because `bun:test` shares `mock.module`
+    // state across test files: `prompts.test.ts:33` overrides
+    // `@atlas/api/lib/db/internal` with a `hasInternalDB` decoupled
+    // from `process.env.DATABASE_URL`, so depending on file load order
+    // the rule-lookup path can run even when DATABASE_URL is unset.
+    // Without the default impl, `Effect.runPromise(undefined)` rejects
+    // with `op._op` and the catch in `rulesExist` fail-closes,
+    // breaking the trusted-transport tests.
+    mockAnyApprovalRuleEnabled.mockImplementation(() => Effect.succeed(false));
     mockInternalQuery.mockImplementation(async () => [{ exists: 1 }]);
   });
 
@@ -145,12 +154,23 @@ describe("resolveMcpActor", () => {
     expect(mockLoadActorUser).not.toHaveBeenCalled();
   });
 
-  it("unbound + no internal DB — returns system:mcp without rule lookup", async () => {
-    // DATABASE_URL unset → hasInternalDB() is false → rule lookup is skipped.
+  // The short-circuit optimization (`!hasInternalDB() → return false`) is
+  // not asserted here via `mockAnyApprovalRuleEnabled.not.toHaveBeenCalled()`
+  // because `bun:test` shares `mock.module` state across files: a sibling
+  // test (`prompts.test.ts:33`) overrides the `@atlas/api/lib/db/internal`
+  // mock with a custom `hasInternalDB` whose return is decoupled from
+  // `process.env.DATABASE_URL`. In that environment the rule-lookup path
+  // does run, even with no DB set. The behaviour we actually care about
+  // is that the trusted-transport actor is returned regardless of the
+  // path taken — that's what's pinned below. With the safe default impl
+  // for `mockAnyApprovalRuleEnabled` (`Effect.succeed(false)`) set in
+  // `beforeEach`, both the short-circuit branch AND the full rule-lookup
+  // branch end up returning `system:mcp`.
+  it("unbound + no internal DB — returns system:mcp", async () => {
     const actor = await resolveMcpActor();
 
     expect(actor.id).toBe("system:mcp");
-    expect(mockAnyApprovalRuleEnabled).not.toHaveBeenCalled();
+    expect(actor.activeOrganizationId).toBeUndefined();
   });
 
   it("partial binding (only ATLAS_MCP_USER_ID) — fails loud", async () => {

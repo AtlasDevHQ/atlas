@@ -1,29 +1,29 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { render, cleanup, fireEvent, screen } from "@testing-library/react";
 import { DashboardTopBar } from "../dashboard-topbar";
+import type { Density } from "../grid-constants";
+
+const unexpected = (label: string) => () => {
+  throw new Error(`unexpected ${label} call`);
+};
 
 const baseProps = {
   title: "Revenue overview",
   cardCount: 3,
   description: null,
-  editingTitle: false,
-  titleDraft: "",
-  onTitleClick: () => {},
-  onTitleDraftChange: () => {},
-  onTitleSave: () => {},
-  onTitleCancel: () => {},
+  onTitleChange: unexpected("onTitleChange") as (next: string) => void,
   refreshing: false,
   refreshSchedule: null,
-  onScheduleChange: () => {},
-  onRefreshAll: () => {},
-  onSuggest: () => {},
+  onScheduleChange: unexpected("onScheduleChange") as (v: string) => void,
+  onRefreshAll: unexpected("onRefreshAll"),
+  onSuggest: unexpected("onSuggest"),
   suggesting: false,
-  onDelete: () => {},
+  onDelete: unexpected("onDelete"),
   shareSlot: <button type="button">Share</button>,
   editing: false,
-  onEditingChange: (_next: boolean) => {},
-  density: "comfortable" as const,
-  onDensityChange: (_next: "compact" | "comfortable" | "spacious") => {},
+  onEditingChange: unexpected("onEditingChange") as (next: boolean) => void,
+  density: "comfortable" as Density,
+  onDensityChange: unexpected("onDensityChange") as (next: Density) => void,
 };
 
 describe("DashboardTopBar", () => {
@@ -51,11 +51,6 @@ describe("DashboardTopBar", () => {
     expect(captured).toBe(true);
   });
 
-  test("Delete button is rendered", () => {
-    render(<DashboardTopBar {...baseProps} />);
-    expect(screen.getByRole("button", { name: /Delete/ })).toBeTruthy();
-  });
-
   test("Suggest button disabled when no cards", () => {
     render(<DashboardTopBar {...baseProps} cardCount={0} />);
     const suggestBtn = screen.getByRole("button", { name: /Suggest/ });
@@ -74,5 +69,39 @@ describe("DashboardTopBar", () => {
     expect(screen.getByText("1 tile")).toBeTruthy();
     rerender(<DashboardTopBar {...baseProps} cardCount={5} />);
     expect(screen.getByText("5 tiles")).toBeTruthy();
+  });
+
+  test("title is internally editable — committing fires onTitleChange with the trimmed draft", () => {
+    let saved: string | null = null;
+    render(
+      <DashboardTopBar
+        {...baseProps}
+        onTitleChange={(next) => { saved = next; }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Revenue overview"));
+    const input = screen.getByDisplayValue("Revenue overview") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "  New title  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(saved).toBe("New title");
+  });
+
+  test("Escape cancels the title edit without firing onTitleChange", () => {
+    render(<DashboardTopBar {...baseProps} />);
+    fireEvent.click(screen.getByText("Revenue overview"));
+    const input = screen.getByDisplayValue("Revenue overview") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Different" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByDisplayValue("Different")).toBeNull();
+    expect(screen.getByText("Revenue overview")).toBeTruthy();
+  });
+
+  test("Delete button calls onDelete on click", () => {
+    let called = false;
+    render(<DashboardTopBar {...baseProps} onDelete={() => { called = true; }} />);
+    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    expect(called).toBe(true);
   });
 });

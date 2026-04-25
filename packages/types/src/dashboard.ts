@@ -13,20 +13,26 @@ export interface DashboardChartConfig {
   valueColumns: string[];
 }
 
-/**
- * Tile placement inside the 24-column freeform dashboard grid (#1867).
- *
- * x: column origin (0..23). w: span in columns (min 3).
- * y: row origin (rows are ROW_H=40px on the client). h: span in rows (min 4).
- *
- * NULL on a card means "not yet placed" — the client auto-lays out by `position`.
- */
+/** NULL on a card means not yet placed — client auto-lays out by `position`. */
 export interface DashboardCardLayout {
   x: number;
   y: number;
   w: number;
   h: number;
 }
+
+/**
+ * Bounds of the dashboard tile grid. Single source of truth shared by the API
+ * Zod schema and the web grid math.
+ */
+export const DASHBOARD_GRID = {
+  COLS: 24,
+  MIN_W: 3,
+  MAX_W: 24,
+  MIN_H: 4,
+  MAX_H: 200,
+  MAX_Y: 10_000,
+} as const;
 
 // ---------------------------------------------------------------------------
 // API shapes (camelCase)

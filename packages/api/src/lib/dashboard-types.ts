@@ -14,4 +14,4 @@ export type {
   DashboardSuggestion,
 } from "@useatlas/types";
 
-export { CHART_TYPES } from "@useatlas/types";
+export { CHART_TYPES, DASHBOARD_GRID } from "@useatlas/types";

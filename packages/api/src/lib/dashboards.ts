@@ -6,6 +6,7 @@
  */
 
 import * as crypto from "crypto";
+import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
@@ -20,6 +21,7 @@ import type {
   DashboardWithCards,
   DashboardChartConfig,
 } from "@atlas/api/lib/dashboard-types";
+import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/conversations";
@@ -27,6 +29,19 @@ import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/
 export type { CrudResult, CrudDataResult, CrudFailReason };
 
 const log = createLogger("dashboards");
+
+/**
+ * Tile layout in the 24-col freeform grid. Single source for both write-time
+ * Zod validation (route) and read-time DB-row validation (`rowToCard`).
+ */
+export const CardLayoutSchema = z.object({
+  x: z.number().int().min(0).max(DASHBOARD_GRID.COLS - 1),
+  y: z.number().int().min(0).max(DASHBOARD_GRID.MAX_Y),
+  w: z.number().int().min(DASHBOARD_GRID.MIN_W).max(DASHBOARD_GRID.MAX_W),
+  h: z.number().int().min(DASHBOARD_GRID.MIN_H).max(DASHBOARD_GRID.MAX_H),
+}).refine((l) => l.x + l.w <= DASHBOARD_GRID.COLS, {
+  message: `Tile extends past column ${DASHBOARD_GRID.COLS}`,
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,7 +66,7 @@ function rowToDashboard(r: Record<string, unknown>): Dashboard {
   };
 }
 
-function rowToCard(r: Record<string, unknown>): DashboardCard {
+export function rowToCard(r: Record<string, unknown>): DashboardCard {
   let chartConfig: DashboardChartConfig | null = null;
   if (r.chart_config) {
     try {
@@ -89,16 +104,11 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
   if (r.layout) {
     try {
       const raw = typeof r.layout === "string" ? JSON.parse(r.layout) : r.layout;
-      if (
-        raw && typeof raw === "object"
-        && typeof (raw as { x: unknown }).x === "number"
-        && typeof (raw as { y: unknown }).y === "number"
-        && typeof (raw as { w: unknown }).w === "number"
-        && typeof (raw as { h: unknown }).h === "number"
-      ) {
-        layout = raw as DashboardCardLayout;
+      const parsed = CardLayoutSchema.safeParse(raw);
+      if (parsed.success) {
+        layout = parsed.data;
       } else {
-        log.warn({ cardId: r.id }, "Discarding malformed dashboard_card.layout JSONB");
+        log.warn({ cardId: r.id, issues: parsed.error.issues }, "Discarding malformed dashboard_card.layout JSONB");
       }
     } catch (err) {
       log.warn({ cardId: r.id, err: errorMessage(err) }, "Failed to parse layout JSONB");

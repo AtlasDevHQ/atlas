@@ -28,6 +28,7 @@ import {
   getShareStatus,
   getSharedDashboard,
   setRefreshSchedule,
+  CardLayoutSchema,
   type CrudFailReason,
   type SharedDashboardFailReason,
 } from "@atlas/api/lib/dashboards";
@@ -56,14 +57,6 @@ const ChartConfigSchema = z.object({
   type: z.enum(CHART_TYPES),
   categoryColumn: z.string(),
   valueColumns: z.array(z.string()).min(1),
-});
-
-// 24-col freeform grid layout. Bounds match the client's grid math (#1867).
-const CardLayoutSchema = z.object({
-  x: z.number().int().min(0).max(23),
-  y: z.number().int().min(0).max(10_000),
-  w: z.number().int().min(3).max(24),
-  h: z.number().int().min(4).max(200),
 });
 
 const CreateDashboardSchema = z.object({

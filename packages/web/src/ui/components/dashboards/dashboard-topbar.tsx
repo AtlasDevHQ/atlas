@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -26,19 +27,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-
-type Density = "compact" | "comfortable" | "spacious";
+import type { Density } from "./grid-constants";
 
 interface DashboardTopBarProps {
   title: string;
   cardCount: number;
   description: string | null;
-  editingTitle: boolean;
-  titleDraft: string;
-  onTitleClick: () => void;
-  onTitleDraftChange: (v: string) => void;
-  onTitleSave: () => void;
-  onTitleCancel: () => void;
+  onTitleChange: (next: string) => void;
   refreshing: boolean;
   refreshSchedule: string | null;
   onScheduleChange: (v: string) => void;
@@ -57,12 +52,7 @@ export function DashboardTopBar({
   title,
   cardCount,
   description,
-  editingTitle,
-  titleDraft,
-  onTitleClick,
-  onTitleDraftChange,
-  onTitleSave,
-  onTitleCancel,
+  onTitleChange,
   refreshing,
   refreshSchedule,
   onScheduleChange,
@@ -76,9 +66,28 @@ export function DashboardTopBar({
   density,
   onDensityChange,
 }: DashboardTopBarProps) {
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+
+  // Resync the draft when the canonical title changes (e.g. after a server save
+  // resolves) so a subsequent edit starts from the up-to-date value.
+  useEffect(() => {
+    if (!titleEditing) setDraft(title);
+  }, [title, titleEditing]);
+
+  function commitTitle() {
+    const next = draft.trim();
+    if (next && next !== title) onTitleChange(next);
+    setTitleEditing(false);
+  }
+
+  function cancelTitle() {
+    setDraft(title);
+    setTitleEditing(false);
+  }
+
   return (
     <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-background/95 px-4 py-3 backdrop-blur dark:border-zinc-800 sm:px-6">
-      {/* Left: breadcrumb + title + chip */}
       <div className="flex min-w-0 flex-col gap-1">
         <Link
           href="/dashboards"
@@ -87,30 +96,30 @@ export function DashboardTopBar({
           <ArrowLeft className="size-3" />
           All dashboards
         </Link>
-        <div className="flex items-center gap-2 min-w-0">
-          {editingTitle ? (
-            <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          {titleEditing ? (
+            <div className="flex min-w-0 items-center gap-1.5">
               <Input
-                value={titleDraft}
-                onChange={(e) => onTitleDraftChange(e.target.value)}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") onTitleSave();
-                  if (e.key === "Escape") onTitleCancel();
+                  if (e.key === "Enter") commitTitle();
+                  if (e.key === "Escape") cancelTitle();
                 }}
                 className="h-8 min-w-[16ch] text-base font-semibold tracking-tight"
                 autoFocus
               />
-              <Button variant="ghost" size="icon" className="size-7" onClick={onTitleSave}>
+              <Button variant="ghost" size="icon" className="size-7" onClick={commitTitle}>
                 <Check className="size-4" />
               </Button>
-              <Button variant="ghost" size="icon" className="size-7" onClick={onTitleCancel}>
+              <Button variant="ghost" size="icon" className="size-7" onClick={cancelTitle}>
                 <X className="size-4" />
               </Button>
             </div>
           ) : (
             <button
               type="button"
-              onClick={onTitleClick}
+              onClick={() => { setDraft(title); setTitleEditing(true); }}
               className="cursor-pointer truncate text-left text-lg font-semibold tracking-tight text-zinc-900 hover:text-zinc-700 dark:text-zinc-100 dark:hover:text-zinc-300"
               title="Click to edit title"
             >
@@ -121,16 +130,14 @@ export function DashboardTopBar({
             {cardCount} {cardCount === 1 ? "tile" : "tiles"}
           </span>
         </div>
-        {description && !editingTitle && (
+        {description && !titleEditing && (
           <p className="line-clamp-1 max-w-[60ch] text-xs text-zinc-500 dark:text-zinc-400">
             {description}
           </p>
         )}
       </div>
 
-      {/* Right: action group */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* View / Edit segmented control */}
         <div
           role="group"
           aria-label="Mode"
@@ -166,7 +173,6 @@ export function DashboardTopBar({
           </button>
         </div>
 
-        {/* Density */}
         <div
           role="group"
           aria-label="Density"
@@ -264,7 +270,7 @@ function DensityButton({
         "inline-flex items-center rounded px-2 py-1 transition-colors",
         active
           ? "bg-background text-foreground shadow-sm"
-          : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100",
+          : "text-zinc-500 hover:text-zinc-400 dark:text-zinc-400 dark:hover:text-zinc-100",
       )}
     >
       {children}

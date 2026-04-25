@@ -158,6 +158,7 @@ export type {
   DashboardSuggestion,
   ChartType,
 } from "@useatlas/types";
+export { DASHBOARD_GRID } from "@useatlas/types";
 export { CHART_TYPES } from "@useatlas/types";
 export { DOMAIN_STATUSES, CERTIFICATE_STATUSES } from "@useatlas/types";
 export { BACKUP_STATUSES } from "@useatlas/types";

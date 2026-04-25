@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 import dynamic from "next/dynamic";
 import {
   GripVertical,
@@ -55,14 +55,9 @@ type ViewMode = "chart" | "table";
 
 interface DashboardTileProps {
   card: DashboardCard;
-  pxRect: { x: number; y: number; w: number; h: number };
   editing: boolean;
-  dragging: boolean;
-  resizing: boolean;
   fullscreen: boolean;
   isRefreshing: boolean;
-  onDragStart: (e: React.MouseEvent, cardId: string) => void;
-  onResizeStart: (e: React.MouseEvent, cardId: string, dir: "e" | "s" | "se") => void;
   onFullscreen: (cardId: string) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -72,14 +67,9 @@ interface DashboardTileProps {
 
 export function DashboardTile({
   card,
-  pxRect,
   editing,
-  dragging,
-  resizing,
   fullscreen,
   isRefreshing,
-  onDragStart,
-  onResizeStart,
   onFullscreen,
   onRefresh,
   onDuplicate,
@@ -98,14 +88,6 @@ export function DashboardTile({
   const hasData = columns.length > 0 && rows.length > 0;
   const stringRows = hasData ? toStringRows(columns, rows) : [];
 
-  const style: CSSProperties = fullscreen
-    ? {}
-    : {
-        transform: `translate(${pxRect.x}px, ${pxRect.y}px)`,
-        width: pxRect.w,
-        height: pxRect.h,
-      };
-
   function commitTitle() {
     const next = titleDraft.trim();
     if (next && next !== card.title) onUpdateTitle(card.id, next);
@@ -115,21 +97,15 @@ export function DashboardTile({
   return (
     <div
       className={cn(
-        "dash-tile rounded-xl border border-zinc-200 bg-white text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100",
+        "dash-tile flex h-full w-full flex-col rounded-xl border border-zinc-200 bg-white text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100",
         "hover:border-zinc-300 dark:hover:border-zinc-700",
-        dragging && "is-dragging",
-        resizing && "is-resizing",
-        fullscreen && "is-fullscreen",
       )}
-      style={style}
     >
-      {/* Tile head — drag handle, title, hover actions */}
       <div
         className={cn(
           "dash-tile-head group/head flex shrink-0 items-center gap-2 border-b border-zinc-100 px-3 py-2 dark:border-zinc-800/80",
-          editing ? "cursor-grab active:cursor-grabbing" : "cursor-default",
+          editing && "dash-drag-handle cursor-grab active:cursor-grabbing",
         )}
-        onMouseDown={editing ? (e) => onDragStart(e, card.id) : undefined}
       >
         <span
           aria-hidden
@@ -142,7 +118,7 @@ export function DashboardTile({
         </span>
 
         {titleEditing ? (
-          <div className="flex flex-1 items-center gap-1.5" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="flex flex-1 items-center gap-1.5">
             <Input
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
@@ -171,12 +147,8 @@ export function DashboardTile({
           </h3>
         )}
 
-        {/* Chart/Table switcher — only when we actually have a chart-eligible config */}
         {hasChartConfig && hasData && !titleEditing && (
-          <div
-            className="flex shrink-0 items-center gap-0 rounded-md p-0.5"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
+          <div className="flex shrink-0 items-center gap-0 rounded-md p-0.5">
             <button
               type="button"
               className={cn(
@@ -204,14 +176,8 @@ export function DashboardTile({
           </div>
         )}
 
-        {/* Actions — refresh / fullscreen always visible (50% opacity → 100% on hover);
-            copy / delete / more collapsed into kebab to keep the head readable on
-            narrow tiles. */}
         {!titleEditing && (
-          <div
-            className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover/head:opacity-100"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
+          <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover/head:opacity-100">
             <Button
               variant="ghost"
               size="icon"
@@ -260,11 +226,10 @@ export function DashboardTile({
         )}
       </div>
 
-      {/* Tile body */}
       <div className="dash-tile-body flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2.5">
         {hasData ? (
           viewMode === "chart" && hasChartConfig ? (
-            <div className="min-h-0 flex-1 [&>div]:!aspect-auto [&>div]:!h-full">
+            <div className="min-h-0 flex-1 [&>div]:aspect-auto! [&>div]:h-full!">
               <ResultChart headers={columns} rows={stringRows} dark={dark} />
             </div>
           ) : (
@@ -279,7 +244,6 @@ export function DashboardTile({
         )}
       </div>
 
-      {/* Footer caption — last refresh */}
       <div className="flex shrink-0 items-center justify-between border-t border-zinc-100 px-3 py-1.5 font-mono text-[10px] text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-500">
         <span className="inline-flex items-center gap-1">
           <Clock className="size-2.5" />
@@ -287,15 +251,6 @@ export function DashboardTile({
         </span>
         {hasData && <span>{rows.length} rows</span>}
       </div>
-
-      {/* Resize handles — only in edit mode, never on fullscreen tiles */}
-      {editing && !fullscreen && (
-        <>
-          <div className="dash-rh e" onMouseDown={(e) => onResizeStart(e, card.id, "e")} />
-          <div className="dash-rh s" onMouseDown={(e) => onResizeStart(e, card.id, "s")} />
-          <div className="dash-rh se" onMouseDown={(e) => onResizeStart(e, card.id, "se")} />
-        </>
-      )}
     </div>
   );
 }

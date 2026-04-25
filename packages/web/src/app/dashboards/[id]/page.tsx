@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -32,14 +32,13 @@ import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import type { Density } from "@/ui/components/dashboards/grid-constants";
 import type {
   DashboardCard,
   DashboardCardLayout,
   DashboardSuggestion,
   DashboardWithCards,
 } from "@/ui/lib/types";
-
-type Density = "compact" | "comfortable" | "spacious";
 
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
@@ -54,14 +53,11 @@ export default function DashboardViewPage() {
   );
 
   const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });
-  const { mutate: layoutMutate } = useAdminMutation({});
 
   const [refreshingCardId, setRefreshingCardId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [deleteCardTarget, setDeleteCardTarget] = useState<DashboardCard | null>(null);
   const [deleteDashboard, setDeleteDashboard] = useState(false);
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState("");
   const [suggestions, setSuggestions] = useState<DashboardSuggestion[]>([]);
   const [suggestingCards, setSuggestingCards] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -70,29 +66,27 @@ export default function DashboardViewPage() {
   const [editing, setEditing] = useState(false);
   const [density, setDensity] = useState<Density>("comfortable");
 
-  // Optimistic layout — applied immediately on drag/resize end so the UI doesn't
-  // wait for the PATCH round-trip. Cleared once `dashboard` reflects the change.
+  // Optimistic layout — applied on drop/resize end so the UI doesn't wait for
+  // the PATCH round-trip. Cleared once `dashboard` reflects the change. On
+  // failure the entry is dropped and `mutationError` surfaces in the banner.
   const [optimisticLayouts, setOptimisticLayouts] = useState<Record<string, DashboardCardLayout>>({});
-  const lastSettledLayouts = useRef<Record<string, DashboardCardLayout>>({});
 
   useEffect(() => {
     if (!dashboard) return;
-    const next: Record<string, DashboardCardLayout> = {};
+    const settled: Record<string, DashboardCardLayout> = {};
     for (const card of dashboard.cards) {
-      if (card.layout) next[card.id] = card.layout;
+      if (card.layout) settled[card.id] = card.layout;
     }
-    lastSettledLayouts.current = next;
     setOptimisticLayouts((prev) => {
-      // Drop optimistic entries that match the server-confirmed layout.
       const remaining: Record<string, DashboardCardLayout> = {};
       for (const [cardId, optimistic] of Object.entries(prev)) {
-        const settled = next[cardId];
+        const next = settled[cardId];
         if (
-          !settled
-          || settled.x !== optimistic.x
-          || settled.y !== optimistic.y
-          || settled.w !== optimistic.w
-          || settled.h !== optimistic.h
+          !next
+          || next.x !== optimistic.x
+          || next.y !== optimistic.y
+          || next.w !== optimistic.w
+          || next.h !== optimistic.h
         ) {
           remaining[cardId] = optimistic;
         }
@@ -101,7 +95,7 @@ export default function DashboardViewPage() {
     });
   }, [dashboard]);
 
-  // Keyboard: E toggles edit mode (when not focused in an input). Esc exits edit.
+  // Skip when typing in inputs.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -154,20 +148,19 @@ export default function DashboardViewPage() {
 
   async function handleLayoutChange(cardId: string, layout: DashboardCardLayout) {
     setOptimisticLayouts((prev) => ({ ...prev, [cardId]: layout }));
-    const result = await layoutMutate({
+    const result = await mutate({
       path: `/api/v1/dashboards/${id}/cards/${cardId}`,
       method: "PATCH",
       body: { layout },
     });
     if (!result.ok) {
-      // Revert: drop the optimistic entry; UI falls back to the server's layout.
+      // Revert optimistic; UI falls back to the server's layout. Error banner
+      // surfaces via `mutationError`.
       setOptimisticLayouts((prev) => {
         const { [cardId]: _, ...rest } = prev;
         return rest;
       });
     }
-    // Trigger a fresh fetch to pull the canonical server state.
-    refetch();
   }
 
   async function handleDuplicate(cardId: string) {
@@ -175,7 +168,6 @@ export default function DashboardViewPage() {
     const card = dashboard.cards.find((c) => c.id === cardId);
     if (!card) return;
     const placed = withAutoLayout(dashboard.cards).map((c) => c.resolvedLayout);
-    const newLayout = nextTileLayout(placed);
     await mutate({
       path: `/api/v1/dashboards/${id}/cards`,
       method: "POST",
@@ -186,7 +178,7 @@ export default function DashboardViewPage() {
         cachedColumns: card.cachedColumns,
         cachedRows: card.cachedRows,
         connectionId: card.connectionId,
-        layout: newLayout,
+        layout: nextTileLayout(placed),
       },
     });
   }
@@ -238,16 +230,12 @@ export default function DashboardViewPage() {
     setSuggestions((prev) => prev.filter((_, i) => i !== index));
   }
 
-  async function handleSaveDashboardTitle() {
-    if (!dashboard) return;
-    if (titleDraft.trim() && titleDraft.trim() !== dashboard.title) {
-      await mutate({
-        path: `/api/v1/dashboards/${id}`,
-        method: "PATCH",
-        body: { title: titleDraft.trim() },
-      });
-    }
-    setEditingTitle(false);
+  async function handleTitleChange(next: string) {
+    await mutate({
+      path: `/api/v1/dashboards/${id}`,
+      method: "PATCH",
+      body: { title: next },
+    });
   }
 
   async function handleScheduleChange(value: string) {
@@ -259,7 +247,6 @@ export default function DashboardViewPage() {
     });
   }
 
-  // Merge optimistic layouts into the cards we hand to the grid.
   const cardsForGrid: DashboardCard[] = dashboard
     ? dashboard.cards.map((c) =>
         optimisticLayouts[c.id] ? { ...c, layout: optimisticLayouts[c.id] } : c,
@@ -271,7 +258,6 @@ export default function DashboardViewPage() {
       <NavBar isAdmin={isAdmin} />
 
       <main className="flex flex-1 flex-col">
-        {/* Loading */}
         {loading && (
           <div className="space-y-4 px-4 py-6 sm:px-6">
             <Skeleton className="h-8 w-1/3" />
@@ -285,7 +271,6 @@ export default function DashboardViewPage() {
           </div>
         )}
 
-        {/* Error */}
         {!loading && error && (
           <div className="m-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
             {error.message ?? "Failed to load dashboard."}
@@ -295,22 +280,13 @@ export default function DashboardViewPage() {
           </div>
         )}
 
-        {/* Dashboard content */}
         {!loading && !error && dashboard && (
           <>
             <DashboardTopBar
               title={dashboard.title}
               cardCount={dashboard.cards.length}
               description={dashboard.description}
-              editingTitle={editingTitle}
-              titleDraft={titleDraft}
-              onTitleClick={() => {
-                setTitleDraft(dashboard.title);
-                setEditingTitle(true);
-              }}
-              onTitleDraftChange={setTitleDraft}
-              onTitleSave={handleSaveDashboardTitle}
-              onTitleCancel={() => setEditingTitle(false)}
+              onTitleChange={handleTitleChange}
               refreshing={refreshingAll}
               refreshSchedule={dashboard.refreshSchedule}
               onScheduleChange={handleScheduleChange}
@@ -423,11 +399,10 @@ export default function DashboardViewPage() {
                 </Button>
               </div>
             ) : (
-              <div className="flex-1 overflow-auto px-3 py-4 sm:px-5">
+              <div className={`dash-density-${density} flex-1 overflow-auto px-3 py-4 sm:px-5`}>
                 <DashboardGrid
                   cards={cardsForGrid}
                   editing={editing}
-                  density={density}
                   refreshingId={refreshingCardId}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}
@@ -441,7 +416,6 @@ export default function DashboardViewPage() {
         )}
       </main>
 
-      {/* Delete card confirmation */}
       <AlertDialog
         open={!!deleteCardTarget}
         onOpenChange={(open) => { if (!open) setDeleteCardTarget(null); }}
@@ -466,7 +440,6 @@ export default function DashboardViewPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Delete dashboard confirmation */}
       <AlertDialog open={deleteDashboard} onOpenChange={setDeleteDashboard}>
         <AlertDialogContent>
           <AlertDialogHeader>

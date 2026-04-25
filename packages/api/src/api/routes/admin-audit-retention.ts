@@ -20,7 +20,7 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const retentionDomainError = domainError(RetentionError, { validation: 400, not_found: 404 });
 
@@ -363,6 +363,9 @@ const hardDeleteRoute = createRoute({
 const adminAuditRetention = createAdminRouter();
 
 adminAuditRetention.use(requireOrgContext());
+// F-53 — audit retention configuration + export + purge are part of the
+// audit-log surface; gate on admin:audit alongside admin-audit.ts.
+adminAuditRetention.use(requirePermission("admin:audit"));
 
 // GET / — get current retention policy
 adminAuditRetention.openapi(getRetentionRoute, async (c) => {

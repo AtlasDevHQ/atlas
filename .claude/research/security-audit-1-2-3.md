@@ -3132,7 +3132,29 @@ This will be a multi-PR remediation — the route-layer changes are wide.
 Suggest doing it in one cluster across the admin surface so the
 permission contract is consistent.
 
-**Status:** P1 — issue to be filed.
+**Status:** P1 — **shipped** (closes #1849). `requirePermission(flag)` and
+`enforcePermission(user, flag, requestId)` now live in
+`packages/api/src/api/routes/admin-router.ts`; the middleware refines
+`adminAuth` (which still gates on `role ∈ {admin, owner, platform_admin}`)
+with the per-flag custom-role check. Wired into every admin sub-router
+per the mapping table above (`admin-roles.ts` / `admin-connections.ts` /
+`admin-audit.ts` / `admin-audit-retention.ts` / `admin-action-retention.ts` /
+`admin-semantic-improve.ts` / `admin-branding.ts` / `admin-domains.ts` /
+`admin-email-provider.ts` / `admin-sandbox.ts` / `admin-residency.ts` /
+`admin-model-config.ts`), plus inline via `adminAuthAndContext(c, flag)`
+across `admin.ts` users / settings / semantic handlers and through
+`registerInvitationRoutes`. `LEGACY_ROLE_PERMISSIONS` in
+`ee/src/auth/roles.ts` was extended to include `platform_admin` — without
+this the legacy fall-through path stripped platform admins down to the
+`member` permission set the moment the route layer started consulting
+the table for real (the table previously powered UI display only). The
+checkPermission import is lazy via `await import("@atlas/ee/auth/roles")`
+inside the helpers; this matches the IP-allowlist lazy-load pattern in
+`middleware.ts` so test files that mock `effect` don't pull `Data` from
+the unmocked roles module at module-load time. Coverage:
+`packages/api/src/api/routes/__tests__/permission-enforcement.test.ts`
+asserts each handler invokes `checkPermission` with the audit-mapped flag
+AND surfaces 403 `insufficient_permissions` when that flag is denied.
 
 ---
 
@@ -3710,7 +3732,7 @@ for each so future audits can short-circuit:
 
 | ID | Severity | Type | Surface | Compliance lens | Issue | Status |
 |---|---|---|---|---|---|---|
-| F-53 | P1 | Authorization gap | Custom-role permission flags never enforced at route layer | SOC 2 CC6.3 (granular authorization) | #1849 | open |
+| F-53 | P1 | Authorization gap | Custom-role permission flags never enforced at route layer | SOC 2 CC6.3 (granular authorization) | #1849 | shipped |
 | F-54 | P1 | Governance bypass | Scheduled-task executor runs agent without user context → approval workflows skipped | SOC 2 CC6.1 / CC7.2 (change management) | #1850 | shipped |
 | F-55 | P2 | Governance bypass | Slack / Teams / Discord agent invocations bypass approval workflows | SOC 2 CC6.1 / CC7.2 | #1851 | shipped |
 | F-56 | P2 | SSO bypass | `simple-key` and `byot` auth modes skip SSO enforcement | SOC 2 CC6.6 / ISO A.9.4.2 | #1852 | open |

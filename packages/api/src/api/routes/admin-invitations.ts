@@ -109,7 +109,10 @@ const revokeInvitationRoute = createRoute({
 export function registerInvitationRoutes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- generic admin router type
   admin: OpenAPIHono<any>,
-  adminAuthAndContext?: (c: { req: { raw: Request }; get(key: string): unknown }) => Promise<{ authResult: { authenticated: true; user?: { id?: string; role?: string; activeOrganizationId?: string } }; requestId: string }>,
+  adminAuthAndContext?: (
+    c: { req: { raw: Request }; get(key: string): unknown },
+    permission?: import("@atlas/ee/auth/roles").Permission,
+  ) => Promise<{ authResult: { authenticated: true; user?: { id?: string; role?: string; activeOrganizationId?: string } }; requestId: string }>,
 ) {
   // If no adminAuthAndContext provided, the handlers assume auth was already done by middleware
   const getAuthCtx = adminAuthAndContext ?? (async (c: { get(key: string): unknown }) => ({
@@ -118,8 +121,9 @@ export function registerInvitationRoutes(
   }));
 
   // POST /users/invite — create invitation scoped to active org
+  // F-53 — workspace member invitations are part of the admin:users surface.
   admin.openapi(inviteUserRoute, async (c) => runHandler(c, "invite user", async () => {
-    const { authResult, requestId } = await getAuthCtx(c);
+    const { authResult, requestId } = await getAuthCtx(c, "admin:users");
     const orgId = authResult.user?.activeOrganizationId;
 
     if (!hasInternalDB() || detectAuthMode() !== "managed") {
@@ -258,7 +262,7 @@ export function registerInvitationRoutes(
 
   // GET /users/invitations — list invitations scoped to active org
   admin.openapi(listInvitationsRoute, async (c) => runHandler(c, "list invitations", async () => {
-    const { authResult, requestId } = await getAuthCtx(c);
+    const { authResult, requestId } = await getAuthCtx(c, "admin:users");
     const orgId = authResult.user?.activeOrganizationId;
 
     if (!hasInternalDB() || detectAuthMode() !== "managed") {
@@ -312,7 +316,7 @@ export function registerInvitationRoutes(
   // DELETE /users/invitations/:id — revoke invitation (must belong to active org)
   admin.openapi(revokeInvitationRoute, async (c) => runHandler(c, "revoke invitation", async () => {
     const { id: invitationId } = c.req.valid("param");
-    const { authResult, requestId } = await getAuthCtx(c);
+    const { authResult, requestId } = await getAuthCtx(c, "admin:users");
     const orgId = authResult.user?.activeOrganizationId;
 
     if (!hasInternalDB() || detectAuthMode() !== "managed") {

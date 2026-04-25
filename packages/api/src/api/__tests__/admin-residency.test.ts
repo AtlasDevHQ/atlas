@@ -322,6 +322,45 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   IPAllowlistError: class extends Error { constructor(message: string, public readonly code: string) { super(message); this.name = "IPAllowlistError"; } },
 }));
 
+// F-53 — admin routes now refine `adminAuth` with `requirePermission()` from
+// `@atlas/ee/auth/roles`. Default-allow. Returning bare values (not real
+// Effects) matches the test-local `Effect.runPromise` shim above, which
+// passes the value through unchanged — a real `Effect.succeed(null)`
+// would resolve to the wrapper object and the truthy check inside
+// `requirePermission` would 403. ALL named exports admin-roles.ts imports
+// must be stubbed: a partial mock surfaces as "Export named 'X' not
+// found" at module load time and the admin tree fails to register.
+mock.module("@atlas/ee/auth/roles", () => ({
+  PERMISSIONS: [
+    "query", "query:raw_data", "admin:users", "admin:connections",
+    "admin:settings", "admin:audit", "admin:roles", "admin:semantic",
+  ] as const,
+  isValidPermission: () => true,
+  isValidRoleName: () => true,
+  BUILTIN_ROLES: [],
+  resolvePermissions: () => new Set(),
+  hasPermission: () => true,
+  checkPermission: () => null,
+  listRoles: () => [],
+  getRole: () => null,
+  getRoleByName: () => null,
+  createRole: () => null,
+  updateRole: () => null,
+  deleteRole: () => true,
+  listRoleMembers: () => [],
+  assignRole: () => null,
+  seedBuiltinRoles: () => undefined,
+  RoleError: class extends Error {
+    public readonly _tag = "RoleError" as const;
+    public readonly code: string;
+    constructor(message: string, code: string) {
+      super(message);
+      this.name = "RoleError";
+      this.code = code;
+    }
+  },
+}));
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},

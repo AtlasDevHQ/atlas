@@ -134,6 +134,44 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
+// F-53 — admin routes now refine `adminAuth` with `requirePermission()` /
+// `enforcePermission()` from `@atlas/ee/auth/roles`. The default-allow mock
+// keeps existing tests focused on their own concern; the negative path is
+// covered separately in `routes/__tests__/permission-enforcement.test.ts`.
+// ALL named exports admin-roles.ts imports must be stubbed so module load
+// doesn't throw "Export named 'X' not found".
+import { Effect as F53Effect } from "effect";
+mock.module("@atlas/ee/auth/roles", () => ({
+  PERMISSIONS: [
+    "query", "query:raw_data", "admin:users", "admin:connections",
+    "admin:settings", "admin:audit", "admin:roles", "admin:semantic",
+  ] as const,
+  isValidPermission: () => true,
+  isValidRoleName: () => true,
+  BUILTIN_ROLES: [],
+  resolvePermissions: () => F53Effect.succeed(new Set()),
+  hasPermission: () => F53Effect.succeed(true),
+  checkPermission: () => F53Effect.succeed(null),
+  listRoles: () => F53Effect.succeed([]),
+  getRole: () => F53Effect.succeed(null),
+  getRoleByName: () => F53Effect.succeed(null),
+  createRole: () => F53Effect.die(new Error("not configured")),
+  updateRole: () => F53Effect.die(new Error("not configured")),
+  deleteRole: () => F53Effect.succeed(true),
+  listRoleMembers: () => F53Effect.succeed([]),
+  assignRole: () => F53Effect.die(new Error("not configured")),
+  seedBuiltinRoles: () => F53Effect.succeed(undefined),
+  RoleError: class extends Error {
+    public readonly _tag = "RoleError" as const;
+    public readonly code: string;
+    constructor(message: string, code: string) {
+      super(message);
+      this.name = "RoleError";
+      this.code = code;
+    }
+  },
+}));
+
 mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: mock(() => []),

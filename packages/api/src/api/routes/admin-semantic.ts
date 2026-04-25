@@ -460,7 +460,10 @@ export const postRollbackRoute = createRoute({
 // Auth function type
 // ---------------------------------------------------------------------------
 
-type AdminAuthFn = (c: { req: { raw: Request }; get(key: string): unknown }) => Promise<{
+type AdminAuthFn = (
+  c: { req: { raw: Request }; get(key: string): unknown },
+  permission?: import("@atlas/ee/auth/roles").Permission,
+) => Promise<{
   authResult: AuthResult & { authenticated: true };
   requestId: string;
 }>;
@@ -490,7 +493,7 @@ export function registerSemanticEditorRoutes(
     runHandler(c, "save structured semantic entity", async () => {
       const { name } = c.req.valid("param");
       const body = c.req.valid("json");
-      const { authResult, requestId } = await authFn(c);
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
@@ -588,7 +591,7 @@ export function registerSemanticEditorRoutes(
   admin.openapi(deleteStructuredEntityRoute, async (c) =>
     runHandler(c, "delete semantic entity", async () => {
       const { name } = c.req.valid("param");
-      const { authResult, requestId } = await authFn(c);
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
@@ -679,7 +682,7 @@ export function registerSemanticEditorRoutes(
   admin.openapi(getColumnsRoute, async (c) =>
     runHandler(c, "get table columns", async () => {
       const { tableName } = c.req.valid("param");
-      const { authResult, requestId } = await authFn(c);
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
@@ -764,7 +767,7 @@ export function registerSemanticEditorRoutes(
     runHandler(c, "list entity versions", async () => {
       const { name } = c.req.valid("param");
       const { limit, offset } = c.req.valid("query");
-      const { authResult, requestId } = await authFn(c);
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
@@ -796,7 +799,7 @@ export function registerSemanticEditorRoutes(
   admin.openapi(getVersionDetailRoute, async (c) =>
     runHandler(c, "get entity version detail", async () => {
       const { versionId } = c.req.valid("param");
-      const { authResult, requestId } = await authFn(c);
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
@@ -835,7 +838,7 @@ export function registerSemanticEditorRoutes(
     runHandler(c, "rollback semantic entity", async () => {
       const { name } = c.req.valid("param");
       const { versionId } = c.req.valid("json");
-      const { authResult, requestId } = await authFn(c);
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {

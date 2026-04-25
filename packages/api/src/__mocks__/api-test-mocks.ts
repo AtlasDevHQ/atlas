@@ -622,6 +622,53 @@ export function createApiTestMocks(
     previewSchedule: () => [],
   }));
 
+  // ── EE: roles (custom-role permission resolution) ──
+  //
+  // F-53 wires `checkPermission()` into every admin route, so a
+  // default-allow mock keeps tests focused on their own concern.
+  // ALL named exports admin-roles.ts imports must be stubbed: a partial
+  // mock surfaces as "Export named 'X' not found" at module load and
+  // the entire admin tree fails to register, which manifests as 404 on
+  // unrelated routes. Tests that exercise the F-53 enforcement path
+  // (`permission-enforcement.test.ts`) override `checkPermission` per-test.
+
+  mock.module("@atlas/ee/auth/roles", () => ({
+    PERMISSIONS: [
+      "query",
+      "query:raw_data",
+      "admin:users",
+      "admin:connections",
+      "admin:settings",
+      "admin:audit",
+      "admin:roles",
+      "admin:semantic",
+    ] as const,
+    isValidPermission: () => true,
+    isValidRoleName: () => true,
+    BUILTIN_ROLES: [],
+    resolvePermissions: mock(() => Effect.succeed(new Set())),
+    hasPermission: mock(() => Effect.succeed(true)),
+    checkPermission: mock(() => Effect.succeed(null)),
+    listRoles: mock(() => Effect.succeed([])),
+    getRole: mock(() => Effect.succeed(null)),
+    getRoleByName: mock(() => Effect.succeed(null)),
+    createRole: mock(() => Effect.die(new Error("not configured"))),
+    updateRole: mock(() => Effect.die(new Error("not configured"))),
+    deleteRole: mock(() => Effect.succeed(true)),
+    listRoleMembers: mock(() => Effect.succeed([])),
+    assignRole: mock(() => Effect.die(new Error("not configured"))),
+    seedBuiltinRoles: mock(() => Effect.succeed(undefined)),
+    RoleError: class extends Error {
+      public readonly _tag = "RoleError" as const;
+      public readonly code: string;
+      constructor(message: string, code: string) {
+        super(message);
+        this.name = "RoleError";
+        this.code = code;
+      }
+    },
+  }));
+
   // ── EE: IP allowlist (queries internal DB, which doesn't exist in tests) ──
 
   mock.module("@atlas/ee/auth/ip-allowlist", () => ({

@@ -200,6 +200,22 @@ describe("resolvePermissions", () => {
     expect(perms.size).toBe(PERMISSIONS.length);
   });
 
+  // F-53 made `LEGACY_ROLE_PERMISSIONS` load-bearing — the table now gates
+  // route access, not just UI display. Without `platform_admin` in the table
+  // (added alongside this fix), platform admins fall through to the
+  // `member` default and lose every admin:* flag the moment the route layer
+  // starts consulting the table for real. This test locks the entry.
+  it("falls back to legacy for platform_admin role with full access", async () => {
+    ee.queueMockRows([]); // No custom row → legacy mapping
+
+    const user = makeUser({ role: "platform_admin" });
+    const perms = await run(resolvePermissions(user));
+    expect(perms.size).toBe(PERMISSIONS.length);
+    for (const p of PERMISSIONS) {
+      expect(perms.has(p)).toBe(true);
+    }
+  });
+
   it("falls back to legacy for member role when no custom role in DB", async () => {
     ee.queueMockRows([]); // No custom role found
 

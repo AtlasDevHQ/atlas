@@ -28,7 +28,7 @@ import {
 } from "@atlas/api/lib/integrations/types";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-email-provider");
 
@@ -307,6 +307,8 @@ const testConfigRoute = createRoute({
 
 const adminEmailProvider = createAdminRouter();
 adminEmailProvider.use(requireOrgContext());
+// F-53 — workspace email-provider config is a settings sub-surface.
+adminEmailProvider.use(requirePermission("admin:settings"));
 
 // GET / — baseline + optional override
 adminEmailProvider.openapi(getConfigRoute, async (c) => {

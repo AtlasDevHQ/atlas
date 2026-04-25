@@ -2,13 +2,18 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { LayoutDashboard, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { NavBar } from "@/ui/components/tour/nav-bar";
-import { NewDashboardDialog } from "@/ui/components/dashboards/new-dashboard-dialog";
+import {
+  NewDashboardDialog,
+  defaultOnDashboardCreated,
+} from "@/ui/components/dashboards/new-dashboard-dialog";
 import { authClient } from "@/lib/auth/client";
 
 export function DashboardsEmptyState() {
+  const router = useRouter();
   const session = authClient.useSession();
   const user = session.data?.user as
     | { email?: string; role?: string }
@@ -46,7 +51,11 @@ export function DashboardsEmptyState() {
         </div>
       </main>
 
-      <NewDashboardDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <NewDashboardDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={defaultOnDashboardCreated(router)}
+      />
     </div>
   );
 }

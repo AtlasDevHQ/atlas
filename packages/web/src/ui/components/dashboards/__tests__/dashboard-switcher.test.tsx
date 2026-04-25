@@ -155,6 +155,23 @@ describe("DashboardSwitcher", () => {
     });
   });
 
+  test("renders an error + retry when the list fetch fails", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "boom" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+
+    render(<DashboardSwitcher currentId="d-1" />, { wrapper });
+    openSwitcher();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/HTTP 500|server|error/i);
+    expect(screen.getByRole("button", { name: /Retry/ })).toBeTruthy();
+    // Empty-state copy must NOT be the user-visible message on a fetch error.
+    expect(screen.queryByText(/No other dashboards yet/)).toBeNull();
+  });
+
   test("View all footer item opens the view-all modal", async () => {
     stubDashboards([{ id: "d-1", title: "Now", updatedAt: "2026-04-25T10:00:00Z", cardCount: 0 }]);
 

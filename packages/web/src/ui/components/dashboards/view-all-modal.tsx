@@ -62,7 +62,11 @@ export function ViewAllDashboardsModal({
     total: number;
   }>("/api/v1/dashboards");
 
-  const { mutate: deleteDashboard } = useAdminMutation({ invalidates: refetch });
+  const {
+    mutate: deleteDashboard,
+    error: deleteError,
+    clearError: clearDeleteError,
+  } = useAdminMutation({ invalidates: refetch });
 
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dashboard | null>(null);
@@ -89,8 +93,12 @@ export function ViewAllDashboardsModal({
       path: `/api/v1/dashboards/${deleteTarget.id}`,
       method: "DELETE",
     });
+    if (!result.ok) {
+      // Keep the alert dialog open so the user sees the failure inline
+      // rather than the row silently reappearing under the modal.
+      return;
+    }
     setDeleteTarget(null);
-    if (!result.ok) return;
     if (wasCurrent) {
       onOpenChange(false);
       router.push("/dashboards");
@@ -140,6 +148,25 @@ export function ViewAllDashboardsModal({
               </div>
             )}
           </DialogHeader>
+
+          {deleteError && (
+            <div
+              role="alert"
+              className="mx-6 mt-1 flex items-start gap-2 rounded-md border border-red-200 bg-red-50/80 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400"
+            >
+              <span className="flex-1">
+                Couldn&rsquo;t delete dashboard. {friendlyError(deleteError)}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 px-1.5 text-xs"
+                onClick={() => clearDeleteError()}
+              >
+                Dismiss
+              </Button>
+            </div>
+          )}
 
           {/* Tablet+ desktop grid; mobile fallback to a text list. */}
           <div className="max-h-[60vh] overflow-y-auto px-6 pb-6">

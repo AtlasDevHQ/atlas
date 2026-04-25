@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import type { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,11 +21,12 @@ interface NewDashboardDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /**
-   * Called after a dashboard is successfully created. Receives the new
-   * dashboard so the caller can navigate, refetch, or both. Defaults to
-   * navigating to the new dashboard's detail page.
+   * Required. Called with the new dashboard after a successful create. The
+   * dialog has no opinion about navigation — every call site supplies its own
+   * policy. The shared `defaultOnDashboardCreated` helper below covers the
+   * common "navigate to the new dashboard" case.
    */
-  onCreated?: (dashboard: Dashboard) => void;
+  onCreated: (dashboard: Dashboard) => void;
 }
 
 export function NewDashboardDialog({
@@ -33,7 +34,6 @@ export function NewDashboardDialog({
   onOpenChange,
   onCreated,
 }: NewDashboardDialogProps) {
-  const router = useRouter();
   const [title, setTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
   const { mutate, saving } = useAdminMutation<Dashboard>();
@@ -63,10 +63,7 @@ export function NewDashboardDialog({
     }
     reset();
     onOpenChange(false);
-    if (result.data) {
-      if (onCreated) onCreated(result.data);
-      else router.push(`/dashboards/${result.data.id}`);
-    }
+    if (result.data) onCreated(result.data);
   }
 
   return (
@@ -104,4 +101,15 @@ export function NewDashboardDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * Default navigation policy for `onCreated`: push the user into the new
+ * dashboard's detail page. Mirrors the pre-redesign list-page UX where
+ * creating a dashboard moved you straight to it.
+ */
+export function defaultOnDashboardCreated(
+  router: Pick<ReturnType<typeof useRouter>, "push">,
+): (d: Dashboard) => void {
+  return (d) => router.push(`/dashboards/${d.id}`);
 }

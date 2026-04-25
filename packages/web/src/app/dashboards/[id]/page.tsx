@@ -20,6 +20,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useAtlasConfig } from "@/ui/context";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { NavBar } from "@/ui/components/tour/nav-bar";
 import { authClient } from "@/lib/auth/client";
@@ -38,6 +39,7 @@ import type {
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const session = authClient.useSession();
   const user = session.data?.user as { email?: string; role?: string } | undefined;
   const isAdmin =
@@ -136,7 +138,9 @@ export default function DashboardViewPage() {
     // and we want the navigation target locked in.
     let nextId: string | null = null;
     try {
-      const res = await fetch(`/api/v1/dashboards`, { credentials: "include" });
+      const res = await fetch(`${apiUrl}/api/v1/dashboards`, {
+        credentials: isCrossOrigin ? "include" : "same-origin",
+      });
       if (res.ok) {
         const json = (await res.json()) as { dashboards?: { id: string; updatedAt: string }[] };
         const others = (json.dashboards ?? [])

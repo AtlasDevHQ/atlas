@@ -313,6 +313,23 @@ describe("checkApprovalRequired", () => {
     expect(result.identityMissing).toBeUndefined();
   });
 
+  it("requesterId + orgId BOTH set still matches org-scoped rules (no short-circuit)", async () => {
+    // Defensive pin: the requesterId option short-circuits ONLY in the
+    // !orgId branch. With both bound (the normal authenticated /query
+    // path), checkApprovalRequired must proceed to the rule lookup. A
+    // future refactor that moved the requesterId short-circuit above the
+    // orgId check would silently bypass approval matching for
+    // authenticated users — this test catches it.
+    ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
+    const result = await run(
+      checkApprovalRequired("org-1", ["users"], ["id"], { requesterId: "user-1" }),
+    );
+    expect(result.required).toBe(true);
+    expect(result.matchedRules).toHaveLength(1);
+    expect(result.matchedRules[0].name).toBe("PII table approval");
+    expect(result.identityMissing).toBeUndefined();
+  });
+
   it("returns false when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
     const result = await run(checkApprovalRequired("org-1", ["users"], ["id"]));

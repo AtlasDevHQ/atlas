@@ -3173,9 +3173,10 @@ tests in `scheduler/__tests__/executor.test.ts` and the new
 ### F-55 — Approval workflows bypassed for Slack / Teams / Discord agent invocations ⬆ **P2**
 
 **Where:**
-- `packages/api/src/api/routes/slack.ts:302` (slash command path) and
-  `slack.ts:458` (events / threaded follow-up path) call
-  `executeAgentQuery(text)` with no user context.
+- The slash command path and the events / threaded follow-up path in
+  `packages/api/src/api/routes/slack.ts` call `executeAgentQuery(text)`
+  with no user context. (Line numbers shift across revisions; the call
+  sites are bracketed by `processAsync` blocks in each handler.)
 - `packages/api/src/api/routes/teams.ts` and `discord.ts` follow the
   same pattern (each forwards to the same agent helper without resolving
   the bot-platform user back to an Atlas user).
@@ -3218,19 +3219,26 @@ a synthetic `slack-bot:<teamId>:<userId>` actor — built by the new
 approval gate fires for chat-platform queries. When a rule matches, the
 slash-command path replaces the "Thinking…" message and the thread
 follow-up posts a clear "approve via the Atlas admin console" notice
-(with the matched rule name) instead of returning query results. The
-audit doc earlier referenced `routes/teams.ts` and `routes/discord.ts`
-"following the same pattern" — those files only carry OAuth
-installation routes today and never invoked `executeAgentQuery`, so
-nothing to fix there; the actor pattern is in place for whenever a
-webhook receiver lands. Regression tests in
-`api/__tests__/slack.test.ts` (3 new: actor-binding, approval-rejection,
-no-org fallthrough). The chat-platforms-bypass admin toggle stop-gap
-is **not** shipped — once the actor is bound the gate works as
-designed, and a toggle to re-disable it would re-introduce the
-governance gap this PR closes. Operators who want chat-platform queries
-to skip approval can do so by leaving the workspace's `approval_rules`
-table empty.
+(with the matched rule name) instead of returning query results.
+**Single-workspace env-token deployments** (no `installation.org_id`
+because the bot token comes from `SLACK_BOT_TOKEN` env without a paired
+DB row, or the DB row exists with `org_id = null`) fall through with no
+actor bound — the inline comment in `slack.ts` documents this as
+intentional, because there is no Atlas org to associate a rule with.
+On those deployments, the defensive `identityMissing` path in
+`approval.ts` only fires if rules exist somewhere in the DB; if not,
+the bot keeps working unchanged. The audit doc earlier referenced
+`routes/teams.ts` and `routes/discord.ts` "following the same pattern"
+— those files only carry OAuth installation routes today and never
+invoked `executeAgentQuery`, so nothing to fix there; the actor pattern
+is in place for whenever a webhook receiver lands. Regression tests in
+`api/__tests__/slack.test.ts` (5 new: slash + thread actor-binding,
+slash + thread approval-rejection, no-org fallthrough). The
+chat-platforms-bypass admin toggle stop-gap is **not** shipped — once
+the actor is bound the gate works as designed, and a toggle to
+re-disable it would re-introduce the governance gap this PR closes.
+Operators who want chat-platform queries to skip approval can do so by
+leaving the workspace's `approval_rules` table empty.
 
 ---
 

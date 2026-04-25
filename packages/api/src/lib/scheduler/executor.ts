@@ -17,12 +17,13 @@
  * Effect migration (P3): Promise.race timeout replaced with Effect.timeout.
  */
 
-import { Effect, Duration } from "effect";
+import { Effect, Duration, Exit, Cause } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getScheduledTask, updateRunDeliveryStatus } from "@atlas/api/lib/scheduled-tasks";
 import { executeAgentQuery, type AgentQueryResult } from "@atlas/api/lib/agent-query";
 import { loadActorUser } from "@atlas/api/lib/auth/actor";
 import { SchedulerTaskTimeoutError, SchedulerExecutionError } from "@atlas/api/lib/effect/errors";
+import { causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { deliverResult } from "./delivery";
 
 const log = createLogger("scheduler-executor");
@@ -81,7 +82,9 @@ function approvalFailureMessage(approval: NonNullable<AgentQueryResult["pendingA
   const ruleSummary = approval.matchedRules.length > 1
     ? `${approval.matchedRules[0]} (+${approval.matchedRules.length - 1} more)`
     : approval.ruleName;
-  const idSuffix = approval.requestId ? ` Request ${approval.requestId}.` : "";
+  const idSuffix = approval.requestId !== null && approval.requestId !== ""
+    ? ` Request ${approval.requestId}.`
+    : "";
   return `Approval required: ${ruleSummary}.${idSuffix} Approve via the Atlas admin console before this task can deliver results.`;
 }
 
@@ -122,16 +125,26 @@ export async function executeScheduledTask(
     "Executing scheduled task",
   );
 
-  // Convert tagged errors to plain Errors at the Effect→Promise boundary
-  // so callers get clean messages, not FiberFailure wrappers.
-  const agentResult = await Effect.runPromise(
-    agentQueryEffect(task.question, requestId, taskId, timeoutMs, { actor }).pipe(
-      Effect.catchTags({
-        SchedulerTaskTimeoutError: (e) => Effect.die(new Error(e.message)),
-        SchedulerExecutionError: (e) => Effect.die(new Error(e.message)),
-      }),
-    ),
+  // Convert tagged errors to plain Errors at the Effect→Promise boundary.
+  // Using `runPromiseExit` + manual cause extraction (instead of
+  // `runPromise` + `Effect.die`) keeps the engine's `err.message` capture
+  // free of the `(FiberFailure)` wrapper that `runPromise` adds when an
+  // Effect dies — operators see "Task execution timed out after 30000ms"
+  // not "(FiberFailure) Error: Task execution timed out…" in the run row.
+  const exit = await Effect.runPromiseExit(
+    agentQueryEffect(task.question, requestId, taskId, timeoutMs, { actor }),
   );
+  if (Exit.isFailure(exit)) {
+    if (Cause.isInterruptedOnly(exit.cause)) {
+      throw new Error("Scheduled task interrupted");
+    }
+    const inner = causeToError(exit.cause);
+    if (inner instanceof SchedulerTaskTimeoutError || inner instanceof SchedulerExecutionError) {
+      throw new Error(inner.message);
+    }
+    throw inner instanceof Error ? inner : new Error(String(inner));
+  }
+  const agentResult = exit.value;
 
   // F-54: any approval-required tool result short-circuits delivery. The
   // approval request is already persisted by `executeSQL`; the engine marks

@@ -1169,6 +1169,46 @@ describe("/api/v1/slack", () => {
       expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
     });
 
+    it("thread follow-up with a missing event.user still binds an actor (no trailing colon in id)", async () => {
+      // Defensive pin: previously the slash-command path passed
+      // `externalUserId: userId` without the truthy guard, producing an
+      // actor id ending in `:` (e.g. `slack-bot:T999:`) when Slack omitted
+      // the user id. The thread path always guarded with a spread; both
+      // paths now do. This test asserts the resulting actor id format is
+      // clean even when `event.user` is absent.
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T999",
+        event: {
+          type: "message",
+          text: "anonymous thread reply",
+          // event.user intentionally omitted
+          channel: "C456",
+          thread_ts: "1234567890.000001",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(observedAgentContexts).toHaveLength(1);
+      // No trailing colon: `slack-bot:T999` (not `slack-bot:T999:`)
+      expect(observedAgentContexts[0].user?.id).toBe("slack-bot:T999");
+      expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
+    });
+
     it("rejects approval-required thread follow-ups with a clear thread message", async () => {
       pendingApprovalToolResultOverride = {
         approval_required: true,

@@ -20,7 +20,16 @@ export interface PendingAction {
 }
 
 export interface PendingApproval {
-  requestId: string;
+  /**
+   * Approval queue row id. `null` when the upstream tool result reports
+   * approval-required without a queued request — this happens when the
+   * defensive `identityMissing` path fires (no caller bound an org), since
+   * `createApprovalRequest` is short-circuited by the user-identity gate
+   * before a row is created. Callers building user-facing links must
+   * handle the null branch (e.g., the chat-platform "approve via Atlas"
+   * notice doesn't deep-link in this case).
+   */
+  requestId: string | null;
   ruleName: string;
   matchedRules: string[];
   message: string;
@@ -170,11 +179,23 @@ export async function executeAgentQuery(
           }
           // First approval-required result wins. Surface it to callers so
           // system-initiated paths (scheduler, chat platforms) can fail-loud
-          // rather than treat the run as a normal completion.
-          if (r.approval_required && !pendingApproval) {
+          // rather than treat the run as a normal completion. Defensive:
+          // both producers in `lib/tools/sql.ts` set `success: false` when
+          // they emit `approval_required: true`. A future tool variant that
+          // returned `success: true` alongside `approval_required: true`
+          // would be a contradictory shape — log a warning and skip rather
+          // than push both `dataResults` and `pendingApproval`.
+          if (r.approval_required && r.success !== false) {
+            log.warn(
+              { requestId: id, toolName: tr.toolName },
+              "Tool returned both success !== false and approval_required — ignoring contradictory approval flag",
+            );
+          } else if (r.approval_required && !pendingApproval) {
             const matchedRules = Array.isArray(r.matched_rules) ? r.matched_rules : [];
             pendingApproval = {
-              requestId: typeof r.approval_request_id === "string" ? r.approval_request_id : "",
+              requestId: typeof r.approval_request_id === "string" && r.approval_request_id.length > 0
+                ? r.approval_request_id
+                : null,
               ruleName: matchedRules[0] ?? "approval-required",
               matchedRules,
               message: typeof r.message === "string"

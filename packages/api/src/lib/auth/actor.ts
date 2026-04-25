@@ -125,7 +125,14 @@ async function resolveEffectiveRole(
   }
 }
 
-export type ChatBotPlatform = "slack" | "teams" | "discord";
+/**
+ * Known chat-platform integrations. Const tuple + derived type matches the
+ * codebase convention (`AUTH_MODES`, `APPROVAL_RULE_TYPES`, etc.) and
+ * gives downstream code (audit emitters, claim validators, docs) a runtime
+ * iterable list of valid platforms.
+ */
+export const CHAT_BOT_PLATFORMS = ["slack", "teams", "discord"] as const;
+export type ChatBotPlatform = (typeof CHAT_BOT_PLATFORMS)[number];
 
 /**
  * Build a synthetic actor for a chat-platform invocation. The resulting

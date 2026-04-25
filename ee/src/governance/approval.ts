@@ -394,11 +394,13 @@ export interface ApprovalMatchResult {
   required: boolean;
   matchedRules: ApprovalRule[];
   /**
-   * Set when `checkApprovalRequired` was invoked without an `orgId` and at
-   * least one approval rule exists somewhere in the database. Callers
-   * (`lib/tools/sql.ts`) treat this as a hard block — running the query
-   * would silently bypass governance because we can't tell which workspace
-   * the rule belongs to. F-54 / F-55 defensive belt-and-suspenders.
+   * Set when `checkApprovalRequired` was invoked with neither `orgId` nor
+   * `requesterId` and at least one approval rule exists somewhere in the
+   * database. Callers (`lib/tools/sql.ts`) treat this as a hard block —
+   * running the query would silently bypass governance because no caller
+   * has bound any context at all. A bound `requesterId` without `orgId`
+   * (demo / single-user mode) does NOT set this flag and falls through to
+   * `required: false`. F-54 / F-55 defensive belt-and-suspenders.
    */
   identityMissing?: boolean;
 }
@@ -579,6 +581,26 @@ export const createApprovalRequest = (opts: {
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("approval-workflows");
     yield* requireInternalDBEffect("approval queue", () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
+
+    // F-54/F-55 defense-in-depth: refuse to insert any row whose ruleId or
+    // orgId smells like an internal sentinel. The `__identity_missing__`
+    // rule + `__unknown__` org are produced by the defensive identityMissing
+    // path and are intercepted by the user-identity gate in
+    // `lib/tools/sql.ts` before this function is ever called. A future
+    // refactor that swapped the order of those checks would silently insert
+    // a sentinel row into `approval_queue` and present operators with a
+    // request whose rule_id has no FK target. Fail loud here so the bug
+    // shows up in the run log instead of the queue.
+    if (opts.ruleId.startsWith("__") || opts.orgId.startsWith("__")) {
+      log.error(
+        { ruleId: opts.ruleId, orgId: opts.orgId, requesterId: opts.requesterId },
+        "createApprovalRequest received a sentinel ruleId/orgId — refusing to queue",
+      );
+      return yield* Effect.fail(new ApprovalError({
+        message: "createApprovalRequest received a sentinel rule or org id — caller did not gate on identityMissing",
+        code: "validation",
+      }));
+    }
 
     const expiryHours = getExpiryHours();
 

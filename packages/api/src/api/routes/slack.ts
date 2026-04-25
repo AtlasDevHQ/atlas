@@ -281,8 +281,16 @@ slack.openapi(commandsRoute, async (c) => {
       // unauthenticated path (no rules can match without an org).
       const installation = await getInstallation(teamId);
       const orgId = installation?.org_id ?? null;
+      // Guard `externalUserId` so an empty Slack `user_id` doesn't produce
+      // a synthetic actor id ending in `:` (e.g. `slack-bot:T123:`). Matches
+      // the thread-follow-up path's spread + truthy guard.
       const actor = orgId
-        ? botActorUser({ platform: "slack", externalId: teamId, orgId, externalUserId: userId })
+        ? botActorUser({
+            platform: "slack",
+            externalId: teamId,
+            orgId,
+            ...(userId ? { externalUserId: userId } : {}),
+          })
         : undefined;
 
       // Post initial "Thinking..." message to get a thread_ts

@@ -173,6 +173,10 @@ const mockGetSharedDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: false, reason: "not_found" }),
 );
 
+// Re-import the real CardLayoutSchema + rowToCard so the mock is otherwise complete
+// per CLAUDE.md ("Mock all exports — partial mocks cause SyntaxError").
+const realDashboards = await import("@atlas/api/lib/dashboards");
+
 mock.module("@atlas/api/lib/dashboards", () => ({
   createDashboard: mockCreateDashboard,
   getDashboard: mockGetDashboard,
@@ -192,6 +196,8 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
   lockDashboardForRefresh: mock(() => Promise.resolve(false)),
   refreshDashboardCards: mock(() => Promise.resolve({ refreshed: 0, failed: 0, total: 0 })),
+  CardLayoutSchema: realDashboards.CardLayoutSchema,
+  rowToCard: realDashboards.rowToCard,
 }));
 
 // --- Other mocks required by app index.ts ---

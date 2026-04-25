@@ -13,6 +13,14 @@ export interface DashboardChartConfig {
   valueColumns: string[];
 }
 
+/** NULL on a card means not yet placed — client auto-lays out by `position`. */
+export interface DashboardCardLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 // ---------------------------------------------------------------------------
 // API shapes (camelCase)
 // ---------------------------------------------------------------------------
@@ -45,6 +53,7 @@ export interface DashboardCard {
   cachedRows: Record<string, unknown>[] | null;
   cachedAt: string | null;
   connectionId: string | null;
+  layout: DashboardCardLayout | null;
   createdAt: string;
   updatedAt: string;
 }

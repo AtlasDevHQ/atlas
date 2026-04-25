@@ -1354,6 +1354,8 @@ export const dashboardCards = pgTable(
     cachedRows: jsonb("cached_rows"),
     cachedAt: timestamp("cached_at", { withTimezone: true }),
     connectionId: text("connection_id"),
+    // NULL = not yet placed; client auto-lays out by `position`.
+    layout: jsonb("layout"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

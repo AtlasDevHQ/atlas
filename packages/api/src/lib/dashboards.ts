@@ -6,6 +6,7 @@
  */
 
 import * as crypto from "crypto";
+import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
@@ -16,9 +17,11 @@ import {
 import type {
   Dashboard,
   DashboardCard,
+  DashboardCardLayout,
   DashboardWithCards,
   DashboardChartConfig,
 } from "@atlas/api/lib/dashboard-types";
+import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/conversations";
@@ -26,6 +29,19 @@ import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/
 export type { CrudResult, CrudDataResult, CrudFailReason };
 
 const log = createLogger("dashboards");
+
+/**
+ * Tile layout in the 24-col freeform grid. Single source for both write-time
+ * Zod validation (route) and read-time DB-row validation (`rowToCard`).
+ */
+export const CardLayoutSchema = z.object({
+  x: z.number().int().min(0).max(DASHBOARD_GRID.COLS - 1),
+  y: z.number().int().min(0).max(DASHBOARD_GRID.MAX_Y),
+  w: z.number().int().min(DASHBOARD_GRID.MIN_W).max(DASHBOARD_GRID.MAX_W),
+  h: z.number().int().min(DASHBOARD_GRID.MIN_H).max(DASHBOARD_GRID.MAX_H),
+}).refine((l) => l.x + l.w <= DASHBOARD_GRID.COLS, {
+  message: `Tile extends past column ${DASHBOARD_GRID.COLS}`,
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,7 +66,7 @@ function rowToDashboard(r: Record<string, unknown>): Dashboard {
   };
 }
 
-function rowToCard(r: Record<string, unknown>): DashboardCard {
+export function rowToCard(r: Record<string, unknown>): DashboardCard {
   let chartConfig: DashboardChartConfig | null = null;
   if (r.chart_config) {
     try {
@@ -84,6 +100,21 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
     }
   }
 
+  let layout: DashboardCardLayout | null = null;
+  if (r.layout) {
+    try {
+      const raw = typeof r.layout === "string" ? JSON.parse(r.layout) : r.layout;
+      const parsed = CardLayoutSchema.safeParse(raw);
+      if (parsed.success) {
+        layout = parsed.data;
+      } else {
+        log.warn({ cardId: r.id, issues: parsed.error.issues }, "Discarding malformed dashboard_card.layout JSONB");
+      }
+    } catch (err) {
+      log.warn({ cardId: r.id, err: errorMessage(err) }, "Failed to parse layout JSONB");
+    }
+  }
+
   return {
     id: r.id as string,
     dashboardId: r.dashboard_id as string,
@@ -95,6 +126,7 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
     cachedRows,
     cachedAt: r.cached_at ? String(r.cached_at) : null,
     connectionId: (r.connection_id as string) ?? null,
+    layout,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
   };
@@ -310,6 +342,7 @@ export async function addCard(opts: {
   cachedColumns?: string[] | null;
   cachedRows?: Record<string, unknown>[] | null;
   connectionId?: string | null;
+  layout?: DashboardCardLayout | null;
 }): Promise<CrudDataResult<DashboardCard>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
@@ -321,8 +354,8 @@ export async function addCard(opts: {
     const nextPos = (posRows[0]?.next_pos as number) ?? 0;
 
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id, layout)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         opts.dashboardId,
@@ -334,6 +367,7 @@ export async function addCard(opts: {
         opts.cachedRows ? JSON.stringify(opts.cachedRows) : null,
         opts.cachedRows ? new Date().toISOString() : null,
         opts.connectionId ?? null,
+        opts.layout ? JSON.stringify(opts.layout) : null,
       ],
     );
     if (rows.length === 0) return { ok: false, reason: "error" };
@@ -355,6 +389,7 @@ export async function updateCard(
     title?: string;
     chartConfig?: DashboardChartConfig | null;
     position?: number;
+    layout?: DashboardCardLayout | null;
   },
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -374,6 +409,10 @@ export async function updateCard(
   if (updates.position !== undefined) {
     setClauses.push(`position = $${paramIdx++}`);
     params.push(updates.position);
+  }
+  if (updates.layout !== undefined) {
+    setClauses.push(`layout = $${paramIdx++}`);
+    params.push(updates.layout ? JSON.stringify(updates.layout) : null);
   }
 
   if (setClauses.length === 0) return { ok: true };

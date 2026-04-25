@@ -147,3 +147,33 @@
     transform: translateY(-2px);
   }
 }
+
+/* Dashboards detail — react-grid-layout overrides (#1867). */
+.react-grid-item.react-grid-placeholder {
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+  border: 1.5px dashed color-mix(in oklch, var(--primary) 60%, transparent);
+  border-radius: 12px;
+  opacity: 1;
+}
+.react-grid-item.react-draggable-dragging {
+  box-shadow: 0 20px 40px oklch(0 0 0 / 0.4);
+}
+.react-grid-item > .react-resizable-handle::after {
+  border-right-color: var(--muted-foreground);
+  border-bottom-color: var(--muted-foreground);
+}
+
+.dash-tile-wrapper.is-fullscreen {
+  position: fixed !important;
+  inset: 14px !important;
+  width: auto !important;
+  height: auto !important;
+  transform: none !important;
+  z-index: 100;
+  box-shadow: 0 30px 60px oklch(0 0 0 / 0.6);
+}
+
+.dash-density-compact .dash-tile-head { padding: 7px 10px 6px; }
+.dash-density-compact .dash-tile-body { padding: 6px 10px 8px; }
+.dash-density-spacious .dash-tile-head { padding: 14px 16px 11px; }
+.dash-density-spacious .dash-tile-body { padding: 12px 16px 14px; }

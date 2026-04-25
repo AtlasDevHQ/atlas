@@ -4764,6 +4764,40 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "layout": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 23
+                      },
+                      "y": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000
+                      },
+                      "w": {
+                        "type": "integer",
+                        "minimum": 3,
+                        "maximum": 24
+                      },
+                      "h": {
+                        "type": "integer",
+                        "minimum": 4,
+                        "maximum": 200
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y",
+                      "w",
+                      "h"
+                    ]
                   }
                 },
                 "required": [
@@ -4992,6 +5026,40 @@
                   "position": {
                     "type": "integer",
                     "minimum": 0
+                  },
+                  "layout": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 23
+                      },
+                      "y": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000
+                      },
+                      "w": {
+                        "type": "integer",
+                        "minimum": 3,
+                        "maximum": 24
+                      },
+                      "h": {
+                        "type": "integer",
+                        "minimum": 4,
+                        "maximum": 200
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y",
+                      "w",
+                      "h"
+                    ]
                   }
                 }
               }

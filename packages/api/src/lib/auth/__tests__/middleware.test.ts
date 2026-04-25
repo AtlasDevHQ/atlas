@@ -9,7 +9,9 @@ import {
   getClientIP,
   _setValidatorOverrides,
   _setSSOEnforcementOverride,
+  _setAuditEnforcementBlockOverride,
 } from "../middleware";
+import type { AdminActionEntry } from "@atlas/api/lib/audit";
 
 // Mock validators — injected via _setValidatorOverrides (no mock.module needed)
 const mockValidateManaged = mock((): Promise<AuthResult> =>
@@ -88,6 +90,7 @@ describe("authenticateRequest()", () => {
     resetAuthModeCache();
     _setValidatorOverrides({ managed: null, byot: null });
     _setSSOEnforcementOverride(null);
+    _setAuditEnforcementBlockOverride(null);
   });
 
   function makeRequest(headers?: Record<string, string>): Request {
@@ -95,6 +98,17 @@ describe("authenticateRequest()", () => {
       method: "POST",
       headers: headers ?? {},
     });
+  }
+
+  /** Install an audit-emit override that pushes each entry into the returned
+   *  array. Lets tests assert on the captured `sso.enforcement_block` shape
+   *  without touching a real internal Postgres. */
+  function captureAuditCalls(): AdminActionEntry[] {
+    const calls: AdminActionEntry[] = [];
+    _setAuditEnforcementBlockOverride((entry) => {
+      calls.push(entry);
+    });
+    return calls;
   }
 
   it("mode 'none' passes through with no user", async () => {
@@ -202,7 +216,7 @@ describe("authenticateRequest()", () => {
     }
   });
 
-  it("mode 'managed' with SSO enforcement blocks login with 403 + redirect", async () => {
+  it("mode 'managed' with SSO enforcement blocks login with 403 + redirect + audit row", async () => {
     process.env.BETTER_AUTH_SECRET = "some-secret-for-managed-auth-32chars!!";
     resetAuthModeCache();
 
@@ -215,6 +229,7 @@ describe("authenticateRequest()", () => {
       expect(domain).toBe("enforced.com");
       return { enforced: true, ssoRedirectUrl: "https://idp.enforced.com/sso" };
     });
+    const auditCalls = captureAuditCalls();
 
     const result = await authenticateRequest(makeRequest());
     expect(result.authenticated).toBe(false);
@@ -223,6 +238,14 @@ describe("authenticateRequest()", () => {
       expect(result.error).toContain("SSO is required");
       expect(result.ssoRedirectUrl).toBe("https://idp.enforced.com/sso");
     }
+    expect(auditCalls).toHaveLength(1);
+    expect(auditCalls[0]).toMatchObject({
+      actionType: "sso.enforcement_block",
+      targetType: "sso",
+      targetId: "enforced.com",
+      status: "failure",
+      metadata: { authMode: "managed", userLabel: "alice@enforced.com" },
+    });
   });
 
   it("mode 'managed' with SSO enforcement check throwing fails closed with 500", async () => {
@@ -301,6 +324,221 @@ describe("authenticateRequest()", () => {
       expect(result.error).toContain("Authentication service error");
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // F-56 — SSO enforcement gates byot, simple-key stays the documented bypass
+  // ---------------------------------------------------------------------------
+
+  it("mode 'simple-key' bypasses SSO enforcement (documented break-glass)", async () => {
+    process.env.ATLAS_API_KEY = "test-secret-key";
+    resetAuthModeCache();
+
+    // The override should never be invoked — simple-key has no email domain
+    // and is the documented escape hatch when SSO breaks (e.g. IdP outage).
+    let invocations = 0;
+    _setSSOEnforcementOverride(async () => {
+      invocations += 1;
+      return { enforced: true, ssoRedirectUrl: "https://idp.example/sso" };
+    });
+    const auditCalls = captureAuditCalls();
+
+    const result = await authenticateRequest(
+      makeRequest({ Authorization: "Bearer test-secret-key" }),
+    );
+    expect(result.authenticated).toBe(true);
+    if (result.authenticated) expect(result.user?.mode).toBe("simple-key");
+    expect(invocations).toBe(0);
+    expect(auditCalls).toHaveLength(0);
+  });
+
+  it("mode 'byot' with SSO-enforced domain blocks login with 403 + redirect + audit row", async () => {
+    process.env.ATLAS_AUTH_JWKS_URL = "https://example.com/.well-known/jwks.json";
+    resetAuthModeCache();
+
+    mockValidateBYOT.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "byot" as const,
+      user: { id: "usr_ext", mode: "byot" as const, label: "ext@enforced.com" },
+    });
+    _setSSOEnforcementOverride(async (domain) => {
+      expect(domain).toBe("enforced.com");
+      return { enforced: true, ssoRedirectUrl: "https://idp.enforced.com/sso" };
+    });
+    const auditCalls = captureAuditCalls();
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(false);
+    if (!result.authenticated) {
+      expect(result.status).toBe(403);
+      expect(result.error).toContain("SSO is required");
+      expect(result.ssoRedirectUrl).toBe("https://idp.enforced.com/sso");
+    }
+    expect(auditCalls).toHaveLength(1);
+    expect(auditCalls[0]).toMatchObject({
+      actionType: "sso.enforcement_block",
+      targetType: "sso",
+      targetId: "enforced.com",
+      status: "failure",
+      metadata: { authMode: "byot", userLabel: "ext@enforced.com" },
+    });
+  });
+
+  it("mode 'byot' with non-enforced domain passes through", async () => {
+    process.env.ATLAS_AUTH_JWKS_URL = "https://example.com/.well-known/jwks.json";
+    resetAuthModeCache();
+
+    mockValidateBYOT.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "byot" as const,
+      user: { id: "usr_ext", mode: "byot" as const, label: "ext@open.com" },
+    });
+    _setSSOEnforcementOverride(async () => ({ enforced: false }));
+    const auditCalls = captureAuditCalls();
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(true);
+    if (result.authenticated) expect(result.user?.mode).toBe("byot");
+    expect(auditCalls).toHaveLength(0);
+  });
+
+  it("mode 'byot' with subject-only label (no email) skips SSO enforcement", async () => {
+    process.env.ATLAS_AUTH_JWKS_URL = "https://example.com/.well-known/jwks.json";
+    resetAuthModeCache();
+
+    // BYOT JWTs without an `email` claim fall back to the `sub` for label.
+    // No domain → no SSO check (consistent with simple-key).
+    mockValidateBYOT.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "byot" as const,
+      user: { id: "usr_ext", mode: "byot" as const, label: "auth0|abc123" },
+    });
+    let invocations = 0;
+    _setSSOEnforcementOverride(async () => {
+      invocations += 1;
+      return { enforced: true };
+    });
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(true);
+    expect(invocations).toBe(0);
+  });
+
+  it("mode 'managed' with audit-write failure fails closed with 500 (forensic row is the security control)", async () => {
+    process.env.BETTER_AUTH_SECRET = "some-secret-for-managed-auth-32chars!!";
+    resetAuthModeCache();
+
+    mockValidateManaged.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: { id: "usr_1", mode: "managed" as const, label: "alice@enforced.com" },
+    });
+    _setSSOEnforcementOverride(async () => ({
+      enforced: true,
+      ssoRedirectUrl: "https://idp.enforced.com/sso",
+    }));
+    _setAuditEnforcementBlockOverride(async () => {
+      throw new Error("admin_action_log insert failed — circuit open");
+    });
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(false);
+    if (!result.authenticated) {
+      // If we can't record the bypass attempt, we don't quietly 403 — we
+      // 500 so the caller retries and the forensic trail stays whole.
+      expect(result.status).toBe(500);
+      expect(result.error).toContain("Unable to verify SSO enforcement");
+    }
+  });
+
+  it("mode 'byot' with SSO enforcement check throwing fails closed with 500", async () => {
+    process.env.ATLAS_AUTH_JWKS_URL = "https://example.com/.well-known/jwks.json";
+    resetAuthModeCache();
+
+    mockValidateBYOT.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "byot" as const,
+      user: { id: "usr_ext", mode: "byot" as const, label: "ext@enforced.com" },
+    });
+    _setSSOEnforcementOverride(async () => {
+      throw new Error("DB unreachable");
+    });
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(false);
+    if (!result.authenticated) {
+      expect(result.status).toBe(500);
+      expect(result.error).toContain("Unable to verify SSO enforcement");
+    }
+  });
+
+  it("mode 'byot' with audit-write failure fails closed with 500 (mirror of managed-side, pins authMode)", async () => {
+    // Pins that the F-56 fix doesn't drift back into a byot-only branch
+    // that special-cases the audit emission. A regression like
+    // `if (mode === "byot") return ... // skip audit, JWT has its own trail`
+    // would silently re-introduce the bypass — managed-side audit-fail
+    // test wouldn't catch it.
+    process.env.ATLAS_AUTH_JWKS_URL = "https://example.com/.well-known/jwks.json";
+    resetAuthModeCache();
+
+    mockValidateBYOT.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "byot" as const,
+      user: { id: "usr_ext", mode: "byot" as const, label: "ext@enforced.com" },
+    });
+    _setSSOEnforcementOverride(async () => ({
+      enforced: true,
+      ssoRedirectUrl: "https://idp.enforced.com/sso",
+    }));
+    _setAuditEnforcementBlockOverride(async () => {
+      throw new Error("admin_action_log insert failed — circuit open");
+    });
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(false);
+    if (!result.authenticated) {
+      expect(result.mode).toBe("byot");
+      expect(result.status).toBe(500);
+      expect(result.error).toContain("Unable to verify SSO enforcement");
+    }
+  });
+
+  it("audit-write that hangs past AUDIT_WRITE_TIMEOUT_MS fails closed with 500", async () => {
+    // Pins the Promise.race timeout: an unreachable-but-routable internal
+    // Postgres can't stall the auth path indefinitely. The override never
+    // resolves; the timeout (5s) trips and the catch returns 500.
+    process.env.BETTER_AUTH_SECRET = "some-secret-for-managed-auth-32chars!!";
+    resetAuthModeCache();
+
+    mockValidateManaged.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: { id: "usr_1", mode: "managed" as const, label: "alice@enforced.com" },
+    });
+    _setSSOEnforcementOverride(async () => ({ enforced: true }));
+
+    // Compress the timeout window via a fake-timer-style trick: the override
+    // returns a promise that never resolves; we advance Date.now past the
+    // 5s deadline via setTimeout fast-forwarding. To keep the test fast and
+    // deterministic, race manually against a short controllable timer.
+    const neverResolves = new Promise<void>(() => {});
+    _setAuditEnforcementBlockOverride(() => neverResolves);
+
+    // Wrap the auth call with our own deadline so the test doesn't itself
+    // wait the full 5s. The middleware's internal timer is what we're
+    // pinning, so we let it fire — but cap at 6s to avoid a hang on regression.
+    const result = await Promise.race([
+      authenticateRequest(makeRequest()),
+      new Promise<AuthResult>((_, reject) =>
+        setTimeout(() => reject(new Error("test deadline exceeded — middleware did not time out")), 6_000),
+      ),
+    ]);
+
+    expect(result.authenticated).toBe(false);
+    if (!result.authenticated) {
+      expect(result.status).toBe(500);
+      expect(result.error).toContain("Unable to verify SSO enforcement");
+    }
+  }, 7_000);
 });
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { Effect } from "effect";
 import { isSSOEnforcedForDomain, extractEmailDomain } from "@atlas/ee/auth/sso";
+import { logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
+import type { AuthMode } from "@useatlas/types";
 
 const log = createLogger("auth");
 
@@ -228,6 +230,21 @@ export function _setSSOEnforcementOverride(
   _ssoEnforcementOverride = override;
 }
 
+let _auditEnforcementBlockOverride:
+  | ((entry: AdminActionEntry) => void | Promise<void>)
+  | null = null;
+
+/** @internal — test-only. Capture (or fail) the `sso.enforcement_block`
+ * audit emission without going through `logAdminActionAwait`. Lets tests
+ * assert on the audit shape and exercise the fail-closed branch without
+ * touching a real internal Postgres. May return a rejected Promise to
+ * simulate an audit-write failure. */
+export function _setAuditEnforcementBlockOverride(
+  override: ((entry: AdminActionEntry) => void | Promise<void>) | null,
+): void {
+  _auditEnforcementBlockOverride = override;
+}
+
 /**
  * Categorize an auth error for diagnostic logging.
  * Helps operators quickly identify whether a failure is a database issue,
@@ -251,11 +268,62 @@ function categorizeAuthError(err: unknown): string {
 }
 
 /**
- * Check SSO enforcement for a user's email domain.
- * Returns an AuthResult rejection if SSO is enforced, null otherwise.
- * Fails closed on errors — returns a 500 AuthResult to block login.
+ * Auth modes whose authenticated path must run through SSO enforcement.
+ *
+ * Derived from `AuthMode` rather than hand-typed so that adding a new
+ * mode forces an explicit decision at this site. By default the new
+ * mode joins the enforced set automatically — bypass is opt-in via
+ * the explicit `Exclude` list. `none` has no user identity to enforce
+ * against; `simple-key` is the documented break-glass when SSO breaks
+ * (e.g. IdP outage during incident response). Hand-typing the
+ * enforced set as a literal union — what the original F-56 code did —
+ * is what let `byot` silently bypass SSO when it was added.
  */
-async function checkSSOEnforcement(userLabel: string): Promise<AuthResult | null> {
+type SSOEnforceableMode = Exclude<AuthMode, "none" | "simple-key">;
+
+/**
+ * Bound on how long the audit-row write may block the auth path.
+ *
+ * The audit row is the security control (see `checkSSOEnforcement`),
+ * so we await its commit before returning the 403 — but the internal
+ * Postgres pool has no `connectionTimeoutMillis` / `statement_timeout`
+ * defaults, which means an unreachable-but-routable DB or a stuck pool
+ * could otherwise stall every blocked SSO login for the full TCP
+ * keepalive window. Cap it: if the write hasn't committed within this
+ * deadline, throw and let the surrounding catch fail closed with 500.
+ */
+const AUDIT_WRITE_TIMEOUT_MS = 5_000;
+
+/**
+ * Check SSO enforcement for a user's email domain.
+ *
+ * Fires for any authenticated path with a resolvable email-domain label
+ * — managed and byot today; future modes inherit enforcement unless
+ * explicitly added to `SSO_BYPASS_MODES`. Returns an `AuthResult`
+ * rejection (403) if enforcement matches; null otherwise. Fails closed
+ * on lookup errors AND on audit-write errors (500). When blocking,
+ * commits a `sso.enforcement_block` admin-action row before returning
+ * the 403 so compliance queries can pivot on the bypass-attempt domain
+ * regardless of which auth mode tried it.
+ *
+ * The audit row IS the security control: a forensic record that
+ * someone tried to bypass SSO. `logAdminActionAwait` writes via
+ * `internalQuery` (no circuit breaker, unlike fire-and-forget
+ * `logAdminAction` / `internalExecute`) so it surfaces failures
+ * rather than dropping the row. We additionally cap the wait at
+ * `AUDIT_WRITE_TIMEOUT_MS` — if the row can't commit promptly we
+ * 500 fail-closed instead of stalling auth on an unreachable
+ * internal Postgres. Either failure mode lands in the catch below.
+ *
+ * Not invoked for `simple-key`: API-key auth has no email domain
+ * (`simple-key.ts` labels keys as `api-key-<first 4 chars of raw key>`)
+ * and is the documented break-glass bypass when SSO breaks (e.g. IdP
+ * outage during incident response).
+ */
+async function checkSSOEnforcement(
+  userLabel: string,
+  authMode: SSOEnforceableMode,
+): Promise<AuthResult | null> {
   try {
     const domain = extractEmailDomain(userLabel);
     if (!domain) return null;
@@ -265,26 +333,57 @@ async function checkSSOEnforcement(userLabel: string): Promise<AuthResult | null
       : await Effect.runPromise(isSSOEnforcedForDomain(domain));
     if (!enforcement || !enforcement.enforced) return null;
 
-    log.warn({ domain, userId: userLabel }, "Password login blocked — SSO enforcement active for domain");
+    log.warn(
+      { domain, userId: userLabel, authMode },
+      "Login blocked — SSO enforcement active for domain",
+    );
+    // Audit write is fail-closed: a throw lands in the catch below and
+    // becomes a 500 AuthResult. Better to 500 than to silently 403 with
+    // no forensic row.
+    await emitEnforcementBlockAudit({ domain, userLabel, authMode });
     return {
       authenticated: false,
-      mode: "managed",
+      mode: authMode,
       status: 403,
       error: "SSO is required for this workspace. Please sign in via your identity provider.",
       ssoRedirectUrl: enforcement.ssoRedirectUrl,
     };
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
+      { err: err instanceof Error ? err : new Error(String(err)), authMode },
       "SSO enforcement check failed — blocking login (fail-closed)",
     );
     return {
       authenticated: false,
-      mode: "managed" as const,
+      mode: authMode,
       status: 500 as const,
       error: "Unable to verify SSO enforcement status. Please retry or contact your administrator.",
     };
   }
+}
+
+async function emitEnforcementBlockAudit(args: {
+  domain: string;
+  userLabel: string;
+  authMode: SSOEnforceableMode;
+}): Promise<void> {
+  const entry: AdminActionEntry = {
+    actionType: "sso.enforcement_block",
+    targetType: "sso",
+    targetId: args.domain,
+    status: "failure",
+    metadata: { authMode: args.authMode, userLabel: args.userLabel },
+  };
+  const writer = _auditEnforcementBlockOverride ?? logAdminActionAwait;
+  await Promise.race([
+    writer(entry),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`audit write timed out after ${AUDIT_WRITE_TIMEOUT_MS}ms`)),
+        AUDIT_WRITE_TIMEOUT_MS,
+      ),
+    ),
+  ]);
 }
 
 /** Authenticate an incoming request based on the detected auth mode. */
@@ -296,58 +395,56 @@ export async function authenticateRequest(req: Request): Promise<AuthResult> {
       return { authenticated: true, user: undefined, mode: "none" };
 
     case "simple-key":
+      // simple-key is the documented break-glass bypass for SSO enforcement
+      // (listed in SSO_BYPASS_MODES above). The API-key user label is
+      // `api-key-<first 4 chars of raw key>` (set in `simple-key.ts`); it
+      // has no `@`, so even if checkSSOEnforcement ran here it would no-op
+      // via extractEmailDomain. Skipping the call keeps intent explicit.
+      // Other auth modes (managed, byot) run the check below — see F-56.
       return validateApiKey(req);
 
     case "managed":
-      try {
-        const managedResult = await (_managedOverride ?? validateManaged)(req);
-
-        // SSO enforcement: if the user's email domain has SSO enforced,
-        // block password/session auth and require SSO login instead.
-        // Break-glass bypass: simple-key auth (API key) is not affected.
-        if (managedResult.authenticated && managedResult.user) {
-          const enforcementCheck = await checkSSOEnforcement(managedResult.user.label);
-          if (enforcementCheck) return enforcementCheck;
-        }
-
-        return managedResult;
-      } catch (err) {
-        const category = categorizeAuthError(err);
-        log.error(
-          { err: err instanceof Error ? err : new Error(String(err)), mode, category },
-          "Managed auth error (%s)",
-          category,
-        );
-        if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
-          log.error({ err, mode }, "BUG: Unexpected programming error in auth validator");
-        }
-        return {
-          authenticated: false,
-          mode,
-          status: 500,
-          error: "Authentication service error",
-        };
-      }
+      return runWithSSOEnforcement(mode, () => (_managedOverride ?? validateManaged)(req));
 
     case "byot":
-      try {
-        return await (_byotOverride ?? validateBYOT)(req);
-      } catch (err) {
-        const category = categorizeAuthError(err);
-        log.error(
-          { err: err instanceof Error ? err : new Error(String(err)), mode, category },
-          "BYOT auth error (%s)",
-          category,
-        );
-        if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
-          log.error({ err, mode }, "BUG: Unexpected programming error in auth validator");
-        }
-        return {
-          authenticated: false,
-          mode,
-          status: 500,
-          error: "Authentication service error",
-        };
-      }
+      return runWithSSOEnforcement(mode, () => (_byotOverride ?? validateBYOT)(req));
+  }
+}
+
+/**
+ * Run a validator and gate the authenticated result through SSO enforcement.
+ *
+ * Single entry point for every `SSOEnforceableMode` — managed and byot
+ * share the same gate (F-56), and any future enforced mode joins
+ * automatically. Centralizes the categorize-and-500 fallback so all
+ * enforced modes report uniformly when their validator throws.
+ */
+async function runWithSSOEnforcement(
+  mode: SSOEnforceableMode,
+  validator: () => Promise<AuthResult>,
+): Promise<AuthResult> {
+  try {
+    const result = await validator();
+    if (result.authenticated && result.user) {
+      const enforcementCheck = await checkSSOEnforcement(result.user.label, mode);
+      if (enforcementCheck) return enforcementCheck;
+    }
+    return result;
+  } catch (err) {
+    const category = categorizeAuthError(err);
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), mode, category },
+      "Auth validator error (%s)",
+      category,
+    );
+    if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
+      log.error({ err, mode }, "BUG: Unexpected programming error in auth validator");
+    }
+    return {
+      authenticated: false,
+      mode,
+      status: 500,
+      error: "Authentication service error",
+    };
   }
 }

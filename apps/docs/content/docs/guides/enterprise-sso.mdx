@@ -368,7 +368,9 @@ Enforcement is an **organization-level** setting. When toggled, it updates the `
 4. The response includes `ssoRedirectUrl` so the client can redirect the user to the IdP
 
 <Callout type="info">
-**Break-glass bypass:** API key authentication (`simple-key` mode) is not affected by SSO enforcement. If an admin is locked out of the UI, they can still access the API using an API key to disable enforcement.
+**Break-glass bypass:** API key authentication (`simple-key` mode) is the **only** auth mode that bypasses SSO enforcement. If an admin is locked out of the UI, they can still access the API using an API key to disable enforcement.
+
+BYOT JWTs (`byot` mode) **are** gated when the JWT's email-claim domain matches an SSO-enforced workspace — login is rejected with a 403 and a `sso.enforcement_block` row is written to the admin action log. JWTs without an `email` claim fall back to the `sub` claim as the user label; if `sub` happens to be email-formatted (some IdPs do this), the SSO check still fires on its domain.
 </Callout>
 
 ### Check Enforcement Status
@@ -431,7 +433,8 @@ When you enable SSO enforcement:
 
 - **Active sessions are not terminated.** Users already signed in continue to have access until their session expires
 - **New sign-in attempts via password are blocked.** Users must use the SSO flow on their next login
-- **API key access is unaffected.** The `simple-key` auth mode bypasses SSO enforcement, providing a break-glass path for administrators
+- **API key access is unaffected.** The `simple-key` auth mode is the documented break-glass for administrators
+- **BYOT JWTs are gated** when the JWT's email-claim domain matches an enforced provider (managed and BYOT both fire the same enforcement check)
 
 When you disable SSO enforcement:
 

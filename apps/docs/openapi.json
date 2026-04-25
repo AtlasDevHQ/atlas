@@ -26965,6 +26965,42 @@
               }
             }
           },
+          "409": {
+            "description": "User is provisioned via SCIM and the workspace policy is `strict`. The IdP owns the user lifecycle; manual mutations would be reverted on the next sync.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "scim_managed"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "SCIM_MANAGED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "code",
+                    "message",
+                    "requestId"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -52716,6 +52752,42 @@
               }
             }
           },
+          "409": {
+            "description": "User is provisioned via SCIM and the workspace policy is `strict`. The IdP owns the user lifecycle; manual mutations would be reverted on the next sync.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "scim_managed"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "SCIM_MANAGED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "code",
+                    "message",
+                    "requestId"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -52850,6 +52922,42 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "User is provisioned via SCIM and the workspace policy is `strict`. The IdP owns the user lifecycle; manual mutations would be reverted on the next sync.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "scim_managed"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "SCIM_MANAGED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "code",
+                    "message",
+                    "requestId"
                   ]
                 }
               }
@@ -53130,6 +53238,42 @@
               }
             }
           },
+          "409": {
+            "description": "User is provisioned via SCIM and the workspace policy is `strict`. The IdP owns the user lifecycle; manual mutations would be reverted on the next sync.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "scim_managed"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "SCIM_MANAGED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "code",
+                    "message",
+                    "requestId"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -53269,6 +53413,42 @@
               }
             }
           },
+          "409": {
+            "description": "User is provisioned via SCIM and the workspace policy is `strict`. The IdP owns the user lifecycle; manual mutations would be reverted on the next sync.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "scim_managed"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "SCIM_MANAGED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "code",
+                    "message",
+                    "requestId"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -53389,6 +53569,42 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "User is provisioned via SCIM and the workspace policy is `strict`. The IdP owns the user lifecycle; manual mutations would be reverted on the next sync.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "scim_managed"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "SCIM_MANAGED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "code",
+                    "message",
+                    "requestId"
                   ]
                 }
               }

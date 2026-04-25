@@ -77,8 +77,9 @@ import { adminActions } from "./admin-actions";
 import { adminPublish } from "./admin-publish";
 import { adminArchive, adminRestore } from "./admin-archive";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
-import { ErrorSchema, AuthErrorSchema, parsePagination, OrgRoleSchema, ORG_ROLE_ERROR_MESSAGE } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, OrgRoleSchema, ORG_ROLE_ERROR_MESSAGE, SCIMManagedResponse } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { evaluateSCIMGuardAsync } from "@atlas/api/lib/auth/scim-provenance";
 
 const log = createLogger("admin-routes");
 
@@ -953,6 +954,7 @@ const changeUserRoleRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    409: SCIMManagedResponse,
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -982,6 +984,7 @@ const banUserRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — platform_admin role required", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    409: SCIMManagedResponse,
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -1011,6 +1014,7 @@ const removeMembershipRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required / cannot self-remove", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "User is not a member of this workspace", content: { "application/json": { schema: ErrorSchema } } },
+    409: SCIMManagedResponse,
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -1062,6 +1066,7 @@ const deleteUserRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    409: SCIMManagedResponse,
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -1086,6 +1091,7 @@ const revokeUserSessionsRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    409: SCIMManagedResponse,
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -1927,6 +1933,18 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
+  // F-57 — SCIM provenance gate. SCIM declares the IdP as source of truth;
+  // strict policy blocks the role flip with 409 (the next sync would revert
+  // it anyway), override policy lets it through but stamps `scim_override`
+  // on the audit row so reconstruction shows the manual deviation.
+  const scimGuard = await evaluateSCIMGuardAsync({
+    userId,
+    orgId: authResult.user?.activeOrganizationId,
+    requestId,
+  });
+  if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
+  const scimOverride = scimGuard.kind === "override";
+
   const body = await c.req.json().catch((err) => {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
     return null;
@@ -1993,7 +2011,7 @@ admin.openapi(changeUserRoleRoute, async (c) => {
       targetType: "user",
       targetId: userId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { previousRole, newRole },
+      metadata: { previousRole, newRole, ...(scimOverride && { scim_override: true }) },
     });
 
     return c.json({ success: true }, 200);
@@ -2033,6 +2051,20 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     return c.json({ error: "forbidden", message: "Cannot ban yourself." , requestId}, 403);
   }
 
+  // F-57 — ban is a global state change; if the IdP re-syncs the user the
+  // ban can survive, but the role/group mapping won't reflect the ban so
+  // the user stays in an inconsistent state. Platform admins can opt into
+  // override policy when an emergency ban must trump the SCIM contract.
+  // Platform-admin path has no active org — pass undefined so the guard
+  // searches across all SCIM providers.
+  const scimGuard = await evaluateSCIMGuardAsync({
+    userId,
+    orgId: authResult.user?.activeOrganizationId,
+    requestId,
+  });
+  if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
+  const scimOverride = scimGuard.kind === "override";
+
   const body = await c.req.json().catch((err: unknown) => {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in ban user request");
     return {};
@@ -2052,7 +2084,7 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     actionType: ADMIN_ACTIONS.user.ban,
     targetType: "user",
     targetId: userId,
-    metadata: { reason: body.reason, expiresIn: body.expiresIn },
+    metadata: { reason: body.reason, expiresIn: body.expiresIn, ...(scimOverride && { scim_override: true }) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -2116,6 +2148,15 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
     return c.json({ error: "not_available", message: "Workspace membership requires an internal database.", requestId }, 404);
   }
 
+  // F-57 — removing a SCIM-provisioned member from this workspace is the
+  // most fragile case: the next sync will re-add the user via the IdP's
+  // group → workspace mapping, undoing the admin's action. Strict policy
+  // blocks; override stamps the audit row so the operator can correlate
+  // the manual removal with the immediate re-add on the next sync window.
+  const scimGuard = await evaluateSCIMGuardAsync({ userId, orgId, requestId });
+  if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
+  const scimOverride = scimGuard.kind === "override";
+
   // Last-admin guard: if the target is an admin/owner of this workspace,
   // removing them must leave at least one admin/owner behind. Without this,
   // a workspace admin could strand the workspace with no remaining admins
@@ -2161,7 +2202,7 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
     actionType: ADMIN_ACTIONS.user.removeFromWorkspace,
     targetType: "user",
     targetId: userId,
-    metadata: { orgId, previousRole: targetRole },
+    metadata: { orgId, previousRole: targetRole, ...(scimOverride && { scim_override: true }) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -2187,6 +2228,19 @@ admin.openapi(deleteUserRoute, async (c) => {
   if (authResult.user?.id === userId) {
     return c.json({ error: "forbidden", message: "Cannot delete yourself." , requestId}, 403);
   }
+
+  // F-57 — delete is the most severe SCIM-collision case. Better Auth
+  // removes the account row, then the next sync re-provisions the user
+  // with a fresh userId, orphaning every audit_log / RLS reference to
+  // the old id. Strict blocks; override audits the override so the
+  // post-sync orphan trail is at least correlatable to the manual delete.
+  const scimGuard = await evaluateSCIMGuardAsync({
+    userId,
+    orgId: authResult.user?.activeOrganizationId,
+    requestId,
+  });
+  if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
+  const scimOverride = scimGuard.kind === "override";
 
   // Last admin guard
   if (hasInternalDB()) {
@@ -2221,6 +2275,7 @@ admin.openapi(deleteUserRoute, async (c) => {
       targetType: "user",
       targetId: userId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      ...(scimOverride && { metadata: { scim_override: true } }),
     });
 
     return c.json({ success: true }, 200);
@@ -2246,6 +2301,18 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
   if (!(await verifyOrgMembership(authResult, userId))) {
     return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
+
+  // F-57 — session revoke for a SCIM-managed user is partially effective:
+  // the IdP can immediately re-issue tokens / re-establish the session on
+  // the next sync. Strict blocks (operator should suspend at the IdP);
+  // override revokes anyway and stamps the audit row.
+  const scimGuard = await evaluateSCIMGuardAsync({
+    userId,
+    orgId: authResult.user?.activeOrganizationId,
+    requestId,
+  });
+  if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
+  const scimOverride = scimGuard.kind === "override";
 
   // Pre-count live sessions so the audit row carries `count` — better-auth's
   // `revokeSessions` doesn't return how many it invalidated. Best-effort:
@@ -2317,6 +2384,7 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
         targetUserId: userId,
         ...(count !== null && { count }),
         ...(countLookupFailed && { countLookupFailed: true }),
+        ...(scimOverride && { scim_override: true }),
       },
     });
     return c.json({ success: true }, 200);
@@ -2332,6 +2400,7 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
         targetUserId: userId,
         error: errorMessage(err),
         ...(countLookupFailed && { countLookupFailed: true }),
+        ...(scimOverride && { scim_override: true }),
       },
     });
     return c.json({ error: "internal_error", message: "Failed to revoke sessions.", requestId }, 500);

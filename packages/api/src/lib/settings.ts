@@ -162,6 +162,23 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // F-57 — admin user-mutation routes consult this when the target is
+    // SCIM-provisioned. `strict` blocks the mutation with 409 SCIM_MANAGED;
+    // `override` allows it to proceed and stamps the audit row with
+    // `metadata.scim_override = true` so the bypass is reconstructable.
+    // No-op for workspaces with no SCIM provider configured.
+    key: "ATLAS_SCIM_OVERRIDE_POLICY",
+    section: "Security",
+    label: "SCIM Override Policy",
+    description:
+      "Admin mutations on SCIM-provisioned users: 'strict' blocks (409 SCIM_MANAGED) so the IdP stays canonical; 'override' allows but audits the override.",
+    type: "select",
+    options: ["strict", "override"],
+    default: "strict",
+    envVar: "ATLAS_SCIM_OVERRIDE_POLICY",
+    scope: "workspace",
+  },
 
   // Sessions
   {

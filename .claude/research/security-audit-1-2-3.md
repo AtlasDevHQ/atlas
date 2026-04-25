@@ -3518,7 +3518,31 @@ Phase 4 already established the pattern of recording overrides in
 `admin_action_log` with `status` + structured metadata; reuse the same
 shape.
 
-**Status:** P2 — issue to be filed.
+**Status:** **shipped** in 1.2.4 — closes #1853. New helper
+`packages/api/src/lib/auth/scim-provenance.ts` exposes
+`isSCIMProvisioned(userId, orgId?)` (mirroring the
+`account ↔ scimProvider` join in `ee/src/auth/scim.ts`),
+`getSCIMOverridePolicy(orgId)`, and the per-call decision API
+`evaluateSCIMGuard{,Async}({ userId, orgId, requestId })`. New workspace
+setting `ATLAS_SCIM_OVERRIDE_POLICY` (`strict` | `override`, default
+`strict`) controls policy. All six handlers now gate the mutation:
+`changeUserRoleRoute` / `banUserRoute` / `removeMembershipRoute` /
+`deleteUserRoute` / `revokeUserSessionsRoute` in `admin.ts`, plus
+`assignRoleRoute` in `admin-roles.ts`. Strict policy returns 409 with
+`{ error: "scim_managed", code: "SCIM_MANAGED", message, requestId }`
+(reusable `SCIMManagedSchema` in `shared-schemas.ts` so the OpenAPI doc
+declares the response). Override policy proceeds and stamps
+`metadata.scim_override = true` on the existing `logAdminAction` row —
+no new action verbs. Helper fails closed: EE off / no internal DB / 42P01
+"scimProvider does not exist" treat the user as non-SCIM (mutation
+proceeds), but a genuine query error propagates as 500. Test coverage:
+`lib/auth/__tests__/scim-provenance.test.ts` (23 unit tests across the
+resolution table, policy parser, and decision wiring) +
+`api/routes/__tests__/scim-provenance-enforcement.test.ts` (14 route-
+level tests covering strict-block + override-audit + non-SCIM passthrough
+per handler). Admin UI banner that surfaces the SCIM-managed badge is
+out-of-scope here — the API contract (409 + `code: "SCIM_MANAGED"`) is
+sufficient for the UI to layer on.
 
 ---
 
@@ -3769,7 +3793,7 @@ for each so future audits can short-circuit:
 | F-54 | P1 | Governance bypass | Scheduled-task executor runs agent without user context → approval workflows skipped | SOC 2 CC6.1 / CC7.2 (change management) | #1850 | shipped |
 | F-55 | P2 | Governance bypass | Slack / Teams / Discord agent invocations bypass approval workflows | SOC 2 CC6.1 / CC7.2 | #1851 | shipped |
 | F-56 | P2 | SSO bypass | `simple-key` and `byot` auth modes skip SSO enforcement | SOC 2 CC6.6 / ISO A.9.4.2 | #1852 | shipped |
-| F-57 | P2 | Identity-source bypass | Admin routes mutate SCIM-provisioned users without provisioning-origin check | ISO A.9.2 (user access management) | #1853 | open |
+| F-57 | P2 | Identity-source bypass | Admin routes mutate SCIM-provisioned users without provisioning-origin check | ISO A.9.2 (user access management) | #1853 | shipped |
 | F-58 | P3 | Doc / UX | Webhook receivers bypass IP allowlist by design — undocumented in admin UI | — | — | noted |
 | F-59 | P3 | Test debt | No tests for `simple-key` / `byot` SSO bypass branches; API-key SSO check inferred-only | — | — | shipped (folded into F-56) |
 | F-60 | P3 | Verified by-design | `/api/v1/demo/chat` runs agent without user context — non-sensitive demo data | — | — | noted |

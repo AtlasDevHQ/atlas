@@ -134,6 +134,10 @@ This provides multi-turn conversations within Slack threads.
 
 When the [action framework](/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/v1/slack/interactions`.
 
+### Query approval rules
+
+If your workspace has [approval rules](/enterprise/approval-workflows) configured (e.g. "queries against `customer_pii` require approval"), a Slack query that matches a rule will not execute. Atlas replaces the "Thinking…" message with a clear approval-required notice naming the rule, and queues the request in the admin console. An admin must approve it from the web app before it can run — there is no per-message approval workflow inside Slack itself. This is the same gate that runs from the chat UI; it can't be bypassed by routing through Slack.
+
 ---
 
 ## Message Formatting

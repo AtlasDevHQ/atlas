@@ -278,9 +278,56 @@ describe("deleteApprovalRule", () => {
 describe("checkApprovalRequired", () => {
   beforeEach(resetMocks);
 
-  it("returns false when no org ID", async () => {
+  it("returns false when no org ID and no rules exist anywhere", async () => {
+    // Default mock returns [] for internalQuery when no rows are queued —
+    // the defensive `anyApprovalRuleEnabled` lookup sees no rules, so
+    // checkApprovalRequired without an orgId is a clean no-op.
     const result = await run(checkApprovalRequired(undefined, ["users"], ["id"]));
     expect(result.required).toBe(false);
+    expect(result.identityMissing).toBeUndefined();
+  });
+
+  it("F-54/F-55 defensive: fails closed when neither org nor requesterId is bound and any rule exists", async () => {
+    // anyApprovalRuleEnabled queries for SELECT 1 FROM approval_rules
+    // WHERE enabled = true LIMIT 1. Queue a single row to simulate "rules
+    // exist somewhere" — the caller (lib/tools/sql.ts) then surfaces this
+    // through the existing user-identity check with a clear error instead
+    // of the previous silent bypass.
+    ee.queueMockRows([{ exists: 1 }]);
+    const result = await run(checkApprovalRequired(undefined, ["users"], ["id"]));
+    expect(result.required).toBe(true);
+    expect(result.identityMissing).toBe(true);
+    expect(result.matchedRules).toHaveLength(1);
+    expect(result.matchedRules[0].name).toBe("missing-requester-identity");
+  });
+
+  it("passes through when requesterId is bound but org is not (demo / single-user mode)", async () => {
+    // The defensive identity-missing check is meant to catch the
+    // scheduler / chat-platform / MCP shape (no caller bound any context).
+    // Demo and single-user-mode deployments deliberately bind a user
+    // identity without an org — the gate must not fire there because no
+    // org-scoped rule can match an unbound org anyway.
+    ee.queueMockRows([{ exists: 1 }]);
+    const result = await run(checkApprovalRequired(undefined, ["users"], ["id"], { requesterId: "demo:alice" }));
+    expect(result.required).toBe(false);
+    expect(result.identityMissing).toBeUndefined();
+  });
+
+  it("requesterId + orgId BOTH set still matches org-scoped rules (no short-circuit)", async () => {
+    // Defensive pin: the requesterId option short-circuits ONLY in the
+    // !orgId branch. With both bound (the normal authenticated /query
+    // path), checkApprovalRequired must proceed to the rule lookup. A
+    // future refactor that moved the requesterId short-circuit above the
+    // orgId check would silently bypass approval matching for
+    // authenticated users — this test catches it.
+    ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
+    const result = await run(
+      checkApprovalRequired("org-1", ["users"], ["id"], { requesterId: "user-1" }),
+    );
+    expect(result.required).toBe(true);
+    expect(result.matchedRules).toHaveLength(1);
+    expect(result.matchedRules[0].name).toBe("PII table approval");
+    expect(result.identityMissing).toBeUndefined();
   });
 
   it("returns false when enterprise is disabled", async () => {

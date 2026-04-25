@@ -3163,16 +3163,38 @@ as a hard block when `hasInternalDB()` AND any approval rule exists for
 the workspace. Currently the absence of orgId silently disables the
 gate; the safer default is fail-closed.
 
-**Status:** P1 — issue to be filed.
+**Status:** P1 — **shipped** (closes #1850). The scheduler executor now
+resolves `task.ownerId` to a real `AtlasUser` via the new
+`loadActorUser` helper in `lib/auth/actor.ts` and binds it through
+`executeAgentQuery({ actor })` so `checkApprovalRequired` sees a real
+`orgId` downstream. When an approval rule matches, the run is marked as
+**failed** with a message naming the rule + queued request id (rather
+than silently delivering results), and tasks whose creator no longer
+exists fail fast instead of running anonymously. **Spec deviation:**
+the original remediation called for surfacing this as
+`delivery_status = "pending_approval"`. That requires adding
+`pending_approval` to `DELIVERY_STATUSES` in
+`@useatlas/types/scheduled-task` — a wire-format bump to a published
+package, out of scope for this fix. The "failed run with a clear
+approval-required message" route is unambiguous in run-history UI and
+audit exports, and the queued approval request has its own row in
+`approval_requests` for the admin to act on; a follow-up can introduce
+the dedicated enum value when the next `@useatlas/types` minor lands.
+The defensive `orgId === undefined + rules-exist → fail-closed`
+belt-and-suspenders is implemented in `anyApprovalRuleEnabled` / the
+new `identityMissing` flag on `ApprovalMatchResult`. Pinned regression
+tests in `scheduler/__tests__/executor.test.ts` and the new
+`lib/__tests__/agent-query.test.ts`.
 
 ---
 
 ### F-55 — Approval workflows bypassed for Slack / Teams / Discord agent invocations ⬆ **P2**
 
 **Where:**
-- `packages/api/src/api/routes/slack.ts:302` (slash command path) and
-  `slack.ts:458` (events / threaded follow-up path) call
-  `executeAgentQuery(text)` with no user context.
+- The slash command path and the events / threaded follow-up path in
+  `packages/api/src/api/routes/slack.ts` call `executeAgentQuery(text)`
+  with no user context. (Line numbers shift across revisions; the call
+  sites are bracketed by `processAsync` blocks in each handler.)
 - `packages/api/src/api/routes/teams.ts` and `discord.ts` follow the
   same pattern (each forwards to the same agent helper without resolving
   the bot-platform user back to an Atlas user).
@@ -3208,7 +3230,33 @@ clear warning that disabling approval for chat platforms reduces the
 governance posture. Logging an `admin_action_log` row when the toggle
 flips closes the audit gap.
 
-**Status:** P2 — issue to be filed.
+**Status:** P2 — **shipped** (closes #1851). The Slack receiver
+(`api/routes/slack.ts`) now resolves the workspace installation and binds
+a synthetic `slack-bot:<teamId>:<userId>` actor — built by the new
+`botActorUser()` helper — into `executeAgentQuery({ actor })` so the
+approval gate fires for chat-platform queries. When a rule matches, the
+slash-command path replaces the "Thinking…" message and the thread
+follow-up posts a clear "approve via the Atlas admin console" notice
+(with the matched rule name) instead of returning query results.
+**Single-workspace env-token deployments** (no `installation.org_id`
+because the bot token comes from `SLACK_BOT_TOKEN` env without a paired
+DB row, or the DB row exists with `org_id = null`) fall through with no
+actor bound — the inline comment in `slack.ts` documents this as
+intentional, because there is no Atlas org to associate a rule with.
+On those deployments, the defensive `identityMissing` path in
+`approval.ts` only fires if rules exist somewhere in the DB; if not,
+the bot keeps working unchanged. The audit doc earlier referenced
+`routes/teams.ts` and `routes/discord.ts` "following the same pattern"
+— those files only carry OAuth installation routes today and never
+invoked `executeAgentQuery`, so nothing to fix there; the actor pattern
+is in place for whenever a webhook receiver lands. Regression tests in
+`api/__tests__/slack.test.ts` (5 new: slash + thread actor-binding,
+slash + thread approval-rejection, no-org fallthrough). The
+chat-platforms-bypass admin toggle stop-gap is **not** shipped — once
+the actor is bound the gate works as designed, and a toggle to
+re-disable it would re-introduce the governance gap this PR closes.
+Operators who want chat-platform queries to skip approval can do so by
+leaving the workspace's `approval_rules` table empty.
 
 ---
 
@@ -3617,8 +3665,8 @@ for each so future audits can short-circuit:
 | ID | Severity | Type | Surface | Compliance lens | Issue | Status |
 |---|---|---|---|---|---|---|
 | F-53 | P1 | Authorization gap | Custom-role permission flags never enforced at route layer | SOC 2 CC6.3 (granular authorization) | #1849 | open |
-| F-54 | P1 | Governance bypass | Scheduled-task executor runs agent without user context → approval workflows skipped | SOC 2 CC6.1 / CC7.2 (change management) | #1850 | open |
-| F-55 | P2 | Governance bypass | Slack / Teams / Discord agent invocations bypass approval workflows | SOC 2 CC6.1 / CC7.2 | #1851 | open |
+| F-54 | P1 | Governance bypass | Scheduled-task executor runs agent without user context → approval workflows skipped | SOC 2 CC6.1 / CC7.2 (change management) | #1850 | shipped |
+| F-55 | P2 | Governance bypass | Slack / Teams / Discord agent invocations bypass approval workflows | SOC 2 CC6.1 / CC7.2 | #1851 | shipped |
 | F-56 | P2 | SSO bypass | `simple-key` and `byot` auth modes skip SSO enforcement | SOC 2 CC6.6 / ISO A.9.4.2 | #1852 | open |
 | F-57 | P2 | Identity-source bypass | Admin routes mutate SCIM-provisioned users without provisioning-origin check | ISO A.9.2 (user access management) | #1853 | open |
 | F-58 | P3 | Doc / UX | Webhook receivers bypass IP allowlist by design — undocumented in admin UI | — | — | noted |

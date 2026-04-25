@@ -18,11 +18,12 @@ import { z } from "zod";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { createLogger } from "@atlas/api/lib/logger";
 import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
+import { botActorUser } from "@atlas/api/lib/auth/actor";
 import { verifySlackSignature } from "@atlas/api/lib/slack/verify";
 import { postMessage, updateMessage, postEphemeral, slackAPI } from "@atlas/api/lib/slack/api";
 import { formatQueryResponse, formatErrorResponse, formatActionApproval, formatActionResult } from "@atlas/api/lib/slack/format";
 import { approveAction, denyAction, getAction } from "@atlas/api/lib/tools/actions/handler";
-import { getBotToken, saveInstallation } from "@atlas/api/lib/slack/store";
+import { getBotToken, getInstallation, saveInstallation } from "@atlas/api/lib/slack/store";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import { createConversation, addMessage, getConversation, generateTitle } from "@atlas/api/lib/conversations";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
@@ -272,6 +273,26 @@ slack.openapi(commandsRoute, async (c) => {
         return;
       }
 
+      // F-55: bind a workspace bot actor so approval rules apply to chat
+      // invocations. Without an Atlas org id, `checkApprovalRequired`
+      // short-circuits and any rule-matching query runs ungated. The
+      // installation row carries org_id for multi-workspace deployments;
+      // single-workspace env-token deployments fall through to the
+      // unauthenticated path (no rules can match without an org).
+      const installation = await getInstallation(teamId);
+      const orgId = installation?.org_id ?? null;
+      // Guard `externalUserId` so an empty Slack `user_id` doesn't produce
+      // a synthetic actor id ending in `:` (e.g. `slack-bot:T123:`). Matches
+      // the thread-follow-up path's spread + truthy guard.
+      const actor = orgId
+        ? botActorUser({
+            platform: "slack",
+            externalId: teamId,
+            orgId,
+            ...(userId ? { externalUserId: userId } : {}),
+          })
+        : undefined;
+
       // Post initial "Thinking..." message to get a thread_ts
       const thinkingResult = await postMessage(token, {
         channel: channelId,
@@ -299,11 +320,40 @@ slack.openapi(commandsRoute, async (c) => {
         });
       }
 
-      const queryResult = await executeAgentQuery(text);
+      const queryResult = await executeAgentQuery(text, undefined, actor ? { actor } : undefined);
 
       // Persist messages for thread history
       addMessage({ conversationId, role: "user", content: text });
       addMessage({ conversationId, role: "assistant", content: queryResult.answer });
+
+      // F-55: when an approval rule matched, the SQL ran through the gate
+      // and was queued rather than executed. Replace the agent's free-form
+      // text with an unambiguous "approve via Atlas" message so the Slack
+      // user knows where to act. The approval request itself is already
+      // persisted by `executeSQL`.
+      if (queryResult.pendingApproval) {
+        const approvalText =
+          `:lock: This query requires approval before it can run. ` +
+          `Rule: *${queryResult.pendingApproval.ruleName}*. ` +
+          `Approve via the Atlas admin console.`;
+        log.info(
+          { channelId, teamId, approvalRequestId: queryResult.pendingApproval.requestId },
+          "Slack query held for approval",
+        );
+        const approvalUpdate = await updateMessage(token, {
+          channel: channelId,
+          ts: messageTs,
+          text: approvalText,
+          blocks: formatErrorResponse(approvalText),
+        });
+        if (!approvalUpdate.ok) {
+          log.error(
+            { error: approvalUpdate.error, channel: channelId, ts: messageTs },
+            "Failed to update Slack message with approval-required notice",
+          );
+        }
+        return;
+      }
 
       const blocks = formatQueryResponse(queryResult);
       const updateResult = await updateMessage(token, {
@@ -433,6 +483,20 @@ slack.openapi(eventsRoute, async (c) => {
             return;
           }
 
+          // F-55: bind a workspace bot actor so approval rules apply to
+          // thread follow-ups, same as the slash command path above.
+          const installation = await getInstallation(teamId);
+          const orgId = installation?.org_id ?? null;
+          const eventUserIdForActor = (event.user as string) ?? "";
+          const actor = orgId
+            ? botActorUser({
+                platform: "slack",
+                externalId: teamId,
+                orgId,
+                ...(eventUserIdForActor ? { externalUserId: eventUserIdForActor } : {}),
+              })
+            : undefined;
+
           // Check for existing conversation mapping
           const conversationId = await getConversationId(channel, threadTs);
 
@@ -455,13 +519,47 @@ slack.openapi(eventsRoute, async (c) => {
             }
           }
 
-          const queryResult = await executeAgentQuery(text, undefined, priorMessages ? { priorMessages } : undefined);
+          const queryOptions: Parameters<typeof executeAgentQuery>[2] = {
+            ...(priorMessages ? { priorMessages } : {}),
+            ...(actor ? { actor } : {}),
+          };
+          const queryResult = await executeAgentQuery(
+            text,
+            undefined,
+            Object.keys(queryOptions).length > 0 ? queryOptions : undefined,
+          );
 
           // Persist new messages for future follow-ups
           if (conversationId) {
             addMessage({ conversationId, role: "user", content: text });
             addMessage({ conversationId, role: "assistant", content: queryResult.answer });
           }
+
+          // F-55: surface approval requirement instead of the agent's raw text.
+          if (queryResult.pendingApproval) {
+            const approvalText =
+              `:lock: This query requires approval before it can run. ` +
+              `Rule: *${queryResult.pendingApproval.ruleName}*. ` +
+              `Approve via the Atlas admin console.`;
+            log.info(
+              { channel, teamId, threadTs, approvalRequestId: queryResult.pendingApproval.requestId },
+              "Slack thread follow-up held for approval",
+            );
+            const approvalPost = await postMessage(token, {
+              channel,
+              text: approvalText,
+              blocks: formatErrorResponse(approvalText),
+              thread_ts: threadTs,
+            });
+            if (!approvalPost.ok) {
+              log.error(
+                { error: approvalPost.error, channel, threadTs },
+                "Failed to post approval-required notice to Slack thread",
+              );
+            }
+            return;
+          }
+
           const blocks = formatQueryResponse(queryResult);
 
           const postResult = await postMessage(token, {
@@ -475,19 +573,18 @@ slack.openapi(eventsRoute, async (c) => {
           }
 
           // Post ephemeral approval prompts for pending actions
-          const eventUserId = (event.user as string) ?? "";
-          if (queryResult.pendingActions?.length && eventUserId) {
+          if (queryResult.pendingActions?.length && eventUserIdForActor) {
             for (const action of queryResult.pendingActions) {
               const approvalBlocks = formatActionApproval(action);
               const ephResult = await postEphemeral(token, {
                 channel,
-                user: eventUserId,
+                user: eventUserIdForActor,
                 text: `Action requires approval: ${action.summary}`,
                 blocks: approvalBlocks,
                 thread_ts: threadTs,
               });
               if (!ephResult.ok) {
-                log.error({ error: ephResult.error, channel, userId: eventUserId, actionId: action.id }, "Failed to post ephemeral action approval prompt");
+                log.error({ error: ephResult.error, channel, userId: eventUserIdForActor, actionId: action.id }, "Failed to post ephemeral action approval prompt");
               }
             }
           }

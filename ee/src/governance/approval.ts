@@ -393,7 +393,66 @@ export const deleteApprovalRule = (orgId: string, ruleId: string): Effect.Effect
 export interface ApprovalMatchResult {
   required: boolean;
   matchedRules: ApprovalRule[];
+  /**
+   * Set when `checkApprovalRequired` was invoked with neither `orgId` nor
+   * `requesterId` and at least one approval rule exists somewhere in the
+   * database. Callers (`lib/tools/sql.ts`) treat this as a hard block —
+   * running the query would silently bypass governance because no caller
+   * has bound any context at all. A bound `requesterId` without `orgId`
+   * (demo / single-user mode) does NOT set this flag and falls through to
+   * `required: false`. F-54 / F-55 defensive belt-and-suspenders.
+   */
+  identityMissing?: boolean;
 }
+
+/**
+ * Sentinel rule used to surface "approval gate active but no requester
+ * identity" through the existing `required: true` path. The caller's
+ * user-identity check then short-circuits with a clear error instead of
+ * silently executing.
+ */
+const IDENTITY_MISSING_RULE: ApprovalRule = {
+  id: "__identity_missing__",
+  orgId: "__unknown__",
+  name: "missing-requester-identity",
+  ruleType: "table",
+  pattern: "*",
+  threshold: null,
+  enabled: true,
+  createdAt: new Date(0).toISOString(),
+  updatedAt: new Date(0).toISOString(),
+};
+
+/**
+ * Returns true when at least one enabled approval rule exists in the
+ * database, regardless of org. Used as a defensive check when an agent
+ * invocation arrives without an `orgId` — the previous behaviour
+ * (`checkApprovalRequired(undefined, …) → { required: false }`) silently
+ * bypassed governance for any caller that forgot to bind a user.
+ */
+export const anyApprovalRuleEnabled = (): Effect.Effect<boolean, never> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return false;
+    return yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<{ exists: number }>(
+          `SELECT 1 AS exists FROM approval_rules WHERE enabled = true LIMIT 1`,
+          [],
+        ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.map((rows) => rows.length > 0));
+  }).pipe(
+    Effect.catchAll((err: Error) => {
+      log.warn(
+        { err: err.message },
+        "anyApprovalRuleEnabled lookup failed — assuming rules exist (fail-closed)",
+      );
+      // Fail-closed: when we can't tell, assume rules exist so the caller
+      // blocks anonymous queries. The alternative (assuming none) is the
+      // exact silent-bypass shape this defensive check exists to prevent.
+      return Effect.succeed(true);
+    }),
+  );
 
 /**
  * Check whether a query requires approval based on the org's rules.
@@ -402,14 +461,52 @@ export interface ApprovalMatchResult {
  * This function gracefully degrades when enterprise is disabled, returning
  * `{ required: false }` instead of throwing. Only `EnterpriseError` is
  * caught — unexpected errors propagate to avoid silently bypassing governance.
+ *
+ * F-54 / F-55 defensive: when called with neither `orgId` nor `requesterId`
+ * while any rule exists in the database, returns `{ required: true,
+ * identityMissing: true }` with a sentinel rule so the caller's user-
+ * identity gate fires. This closes the silent-bypass that scheduler /
+ * chat-platform paths used to hit before they were retrofitted to bind a
+ * user. A bound `requesterId` without `orgId` (demo / single-user mode) is
+ * an explicit "this caller has a user but no org" signal and falls
+ * through to `required: false` — there's nothing for an org-scoped rule
+ * to match against, so the gate has nothing to do.
  */
 export const checkApprovalRequired = (
   orgId: string | undefined,
   tablesAccessed: string[],
   columnsAccessed: string[],
+  options?: { requesterId?: string | undefined },
 ): Effect.Effect<ApprovalMatchResult, never> =>
   Effect.gen(function* () {
-    if (!orgId || !hasInternalDB()) {
+    if (!hasInternalDB()) {
+      return { required: false, matchedRules: [] };
+    }
+
+    if (!orgId) {
+      // No org context. If the caller has bound a user (demo, single-user
+      // mode), pass through cleanly — no rule can match an unbound org and
+      // the operator made the no-org choice deliberately. If the caller
+      // has bound NEITHER an org NOR a user, it's the scheduler / chat-
+      // platform / MCP shape: fail closed via `identityMissing` so the
+      // caller's user-identity gate (lib/tools/sql.ts) returns a clear
+      // "approve via the Atlas web app" error instead of the previous
+      // silent bypass.
+      if (options?.requesterId) {
+        return { required: false, matchedRules: [] };
+      }
+      const ruleExists = yield* anyApprovalRuleEnabled();
+      if (ruleExists) {
+        log.warn(
+          {},
+          "checkApprovalRequired called with neither orgId nor requesterId while rules exist — failing closed",
+        );
+        return {
+          required: true,
+          matchedRules: [IDENTITY_MISSING_RULE],
+          identityMissing: true,
+        };
+      }
       return { required: false, matchedRules: [] };
     }
 
@@ -484,6 +581,26 @@ export const createApprovalRequest = (opts: {
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("approval-workflows");
     yield* requireInternalDBEffect("approval queue", () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
+
+    // F-54/F-55 defense-in-depth: refuse to insert any row whose ruleId or
+    // orgId smells like an internal sentinel. The `__identity_missing__`
+    // rule + `__unknown__` org are produced by the defensive identityMissing
+    // path and are intercepted by the user-identity gate in
+    // `lib/tools/sql.ts` before this function is ever called. A future
+    // refactor that swapped the order of those checks would silently insert
+    // a sentinel row into `approval_queue` and present operators with a
+    // request whose rule_id has no FK target. Fail loud here so the bug
+    // shows up in the run log instead of the queue.
+    if (opts.ruleId.startsWith("__") || opts.orgId.startsWith("__")) {
+      log.error(
+        { ruleId: opts.ruleId, orgId: opts.orgId, requesterId: opts.requesterId },
+        "createApprovalRequest received a sentinel ruleId/orgId — refusing to queue",
+      );
+      return yield* Effect.fail(new ApprovalError({
+        message: "createApprovalRequest received a sentinel rule or org id — caller did not gate on identityMissing",
+        code: "validation",
+      }));
+    }
 
     const expiryHours = getExpiryHours();
 

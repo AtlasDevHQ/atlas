@@ -85,6 +85,7 @@ describe("scheduled-task-types", () => {
       const task: ScheduledTask = {
         id: "uuid",
         ownerId: "u1",
+        orgId: null,
         name: "Daily Revenue",
         question: "What was yesterday's revenue?",
         cronExpression: "0 9 * * 1",

@@ -86,10 +86,78 @@ const mockGetBotToken: Mock<(teamId: string) => Promise<string | null>> = mock((
 
 const mockSaveInstallation: Mock<(teamId: string, token: string) => Promise<void>> = mock(() => Promise.resolve());
 
+const mockGetInstallation: Mock<(teamId: string) => Promise<{
+  team_id: string;
+  bot_token: string;
+  org_id: string | null;
+  workspace_name: string | null;
+  installed_at: string;
+} | null>> = mock((teamId: string) =>
+  Promise.resolve({
+    team_id: teamId,
+    bot_token: "xoxb-test-token",
+    org_id: "org-xyz",
+    workspace_name: "TestWorkspace",
+    installed_at: new Date().toISOString(),
+  }),
+);
+
 mock.module("@atlas/api/lib/slack/store", () => ({
   getBotToken: mockGetBotToken,
+  getInstallation: mockGetInstallation,
+  getInstallationByOrg: mock(() => Promise.resolve(null)),
   saveInstallation: mockSaveInstallation,
+  deleteInstallation: mock(() => Promise.resolve()),
+  deleteInstallationByOrg: mock(() => Promise.resolve(false)),
+  ENV_TEAM_ID: "env" as const,
 }));
+
+// F-55: capture the RequestContext that the agent runs under so route tests
+// can assert the chat-platform actor was bound. The existing mockRunAgent
+// already covers the agent loop; this proxy snoops the AsyncLocalStorage
+// state at the moment runAgent is invoked. Default mockRunAgent reads no
+// context, so we wrap the mock to capture it then delegate to the original
+// behaviour. Tests can also override the agent's tool result so we can
+// simulate an approval-required response without standing up a real
+// approval gate.
+const observedAgentContexts: Array<{ requestId?: string; user?: { id: string; activeOrganizationId?: string | undefined } | undefined }> = [];
+let pendingApprovalToolResultOverride: { approval_required: true; approval_request_id: string; matched_rules: string[]; message: string } | null = null;
+const baseRunAgentImpl = mockRunAgent.getMockImplementation();
+mockRunAgent.mockImplementation(async (opts) => {
+  const { getRequestContext } = await import("@atlas/api/lib/logger");
+  const ctx = getRequestContext();
+  observedAgentContexts.push({
+    ...(ctx?.requestId !== undefined ? { requestId: ctx.requestId } : {}),
+    ...(ctx?.user !== undefined ? {
+      user: {
+        id: ctx.user.id,
+        ...(ctx.user.activeOrganizationId !== undefined ? { activeOrganizationId: ctx.user.activeOrganizationId } : {}),
+      },
+    } : {}),
+  });
+  if (pendingApprovalToolResultOverride) {
+    return {
+      text: Promise.resolve("approval required"),
+      steps: Promise.resolve([
+        {
+          toolResults: [
+            {
+              toolName: "executeSQL",
+              input: { sql: "SELECT * FROM customer_pii" },
+              output: { success: false, ...pendingApprovalToolResultOverride },
+            },
+          ],
+        },
+      ]),
+      totalUsage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+    };
+  }
+  return baseRunAgentImpl ? baseRunAgentImpl(opts) : {
+    text: Promise.resolve("42 active users"),
+    steps: Promise.resolve([]),
+    totalUsage: Promise.resolve({ inputTokens: 100, outputTokens: 50 }),
+  };
+});
 
 const mockGetConversationId: Mock<(channelId: string, threadTs: string) => Promise<string | null>> = mock(() =>
   Promise.resolve(null),
@@ -198,6 +266,18 @@ describe("/api/v1/slack", () => {
     mockSlackAPI.mockClear();
     mockGetBotToken.mockClear();
     mockSaveInstallation.mockClear();
+    mockGetInstallation.mockClear();
+    mockGetInstallation.mockImplementation((teamId: string) =>
+      Promise.resolve({
+        team_id: teamId,
+        bot_token: "xoxb-test-token",
+        org_id: "org-xyz",
+        workspace_name: "TestWorkspace",
+        installed_at: new Date().toISOString(),
+      }),
+    );
+    observedAgentContexts.length = 0;
+    pendingApprovalToolResultOverride = null;
     mockGetConversationId.mockClear();
     mockSetConversationId.mockClear();
     mockCreateConversation.mockClear();
@@ -943,6 +1023,242 @@ describe("/api/v1/slack", () => {
       } finally {
         config._setConfigForTest(null);
       }
+    });
+  });
+
+  // ── F-55 regression tests ────────────────────────────────────────────
+  // The Slack receiver used to call executeAgentQuery without binding any
+  // user, so checkApprovalRequired short-circuited and any rule-matching
+  // query ran ungated. These tests pin the new behaviour: an installation's
+  // org_id is resolved up front and an approval-required result is surfaced
+  // to the user with a "approve via the Atlas web app" message instead of
+  // delivering query results.
+
+  describe("F-55: chat-platform approval gate", () => {
+    it("binds the workspace's installation org as the agent actor for slash commands", async () => {
+      const app = await getApp();
+      const body = "token=xxx&team_id=T999&channel_id=C456&user_id=U789&text=show+me+pii";
+      const { signature, timestamp } = makeSignature(body);
+
+      const resp = await app.request("/api/v1/slack/commands", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body,
+      });
+
+      expect(resp.status).toBe(200);
+      // Wait for async fire-and-forget processing
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(mockGetInstallation).toHaveBeenCalledWith("T999");
+      expect(observedAgentContexts).toHaveLength(1);
+      // Synthetic chat-platform actor — id format `slack-bot:<teamId>:<userId>`,
+      // org from the installation row so checkApprovalRequired sees a real orgId.
+      expect(observedAgentContexts[0].user?.id).toBe("slack-bot:T999:U789");
+      expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
+    });
+
+    it("rejects an approval-required query with a clear Slack message instead of executing", async () => {
+      pendingApprovalToolResultOverride = {
+        approval_required: true,
+        approval_request_id: "approval-req-77",
+        matched_rules: ["Block PII reads"],
+        message: "This query requires approval before execution.",
+      };
+
+      const app = await getApp();
+      const body = "token=xxx&team_id=T999&channel_id=C456&user_id=U789&text=show+me+pii";
+      const { signature, timestamp } = makeSignature(body);
+
+      const resp = await app.request("/api/v1/slack/commands", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      // The approval-required path replaces the "Thinking..." message
+      // with a clear approval notice. Find the update that mentions the
+      // rule — there may be other updateMessage calls in the test session.
+      const updateCalls = mockUpdateMessage.mock.calls;
+      const approvalUpdate = updateCalls.find((call) => {
+        const params = call[1] as { text?: string } | undefined;
+        return typeof params?.text === "string" && params.text.includes("Block PII reads");
+      });
+      expect(approvalUpdate).toBeDefined();
+      const approvalParams = approvalUpdate?.[1] as { text?: string };
+      expect(approvalParams.text).toContain("requires approval");
+      expect(approvalParams.text).toContain("Atlas admin console");
+    });
+
+    it("does not bind an actor when the installation has no org_id (single-workspace env-token deployment)", async () => {
+      mockGetInstallation.mockResolvedValueOnce({
+        team_id: "T999",
+        bot_token: "xoxb-test-token",
+        org_id: null,
+        workspace_name: null,
+        installed_at: new Date().toISOString(),
+      });
+
+      const app = await getApp();
+      const body = "token=xxx&team_id=T999&channel_id=C456&user_id=U789&text=hello";
+      const { signature, timestamp } = makeSignature(body);
+
+      const resp = await app.request("/api/v1/slack/commands", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Without an org binding, no user is bound — the agent runs as
+      // unauthenticated and the defensive check in approval.ts will
+      // fail-closed if any rule exists. Non-rule queries continue to work.
+      expect(observedAgentContexts).toHaveLength(1);
+      expect(observedAgentContexts[0].user).toBeUndefined();
+    });
+
+    it("binds the workspace's installation org as the agent actor for thread follow-ups", async () => {
+      // Slack's events handler is the second F-55 surface — it processes
+      // thread replies and runs the agent with conversation history. A
+      // regression that drops `actor` here is just as severe as the slash-
+      // command path, so pin it independently.
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T999",
+        event: {
+          type: "message",
+          text: "what about last quarter's pii?",
+          user: "U-thread-author",
+          channel: "C456",
+          thread_ts: "1234567890.000001",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(mockGetInstallation).toHaveBeenCalledWith("T999");
+      expect(observedAgentContexts).toHaveLength(1);
+      expect(observedAgentContexts[0].user?.id).toBe("slack-bot:T999:U-thread-author");
+      expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
+    });
+
+    it("thread follow-up with a missing event.user still binds an actor (no trailing colon in id)", async () => {
+      // Defensive pin: previously the slash-command path passed
+      // `externalUserId: userId` without the truthy guard, producing an
+      // actor id ending in `:` (e.g. `slack-bot:T999:`) when Slack omitted
+      // the user id. The thread path always guarded with a spread; both
+      // paths now do. This test asserts the resulting actor id format is
+      // clean even when `event.user` is absent.
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T999",
+        event: {
+          type: "message",
+          text: "anonymous thread reply",
+          // event.user intentionally omitted
+          channel: "C456",
+          thread_ts: "1234567890.000001",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(observedAgentContexts).toHaveLength(1);
+      // No trailing colon: `slack-bot:T999` (not `slack-bot:T999:`)
+      expect(observedAgentContexts[0].user?.id).toBe("slack-bot:T999");
+      expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
+    });
+
+    it("rejects approval-required thread follow-ups with a clear thread message", async () => {
+      pendingApprovalToolResultOverride = {
+        approval_required: true,
+        approval_request_id: "approval-req-thread-99",
+        matched_rules: ["Block PII reads"],
+        message: "This query requires approval before execution.",
+      };
+
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T999",
+        event: {
+          type: "message",
+          text: "show me customer pii",
+          user: "U-thread-author",
+          channel: "C456",
+          thread_ts: "1234567890.000001",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Thread approval surfaces as a postMessage (not updateMessage) on
+      // the same thread_ts. Find the call that mentions the rule.
+      const postCalls = mockPostMessage.mock.calls;
+      const approvalPost = postCalls.find((call) => {
+        const params = call[1] as { text?: string; thread_ts?: string } | undefined;
+        return typeof params?.text === "string" && params.text.includes("Block PII reads");
+      });
+      expect(approvalPost).toBeDefined();
+      const approvalParams = approvalPost?.[1] as { text?: string; thread_ts?: string };
+      expect(approvalParams.text).toContain("requires approval");
+      expect(approvalParams.text).toContain("Atlas admin console");
+      expect(approvalParams.thread_ts).toBe("1234567890.000001");
     });
   });
 });

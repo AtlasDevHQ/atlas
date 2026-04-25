@@ -9,6 +9,7 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
     id: "task-123",
     ownerId: "u1",
+    orgId: null,
     name: "Daily Revenue",
     question: "What was yesterday's revenue?",
     cronExpression: "0 9 * * 1",

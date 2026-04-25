@@ -1006,24 +1006,48 @@ Rules:
       // stays undefined — their audit entries store NULL for tables/columns_accessed.
       const classification = initial.classification;
 
-      // Step 3: Enterprise approval check (fail-open for availability, hard-fail for request creation)
+      // Step 3: Enterprise approval check.
+      // F-54 / F-55: this gate is fail-CLOSED. The previous behaviour
+      // (catch → log.warn → proceed without approvalMatch) silently
+      // bypassed governance whenever the EE module failed to import or
+      // `checkApprovalRequired` rejected — a "catch { return false } on a
+      // security check is a bug" pattern called out in CLAUDE.md. The new
+      // shape returns a clear "approval system unavailable" error to the
+      // agent so the operator sees the failure instead of silently
+      // executing approval-gated queries.
+      //
+      // When the caller binds no user, `checkApprovalRequired` itself
+      // now returns `required: true` with `identityMissing: true` if any
+      // rule exists in the database; the Phase 2 user-identity gate
+      // below routes that into the "approve via the Atlas web app" error.
       if (classification) {
         const approvalResult = yield* Effect.tryPromise({
           try: async () => {
-            // Phase 1: check availability (fail open)
-            let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
+            let approvalMatch:
+              | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean };
             try {
               const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
               const checkReqCtx = getRequestContext();
               const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+              const checkUserId = checkReqCtx?.user?.id;
+              // Pass requesterId so the defensive identity-missing check
+              // distinguishes "scheduler/Slack/MCP forgot to bind anything"
+              // (fail-closed) from "demo / single-user mode bound a user
+              // but no org" (pass-through, no rule can match anyway).
               approvalMatch = await Effect.runPromise(checkApprovalRequired(
                 checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+                checkUserId ? { requesterId: checkUserId } : undefined,
               ));
             } catch (err) {
-              log.warn(
+              log.error(
                 { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-                "Approval check failed — proceeding without approval gate",
+                "Approval check failed — blocking query (fail-closed)",
               );
+              return {
+                success: false,
+                error: "Approval system unavailable — query blocked. Contact your administrator.",
+                executionMs: 0,
+              };
             }
 
             // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
@@ -1036,7 +1060,7 @@ Rules:
 
               if (!userId || !approvalOrgId) {
                 log.warn(
-                  { connectionId: connId, orgId: approvalOrgId },
+                  { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
                   "Approval required but user identity unavailable — blocking query",
                 );
                 return {

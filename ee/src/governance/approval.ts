@@ -460,16 +460,21 @@ export const anyApprovalRuleEnabled = (): Effect.Effect<boolean, never> =>
  * `{ required: false }` instead of throwing. Only `EnterpriseError` is
  * caught — unexpected errors propagate to avoid silently bypassing governance.
  *
- * F-54 / F-55 defensive: when called without `orgId` while any rule exists
- * in the database, returns `{ required: true, identityMissing: true }` with
- * a sentinel rule so the caller's user-identity gate fires. This closes the
- * silent-bypass that scheduler / chat-platform paths used to hit before
- * they were retrofitted to bind a user.
+ * F-54 / F-55 defensive: when called with neither `orgId` nor `requesterId`
+ * while any rule exists in the database, returns `{ required: true,
+ * identityMissing: true }` with a sentinel rule so the caller's user-
+ * identity gate fires. This closes the silent-bypass that scheduler /
+ * chat-platform paths used to hit before they were retrofitted to bind a
+ * user. A bound `requesterId` without `orgId` (demo / single-user mode) is
+ * an explicit "this caller has a user but no org" signal and falls
+ * through to `required: false` — there's nothing for an org-scoped rule
+ * to match against, so the gate has nothing to do.
  */
 export const checkApprovalRequired = (
   orgId: string | undefined,
   tablesAccessed: string[],
   columnsAccessed: string[],
+  options?: { requesterId?: string | undefined },
 ): Effect.Effect<ApprovalMatchResult, never> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) {
@@ -477,15 +482,22 @@ export const checkApprovalRequired = (
     }
 
     if (!orgId) {
-      // No org context — defensively block the query if any rule exists.
-      // The caller (`lib/tools/sql.ts`) already fails closed on missing
-      // user identity when `required: true`, so we route through that path
-      // rather than introducing a second error shape.
+      // No org context. If the caller has bound a user (demo, single-user
+      // mode), pass through cleanly — no rule can match an unbound org and
+      // the operator made the no-org choice deliberately. If the caller
+      // has bound NEITHER an org NOR a user, it's the scheduler / chat-
+      // platform / MCP shape: fail closed via `identityMissing` so the
+      // caller's user-identity gate (lib/tools/sql.ts) returns a clear
+      // "approve via the Atlas web app" error instead of the previous
+      // silent bypass.
+      if (options?.requesterId) {
+        return { required: false, matchedRules: [] };
+      }
       const ruleExists = yield* anyApprovalRuleEnabled();
       if (ruleExists) {
         log.warn(
           {},
-          "checkApprovalRequired called without orgId while rules exist — failing closed",
+          "checkApprovalRequired called with neither orgId nor requesterId while rules exist — failing closed",
         );
         return {
           required: true,

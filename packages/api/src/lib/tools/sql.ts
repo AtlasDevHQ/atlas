@@ -1024,14 +1024,19 @@ Rules:
         const approvalResult = yield* Effect.tryPromise({
           try: async () => {
             let approvalMatch:
-              | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean }
-              | null = null;
+              | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean };
             try {
               const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
               const checkReqCtx = getRequestContext();
               const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+              const checkUserId = checkReqCtx?.user?.id;
+              // Pass requesterId so the defensive identity-missing check
+              // distinguishes "scheduler/Slack/MCP forgot to bind anything"
+              // (fail-closed) from "demo / single-user mode bound a user
+              // but no org" (pass-through, no rule can match anyway).
               approvalMatch = await Effect.runPromise(checkApprovalRequired(
                 checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+                checkUserId ? { requesterId: checkUserId } : undefined,
               ));
             } catch (err) {
               log.error(

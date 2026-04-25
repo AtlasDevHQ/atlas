@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 // RFC 8288 / 9727 link relations advertised on every docs response.
-// Single line so curl -I shows it cleanly.
 const LINK_HEADER = [
   '</.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"',
   '<https://docs.useatlas.dev/api-reference/openapi.json>; rel="service-desc"; type="application/openapi+json"',
@@ -28,27 +27,21 @@ function prefersMarkdown(req: NextRequest): boolean {
  * markdown rendering (title + processed MDX) via getLLMText(), so
  * Accept-based negotiation is just an internal rewrite to that handler.
  */
+// Paths that don't have a markdown twin. Most static-asset extensions
+// are already filtered by the matcher regex below; this list covers the
+// remaining route prefixes (Fumadocs internals, our own llms* + .well-
+// known surfaces) plus the document-format extensions matcher doesn't
+// strip. Keep both layers — the matcher is a perf gate, this is a
+// correctness gate against a future matcher refactor.
+const MARKDOWN_TWIN_SKIP_PREFIXES = ["/_next/", "/api/", "/.well-known/", "/llms", "/docs-og/"];
+const MARKDOWN_TWIN_SKIP_SUFFIXES = [".mdx", ".txt", ".json", ".xml"];
+
 function markdownTwinPath(pathname: string): string | null {
   // Homepage maps to the index.mdx page; the bare /llms.mdx route returns
   // 404 because source.getPage([]) doesn't resolve. /llms.mdx/index does.
   if (pathname === "/" || pathname === "/index") return "/llms.mdx/index";
-  // Skip API surfaces, well-known paths, and Fumadocs internals — they
-  // don't have a markdown twin and rewriting would 404 confusingly.
-  if (
-    pathname.startsWith("/_next/") ||
-    pathname.startsWith("/api/") ||
-    pathname.startsWith("/.well-known/") ||
-    pathname.startsWith("/llms") ||
-    pathname.startsWith("/docs-og/") ||
-    pathname.endsWith(".mdx") ||
-    pathname.endsWith(".txt") ||
-    pathname.endsWith(".json") ||
-    pathname.endsWith(".svg") ||
-    pathname.endsWith(".png") ||
-    pathname.endsWith(".ico")
-  ) {
-    return null;
-  }
+  if (MARKDOWN_TWIN_SKIP_PREFIXES.some((p) => pathname.startsWith(p))) return null;
+  if (MARKDOWN_TWIN_SKIP_SUFFIXES.some((s) => pathname.endsWith(s))) return null;
   const trimmed = pathname.replace(/\/+$/, "");
   return `/llms.mdx${trimmed}`;
 }
@@ -73,9 +66,8 @@ export function middleware(req: NextRequest): NextResponse {
   return res;
 }
 
-// Skip Next internals, static assets, and the search API. We deliberately
-// run on /.well-known/* so the Link header advertises them on the canonical
-// docs origin.
+// Run on /.well-known/* so the Link header advertises them on the
+// canonical docs origin.
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|api/search|.*\\.(?:woff2?|png|jpg|jpeg|gif|webp|avif|css|js)).*)",

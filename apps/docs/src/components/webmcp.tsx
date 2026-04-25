@@ -2,10 +2,9 @@
 
 import { useEffect } from "react";
 
-// Provides tools to in-browser agents via Chrome's experimental webmcp
-// proposal (navigator.modelContext). No-op elsewhere. Response envelope
-// mirrors MCP server tools/call since the WebMCP draft hasn't finalized
-// its own shape — track at https://webmachinelearning.github.io/webmcp/.
+// Chrome's experimental webmcp proposal (navigator.modelContext).
+// Response envelope mirrors MCP tools/call until the WebMCP draft
+// finalizes its shape: https://webmachinelearning.github.io/webmcp/.
 type ModelContextTool = {
   name: string;
   description: string;
@@ -85,21 +84,41 @@ const TOOLS: ModelContextTool[] = [
       if (typeof input.slug !== "string") {
         return { content: [{ type: "text", text: "slug must be a string." }] };
       }
-      const slug = input.slug.trim().replace(/^\/+/, "").replace(/\.mdx?$/, "");
-      if (!slug) {
+      const normalized = input.slug.trim().replace(/^\/+/, "").replace(/\.mdx?$/, "");
+      if (!normalized) {
         return { content: [{ type: "text", text: "No slug provided." }] };
       }
-      const url = `https://docs.useatlas.dev/${slug}.mdx`;
+      // Defense-in-depth: same-origin URL parsing already keeps fetches
+      // within docs.useatlas.dev, but reject obvious garbage early so the
+      // agent gets a clear error before a wasted round-trip.
+      if (!/^[a-z0-9][a-z0-9/_-]*$/i.test(normalized)) {
+        return {
+          content: [{ type: "text", text: `Invalid slug: ${input.slug}. Use lowercase letters, digits, '/', '_', or '-'.` }],
+        };
+      }
+      const url = `https://docs.useatlas.dev/${normalized}.mdx`;
       try {
         const res = await fetch(url, { headers: { Accept: "text/markdown,text/plain" } });
         if (!res.ok) {
-          return {
-            content: [{ type: "text", text: `Page not found: ${url} (HTTP ${res.status}).` }],
-          };
+          console.warn(
+            "[webmcp] atlas_get_doc_markdown non-OK status:",
+            url,
+            res.status,
+          );
+          const transient = res.status >= 500 || res.status === 429;
+          const message = transient
+            ? `Upstream error fetching ${url} (HTTP ${res.status}). Retry shortly.`
+            : `Page not found: ${url} (HTTP ${res.status}).`;
+          return { content: [{ type: "text", text: message }] };
         }
         const md = await res.text();
         return { content: [{ type: "text", text: md }] };
       } catch (err) {
+        console.warn(
+          "[webmcp] atlas_get_doc_markdown fetch failed:",
+          url,
+          err instanceof Error ? err.message : String(err),
+        );
         return {
           content: [
             {
@@ -128,6 +147,9 @@ export default function WebMCP() {
     const mc = (navigator as WebMcpNavigator).modelContext;
     if (!mc?.provideContext) return;
     Promise.resolve(mc.provideContext({ tools: TOOLS })).catch((err: unknown) => {
+      // console.warn so the failure is visible at the default devtools
+      // level — silent breakage of the whole webmcp surface is exactly
+      // what we don't want to ship.
       console.warn(
         "[webmcp] provideContext failed:",
         err instanceof Error ? err.message : String(err),

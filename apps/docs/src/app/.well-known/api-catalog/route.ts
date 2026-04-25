@@ -36,7 +36,7 @@ const BODY = {
       ],
     },
   ],
-};
+} as const;
 
 export function GET(): Response {
   return new Response(JSON.stringify(BODY, null, 2), {

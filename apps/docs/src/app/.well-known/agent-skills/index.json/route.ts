@@ -1,8 +1,6 @@
 // Agent Skills Discovery RFC v0.2.0. The skills surface for the docs
 // origin: machine-readable summary, full corpus, OpenAPI spec, and the
-// MCP server card. Sha256 digests are computed at build time over the
-// referenced URL contents (llms.txt, llms-full.txt are dynamic so we
-// omit the digest there — agents that need it can recompute on fetch).
+// MCP server card.
 export const dynamic = "force-static";
 
 const BODY = {
@@ -38,7 +36,7 @@ const BODY = {
       url: "https://docs.useatlas.dev/.well-known/mcp/server-card.json",
     },
   ],
-};
+} as const;
 
 export function GET(): Response {
   return new Response(JSON.stringify(BODY, null, 2), {

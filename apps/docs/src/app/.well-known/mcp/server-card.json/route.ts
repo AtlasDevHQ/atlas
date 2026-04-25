@@ -53,7 +53,7 @@ const BODY = {
     apiCatalog: "https://docs.useatlas.dev/.well-known/api-catalog",
     openapi: "https://docs.useatlas.dev/api-reference/openapi.json",
   },
-};
+} as const;
 
 export function GET(): Response {
   return new Response(JSON.stringify(BODY, null, 2), {

@@ -2,9 +2,6 @@
 # RFC 9309 (Robots Exclusion Protocol)
 # Content-Signal: https://contentsignals.org/
 
-# General crawlers — full access. Docs are public + intentionally
-# discoverable. Search indexing yes, training no, agent input yes (we
-# want agents to recommend Atlas based on these docs).
 User-agent: *
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 Allow: /

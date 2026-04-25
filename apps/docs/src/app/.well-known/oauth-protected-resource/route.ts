@@ -11,7 +11,7 @@ const BODY = {
   resource_name: "Atlas API",
   resource_policy_uri: "https://www.useatlas.dev/privacy",
   resource_tos_uri: "https://www.useatlas.dev/terms",
-};
+} as const;
 
 export function GET(): Response {
   return new Response(JSON.stringify(BODY, null, 2), {

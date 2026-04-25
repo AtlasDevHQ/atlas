@@ -65,39 +65,11 @@ export default function DashboardViewPage() {
   const [density, setDensity] = useState<Density>("comfortable");
 
   // Optimistic layout — applied on drop/resize end so the UI doesn't wait for
-  // the PATCH round-trip. Cleared once `dashboard` reflects the change. On
-  // failure the entry is dropped and `mutationError` surfaces in the banner.
+  // the PATCH round-trip. Dropped explicitly when the mutation settles. No
+  // effect-driven reconciliation against `dashboard` — the previous version
+  // of that pattern cascaded into React #185 once refetches started landing
+  // fast enough during multi-drag sessions.
   const [optimisticLayouts, setOptimisticLayouts] = useState<Record<string, DashboardCardLayout>>({});
-
-  useEffect(() => {
-    if (!dashboard) return;
-    const settled: Record<string, DashboardCardLayout> = {};
-    for (const card of dashboard.cards) {
-      if (card.layout) settled[card.id] = card.layout;
-    }
-    setOptimisticLayouts((prev) => {
-      // Walk `prev` and decide which optimistic entries are still ahead of the
-      // server. Crucially: if nothing changed, return `prev` by reference so
-      // React's Object.is short-circuits the state update — without this guard
-      // every refetch produces a new `{}` ref and during a multi-drag session
-      // the effect → setState → refetch → effect chain can cascade into
-      // "Maximum update depth exceeded" (#185).
-      let changed = false;
-      const next: Record<string, DashboardCardLayout> = {};
-      for (const [cardId, optimistic] of Object.entries(prev)) {
-        const server = settled[cardId];
-        const stillAhead =
-          !server
-          || server.x !== optimistic.x
-          || server.y !== optimistic.y
-          || server.w !== optimistic.w
-          || server.h !== optimistic.h;
-        if (stillAhead) next[cardId] = optimistic;
-        else changed = true;
-      }
-      return changed ? next : prev;
-    });
-  }, [dashboard]);
 
   // Skip when typing in inputs.
   useEffect(() => {
@@ -174,19 +146,18 @@ export default function DashboardViewPage() {
 
   async function handleLayoutChange(cardId: string, layout: DashboardCardLayout) {
     setOptimisticLayouts((prev) => ({ ...prev, [cardId]: layout }));
-    const result = await mutate({
+    await mutate({
       path: `/api/v1/dashboards/${id}/cards/${cardId}`,
       method: "PATCH",
       body: { layout },
     });
-    if (!result.ok) {
-      // Revert optimistic; UI falls back to the server's layout. Error banner
-      // surfaces via `mutationError`.
-      setOptimisticLayouts((prev) => {
-        const { [cardId]: _, ...rest } = prev;
-        return rest;
-      });
-    }
+    // Drop the entry whether the PATCH succeeded (server now reflects it) or
+    // failed (UI falls back to the server's last-known layout, mutationError
+    // surfaces in the banner).
+    setOptimisticLayouts((prev) => {
+      const { [cardId]: _, ...rest } = prev;
+      return rest;
+    });
   }
 
   async function handleDuplicate(cardId: string) {

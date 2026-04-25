@@ -6,6 +6,7 @@ import {
   useContainerWidth,
   noCompactor,
   type Layout,
+  type LayoutItem,
 } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { cn } from "@/lib/utils";
@@ -64,15 +65,28 @@ export function DashboardGrid({
     maxW: COLS,
   }));
 
-  function handleRGLLayoutChange(next: Layout) {
-    for (const item of next) {
-      const before = placed.find((p) => p.id === item.i);
-      if (!before) continue;
-      const cur = before.resolvedLayout;
-      if (item.x !== cur.x || item.y !== cur.y || item.w !== cur.w || item.h !== cur.h) {
-        onLayoutChange(item.i, { x: item.x, y: item.y, w: item.w, h: item.h });
-      }
-    }
+  // Commit layout changes once per gesture (mouse-up / resize-stop) instead of
+  // streaming every intermediate position through `onLayoutChange`. RGL handles
+  // its own visual feedback during the drag via its internal placeholder, so
+  // the parent only needs the final coordinates. This collapses N PATCHes per
+  // drag down to 1 and removes the cascade that previously produced React
+  // error #185 ("Maximum update depth exceeded") in production.
+  function handleRGLDragOrResizeStop(
+    _layout: Layout,
+    _oldItem: LayoutItem | null,
+    newItem: LayoutItem | null,
+  ) {
+    if (!newItem) return;
+    const before = placed.find((p) => p.id === newItem.i);
+    if (!before) return;
+    const cur = before.resolvedLayout;
+    if (
+      newItem.x === cur.x
+      && newItem.y === cur.y
+      && newItem.w === cur.w
+      && newItem.h === cur.h
+    ) return;
+    onLayoutChange(newItem.i, { x: newItem.x, y: newItem.y, w: newItem.w, h: newItem.h });
   }
 
   if (placed.length === 0) return null;
@@ -126,7 +140,8 @@ export function DashboardGrid({
           }}
           resizeConfig={{ enabled: editing, handles: ["e", "s", "se"] }}
           compactor={noCompactor}
-          onLayoutChange={handleRGLLayoutChange}
+          onDragStop={handleRGLDragOrResizeStop}
+          onResizeStop={handleRGLDragOrResizeStop}
         >
           {placed.map((card) => (
             <div

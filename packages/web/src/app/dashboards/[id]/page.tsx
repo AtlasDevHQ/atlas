@@ -76,20 +76,26 @@ export default function DashboardViewPage() {
       if (card.layout) settled[card.id] = card.layout;
     }
     setOptimisticLayouts((prev) => {
-      const remaining: Record<string, DashboardCardLayout> = {};
+      // Walk `prev` and decide which optimistic entries are still ahead of the
+      // server. Crucially: if nothing changed, return `prev` by reference so
+      // React's Object.is short-circuits the state update — without this guard
+      // every refetch produces a new `{}` ref and during a multi-drag session
+      // the effect → setState → refetch → effect chain can cascade into
+      // "Maximum update depth exceeded" (#185).
+      let changed = false;
+      const next: Record<string, DashboardCardLayout> = {};
       for (const [cardId, optimistic] of Object.entries(prev)) {
-        const next = settled[cardId];
-        if (
-          !next
-          || next.x !== optimistic.x
-          || next.y !== optimistic.y
-          || next.w !== optimistic.w
-          || next.h !== optimistic.h
-        ) {
-          remaining[cardId] = optimistic;
-        }
+        const server = settled[cardId];
+        const stillAhead =
+          !server
+          || server.x !== optimistic.x
+          || server.y !== optimistic.y
+          || server.w !== optimistic.w
+          || server.h !== optimistic.h;
+        if (stillAhead) next[cardId] = optimistic;
+        else changed = true;
       }
-      return remaining;
+      return changed ? next : prev;
     });
   }, [dashboard]);
 

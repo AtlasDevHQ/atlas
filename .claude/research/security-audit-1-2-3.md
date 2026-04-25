@@ -3393,8 +3393,25 @@ documentation of any break-glass paths. Currently undocumented for
    admin-action audit row. Default behaviour: SSO is enforced regardless
    of auth mode, with an explicit allow-list of bypass-eligible API keys.
 
-**Status:** P2 — issue to be filed. Suggest pairing with F-59 (test
-debt) so the bypass branches grow tests in the same PR.
+**Status:** **shipped** — `checkSSOEnforcement` factored out of the
+`case "managed":` branch in `packages/api/src/lib/auth/middleware.ts`
+into a `runWithSSOEnforcement(mode, validator)` wrapper that fires
+for both `managed` and `byot`. `simple-key` keeps the explicit
+break-glass bypass (the API-key user label has no `@`, so even a
+shared call site would no-op via `extractEmailDomain`). When the
+check blocks, a `sso.enforcement_block` admin-action row is committed
+via `logAdminActionAwait` BEFORE the 403 returns
+(`targetType: "sso"`, `targetId: <domain>`, `metadata: { authMode,
+userLabel }`) so compliance queries can pivot on the bypass-attempt
+domain regardless of which auth mode tried it. The audit row is the
+security control: fire-and-forget would let a circuit-breaker-open
+state silently drop the row while still 403-ing the user, so the
+emission is awaited and a write failure converts to a 500 fail-closed
+(matching the `lib/audit/admin.ts` pattern documented for
+security-control rows like the audit-retention surface). Three new
+test cases land alongside (closes F-59 — see below) plus a fail-closed
+500 mirror for the byot path and an audit-write-fails-closed test.
+Filed: #1852. Issue pairs with F-59.
 
 ---
 
@@ -3540,7 +3557,16 @@ shape:
 2. `mode: byot — SSO enforcement DOES block when domain matches (target behaviour after F-56)` *or* `mode: byot — SSO enforcement does NOT block (documents current behaviour pending F-56 fix)`
 3. `mode: managed (API-key) — SSO enforcement DOES fire for Better Auth API key auth`
 
-**Status:** P3 — noted. Folded into F-56 remediation PR.
+**Status:** **shipped** — three test cases landed in
+`packages/api/src/lib/auth/__tests__/middleware.test.ts` alongside
+the F-56 remediation: (1) `simple-key` break-glass passes through
+without invoking the SSO override, (2) `byot` with an SSO-enforced
+domain returns 403 + redirect + emits `sso.enforcement_block`,
+(3) `byot` with a non-enforced domain passes through. Bonus
+coverage: `byot` JWT with subject-only label (no email claim) skips
+SSO enforcement (consistent with simple-key); `byot` SSO lookup
+throwing fails closed with 500. Existing managed-mode block test
+strengthened to assert the new audit emission. Folded into F-56 PR.
 
 ---
 
@@ -3713,10 +3739,10 @@ for each so future audits can short-circuit:
 | F-53 | P1 | Authorization gap | Custom-role permission flags never enforced at route layer | SOC 2 CC6.3 (granular authorization) | #1849 | open |
 | F-54 | P1 | Governance bypass | Scheduled-task executor runs agent without user context → approval workflows skipped | SOC 2 CC6.1 / CC7.2 (change management) | #1850 | shipped |
 | F-55 | P2 | Governance bypass | Slack / Teams / Discord agent invocations bypass approval workflows | SOC 2 CC6.1 / CC7.2 | #1851 | shipped |
-| F-56 | P2 | SSO bypass | `simple-key` and `byot` auth modes skip SSO enforcement | SOC 2 CC6.6 / ISO A.9.4.2 | #1852 | open |
+| F-56 | P2 | SSO bypass | `simple-key` and `byot` auth modes skip SSO enforcement | SOC 2 CC6.6 / ISO A.9.4.2 | #1852 | shipped |
 | F-57 | P2 | Identity-source bypass | Admin routes mutate SCIM-provisioned users without provisioning-origin check | ISO A.9.2 (user access management) | #1853 | open |
 | F-58 | P3 | Doc / UX | Webhook receivers bypass IP allowlist by design — undocumented in admin UI | — | — | noted |
-| F-59 | P3 | Test debt | No tests for `simple-key` / `byot` SSO bypass branches; API-key SSO check inferred-only | — | — | noted (folds into F-56) |
+| F-59 | P3 | Test debt | No tests for `simple-key` / `byot` SSO bypass branches; API-key SSO check inferred-only | — | — | shipped (folded into F-56) |
 | F-60 | P3 | Verified by-design | `/api/v1/demo/chat` runs agent without user context — non-sensitive demo data | — | — | noted |
 
 **Totals:** P0 = 0, P1 = 2 (F-53, F-54), P2 = 3 (F-55, F-56, F-57), P3 = 3 (F-58, F-59, F-60). Issue IDs filled in below as filed.

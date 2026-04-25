@@ -165,6 +165,16 @@ export const ADMIN_ACTIONS = {
     test: "sso.test",
     verifyDomain: "sso.verify_domain",
     enforcementUpdate: "sso.enforcement_update",
+    /**
+     * Emitted by the auth middleware when SSO enforcement blocks a login —
+     * either a managed-mode password/session attempt or a BYOT JWT whose
+     * email-claim domain matches an SSO-enforced workspace (F-56). Status
+     * is always `failure`. Target id is the email domain so forensic
+     * queries can pivot on the enforced domain without joining on user.
+     * Metadata: `{ authMode, userLabel }`. Not emitted for `simple-key` —
+     * that mode is the documented break-glass bypass.
+     */
+    enforcementBlock: "sso.enforcement_block",
   },
   /**
    * Semantic-layer mutations. `createEntity` / `updateEntity` /

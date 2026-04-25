@@ -148,7 +148,7 @@
   }
 }
 
-/* Dashboards detail — react-grid-layout overrides (#1867). */
+/* Dashboards detail — react-grid-layout overrides. */
 .react-grid-item.react-grid-placeholder {
   background: color-mix(in oklch, var(--primary) 22%, transparent);
   border: 1.5px dashed color-mix(in oklch, var(--primary) 60%, transparent);
@@ -191,8 +191,6 @@
   box-shadow: 0 14px 32px oklch(0 0 0 / 0.18);
 }
 
-/* Mobile tiles are non-draggable single-column reads. Border + radius mimic
- * the desktop tile wrapper so the visual register stays consistent. */
 .dash-mobile-tile {
   width: 100%;
 }

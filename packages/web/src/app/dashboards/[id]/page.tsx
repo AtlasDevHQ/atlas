@@ -129,7 +129,8 @@ export default function DashboardViewPage() {
   }
 
   async function handleDeleteDashboard() {
-    await mutate({ path: `/api/v1/dashboards/${id}`, method: "DELETE" });
+    const result = await mutate({ path: `/api/v1/dashboards/${id}`, method: "DELETE" });
+    if (!result.ok) return;
     router.push("/dashboards");
   }
 

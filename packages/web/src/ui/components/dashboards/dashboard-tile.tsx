@@ -274,11 +274,10 @@ export function DashboardTile({
   );
 }
 
-// `ChartSlot` measures its own width and keys ResultChart on a width bucket.
 // Recharts' ResponsiveContainer renders bars/lines as zero-extent shapes when
-// it first measures a 0-width parent (which RGL transiently produces during
-// initial mount). Remounting once the slot has real width forces a fresh
-// chart that picks up the settled dimensions.
+// the parent reports 0 width on first measurement. Wait for a real bounding
+// box before mounting ResultChart so the chart's first paint sees stable
+// dimensions.
 function ChartSlot({
   cardId,
   columns,

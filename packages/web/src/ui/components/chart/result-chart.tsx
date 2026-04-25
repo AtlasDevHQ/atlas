@@ -474,8 +474,8 @@ function ChartTypeSelector({
           aria-pressed={active === rec.type}
           className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
             active === rec.type
-              ? "bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary"
-              : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+              ? "bg-background text-foreground shadow-sm ring-1 ring-zinc-300 dark:ring-zinc-700"
+              : "text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
           }`}
         >
           {CHART_LABELS[rec.type]}

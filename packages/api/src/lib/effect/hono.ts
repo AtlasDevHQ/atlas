@@ -82,6 +82,7 @@ type HttpErrorCode =
   | "not_found"
   | "unprocessable_entity"
   | "rate_limited"
+  | "conversation_budget_exceeded"
   | "upstream_error"
   | "service_unavailable"
   | "timeout";
@@ -168,6 +169,16 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     case "ConcurrencyLimitError":
     case "PoolExhaustedError":
       return { status: 429, code: "rate_limited", message: error.message };
+    // F-77 — per-conversation budget. Distinct wire code so the chat UI
+    // surfaces a "start a new conversation" affordance rather than
+    // suggesting retry on the same conversationId, which will stay over
+    // budget until a new one is created.
+    case "ConversationBudgetExceededError":
+      return {
+        status: 429,
+        code: "conversation_budget_exceeded",
+        message: error.message,
+      };
 
     // ── 502 Bad Gateway — upstream DB error ──────────────────────
     case "QueryExecutionError":

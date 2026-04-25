@@ -505,6 +505,7 @@ function ChatPage() {
                         }
                       : undefined
                   }
+                  onStartNewConversation={handleNewChat}
                 />
               )}
 

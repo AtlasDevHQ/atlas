@@ -2929,11 +2929,11 @@ nsjail `-u 65534 -g 65534` runs as nobody. Verified-clean.
 
 | ID | Severity | Type | Surface | Compliance lens | Issue | Status |
 |---|---|---|---|---|---|---|
-| F-73 | P1 | Live DoS surface | `/api/public/conversations/:token`, `/api/public/dashboards/:token` rate limit broken without `ATLAS_TRUST_PROXY` | SOC 2 CC6.6 / availability | #1844 | open |
-| F-74 | P2 | Hardening | Single global RPM bucket conflates chat (25-step) with cheap reads | — | #1845 | open |
+| F-73 | P1 | Live DoS surface | `/api/public/conversations/:token`, `/api/public/dashboards/:token` rate limit broken without `ATLAS_TRUST_PROXY` | SOC 2 CC6.6 / availability | #1844 | shipped |
+| F-74 | P2 | Hardening | Single global RPM bucket conflates chat (25-step) with cheap reads | — | #1845 | shipped |
 | F-75 | P2 | Replay protection gap | Webhook plugin has no timestamp-window check | SOC 2 CC6.7 | #1846 | shipped |
 | F-76 | P2 | Cost ceiling gap | Webhook plugin has no per-channel rate limit | — | #1847 | shipped |
-| F-77 | P2 | Hardening | No per-conversation aggregate budget cap | — | #1848 | open |
+| F-77 | P2 | Hardening | No per-conversation aggregate budget cap | — | #1848 | shipped |
 | F-78 | P3 | Hardening | `just-bash` explore backend has no wall-clock timeout | — | — | noted |
 | F-79 | P3 | Hardening | Vercel python sandbox memory cap delegated to platform | — | — | noted |
 | F-80 | P3 | Hardening | Internal `/migrate/import` no body-size / rate limit | — | — | noted |

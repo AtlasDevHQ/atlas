@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { parseChatError, type AuthMode, type ClientErrorCode } from "../../lib/types";
-import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle } from "lucide-react";
+import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle, MessageSquarePlus } from "lucide-react";
 
 /** Icon for each client error code */
 function ErrorIcon({ clientCode }: { clientCode?: ClientErrorCode }) {
@@ -27,10 +27,19 @@ export function ErrorBanner({
   error,
   authMode,
   onRetry,
+  onStartNewConversation,
 }: {
   error: Error;
   authMode: AuthMode;
   onRetry?: () => void;
+  /**
+   * Handler for `conversation_budget_exceeded` (F-77). When the chat
+   * server rejects further messages on a conversation that hit the
+   * aggregate step ceiling, the banner replaces "Try again" with a
+   * "Start a new conversation" CTA — retrying on the same id will keep
+   * failing.
+   */
+  onStartNewConversation?: () => void;
 }) {
   const info = useMemo(() => parseChatError(error, authMode), [error, authMode]);
   const [countdown, setCountdown] = useState(info.retryAfterSeconds ?? 0);
@@ -81,7 +90,10 @@ export function ErrorBanner({
     ? `Try again in ${countdown} second${countdown !== 1 ? "s" : ""}.`
     : info.detail;
 
-  const showRetry = info.retryable && onRetry && countdown === 0 && info.clientCode !== "offline";
+  const isBudgetExceeded = info.code === "conversation_budget_exceeded";
+  const showRetry =
+    info.retryable && onRetry && countdown === 0 && info.clientCode !== "offline" && !isBudgetExceeded;
+  const showStartNew = isBudgetExceeded && Boolean(onStartNewConversation);
 
   return (
     <div
@@ -89,12 +101,26 @@ export function ErrorBanner({
       role="alert"
     >
       <div className="flex items-start gap-2">
-        <ErrorIcon clientCode={info.clientCode} />
+        {isBudgetExceeded ? (
+          <MessageSquarePlus className="size-4 shrink-0" />
+        ) : (
+          <ErrorIcon clientCode={info.clientCode} />
+        )}
         <div className="min-w-0 flex-1">
           <p className="font-medium">{info.title}</p>
           {detail && <p className="mt-1 text-xs opacity-80">{detail}</p>}
           {info.requestId && (
             <p className="mt-1 text-xs opacity-60">Request ID: {info.requestId}</p>
+          )}
+          {showStartNew && (
+            <Button
+              variant="link"
+              size="sm"
+              onClick={onStartNewConversation}
+              className="mt-2 h-auto p-0 text-xs font-medium text-red-700 dark:text-red-400"
+            >
+              Start a new conversation
+            </Button>
           )}
           {showRetry && (
             <Button

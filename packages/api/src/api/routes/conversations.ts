@@ -42,6 +42,11 @@ import type { ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import {
+  createPublicRateLimiter,
+  warnIfTrustProxyMissingForPublicShare,
+  PUBLIC_RATE_LIMIT_CONSTANTS,
+} from "@atlas/api/lib/public-rate-limit";
 
 const log = createLogger("conversations");
 
@@ -1191,24 +1196,25 @@ const SHARE_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
 // In-memory rate limiter for public route
 // ---------------------------------------------------------------------------
 
-const PUBLIC_RATE_WINDOW_MS = 60_000;
 const PUBLIC_RATE_MAX = 60;
 
-const publicRateMap = new Map<string, { count: number; resetAt: number }>();
+const publicRateLimiter = createPublicRateLimiter({ maxRpm: PUBLIC_RATE_MAX });
 
 /**
  * Evict expired entries to prevent unbounded growth. Called periodically
  * by the SchedulerLayer fiber in lib/effect/layers.ts.
  */
 export function conversationRateSweepTick(): void {
-  const now = Date.now();
-  for (const [key, entry] of publicRateMap) {
-    if (now > entry.resetAt) publicRateMap.delete(key);
-  }
+  publicRateLimiter.cleanup();
+}
+
+/** @internal — test-only. Drop all conversation rate-limit state between tests. */
+export function _resetConversationRateLimit(): void {
+  publicRateLimiter.reset();
 }
 
 /** Interval for conversation rate sweep. Exported for SchedulerLayer. */
-export const CONVERSATION_RATE_SWEEP_INTERVAL_MS = PUBLIC_RATE_WINDOW_MS;
+export const CONVERSATION_RATE_SWEEP_INTERVAL_MS = PUBLIC_RATE_LIMIT_CONSTANTS.WINDOW_MS;
 
 /** Interval for share token cleanup. Exported for SchedulerLayer. */
 export const SHARE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
@@ -1240,16 +1246,10 @@ export async function shareCleanupTick(): Promise<void> {
   }
 }
 
-function checkPublicRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = publicRateMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    publicRateMap.set(ip, { count: 1, resetAt: now + PUBLIC_RATE_WINDOW_MS });
-    return true;
-  }
-  entry.count++;
-  return entry.count <= PUBLIC_RATE_MAX;
-}
+// Fire once per process if ATLAS_TRUST_PROXY is unset and a public-share route
+// has been exercised — surfaces the env-var miss instead of letting the
+// limiter silently fall back to the anonymous bucket.
+warnIfTrustProxyMissingForPublicShare();
 
 // ---------------------------------------------------------------------------
 // Public router + route definition
@@ -1327,12 +1327,11 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
   }
 
   const ip = getClientIP(c.req.raw);
-  if (!ip) {
-    log.warn({ requestId }, "Public conversation request with no client IP");
-  }
-  const rateLimitKey = ip ?? `unknown-${requestId}`;
-  if (!checkPublicRateLimit(rateLimitKey)) {
-    log.warn({ requestId, ip }, "Public conversation rate limited");
+  if (!publicRateLimiter.check(ip)) {
+    // `ip === null` means the request landed in the shared anonymous bucket —
+    // surface that in logs so operators can correlate 429 spikes with a
+    // missing ATLAS_TRUST_PROXY rather than per-IP traffic.
+    log.warn({ requestId, ip, anonymous: ip === null }, "Public conversation rate limited");
     return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again.", requestId }, 429);
   }
 

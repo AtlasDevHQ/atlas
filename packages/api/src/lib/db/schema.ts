@@ -90,6 +90,12 @@ export const conversations = pgTable(
     orgId: text("org_id"),
     // Soft-delete
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    // F-77 per-conversation aggregate step counter. Incremented after every
+    // agent run by `result.steps.length`. Once it crosses
+    // ATLAS_CONVERSATION_STEP_CAP the chat handler rejects further messages
+    // with `conversation_budget_exceeded` and the UI surfaces a
+    // start-a-new-conversation affordance.
+    totalSteps: integer("total_steps").notNull().default(0),
   },
   (t) => [
     index("idx_conversations_user").on(t.userId),

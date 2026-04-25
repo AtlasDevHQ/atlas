@@ -129,6 +129,10 @@ mock.module("@atlas/api/lib/conversations", () => ({
   addMessage: mockAddMessage,
   generateTitle: mockGenerateTitle,
   persistAssistantSteps: mock(() => {}),
+  // F-77 step-cap helpers — chat.ts imports both. Default to "no budget
+  // consumed yet" so existing tests (which don't exercise the cap) pass.
+  reserveConversationBudget: mock(() => Promise.resolve({ status: "ok" as const, totalStepsBefore: 0 })),
+  settleConversationSteps: mock(() => {}),
   updateNotebookState: mockUpdateNotebookState,
   forkConversation: mockForkConversation,
   convertToNotebook: mockConvertToNotebook,
@@ -185,8 +189,14 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => _EffectForAllowlistMock.succeed({ allowed: true as const }),
 }));
 
-// Import after mocks
+// Import after mocks. Dynamic imports avoid hoisting routes/conversations.ts
+// past the mock.module() calls — a static `import` would load the module
+// before the logger mock applies, leaving public-rate-limit warns going
+// through real pino and the route logs uncaptured (F-73 wiring).
 const { app } = await import("../index");
+// Reset the public-share rate limiter between tests so the new shared
+// anonymous-bucket ceiling (F-73) does not exhaust across the suite.
+const { _resetConversationRateLimit } = await import("../routes/conversations");
 
 // Valid UUID for tests — routes now validate UUID format on :id params
 const VALID_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
@@ -213,6 +223,7 @@ describe("conversations routes", () => {
     mockCheckRateLimit.mockReturnValue({ allowed: true });
     mockGetClientIP.mockReset();
     mockGetClientIP.mockReturnValue(null);
+    _resetConversationRateLimit();
     mockListConversations.mockReset();
     mockListConversations.mockResolvedValue({ conversations: [], total: 0 });
     mockGetConversation.mockReset();

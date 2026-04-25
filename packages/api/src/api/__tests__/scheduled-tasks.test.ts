@@ -101,6 +101,9 @@ mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
   persistAssistantSteps: mock(() => {}),
+  // F-77 step-cap helpers — chat.ts imports both via @atlas/api/lib/conversations.
+  reserveConversationBudget: mock(() => Promise.resolve({ status: 'ok' as const, totalStepsBefore: 0 })),
+  settleConversationSteps: mock(() => {}),
   generateTitle: mock(() => "Test title"),
   starConversation: async () => false,
   shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),

@@ -93,6 +93,16 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_RATE_LIMIT_RPM",
     scope: "workspace",
   },
+  {
+    key: "ATLAS_RATE_LIMIT_RPM_CHAT",
+    section: "Rate Limiting",
+    label: "Chat Rate Limit (RPM)",
+    description:
+      "Max chat requests per minute per user (defaults to max(5, RPM/4) so a 25-step LLM run does not deplete the cheap-read allowance)",
+    type: "number",
+    envVar: "ATLAS_RATE_LIMIT_RPM_CHAT",
+    scope: "workspace",
+  },
 
   // Security
   {
@@ -224,6 +234,17 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "25",
     envVar: "ATLAS_AGENT_MAX_STEPS",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_CONVERSATION_STEP_CAP",
+    section: "Agent",
+    label: "Conversation Step Cap",
+    description:
+      "Aggregate step ceiling per conversation (default 500 = 20 follow-ups × 25 steps). Once exceeded the chat handler rejects further messages with `conversation_budget_exceeded` and the UI offers to start a new conversation. 0 disables the cap.",
+    type: "number",
+    default: "500",
+    envVar: "ATLAS_CONVERSATION_STEP_CAP",
     scope: "workspace",
   },
   {

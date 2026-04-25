@@ -57,11 +57,11 @@ describe("DashboardTopBar", () => {
     expect((suggestBtn as HTMLButtonElement).disabled).toBe(true);
   });
 
-  test("Add tile only renders in edit mode", () => {
+  test("Add from chat only renders in edit mode", () => {
     const { rerender } = render(<DashboardTopBar {...baseProps} editing={false} />);
-    expect(screen.queryByText("Add tile")).toBeNull();
+    expect(screen.queryByText("Add from chat")).toBeNull();
     rerender(<DashboardTopBar {...baseProps} editing={true} />);
-    expect(screen.getByText("Add tile")).toBeTruthy();
+    expect(screen.getByText("Add from chat")).toBeTruthy();
   });
 
   test("singular vs plural tile chip", () => {
@@ -103,5 +103,27 @@ describe("DashboardTopBar", () => {
     render(<DashboardTopBar {...baseProps} onDelete={() => { called = true; }} />);
     fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
     expect(called).toBe(true);
+  });
+
+  test("editing banner with Esc-to-exit hint only renders in edit mode", () => {
+    const { rerender } = render(<DashboardTopBar {...baseProps} editing={false} />);
+    expect(screen.queryByText(/drag tiles to rearrange/)).toBeNull();
+    rerender(<DashboardTopBar {...baseProps} editing={true} />);
+    expect(screen.getByText(/drag tiles to rearrange/)).toBeTruthy();
+    expect(screen.getByText("Esc")).toBeTruthy();
+  });
+
+  test("tile count chip is hidden when there are zero tiles", () => {
+    const { rerender } = render(<DashboardTopBar {...baseProps} cardCount={0} />);
+    expect(screen.queryByText(/0 tiles?/)).toBeNull();
+    rerender(<DashboardTopBar {...baseProps} cardCount={2} />);
+    expect(screen.getByText(/2 tiles/)).toBeTruthy();
+  });
+
+  test("description renders with title attribute fallback so truncated text is reachable on hover", () => {
+    const long = "Pipeline, revenue, win-rate, retention, NRR, magic-number, churn, and CAC payback across all 4 regions";
+    render(<DashboardTopBar {...baseProps} description={long} />);
+    const desc = screen.getByText(long);
+    expect(desc.getAttribute("title")).toBe(long);
   });
 });

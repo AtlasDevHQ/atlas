@@ -3,12 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import {
-  LayoutDashboard,
-  Plus,
-  Sparkles,
-  XCircle,
-} from "lucide-react";
+import { Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -386,20 +381,17 @@ export default function DashboardViewPage() {
             )}
 
             {dashboard.cards.length === 0 ? (
-              <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
-                <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                  <LayoutDashboard className="size-8 text-zinc-400 dark:text-zinc-500" />
-                </div>
-                <h2 className="mb-1 text-2xl font-semibold tracking-tight">An empty canvas</h2>
-                <p className="mb-6 max-w-sm text-sm text-zinc-500 dark:text-zinc-400">
-                  Run a query in chat and click <span className="font-medium">Add to Dashboard</span> on the result to drop your first tile here.
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+                <h2 className="text-2xl font-semibold tracking-tight">An empty canvas</h2>
+                <p className="max-w-sm text-sm text-zinc-500 dark:text-zinc-400">
+                  Run a query in chat, then click <span className="font-medium">Add to Dashboard</span> to drop your first tile here.
                 </p>
-                <Button asChild size="sm">
+                <Button asChild size="sm" className="mt-2">
                   <Link href="/">Go to chat</Link>
                 </Button>
               </div>
             ) : (
-              <div className={`dash-density-${density} flex-1 overflow-auto px-3 py-4 sm:px-5`}>
+              <div className={`dash-density-${density} flex-1 px-3 py-4 sm:overflow-auto sm:px-5`}>
                 <DashboardGrid
                   cards={cardsForGrid}
                   editing={editing}

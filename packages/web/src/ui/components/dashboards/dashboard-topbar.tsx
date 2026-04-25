@@ -126,12 +126,17 @@ export function DashboardTopBar({
               {title}
             </button>
           )}
-          <span className="hidden shrink-0 rounded border border-primary/30 bg-primary/12 px-1.5 py-px font-mono text-[10px] uppercase tracking-widest text-primary sm:inline">
-            {cardCount} {cardCount === 1 ? "tile" : "tiles"}
-          </span>
+          {cardCount > 0 && (
+            <span className="hidden shrink-0 text-xs tabular-nums text-zinc-500 dark:text-zinc-400 sm:inline">
+              {cardCount} {cardCount === 1 ? "tile" : "tiles"}
+            </span>
+          )}
         </div>
         {description && !titleEditing && (
-          <p className="line-clamp-1 max-w-[60ch] text-xs text-zinc-500 dark:text-zinc-400">
+          <p
+            className="line-clamp-1 max-w-[60ch] text-xs text-zinc-500 dark:text-zinc-400"
+            title={description}
+          >
             {description}
           </p>
         )}
@@ -206,7 +211,10 @@ export function DashboardTopBar({
         </Button>
 
         <Select value={refreshSchedule ?? "off"} onValueChange={onScheduleChange}>
-          <SelectTrigger className="hidden h-8 w-auto gap-1.5 text-xs lg:inline-flex">
+          <SelectTrigger
+            aria-label="Auto-refresh schedule"
+            className="hidden h-8 w-auto gap-1.5 text-xs md:inline-flex"
+          >
             <Timer className="size-3.5 text-zinc-500" />
             <SelectValue placeholder="Auto-refresh" />
           </SelectTrigger>
@@ -226,21 +234,31 @@ export function DashboardTopBar({
           variant="outline"
           size="sm"
           onClick={onDelete}
-          className="text-red-500 hover:text-red-600 dark:text-red-400"
+          className="text-red-600 hover:text-red-700 dark:text-red-400"
         >
           <Trash2 className="mr-1.5 size-3.5" />
           Delete
         </Button>
 
         {editing && (
-          <Button size="sm" asChild>
+          <Button variant="outline" size="sm" asChild>
             <Link href="/">
               <Plus className="mr-1.5 size-3.5" />
-              Add tile
+              Add from chat
             </Link>
           </Button>
         )}
       </div>
+
+      {editing && (
+        <div className="basis-full pt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+          Editing — drag tiles to rearrange, drag the bottom-right corner to resize. Press{" "}
+          <kbd className="rounded border border-zinc-300 bg-zinc-100 px-1 font-mono text-[10px] dark:border-zinc-700 dark:bg-zinc-900">
+            Esc
+          </kbd>{" "}
+          to exit.
+        </div>
+      )}
     </div>
   );
 }
@@ -269,8 +287,8 @@ function DensityButton({
       className={cn(
         "inline-flex items-center rounded px-2 py-1 transition-colors",
         active
-          ? "bg-background text-foreground shadow-sm"
-          : "text-zinc-500 hover:text-zinc-400 dark:text-zinc-400 dark:hover:text-zinc-100",
+          ? "bg-background text-primary ring-1 ring-zinc-300 dark:ring-zinc-700"
+          : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100",
       )}
     >
       {children}

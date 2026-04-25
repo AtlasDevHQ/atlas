@@ -1130,5 +1130,92 @@ describe("/api/v1/slack", () => {
       expect(observedAgentContexts).toHaveLength(1);
       expect(observedAgentContexts[0].user).toBeUndefined();
     });
+
+    it("binds the workspace's installation org as the agent actor for thread follow-ups", async () => {
+      // Slack's events handler is the second F-55 surface — it processes
+      // thread replies and runs the agent with conversation history. A
+      // regression that drops `actor` here is just as severe as the slash-
+      // command path, so pin it independently.
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T999",
+        event: {
+          type: "message",
+          text: "what about last quarter's pii?",
+          user: "U-thread-author",
+          channel: "C456",
+          thread_ts: "1234567890.000001",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(mockGetInstallation).toHaveBeenCalledWith("T999");
+      expect(observedAgentContexts).toHaveLength(1);
+      expect(observedAgentContexts[0].user?.id).toBe("slack-bot:T999:U-thread-author");
+      expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
+    });
+
+    it("rejects approval-required thread follow-ups with a clear thread message", async () => {
+      pendingApprovalToolResultOverride = {
+        approval_required: true,
+        approval_request_id: "approval-req-thread-99",
+        matched_rules: ["Block PII reads"],
+        message: "This query requires approval before execution.",
+      };
+
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T999",
+        event: {
+          type: "message",
+          text: "show me customer pii",
+          user: "U-thread-author",
+          channel: "C456",
+          thread_ts: "1234567890.000001",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Thread approval surfaces as a postMessage (not updateMessage) on
+      // the same thread_ts. Find the call that mentions the rule.
+      const postCalls = mockPostMessage.mock.calls;
+      const approvalPost = postCalls.find((call) => {
+        const params = call[1] as { text?: string; thread_ts?: string } | undefined;
+        return typeof params?.text === "string" && params.text.includes("Block PII reads");
+      });
+      expect(approvalPost).toBeDefined();
+      const approvalParams = approvalPost?.[1] as { text?: string; thread_ts?: string };
+      expect(approvalParams.text).toContain("requires approval");
+      expect(approvalParams.text).toContain("Atlas admin console");
+      expect(approvalParams.thread_ts).toBe("1234567890.000001");
+    });
   });
 });

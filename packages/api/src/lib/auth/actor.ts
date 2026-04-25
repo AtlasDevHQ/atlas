@@ -40,8 +40,17 @@ const ROLE_LEVEL: Record<AtlasRole, number> = {
 
 /**
  * Load a real Atlas user as an actor for a system-initiated call (e.g. the
- * scheduler executing a task on the user's behalf). Returns null when the
- * user row is missing or the internal DB is unavailable.
+ * scheduler executing a task on the user's behalf).
+ *
+ * Returns:
+ *  - `null` when the user row is missing (deleted account / removed from
+ *    org) or no internal DB is configured. Callers treat this as a
+ *    permanent condition — pause / recreate the dependent resource.
+ *  - **Throws** on transient DB errors (connection failure, timeout). The
+ *    caller should mark the run as failed with the DB error message and
+ *    let the next scheduler tick retry — distinguishing "permanent
+ *    missing" from "transient DB blip" so operators don't get told to
+ *    recreate tasks during a flapping internal database.
  *
  * Resolves the effective role by comparing the user-level role with the
  * org-level membership role and taking the higher of the two — same logic
@@ -54,8 +63,9 @@ export async function loadActorUser(
 ): Promise<AtlasUser | null> {
   if (!hasInternalDB()) return null;
 
+  let userRows: { id: string; email: string | null; role: string | null }[];
   try {
-    const userRows = await internalQuery<{
+    userRows = await internalQuery<{
       id: string;
       email: string | null;
       role: string | null;
@@ -63,29 +73,30 @@ export async function loadActorUser(
       `SELECT id, email, role FROM "user" WHERE id = $1 LIMIT 1`,
       [userId],
     );
-    if (userRows.length === 0) return null;
-
-    const row = userRows[0];
-    const userRole = parseRole(row.role ?? undefined);
-    const effectiveRole = await resolveEffectiveRole(userRole, userId, orgId);
-
-    return createAtlasUser(
-      row.id,
-      "managed",
-      row.email || row.id,
-      {
-        ...(effectiveRole !== undefined ? { role: effectiveRole } : {}),
-        ...(orgId !== null ? { activeOrganizationId: orgId } : {}),
-        claims: orgId !== null ? { sub: row.id, org_id: orgId } : { sub: row.id },
-      },
-    );
   } catch (err) {
     log.error(
       { err: errorMessage(err), userId, orgId },
-      "loadActorUser failed",
+      "loadActorUser DB query failed — propagating so caller can distinguish from missing user",
     );
-    return null;
+    throw err instanceof Error ? err : new Error(String(err));
   }
+
+  if (userRows.length === 0) return null;
+
+  const row = userRows[0];
+  const userRole = parseRole(row.role ?? undefined);
+  const effectiveRole = await resolveEffectiveRole(userRole, userId, orgId);
+
+  return createAtlasUser(
+    row.id,
+    "managed",
+    row.email || row.id,
+    {
+      ...(effectiveRole !== undefined ? { role: effectiveRole } : {}),
+      ...(orgId !== null ? { activeOrganizationId: orgId } : {}),
+      claims: orgId !== null ? { sub: row.id, org_id: orgId } : { sub: row.id },
+    },
+  );
 }
 
 async function resolveEffectiveRole(

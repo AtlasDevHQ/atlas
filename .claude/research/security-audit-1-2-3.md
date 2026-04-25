@@ -3150,13 +3150,22 @@ resolves `task.ownerId` to a real `AtlasUser` via the new
 `loadActorUser` helper in `lib/auth/actor.ts` and binds it through
 `executeAgentQuery({ actor })` so `checkApprovalRequired` sees a real
 `orgId` downstream. When an approval rule matches, the run is marked as
-failed with a message naming the rule + queued request id (rather than
-silently delivering results), and tasks whose creator no longer exists
-fail fast instead of running anonymously. The defensive `orgId === undefined +
-rules-exist → fail-closed` belt-and-suspenders is implemented in
-`anyApprovalRuleEnabled` / the new `identityMissing` flag on
-`ApprovalMatchResult`. Pinned regression tests in
-`scheduler/__tests__/executor.test.ts` and the new
+**failed** with a message naming the rule + queued request id (rather
+than silently delivering results), and tasks whose creator no longer
+exists fail fast instead of running anonymously. **Spec deviation:**
+the original remediation called for surfacing this as
+`delivery_status = "pending_approval"`. That requires adding
+`pending_approval` to `DELIVERY_STATUSES` in
+`@useatlas/types/scheduled-task` — a wire-format bump to a published
+package, out of scope for this fix. The "failed run with a clear
+approval-required message" route is unambiguous in run-history UI and
+audit exports, and the queued approval request has its own row in
+`approval_requests` for the admin to act on; a follow-up can introduce
+the dedicated enum value when the next `@useatlas/types` minor lands.
+The defensive `orgId === undefined + rules-exist → fail-closed`
+belt-and-suspenders is implemented in `anyApprovalRuleEnabled` / the
+new `identityMissing` flag on `ApprovalMatchResult`. Pinned regression
+tests in `scheduler/__tests__/executor.test.ts` and the new
 `lib/__tests__/agent-query.test.ts`.
 
 ---

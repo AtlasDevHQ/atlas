@@ -70,11 +70,12 @@ function agentQueryEffect(
 /**
  * Format the failure message engine.ts records on the run row when the agent
  * surfaces an approval-required result. The run is marked as `failed` with
- * this message — `RunStatus` lacks a dedicated `pending_approval` value and
- * adding one is a wire-format change to `@useatlas/types/scheduled-task`,
- * out of scope here. The message is unambiguous in run-history UI and audit
- * exports, and the queued approval request has its own row in
- * `approval_requests` for the admin to act on.
+ * this message — the F-54 audit recommended a new `delivery_status =
+ * "pending_approval"` value, but adding to `DELIVERY_STATUSES` in
+ * `@useatlas/types/scheduled-task` is a wire-format bump to a published
+ * package and out of scope for this fix. The message is unambiguous in
+ * run-history UI and audit exports, and the queued approval request has
+ * its own row in `approval_requests` for the admin to act on.
  */
 function approvalFailureMessage(approval: NonNullable<AgentQueryResult["pendingApproval"]>): string {
   const ruleSummary = approval.matchedRules.length > 1

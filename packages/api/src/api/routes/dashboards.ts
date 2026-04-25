@@ -41,6 +41,10 @@ import {
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import {
+  createPublicRateLimiter,
+  warnIfTrustProxyMissingForPublicShare,
+} from "@atlas/api/lib/public-rate-limit";
 
 const log = createLogger("dashboard-routes");
 
@@ -124,9 +128,9 @@ function sharedDashboardFailResponse(reason: SharedDashboardFailReason) {
 // Rate limiting (public endpoint)
 // ---------------------------------------------------------------------------
 
-const PUBLIC_RATE_WINDOW_MS = 60_000;
 const PUBLIC_RATE_MAX = 30;
-const publicRateMap = new Map<string, { count: number; resetAt: number }>();
+
+const publicRateLimiter = createPublicRateLimiter({ maxRpm: PUBLIC_RATE_MAX });
 
 /** Interval for dashboard rate-limit cleanup. Exported for SchedulerLayer. */
 export const DASHBOARD_RATE_CLEANUP_INTERVAL_MS = 60_000;
@@ -136,22 +140,17 @@ export const DASHBOARD_RATE_CLEANUP_INTERVAL_MS = 60_000;
  * SchedulerLayer fiber in lib/effect/layers.ts.
  */
 export function dashboardRateLimitCleanupTick(): void {
-  const now = Date.now();
-  for (const [key, entry] of publicRateMap) {
-    if (now > entry.resetAt) publicRateMap.delete(key);
-  }
+  publicRateLimiter.cleanup();
 }
 
-function checkPublicRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = publicRateMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    publicRateMap.set(ip, { count: 1, resetAt: now + PUBLIC_RATE_WINDOW_MS });
-    return true;
-  }
-  entry.count++;
-  return entry.count <= PUBLIC_RATE_MAX;
+/** @internal — test-only. Drop all dashboard rate-limit state between tests. */
+export function _resetDashboardRateLimit(): void {
+  publicRateLimiter.reset();
 }
+
+// Fire-once startup hint when ATLAS_TRUST_PROXY is unset — see F-73 in the
+// security audit. Mirrors the conversations public route.
+warnIfTrustProxyMissingForPublicShare();
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -1138,12 +1137,11 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
   }
 
   const ip = getClientIP(c.req.raw);
-  if (!ip) {
-    log.warn({ requestId }, "Public dashboard request with no client IP");
-  }
-  const rateLimitKey = ip ?? `unknown-${requestId}`;
-  if (!checkPublicRateLimit(rateLimitKey)) {
-    log.warn({ requestId, ip }, "Public dashboard rate limited");
+  if (!publicRateLimiter.check(ip)) {
+    // F-73: anonymous=true means the request landed in the shared
+    // anonymous bucket because the route layer could not resolve a
+    // canonical client IP — usually a missing ATLAS_TRUST_PROXY.
+    log.warn({ requestId, ip, anonymous: ip === null }, "Public dashboard rate limited");
     return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again.", requestId }, 429);
   }
 

@@ -30,6 +30,7 @@ const WINDOW_MS = 60_000; // 60 seconds
 const windows = new Map<string, number[]>();
 
 let lastWarnedRpmValue: string | undefined;
+let lastWarnedChatRpmValue: string | undefined;
 
 function getRpmLimit(): number {
   const raw = getSetting("ATLAS_RATE_LIMIT_RPM");
@@ -44,6 +45,57 @@ function getRpmLimit(): number {
   }
   return Math.floor(n);
 }
+
+/**
+ * Per-bucket RPM ceiling.
+ *
+ * `default` mirrors `ATLAS_RATE_LIMIT_RPM` — covers cheap reads (audit-log
+ * scrolling, conversation list, etc).
+ *
+ * `chat` reads `ATLAS_RATE_LIMIT_RPM_CHAT` when set, otherwise derives
+ * `max(5, RPM/4)` from the default. The carve-out keeps a 25-step LLM
+ * call from depleting the same budget that serves trivial reads (F-74).
+ *
+ * Returning 0 means "disabled" (matching the existing semantics on the
+ * default bucket); when the global limit is disabled the chat bucket is
+ * also disabled regardless of override.
+ */
+function getRpmLimitForBucket(bucket: RateLimitBucket): number {
+  const baseLimit = getRpmLimit();
+  if (bucket === "default") return baseLimit;
+  if (baseLimit === 0) return 0;
+
+  const raw = getSetting("ATLAS_RATE_LIMIT_RPM_CHAT");
+  if (raw === undefined || raw === "") {
+    // Default: cap at 1/4 of the global RPM, with a floor of 5/min so a
+    // very low ATLAS_RATE_LIMIT_RPM doesn't push the chat ceiling to 0.
+    return Math.max(5, Math.floor(baseLimit / 4));
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (raw !== lastWarnedChatRpmValue) {
+      log.warn(
+        { value: raw },
+        "Invalid ATLAS_RATE_LIMIT_RPM_CHAT; falling back to derived default max(5, RPM/4)",
+      );
+      lastWarnedChatRpmValue = raw;
+    }
+    return Math.max(5, Math.floor(baseLimit / 4));
+  }
+  return Math.floor(n);
+}
+
+/** Bucket categories for `checkRateLimit`. */
+export type RateLimitBucket = "default" | "chat";
+
+// `\x00` is illegal in user ids, IPs, and the "anon" fallback used by
+// chat.ts — so the chat-bucket prefix can never collide with a
+// caller-derived key. Keeps F-74 isolation true even against
+// pathological identity strings.
+const BUCKET_PREFIX: Record<RateLimitBucket, string> = {
+  default: "",
+  chat: "\x00chat:",
+};
 
 /**
  * Extract client IP from request headers.
@@ -73,24 +125,38 @@ export function getClientIP(req: Request): string | null {
  * `{ allowed: false, retryAfterMs }` when the caller should back off.
  * Always allows when ATLAS_RATE_LIMIT_RPM is unset or "0".
  *
- * Note: this limits API *requests*, not agent steps. A single chat request
- * may run up to 25 agent steps internally, so effective LLM call volume
- * can be higher than the RPM value implies.
+ * The optional `bucket` parameter selects between two independent
+ * sliding windows keyed on the same caller identity (user id or IP):
+ *
+ *   - `"default"` (omitted) — the original cheap-read bucket. Ceiling
+ *     comes from `ATLAS_RATE_LIMIT_RPM`.
+ *   - `"chat"` — the chat-stream carve-out (F-74). Ceiling comes from
+ *     `ATLAS_RATE_LIMIT_RPM_CHAT`, defaulting to `max(5, RPM/4)`. A 25-step
+ *     chat run debiting the chat bucket no longer drains the cheap-read
+ *     allowance for the same caller.
+ *
+ * Note: this still limits API *requests*, not agent steps. Per-conversation
+ * step accounting (F-77) is enforced separately on the chat handler.
  */
-export function checkRateLimit(key: string): {
+export function checkRateLimit(
+  key: string,
+  options?: { bucket?: RateLimitBucket },
+): {
   allowed: boolean;
   retryAfterMs?: number;
 } {
-  const limit = getRpmLimit();
+  const bucket = options?.bucket ?? "default";
+  const limit = getRpmLimitForBucket(bucket);
   if (limit === 0) return { allowed: true };
 
+  const bucketedKey = BUCKET_PREFIX[bucket] + key;
   const now = Date.now();
   const cutoff = now - WINDOW_MS;
 
-  let timestamps = windows.get(key);
+  let timestamps = windows.get(bucketedKey);
   if (!timestamps) {
     timestamps = [];
-    windows.set(key, timestamps);
+    windows.set(bucketedKey, timestamps);
   }
 
   // Evict stale entries
@@ -112,6 +178,7 @@ export function checkRateLimit(key: string): {
 export function resetRateLimits(): void {
   windows.clear();
   lastWarnedRpmValue = undefined;
+  lastWarnedChatRpmValue = undefined;
 }
 
 /**

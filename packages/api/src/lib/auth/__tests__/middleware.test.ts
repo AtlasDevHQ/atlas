@@ -433,6 +433,107 @@ describe("checkRateLimit()", () => {
 });
 
 // ---------------------------------------------------------------------------
+// F-74 — chat bucket isolation
+// ---------------------------------------------------------------------------
+
+describe("checkRateLimit() — chat bucket (F-74)", () => {
+  const origRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+  const origChatRpm = process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+
+  beforeEach(() => {
+    resetRateLimits();
+    process.env.ATLAS_RATE_LIMIT_RPM = "20";
+  });
+
+  afterEach(() => {
+    if (origRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = origRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM;
+    if (origChatRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_CHAT = origChatRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+    resetRateLimits();
+  });
+
+  it("derives default chat ceiling as max(5, RPM/4) when override unset", () => {
+    delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+    process.env.ATLAS_RATE_LIMIT_RPM = "20"; // → chat ceiling = 5
+    resetRateLimits();
+
+    for (let i = 0; i < 5; i++) {
+      expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
+
+  it("floor of 5/min applies when ATLAS_RATE_LIMIT_RPM is small", () => {
+    delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+    // RPM=4 / 4 = 1, but the floor is 5 to keep the chat surface usable.
+    process.env.ATLAS_RATE_LIMIT_RPM = "4";
+    resetRateLimits();
+
+    for (let i = 0; i < 5; i++) {
+      expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
+
+  it("ATLAS_RATE_LIMIT_RPM_CHAT override wins over the derived default", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "100";
+    process.env.ATLAS_RATE_LIMIT_RPM_CHAT = "2";
+    resetRateLimits();
+
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
+
+  it("disables chat bucket when ATLAS_RATE_LIMIT_RPM=0", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "0";
+    process.env.ATLAS_RATE_LIMIT_RPM_CHAT = "2";
+    resetRateLimits();
+
+    // When the global limit is disabled the chat bucket inherits "off".
+    for (let i = 0; i < 50; i++) {
+      expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    }
+  });
+
+  // F-74 isolation pin: a chat-burning user's cheap reads must keep working.
+  it("chat bucket exhaustion does not lock out the default bucket for the same key", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "20";
+    process.env.ATLAS_RATE_LIMIT_RPM_CHAT = "2";
+    resetRateLimits();
+
+    // Burn the chat ceiling.
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+
+    // Default bucket on the same key still has its full allowance.
+    for (let i = 0; i < 20; i++) {
+      expect(checkRateLimit("u").allowed).toBe(true);
+    }
+    expect(checkRateLimit("u").allowed).toBe(false);
+  });
+
+  it("default bucket exhaustion does not lock out the chat bucket for the same key", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "2";
+    process.env.ATLAS_RATE_LIMIT_RPM_CHAT = "5";
+    resetRateLimits();
+
+    // Burn the default ceiling.
+    expect(checkRateLimit("u").allowed).toBe(true);
+    expect(checkRateLimit("u").allowed).toBe(true);
+    expect(checkRateLimit("u").allowed).toBe(false);
+
+    // Chat bucket is unaffected.
+    for (let i = 0; i < 5; i++) {
+      expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // rateLimitCleanupTick
 // ---------------------------------------------------------------------------
 

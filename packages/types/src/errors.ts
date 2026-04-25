@@ -25,6 +25,7 @@ export const CHAT_ERROR_CODES = [
   "auth_error",
   "session_expired",
   "rate_limited",
+  "conversation_budget_exceeded",
   "configuration_error",
   "no_datasource",
   "invalid_request",
@@ -95,6 +96,10 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   workspace_suspended: false,
   workspace_throttled: true,
   workspace_deleted: false,
+  // F-77 — retrying on the same conversation will keep failing because
+  // the aggregate counter only resets on a new conversation. The UI
+  // surfaces a "start a new conversation" affordance instead of retry.
+  conversation_budget_exceeded: false,
 };
 
 /** Returns `true` if the given error code represents a transient, retryable failure. */
@@ -456,6 +461,15 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
         requestId,
       };
     }
+
+    case "conversation_budget_exceeded":
+      return {
+        title: "This conversation has reached its limit.",
+        detail: serverMessage ?? "Start a new conversation to continue. The current thread has hit the per-conversation step ceiling.",
+        code: rawCode,
+        retryable,
+        requestId,
+      };
 
     case "configuration_error":
       return { title: "Atlas is not fully configured.", detail: serverMessage, code: rawCode, retryable, requestId };

@@ -36,9 +36,43 @@ import {
   getConversation,
   generateTitle,
   persistAssistantSteps,
+  reserveConversationBudget,
+  settleConversationSteps,
 } from "@atlas/api/lib/conversations";
 import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
+import { getSetting } from "@atlas/api/lib/settings";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema } from "./shared-schemas";
+
+const DEFAULT_CONVERSATION_STEP_CAP = 500;
+const DEFAULT_AGENT_MAX_STEPS = 25;
+
+/**
+ * Resolve `ATLAS_CONVERSATION_STEP_CAP` with sensible fallbacks. Returns
+ * 0 ("disabled") when the setting is `0`, an empty string, or invalid —
+ * any non-positive integer disables the cap. F-77.
+ */
+function getConversationStepCap(): number {
+  const raw = getSetting("ATLAS_CONVERSATION_STEP_CAP");
+  if (raw === undefined) return DEFAULT_CONVERSATION_STEP_CAP;
+  if (raw === "") return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_CONVERSATION_STEP_CAP;
+  return Math.floor(n);
+}
+
+/**
+ * Resolve `ATLAS_AGENT_MAX_STEPS` for the F-77 upfront reservation.
+ * Mirrors the agent loop's `getAgentMaxSteps()` clamp ([1, 100], default
+ * 25) so the upfront charge matches the worst-case spend per request.
+ */
+function getReservationStepBudget(): number {
+  const raw = getSetting("ATLAS_AGENT_MAX_STEPS");
+  if (raw === undefined || raw === "") return DEFAULT_AGENT_MAX_STEPS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_AGENT_MAX_STEPS;
+  return Math.min(100, Math.max(1, Math.floor(n)));
+}
 
 const log = createLogger("chat");
 
@@ -170,10 +204,12 @@ chat.openapi(chatRoute, async (c) => {
       );
     }
   
-    // Rate limit check — after auth so we have user identity
+    // Rate limit check — after auth so we have user identity. The chat
+    // route uses its own carve-out bucket (F-74) so a 25-step LLM run does
+    // not deplete the same allowance that serves cheap admin reads.
     const ip = getClientIP(req);
     const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-    const rateCheck = checkRateLimit(rateLimitKey);
+    const rateCheck = checkRateLimit(rateLimitKey, { bucket: "chat" });
     if (!rateCheck.allowed) {
       log.warn(
         { requestId, rateLimitKey, retryAfterMs: rateCheck.retryAfterMs },
@@ -375,7 +411,12 @@ chat.openapi(chatRoute, async (c) => {
   
         const messages = parsed.data.messages as UIMessage[];
         let conversationId = parsed.data.conversationId;
-  
+        // F-77 — track the upfront reservation so the post-stream
+        // settlement can refund any unused budget. `null` means no
+        // reservation was charged (cap disabled, new conversation, or
+        // fail-open path).
+        let reservedStepBudget: number | null = null;
+
         // Conversation persistence — Ownership verification blocks here (can 404); message writes are fire-and-forget via internalExecute.
         if (hasInternalDB()) {
           if (conversationId) {
@@ -384,14 +425,71 @@ chat.openapi(chatRoute, async (c) => {
             if (!existing.ok) {
               return c.json({ error: "not_found", message: "Conversation not found.", retryable: false, requestId }, 404);
             }
-            // Persist the latest user message
+            // F-77 — aggregate per-conversation step ceiling. The per-request
+            // caps (stepCountIs(25), 180s wall-clock) bound a single agent
+            // run; this gate bounds the long-tail follow-up flow on a single
+            // conversationId. The reservation charges the row by the worst-
+            // case step budget atomically, so concurrent runs cannot all pass
+            // the gate at `cap − 1` — the ceiling is enforced at the row, not
+            // here. Settlement on stream finish refunds the unused portion.
+            // `no_db` / `error` reservation results fail open so a transient
+            // internal-DB glitch never 429s the whole chat surface; sustained
+            // outages surface via a throttled `log.warn` from the helper.
+            const stepCap = getConversationStepCap();
+            if (stepCap > 0) {
+              const stepBudget = getReservationStepBudget();
+              const reservation = await reserveConversationBudget(
+                conversationId,
+                stepBudget,
+                stepCap,
+              );
+              if (reservation.status === "exceeded") {
+                log.warn(
+                  { requestId, conversationId, totalSteps: reservation.totalSteps, cap: stepCap },
+                  "Conversation budget exceeded — rejecting follow-up message",
+                );
+                // Audit so abuse detection picks up workspaces grinding the cap.
+                // Pass `scope: "workspace"` explicitly so a future system-actor
+                // codepath cannot silently invert the row's scope to "platform".
+                logAdminAction({
+                  actionType: ADMIN_ACTIONS.conversation.budgetExceeded,
+                  targetType: "conversation",
+                  targetId: conversationId,
+                  status: "failure",
+                  scope: "workspace",
+                  metadata: { totalSteps: reservation.totalSteps, cap: stepCap },
+                });
+                return c.json(
+                  {
+                    error: "conversation_budget_exceeded",
+                    message: "This conversation has reached its step limit. Start a new conversation to continue.",
+                    retryable: false,
+                    requestId,
+                  },
+                  429,
+                );
+              }
+              if (reservation.status === "ok") {
+                reservedStepBudget = stepBudget;
+              }
+              // status === "no_db" | "error" → fail open, no reservation
+              // charged. The helper has already logged the failure (rate-
+              // limited) so the operator sees sustained outages.
+            }
+            // Persist the latest user message. `addMessage` is fire-and-
+            // forget via `internalExecute`; the synchronous try/catch only
+            // covers pool-init throws — async insert failures are logged
+            // inside `internalExecute`'s circuit breaker.
             try {
               const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
               if (lastUserMsg) {
                 addMessage({ conversationId, role: "user", content: lastUserMsg.parts });
               }
             } catch (err) {
-              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to persist user message");
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), requestId, conversationId },
+                "Failed to persist user message (pool init throw)",
+              );
             }
           } else {
             try {
@@ -533,6 +631,31 @@ chat.openapi(chatRoute, async (c) => {
           // Fire-and-forget: persist assistant response (text + tool results) after stream completes.
           if (conversationId) {
             persistAssistantSteps({ conversationId, steps: agentResult.steps, label: "chat" });
+            // F-77 — settlement. The reservation charged the row by the
+            // worst-case step budget upfront so concurrent runs couldn't
+            // overshoot the cap. Once the agent loop resolves we refund
+            // the unused portion. If the stream errors out we keep the
+            // full reservation charged — that's the conservative cost
+            // accounting choice (an attacker spinning up streams that
+            // fail mid-flight still pays full budget).
+            if (reservedStepBudget !== null) {
+              const convIdForSettle = conversationId;
+              const reservedForSettle = reservedStepBudget;
+              void Promise.resolve(agentResult.steps)
+                .then((steps) => {
+                  settleConversationSteps(convIdForSettle, reservedForSettle, steps.length);
+                })
+                .catch((err: unknown) => {
+                  log.warn(
+                    {
+                      err: err instanceof Error ? err.message : String(err),
+                      requestId,
+                      conversationId: convIdForSettle,
+                    },
+                    "F-77 step-cap settlement skipped — agent stream failed; reservation stays charged",
+                  );
+                });
+            }
           }
   
           // The streaming response is a raw Response from createUIMessageStreamResponse.

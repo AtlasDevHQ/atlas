@@ -226,6 +226,9 @@ mock.module("@atlas/api/lib/conversations", () => ({
   convertToNotebook: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  // F-77 step-cap helpers — chat.ts imports both via the shared module.
+  reserveConversationBudget: mock(() => Promise.resolve({ status: "ok" as const, totalStepsBefore: 0 })),
+  settleConversationSteps: mock(() => {}),
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
@@ -280,8 +283,14 @@ mock.module("@atlas/api/lib/config", () => ({
 import { createConnectionMock } from "@atlas/api/testing/connection";
 mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
 
-// Import after all mocks
+// Import after all mocks. The dynamic import avoids hoisting routes/dashboards.ts
+// past the mock.module() calls — a static `import` would load the module before
+// the logger mock applies, leaving the public-rate-limit warn going through
+// real pino and the route logs uncaptured.
 const { app } = await import("../index");
+// Reset the public-share rate limiter between tests so the new shared
+// anonymous-bucket ceiling (F-73) does not exhaust across the suite.
+const { _resetDashboardRateLimit } = await import("../routes/dashboards");
 
 describe("dashboard routes", () => {
   const origDatabaseUrl = process.env.DATABASE_URL;
@@ -299,6 +308,7 @@ describe("dashboard routes", () => {
     mockCheckRateLimit.mockReturnValue({ allowed: true });
     mockGetClientIP.mockReset();
     mockGetClientIP.mockReturnValue(null);
+    _resetDashboardRateLimit();
 
     // Reset dashboard mocks
     mockCreateDashboard.mockReset();

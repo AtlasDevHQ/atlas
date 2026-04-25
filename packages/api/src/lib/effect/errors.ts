@@ -167,6 +167,25 @@ export class ActionTimeoutError extends Data.TaggedError("ActionTimeoutError")<{
   readonly timeoutMs: number;
 }> {}
 
+// ── Conversation Budget (F-77) ─────────────────────────────────────
+
+/**
+ * Aggregate per-conversation step ceiling exceeded. Per-request caps
+ * (`stepCountIs(25)`, 180s wall-clock) bound a single agent run; this
+ * error fires when `total_steps` on a conversation crosses
+ * `ATLAS_CONVERSATION_STEP_CAP`. The chat handler returns 429 with the
+ * specific `conversation_budget_exceeded` chat error code so the UI can
+ * render a "start a new conversation" affordance instead of suggesting
+ * retry. Audited via `conversation.budget_exceeded` so abuse detection
+ * gets a signal.
+ */
+export class ConversationBudgetExceededError extends Data.TaggedError("ConversationBudgetExceededError")<{
+  readonly message: string;
+  readonly conversationId: string;
+  readonly totalSteps: number;
+  readonly cap: number;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -213,6 +232,7 @@ export type AtlasError =
   | PluginRejectedError
   | CustomValidatorError
   | ActionTimeoutError
+  | ConversationBudgetExceededError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -249,6 +269,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "PluginRejectedError",
   "CustomValidatorError",
   "ActionTimeoutError",
+  "ConversationBudgetExceededError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

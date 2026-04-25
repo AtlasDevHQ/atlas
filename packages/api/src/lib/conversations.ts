@@ -246,6 +246,173 @@ export function addMessage(opts: {
 }
 
 /**
+ * F-77 — atomically charge the per-request step budget against a
+ * conversation's running total.
+ *
+ * Returns one of:
+ *   - `{ status: "ok", totalStepsBefore }` — the reservation was
+ *     accepted; the row's `total_steps` was bumped by `stepBudget`.
+ *     The caller may run the agent. Settle the actual spend afterward
+ *     via `settleConversationSteps` so follow-ups see real usage, not
+ *     the worst-case reservation.
+ *   - `{ status: "exceeded", totalSteps }` — the row was already at or
+ *     past the cap. Reject with 429 `conversation_budget_exceeded`.
+ *   - `{ status: "no_db" }` — internal DB not configured; caller fails
+ *     open.
+ *   - `{ status: "error" }` — query threw; caller fails open. A
+ *     throttled `log.warn` surfaces sustained outages so operators
+ *     don't miss that F-77 is no-op'd while the DB is down.
+ *
+ * Atomicity: the gate is enforced at the row by
+ * `UPDATE … WHERE total_steps < $cap … RETURNING`. A non-atomic
+ * read-then-write loop would let two concurrent follow-ups both pass
+ * the gate at `cap - 1` and then both add their full step budget,
+ * letting the row exceed the cap by `(parallelism − 1) × stepBudget`.
+ * Charging upfront also closes the timing hole in the previous design,
+ * where the post-stream increment ran after the handler returned and
+ * dropped silently if the stream failed.
+ */
+export type ConversationBudgetReservation =
+  | { status: "ok"; totalStepsBefore: number }
+  | { status: "exceeded"; totalSteps: number }
+  | { status: "no_db" }
+  | { status: "error" };
+
+let lastBudgetReadFailureWarnAt = 0;
+const BUDGET_FAILURE_WARN_THROTTLE_MS = 60_000;
+
+function maybeWarnBudgetFailure(conversationId: string, err: unknown): void {
+  const now = Date.now();
+  if (now - lastBudgetReadFailureWarnAt < BUDGET_FAILURE_WARN_THROTTLE_MS) {
+    log.debug(
+      { err: errorMessage(err), conversationId },
+      "Conversation budget read failed (throttled)",
+    );
+    return;
+  }
+  lastBudgetReadFailureWarnAt = now;
+  log.warn(
+    { err: errorMessage(err), conversationId },
+    "Conversation budget read/reserve failed — F-77 cap is failing open until the internal DB is reachable",
+  );
+}
+
+/** @internal — test-only. Reset the throttled-warn cooldown. */
+export function _resetConversationBudgetWarnState(): void {
+  lastBudgetReadFailureWarnAt = 0;
+}
+
+export async function reserveConversationBudget(
+  conversationId: string,
+  stepBudget: number,
+  cap: number,
+): Promise<ConversationBudgetReservation> {
+  if (!hasInternalDB()) return { status: "no_db" };
+  if (!Number.isFinite(stepBudget) || stepBudget <= 0) {
+    return { status: "ok", totalStepsBefore: 0 };
+  }
+  if (!Number.isFinite(cap) || cap <= 0) {
+    // Cap disabled — short-circuit before touching the DB.
+    return { status: "ok", totalStepsBefore: 0 };
+  }
+  const delta = Math.floor(stepBudget);
+  const ceiling = Math.floor(cap);
+  try {
+    const updated = await internalQuery<{ before: number | string | null }>(
+      `UPDATE conversations
+          SET total_steps = total_steps + $2
+        WHERE id = $1 AND total_steps < $3
+        RETURNING total_steps - $2 AS before`,
+      [conversationId, delta, ceiling],
+    );
+    if (updated.length > 0) {
+      const raw = updated[0].before;
+      const n = typeof raw === "number" ? raw : Number(raw);
+      return { status: "ok", totalStepsBefore: Number.isFinite(n) ? n : 0 };
+    }
+    // UPDATE returned 0 rows. Three possibilities — only one of them
+    // is "exceeded", the others both mean the cap state is unknown
+    // (the row vanished between auth check and reservation, or a
+    // concurrent reservation just settled and freed budget). In both
+    // unknown cases we MUST NOT return `ok` — the chat handler reads
+    // `status === "ok"` as "charge applied, settle later" and a
+    // false-positive ok corrupts `total_steps` accounting via a
+    // settlement that refunds an unmade charge.
+    const rows = await internalQuery<{ total_steps: number | string | null }>(
+      `SELECT total_steps FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    if (rows.length === 0) {
+      // TOCTOU: the conversation existed at the auth check but is gone
+      // now. Surface the race so operators can tell genuine deletes
+      // from a future logic bug.
+      log.warn(
+        { conversationId },
+        "Reservation skipped — conversation row vanished between auth check and budget reserve (TOCTOU)",
+      );
+      return { status: "error" };
+    }
+    const raw = rows[0].total_steps;
+    const n = typeof raw === "number" ? raw : Number(raw);
+    const total = Number.isFinite(n) ? n : 0;
+    if (total >= ceiling) {
+      return { status: "exceeded", totalSteps: total };
+    }
+    // Row is below cap but UPDATE missed it — concurrent reservation
+    // race. Fail open (the cap state is unknown), but log it; if this
+    // fires repeatedly the cap parameters or transaction isolation
+    // deserve a second look.
+    log.warn(
+      { conversationId, totalSteps: total, cap: ceiling },
+      "Reservation skipped — UPDATE matched 0 rows but row is below cap (concurrent reservation race)",
+    );
+    return { status: "error" };
+  } catch (err) {
+    maybeWarnBudgetFailure(conversationId, err);
+    return { status: "error" };
+  }
+}
+
+/**
+ * F-77 settlement adjustment. `reserveConversationBudget` charges the
+ * row by the full `stepBudget` upfront so concurrent runs can't all
+ * pass the gate at `cap − 1`. Once the agent loop settles, refund the
+ * difference between reserved and actual spend so follow-ups see real
+ * usage.
+ *
+ * Fire-and-forget — `internalExecute` swallows async errors with its
+ * own circuit breaker + logging. The synchronous try/catch covers
+ * pool-init throws. `GREATEST(0, …)` keeps the counter from going
+ * negative when a stale settlement races with a concurrent reservation
+ * that already settled.
+ */
+export function settleConversationSteps(
+  conversationId: string,
+  reservedSteps: number,
+  actualSteps: number,
+): void {
+  if (!hasInternalDB()) return;
+  if (!Number.isFinite(reservedSteps) || !Number.isFinite(actualSteps)) return;
+  const refund =
+    Math.max(0, Math.floor(reservedSteps)) -
+    Math.max(0, Math.floor(actualSteps));
+  if (refund <= 0) return;
+  try {
+    internalExecute(
+      `UPDATE conversations
+          SET total_steps = GREATEST(0, total_steps - $1)
+        WHERE id = $2`,
+      [refund, conversationId],
+    );
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), conversationId, refund },
+      "settleConversationSteps failed (synchronous throw)",
+    );
+  }
+}
+
+/**
  * Fetches a conversation with its messages. Scope filters are composed via
  * `scopeClause()` — `userId` enforces ownership, `orgId` restricts access to
  * the caller's active workspace (or legacy rows with NULL org_id). Omitting

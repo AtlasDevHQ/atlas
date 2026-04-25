@@ -448,6 +448,23 @@ export const ADMIN_ACTIONS = {
     unhide: "starter_prompt.unhide",
     authorUpdate: "starter_prompt.author_update",
   },
+  /**
+   * Per-conversation cost-ceiling rejection (F-77). Emitted by the chat
+   * handler when `reserveConversationBudget` returns `exceeded`.
+   * Audited so abuse detection picks up on a workspace grinding a single
+   * conversation up to the aggregate ceiling — the per-request step cap
+   * and wall-clock budgets bound a single run, but the long-tail
+   * follow-up flow on one conversation isn't covered without this row.
+   * Metadata: `{ totalSteps, cap }`. Target id is the conversation id.
+   * The chat handler passes `scope: "workspace"` explicitly —
+   * `logAdminAction` defaults to `"workspace"` only when no
+   * `systemActor` is set, so the explicit pass keeps a future
+   * system-actor codepath from silently inverting the row's scope to
+   * `"platform"`.
+   */
+  conversation: {
+    budgetExceeded: "conversation.budget_exceeded",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

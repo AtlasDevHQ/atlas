@@ -171,10 +171,10 @@ const ENCRYPTED_SECRET_PREFIX = "enc:v1:";
 
 /**
  * True iff `value` is a string that already carries the `enc:v1:` prefix.
- * Used both by `encryptSecretFields` for idempotence (the backfill script
- * and repeated PUTs must not double-encrypt) and by `isEncryptedSecret`
- * (exported for callers that need to detect ciphertext in a mixed blob,
- * e.g. the backfill's idempotency check).
+ * Used by `encryptSecretFields` for idempotence (repeated PUTs and the
+ * one-off F-42 plaintext-to-ciphertext walk in
+ * `lib/db/backfill-plugin-config.ts` must not double-encrypt) and
+ * exported for callers that need to detect ciphertext in a mixed blob.
  */
 export function isEncryptedSecret(value: unknown): value is string {
   return typeof value === "string" && value.startsWith(ENCRYPTED_SECRET_PREFIX);
@@ -200,8 +200,8 @@ export function isEncryptedSecret(value: unknown): value is string {
  * secret doesn't become `encryptSecret("")`.
  *
  * Idempotent on already-encrypted values: an `enc:v1:…` string is
- * recognized and returned as-is. The backfill script and any double-PUT
- * relies on this to re-run safely.
+ * recognized and returned as-is. Repeated PUTs and the one-off F-42
+ * `lib/db/backfill-plugin-config.ts` rely on this to re-run safely.
  */
 export function encryptSecretFields(
   config: unknown,
@@ -243,8 +243,10 @@ export function encryptSecretFields(
  * `lib/audit/error-scrub.ts` to strip connection strings from other parts
  * of the error chain before logging.
  *
- * Passes un-prefixed plaintext through unchanged — a legacy row not yet
- * touched by the backfill decrypts to itself.
+ * Passes un-prefixed plaintext through unchanged — a legacy
+ * pre-F-42-encryption row decrypts to itself. Once the F-42 backfill
+ * has run those rows are ciphertext, but the passthrough stays for
+ * tolerance against schema-marked-secret-after-write drift.
  */
 export function decryptSecretFields(
   config: unknown,
@@ -276,7 +278,7 @@ export function decryptSecretFields(
       if (!isEncryptedSecret(value)) {
         log.warn(
           { key },
-          "Plaintext value on a `secret: true` field — legacy pre-backfill row or write-path drift (F-42)",
+          "Plaintext value on a `secret: true` field — legacy pre-F-42-encryption row or write-path drift",
         );
       }
       out[key] = decryptSecret(value);

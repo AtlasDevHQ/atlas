@@ -23,10 +23,18 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   }),
 }));
 
+// Mock decryptSecret with three branches:
+//   `enc:v1:test:<value>` → returns <value>
+//   `enc:v1:throw:<reason>` → throws (lets tests exercise the catch path)
+//   anything else → returns unchanged (legacy plaintext passthrough)
 mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   encryptSecret: (plaintext: string) => `enc:v1:test:${plaintext}`,
-  decryptSecret: (stored: string) =>
-    stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored,
+  decryptSecret: (stored: string) => {
+    if (stored.startsWith("enc:v1:throw:")) {
+      throw new Error(`mock decrypt failure: ${stored.slice("enc:v1:throw:".length)}`);
+    }
+    return stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored;
+  },
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -93,5 +101,25 @@ describe("F-41 teams encrypted-only writes + reads", () => {
     ];
     const install = await getTeamsInstallation("tenant-1");
     expect(install?.app_password).toBeNull();
+  });
+
+  it("getTeamsInstallation hides the row when decryptSecret throws (decrypt failure ≠ admin-consent)", async () => {
+    // Pin the M2 fix: a row with garbled `app_password_encrypted` must
+    // not surface as `{ ..., app_password: null }` — that would be
+    // indistinguishable from a legitimate admin-consent install and
+    // the caller would treat the broken row as healthy. Returning
+    // null for the whole row matches Slack/Telegram and forces the
+    // operator to investigate via the F-42 audit script.
+    mockInternalQueryResult = [
+      {
+        tenant_id: "tenant-1",
+        org_id: "org-1",
+        tenant_name: "Acme",
+        app_password_encrypted: "enc:v1:throw:auth-tag-failure",
+        installed_at: "2026-04-20T00:00:00Z",
+      },
+    ];
+    const install = await getTeamsInstallation("tenant-1");
+    expect(install).toBeNull();
   });
 });

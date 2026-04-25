@@ -37,10 +37,22 @@ export interface SandboxCredential {
 
 /**
  * Decode the provider credentials blob from `credentials_encrypted`.
- * The plaintext JSONB sibling was dropped in migration 0040 once F-41
- * cleared soak — there is no longer a fall-through branch. Decrypt or
- * parse failures return null so the caller treats the record as
- * invalid and the operator can re-enter the credential.
+ * Two branches:
+ *
+ *   • encrypted column NULL/empty   → return null (caller treats the
+ *                                     record as invalid).
+ *   • encrypted column has data,
+ *     decrypt / JSON.parse throws   → THROW. The route layer surfaces
+ *                                     a 500 with `requestId` so the
+ *                                     admin sees the underlying
+ *                                     decrypt failure rather than a
+ *                                     silently-missing row.
+ *
+ * Throw-on-decrypt-failure is symmetric with `email/store.ts`'s
+ * matching helper. Listing endpoints (`getSandboxCredentials`) let
+ * the throw propagate — one bad row breaks the page until the
+ * operator runs the F-42 audit script and fixes the residue, which
+ * is the "fail loud" outcome the security promise requires.
  */
 function decodeEncryptedCredentials(
   encrypted: unknown,
@@ -50,21 +62,13 @@ function decodeEncryptedCredentials(
     log.warn(context, "Missing credentials_encrypted field in sandbox_credentials record");
     return null;
   }
-  try {
-    const decoded = decryptSecret(encrypted);
-    const parsed = JSON.parse(decoded) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
+  const decoded = decryptSecret(encrypted);
+  const parsed = JSON.parse(decoded) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     log.error(context, "Decrypted sandbox credentials is not an object");
-    return null;
-  } catch (err) {
-    log.error(
-      { ...context, parseError: err instanceof Error ? err.message : String(err) },
-      "Failed to decrypt/parse sandbox credentials",
-    );
-    return null;
+    throw new Error("Decrypted sandbox credentials is not an object");
   }
+  return parsed as Record<string, unknown>;
 }
 
 function parseRow(

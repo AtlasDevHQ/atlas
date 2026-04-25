@@ -36,11 +36,25 @@ function parseInstallationRow(
     log.warn(context, "Invalid Teams installation record in database");
     return null;
   }
-  // app_password is nullable (admin-consent mode stores no password; only
-  // BYOT writes one). The encrypted column is null/empty for OAuth
-  // installs, which is the expected state — we surface `app_password: null`
-  // so callers can distinguish "no password configured" from "password
-  // could not be decrypted" (the latter logs at error and returns null).
+  // app_password is nullable on the encrypted side too — admin-consent
+  // installs persist no password and that's a legitimate state. We
+  // distinguish three cases here:
+  //
+  //   • encrypted column NULL/empty   → admin-consent install. Return
+  //                                     row with `app_password: null`.
+  //   • encrypted column has data,
+  //     decryptSecret succeeds        → BYOT install. Return row with
+  //                                     decrypted password.
+  //   • encrypted column has data,
+  //     decryptSecret throws          → row exists but is unusable. We
+  //                                     return null for the whole row
+  //                                     (matches Slack/Telegram pattern)
+  //                                     rather than silently surfacing
+  //                                     `app_password: null` — that
+  //                                     would be indistinguishable from
+  //                                     the admin-consent state and the
+  //                                     caller would treat the broken
+  //                                     row as a healthy install.
   const encrypted = row.app_password_encrypted;
   let appPassword: string | null = null;
   if (typeof encrypted === "string" && encrypted.length > 0) {
@@ -49,8 +63,9 @@ function parseInstallationRow(
     } catch (err) {
       log.error(
         { ...context, err: err instanceof Error ? err.message : String(err) },
-        "Failed to decrypt teams_installations.app_password_encrypted",
+        "Failed to decrypt teams_installations.app_password_encrypted — row hidden from API; F-42 audit script catches residue",
       );
+      return null;
     }
   }
   return {

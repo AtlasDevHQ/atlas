@@ -21,8 +21,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   encryptSecret: (plaintext: string) => `enc:v1:test:${plaintext}`,
-  decryptSecret: (stored: string) =>
-    stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored,
+  decryptSecret: (stored: string) => {
+    if (stored.startsWith("enc:v1:throw:")) {
+      throw new Error(`mock decrypt failure: ${stored.slice("enc:v1:throw:".length)}`);
+    }
+    return stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored;
+  },
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -91,5 +95,24 @@ describe("F-41 discord encrypted-only writes + reads", () => {
     ];
     const install = await getDiscordInstallation("g-1");
     expect(install?.bot_token).toBeNull();
+  });
+
+  it("hides the row when decryptSecret throws (decrypt failure ≠ OAuth-only install)", async () => {
+    // Pin the M2 fix: decrypt failure on the nullable encrypted column
+    // returns null for the whole row instead of `{ ..., bot_token: null }`,
+    // which would be indistinguishable from a healthy OAuth-only install.
+    mockInternalQueryResult = [
+      {
+        guild_id: "g-1",
+        org_id: "org-1",
+        guild_name: "Test",
+        bot_token_encrypted: "enc:v1:throw:auth-tag-failure",
+        application_id: "app-1",
+        public_key: "pub-1",
+        installed_at: "2026-04-20T00:00:00Z",
+      },
+    ];
+    const install = await getDiscordInstallation("g-1");
+    expect(install).toBeNull();
   });
 });

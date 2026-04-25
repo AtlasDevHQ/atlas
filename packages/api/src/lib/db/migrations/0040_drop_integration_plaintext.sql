@@ -13,21 +13,29 @@
 -- Dropping a column is destructive and irreversible at the schema layer.
 -- Recovery requires restoring from a pre-migration backup, NOT
 -- re-running the migration in reverse. Operator pre-flight checks
--- (enumerated in the PR description) MUST report zero plaintext-only
--- rows in every production region before this migration is applied:
+-- (enumerated in the PR description) MUST report zero residue rows in
+-- every production region before this migration is applied:
 --
 --   1. Run `bun run packages/api/scripts/audit-plugin-config-residue.ts`
---      against US, EU, APAC. Expected: zero rows with plaintext-shaped
---      secret fields. (The audit script also asserts the integration
---      stores have no `<col> IS NOT NULL AND <col>_encrypted IS NULL`
---      rows — same chokepoint.)
---   2. One last idempotent backfill pass per region:
---      `bun run packages/api/src/lib/db/backfill-integration-credentials.ts`
---      against US/EU/APAC. Expected: 0 rows updated.
---   3. Confirm
---      `SELECT count(*) FROM <table> WHERE <col> IS NOT NULL AND <col>_encrypted IS NULL`
---      returns 0 across all 10 integration tables and all 3 regions.
---      The audit script bundles this check.
+--      against US, EU, APAC. Expected: exit code 0 — zero residue
+--      findings. The script asserts every row in the eight non-nullable
+--      F-41 integration tables (Slack, Telegram, GChat, GitHub, Linear,
+--      WhatsApp, Email, Sandbox) has a non-empty `<col>_encrypted`
+--      value matching `enc:v<N>:`. A non-zero exit indicates either an
+--      F-41 row whose ciphertext was never written or an F-42
+--      `secret: true` field still carrying plaintext.
+--   2. One last idempotent backfill pass per region. The integration
+--      credential backfill script (`backfill-integration-credentials.ts`)
+--      is deleted in this PR, so step 2 collapses into step 1 — exit-0
+--      from the audit covers the same invariant. For workspace + plugin
+--      config, the backfill remains at `lib/db/backfill-plugin-config.ts`
+--      (one-off F-42 plaintext → ciphertext walk, idempotent on
+--      `enc:v<N>:` prefix).
+--   3. Confirm zero `count(*) FROM <table> WHERE <col>_encrypted IS NULL`
+--      across all eight non-nullable integration tables and all 3
+--      regions. The audit script in step 1 asserts this for every row;
+--      a manual re-run of this exact query in ≥1 region is the
+--      belt-and-braces double-check.
 --
 -- If ANY pre-flight check returns non-zero, do NOT apply this
 -- migration. Dropping the plaintext column on a row whose ciphertext

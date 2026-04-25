@@ -41,11 +41,25 @@ function isEmailProvider(value: string): value is EmailProvider {
 }
 
 /**
- * Decode the provider-config payload from `config_encrypted`. The
- * plaintext JSONB sibling was dropped in migration 0040 once F-41
- * cleared soak — there is no longer a fall-through branch. A decrypt
- * or parse failure here surfaces as `null` so the admin UI shows "no
- * provider configured" and the operator can re-enter the config.
+ * Decode the provider-config payload from `config_encrypted`. Two
+ * branches:
+ *
+ *   • encrypted column NULL/empty   → row is in a transitional state
+ *                                     (e.g. mid-install) — return null
+ *                                     and the caller surfaces "no
+ *                                     provider configured".
+ *   • encrypted column has data,
+ *     decrypt or JSON.parse throws  → THROW. The caller (route handler)
+ *                                     surfaces a 500 with `requestId`
+ *                                     and the admin sees an actionable
+ *                                     error.
+ *
+ * The throw-on-decrypt-failure semantic prevents the silent footgun
+ * where "decrypt failed" looks like "no provider configured" — under
+ * the old null-return semantics an operator could click Save on a
+ * row that's actually unreadable, overwriting evidence of corruption
+ * (or a botched key rotation) with a fresh ciphertext under the active
+ * key. Forcing the 500 makes the underlying problem visible.
  */
 function decodeEncryptedConfig(
   encrypted: unknown,
@@ -55,21 +69,16 @@ function decodeEncryptedConfig(
     log.warn(context, "Email installation config_encrypted column is missing");
     return null;
   }
-  try {
-    const decoded = decryptSecret(encrypted);
-    const parsed = JSON.parse(decoded) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
+  // Let decrypt + JSON.parse failures propagate — the route layer maps
+  // them to 500 with a scrubbed message and the admin UI surfaces the
+  // error rather than silently inviting an overwrite.
+  const decoded = decryptSecret(encrypted);
+  const parsed = JSON.parse(decoded) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     log.error({ ...context }, "Decrypted email config is not an object");
-    return null;
-  } catch (err) {
-    log.error(
-      { ...context, parseError: err instanceof Error ? err.message : String(err) },
-      "Failed to decrypt/parse email config",
-    );
-    return null;
+    throw new Error("Decrypted email config is not an object");
   }
+  return parsed as Record<string, unknown>;
 }
 
 /**

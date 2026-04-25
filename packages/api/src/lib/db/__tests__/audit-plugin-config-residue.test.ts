@@ -139,6 +139,7 @@ describe("runAudit", () => {
           { key: "apiKey", type: "string", secret: true },
           { key: "region", type: "string", secret: false },
         ],
+        orphan: false,
       },
     ];
     const report = await runAudit(makeClient(state));
@@ -163,6 +164,7 @@ describe("runAudit", () => {
           { key: "apiKey", type: "string", secret: true },
           { key: "debug", type: "boolean", secret: false },
         ],
+        orphan: false,
       },
     ];
     const report = await runAudit(makeClient(state));
@@ -179,6 +181,7 @@ describe("runAudit", () => {
         // would over-encrypt; audit walker over-flags. Symmetric.
         config: { someKey: "looks-like-plaintext", encryptedKey: "enc:v1:fine" },
         config_schema: "not-an-array",
+        orphan: false,
       },
     ];
     const report = await runAudit(makeClient(state));
@@ -196,6 +199,7 @@ describe("runAudit", () => {
         id: "wp-leaky",
         config: { apiKey: "VERY-SECRET-KEY-DO-NOT-LEAK" },
         config_schema: [{ key: "apiKey", type: "string", secret: true }],
+        orphan: false,
       },
     ];
     const report = await runAudit(makeClient(state));
@@ -205,5 +209,54 @@ describe("runAudit", () => {
     // But the row ID + key must be present so operators can investigate.
     expect(json).toContain("wp-leaky");
     expect(json).toContain("apiKey");
+  });
+
+  it("fails-closed for catalog-orphaned plugin_settings rows (catalog deleted post-install)", async () => {
+    // The exact regression silent-failure-hunter HIGH#4 + pr-test-analyzer
+    // HIGH#4 named: a `plugin_settings` row whose `plugin_catalog` row
+    // was deleted leaves `config_schema: null` after the LEFT JOIN.
+    // Without the orphan flag, `parseConfigSchema(null)` is `state:
+    // "absent"` and the row passes audit silently — the migration
+    // pre-flight greenlights the destructive drop with plaintext residue
+    // still on disk. The orphan branch fail-closes by flagging every
+    // non-empty plaintext string as `plaintext_string_orphan_row`.
+    const state = cleanIntegrationState();
+    state["FROM plugin_settings ps"] = [
+      {
+        id: "orphaned-plugin",
+        config: { apiKey: "sk-LEFTOVER-from-deleted-catalog", region: "us" },
+        config_schema: null,
+        orphan: true,
+      },
+    ];
+    const report = await runAudit(makeClient(state));
+    expect(report.ok).toBe(false);
+    const flagged = report.findings
+      .filter((f) => f.table === "plugin_settings")
+      .map((f) => `${f.key}:${f.reason}`)
+      .toSorted();
+    expect(flagged).toEqual([
+      "apiKey:plaintext_string_orphan_row",
+      "region:plaintext_string_orphan_row",
+    ]);
+  });
+
+  it("does not flag orphan rows whose values are already encrypted", async () => {
+    // An orphan that was encrypted before the catalog deletion is fine —
+    // ciphertext stays decryptable as long as the key is in the keyset.
+    // The fail-closed branch should ignore `enc:v<N>:` values to avoid
+    // overstating residue.
+    const state = cleanIntegrationState();
+    state["FROM plugin_settings ps"] = [
+      {
+        id: "orphaned-but-encrypted",
+        config: { apiKey: "enc:v1:iv:tag:ct", debug: true },
+        config_schema: null,
+        orphan: true,
+      },
+    ];
+    const report = await runAudit(makeClient(state));
+    const settingsFindings = report.findings.filter((f) => f.table === "plugin_settings");
+    expect(settingsFindings).toEqual([]);
   });
 });

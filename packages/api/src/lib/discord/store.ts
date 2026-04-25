@@ -37,9 +37,22 @@ function parseInstallationRow(
     log.warn(context, "Invalid Discord installation record in database");
     return null;
   }
-  // bot_token_encrypted is nullable — OAuth installs leave it null until
-  // BYOT supplies one. Decrypt failure logs at error and surfaces null
-  // so the caller can distinguish "no token" from "token unreadable".
+  // bot_token_encrypted stays nullable — OAuth installs leave it NULL
+  // until BYOT supplies one. Three cases:
+  //
+  //   • encrypted column NULL/empty   → OAuth-only install. Return row
+  //                                     with `bot_token: null`.
+  //   • encrypted column has data,
+  //     decryptSecret succeeds        → BYOT install. Return row with
+  //                                     decrypted token.
+  //   • encrypted column has data,
+  //     decryptSecret throws          → return null for the whole row
+  //                                     (matches Slack/Telegram). Letting
+  //                                     `bot_token: null` flow through
+  //                                     would be indistinguishable from
+  //                                     a healthy OAuth-only install and
+  //                                     the caller would treat the
+  //                                     broken row as connected.
   const encrypted = row.bot_token_encrypted;
   let botToken: string | null = null;
   if (typeof encrypted === "string" && encrypted.length > 0) {
@@ -48,8 +61,9 @@ function parseInstallationRow(
     } catch (err) {
       log.error(
         { ...context, err: err instanceof Error ? err.message : String(err) },
-        "Failed to decrypt discord_installations.bot_token_encrypted",
+        "Failed to decrypt discord_installations.bot_token_encrypted — row hidden from API; F-42 audit script catches residue",
       );
+      return null;
     }
   }
   return {

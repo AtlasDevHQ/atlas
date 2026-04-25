@@ -59,13 +59,23 @@ export interface ResidueFinding {
   rowId: string;
   /**
    * Why this row is flagged. `missing_encrypted_column` covers F-41
-   * residue (the post-#1832 invariant); `plaintext_secret_field` and
-   * `plaintext_string_under_corrupt_schema` cover F-42.
+   * residue (the post-#1832 invariant); the remaining variants cover
+   * F-42:
+   *   • `plaintext_secret_field` — schema parsed, key marked `secret: true`
+   *     in the catalog, value is plaintext.
+   *   • `plaintext_string_under_corrupt_schema` — catalog row exists but
+   *     `config_schema` is malformed; fail-closed scan flags every
+   *     non-empty plaintext string (we can't tell which keys are secret).
+   *   • `plaintext_string_orphan_row` — `plugin_settings` row whose
+   *     `plugin_catalog` row was deleted post-install. Same fail-closed
+   *     policy as `corrupt`, but tagged distinctly so operators can
+   *     diagnose the upstream cause (catalog deletion vs schema drift).
    */
   reason:
     | "missing_encrypted_column"
     | "plaintext_secret_field"
-    | "plaintext_string_under_corrupt_schema";
+    | "plaintext_string_under_corrupt_schema"
+    | "plaintext_string_orphan_row";
   /**
    * For F-42: which JSONB key carries the suspicious value. Omitted for
    * F-41 column-level findings.
@@ -154,12 +164,14 @@ interface PluginSettingsRow extends Record<string, unknown> {
   id: string;
   config: Record<string, unknown> | null;
   config_schema: unknown;
+  orphan: boolean;
 }
 
 interface WorkspacePluginRow extends Record<string, unknown> {
   id: string;
   config: Record<string, unknown> | null;
   config_schema: unknown;
+  orphan: boolean;
 }
 
 /**
@@ -170,6 +182,13 @@ interface WorkspacePluginRow extends Record<string, unknown> {
  *   • the schema is corrupt — fail-closed: every non-empty string value
  *     looks like a secret residue. Matches the encryptor's policy in
  *     `secrets.ts::encryptSecretFields`.
+ *   • the catalog row is missing entirely (`isOrphan` true) — same
+ *     fail-closed treatment as `corrupt`. The audit cannot prove a
+ *     missing-catalog row's pre-existing secrets were encrypted, and
+ *     LEFT JOIN'ing past a deleted catalog row would otherwise let
+ *     plaintext residue pass silently. Tag the reason
+ *     `plaintext_string_orphan_row` so operators can distinguish a
+ *     malformed schema from an outright catalog deletion.
  *
  * Returns the finding count plus the count of secret-typed values that
  * were verified clean (used in the success-path JSON for ops triage).
@@ -179,6 +198,7 @@ function auditPluginConfigRow(
   rowId: string,
   config: Record<string, unknown> | null,
   schema: ConfigSchema,
+  isOrphan: boolean,
 ): { findings: ResidueFinding[]; secretFieldsVerified: number } {
   if (config == null || typeof config !== "object" || Array.isArray(config)) {
     return { findings: [], secretFieldsVerified: 0 };
@@ -187,10 +207,16 @@ function auditPluginConfigRow(
   const findings: ResidueFinding[] = [];
   let secretFieldsVerified = 0;
 
-  if (schema.state === "corrupt") {
+  // Fail-closed for orphans (catalog row deleted post-install): we can't
+  // prove which keys are secret, so every non-empty plaintext string is
+  // suspicious. Same policy as the corrupt-schema branch.
+  if (isOrphan || schema.state === "corrupt") {
+    const reason: ResidueFinding["reason"] = isOrphan
+      ? "plaintext_string_orphan_row"
+      : "plaintext_string_under_corrupt_schema";
     for (const [key, value] of Object.entries(config)) {
       if (typeof value === "string" && value.length > 0 && !ENCRYPTED_PREFIX_RE.test(value)) {
-        findings.push({ table, rowId, reason: "plaintext_string_under_corrupt_schema", key });
+        findings.push({ table, rowId, reason, key });
       }
     }
     return { findings, secretFieldsVerified };
@@ -218,24 +244,34 @@ function auditPluginConfigRow(
 export async function auditPluginSettings(
   client: AuditClient,
 ): Promise<{ scanned: number; secretFieldsVerified: number; findings: ResidueFinding[] }> {
-  // `plugin_settings` is keyed by plugin id (the registry key). The
-  // catalog join keys on `slug` because `plugin_settings` doesn't carry
-  // a foreign key — older schemas — so we LEFT JOIN on slug-equals-id.
-  // A NULL config_schema falls through to `parseConfigSchema(null)`
-  // which yields `state: "absent"`, i.e. no secret fields to check.
+  // `plugin_settings` is keyed by `plugin_id` (the registry key). The
+  // catalog join keys on `slug` because there's no FK — `plugin_settings`
+  // predates the catalog. The `pc.id IS NULL` projection lets us
+  // distinguish a catalog-orphaned row (catalog deleted, settings row
+  // survives) from a row whose catalog is genuinely there but carries
+  // no schema. The audit fail-closes orphans rather than skipping them,
+  // because an orphaned plugin_settings row could legitimately carry
+  // plaintext secrets from a pre-encryption era and the catalog row was
+  // the only signal pointing at which fields are sensitive.
   const result = await client.query<PluginSettingsRow>(
-    `SELECT ps.id, ps.config, pc.config_schema
+    `SELECT ps.plugin_id AS id, ps.config, pc.config_schema, (pc.id IS NULL)::boolean AS orphan
      FROM plugin_settings ps
-     LEFT JOIN plugin_catalog pc ON pc.slug = ps.id`,
+     LEFT JOIN plugin_catalog pc ON pc.slug = ps.plugin_id`,
   );
 
   const findings: ResidueFinding[] = [];
   let secretFieldsVerified = 0;
   for (const row of result.rows) {
     const schema = parseConfigSchema(row.config_schema);
-    const result = auditPluginConfigRow("plugin_settings", row.id, row.config, schema);
-    findings.push(...result.findings);
-    secretFieldsVerified += result.secretFieldsVerified;
+    const subResult = auditPluginConfigRow(
+      "plugin_settings",
+      row.id,
+      row.config,
+      schema,
+      row.orphan === true,
+    );
+    findings.push(...subResult.findings);
+    secretFieldsVerified += subResult.secretFieldsVerified;
   }
   return { scanned: result.rows.length, secretFieldsVerified, findings };
 }
@@ -243,8 +279,12 @@ export async function auditPluginSettings(
 export async function auditWorkspacePlugins(
   client: AuditClient,
 ): Promise<{ scanned: number; secretFieldsVerified: number; findings: ResidueFinding[] }> {
+  // `workspace_plugins` has an FK to `plugin_catalog` so an orphan is
+  // structurally impossible today. We still project `pc.id IS NULL` for
+  // symmetry with `auditPluginSettings` — if the FK ever gets relaxed
+  // or a row is bulk-loaded out of band, the orphan branch catches it.
   const result = await client.query<WorkspacePluginRow>(
-    `SELECT wp.id, wp.config, pc.config_schema
+    `SELECT wp.id, wp.config, pc.config_schema, (pc.id IS NULL)::boolean AS orphan
      FROM workspace_plugins wp
      LEFT JOIN plugin_catalog pc ON pc.id = wp.catalog_id`,
   );
@@ -253,9 +293,15 @@ export async function auditWorkspacePlugins(
   let secretFieldsVerified = 0;
   for (const row of result.rows) {
     const schema = parseConfigSchema(row.config_schema);
-    const result = auditPluginConfigRow("workspace_plugins", row.id, row.config, schema);
-    findings.push(...result.findings);
-    secretFieldsVerified += result.secretFieldsVerified;
+    const subResult = auditPluginConfigRow(
+      "workspace_plugins",
+      row.id,
+      row.config,
+      schema,
+      row.orphan === true,
+    );
+    findings.push(...subResult.findings);
+    secretFieldsVerified += subResult.secretFieldsVerified;
   }
   return { scanned: result.rows.length, secretFieldsVerified, findings };
 }
@@ -308,21 +354,28 @@ async function main(): Promise<void> {
   }
 
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  // Compute the exit code, await pool teardown, THEN exit. The previous
+  // shape (`process.exit()` inside the try with `pool.end()` in
+  // finally) raced the kernel-level socket teardown against the
+  // exit() — fine in practice but produces sporadic "client has
+  // already ended" diagnostics in CI runners that pipe output through
+  // a subsequent invocation.
+  let exitCode: number;
   try {
     const report = await runAudit(pool);
     // Single-line JSON output keeps `bun run … | jq` clean and the CI
     // wrapper that runs this script across regions can simply diff.
     process.stdout.write(`${JSON.stringify(report)}\n`);
-    process.exit(report.ok ? 0 : 2);
+    exitCode = report.ok ? 0 : 2;
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err) },
       "Plugin-config residue audit failed",
     );
-    process.exit(1);
-  } finally {
-    await pool.end();
+    exitCode = 1;
   }
+  await pool.end();
+  process.exit(exitCode);
 }
 
 if (import.meta.main) {

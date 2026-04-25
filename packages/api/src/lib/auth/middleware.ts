@@ -88,9 +88,13 @@ function getRpmLimitForBucket(bucket: RateLimitBucket): number {
 /** Bucket categories for `checkRateLimit`. */
 export type RateLimitBucket = "default" | "chat";
 
+// `\x00` is illegal in user ids, IPs, and the "anon" fallback used by
+// chat.ts — so the chat-bucket prefix can never collide with a
+// caller-derived key. Keeps F-74 isolation true even against
+// pathological identity strings.
 const BUCKET_PREFIX: Record<RateLimitBucket, string> = {
   default: "",
-  chat: "chat:",
+  chat: "\x00chat:",
 };
 
 /**

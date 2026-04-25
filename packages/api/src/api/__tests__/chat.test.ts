@@ -249,6 +249,22 @@ describe("POST /api/v1/chat", () => {
     expect(response.headers.get("content-type")).toContain("text/event-stream");
   });
 
+  // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the
+  // request lands in the chat-scoped sliding window. Without this option a
+  // 25-step agent run drains the same allowance that serves cheap admin
+  // reads. Asserting the second argument here catches a refactor that drops
+  // the option object — `mockCheckRateLimit` would still gate but the
+  // F-74 isolation acceptance criterion would silently regress.
+  it("F-74 — chat handler debits the chat bucket", async () => {
+    const response = await app.fetch(makeRequest());
+    expect(response.status).toBe(200);
+    expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
+    const calls = mockCheckRateLimit.mock.calls as unknown as unknown[][];
+    const args = calls[0]!;
+    // Second argument must carry { bucket: "chat" }.
+    expect(args[1]).toEqual({ bucket: "chat" });
+  });
+
   it("returns 401 when authenticateRequest returns unauthenticated", async () => {
     mockAuthenticateRequest.mockResolvedValueOnce({
       authenticated: false as const,
@@ -455,6 +471,44 @@ describe("POST /api/v1/chat", () => {
       const settleCalls = mockSettleConversationSteps.mock.calls as unknown as unknown[][];
       expect(settleCalls.length).toBe(1);
       expect(settleCalls[0]).toEqual([convId, 5, 3]);
+
+      delete process.env.ATLAS_AGENT_MAX_STEPS;
+    });
+
+    // Conservative cost-accounting pin: when the agent stream rejects mid-
+    // flight the reservation MUST stay charged (settlement is skipped).
+    // Otherwise an attacker could spin up streams that fail mid-flight to
+    // refund their full budget — exactly the abuse vector the F-77 cap is
+    // designed to bound.
+    it("does not settle when the agent stream rejects (reservation stays charged)", async () => {
+      process.env.ATLAS_CONVERSATION_STEP_CAP = "10";
+      process.env.ATLAS_AGENT_MAX_STEPS = "5";
+      mockGetConversationChat.mockResolvedValueOnce({
+        ok: true,
+        data: { id: convId, userId: null, title: "Test", messages: [] },
+      });
+      mockReserveConversationBudget.mockResolvedValueOnce({
+        status: "ok",
+        totalStepsBefore: 0,
+      });
+      // Suppress the unhandled-rejection log noise; the catch in chat.ts
+      // owns the rejection.
+      const stepsRejection = Promise.reject(new Error("stream blew up"));
+      stepsRejection.catch(() => undefined);
+      mockRunAgent.mockResolvedValueOnce({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+        steps: stepsRejection,
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+
+      const response = await app.fetch(makeFollowUp());
+      expect(response.status).toBe(200);
+      // Flush the fire-and-forget chain.
+      await Promise.resolve();
+      await Promise.resolve();
+      // Settlement must NOT have run — the full reservation stays charged.
+      expect(mockSettleConversationSteps).not.toHaveBeenCalled();
 
       delete process.env.ATLAS_AGENT_MAX_STEPS;
     });

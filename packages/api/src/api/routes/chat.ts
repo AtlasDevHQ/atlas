@@ -476,14 +476,20 @@ chat.openapi(chatRoute, async (c) => {
               // charged. The helper has already logged the failure (rate-
               // limited) so the operator sees sustained outages.
             }
-            // Persist the latest user message
+            // Persist the latest user message. `addMessage` is fire-and-
+            // forget via `internalExecute`; the synchronous try/catch only
+            // covers pool-init throws — async insert failures are logged
+            // inside `internalExecute`'s circuit breaker.
             try {
               const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
               if (lastUserMsg) {
                 addMessage({ conversationId, role: "user", content: lastUserMsg.parts });
               }
             } catch (err) {
-              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to persist user message");
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), requestId, conversationId },
+                "Failed to persist user message (pool init throw)",
+              );
             }
           } else {
             try {
@@ -641,7 +647,11 @@ chat.openapi(chatRoute, async (c) => {
                 })
                 .catch((err: unknown) => {
                   log.warn(
-                    { err: err instanceof Error ? err.message : String(err), conversationId: convIdForSettle },
+                    {
+                      err: err instanceof Error ? err.message : String(err),
+                      requestId,
+                      conversationId: convIdForSettle,
+                    },
                     "F-77 step-cap settlement skipped — agent stream failed; reservation stays charged",
                   );
                 });

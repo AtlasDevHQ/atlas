@@ -330,21 +330,43 @@ export async function reserveConversationBudget(
       const n = typeof raw === "number" ? raw : Number(raw);
       return { status: "ok", totalStepsBefore: Number.isFinite(n) ? n : 0 };
     }
-    // Update returned 0 rows. Distinguish "row missing" (treat as ok —
-    // the conversation was created elsewhere or doesn't exist yet) from
-    // "row exists but is at/past cap" (reject). The follow-up SELECT is
-    // necessary because the failed UPDATE alone doesn't tell us which.
+    // UPDATE returned 0 rows. Three possibilities — only one of them
+    // is "exceeded", the others both mean the cap state is unknown
+    // (the row vanished between auth check and reservation, or a
+    // concurrent reservation just settled and freed budget). In both
+    // unknown cases we MUST NOT return `ok` — the chat handler reads
+    // `status === "ok"` as "charge applied, settle later" and a
+    // false-positive ok corrupts `total_steps` accounting via a
+    // settlement that refunds an unmade charge.
     const rows = await internalQuery<{ total_steps: number | string | null }>(
       `SELECT total_steps FROM conversations WHERE id = $1`,
       [conversationId],
     );
     if (rows.length === 0) {
-      return { status: "ok", totalStepsBefore: 0 };
+      // TOCTOU: the conversation existed at the auth check but is gone
+      // now. Surface the race so operators can tell genuine deletes
+      // from a future logic bug.
+      log.warn(
+        { conversationId },
+        "Reservation skipped — conversation row vanished between auth check and budget reserve (TOCTOU)",
+      );
+      return { status: "error" };
     }
     const raw = rows[0].total_steps;
     const n = typeof raw === "number" ? raw : Number(raw);
     const total = Number.isFinite(n) ? n : 0;
-    return { status: "exceeded", totalSteps: total };
+    if (total >= ceiling) {
+      return { status: "exceeded", totalSteps: total };
+    }
+    // Row is below cap but UPDATE missed it — concurrent reservation
+    // race. Fail open (the cap state is unknown), but log it; if this
+    // fires repeatedly the cap parameters or transaction isolation
+    // deserve a second look.
+    log.warn(
+      { conversationId, totalSteps: total, cap: ceiling },
+      "Reservation skipped — UPDATE matched 0 rows but row is below cap (concurrent reservation race)",
+    );
+    return { status: "error" };
   } catch (err) {
     maybeWarnBudgetFailure(conversationId, err);
     return { status: "error" };

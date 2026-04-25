@@ -92,15 +92,18 @@ describe("reserveConversationBudget — F-77 atomic gate", () => {
     expect(calls[0][1]).toEqual(["c1", 25, 100]);
   });
 
-  it("treats a missing row (UPDATE+SELECT both empty) as ok with totalStepsBefore=0", async () => {
-    // UPDATE returns no rows because the conversation doesn't exist yet.
-    internalQueryMock.mockResolvedValueOnce([]);
-    // Follow-up SELECT also returns no rows.
-    internalQueryMock.mockResolvedValueOnce([]);
+  // TOCTOU pin: chat.ts verifies the conversation exists before
+  // calling reserve. If both UPDATE and follow-up SELECT come back
+  // empty, the row vanished between auth check and reservation.
+  // This MUST NOT return `ok` — settlement on a non-charge would
+  // corrupt total_steps. Returns `error` so the caller fails open
+  // visibly, with a logged warn.
+  it("returns error when UPDATE and follow-up SELECT both return 0 rows (TOCTOU)", async () => {
+    internalQueryMock.mockResolvedValueOnce([]); // UPDATE returned no rows
+    internalQueryMock.mockResolvedValueOnce([]); // SELECT also empty — row vanished
 
     const result = await reserveConversationBudget("c-new", 25, 100);
-    expect(result.status).toBe("ok");
-    if (result.status === "ok") expect(result.totalStepsBefore).toBe(0);
+    expect(result.status).toBe("error");
   });
 
   it("returns exceeded when UPDATE returns 0 rows AND the row exists at/over cap", async () => {
@@ -119,6 +122,20 @@ describe("reserveConversationBudget — F-77 atomic gate", () => {
     const result = await reserveConversationBudget("c1", 25, 100);
     expect(result.status).toBe("exceeded");
     if (result.status === "exceeded") expect(result.totalSteps).toBe(150);
+  });
+
+  // Race pin: a concurrent reservation can settle just before our
+  // UPDATE runs, freeing capacity. The UPDATE matches 0 rows but a
+  // follow-up SELECT shows total_steps below the cap. We can't tell
+  // whether our row was charged — return `error` (fail-open with a
+  // logged warn) rather than `ok` (which would imply a charge that
+  // didn't happen). Same protection as the TOCTOU branch.
+  it("returns error when UPDATE returns 0 rows but the row is below cap (concurrent race)", async () => {
+    internalQueryMock.mockResolvedValueOnce([]); // UPDATE returned no rows
+    internalQueryMock.mockResolvedValueOnce([{ total_steps: 50 }]); // below cap of 100
+
+    const result = await reserveConversationBudget("c1", 25, 100);
+    expect(result.status).toBe("error");
   });
 
   it("fails open with status=error when the UPDATE throws", async () => {

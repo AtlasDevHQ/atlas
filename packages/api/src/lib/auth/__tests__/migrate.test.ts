@@ -285,6 +285,7 @@ describe("migrateAuthTables", () => {
             { name: "0037_plugin_config_encryption.sql" },
             { name: "0038_encryption_key_versioning.sql" },
             { name: "0039_conversation_step_cap.sql" },
+            { name: "0040_drop_integration_plaintext.sql" },
           ],
         };
       }

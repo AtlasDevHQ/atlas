@@ -11,6 +11,7 @@
     "data-residency",
     "abuse-prevention",
     "plugin-catalog",
-    "encryption-key-rotation"
+    "encryption-key-rotation",
+    "plugin-config-residue-audit"
   ]
 }

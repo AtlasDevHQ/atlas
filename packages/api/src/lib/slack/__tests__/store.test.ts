@@ -2,6 +2,8 @@
  * Tests for Slack installation storage (store.ts).
  *
  * Mocks the internal DB layer to test DB-backed and env-var fallback paths.
+ * Post-#1832 the plaintext `bot_token` column is gone — reads decrypt
+ * `bot_token_encrypted` directly, writes only populate the encrypted column.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
@@ -25,16 +27,10 @@ const mockGetInternalDB: Mock<() => { query: typeof mockPoolQuery }> = mock(() =
 const mockEncryptSecret = (plaintext: string) => `enc:v1:test:${plaintext}`;
 const mockDecryptSecret = (stored: string) =>
   stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored;
-const mockPickDecryptedSecret = (encrypted: unknown, plaintext: unknown): string | null => {
-  if (typeof encrypted === "string" && encrypted.length > 0) return mockDecryptSecret(encrypted);
-  if (typeof plaintext === "string" && plaintext.length > 0) return plaintext;
-  return null;
-};
 
 mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   encryptSecret: mockEncryptSecret,
   decryptSecret: mockDecryptSecret,
-  pickDecryptedSecret: mockPickDecryptedSecret,
 }));
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -89,68 +85,39 @@ describe("store", () => {
   });
 
   describe("getInstallation", () => {
-    it("returns installation from DB when hasInternalDB() is true and row exists", async () => {
+    it("decrypts bot_token_encrypted from the DB row", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockInternalQuery.mockResolvedValue([
-        { team_id: "T123", bot_token: "xoxb-abc", installed_at: "2025-01-01T00:00:00Z" },
+        {
+          team_id: "T123",
+          bot_token_encrypted: "enc:v1:test:xoxb-fresh",
+          installed_at: "2025-01-01T00:00:00Z",
+        },
       ]);
 
       const result = await getInstallation("T123");
       expect(result).toEqual({
         team_id: "T123",
-        bot_token: "xoxb-abc",
+        bot_token: "xoxb-fresh",
         org_id: null,
         workspace_name: null,
         installed_at: "2025-01-01T00:00:00Z",
       });
       expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-      // F-41: SELECT must include the new _encrypted column.
       const [selectSql] = mockInternalQuery.mock.calls[0];
       expect(selectSql).toContain("bot_token_encrypted");
+      // The dropped plaintext column must not appear in any SELECT.
+      expect(selectSql).not.toMatch(/(?<![_\w])bot_token(?![_\w])/);
     });
 
-    it("prefers the decrypted _encrypted column over plaintext (F-41)", async () => {
-      mockHasInternalDB.mockReturnValue(true);
-      mockInternalQuery.mockResolvedValue([
-        {
-          team_id: "T123",
-          bot_token: "xoxb-stale-plaintext",
-          bot_token_encrypted: "enc:v1:test:xoxb-fresh-from-encrypted",
-          installed_at: "2025-01-01T00:00:00Z",
-        },
-      ]);
-
-      const result = await getInstallation("T123");
-      expect(result?.bot_token).toBe("xoxb-fresh-from-encrypted");
-    });
-
-    it("falls back to plaintext column when _encrypted is NULL (legacy row)", async () => {
-      mockHasInternalDB.mockReturnValue(true);
-      mockInternalQuery.mockResolvedValue([
-        {
-          team_id: "T123",
-          bot_token: "xoxb-legacy",
-          bot_token_encrypted: null,
-          installed_at: "2025-01-01T00:00:00Z",
-        },
-      ]);
-
-      const result = await getInstallation("T123");
-      expect(result?.bot_token).toBe("xoxb-legacy");
-    });
-
-    it("ON CONFLICT DO UPDATE clause writes both plaintext and encrypted columns", async () => {
-      // Guard against a param-renumbering regression that drops the
-      // encrypted column from the UPDATE clause — on dual-write this
-      // would be invisible (plaintext still updates), but would break
-      // every re-save once the plaintext column is dropped in #1832.
+    it("ON CONFLICT DO UPDATE clause refreshes the encrypted column", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
 
       await saveInstallation("T123", "xoxb-new");
       const [sql] = mockPoolQuery.mock.calls[0];
-      expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bbot_token\s*=\s*\$\d/);
       expect(sql).toMatch(/DO UPDATE SET[\s\S]*\bbot_token_encrypted\s*=\s*\$\d/);
+      expect(sql).not.toMatch(/DO UPDATE SET[\s\S]*(?<![_\w])bot_token\s*=/);
     });
 
     it("returns null when DB has no matching row", async () => {
@@ -188,10 +155,10 @@ describe("store", () => {
       expect(result).toBeNull();
     });
 
-    it("returns null for invalid DB record (non-string bot_token)", async () => {
+    it("returns null for invalid DB record (missing encrypted column)", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockInternalQuery.mockResolvedValue([
-        { team_id: "T123", bot_token: 12345, installed_at: "2025-01-01T00:00:00Z" },
+        { team_id: "T123", bot_token_encrypted: null, installed_at: "2025-01-01T00:00:00Z" },
       ]);
 
       const result = await getInstallation("T123");
@@ -203,7 +170,13 @@ describe("store", () => {
     it("returns installation from DB when row exists for org", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockInternalQuery.mockResolvedValue([
-        { team_id: "T123", bot_token: "xoxb-abc", org_id: "org-1", workspace_name: "My Team", installed_at: "2025-01-01T00:00:00Z" },
+        {
+          team_id: "T123",
+          bot_token_encrypted: "enc:v1:test:xoxb-fresh",
+          org_id: "org-1",
+          workspace_name: "My Team",
+          installed_at: "2025-01-01T00:00:00Z",
+        },
       ]);
 
       const result = await getInstallationByOrg("org-1");
@@ -253,10 +226,10 @@ describe("store", () => {
       await expect(getInstallationByOrg("org-1")).rejects.toThrow("timeout");
     });
 
-    it("returns null for invalid DB record (non-string bot_token)", async () => {
+    it("returns null for invalid DB record (missing encrypted column)", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockInternalQuery.mockResolvedValue([
-        { team_id: "T123", bot_token: null, org_id: "org-1", installed_at: "2025-01-01T00:00:00Z" },
+        { team_id: "T123", bot_token_encrypted: null, org_id: "org-1", installed_at: "2025-01-01T00:00:00Z" },
       ]);
 
       const result = await getInstallationByOrg("org-1");
@@ -265,7 +238,7 @@ describe("store", () => {
   });
 
   describe("saveInstallation", () => {
-    it("resolves when DB write succeeds (F-41: dual-writes plaintext + encrypted)", async () => {
+    it("writes only the encrypted bot_token", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
 
@@ -276,8 +249,8 @@ describe("store", () => {
       expect(insertSql).toContain("bot_token_encrypted");
       expect(insertSql).toContain("bot_token_key_version");
       expect(insertSql).toContain("RETURNING team_id");
-      // F-41 + F-47: INSERT carries (team_id, plaintext, encrypted, org_id, workspace_name, key_version).
-      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", null, null, 1]);
+      // params: (team_id, bot_token_encrypted, org_id, workspace_name, key_version).
+      expect(insertParams).toEqual(["T123", "enc:v1:test:xoxb-new", null, null, 1]);
     });
 
     it("passes orgId and workspaceName when provided", async () => {
@@ -286,7 +259,7 @@ describe("store", () => {
 
       await saveInstallation("T123", "xoxb-new", { orgId: "org-1", workspaceName: "My Team" });
       const [, insertParams] = mockPoolQuery.mock.calls[0];
-      expect(insertParams).toEqual(["T123", "xoxb-new", "enc:v1:test:xoxb-new", "org-1", "My Team", 1]);
+      expect(insertParams).toEqual(["T123", "enc:v1:test:xoxb-new", "org-1", "My Team", 1]);
     });
 
     it("rejects when team is bound to a different org", async () => {
@@ -375,10 +348,14 @@ describe("store", () => {
   });
 
   describe("getBotToken", () => {
-    it("returns the token string from getInstallation", async () => {
+    it("returns the decrypted token from getInstallation", async () => {
       mockHasInternalDB.mockReturnValue(true);
       mockInternalQuery.mockResolvedValue([
-        { team_id: "T123", bot_token: "xoxb-from-db", installed_at: "2025-01-01T00:00:00Z" },
+        {
+          team_id: "T123",
+          bot_token_encrypted: "enc:v1:test:xoxb-from-db",
+          installed_at: "2025-01-01T00:00:00Z",
+        },
       ]);
 
       const token = await getBotToken("T123");

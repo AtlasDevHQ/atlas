@@ -22,6 +22,7 @@ import {
   restoreMaskedSecrets,
   encryptSecretFields,
   decryptSecretFields,
+  checkStrictPluginSecrets,
 } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
@@ -627,6 +628,7 @@ const installRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Catalog entry not found", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Already installed", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Strict-mode plugin secrets check rejected the install (catalog schema corrupt or per-key secret/passthrough drift)", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -666,6 +668,7 @@ const updateConfigRoute = createRoute({
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Installation not found", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Strict-mode plugin secrets check rejected the write (catalog schema corrupt or per-key secret/passthrough drift)", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -818,6 +821,33 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         );
       }
       const id = crypto.randomUUID();
+
+      // F-42 strict-mode (#1835): reject installs the encryptor can't
+      // soundly process. Mirrors the platform admin-plugins.ts gate.
+      const installStrictRejection = checkStrictPluginSecrets(installSchema);
+      if (installStrictRejection !== null) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            pluginSlug: catalogEntry.slug,
+            orgId,
+            strictModeRejection: installStrictRejection.state,
+            ...(installStrictRejection.state === "passthrough_with_secret" ? { conflictKey: installStrictRejection.key } : {}),
+          },
+        });
+        return c.json({
+          error: "strict_plugin_secrets",
+          message: installStrictRejection.state === "corrupt"
+            ? `Plugin catalog schema is unreadable (${installStrictRejection.reason}); fix the catalog row before installing.`
+            : `Catalog schema for "${installStrictRejection.key}" disagrees on secret vs non-secret; resolve the schema before installing.`,
+          requestId,
+        }, 422);
+      }
       let encryptedConfig: Record<string, unknown>;
       try {
         encryptedConfig = encryptSecretFields(body.config ?? {}, installSchema);
@@ -1018,6 +1048,34 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
           { installationId: id, orgId, reason: schema.reason },
           "plugin_catalog.config_schema unreadable on PUT — restoring every stored key to prevent secret loss",
         );
+      }
+
+      // F-42 strict-mode (#1835): reject the PUT before we touch
+      // ciphertext when the schema can't be soundly walked. Mirrors the
+      // install + platform-plugin gates.
+      const putStrictRejection = checkStrictPluginSecrets(schema);
+      if (putStrictRejection !== null) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.configUpdate,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: id,
+            orgId,
+            keysChanged,
+            strictModeRejection: putStrictRejection.state,
+            ...(putStrictRejection.state === "passthrough_with_secret" ? { conflictKey: putStrictRejection.key } : {}),
+          },
+        });
+        return c.json({
+          error: "strict_plugin_secrets",
+          message: putStrictRejection.state === "corrupt"
+            ? `Plugin catalog schema is unreadable (${putStrictRejection.reason}); fix the catalog row before saving.`
+            : `Catalog schema for "${putStrictRejection.key}" disagrees on secret vs non-secret; resolve the schema before saving.`,
+          requestId,
+        }, 422);
       }
       // F-42: the stored JSONB carries `secret: true` fields encrypted.
       // Decrypt before restoreMaskedSecrets so placeholder-restored values

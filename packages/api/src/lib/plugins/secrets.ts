@@ -297,3 +297,69 @@ export function decryptSecretFields(
 function isEncryptableString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !isEncryptedSecret(value);
 }
+
+// ---------------------------------------------------------------------------
+// F-42 strict-mode opt-in (#1835)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reason a strict-mode write was rejected. The `state` mirrors the
+ * `ConfigSchema` discriminator so the route layer can branch on it
+ * without re-parsing the schema.
+ */
+export type StrictModeRejection =
+  | { state: "corrupt"; reason: string }
+  | { state: "passthrough_with_secret"; key: string };
+
+/**
+ * F-42 stronger invariant — when `ATLAS_STRICT_PLUGIN_SECRETS === "true"`,
+ * the route layer rejects any write that *can't be guaranteed* to land
+ * with every `secret: true` field encrypted. That happens in two cases:
+ *
+ *   1. The catalog schema is corrupt (`schema.state === "corrupt"`). The
+ *      walker would fail-closed by encrypting every non-empty string,
+ *      which is correct-but-noisy: the operator should fix the schema
+ *      first instead of accepting over-encryption silently.
+ *
+ *   2. The schema has any `secret: true` fields but the corresponding
+ *      `passthrough` (`secret === false` or no `secret`) entry exists
+ *      *for the same key*. Catalog drift would otherwise let a key
+ *      switch from secret to non-secret and stop being encrypted on
+ *      next PUT — strict mode catches that class of regression.
+ *
+ * Returns `null` to mean "writes may proceed". Returns a rejection
+ * object to mean "the route layer should respond with 422 Unprocessable
+ * Entity and an actionable message". The function does not throw —
+ * callers branch on the return so they can attach audit metadata.
+ *
+ * Always returns `null` when strict mode is not enabled (default off,
+ * preserves the "idempotent-but-tolerant passthrough" baseline). SaaS
+ * regions opt in by setting `ATLAS_STRICT_PLUGIN_SECRETS=true`.
+ */
+export function checkStrictPluginSecrets(schema: ConfigSchema): StrictModeRejection | null {
+  if (process.env.ATLAS_STRICT_PLUGIN_SECRETS !== "true") return null;
+  if (schema.state === "corrupt") {
+    return { state: "corrupt", reason: schema.reason };
+  }
+  if (schema.state === "absent" || schema.fields.length === 0) return null;
+
+  const seen = new Map<string, boolean>();
+  for (const field of schema.fields) {
+    const prior = seen.get(field.key);
+    if (prior !== undefined && prior !== isSecretField(field)) {
+      return { state: "passthrough_with_secret", key: field.key };
+    }
+    seen.set(field.key, isSecretField(field));
+  }
+  return null;
+}
+
+/**
+ * Convenience wrapper for tests + route handlers that want a boolean
+ * "is strict mode on" signal without re-reading the env var. Keeps the
+ * env-var read centralized so a future move to `Config` service stays
+ * a one-line change.
+ */
+export function isStrictPluginSecretsEnabled(): boolean {
+  return process.env.ATLAS_STRICT_PLUGIN_SECRETS === "true";
+}

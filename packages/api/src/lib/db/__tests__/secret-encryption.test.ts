@@ -1,19 +1,22 @@
 /**
- * Tests for the `encryptSecret` / `decryptSecret` / `pickDecryptedSecret`
- * helpers that F-41 (workspace integration credential encryption) relies
- * on. Covers the three contracts the integration stores depend on:
+ * Tests for the `encryptSecret` / `decryptSecret` helpers that F-41
+ * (workspace integration credential encryption) relies on. Covers the
+ * three contracts the integration stores depend on:
  *
  *   1. Round-trip: decryptSecret(encryptSecret(x)) === x when a key is set.
  *   2. Passthrough: with no key, both helpers become no-ops so dev still works.
  *   3. Plaintext tolerance: decryptSecret leaves un-prefixed values alone, so
  *      the read path is safe on legacy rows not yet touched by the backfill.
+ *
+ * `pickDecryptedSecret` was removed alongside the F-41 plaintext-column
+ * drop in 0040 — its caller-side fallback is no longer reachable now
+ * that there is no plaintext column to fall back to.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   encryptSecret,
   decryptSecret,
-  pickDecryptedSecret,
   UnknownKeyVersionError,
 } from "../secret-encryption";
 import { _resetEncryptionKeyCache } from "../internal";
@@ -189,12 +192,12 @@ describe("secret encryption helpers", () => {
       expect(() => decryptSecret(v2Ciphertext)).toThrow(/v2|not present|missing/i);
     });
 
-    it("throws UnknownKeyVersionError (not plain Error) so pickDecryptedSecret can escalate the breadcrumb", () => {
-      // The typed error drives the F-47 `pickDecryptedSecret` log.error
-      // path — a generic Error would hide operator misconfig inside the
-      // "F-41 soak" warn stream. This pin makes sure a future refactor
-      // that "simplifies" the throw back to `new Error(...)` can't
-      // silently regress the alerting path.
+    it("throws UnknownKeyVersionError (not plain Error) so callers can discriminate operator misconfig", () => {
+      // The typed error lets the rotation script + per-store decrypt
+      // sites distinguish dropped-legacy-key (operator misconfig) from
+      // generic decrypt failure (data corruption). A future refactor
+      // that "simplifies" the throw back to `new Error(...)` would
+      // collapse those two remediation paths, so pin the type here.
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
       _resetEncryptionKeyCache();
       const v2Ciphertext = encryptSecret("orphaned-row");
@@ -229,73 +232,6 @@ describe("secret encryption helpers", () => {
       // Two entries → first gets version 2, last gets version 1.
       expect(ciphertext.startsWith("enc:v2:")).toBe(true);
       expect(decryptSecret(ciphertext)).toBe("positional");
-    });
-  });
-
-  describe("pickDecryptedSecret", () => {
-    beforeEach(() => {
-      process.env.ATLAS_ENCRYPTION_KEY = "atlas-test-encryption-key";
-      delete process.env.ATLAS_ENCRYPTION_KEYS;
-      delete process.env.BETTER_AUTH_SECRET;
-      _resetEncryptionKeyCache();
-    });
-
-    it("prefers the encrypted column when present", () => {
-      const encrypted = encryptSecret("encrypted-value");
-      expect(pickDecryptedSecret(encrypted, "plaintext-value")).toBe("encrypted-value");
-    });
-
-    it("falls back to plaintext when encrypted is missing", () => {
-      expect(pickDecryptedSecret(null, "plaintext-value")).toBe("plaintext-value");
-      expect(pickDecryptedSecret(undefined, "plaintext-value")).toBe("plaintext-value");
-      expect(pickDecryptedSecret("", "plaintext-value")).toBe("plaintext-value");
-    });
-
-    it("returns null when both columns are empty (malformed row)", () => {
-      expect(pickDecryptedSecret(null, null)).toBeNull();
-      expect(pickDecryptedSecret("", "")).toBeNull();
-      expect(pickDecryptedSecret(undefined, undefined)).toBeNull();
-    });
-
-    it("ignores non-string types from the driver", () => {
-      expect(pickDecryptedSecret(123, "plaintext-value")).toBe("plaintext-value");
-      expect(pickDecryptedSecret(null, 42)).toBeNull();
-    });
-
-    it("falls back to plaintext when encrypted decodes unsuccessfully (F-41 soak)", () => {
-      // Corrupted ciphertext — the decrypt-failure fallback to plaintext
-      // is what keeps a single bad row from taking down an integration
-      // while the plaintext copy is still there during the soak period.
-      expect(
-        pickDecryptedSecret("enc:v1:malformed", "working-plaintext"),
-      ).toBe("working-plaintext");
-    });
-
-    it("returns null when encrypted fails AND plaintext is also missing", () => {
-      // Defensive: don't silently return the malformed ciphertext — the
-      // caller should treat this as a bad row and move on.
-      expect(pickDecryptedSecret("enc:v1:malformed", null)).toBeNull();
-    });
-
-    it("F-47: UnknownKeyVersionError still falls back to plaintext (soak), but the escalated log.error path is exercised", () => {
-      // Write under v2-active keyset, then remove v2 so the ciphertext
-      // becomes un-decryptable with the current keyset. The fallback to
-      // plaintext must still succeed during the F-41 soak — but behind
-      // the scenes the dropped-key breadcrumb goes to `log.error`, not
-      // the generic `log.warn` path, so ops alerting wakes up.
-      delete process.env.ATLAS_ENCRYPTION_KEY;
-      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
-      _resetEncryptionKeyCache();
-      const v2Ciphertext = encryptSecret("soaked-secret");
-
-      process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
-      _resetEncryptionKeyCache();
-      // Plaintext column still carries the usable value during the F-41
-      // soak. Caller behaviour is "return the plaintext" — the
-      // escalation is a *logging* distinction, not a contract shift.
-      expect(
-        pickDecryptedSecret(v2Ciphertext, "soaked-secret"),
-      ).toBe("soaked-secret");
     });
   });
 });

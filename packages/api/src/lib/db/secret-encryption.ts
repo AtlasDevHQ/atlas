@@ -48,12 +48,9 @@ const AUTH_TAG_LENGTH = 16;
  * Distinct from a generic decrypt failure because the remediation is
  * different: an `UnknownKeyVersionError` is an *operator misconfig*
  * (legacy key dropped from `ATLAS_ENCRYPTION_KEYS` before rotation
- * finished), not data corruption. `pickDecryptedSecret` distinguishes
- * these so a dropped key surfaces as a `log.error` with a distinct
- * breadcrumb instead of hiding inside the generic F-41 "fall back to
- * plaintext" warn — otherwise the integration keeps working silently
- * until the follow-up plaintext-drop (#1832) turns every read into a
- * 500 with no warning history.
+ * finished), not data corruption. Callers should escalate this with a
+ * distinct breadcrumb so the dropped-key class of failure does not
+ * blur into the generic decrypt-failure log path.
  */
 export class UnknownKeyVersionError extends Error {
   readonly _tag = "UnknownKeyVersionError" as const;
@@ -126,8 +123,7 @@ export function encryptSecret(plaintext: string): string {
  *   • the value carries `enc:v<N>:` but `N` isn't in the current
  *     keyset (config error — operator must add the legacy key back);
  *   • the body is malformed or AES-GCM auth-tag verification fails
- *     (corruption — caller should surface a 500 with `requestId` or
- *     fall back to a plaintext column via `pickDecryptedSecret`).
+ *     (corruption — caller should surface a 500 with `requestId`).
  */
 export function decryptSecret(stored: string): string {
   if (!hasVersionedPrefix(stored)) return stored;
@@ -178,63 +174,11 @@ export function decryptSecret(stored: string): string {
   }
 }
 
-/**
- * Prefer the encrypted column (decrypted via `decryptSecret`) and fall
- * back to the plaintext column when:
- *   • the encrypted column is null / empty / not a string, OR
- *   • the encrypted column decodes unsuccessfully (corrupt ciphertext,
- *     rotated key, truncated row).
- *
- * The decrypt-failure fallback is load-bearing during the F-41 soak: a
- * single bad encrypted row must not take down an integration when the
- * plaintext copy is still there. Post-#1832 (plaintext drop), decrypt
- * failure will naturally become terminal since the fallback disappears.
- *
- * F-47: `UnknownKeyVersionError` (the ciphertext's `enc:v<N>:` points
- * at a version missing from the keyset) is logged at `error` level, not
- * `warn`. Rationale: every other decrypt failure is data-corruption
- * drift, but a missing version is *operator misconfig* — the legacy
- * key was dropped before the rotation script finished. Same symptom,
- * different remediation, so the breadcrumbs must not blur together
- * (the generic F-41 warn path was hiding this class of misconfig
- * silently until #1832 turned every read into a 500). Sentry-grade
- * alert wiring should page on the `error`, not sample the warn stream.
- *
- * Returns `null` when neither column carries a usable string — the
- * caller treats that as a malformed row.
- */
-export function pickDecryptedSecret(
-  encryptedValue: unknown,
-  plaintextValue: unknown,
-): string | null {
-  if (encryptedValue !== null && encryptedValue !== undefined && typeof encryptedValue !== "string") {
-    log.warn(
-      { encryptedType: typeof encryptedValue },
-      "Encrypted column carries non-string value — schema drift, falling back to plaintext",
-    );
-  }
-  if (typeof encryptedValue === "string" && encryptedValue.length > 0) {
-    try {
-      return decryptSecret(encryptedValue);
-    } catch (err) {
-      if (err instanceof UnknownKeyVersionError) {
-        log.error(
-          { version: err.version, activeVersion: err.activeVersion },
-          "F-47 dropped-legacy-key: ciphertext references an unknown key version — " +
-          "ATLAS_ENCRYPTION_KEYS is missing the version the row was written under. " +
-          "Falling back to plaintext column (soak); post-#1832 this will 500. " +
-          "Add the legacy key back under the right v<N>: label and run the rotation script.",
-        );
-      } else {
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "Encrypted column failed to decrypt — falling back to plaintext column (F-41 soak)",
-        );
-      }
-    }
-  }
-  if (typeof plaintextValue === "string" && plaintextValue.length > 0) {
-    return plaintextValue;
-  }
-  return null;
-}
+// `pickDecryptedSecret` and the email/sandbox `pickEncryptedConfig`
+// helpers were removed in 0040 once F-41 cleared soak. Integration
+// stores now call `decryptSecret(...)` / `JSON.parse(decryptSecret(...))`
+// directly and surface decrypt failures as null (chat/email installs)
+// or skipped rows (sandbox credentials list). `UnknownKeyVersionError`
+// stays exported because rotation tooling still discriminates against
+// it; production reads now treat dropped-legacy-key the same as any
+// other decrypt failure (no fallback survived the column drop).

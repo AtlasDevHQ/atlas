@@ -8,7 +8,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -17,7 +17,7 @@ export type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/
 
 const log = createLogger("teams-store");
 
-const SELECT_COLS = "tenant_id, org_id, tenant_name, app_password, app_password_encrypted, installed_at::text";
+const SELECT_COLS = "tenant_id, org_id, tenant_name, app_password_encrypted, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -36,10 +36,23 @@ function parseInstallationRow(
     log.warn(context, "Invalid Teams installation record in database");
     return null;
   }
-  // app_password is nullable (admin-consent mode stores no password;
-  // only BYOT writes one). pickDecryptedSecret returns null when both
-  // columns are empty, which is the expected state for OAuth installs.
-  const appPassword = pickDecryptedSecret(row.app_password_encrypted, row.app_password);
+  // app_password is nullable (admin-consent mode stores no password; only
+  // BYOT writes one). The encrypted column is null/empty for OAuth
+  // installs, which is the expected state — we surface `app_password: null`
+  // so callers can distinguish "no password configured" from "password
+  // could not be decrypted" (the latter logs at error and returns null).
+  const encrypted = row.app_password_encrypted;
+  let appPassword: string | null = null;
+  if (typeof encrypted === "string" && encrypted.length > 0) {
+    try {
+      appPassword = decryptSecret(encrypted);
+    } catch (err) {
+      log.error(
+        { ...context, err: err instanceof Error ? err.message : String(err) },
+        "Failed to decrypt teams_installations.app_password_encrypted",
+      );
+    }
+  }
   return {
     tenant_id: tenantIdVal,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
@@ -158,18 +171,17 @@ export async function saveTeamsInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ tenant_id: string }>(
-      `INSERT INTO teams_installations (tenant_id, org_id, tenant_name, app_password, app_password_encrypted, app_password_key_version)
-       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 1))
+      `INSERT INTO teams_installations (tenant_id, org_id, tenant_name, app_password_encrypted, app_password_key_version)
+       VALUES ($1, $2, $3, $4, COALESCE($5, 1))
        ON CONFLICT (tenant_id) DO UPDATE SET
          org_id = COALESCE($2, teams_installations.org_id),
          tenant_name = COALESCE($3, teams_installations.tenant_name),
-         app_password = COALESCE($4, teams_installations.app_password),
-         app_password_encrypted = COALESCE($5, teams_installations.app_password_encrypted),
-         app_password_key_version = COALESCE($6, teams_installations.app_password_key_version),
+         app_password_encrypted = COALESCE($4, teams_installations.app_password_encrypted),
+         app_password_key_version = COALESCE($5, teams_installations.app_password_key_version),
          installed_at = now()
        WHERE teams_installations.org_id IS NULL OR teams_installations.org_id = $2
        RETURNING tenant_id`,
-      [tenantId, orgId, tenantName, appPassword, appPasswordEncrypted, appPasswordKeyVersion],
+      [tenantId, orgId, tenantName, appPasswordEncrypted, appPasswordKeyVersion],
     );
 
     if (rows.length === 0) {

@@ -46348,6 +46348,31 @@
               }
             }
           },
+          "422": {
+            "description": "Strict-mode plugin secrets check rejected the write (catalog schema corrupt or per-key secret/passthrough drift)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -47409,6 +47434,31 @@
               }
             }
           },
+          "422": {
+            "description": "Strict-mode plugin secrets check rejected the install (catalog schema corrupt or per-key secret/passthrough drift)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -47649,6 +47699,31 @@
           },
           "404": {
             "description": "Installation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Strict-mode plugin secrets check rejected the write (catalog schema corrupt or per-key secret/passthrough drift)",
             "content": {
               "application/json": {
                 "schema": {

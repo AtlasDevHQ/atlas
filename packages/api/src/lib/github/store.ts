@@ -6,7 +6,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { GitHubInstallation, GitHubInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -15,7 +15,7 @@ export type { GitHubInstallation, GitHubInstallationWithSecret } from "@atlas/ap
 
 const log = createLogger("github-store");
 
-const SELECT_COLS = "user_id, access_token, access_token_encrypted, username, org_id, installed_at::text";
+const SELECT_COLS = "user_id, access_token_encrypted, username, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -26,9 +26,19 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): GitHubInstallationWithSecret | null {
   const userId = row.user_id;
-  const accessToken = pickDecryptedSecret(row.access_token_encrypted, row.access_token);
-  if (typeof userId !== "string" || !userId || !accessToken) {
+  const encrypted = row.access_token_encrypted;
+  if (typeof userId !== "string" || !userId || typeof encrypted !== "string" || encrypted.length === 0) {
     log.warn(context, "Invalid GitHub installation record in database");
+    return null;
+  }
+  let accessToken: string;
+  try {
+    accessToken = decryptSecret(encrypted);
+  } catch (err) {
+    log.error(
+      { ...context, err: err instanceof Error ? err.message : String(err) },
+      "Failed to decrypt github_installations.access_token_encrypted",
+    );
     return null;
   }
   return {
@@ -130,18 +140,17 @@ export async function saveGitHubInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ user_id: string }>(
-      `INSERT INTO github_installations (user_id, access_token, access_token_encrypted, access_token_key_version, username, org_id)
-       VALUES ($1, $2, $3, $6, $4, $5)
+      `INSERT INTO github_installations (user_id, access_token_encrypted, access_token_key_version, username, org_id)
+       VALUES ($1, $2, $5, $3, $4)
        ON CONFLICT (user_id) DO UPDATE SET
-         access_token = $2,
-         access_token_encrypted = $3,
-         access_token_key_version = $6,
-         username = COALESCE($4, github_installations.username),
-         org_id = COALESCE($5, github_installations.org_id),
+         access_token_encrypted = $2,
+         access_token_key_version = $5,
+         username = COALESCE($3, github_installations.username),
+         org_id = COALESCE($4, github_installations.org_id),
          installed_at = now()
-       WHERE github_installations.org_id IS NULL OR github_installations.org_id = $5
+       WHERE github_installations.org_id IS NULL OR github_installations.org_id = $4
        RETURNING user_id`,
-      [userId, opts.accessToken, accessTokenEncrypted, username, orgId, keyVersion],
+      [userId, accessTokenEncrypted, username, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { TelegramInstallation, TelegramInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -16,7 +16,7 @@ export type { TelegramInstallation, TelegramInstallationWithSecret } from "@atla
 
 const log = createLogger("telegram-store");
 
-const SELECT_COLS = "bot_id, bot_token, bot_token_encrypted, bot_username, org_id, installed_at::text";
+const SELECT_COLS = "bot_id, bot_token_encrypted, bot_username, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -31,9 +31,19 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): TelegramInstallationWithSecret | null {
   const botIdVal = row.bot_id;
-  const botToken = pickDecryptedSecret(row.bot_token_encrypted, row.bot_token);
-  if (typeof botIdVal !== "string" || !botIdVal || !botToken) {
+  const encrypted = row.bot_token_encrypted;
+  if (typeof botIdVal !== "string" || !botIdVal || typeof encrypted !== "string" || encrypted.length === 0) {
     log.warn(context, "Invalid Telegram installation record in database");
+    return null;
+  }
+  let botToken: string;
+  try {
+    botToken = decryptSecret(encrypted);
+  } catch (err) {
+    log.error(
+      { ...context, err: err instanceof Error ? err.message : String(err) },
+      "Failed to decrypt telegram_installations.bot_token_encrypted",
+    );
     return null;
   }
   return {
@@ -135,18 +145,17 @@ export async function saveTelegramInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ bot_id: string }>(
-      `INSERT INTO telegram_installations (bot_id, bot_token, bot_token_encrypted, bot_token_key_version, bot_username, org_id)
-       VALUES ($1, $2, $3, $6, $4, $5)
+      `INSERT INTO telegram_installations (bot_id, bot_token_encrypted, bot_token_key_version, bot_username, org_id)
+       VALUES ($1, $2, $5, $3, $4)
        ON CONFLICT (bot_id) DO UPDATE SET
-         bot_token = $2,
-         bot_token_encrypted = $3,
-         bot_token_key_version = $6,
-         bot_username = COALESCE($4, telegram_installations.bot_username),
-         org_id = COALESCE($5, telegram_installations.org_id),
+         bot_token_encrypted = $2,
+         bot_token_key_version = $5,
+         bot_username = COALESCE($3, telegram_installations.bot_username),
+         org_id = COALESCE($4, telegram_installations.org_id),
          installed_at = now()
-       WHERE telegram_installations.org_id IS NULL OR telegram_installations.org_id = $5
+       WHERE telegram_installations.org_id IS NULL OR telegram_installations.org_id = $4
        RETURNING bot_id`,
-      [botId, opts.botToken, botTokenEncrypted, botUsername, orgId, keyVersion],
+      [botId, botTokenEncrypted, botUsername, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

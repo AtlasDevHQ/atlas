@@ -6,10 +6,17 @@
  * fields.
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import type { ConfigSchemaField } from "../registry";
 import type { ConfigSchema } from "../secrets";
-import { MASKED_PLACEHOLDER, maskSecretFields, parseConfigSchema, restoreMaskedSecrets } from "../secrets";
+import {
+  MASKED_PLACEHOLDER,
+  checkStrictPluginSecrets,
+  isStrictPluginSecretsEnabled,
+  maskSecretFields,
+  parseConfigSchema,
+  restoreMaskedSecrets,
+} from "../secrets";
 
 const parsed = (fields: ConfigSchemaField[]): ConfigSchema => ({ state: "parsed", fields });
 const absent: ConfigSchema = { state: "absent" };
@@ -205,5 +212,74 @@ describe("restoreMaskedSecrets", () => {
     expect(out.apiKey).toBe("sk-live-1");
     expect(out.region).toBe("us-east-1"); // omitted → preserved
     expect(out.port).toBe(5432);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-42 strict-mode opt-in (#1835)
+// ---------------------------------------------------------------------------
+
+describe("checkStrictPluginSecrets / isStrictPluginSecretsEnabled", () => {
+  const savedFlag = process.env.ATLAS_STRICT_PLUGIN_SECRETS;
+  afterEach(() => {
+    if (savedFlag !== undefined) process.env.ATLAS_STRICT_PLUGIN_SECRETS = savedFlag;
+    else delete process.env.ATLAS_STRICT_PLUGIN_SECRETS;
+  });
+
+  it("returns null when strict mode is disabled (default)", () => {
+    delete process.env.ATLAS_STRICT_PLUGIN_SECRETS;
+    expect(isStrictPluginSecretsEnabled()).toBe(false);
+    expect(checkStrictPluginSecrets({ state: "corrupt", reason: "bad" })).toBeNull();
+    expect(
+      checkStrictPluginSecrets(parsed([
+        { key: "apiKey", type: "string", secret: true },
+      ])),
+    ).toBeNull();
+  });
+
+  it("treats anything other than the literal 'true' as disabled", () => {
+    // Avoid the trap where TRUE / 1 / yes silently enable production
+    // strict mode after a string-coercion bug.
+    for (const value of ["", "TRUE", "1", "yes", "True"]) {
+      process.env.ATLAS_STRICT_PLUGIN_SECRETS = value;
+      expect(isStrictPluginSecretsEnabled()).toBe(false);
+      expect(checkStrictPluginSecrets({ state: "corrupt", reason: "bad" })).toBeNull();
+    }
+  });
+
+  it("rejects corrupt schema when strict mode is on", () => {
+    process.env.ATLAS_STRICT_PLUGIN_SECRETS = "true";
+    expect(isStrictPluginSecretsEnabled()).toBe(true);
+    expect(checkStrictPluginSecrets({ state: "corrupt", reason: "expected array, got string" })).toEqual({
+      state: "corrupt",
+      reason: "expected array, got string",
+    });
+  });
+
+  it("rejects per-key secret-vs-passthrough drift when strict mode is on", () => {
+    process.env.ATLAS_STRICT_PLUGIN_SECRETS = "true";
+    const drift = parsed([
+      { key: "apiKey", type: "string", secret: true },
+      { key: "apiKey", type: "string", secret: false },
+    ]);
+    expect(checkStrictPluginSecrets(drift)).toEqual({
+      state: "passthrough_with_secret",
+      key: "apiKey",
+    });
+  });
+
+  it("allows clean parsed schemas under strict mode", () => {
+    process.env.ATLAS_STRICT_PLUGIN_SECRETS = "true";
+    const clean = parsed([
+      { key: "apiKey", type: "string", secret: true },
+      { key: "region", type: "string", secret: false },
+    ]);
+    expect(checkStrictPluginSecrets(clean)).toBeNull();
+  });
+
+  it("allows absent / empty schemas under strict mode (no secrets to enforce)", () => {
+    process.env.ATLAS_STRICT_PLUGIN_SECRETS = "true";
+    expect(checkStrictPluginSecrets(absent)).toBeNull();
+    expect(checkStrictPluginSecrets(parsed([]))).toBeNull();
   });
 });

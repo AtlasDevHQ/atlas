@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { GChatInstallation, GChatInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -16,7 +16,7 @@ export type { GChatInstallation, GChatInstallationWithSecret } from "@atlas/api/
 
 const log = createLogger("gchat-store");
 
-const SELECT_COLS = "project_id, service_account_email, credentials_json, credentials_json_encrypted, org_id, installed_at::text";
+const SELECT_COLS = "project_id, service_account_email, credentials_json_encrypted, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -28,13 +28,23 @@ function parseInstallationRow(
 ): GChatInstallationWithSecret | null {
   const projectId = row.project_id;
   const serviceAccountEmail = row.service_account_email;
-  const credentialsJson = pickDecryptedSecret(row.credentials_json_encrypted, row.credentials_json);
+  const encrypted = row.credentials_json_encrypted;
   if (
     typeof projectId !== "string" || !projectId ||
     typeof serviceAccountEmail !== "string" || !serviceAccountEmail ||
-    !credentialsJson
+    typeof encrypted !== "string" || encrypted.length === 0
   ) {
     log.warn(context, "Invalid Google Chat installation record in database");
+    return null;
+  }
+  let credentialsJson: string;
+  try {
+    credentialsJson = decryptSecret(encrypted);
+  } catch (err) {
+    log.error(
+      { ...context, err: err instanceof Error ? err.message : String(err) },
+      "Failed to decrypt gchat_installations.credentials_json_encrypted",
+    );
     return null;
   }
   return {
@@ -135,18 +145,17 @@ export async function saveGChatInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ project_id: string }>(
-      `INSERT INTO gchat_installations (project_id, service_account_email, credentials_json, credentials_json_encrypted, credentials_json_key_version, org_id)
-       VALUES ($1, $2, $3, $4, $6, $5)
+      `INSERT INTO gchat_installations (project_id, service_account_email, credentials_json_encrypted, credentials_json_key_version, org_id)
+       VALUES ($1, $2, $3, $5, $4)
        ON CONFLICT (project_id) DO UPDATE SET
          service_account_email = $2,
-         credentials_json = $3,
-         credentials_json_encrypted = $4,
-         credentials_json_key_version = $6,
-         org_id = COALESCE($5, gchat_installations.org_id),
+         credentials_json_encrypted = $3,
+         credentials_json_key_version = $5,
+         org_id = COALESCE($4, gchat_installations.org_id),
          installed_at = now()
-       WHERE gchat_installations.org_id IS NULL OR gchat_installations.org_id = $5
+       WHERE gchat_installations.org_id IS NULL OR gchat_installations.org_id = $4
        RETURNING project_id`,
-      [projectId, opts.serviceAccountEmail, opts.credentialsJson, credentialsJsonEncrypted, orgId, keyVersion],
+      [projectId, opts.serviceAccountEmail, credentialsJsonEncrypted, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

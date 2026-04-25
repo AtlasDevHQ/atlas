@@ -68,8 +68,8 @@ describe("F-41 email real-AES round-trip", () => {
       config: { provider: "resend", apiKey: "re_real_round_trip" },
     });
     const insert = capturedQueries.find((q) => q.sql.includes("INSERT INTO email_installations"));
-    const plaintextJson = insert!.params[2] as string;
-    const encryptedBlob = insert!.params[3] as string;
+    // Post-#1832 params: [provider, senderAddress, configEncrypted, orgId, keyVersion]
+    const encryptedBlob = insert!.params[2] as string;
 
     // Encrypted blob must not contain the plaintext secret.
     expect(encryptedBlob.startsWith("enc:v1:")).toBe(true);
@@ -81,7 +81,6 @@ describe("F-41 email real-AES round-trip", () => {
         config_id: "cfg-rt",
         provider: "resend",
         sender_address: "r@example.com",
-        config: JSON.parse(plaintextJson),
         config_encrypted: encryptedBlob,
         org_id: "org-1",
         installed_at: "2026-04-24T00:00:00Z",

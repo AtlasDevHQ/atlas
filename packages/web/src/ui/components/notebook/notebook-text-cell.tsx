@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useState, useRef, useEffect } from "react";
-import { GripVertical, Type, Pencil, Check, Trash2 } from "lucide-react";
+import { GripVertical, Pencil, Check, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { SortableItemHandle } from "@/components/ui/sortable";
@@ -69,6 +69,9 @@ export const NotebookTextCell = forwardRef<HTMLElement, NotebookTextCellProps>(
 
     const hasContent = (cell.content ?? "").trim().length > 0;
 
+    // Editing wears the dashed border + tinted background as the focused-edit signal.
+    // Rendered text reads as inline documentation; the chrome would otherwise feel
+    // like a "this cell is unfinished" placeholder.
     return (
       <section
         ref={ref}
@@ -76,22 +79,27 @@ export const NotebookTextCell = forwardRef<HTMLElement, NotebookTextCellProps>(
         aria-label={`Text cell ${cell.number}`}
         tabIndex={0}
         className={cn(
-          "group rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 transition-shadow focus:outline-none focus:ring-2 focus:ring-ring dark:border-zinc-700 dark:bg-zinc-900/30",
+          "group rounded-lg transition-shadow focus:outline-none focus:ring-2 focus:ring-ring",
+          cell.editing
+            ? "border border-dashed border-zinc-300 bg-zinc-50/50 dark:border-zinc-700 dark:bg-zinc-900/30"
+            : "",
         )}
       >
-        <div className="flex items-start gap-3 border-b border-dashed border-zinc-200 px-4 py-2 dark:border-zinc-800/50">
+        <div
+          className={cn(
+            "flex items-center gap-2 px-4 py-1.5",
+            cell.editing && "border-b border-dashed border-zinc-200 dark:border-zinc-800/50",
+          )}
+        >
           <SortableItemHandle asChild>
             <button
-              className="mt-0.5 flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+              className="flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-zinc-300 transition-colors hover:text-zinc-500 dark:text-zinc-600 dark:hover:text-zinc-300"
               aria-label="Drag to reorder"
             >
               <GripVertical className="size-3.5" />
             </button>
           </SortableItemHandle>
-          <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded bg-zinc-100 dark:bg-zinc-800">
-            <Type className="size-3 text-zinc-500 dark:text-zinc-400" />
-          </span>
-          <span className="mt-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          <span className="text-[11px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
             Text
           </span>
           <div className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">

@@ -136,8 +136,8 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 Revamp end-user facing surfaces using the treatment pattern from the 1.2.1/1.2.2 admin revamp (critique → distill → colorize → polish). No features, no backend. Tracking issue #1719 + 13 page sub-issues #1864–#1876. 1.2.4 cleanup tail is now closed (F-57 #1853 shipped) — every bucket is unblocked.
 
-- [ ] Bucket 1 — Chat (`/`, #1864) — message density, starter-prompt grid, tool calls, result cards, conversation sidebar
-- [ ] Bucket 2 — Notebook (`/notebook`, #1865) — cell UX, fork-gutter verification, markdown cells, empty state
+- [x] Bucket 1 — Chat (`/`, #1864) — message density, starter-prompt grid, tool calls, result cards, conversation sidebar (PR #1885)
+- [x] Bucket 2 — Notebook (`/notebook`, #1865) — cell UX, fork-gutter verification, markdown cells, empty state — SQL-failure dedup wired in via existing `computeSqlFailureDedup`, cell head simplified, "What if?" promoted out of toolbar, mobile cell-toolbar collapsed to kebab
 - [ ] Bucket 3 — Dashboards (#1866 list, #1867 detail) — tile chrome, edit vs view, empty state, share affordance
 - [ ] Bucket 4 — Public views (#1868 shared chat, #1869 embed, #1870 shared dashboard, #1871 report) — branding, load perf, mobile, print
 - [ ] Bucket 5 — Onboarding (#1872 login, #1873 signup flow, #1874 create-org, #1875 wizard)

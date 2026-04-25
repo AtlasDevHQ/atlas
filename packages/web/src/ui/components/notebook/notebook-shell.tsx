@@ -128,29 +128,33 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterP
             </div>
           )}
 
-          {notebook.forkInfo && notebook.forkInfo.branches.length > 0 && (
-            <ForkBranchSelector
-              forkInfo={notebook.forkInfo}
-              onSwitchBranch={notebook.switchBranch}
-              onDeleteBranch={notebook.deleteBranch}
-              onRenameBranch={notebook.renameBranch}
-            />
-          )}
+          {(notebook.cells.length > 0 ||
+            (notebook.forkInfo && notebook.forkInfo.branches.length > 0)) && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {notebook.forkInfo && notebook.forkInfo.branches.length > 0 && (
+                  <ForkBranchSelector
+                    forkInfo={notebook.forkInfo}
+                    onSwitchBranch={notebook.switchBranch}
+                    onDeleteBranch={notebook.deleteBranch}
+                    onRenameBranch={notebook.renameBranch}
+                  />
+                )}
+                {notebook.cells.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={() => notebook.insertTextCell()}
+                  >
+                    <Plus className="size-3" />
+                    Text Cell
+                  </Button>
+                )}
+              </div>
 
-          {/* Notebook toolbar */}
-          {notebook.cells.length > 0 && (
-            <div className="flex items-center justify-between">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1.5 text-xs"
-                onClick={() => notebook.insertTextCell()}
-              >
-                <Plus className="size-3" />
-                Text Cell
-              </Button>
-
-              <div className="flex items-center gap-1.5">
+              {notebook.cells.length > 0 && (
+                <div className="flex items-center gap-1.5">
                 {onShareAsReport && (
                   <Button
                     variant="outline"
@@ -252,7 +256,8 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterP
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </div>
+                </div>
+              )}
             </div>
           )}
 

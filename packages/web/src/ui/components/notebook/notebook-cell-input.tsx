@@ -46,7 +46,10 @@ export function NotebookCellInput({ question, editing, onSubmit, onCancel }: Cel
 
   if (!editing) {
     return (
-      <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+      <p
+        data-testid="cell-question"
+        className="text-base font-semibold leading-snug text-zinc-900 dark:text-zinc-100"
+      >
         {question}
       </p>
     );
@@ -66,10 +69,10 @@ export function NotebookCellInput({ question, editing, onSubmit, onCancel }: Cel
         <Button size="sm" onClick={() => onSubmit(draft)}>
           Run
         </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>
+        <Button size="sm" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <span className="text-xs text-zinc-500">Enter to run, Shift+Enter for newline</span>
+        <span className="text-xs text-muted-foreground">Enter to run, Shift+Enter for newline</span>
       </div>
     </div>
   );

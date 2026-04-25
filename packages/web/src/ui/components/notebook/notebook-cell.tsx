@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useState } from "react";
-import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SortableItemHandle } from "@/components/ui/sortable";
 import { cn } from "@/lib/utils";
@@ -53,7 +53,7 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
           aria-label={`Cell ${cell.number}`}
           tabIndex={0}
           className={cn(
-            "group relative rounded-lg border border-zinc-200 bg-white transition-shadow focus:outline-none focus:ring-2 focus:ring-ring dark:border-zinc-800 dark:bg-zinc-950",
+            "group relative rounded-lg border border-zinc-200 bg-white transition-shadow hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-ring dark:border-zinc-800 dark:bg-zinc-950",
             isRunning && "ring-2 ring-primary/50",
           )}
         >
@@ -61,13 +61,13 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
           <div className="flex items-start gap-3 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800/50">
             <SortableItemHandle asChild>
               <button
-                className="mt-0.5 flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                className="mt-1 flex size-5 shrink-0 cursor-grab items-center justify-center rounded text-zinc-300 transition-colors hover:text-zinc-500 dark:text-zinc-600 dark:hover:text-zinc-300"
                 aria-label="Drag to reorder"
               >
                 <GripVertical className="size-3.5" />
               </button>
             </SortableItemHandle>
-            <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded bg-zinc-100 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+            <span className="mt-0.5 shrink-0 font-mono text-xs tabular-nums text-zinc-400 dark:text-zinc-500">
               {cell.number}
             </span>
             <div className="min-w-0 flex-1">
@@ -99,11 +99,9 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
                 status={cell.status}
                 editing={cell.editing}
                 disabled={anyRunning && !isRunning}
-                hasOutput={cell.assistantMessage !== null}
                 onEdit={() => onToggleEdit(cell.id)}
                 onRun={() => onRerun(cell.id, question)}
                 onCopy={() => onCopy(cell.id)}
-                onFork={() => onFork(cell.id)}
                 onDelete={() => setShowDeleteDialog(true)}
               />
             </div>
@@ -122,6 +120,21 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
                 previousExecution={cell.previousExecution}
               />
             </DashboardBridgeProvider>
+            {cell.assistantMessage !== null && !cell.collapsed && !cell.editing && (
+              <div className="mt-3 flex">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onFork(cell.id)}
+                  disabled={isRunning || (anyRunning && !isRunning)}
+                  className="h-7 gap-1.5 text-xs text-zinc-500 hover:text-primary dark:text-zinc-400"
+                  aria-label="Branch from this cell to explore an alternative direction"
+                >
+                  <GitBranch className="size-3.5" />
+                  What if?
+                </Button>
+              </div>
+            )}
           </div>
         </section>
 

@@ -134,14 +134,14 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## 1.3.0 — End-User UI Design Pass
 
-Revamp end-user facing surfaces using the treatment pattern from the 1.2.1/1.2.2 admin revamp (critique → distill → colorize → polish). No features, no backend. Tracking issue #1719. Starts after 1.2.3 closes; public-views bucket safe to pipeline in parallel.
+Revamp end-user facing surfaces using the treatment pattern from the 1.2.1/1.2.2 admin revamp (critique → distill → colorize → polish). No features, no backend. Tracking issue #1719 + 13 page sub-issues #1864–#1876. Starts after 1.2.4 cleanup tail (F-57 #1853) closes; public-views bucket safe to pipeline in parallel.
 
-- [ ] Bucket 1 — Chat (`/`) — message density, starter-prompt grid, tool calls, result cards, conversation sidebar
-- [ ] Bucket 2 — Notebook (`/notebook`) — cell UX, fork-gutter verification, markdown cells, empty state
-- [ ] Bucket 3 — Dashboards (`/dashboards`, `/dashboards/[id]`) — tile chrome, edit vs view, empty state, share affordance
-- [ ] Bucket 4 — Public views (`/shared/[token]`, `/report/[token]`, embed) — branding, load perf, mobile, print — safe to pipeline with 1.2.3
-- [ ] Bucket 5 — Onboarding (`/signup/*`, `/login`, `/create-org`, `/wizard`) — region picker, workspace create, success
-- [ ] Bucket 6 — Demo (`/demo`) — the marketing hand-off surface
+- [ ] Bucket 1 — Chat (`/`, #1864) — message density, starter-prompt grid, tool calls, result cards, conversation sidebar
+- [ ] Bucket 2 — Notebook (`/notebook`, #1865) — cell UX, fork-gutter verification, markdown cells, empty state
+- [ ] Bucket 3 — Dashboards (#1866 list, #1867 detail) — tile chrome, edit vs view, empty state, share affordance
+- [ ] Bucket 4 — Public views (#1868 shared chat, #1869 embed, #1870 shared dashboard, #1871 report) — branding, load perf, mobile, print — safe to pipeline with 1.2.4 tail
+- [ ] Bucket 5 — Onboarding (#1872 login, #1873 signup flow, #1874 create-org, #1875 wizard)
+- [ ] Bucket 6 — Demo (`/demo`, #1876) — the marketing hand-off surface
 
 ---
 

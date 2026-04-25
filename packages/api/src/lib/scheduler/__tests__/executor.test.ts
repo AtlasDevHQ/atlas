@@ -2,7 +2,8 @@
  * Unit tests for the scheduler executor (Effect.ts migration).
  *
  * Covers: Effect.timeout replacing Promise.race, typed error propagation,
- * delivery status recording.
+ * delivery status recording, and the F-54 actor-binding + approval-required
+ * regression tests.
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 
@@ -11,6 +12,8 @@ const mockGetScheduledTask = mock(() =>
     ok: true,
     data: {
       id: "task-1",
+      ownerId: "user-1",
+      orgId: "org-1",
       question: "What is revenue?",
       recipients: [{ type: "webhook", url: "https://hook.example.com" }],
       deliveryChannel: "webhook",
@@ -36,6 +39,28 @@ mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   _resetScheduledTasksForTest: mock(() => {}),
 }));
 
+type ActorUserLike = {
+  id: string;
+  mode: "managed";
+  label: string;
+  role: "admin";
+  activeOrganizationId: string;
+};
+const mockLoadActorUser = mock<(userId: string, orgId: string | null) => Promise<ActorUserLike | null>>(() =>
+  Promise.resolve({
+    id: "user-1",
+    mode: "managed",
+    label: "user-1@example.com",
+    role: "admin",
+    activeOrganizationId: "org-1",
+  }),
+);
+
+mock.module("@atlas/api/lib/auth/actor", () => ({
+  loadActorUser: mockLoadActorUser,
+  botActorUser: mock(() => ({ id: "slack-bot:T1", mode: "simple-key", label: "slack-bot:T1" })),
+}));
+
 const mockAgentResult = {
   answer: "Revenue is $1M",
   sql: ["SELECT SUM(revenue)"],
@@ -45,11 +70,21 @@ const mockAgentResult = {
 };
 
 let agentQueryDelay = 0;
-const mockExecuteAgentQuery = mock(() => {
+type AgentResultLike = typeof mockAgentResult & {
+  pendingApproval?: { requestId: string; ruleName: string; matchedRules: string[]; message: string };
+};
+let agentResultOverride: AgentResultLike | null = null;
+type ExecuteAgentQueryOptionsLike = {
+  actor?: { id: string; activeOrganizationId?: string };
+  priorMessages?: Array<{ role: "user" | "assistant"; content: string }>;
+  conversationId?: string;
+};
+const mockExecuteAgentQuery = mock<(question: string, requestId?: string, options?: ExecuteAgentQueryOptionsLike) => Promise<AgentResultLike>>(() => {
+  const result = agentResultOverride ?? mockAgentResult;
   if (agentQueryDelay > 0) {
-    return new Promise((resolve) => setTimeout(() => resolve(mockAgentResult), agentQueryDelay));
+    return new Promise<AgentResultLike>((resolve) => setTimeout(() => resolve(result), agentQueryDelay));
   }
-  return Promise.resolve(mockAgentResult);
+  return Promise.resolve(result);
 });
 
 mock.module("@atlas/api/lib/agent-query", () => ({
@@ -69,22 +104,34 @@ const { executeScheduledTask } = await import("../executor");
 describe("executor", () => {
   beforeEach(() => {
     agentQueryDelay = 0;
+    agentResultOverride = null;
     mockGetScheduledTask.mockReset();
     mockGetScheduledTask.mockResolvedValue({
       ok: true,
       data: {
         id: "task-1",
+        ownerId: "user-1",
+        orgId: "org-1",
         question: "What is revenue?",
         recipients: [{ type: "webhook", url: "https://hook.example.com" }],
         deliveryChannel: "webhook",
       },
     });
+    mockLoadActorUser.mockReset();
+    mockLoadActorUser.mockResolvedValue({
+      id: "user-1",
+      mode: "managed",
+      label: "user-1@example.com",
+      role: "admin",
+      activeOrganizationId: "org-1",
+    });
     mockExecuteAgentQuery.mockReset();
     mockExecuteAgentQuery.mockImplementation(() => {
+      const result = agentResultOverride ?? mockAgentResult;
       if (agentQueryDelay > 0) {
-        return new Promise((resolve) => setTimeout(() => resolve(mockAgentResult), agentQueryDelay));
+        return new Promise((resolve) => setTimeout(() => resolve(result), agentQueryDelay));
       }
-      return Promise.resolve(mockAgentResult);
+      return Promise.resolve(result);
     });
     mockDeliverResult.mockReset();
     mockDeliverResult.mockResolvedValue({ attempted: 1, succeeded: 1, failed: 0 });
@@ -141,5 +188,45 @@ describe("executor", () => {
     await expect(executeScheduledTask("task-1", "run-1", 30_000)).rejects.toThrow(
       /Agent crashed/,
     );
+  });
+
+  // ── F-54 regression tests ──────────────────────────────────────────
+
+  it("F-54: resolves the task creator and binds them as the agent actor", async () => {
+    await executeScheduledTask("task-1", "run-1", 30_000);
+    expect(mockLoadActorUser).toHaveBeenCalledWith("user-1", "org-1");
+    expect(mockExecuteAgentQuery).toHaveBeenCalledTimes(1);
+    const calls = mockExecuteAgentQuery.mock.calls;
+    // executeAgentQuery(question, requestId, options) — options.actor must
+    // carry the resolved user so checkApprovalRequired sees the orgId.
+    const opts = calls[0][2] as { actor?: { id: string; activeOrganizationId?: string } } | undefined;
+    expect(opts?.actor?.id).toBe("user-1");
+    expect(opts?.actor?.activeOrganizationId).toBe("org-1");
+  });
+
+  it("F-54: refuses to run when the task creator can't be resolved (deleted user)", async () => {
+    mockLoadActorUser.mockResolvedValueOnce(null);
+    await expect(executeScheduledTask("task-1", "run-1", 30_000)).rejects.toThrow(
+      /could not be resolved/,
+    );
+    expect(mockExecuteAgentQuery).not.toHaveBeenCalled();
+    expect(mockDeliverResult).not.toHaveBeenCalled();
+  });
+
+  it("F-54: when an approval rule matches, the run fails with a clear message and skips delivery", async () => {
+    agentResultOverride = {
+      ...mockAgentResult,
+      pendingApproval: {
+        requestId: "approval-req-42",
+        ruleName: "Block PII reads",
+        matchedRules: ["Block PII reads"],
+        message: "This query requires approval before execution.",
+      },
+    };
+    await expect(executeScheduledTask("task-1", "run-1", 30_000)).rejects.toThrow(
+      /Approval required: Block PII reads.*approval-req-42/,
+    );
+    expect(mockDeliverResult).not.toHaveBeenCalled();
+    expect(mockUpdateRunDeliveryStatus).not.toHaveBeenCalled();
   });
 });

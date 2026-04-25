@@ -43,6 +43,13 @@ export type Recipient = EmailRecipient | SlackRecipient | WebhookRecipient;
 export interface ScheduledTask {
   id: string;
   ownerId: string;
+  /**
+   * Workspace that owns the task. Null for single-tenant deployments without
+   * an internal `organization` table. The scheduler executor uses this to
+   * bind the agent's RequestContext so approval rules apply to scheduled runs
+   * (F-54).
+   */
+  orgId: string | null;
   name: string;
   question: string;
   cronExpression: string;

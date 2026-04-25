@@ -69,6 +69,7 @@ function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
   return {
     id: r.id as string,
     ownerId: r.owner_id as string,
+    orgId: typeof r.org_id === "string" ? r.org_id : null,
     name: r.name as string,
     question: r.question as string,
     cronExpression: r.cron_expression as string,

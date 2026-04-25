@@ -393,7 +393,64 @@ export const deleteApprovalRule = (orgId: string, ruleId: string): Effect.Effect
 export interface ApprovalMatchResult {
   required: boolean;
   matchedRules: ApprovalRule[];
+  /**
+   * Set when `checkApprovalRequired` was invoked without an `orgId` and at
+   * least one approval rule exists somewhere in the database. Callers
+   * (`lib/tools/sql.ts`) treat this as a hard block — running the query
+   * would silently bypass governance because we can't tell which workspace
+   * the rule belongs to. F-54 / F-55 defensive belt-and-suspenders.
+   */
+  identityMissing?: boolean;
 }
+
+/**
+ * Sentinel rule used to surface "approval gate active but no requester
+ * identity" through the existing `required: true` path. The caller's
+ * user-identity check then short-circuits with a clear error instead of
+ * silently executing.
+ */
+const IDENTITY_MISSING_RULE: ApprovalRule = {
+  id: "__identity_missing__",
+  orgId: "__unknown__",
+  name: "missing-requester-identity",
+  ruleType: "table",
+  pattern: "*",
+  threshold: null,
+  enabled: true,
+  createdAt: new Date(0).toISOString(),
+  updatedAt: new Date(0).toISOString(),
+};
+
+/**
+ * Returns true when at least one enabled approval rule exists in the
+ * database, regardless of org. Used as a defensive check when an agent
+ * invocation arrives without an `orgId` — the previous behaviour
+ * (`checkApprovalRequired(undefined, …) → { required: false }`) silently
+ * bypassed governance for any caller that forgot to bind a user.
+ */
+export const anyApprovalRuleEnabled = (): Effect.Effect<boolean, never> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return false;
+    return yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<{ exists: number }>(
+          `SELECT 1 AS exists FROM approval_rules WHERE enabled = true LIMIT 1`,
+          [],
+        ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.map((rows) => rows.length > 0));
+  }).pipe(
+    Effect.catchAll((err: Error) => {
+      log.warn(
+        { err: err.message },
+        "anyApprovalRuleEnabled lookup failed — assuming rules exist (fail-closed)",
+      );
+      // Fail-closed: when we can't tell, assume rules exist so the caller
+      // blocks anonymous queries. The alternative (assuming none) is the
+      // exact silent-bypass shape this defensive check exists to prevent.
+      return Effect.succeed(true);
+    }),
+  );
 
 /**
  * Check whether a query requires approval based on the org's rules.
@@ -402,6 +459,12 @@ export interface ApprovalMatchResult {
  * This function gracefully degrades when enterprise is disabled, returning
  * `{ required: false }` instead of throwing. Only `EnterpriseError` is
  * caught — unexpected errors propagate to avoid silently bypassing governance.
+ *
+ * F-54 / F-55 defensive: when called without `orgId` while any rule exists
+ * in the database, returns `{ required: true, identityMissing: true }` with
+ * a sentinel rule so the caller's user-identity gate fires. This closes the
+ * silent-bypass that scheduler / chat-platform paths used to hit before
+ * they were retrofitted to bind a user.
  */
 export const checkApprovalRequired = (
   orgId: string | undefined,
@@ -409,7 +472,27 @@ export const checkApprovalRequired = (
   columnsAccessed: string[],
 ): Effect.Effect<ApprovalMatchResult, never> =>
   Effect.gen(function* () {
-    if (!orgId || !hasInternalDB()) {
+    if (!hasInternalDB()) {
+      return { required: false, matchedRules: [] };
+    }
+
+    if (!orgId) {
+      // No org context — defensively block the query if any rule exists.
+      // The caller (`lib/tools/sql.ts`) already fails closed on missing
+      // user identity when `required: true`, so we route through that path
+      // rather than introducing a second error shape.
+      const ruleExists = yield* anyApprovalRuleEnabled();
+      if (ruleExists) {
+        log.warn(
+          {},
+          "checkApprovalRequired called without orgId while rules exist — failing closed",
+        );
+        return {
+          required: true,
+          matchedRules: [IDENTITY_MISSING_RULE],
+          identityMissing: true,
+        };
+      }
       return { required: false, matchedRules: [] };
     }
 

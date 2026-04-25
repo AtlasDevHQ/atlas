@@ -1010,8 +1010,15 @@ Rules:
       if (classification) {
         const approvalResult = yield* Effect.tryPromise({
           try: async () => {
-            // Phase 1: check availability (fail open)
-            let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
+            // Phase 1: check availability (fail open).
+            // F-54 / F-55: when the caller binds no user, `checkApprovalRequired`
+            // now returns `required: true` with `identityMissing: true` if any
+            // rule exists in the database. The Phase 2 user-identity gate
+            // below converts that into a clear "approve via the Atlas web app"
+            // error rather than the previous silent bypass.
+            let approvalMatch:
+              | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean }
+              | null = null;
             try {
               const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
               const checkReqCtx = getRequestContext();
@@ -1036,7 +1043,7 @@ Rules:
 
               if (!userId || !approvalOrgId) {
                 log.warn(
-                  { connectionId: connId, orgId: approvalOrgId },
+                  { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
                   "Approval required but user identity unavailable — blocking query",
                 );
                 return {

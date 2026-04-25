@@ -1,0 +1,18 @@
+{
+  "issuer": "https://api.useatlas.dev",
+  "authorization_endpoint": "https://api.useatlas.dev/api/auth/sign-in",
+  "token_endpoint": "https://api.useatlas.dev/api/auth/token",
+  "userinfo_endpoint": "https://api.useatlas.dev/api/auth/get-session",
+  "jwks_uri": "https://api.useatlas.dev/api/auth/jwks",
+  "registration_endpoint": "https://app.useatlas.dev/admin/api-keys",
+  "scopes_supported": ["openid", "profile", "email", "query", "query:raw_data"],
+  "response_types_supported": ["code"],
+  "subject_types_supported": ["public"],
+  "id_token_signing_alg_values_supported": ["RS256"],
+  "grant_types_supported": ["authorization_code", "refresh_token"],
+  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
+  "code_challenge_methods_supported": ["S256"],
+  "claims_supported": ["sub", "email", "email_verified", "name", "picture", "iat", "exp", "iss", "aud"],
+  "service_documentation": "https://docs.useatlas.dev/api-reference/authentication",
+  "ui_locales_supported": ["en-US"]
+}

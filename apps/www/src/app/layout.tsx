@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Sora, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import WebMCP from "@/components/webmcp";
 
 const sora = Sora({
   subsets: ["latin"],
@@ -52,6 +53,7 @@ export default function RootLayout({
     <html lang="en" className={`${sora.variable} ${jetbrainsMono.variable}`}>
       <body className="noise-overlay bg-zinc-950 font-sans text-zinc-300 antialiased">
         {children}
+        <WebMCP />
       </body>
     </html>
   );

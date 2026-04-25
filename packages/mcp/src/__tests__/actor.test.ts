@@ -39,13 +39,10 @@ const mockLoadActorUser = mock<
 const mockAnyApprovalRuleEnabled = mock<() => Effect.Effect<boolean, never>>(
   () => Effect.succeed(false),
 );
+const mockInternalQuery = mock<
+  (sql: string, params?: unknown[]) => Promise<unknown[]>
+>(async () => []);
 
-// Only the two helpers `actor.ts` reaches for outside its own dynamic
-// import surface get mocked. We deliberately avoid mocking
-// `@atlas/api/lib/db/internal` — partial-export mocks leak into sibling
-// test files (CLAUDE.md "Mock all exports"). `hasInternalDB` keys on
-// `process.env.DATABASE_URL` so toggling that env var is enough to drive
-// the rule-lookup branch.
 mock.module("@atlas/api/lib/auth/actor", () => ({
   loadActorUser: mockLoadActorUser,
 }));
@@ -54,7 +51,17 @@ mock.module("@atlas/ee/governance/approval", () => ({
   anyApprovalRuleEnabled: mockAnyApprovalRuleEnabled,
 }));
 
-const { resolveMcpActor, MCP_BINDING_ERROR_MESSAGE, MCP_PARTIAL_BINDING_ERROR, MCP_USER_NOT_FOUND_ERROR } = await import("../actor.js");
+// `internalQuery` is overridden via spread (CLAUDE.md "Mock all exports")
+// so the membership-check (`userIsMemberOf`) can be driven without
+// breaking sibling test files that need the real `@atlas/api/lib/db/internal`
+// surface (encryption helpers, pool lifecycle, etc.).
+const realInternal = await import("@atlas/api/lib/db/internal");
+mock.module("@atlas/api/lib/db/internal", () => ({
+  ...realInternal,
+  internalQuery: mockInternalQuery,
+}));
+
+const { resolveMcpActor, MCP_BINDING_ERROR_MESSAGE, MCP_PARTIAL_BINDING_ERROR, MCP_USER_NOT_FOUND_ERROR, MCP_USER_NOT_MEMBER_ERROR } = await import("../actor.js");
 
 describe("resolveMcpActor", () => {
   beforeEach(() => {
@@ -63,6 +70,10 @@ describe("resolveMcpActor", () => {
     setEnv("DATABASE_URL", undefined);
     mockLoadActorUser.mockReset();
     mockAnyApprovalRuleEnabled.mockReset();
+    mockInternalQuery.mockReset();
+    // Default to "member exists" so existing bound-path tests stay focused
+    // on the binding semantics they were written to pin.
+    mockInternalQuery.mockImplementation(async () => [{ exists: 1 }]);
   });
 
   afterEach(() => {
@@ -86,6 +97,10 @@ describe("resolveMcpActor", () => {
     expect(actor.id).toBe("u_123");
     expect(actor.activeOrganizationId).toBe("org_abc");
     expect(mockLoadActorUser).toHaveBeenCalledWith("u_123", "org_abc");
+    // G4: bound path returns before rule lookup — symmetric with the
+    // "bound + no rules" test below. A refactor that hoists the rule
+    // check above binding would silently regress this.
+    expect(mockAnyApprovalRuleEnabled).not.toHaveBeenCalled();
   });
 
   it("bound + no rules — resolves the bound user (no rule lookup needed)", async () => {
@@ -158,12 +173,84 @@ describe("resolveMcpActor", () => {
     setEnv("DATABASE_URL", "postgres://x");
     mockAnyApprovalRuleEnabled.mockImplementation(() =>
       // The real `anyApprovalRuleEnabled` swallows DB errors and fail-closes
-      // to `true`. Stub the dynamic import itself rejecting (a transient
-      // load failure inside the EE bundle) — actor.ts catches and treats
-      // as "rules exist", same fail-closed posture.
+      // to `true`. Stub a defect (`Effect.die`) so `Effect.runPromise`
+      // rejects — `rulesExist`'s catch then treats it as "rules exist",
+      // same fail-closed posture.
       Effect.die(new Error("DB connection refused")),
     );
 
     await expect(resolveMcpActor()).rejects.toThrow(MCP_BINDING_ERROR_MESSAGE);
+  });
+
+  it("bound + user not a member of bound org — fails loud", async () => {
+    setEnv("ATLAS_MCP_USER_ID", "u_alice");
+    setEnv("ATLAS_MCP_ORG_ID", "org_other");
+    setEnv("DATABASE_URL", "postgres://x");
+    mockLoadActorUser.mockResolvedValueOnce({
+      id: "u_alice",
+      mode: "managed",
+      label: "alice@example.com",
+      role: "admin",
+      activeOrganizationId: "org_other",
+    });
+    // Membership check returns no rows.
+    mockInternalQuery.mockImplementationOnce(async () => []);
+
+    await expect(resolveMcpActor()).rejects.toThrow(MCP_USER_NOT_MEMBER_ERROR);
+  });
+
+  it("bound + member-lookup DB error — propagates (no silent reject)", async () => {
+    setEnv("ATLAS_MCP_USER_ID", "u_bob");
+    setEnv("ATLAS_MCP_ORG_ID", "org_abc");
+    setEnv("DATABASE_URL", "postgres://x");
+    mockLoadActorUser.mockResolvedValueOnce({
+      id: "u_bob",
+      mode: "managed",
+      label: "bob@example.com",
+      role: "member",
+      activeOrganizationId: "org_abc",
+    });
+    mockInternalQuery.mockImplementationOnce(async () => {
+      throw new Error("connection refused");
+    });
+
+    // Propagates the underlying error — operator sees "connection refused"
+    // and can distinguish from MCP_USER_NOT_MEMBER_ERROR.
+    await expect(resolveMcpActor()).rejects.toThrow("connection refused");
+  });
+
+  it("bound + no internal DB — skips membership check (governance can't be enforced anyway)", async () => {
+    setEnv("ATLAS_MCP_USER_ID", "u_123");
+    setEnv("ATLAS_MCP_ORG_ID", "org_abc");
+    // DATABASE_URL unset → hasInternalDB() false → membership check is skipped.
+    mockLoadActorUser.mockResolvedValueOnce({
+      id: "u_123",
+      mode: "managed",
+      label: "user@example.com",
+      role: "member",
+      activeOrganizationId: "org_abc",
+    });
+
+    const actor = await resolveMcpActor();
+
+    expect(actor.id).toBe("u_123");
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  // Code-reviewer #2: trusted-transport actor must flow through the
+  // approval gate's `requesterId` short-circuit (ee/governance/approval.ts
+  // line ~495), not the `identityMissing` branch. A future refactor that
+  // tightens `requesterId` to non-synthetic ids would silently break
+  // trusted-transport. Pinning the actor's *shape* here so anyone changing
+  // the gate sees the dependency.
+  it("trusted-transport actor has shape compatible with the requesterId fallthrough path", async () => {
+    const actor = await resolveMcpActor();
+    expect(actor.id).toBe("system:mcp");
+    // The gate reads `getRequestContext()?.user?.id` as `requesterId`.
+    // A non-empty id is the sole precondition for the fallthrough branch.
+    expect(actor.id.length).toBeGreaterThan(0);
+    // No org claim — that's the trusted-transport contract; queries proceed
+    // because no org-scoped rule can match an unbound org.
+    expect(actor.activeOrganizationId).toBeUndefined();
   });
 });

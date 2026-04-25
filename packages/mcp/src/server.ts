@@ -34,10 +34,14 @@ interface CreateMcpServerOptions {
  * Create and configure an Atlas MCP server.
  *
  * 1. Initializes config (atlas.config.ts or env vars) — same as Hono server.ts
- * 2. Resolves the MCP actor identity (#1858) — fails loud at boot when
- *    approval rules exist without a `ATLAS_MCP_USER_ID` + `ATLAS_MCP_ORG_ID`
- *    binding, otherwise produces either the bound user or a synthetic
- *    `system:mcp` actor for trusted-transport mode.
+ * 2. Resolves the MCP actor identity (#1858). For stdio this runs once at
+ *    server boot. For SSE the entry point in `bin/serve.ts` resolves the
+ *    actor once eagerly and threads it through `opts.actor` so every new
+ *    session shares the same identity (and the fail-loud check fires at
+ *    process start, not at first request). Either way the resolution
+ *    fails loud when approval rules exist without
+ *    `ATLAS_MCP_USER_ID` + `ATLAS_MCP_ORG_ID`, otherwise produces the
+ *    bound user or a synthetic `system:mcp` actor.
  * 3. Registers the core tools (explore, executeSQL) as MCP tools, wrapping
  *    every dispatch in `withRequestContext({ user })` so the approval gate
  *    sees a bound actor.

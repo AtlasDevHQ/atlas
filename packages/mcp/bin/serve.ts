@@ -28,6 +28,8 @@
  */
 
 import { createAtlasMcpServer } from "../src/server.js";
+import { resolveMcpActor } from "../src/actor.js";
+import { initializeConfig } from "@atlas/api/lib/config";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -65,9 +67,17 @@ async function main() {
   const { transport, port, corsOrigin } = parseArgs(process.argv);
 
   if (transport === "sse") {
+    // #1858: resolve the actor once at boot and share it across all SSE
+    // sessions. The doc contract says "fails loud at boot if mis-configured"
+    // — resolving lazily per-session would push the failure to the first
+    // request and let the server start in a known-broken state. Initialize
+    // config first since `resolveMcpActor` touches the internal DB.
+    await initializeConfig();
+    const actor = await resolveMcpActor();
+
     const { startSseServer } = await import("../src/sse.js");
     const handle = await startSseServer(
-      () => createAtlasMcpServer(),
+      () => createAtlasMcpServer({ skipConfig: true, actor }),
       { port, corsOrigin },
     );
 

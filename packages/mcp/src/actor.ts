@@ -9,8 +9,11 @@
  * with "approve via the Atlas web app" — a message that doesn't apply to
  * the MCP transport because the caller has no Atlas session.
  *
- * `resolveMcpActor()` runs once at MCP server boot and produces an
- * `AtlasUser` to bind on every tool dispatch:
+ * `resolveMcpActor()` is invoked once per MCP process — `bin/serve.ts`
+ * resolves it eagerly for stdio (before the first JSON-RPC frame) and
+ * for SSE (before any session can be created). The result is threaded
+ * into `createAtlasMcpServer({ actor })` so every tool dispatch binds
+ * the same identity:
  *
  *  - **Bound transport** (both `ATLAS_MCP_USER_ID` + `ATLAS_MCP_ORG_ID`
  *    set) — resolves the workspace identity via `loadActorUser` so
@@ -34,7 +37,7 @@ import { Effect } from "effect";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { loadActorUser } from "@atlas/api/lib/auth/actor";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("mcp:actor");
@@ -53,6 +56,11 @@ export const MCP_USER_NOT_FOUND_ERROR =
   "ATLAS_MCP_USER_ID resolves no row in the internal DB. The user may have been " +
   "deleted or removed from the org. Recreate the binding under a current Atlas user.";
 
+export const MCP_USER_NOT_MEMBER_ERROR =
+  "ATLAS_MCP_USER_ID is not a member of ATLAS_MCP_ORG_ID. The bound user must " +
+  "have an entry in the `member` table for the bound org. Either add membership " +
+  "or rebind to a user that already belongs to this org.";
+
 export async function resolveMcpActor(): Promise<AtlasUser> {
   const userId = process.env.ATLAS_MCP_USER_ID;
   const orgId = process.env.ATLAS_MCP_ORG_ID;
@@ -68,6 +76,16 @@ export async function resolveMcpActor(): Promise<AtlasUser> {
   if (userId && orgId) {
     const actor = await loadActorUser(userId, orgId);
     if (!actor) throw new Error(MCP_USER_NOT_FOUND_ERROR);
+    // Unlike scheduler (orgId derived from a validated task row) and Slack
+    // (orgId derived from a validated installation row), MCP wires the two
+    // env vars unilaterally — `loadActorUser` will return a fully-formed
+    // actor even if the user has no `member` row for the bound org, with
+    // `activeOrganizationId` claimed from the env var. That would silently
+    // attribute every MCP query to a foreign org in audit + approval
+    // routing. Validate explicitly here.
+    if (!(await userIsMemberOf(userId, orgId))) {
+      throw new Error(MCP_USER_NOT_MEMBER_ERROR);
+    }
     log.info(
       { userId: actor.id, orgId, mode: actor.mode },
       "MCP bound to workspace identity",
@@ -105,4 +123,22 @@ async function rulesExist(): Promise<boolean> {
     // exact silent-bypass shape this binding exists to prevent.
     return true;
   }
+}
+
+/**
+ * Verify the bound user has a `member` row for the bound org. We deliberately
+ * do NOT swallow DB errors — a transient internal-DB blip should propagate
+ * so MCP fails to boot with the underlying error message rather than
+ * silently rejecting a valid binding as "not a member".
+ */
+async function userIsMemberOf(userId: string, orgId: string): Promise<boolean> {
+  // No internal DB means no `member` table — falls back to "trust the env
+  // vars" because there's nothing to validate against. This branch is only
+  // reachable in deployments where governance can't be enforced anyway.
+  if (!hasInternalDB()) return true;
+  const rows = await internalQuery<{ exists: number }>(
+    `SELECT 1 AS exists FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+    [userId, orgId],
+  );
+  return rows.length > 0;
 }

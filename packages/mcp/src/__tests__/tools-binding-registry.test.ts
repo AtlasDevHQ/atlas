@@ -38,12 +38,17 @@ describe("MCP tool binding registry", () => {
     ).toBeGreaterThan(0);
 
     for (let i = 0; i < registrations.length; i++) {
-      const block = registrations[i];
-      // Look only at the body up to the next `server.registerTool(` (or
-      // end of file). Each block extends until the next registration or
-      // the closing of `registerTools`.
-      const closingIdx = block.search(/^\s*\}\s*$/m); // first top-level `}`
-      const body = closingIdx >= 0 ? block.slice(0, closingIdx) : block;
+      // Each registration's body extends from `server.registerTool(` until
+      // the next registration (or EOF for the last one). We deliberately
+      // search the FULL body — earlier versions of this test truncated at
+      // the first top-level `}`, which landed inside the inner catch block
+      // and missed any wrap added LATER in the dispatch. Searching the
+      // full block is safe because (a) `blocks[0]` (the file preamble) is
+      // dropped, so an unused `withRequestContext` import wouldn't falsely
+      // satisfy a registration, and (b) only the next `server.registerTool(`
+      // bounds the block, so a missing wrap can't borrow the next
+      // registration's wrap to pass.
+      const body = registrations[i];
 
       expect(
         body.includes("withRequestContext("),

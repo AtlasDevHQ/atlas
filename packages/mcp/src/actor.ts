@@ -130,12 +130,14 @@ async function rulesExist(): Promise<boolean> {
  * do NOT swallow DB errors — a transient internal-DB blip should propagate
  * so MCP fails to boot with the underlying error message rather than
  * silently rejecting a valid binding as "not a member".
+ *
+ * Reachability note: by the time this runs, `loadActorUser` has already
+ * returned a non-null actor, which is only possible when `hasInternalDB()`
+ * is true (`packages/api/src/lib/auth/actor.ts:64`). So a `!hasInternalDB()`
+ * guard here would be dead code — the realistic mis-config (bound env vars
+ * + no DATABASE_URL) is already caught by `MCP_USER_NOT_FOUND_ERROR`.
  */
 async function userIsMemberOf(userId: string, orgId: string): Promise<boolean> {
-  // No internal DB means no `member` table — falls back to "trust the env
-  // vars" because there's nothing to validate against. This branch is only
-  // reachable in deployments where governance can't be enforced anyway.
-  if (!hasInternalDB()) return true;
   const rows = await internalQuery<{ exists: number }>(
     `SELECT 1 AS exists FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
     [userId, orgId],

@@ -96,6 +96,10 @@ describe("resolveMcpActor", () => {
 
     expect(actor.id).toBe("u_123");
     expect(actor.activeOrganizationId).toBe("org_abc");
+    // I2: pin that loadActorUser's mode flows through unaltered. A refactor
+    // that wrapped the loaded user in a fresh `createAtlasUser` with a
+    // different mode would silently break audit attribution.
+    expect(actor.mode).toBe("managed");
     expect(mockLoadActorUser).toHaveBeenCalledWith("u_123", "org_abc");
     // G4: bound path returns before rule lookup — symmetric with the
     // "bound + no rules" test below. A refactor that hoists the rule
@@ -219,21 +223,21 @@ describe("resolveMcpActor", () => {
     await expect(resolveMcpActor()).rejects.toThrow("connection refused");
   });
 
-  it("bound + no internal DB — skips membership check (governance can't be enforced anyway)", async () => {
+  // G5: pin the realistic mis-config (operator sets the binding env vars
+  // but forgets DATABASE_URL). In production `loadActorUser` returns null
+  // when `!hasInternalDB()` (packages/api/src/lib/auth/actor.ts:64), so
+  // resolveMcpActor fails with MCP_USER_NOT_FOUND_ERROR before reaching
+  // the membership check. A future refactor that lets loadActorUser
+  // synthesize an actor without a DB would silently make MCP boot with a
+  // foreign actor, no test failing — this test fails it visibly.
+  it("bound + no internal DB — fails loud with USER_NOT_FOUND (loadActorUser short-circuits)", async () => {
     setEnv("ATLAS_MCP_USER_ID", "u_123");
     setEnv("ATLAS_MCP_ORG_ID", "org_abc");
-    // DATABASE_URL unset → hasInternalDB() false → membership check is skipped.
-    mockLoadActorUser.mockResolvedValueOnce({
-      id: "u_123",
-      mode: "managed",
-      label: "user@example.com",
-      role: "member",
-      activeOrganizationId: "org_abc",
-    });
+    // DATABASE_URL unset → real loadActorUser returns null → membership
+    // check is unreachable. Mock matches that production behaviour.
+    mockLoadActorUser.mockResolvedValueOnce(null);
 
-    const actor = await resolveMcpActor();
-
-    expect(actor.id).toBe("u_123");
+    await expect(resolveMcpActor()).rejects.toThrow(MCP_USER_NOT_FOUND_ERROR);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
@@ -252,5 +256,9 @@ describe("resolveMcpActor", () => {
     // No org claim — that's the trusted-transport contract; queries proceed
     // because no org-scoped rule can match an unbound org.
     expect(actor.activeOrganizationId).toBeUndefined();
+    // I1: pin `mode` here so a refactor that flips the synthetic actor
+    // off `simple-key` (the no-Better-Auth-session signal) doesn't quietly
+    // break audit attribution or downstream auth-mode branching.
+    expect(actor.mode).toBe("simple-key");
   });
 });

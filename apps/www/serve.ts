@@ -7,12 +7,13 @@ const SECURITY_HEADERS: Record<string, string> = {
   "X-Frame-Options": "DENY",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
+  // Set globally so any cache fronting the server keeps the markdown twin
+  // and the HTML representation distinct.
+  Vary: "Accept",
 };
 
-// Agent-discovery Link header on the homepage (RFC 8288 + RFC 9727).
-// Points crawlers at the API catalog, OpenAPI spec, hosted docs, status,
-// markdown twin, MCP server card, OAuth metadata, and the agent-skills
-// index. Kept on a single line so curl -I shows it cleanly.
+// RFC 8288 / 9727 link relations advertised on the homepage. Single line
+// so curl -I shows it cleanly.
 const HOMEPAGE_LINK_HEADER = [
   '</.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"',
   '<https://docs.useatlas.dev/api-reference/openapi.json>; rel="service-desc"; type="application/openapi+json"',
@@ -24,25 +25,15 @@ const HOMEPAGE_LINK_HEADER = [
   '</.well-known/agent-skills/index.json>; rel="agent-skills"; type="application/json"',
 ].join(", ");
 
-// /.well-known canonical URLs are extension-less per their RFCs. The
-// underlying static files live with .json extensions so editors and CI
-// linters recognize them. Each entry maps the canonical URL → file +
-// content-type override.
+// /.well-known canonical URLs are extension-less per their RFCs; the on-disk
+// files keep .json so editors and CI linters recognize them.
 const WELL_KNOWN_ROUTES: Record<string, { file: string; contentType: string }> = {
   "/.well-known/api-catalog": {
     file: "/.well-known/api-catalog.json",
     contentType: "application/linkset+json; charset=utf-8",
   },
-  "/.well-known/oauth-authorization-server": {
-    file: "/.well-known/oauth-authorization-server.json",
-    contentType: "application/json; charset=utf-8",
-  },
   "/.well-known/oauth-protected-resource": {
     file: "/.well-known/oauth-protected-resource.json",
-    contentType: "application/json; charset=utf-8",
-  },
-  "/.well-known/openid-configuration": {
-    file: "/.well-known/openid-configuration.json",
     contentType: "application/json; charset=utf-8",
   },
 };
@@ -87,7 +78,6 @@ async function proxyApiHealth(): Promise<Response> {
   }
 }
 
-/** True when the Accept header lists text/markdown anywhere in its q-list. */
 function prefersMarkdown(req: Request): boolean {
   const accept = req.headers.get("accept");
   if (!accept) return false;
@@ -96,13 +86,9 @@ function prefersMarkdown(req: Request): boolean {
     .some((part) => part.trim().toLowerCase().startsWith("text/markdown"));
 }
 
-/**
- * Markdown twin for a static page. Per-page markdown lives in
- * `public/markdown/<path>.md` (so /pricing → /markdown/pricing.md). The
- * homepage falls back to llms.txt — that file is hand-curated and kept in
- * sync as our canonical "what Atlas is" overview.
- */
 function markdownTwinPath(pathname: string): string {
+  // "/" maps to llms.txt — hand-curated as our canonical "what Atlas is"
+  // overview, not a generated twin. Other paths look up a sibling .md.
   if (pathname === "/" || pathname === "") return "/llms.txt";
   const trimmed = pathname.replace(/\/+$/, "");
   return `/markdown${trimmed}.md`;
@@ -113,10 +99,24 @@ async function tryServeMarkdown(pathname: string): Promise<Response | null> {
   const file = Bun.file(join(OUT_DIR, twin));
   if (!(await file.exists())) return null;
 
-  const text = await file.text();
-  // Rough token estimate — most tokenizers land around 3.5–4 chars per
-  // token for English markdown. We expose this so agents can budget
-  // context windows without re-tokenizing.
+  let text: string;
+  try {
+    text = await file.text();
+  } catch (err) {
+    // exists() / text() are not atomic; the file can disappear or flip
+    // permissions in between. Log + fall through to HTML rather than 500
+    // the caller, since the markdown twin is an opportunistic agent
+    // affordance, not a load-bearing surface.
+    console.warn(
+      "[serve] markdown twin read failed:",
+      twin,
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+
+  // Most tokenizers land around 3.5–4 chars/token for English markdown;
+  // exposed so agents can budget context windows without re-tokenizing.
   const tokenEstimate = Math.ceil(text.length / 4);
 
   return new Response(text, {
@@ -125,7 +125,6 @@ async function tryServeMarkdown(pathname: string): Promise<Response | null> {
       "Content-Type": "text/markdown; charset=utf-8",
       "X-Markdown-Tokens": String(tokenEstimate),
       "X-Markdown-Source": twin,
-      Vary: "Accept",
     },
   });
 }
@@ -156,13 +155,18 @@ Bun.serve({
           },
         });
       }
+      // Build/template drift: route is registered but the underlying
+      // .well-known file is missing. Surface as a 404 with a log line so
+      // it doesn't silently fall through into the HTML SPA shell.
+      console.warn("[serve] well-known asset missing on disk:", wellKnown.file);
+      return new Response("Not Found", { status: 404, headers: SECURITY_HEADERS });
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && prefersMarkdown(req)) {
       const markdown = await tryServeMarkdown(pathname);
       if (markdown) return markdown;
-      // No markdown twin — fall through to HTML. RFC 7231 lets us
-      // ignore an Accept hint when no acceptable representation exists.
+      // RFC 7231: Accept is ignorable when no acceptable representation
+      // exists. Fall through to HTML.
     }
 
     for (const suffix of ["", ".html", "/index.html"]) {
@@ -171,7 +175,6 @@ Bun.serve({
         const headers: Record<string, string> = { ...SECURITY_HEADERS };
         if (pathname === "/" || pathname === "/index.html" || suffix === "/index.html") {
           headers["Link"] = HOMEPAGE_LINK_HEADER;
-          headers["Vary"] = "Accept";
         }
         return new Response(file, { headers });
       }

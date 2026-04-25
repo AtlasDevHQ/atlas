@@ -1,5 +1,4 @@
 {
-  "$schema": "https://modelcontextprotocol.io/schemas/server-card/v1.json",
   "serverInfo": {
     "name": "atlas",
     "title": "Atlas — Text-to-SQL Data Analyst",
@@ -14,15 +13,6 @@
     }
   },
   "transports": [
-    {
-      "type": "stdio",
-      "command": "bun",
-      "args": ["x", "atlas-mcp"],
-      "env": {
-        "ATLAS_API_URL": "https://api.useatlas.dev",
-        "ATLAS_API_KEY": "<generate-at-https://app.useatlas.dev/admin/api-keys>"
-      }
-    },
     {
       "type": "http",
       "endpoint": "https://api.useatlas.dev/api/v1/mcp/sse",

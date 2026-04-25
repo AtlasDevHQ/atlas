@@ -2,13 +2,11 @@
 
 import { useEffect } from "react";
 
-/**
- * WebMCP tool-provider for the marketing site.
- *
- * Exposes a small surface to in-browser AI agents (Chrome's `webmcp`
- * proposal): start the SaaS signup flow, jump to the live demo, and
- * search the docs. No-op on browsers without `navigator.modelContext`.
- */
+// Provides tools to in-browser agents via Chrome's experimental webmcp
+// proposal (navigator.modelContext). No-op elsewhere. The response
+// envelope mirrors MCP server tools/call (`{ content: [{type, text}] }`)
+// since the WebMCP draft hasn't finalized its own shape — track the
+// proposal at https://webmachinelearning.github.io/webmcp/.
 type ModelContextTool = {
   name: string;
   description: string;
@@ -22,10 +20,25 @@ type ModelContext = {
   provideContext: (ctx: { tools: ModelContextTool[] }) => Promise<void> | void;
 };
 
-declare global {
-  interface Navigator {
-    modelContext?: ModelContext;
+type WebMcpNavigator = Navigator & { modelContext?: ModelContext };
+
+/**
+ * Open a URL in a new tab and report back to the agent. Handles popup-
+ * blocker rejection (`window.open` returns null) so the response text
+ * matches what the user actually sees.
+ */
+function openAndReport(url: string, openedText: string): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  if (typeof window === "undefined") {
+    return { content: [{ type: "text", text: `${url} (server context — cannot open)` }] };
   }
+  const win = window.open(url, "_blank", "noopener");
+  const text =
+    win === null
+      ? `Couldn't open a new tab — popup blocker likely. Visit ${url} directly.`
+      : openedText;
+  return { content: [{ type: "text", text }] };
 }
 
 const TOOLS: ModelContextTool[] = [
@@ -36,15 +49,10 @@ const TOOLS: ModelContextTool[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       const url = "https://app.useatlas.dev/signup";
-      if (typeof window !== "undefined") window.open(url, "_blank", "noopener");
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Opened the Atlas signup page: ${url}. New workspaces include a 14-day Team-tier trial; no credit card required.`,
-          },
-        ],
-      };
+      return openAndReport(
+        url,
+        `Opened the Atlas signup page: ${url}. New workspaces include a 14-day Team-tier trial; no credit card required.`,
+      );
     },
   },
   {
@@ -54,15 +62,10 @@ const TOOLS: ModelContextTool[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       const url = "https://app.useatlas.dev/demo";
-      if (typeof window !== "undefined") window.open(url, "_blank", "noopener");
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Opened the Atlas live demo: ${url}. Pre-loaded with an e-commerce sample schema.`,
-          },
-        ],
-      };
+      return openAndReport(
+        url,
+        `Opened the Atlas live demo: ${url}. Pre-loaded with an e-commerce sample schema.`,
+      );
     },
   },
   {
@@ -81,29 +84,32 @@ const TOOLS: ModelContextTool[] = [
       additionalProperties: false,
     },
     async execute(input) {
-      const query = String(input.query ?? "").trim();
+      if (typeof input.query !== "string") {
+        return {
+          content: [{ type: "text", text: "query must be a string." }],
+        };
+      }
+      const query = input.query.trim();
       if (!query) {
         return {
           content: [{ type: "text", text: "No query provided. Try 'BigQuery setup' or 'MCP server'." }],
         };
       }
       const url = `https://docs.useatlas.dev/?q=${encodeURIComponent(query)}`;
-      if (typeof window !== "undefined") window.open(url, "_blank", "noopener");
-      return {
-        content: [
-          { type: "text", text: `Opened Atlas docs search for "${query}": ${url}` },
-        ],
-      };
+      return openAndReport(url, `Opened Atlas docs search for "${query}": ${url}`);
     },
   },
 ];
 
 export default function WebMCP() {
   useEffect(() => {
-    const mc = navigator.modelContext;
+    const mc = (navigator as WebMcpNavigator).modelContext;
     if (!mc?.provideContext) return;
     Promise.resolve(mc.provideContext({ tools: TOOLS })).catch((err: unknown) => {
-      console.debug(
+      // console.warn so the failure is visible at the default devtools
+      // level — silent breakage of the whole webmcp surface is exactly
+      // what we don't want to ship.
+      console.warn(
         "[webmcp] provideContext failed:",
         err instanceof Error ? err.message : String(err),
       );

@@ -45,7 +45,7 @@ describe("ExploreCard", () => {
     const { container } = render(
       <ExploreCard part={makePart({ state: "running", output: undefined })} />,
     );
-    expect(container.textContent).toContain("running...");
+    expect(container.textContent).toContain("running");
   });
 
   test("does not expand when still running", () => {

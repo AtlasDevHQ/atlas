@@ -107,9 +107,23 @@ function SQLResultCardInner({ part, previousExecution }: { part: unknown; previo
   }
 
   if (!result.success) {
+    const errorMessage =
+      typeof result.error === "string" && result.error.trim()
+        ? result.error
+        : "Query failed.";
+    const explanation =
+      typeof args.explanation === "string" && args.explanation.trim()
+        ? args.explanation
+        : null;
     return (
-      <div className="my-2 rounded-lg border border-red-300 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 px-3 py-2 text-xs">
-        Query failed. Check the query and try again.
+      <div className="rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
+        {explanation && <p className="font-medium">{explanation}</p>}
+        <p className={explanation ? "mt-0.5 opacity-80" : ""}>{errorMessage}</p>
+        {sql && (
+          <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-100/60 px-2 py-1 font-mono text-xs leading-snug text-red-900 dark:bg-red-950/40 dark:text-red-300">
+            {sql}
+          </pre>
+        )}
       </div>
     );
   }

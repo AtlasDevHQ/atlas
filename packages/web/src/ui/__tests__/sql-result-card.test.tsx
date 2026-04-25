@@ -63,6 +63,21 @@ describe("SQLResultCard", () => {
         })}
       />,
     );
+    // Failure card surfaces the actual error message and the SQL that failed,
+    // plus the agent's explanation when present — not a generic "Query failed".
+    expect(container.textContent).toContain("relation does not exist");
+    expect(container.textContent).toContain("SELECT");
+  });
+
+  test("renders generic fallback when failed query has no error message", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          input: { sql: "SELECT 1", explanation: "" },
+          output: { success: false },
+        })}
+      />,
+    );
     expect(container.textContent).toContain("Query failed");
   });
 

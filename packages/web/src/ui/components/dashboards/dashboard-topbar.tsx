@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft,
   RefreshCw,
   Eye,
   Pencil,
@@ -27,9 +26,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { DashboardSwitcher } from "./dashboard-switcher";
 import type { Density } from "./grid-constants";
 
 interface DashboardTopBarProps {
+  dashboardId: string;
   title: string;
   cardCount: number;
   description: string | null;
@@ -49,6 +50,7 @@ interface DashboardTopBarProps {
 }
 
 export function DashboardTopBar({
+  dashboardId,
   title,
   cardCount,
   description,
@@ -88,15 +90,8 @@ export function DashboardTopBar({
 
   return (
     <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-background/95 px-4 py-3 backdrop-blur dark:border-zinc-800 sm:px-6">
-      <div className="flex min-w-0 flex-col gap-1">
-        <Link
-          href="/dashboards"
-          className="inline-flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-zinc-500 transition-colors hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-300"
-        >
-          <ArrowLeft className="size-3" />
-          All dashboards
-        </Link>
-        <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center gap-1">
           {titleEditing ? (
             <div className="flex min-w-0 items-center gap-1.5">
               <Input
@@ -109,24 +104,27 @@ export function DashboardTopBar({
                 className="h-8 min-w-[16ch] text-base font-semibold tracking-tight"
                 autoFocus
               />
-              <Button variant="ghost" size="icon" className="size-7" onClick={commitTitle}>
+              <Button variant="ghost" size="icon" className="size-7" aria-label="Save title" onClick={commitTitle}>
                 <Check className="size-4" />
               </Button>
-              <Button variant="ghost" size="icon" className="size-7" onClick={cancelTitle}>
+              <Button variant="ghost" size="icon" className="size-7" aria-label="Cancel title edit" onClick={cancelTitle}>
                 <X className="size-4" />
               </Button>
             </div>
           ) : (
-            <button
-              type="button"
-              onClick={() => { setDraft(title); setTitleEditing(true); }}
-              className="cursor-pointer truncate text-left text-lg font-semibold tracking-tight text-zinc-900 hover:text-zinc-700 dark:text-zinc-100 dark:hover:text-zinc-300"
-              title="Click to edit title"
-            >
-              {title}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => { setDraft(title); setTitleEditing(true); }}
+                className="cursor-pointer truncate text-left text-lg font-semibold tracking-tight text-zinc-900 hover:text-zinc-700 dark:text-zinc-100 dark:hover:text-zinc-300"
+                title="Click to rename"
+              >
+                {title}
+              </button>
+              <DashboardSwitcher currentId={dashboardId} />
+            </>
           )}
-          {cardCount > 0 && (
+          {cardCount > 0 && !titleEditing && (
             <span className="hidden shrink-0 text-xs tabular-nums text-zinc-500 dark:text-zinc-400 sm:inline">
               {cardCount} {cardCount === 1 ? "tile" : "tiles"}
             </span>

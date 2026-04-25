@@ -20,6 +20,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useAtlasConfig } from "@/ui/context";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { NavBar } from "@/ui/components/tour/nav-bar";
 import { authClient } from "@/lib/auth/client";
@@ -27,6 +28,7 @@ import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import { selectNextAfterDelete } from "@/app/dashboards/select-recent";
 import type { Density } from "@/ui/components/dashboards/grid-constants";
 import type {
   DashboardCard,
@@ -38,6 +40,7 @@ import type {
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const session = authClient.useSession();
   const user = session.data?.user as { email?: string; role?: string } | undefined;
   const isAdmin =
@@ -129,9 +132,30 @@ export default function DashboardViewPage() {
   }
 
   async function handleDeleteDashboard() {
+    // Pre-fetch the next-most-recent dashboard so we can land the user on it
+    // after the delete settles. We compute `next` BEFORE the delete because
+    // `useAdminFetch` invalidations clear the in-memory list first, and we
+    // want the navigation target locked in. On failure we fall back to
+    // /dashboards which will redirect or show the empty state.
+    let nextId: string | null = null;
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/dashboards`, {
+        credentials: isCrossOrigin ? "include" : "same-origin",
+      });
+      if (res.ok) {
+        const json = (await res.json()) as { dashboards?: { id: string; updatedAt: string }[] };
+        nextId = selectNextAfterDelete(json.dashboards ?? [], id);
+      }
+    } catch (err) {
+      console.debug(
+        "[dashboard] Pre-delete next-dashboard lookup failed; falling back to /dashboards:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
     const result = await mutate({ path: `/api/v1/dashboards/${id}`, method: "DELETE" });
     if (!result.ok) return;
-    router.push("/dashboards");
+    router.push(nextId ? `/dashboards/${nextId}` : "/dashboards");
   }
 
   async function handleUpdateCardTitle(cardId: string, title: string) {
@@ -279,6 +303,7 @@ export default function DashboardViewPage() {
         {!loading && !error && dashboard && (
           <>
             <DashboardTopBar
+              dashboardId={dashboard.id}
               title={dashboard.title}
               cardCount={dashboard.cards.length}
               description={dashboard.description}

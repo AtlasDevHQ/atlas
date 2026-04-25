@@ -32,8 +32,9 @@ import {
   RoleError,
   PERMISSIONS,
 } from "@atlas/ee/auth/roles";
-import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema, createParamSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema, createParamSchema, SCIMManagedResponse } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
+import { evaluateSCIMGuard } from "@atlas/api/lib/auth/scim-provenance";
 
 function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
@@ -205,6 +206,7 @@ const assignRoleRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "User or role not found, or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    409: SCIMManagedResponse,
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -472,6 +474,7 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
   const ipAddress = clientIP(c);
   const { userId } = c.req.valid("param");
   const { role: roleName } = c.req.valid("json");
+  const requestId = (c.get("requestId") as string | undefined) ?? "unknown";
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
@@ -479,6 +482,15 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
     if (!isValidId(userId)) {
       return c.json({ error: "bad_request", message: "Invalid user ID." }, 400);
     }
+
+    // F-57 — SCIM provenance gate. SCIM group → role mappings (managed in
+    // admin-scim.ts) are authoritative for SCIM-provisioned users; a manual
+    // role assignment here gets reverted on the next sync. Strict blocks
+    // with 409 SCIM_MANAGED before any DB writes. Override audits the
+    // bypass via metadata.scim_override.
+    const scimGuard = yield* evaluateSCIMGuard({ userId, orgId: orgId!, requestId });
+    if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
+    const scimOverride = scimGuard.kind === "override";
 
     // Pre-fetch role row (by name) to resolve a stable roleId for the audit,
     // and the user's existing member.role so the audit captures what was
@@ -506,6 +518,7 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
         roleName: result.role,
         userId,
         previousRole,
+        ...(scimOverride && { scim_override: true }),
       },
     });
 

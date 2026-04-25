@@ -138,7 +138,9 @@ Revamp end-user facing surfaces using the treatment pattern from the 1.2.1/1.2.2
 
 - [x] Bucket 1 — Chat (`/`, #1864) — message density, starter-prompt grid, tool calls, result cards, conversation sidebar (PR #1885)
 - [x] Bucket 2 — Notebook (`/notebook`, #1865) — cell UX, fork-gutter verification, markdown cells, empty state — SQL-failure dedup wired in via existing `computeSqlFailureDedup`, cell head simplified, "What if?" promoted out of toolbar, mobile cell-toolbar collapsed to kebab
-- [ ] Bucket 3 — Dashboards (#1866 list, #1867 detail) — tile chrome, edit vs view, empty state, share affordance
+- [ ] Bucket 3 — Dashboards
+  - [x] 3b detail (`/dashboards/[id]`, #1867) — freeform RGL tile grid build (PR #1889) + critique pass (#1890, PR #1893): chart-on-mount bug fixed via measured-width gating, mobile single-column read-only fallback below 640px, edit-mode visually distinct (dot tint + always-on drag handles + Esc-to-exit banner), opaque fullscreen backdrop, tile-head a11y labels, register/typography lift. Adjacent issues filed: #1891 (chart Bar/Pie + DataTable th contrast, shared with chat), #1892 (peach guided-tour avatar overlay)
+  - [ ] 3a list (`/dashboards`, #1866) — separate critique pass
 - [ ] Bucket 4 — Public views (#1868 shared chat, #1869 embed, #1870 shared dashboard, #1871 report) — branding, load perf, mobile, print
 - [ ] Bucket 5 — Onboarding (#1872 login, #1873 signup flow, #1874 create-org, #1875 wizard)
 - [ ] Bucket 6 — Demo (`/demo`, #1876) — the marketing hand-off surface

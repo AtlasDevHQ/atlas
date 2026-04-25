@@ -25,7 +25,7 @@ import {
 } from "@atlas/api/lib/sandbox/credentials";
 import { validateCredentials } from "@atlas/api/lib/sandbox/validate";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-sandbox");
 
@@ -247,6 +247,8 @@ function isValidProvider(provider: string): provider is (typeof SANDBOX_PROVIDER
 const adminSandbox = createAdminRouter();
 
 adminSandbox.use(requireOrgContext());
+// F-53 — sandbox backend selection is a settings cluster surface.
+adminSandbox.use(requirePermission("admin:settings"));
 
 // GET /status — sandbox backend status for this workspace
 adminSandbox.openapi(getStatusRoute, async (c) => {

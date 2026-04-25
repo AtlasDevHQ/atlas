@@ -26,7 +26,7 @@ import {
 import { MIGRATION_STATUSES, type RegionMigration } from "@useatlas/types";
 import { RegionMigrationSchema, MigrationStatusResponseSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
@@ -468,6 +468,8 @@ const cancelMigrationRoute = createRoute({
 const adminResidency = createAdminRouter();
 
 adminResidency.use(requireOrgContext());
+// F-53 — data residency configuration is a settings cluster surface.
+adminResidency.use(requirePermission("admin:settings"));
 
 // GET / — workspace residency status
 adminResidency.openapi(getStatusRoute, async (c) => {

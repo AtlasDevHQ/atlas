@@ -19,7 +19,7 @@ import {
 } from "@atlas/ee/branding/white-label";
 import { WorkspaceBrandingSchema as BrandingSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const brandingDomainError = domainError(BrandingError, { validation: 400, not_found: 404 });
 
@@ -212,6 +212,8 @@ const deleteBrandingRoute = createRoute({
 const adminBranding = createAdminRouter();
 
 adminBranding.use(requireOrgContext());
+// F-53 — branding lives under the settings cluster; gate on admin:settings.
+adminBranding.use(requirePermission("admin:settings"));
 
 // GET / — get workspace branding
 adminBranding.openapi(getBrandingRoute, async (c) => {

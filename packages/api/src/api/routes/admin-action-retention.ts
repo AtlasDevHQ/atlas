@@ -39,7 +39,7 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const retentionDomainError = domainError(RetentionError, { validation: 400, not_found: 404 });
 
@@ -310,6 +310,9 @@ const eraseUserRoute = createRoute({
 
 const adminActionRetention = createAdminRouter();
 adminActionRetention.use(requireOrgContext());
+// F-53 — admin-action retention + erase-user belong to the audit governance
+// surface; gate on admin:audit.
+adminActionRetention.use(requirePermission("admin:audit"));
 
 // GET /admin-action-retention — current policy
 adminActionRetention.openapi(getRetentionRoute, async (c) => {
@@ -446,6 +449,8 @@ adminActionRetention.openapi(purgeRoute, async (c) => {
 
 const adminEraseUser = createAdminRouter();
 adminEraseUser.use(requireOrgContext());
+// F-53 — admin:audit gates the erase-user surface (preview + execute).
+adminEraseUser.use(requirePermission("admin:audit"));
 
 // GET /erase-user/preview — read-only count, no audit emission
 adminEraseUser.openapi(erasePreviewRoute, async (c) => {

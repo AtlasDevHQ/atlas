@@ -20,7 +20,7 @@ import {
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createAdminRouter, requirePermission } from "./admin-router";
 
 const modelConfigDomainError = domainError(ModelConfigError, { validation: 400, not_found: 404, test_failed: 422 });
 
@@ -145,6 +145,8 @@ const testConfigRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const adminModelConfig = createAdminRouter();
+// F-53 — BYOT model config (provider, key, model) is a settings cluster surface.
+adminModelConfig.use(requirePermission("admin:settings"));
 
 // GET / — get workspace model configuration
 adminModelConfig.openapi(getConfigRoute, async (c) => {

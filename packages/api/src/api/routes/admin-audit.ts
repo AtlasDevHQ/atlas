@@ -15,7 +15,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-audit");
 
@@ -295,6 +295,10 @@ const auditUsersRoute = createRoute({
 
 const adminAudit = createAdminRouter();
 adminAudit.use(requireOrgContext());
+// F-53 — admin:audit refines adminAuth so a custom role authored without
+// admin:audit can't reach the audit log surface even if its member.role
+// passes the {admin, owner, platform_admin} gate.
+adminAudit.use(requirePermission("admin:audit"));
 
 // GET / — paginated audit log
 adminAudit.openapi(listAuditRoute, async (c) => {

@@ -18,7 +18,7 @@ import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 import { Effect } from "effect";
 import {
   CONTENT_MODE_TABLES,
@@ -339,6 +339,10 @@ const getConnectionRoute = createRoute({
 
 const adminConnections = createAdminRouter();
 adminConnections.use(requireOrgContext());
+// F-53 — admin:connections refines adminAuth with the custom-role permission
+// check. Pool drains, secret rotation (decrypt) and CRUD on connection rows
+// all require the flag.
+adminConnections.use(requirePermission("admin:connections"));
 
 // GET / — list connections scoped to active org
 adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list connections", async () => {

@@ -27,7 +27,7 @@ import {
   type AnalysisResult,
 } from "@atlas/api/lib/semantic/expert";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-semantic-improve");
 
@@ -357,6 +357,8 @@ function advanceAndRecord(
 
 export const adminSemanticImprove = createAdminRouter();
 adminSemanticImprove.use(requireOrgContext());
+// F-53 — gate the expert-agent semantic improve surface on admin:semantic.
+adminSemanticImprove.use(requirePermission("admin:semantic"));
 
 // POST /chat — streaming expert agent conversation
 adminSemanticImprove.openapi(chatStreamRoute, async (c) =>

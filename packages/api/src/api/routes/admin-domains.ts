@@ -25,7 +25,7 @@ import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import { EnterpriseError } from "@atlas/ee/index";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 import {
   CustomDomainSchema,
   DomainCheckResponseSchema,
@@ -266,6 +266,8 @@ const EE_REQUIRED_MESSAGE =
 const adminDomains = createAdminRouter();
 
 adminDomains.use(requireOrgContext());
+// F-53 — custom domain config is part of the settings cluster.
+adminDomains.use(requirePermission("admin:settings"));
 
 // GET / — get workspace custom domain
 adminDomains.openapi(getDomainRoute, async (c) => {

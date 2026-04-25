@@ -54,6 +54,8 @@ import { adminRoles } from "./admin-roles";
 import { adminModelConfig } from "./admin-model-config";
 import { adminEmailProvider } from "./admin-email-provider";
 import { adminAuthPreamble, authErrorCode, requireAdminAuth } from "./admin-auth";
+import { enforcePermission } from "./admin-router";
+import type { Permission } from "@atlas/ee/auth/roles";
 import { adminUsage } from "./admin-usage";
 import { adminAuditRetention } from "./admin-audit-retention";
 import { adminActionRetention, adminEraseUser } from "./admin-action-retention";
@@ -112,11 +114,33 @@ const getAtlasMode = (c: { get(key: string): unknown }): import("@useatlas/types
  */
 async function adminAuthAndContext(
   c: { req: { raw: Request }; get(key: string): unknown; set?: (key: string, value: unknown) => void },
+  permission?: Permission,
 ): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
   const requestId = reqId(c);
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   requireAdminAuth(preamble);
   const { authResult } = preamble;
+
+  // F-53 — refine adminAuth's coarse role gate with the per-flag custom-role
+  // permission check. Skipping the call when no permission is supplied keeps
+  // the helper compatible with handlers that haven't been mapped to a
+  // specific flag (e.g. /password — every authenticated admin is allowed
+  // to manage their own credentials).
+  //
+  // Throwing HTTPException matches `requireAdminAuth(preamble)` above —
+  // both surface as the same response shape `{ error, message, requestId }`
+  // through Hono's onError. `enforcePermission` returns 403 for an
+  // insufficient-permission deny AND 503 (`permissions_unavailable`) when
+  // the EE module fails to load or the check defects, so we propagate
+  // whichever status the helper resolved.
+  if (permission) {
+    const denied = await enforcePermission(authResult.user, permission, requestId);
+    if (denied) {
+      throw new HTTPException(denied.status, {
+        res: Response.json(denied.body, { status: denied.status }),
+      });
+    }
+  }
   // Bind user identity into the existing AsyncLocalStorage context so
   // downstream log lines include userId. The context was created by
   // withRequestId middleware with { requestId } only — mutating is safe
@@ -130,12 +154,8 @@ async function adminAuthAndContext(
   // reads from c.get("atlasMode") — populate it once per request and log any
   // developer-mode request we downgraded due to insufficient role (matches
   // the security signal emitted by `resolveModeForRequest` on the
-  // adminAuth/standardAuth middleware paths).
-  //
-  // Note: the downgrade branch is defensive — `requireAdminAuth` above
-  // already 403's non-admin users before this point, so in practice the
-  // downgrade never fires for admin routes. It stays for parity with the
-  // other auth preambles in case admin gating is ever relaxed.
+  // adminAuth/standardAuth middleware paths). The downgrade branch stays
+  // for parity in case admin gating is ever relaxed.
   if (typeof c.set === "function") {
     const cookieHeader = c.req.raw.headers.get("cookie");
     const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");
@@ -1208,7 +1228,7 @@ admin.openapi(overviewRoute, async (c) => {
 // -- Semantic Layer ---------------------------------------------------------
 
 admin.openapi(listEntitiesRoute, async (c) => {
-  await adminAuthAndContext(c);
+  await adminAuthAndContext(c, "admin:semantic");
   const root = getSemanticRoot();
   const result = discoverEntities(root);
   return c.json({
@@ -1221,7 +1241,7 @@ admin.openapi(getEntityRoute, async (c) => {
 
   const { name } = c.req.valid("param");
 
-  const { requestId } = await adminAuthAndContext(c);
+  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
   // Path traversal protection
   if (!isValidEntityName(name)) {
     log.warn({ requestId, name }, "Rejected invalid entity name");
@@ -1251,21 +1271,21 @@ admin.openapi(getEntityRoute, async (c) => {
 });
 
 admin.openapi(listMetricsRoute, async (c) => {
-  await adminAuthAndContext(c);
+  await adminAuthAndContext(c, "admin:semantic");
   const root = getSemanticRoot();
   const metrics = discoverMetrics(root);
   return c.json({ metrics }, 200);
 });
 
 admin.openapi(getGlossaryRoute, async (c) => {
-  await adminAuthAndContext(c);
+  await adminAuthAndContext(c, "admin:semantic");
   const root = getSemanticRoot();
   const glossary = loadGlossary(root);
   return c.json({ glossary }, 200);
 });
 
 admin.openapi(getCatalogRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
   const root = getSemanticRoot();
   const catalogFile = path.join(root, "catalog.yml");
   if (!fs.existsSync(catalogFile)) {
@@ -1283,19 +1303,19 @@ admin.openapi(getCatalogRoute, async (c) => {
 admin.openapi(getRawYamlDirFileRoute, async (c) => {
 
   const { dir, file } = c.req.valid("param");
-  const { requestId } = await adminAuthAndContext(c);
+  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
   serveRawYaml(c, requestId, `${dir}/${file}`);
 });
 
 admin.openapi(getRawYamlFileRoute, async (c) => {
 
   const { file } = c.req.valid("param");
-  const { requestId } = await adminAuthAndContext(c);
+  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
   serveRawYaml(c, requestId, file);
 });
 
 admin.openapi(getSemanticStatsRoute, async (c) => {
-  await adminAuthAndContext(c);
+  await adminAuthAndContext(c, "admin:semantic");
   const root = getSemanticRoot();
   const { entities, warnings } = discoverEntities(root);
 
@@ -1322,7 +1342,7 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
 });
 
 admin.openapi(getSemanticDiffRoute, async (c) => {
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
   const connectionId = c.req.query("connection") ?? "default";
 
   // Validate connection exists
@@ -1353,7 +1373,7 @@ admin.openapi(getSemanticDiffRoute, async (c) => {
 // -- Org-scoped semantic CRUD -----------------------------------------------
 
 admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semantic entities", async () => {
-  const { authResult } = await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c, "admin:semantic");
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -1389,7 +1409,7 @@ admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semanti
 admin.openapi(getOrgEntityRoute, async (c) => runHandler(c, "get org semantic entity", async () => {
 
   const { name } = c.req.valid("param");
-  const { authResult } = await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c, "admin:semantic");
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -1423,7 +1443,7 @@ admin.openapi(getOrgEntityRoute, async (c) => runHandler(c, "get org semantic en
 admin.openapi(putOrgEntityRoute, async (c) => runHandler(c, "save org semantic entity", async () => {
 
   const { name } = c.req.valid("param");
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -1493,7 +1513,7 @@ admin.openapi(putOrgEntityRoute, async (c) => runHandler(c, "save org semantic e
 admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org semantic entity", async () => {
 
   const { name } = c.req.valid("param");
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -1532,7 +1552,7 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
 }));
 
 admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org semantic entities", async () => {
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -1727,7 +1747,7 @@ admin.openapi(changePasswordRoute, async (c) => {
 // -- Users ------------------------------------------------------------------
 
 admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () => {
-  const { authResult } = await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c, "admin:users");
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
@@ -1835,7 +1855,7 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
 }));
 
 admin.openapi(getUserStatsRoute, async (c) => runHandler(c, "query user stats", async () => {
-  const { authResult } = await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c, "admin:users");
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
@@ -1895,7 +1915,7 @@ admin.openapi(changeUserRoleRoute, async (c) => {
 
   const { id: userId } = c.req.valid("param");
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -1987,7 +2007,7 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
 
   const { id: userId } = c.req.valid("param");
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
   // Ban is a global state change — user.banned = true across every workspace
   // the target belongs to. Workspace admins must not be able to degrade
@@ -2043,7 +2063,7 @@ admin.openapi(unbanUserRoute, async (c) => runHandler(c, "unban user", async () 
 
   const { id: userId } = c.req.valid("param");
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
   // Symmetric with banUserRoute — unban is a global state change, platform-only.
   if (authResult.user?.role !== "platform_admin") {
@@ -2081,7 +2101,7 @@ admin.openapi(unbanUserRoute, async (c) => runHandler(c, "unban user", async () 
 admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user from workspace", async () => {
   const { id: userId } = c.req.valid("param");
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
     return c.json({ error: "bad_request", message: "No active workspace. Set an active org first.", requestId }, 400);
@@ -2152,7 +2172,7 @@ admin.openapi(deleteUserRoute, async (c) => {
 
   const { id: userId } = c.req.valid("param");
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -2215,7 +2235,7 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
   const { id: userId } = c.req.valid("param");
   const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -2321,7 +2341,7 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
 // -- Settings ---------------------------------------------------------------
 
 admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", async () => {
-  const { authResult } = await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c, "admin:settings");
   const orgId = authResult.user?.activeOrganizationId;
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const allSettings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
@@ -2362,7 +2382,7 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
 
   const { key } = c.req.valid("param");
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:settings");
 
   if (!hasInternalDB()) {
     return c.json(
@@ -2444,7 +2464,7 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
 
   const { key } = c.req.valid("param");
 
-  const { authResult, requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:settings");
 
   if (!hasInternalDB()) {
     return c.json(

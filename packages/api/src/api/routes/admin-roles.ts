@@ -33,7 +33,7 @@ import {
   PERMISSIONS,
 } from "@atlas/ee/auth/roles";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema, createParamSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 function clientIP(c: Context): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
@@ -217,6 +217,11 @@ const assignRoleRoute = createRoute({
 const adminRoles = createAdminRouter();
 
 adminRoles.use(requireOrgContext());
+// F-53 — refine `adminAuth` (role ∈ {admin, owner, platform_admin}) with the
+// per-flag custom-role check. Custom roles authored without `admin:roles`
+// can no longer reach the role CRUD surface even though their assigned
+// member.role still passes the coarse adminAuth gate.
+adminRoles.use(requirePermission("admin:roles"));
 
 // GET / — list all roles for the active org
 adminRoles.openapi(listRolesRoute, async (c) => {

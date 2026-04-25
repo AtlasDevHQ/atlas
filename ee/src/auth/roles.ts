@@ -161,12 +161,24 @@ export function isValidRoleName(name: string): boolean {
 // ── Permission resolution ────────────────────────────────────────
 
 /**
- * Legacy role-to-permission mapping for non-enterprise deployments.
- * Maps the AtlasRole (member/admin/owner) to permission sets.
+ * Legacy role-to-permission mapping for non-enterprise deployments and the
+ * fall-through path when no custom role row matches the user's `member.role`.
+ *
+ * **Load-bearing for admin-route access** — `requirePermission` /
+ * `enforcePermission` consult this table whenever a user's role is not in
+ * the `custom_roles` table. Removing or narrowing entries is a security
+ * change: `platform_admin` and `admin` get full PERMISSIONS, `member` gets
+ * the read-only pair, and any role not listed here falls through to the
+ * `member` default below — which strips every admin:* flag. Adding a new
+ * built-in role to `ATLAS_ROLES` requires a matching entry here.
+ *
+ * See F-53 in `.claude/research/security-audit-1-2-3.md` for the full
+ * remediation context.
  */
 const LEGACY_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
   owner: [...PERMISSIONS],
   admin: [...PERMISSIONS],
+  platform_admin: [...PERMISSIONS],
   member: ["query", "query:raw_data"],
 };
 
@@ -221,9 +233,17 @@ export const resolvePermissions = (user: AtlasUser | undefined): Effect.Effect<S
             log.debug("custom_roles table not yet created — using legacy permissions");
             return Effect.succeed(null);
           }
-          // Fail closed: DB error → minimal permissions, not elevated legacy ones
-          log.error({ err: msg }, "Failed to resolve custom role — denying elevated permissions");
-          return Effect.succeed(new Set<Permission>(["query"]));
+          // Defect on unexpected DB errors so the caller surfaces a distinct
+          // 503 `permissions_unavailable` response. Returning a stripped-down
+          // permission set here would be the load-bearing wrong choice F-53
+          // explicitly identifies: an admin hits transient DB trouble and
+          // gets "insufficient_permissions" pointing them at their role
+          // config, when the actual fault is the authorization layer being
+          // unable to resolve their role. `requirePermission` /
+          // `enforcePermission` in `admin-router.ts` catch the defect and
+          // return 503 with the `permissions_unavailable` error tag.
+          log.error({ err: msg }, "Failed to resolve custom role — surfacing as permissions_unavailable");
+          return Effect.die(err instanceof Error ? err : new Error(msg));
         }),
       );
 

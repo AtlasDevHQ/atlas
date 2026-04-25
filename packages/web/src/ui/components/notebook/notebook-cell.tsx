@@ -120,8 +120,6 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
                 previousExecution={cell.previousExecution}
               />
             </DashboardBridgeProvider>
-            {/* Fork is the headline 1.1.0 feature — promoted out of the action toolbar
-                into a dedicated pill below the output, only after the cell has output. */}
             {cell.assistantMessage !== null && !cell.collapsed && !cell.editing && (
               <div className="mt-3 flex">
                 <Button

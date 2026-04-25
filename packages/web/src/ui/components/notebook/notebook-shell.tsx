@@ -128,8 +128,6 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterP
             </div>
           )}
 
-          {/* Notebook toolbar — branch selector + Text Cell on the left, Share / Export on the right.
-              Merging both rows keeps a single ~28px header band instead of two stacked pills. */}
           {(notebook.cells.length > 0 ||
             (notebook.forkInfo && notebook.forkInfo.branches.length > 0)) && (
             <div className="flex flex-wrap items-center justify-between gap-2">

@@ -44,13 +44,8 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed, previo
     );
   }
 
-  // Same dedup we apply on the chat surface — collapses identical executeSQL
-  // failures into one card with a "Tried N times" badge instead of stacking
-  // verbatim red blocks (matches packages/web/src/app/page.tsx:431).
   const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(assistantMessage.parts);
 
-  // Gutter rail visually anchors the answer to the question, mirroring the
-  // chat surface's assistant-turn pattern (packages/web/src/app/page.tsx:436).
   return (
     <div className="space-y-2 border-l-2 border-primary/40 pl-4 text-sm">
       {assistantMessage.parts.map((part, i) => {

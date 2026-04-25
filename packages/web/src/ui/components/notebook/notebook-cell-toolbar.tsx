@@ -21,18 +21,7 @@ interface CellToolbarProps {
   onDelete: () => void;
 }
 
-/**
- * Cell action toolbar.
- *
- * - At md+ viewports: 4 icon buttons (edit / run / copy / delete) revealed on
- *   hover or focus-within.
- * - Below md: a single overflow menu (kebab) so the cell question gets the
- *   full row width and isn't crowded by toolbar chrome.
- *
- * The "What if?" / fork action is promoted out of this toolbar and rendered
- * as a separate pill below the cell output (only when the cell has output) —
- * see {@link NotebookCell}.
- */
+/** Fork is intentionally absent — it renders as a "What if?" pill in {@link NotebookCell} after output. */
 export function NotebookCellToolbar({
   status,
   editing,

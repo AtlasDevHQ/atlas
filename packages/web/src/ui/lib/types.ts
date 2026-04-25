@@ -152,6 +152,7 @@ export type {
 export type {
   Dashboard,
   DashboardCard,
+  DashboardCardLayout,
   DashboardWithCards,
   DashboardChartConfig,
   DashboardSuggestion,

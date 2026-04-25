@@ -16,6 +16,7 @@ import {
 import type {
   Dashboard,
   DashboardCard,
+  DashboardCardLayout,
   DashboardWithCards,
   DashboardChartConfig,
 } from "@atlas/api/lib/dashboard-types";
@@ -84,6 +85,26 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
     }
   }
 
+  let layout: DashboardCardLayout | null = null;
+  if (r.layout) {
+    try {
+      const raw = typeof r.layout === "string" ? JSON.parse(r.layout) : r.layout;
+      if (
+        raw && typeof raw === "object"
+        && typeof (raw as { x: unknown }).x === "number"
+        && typeof (raw as { y: unknown }).y === "number"
+        && typeof (raw as { w: unknown }).w === "number"
+        && typeof (raw as { h: unknown }).h === "number"
+      ) {
+        layout = raw as DashboardCardLayout;
+      } else {
+        log.warn({ cardId: r.id }, "Discarding malformed dashboard_card.layout JSONB");
+      }
+    } catch (err) {
+      log.warn({ cardId: r.id, err: errorMessage(err) }, "Failed to parse layout JSONB");
+    }
+  }
+
   return {
     id: r.id as string,
     dashboardId: r.dashboard_id as string,
@@ -95,6 +116,7 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
     cachedRows,
     cachedAt: r.cached_at ? String(r.cached_at) : null,
     connectionId: (r.connection_id as string) ?? null,
+    layout,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
   };
@@ -310,6 +332,7 @@ export async function addCard(opts: {
   cachedColumns?: string[] | null;
   cachedRows?: Record<string, unknown>[] | null;
   connectionId?: string | null;
+  layout?: DashboardCardLayout | null;
 }): Promise<CrudDataResult<DashboardCard>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
@@ -321,8 +344,8 @@ export async function addCard(opts: {
     const nextPos = (posRows[0]?.next_pos as number) ?? 0;
 
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id, layout)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         opts.dashboardId,
@@ -334,6 +357,7 @@ export async function addCard(opts: {
         opts.cachedRows ? JSON.stringify(opts.cachedRows) : null,
         opts.cachedRows ? new Date().toISOString() : null,
         opts.connectionId ?? null,
+        opts.layout ? JSON.stringify(opts.layout) : null,
       ],
     );
     if (rows.length === 0) return { ok: false, reason: "error" };
@@ -355,6 +379,7 @@ export async function updateCard(
     title?: string;
     chartConfig?: DashboardChartConfig | null;
     position?: number;
+    layout?: DashboardCardLayout | null;
   },
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -374,6 +399,10 @@ export async function updateCard(
   if (updates.position !== undefined) {
     setClauses.push(`position = $${paramIdx++}`);
     params.push(updates.position);
+  }
+  if (updates.layout !== undefined) {
+    setClauses.push(`layout = $${paramIdx++}`);
+    params.push(updates.layout ? JSON.stringify(updates.layout) : null);
   }
 
   if (setClauses.length === 0) return { ok: true };

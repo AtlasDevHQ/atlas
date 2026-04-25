@@ -58,6 +58,14 @@ const ChartConfigSchema = z.object({
   valueColumns: z.array(z.string()).min(1),
 });
 
+// 24-col freeform grid layout. Bounds match the client's grid math (#1867).
+const CardLayoutSchema = z.object({
+  x: z.number().int().min(0).max(23),
+  y: z.number().int().min(0).max(10_000),
+  w: z.number().int().min(3).max(24),
+  h: z.number().int().min(4).max(200),
+});
+
 const CreateDashboardSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(2000).nullable().optional(),
@@ -76,12 +84,14 @@ const AddCardSchema = z.object({
   cachedColumns: z.array(z.string()).nullable().optional(),
   cachedRows: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   connectionId: z.string().nullable().optional(),
+  layout: CardLayoutSchema.nullable().optional(),
 });
 
 const UpdateCardSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   chartConfig: ChartConfigSchema.nullable().optional(),
   position: z.number().int().min(0).optional(),
+  layout: CardLayoutSchema.nullable().optional(),
 });
 
 const ShareSchema = z.object({
@@ -656,6 +666,7 @@ authed.openapi(
         cachedColumns: parsed.cachedColumns ?? null,
         cachedRows: parsed.cachedRows ?? null,
         connectionId: parsed.connectionId ?? null,
+        layout: parsed.layout ?? null,
       }));
 
       if (!result.ok) {

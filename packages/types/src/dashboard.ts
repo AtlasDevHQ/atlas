@@ -13,6 +13,21 @@ export interface DashboardChartConfig {
   valueColumns: string[];
 }
 
+/**
+ * Tile placement inside the 24-column freeform dashboard grid (#1867).
+ *
+ * x: column origin (0..23). w: span in columns (min 3).
+ * y: row origin (rows are ROW_H=40px on the client). h: span in rows (min 4).
+ *
+ * NULL on a card means "not yet placed" — the client auto-lays out by `position`.
+ */
+export interface DashboardCardLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 // ---------------------------------------------------------------------------
 // API shapes (camelCase)
 // ---------------------------------------------------------------------------
@@ -45,6 +60,7 @@ export interface DashboardCard {
   cachedRows: Record<string, unknown>[] | null;
   cachedAt: string | null;
   connectionId: string | null;
+  layout: DashboardCardLayout | null;
   createdAt: string;
   updatedAt: string;
 }

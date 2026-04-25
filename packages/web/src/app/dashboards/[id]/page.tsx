@@ -1,27 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import {
-  ArrowLeft,
-  RefreshCw,
-  Trash2,
-  Pencil,
-  GripVertical,
-  Clock,
-  Timer,
   LayoutDashboard,
-  Check,
-  X,
-  Sparkles,
   Plus,
+  Sparkles,
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertDialog,
@@ -33,221 +22,111 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Sortable,
-  SortableContent,
-  SortableItem,
-  SortableItemHandle,
-  SortableOverlay,
-} from "@/components/ui/sortable";
+import { Badge } from "@/components/ui/badge";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { NavBar } from "@/ui/components/tour/nav-bar";
-import { DataTable } from "@/ui/components/chat/data-table";
-import { useDarkMode } from "@/ui/hooks/use-dark-mode";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { authClient } from "@/lib/auth/client";
-import { Badge } from "@/components/ui/badge";
 import { DashboardShareDialog } from "./share-dialog";
-import type { DashboardWithCards, DashboardCard, DashboardSuggestion } from "@/ui/lib/types";
+import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
+import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
+import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import type {
+  DashboardCard,
+  DashboardCardLayout,
+  DashboardSuggestion,
+  DashboardWithCards,
+} from "@/ui/lib/types";
 
-const ResultChart = dynamic(
-  () => import("@/ui/components/chart/result-chart").then((m) => ({ default: m.ResultChart })),
-  { ssr: false, loading: () => <div className="h-48 animate-pulse rounded-lg bg-zinc-100 dark:bg-zinc-800" /> },
-);
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function timeAgo(iso: string | null): string {
-  if (!iso) return "never";
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-/** Convert Record rows to string[][] for ResultChart. */
-function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
-  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col]))));
-}
-
-// ---------------------------------------------------------------------------
-// Card Component
-// ---------------------------------------------------------------------------
-
-function DashboardCardView({
-  card,
-  onRefresh,
-  onDelete,
-  onUpdate,
-  refreshingId,
-}: {
-  card: DashboardCard;
-  onRefresh: (cardId: string) => void;
-  onDelete: (card: DashboardCard) => void;
-  onUpdate: (cardId: string, title: string) => void;
-  refreshingId: string | null;
-}) {
-  const dark = useDarkMode();
-  const [editing, setEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState(card.title);
-  const isRefreshing = refreshingId === card.id;
-
-  const columns = card.cachedColumns ?? [];
-  const rows = (card.cachedRows ?? []) as Record<string, unknown>[];
-  const hasData = columns.length > 0 && rows.length > 0;
-  const stringRows = hasData ? toStringRows(columns, rows) : [];
-
-  function handleSaveTitle() {
-    if (editTitle.trim() && editTitle.trim() !== card.title) {
-      onUpdate(card.id, editTitle.trim());
-    }
-    setEditing(false);
-  }
-
-  return (
-    <Card className="overflow-hidden">
-      {/* Card header */}
-      <div className="flex items-center gap-2 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
-        <SortableItemHandle className="cursor-grab text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300">
-          <GripVertical className="size-4" />
-        </SortableItemHandle>
-
-        {editing ? (
-          <div className="flex flex-1 items-center gap-1.5">
-            <Input
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleSaveTitle(); if (e.key === "Escape") setEditing(false); }}
-              className="h-7 text-sm"
-              autoFocus
-            />
-            <Button variant="ghost" size="icon" className="size-7" onClick={handleSaveTitle}>
-              <Check className="size-3.5" />
-            </Button>
-            <Button variant="ghost" size="icon" className="size-7" onClick={() => setEditing(false)}>
-              <X className="size-3.5" />
-            </Button>
-          </div>
-        ) : (
-          <h3 className="flex-1 text-sm font-medium text-zinc-900 dark:text-zinc-100 line-clamp-1">
-            {card.title}
-          </h3>
-        )}
-
-        <div className="flex items-center gap-1">
-          <span className="mr-1 text-xs text-zinc-400 dark:text-zinc-500">
-            <Clock className="mr-0.5 inline size-3" />
-            {timeAgo(card.cachedAt)}
-          </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            onClick={() => onRefresh(card.id)}
-            disabled={isRefreshing}
-            title="Refresh data"
-          >
-            <RefreshCw className={`size-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            onClick={() => { setEditTitle(card.title); setEditing(true); }}
-            title="Edit title"
-          >
-            <Pencil className="size-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 text-zinc-400 hover:text-red-500 dark:hover:text-red-400"
-            onClick={() => onDelete(card)}
-            title="Remove card"
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        </div>
-      </div>
-
-      {/* Card body — chart + table */}
-      {hasData ? (
-        <div>
-          {card.chartConfig && card.chartConfig.type !== "table" && (
-            <div className="px-4 py-3">
-              <ResultChart headers={columns} rows={stringRows} dark={dark} />
-            </div>
-          )}
-          <DataTable columns={columns} rows={rows} />
-        </div>
-      ) : (
-        <div className="px-4 py-8 text-center text-xs text-zinc-500 dark:text-zinc-400">
-          No cached data. Click refresh to load results.
-        </div>
-      )}
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+type Density = "compact" | "comfortable" | "spacious";
 
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const session = authClient.useSession();
-  const user = session.data?.user as
-    | { email?: string; role?: string }
-    | undefined;
-  const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
+  const user = session.data?.user as { email?: string; role?: string } | undefined;
+  const isAdmin =
+    user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
 
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     `/api/v1/dashboards/${id}`,
   );
 
   const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });
+  const { mutate: layoutMutate } = useAdminMutation({});
+
   const [refreshingCardId, setRefreshingCardId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [deleteCardTarget, setDeleteCardTarget] = useState<DashboardCard | null>(null);
   const [deleteDashboard, setDeleteDashboard] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
-  const [titleValue, setTitleValue] = useState("");
+  const [titleDraft, setTitleDraft] = useState("");
   const [suggestions, setSuggestions] = useState<DashboardSuggestion[]>([]);
   const [suggestingCards, setSuggestingCards] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
   const [addingSuggestion, setAddingSuggestion] = useState<number | null>(null);
 
+  const [editing, setEditing] = useState(false);
+  const [density, setDensity] = useState<Density>("comfortable");
+
+  // Optimistic layout — applied immediately on drag/resize end so the UI doesn't
+  // wait for the PATCH round-trip. Cleared once `dashboard` reflects the change.
+  const [optimisticLayouts, setOptimisticLayouts] = useState<Record<string, DashboardCardLayout>>({});
+  const lastSettledLayouts = useRef<Record<string, DashboardCardLayout>>({});
+
+  useEffect(() => {
+    if (!dashboard) return;
+    const next: Record<string, DashboardCardLayout> = {};
+    for (const card of dashboard.cards) {
+      if (card.layout) next[card.id] = card.layout;
+    }
+    lastSettledLayouts.current = next;
+    setOptimisticLayouts((prev) => {
+      // Drop optimistic entries that match the server-confirmed layout.
+      const remaining: Record<string, DashboardCardLayout> = {};
+      for (const [cardId, optimistic] of Object.entries(prev)) {
+        const settled = next[cardId];
+        if (
+          !settled
+          || settled.x !== optimistic.x
+          || settled.y !== optimistic.y
+          || settled.w !== optimistic.w
+          || settled.h !== optimistic.h
+        ) {
+          remaining[cardId] = optimistic;
+        }
+      }
+      return remaining;
+    });
+  }, [dashboard]);
+
+  // Keyboard: E toggles edit mode (when not focused in an input). Esc exits edit.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+      if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        setEditing((prev) => !prev);
+      } else if (e.key === "Escape") {
+        setEditing(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   async function handleRefreshCard(cardId: string) {
     setRefreshingCardId(cardId);
-    await mutate({
-      path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh`,
-      method: "POST",
-    });
+    await mutate({ path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh`, method: "POST" });
     setRefreshingCardId(null);
   }
 
   async function handleRefreshAll() {
     setRefreshingAll(true);
-    await mutate({
-      path: `/api/v1/dashboards/${id}/refresh`,
-      method: "POST",
-    });
+    await mutate({ path: `/api/v1/dashboards/${id}/refresh`, method: "POST" });
     setRefreshingAll(false);
   }
 
@@ -261,10 +140,7 @@ export default function DashboardViewPage() {
   }
 
   async function handleDeleteDashboard() {
-    await mutate({
-      path: `/api/v1/dashboards/${id}`,
-      method: "DELETE",
-    });
+    await mutate({ path: `/api/v1/dashboards/${id}`, method: "DELETE" });
     router.push("/dashboards");
   }
 
@@ -276,17 +152,42 @@ export default function DashboardViewPage() {
     });
   }
 
-  async function handleReorder(activeId: string, overId: string) {
-    if (!dashboard) return;
-    const cards = dashboard.cards;
-    const oldIdx = cards.findIndex((c) => c.id === activeId);
-    const newIdx = cards.findIndex((c) => c.id === overId);
-    if (oldIdx === -1 || newIdx === -1 || oldIdx === newIdx) return;
-
-    await mutate({
-      path: `/api/v1/dashboards/${id}/cards/${activeId}`,
+  async function handleLayoutChange(cardId: string, layout: DashboardCardLayout) {
+    setOptimisticLayouts((prev) => ({ ...prev, [cardId]: layout }));
+    const result = await layoutMutate({
+      path: `/api/v1/dashboards/${id}/cards/${cardId}`,
       method: "PATCH",
-      body: { position: newIdx },
+      body: { layout },
+    });
+    if (!result.ok) {
+      // Revert: drop the optimistic entry; UI falls back to the server's layout.
+      setOptimisticLayouts((prev) => {
+        const { [cardId]: _, ...rest } = prev;
+        return rest;
+      });
+    }
+    // Trigger a fresh fetch to pull the canonical server state.
+    refetch();
+  }
+
+  async function handleDuplicate(cardId: string) {
+    if (!dashboard) return;
+    const card = dashboard.cards.find((c) => c.id === cardId);
+    if (!card) return;
+    const placed = withAutoLayout(dashboard.cards).map((c) => c.resolvedLayout);
+    const newLayout = nextTileLayout(placed);
+    await mutate({
+      path: `/api/v1/dashboards/${id}/cards`,
+      method: "POST",
+      body: {
+        title: `${card.title} (copy)`,
+        sql: card.sql,
+        chartConfig: card.chartConfig,
+        cachedColumns: card.cachedColumns,
+        cachedRows: card.cachedRows,
+        connectionId: card.connectionId,
+        layout: newLayout,
+      },
     });
   }
 
@@ -295,10 +196,7 @@ export default function DashboardViewPage() {
     setSuggestions([]);
     setSuggestError(null);
     try {
-      const result = await mutate({
-        path: `/api/v1/dashboards/${id}/suggest`,
-        method: "POST",
-      });
+      const result = await mutate({ path: `/api/v1/dashboards/${id}/suggest`, method: "POST" });
       if (result.ok && result.data) {
         const data = result.data as { suggestions?: DashboardSuggestion[] };
         setSuggestions(data.suggestions ?? []);
@@ -309,7 +207,6 @@ export default function DashboardViewPage() {
       const message = err instanceof Error ? err.message : String(err);
       console.debug("[dashboard] Failed to fetch AI suggestions:", message);
       setSuggestError(message || "Failed to generate suggestions. Please try again.");
-      setSuggestions([]);
     } finally {
       setSuggestingCards(false);
     }
@@ -317,9 +214,10 @@ export default function DashboardViewPage() {
 
   async function handleAcceptSuggestion(index: number) {
     const suggestion = suggestions[index];
-    if (!suggestion) return;
+    if (!suggestion || !dashboard) return;
     setAddingSuggestion(index);
     try {
+      const placed = withAutoLayout(dashboard.cards).map((c) => c.resolvedLayout);
       const result = await mutate({
         path: `/api/v1/dashboards/${id}/cards`,
         method: "POST",
@@ -327,11 +225,10 @@ export default function DashboardViewPage() {
           title: suggestion.title,
           sql: suggestion.sql,
           chartConfig: suggestion.chartConfig,
+          layout: nextTileLayout(placed),
         },
       });
-      if (result.ok) {
-        setSuggestions((prev) => prev.filter((_, i) => i !== index));
-      }
+      if (result.ok) setSuggestions((prev) => prev.filter((_, i) => i !== index));
     } finally {
       setAddingSuggestion(null);
     }
@@ -342,29 +239,46 @@ export default function DashboardViewPage() {
   }
 
   async function handleSaveDashboardTitle() {
-    if (titleValue.trim() && titleValue.trim() !== dashboard?.title) {
+    if (!dashboard) return;
+    if (titleDraft.trim() && titleDraft.trim() !== dashboard.title) {
       await mutate({
         path: `/api/v1/dashboards/${id}`,
         method: "PATCH",
-        body: { title: titleValue.trim() },
+        body: { title: titleDraft.trim() },
       });
     }
     setEditingTitle(false);
   }
 
-  const cards = dashboard?.cards ?? [];
+  async function handleScheduleChange(value: string) {
+    const schedule = value === "off" ? null : value;
+    await mutate({
+      path: `/api/v1/dashboards/${id}`,
+      method: "PATCH",
+      body: { refreshSchedule: schedule },
+    });
+  }
+
+  // Merge optimistic layouts into the cards we hand to the grid.
+  const cardsForGrid: DashboardCard[] = dashboard
+    ? dashboard.cards.map((c) =>
+        optimisticLayouts[c.id] ? { ...c, layout: optimisticLayouts[c.id] } : c,
+      )
+    : [];
 
   return (
     <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950">
       <NavBar isAdmin={isAdmin} />
 
-      <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-8">
+      <main className="flex flex-1 flex-col">
         {/* Loading */}
         {loading && (
-          <div className="space-y-4">
+          <div className="space-y-4 px-4 py-6 sm:px-6">
             <Skeleton className="h-8 w-1/3" />
             <Skeleton className="h-4 w-1/4" />
-            <div className="mt-8 space-y-4">
+            <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Skeleton className="h-64 w-full" />
+              <Skeleton className="h-64 w-full" />
               <Skeleton className="h-64 w-full" />
               <Skeleton className="h-64 w-full" />
             </div>
@@ -373,7 +287,7 @@ export default function DashboardViewPage() {
 
         {/* Error */}
         {!loading && error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
+          <div className="m-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
             {error.message ?? "Failed to load dashboard."}
             <Button variant="ghost" size="sm" className="ml-2" onClick={() => refetch()}>
               Retry
@@ -384,113 +298,41 @@ export default function DashboardViewPage() {
         {/* Dashboard content */}
         {!loading && !error && dashboard && (
           <>
-            {/* Header */}
-            <div className="mb-8">
-              <Link
-                href="/dashboards"
-                className="mb-4 inline-flex items-center gap-1 text-xs text-zinc-500 transition-colors hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-300"
-              >
-                <ArrowLeft className="size-3" />
-                All Dashboards
-              </Link>
+            <DashboardTopBar
+              title={dashboard.title}
+              cardCount={dashboard.cards.length}
+              description={dashboard.description}
+              editingTitle={editingTitle}
+              titleDraft={titleDraft}
+              onTitleClick={() => {
+                setTitleDraft(dashboard.title);
+                setEditingTitle(true);
+              }}
+              onTitleDraftChange={setTitleDraft}
+              onTitleSave={handleSaveDashboardTitle}
+              onTitleCancel={() => setEditingTitle(false)}
+              refreshing={refreshingAll}
+              refreshSchedule={dashboard.refreshSchedule}
+              onScheduleChange={handleScheduleChange}
+              onRefreshAll={handleRefreshAll}
+              onSuggest={handleSuggestCards}
+              suggesting={suggestingCards}
+              onDelete={() => setDeleteDashboard(true)}
+              shareSlot={<DashboardShareDialog dashboardId={id} />}
+              editing={editing}
+              onEditingChange={setEditing}
+              density={density}
+              onDensityChange={setDensity}
+            />
 
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  {editingTitle ? (
-                    <div className="flex items-center gap-2">
-                      <Input
-                        value={titleValue}
-                        onChange={(e) => setTitleValue(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleSaveDashboardTitle(); if (e.key === "Escape") setEditingTitle(false); }}
-                        className="text-xl font-semibold"
-                        autoFocus
-                      />
-                      <Button variant="ghost" size="icon" onClick={handleSaveDashboardTitle}>
-                        <Check className="size-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => setEditingTitle(false)}>
-                        <X className="size-4" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <h1
-                      className="cursor-pointer text-xl font-semibold tracking-tight text-zinc-900 hover:text-zinc-700 dark:text-zinc-100 dark:hover:text-zinc-300"
-                      onClick={() => { setTitleValue(dashboard.title); setEditingTitle(true); }}
-                      title="Click to edit title"
-                    >
-                      {dashboard.title}
-                    </h1>
-                  )}
-                  {mutationError && (
-                    <p className="mt-1 text-xs text-red-500 dark:text-red-400">{friendlyError(mutationError)}</p>
-                  )}
-                  {dashboard.description && (
-                    <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                      {dashboard.description}
-                    </p>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleSuggestCards}
-                    disabled={suggestingCards || cards.length === 0}
-                  >
-                    <Sparkles className={`mr-1.5 size-3.5 ${suggestingCards ? "animate-pulse" : ""}`} />
-                    {suggestingCards ? "Thinking..." : "Suggest Cards"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleRefreshAll}
-                    disabled={refreshingAll || cards.length === 0}
-                  >
-                    <RefreshCw className={`mr-1.5 size-3.5 ${refreshingAll ? "animate-spin" : ""}`} />
-                    Refresh All
-                  </Button>
-                  <Select
-                    value={dashboard.refreshSchedule ?? "off"}
-                    onValueChange={async (v) => {
-                      const schedule = v === "off" ? null : v;
-                      await mutate({
-                        path: `/api/v1/dashboards/${id}`,
-                        method: "PATCH",
-                        body: { refreshSchedule: schedule },
-                      });
-                    }}
-                  >
-                    <SelectTrigger className="h-8 w-auto gap-1.5 text-xs">
-                      <Timer className="size-3.5 text-zinc-500" />
-                      <SelectValue placeholder="Auto-refresh" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="off">Off</SelectItem>
-                      <SelectItem value="*/15 * * * *">Every 15 min</SelectItem>
-                      <SelectItem value="0 * * * *">Every hour</SelectItem>
-                      <SelectItem value="0 */6 * * *">Every 6 hours</SelectItem>
-                      <SelectItem value="0 0 * * *">Daily</SelectItem>
-                      <SelectItem value="0 9 * * 1">Weekly (Mon 9am)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <DashboardShareDialog dashboardId={id} />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setDeleteDashboard(true)}
-                    className="text-red-500 hover:text-red-600 dark:text-red-400"
-                  >
-                    <Trash2 className="mr-1.5 size-3.5" />
-                    Delete
-                  </Button>
-                </div>
+            {mutationError && (
+              <div className="mx-4 mt-3 rounded-md border border-red-200 bg-red-50/60 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 sm:mx-6">
+                {friendlyError(mutationError)}
               </div>
-            </div>
+            )}
 
-            {/* Suggest error */}
             {suggestError && (
-              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300">
+              <div className="mx-4 mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300 sm:mx-6">
                 {suggestError}
                 <Button variant="ghost" size="sm" className="ml-2 h-6 text-xs" onClick={() => setSuggestError(null)}>
                   Dismiss
@@ -498,18 +340,15 @@ export default function DashboardViewPage() {
               </div>
             )}
 
-            {/* AI Suggestions */}
             {suggestions.length > 0 && (
-              <div className="mb-6 space-y-3">
+              <div className="mx-4 mt-4 space-y-2 sm:mx-6">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Sparkles className="size-4 text-teal-500" />
-                    <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                      Suggested Cards
+                    <Sparkles className="size-4 text-primary" />
+                    <h2 className="text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100">
+                      Suggested tiles
                     </h2>
-                    <Badge variant="secondary" className="text-xs">
-                      {suggestions.length}
-                    </Badge>
+                    <Badge variant="secondary" className="text-xs">{suggestions.length}</Badge>
                   </div>
                   <Button
                     variant="ghost"
@@ -517,37 +356,38 @@ export default function DashboardViewPage() {
                     onClick={() => setSuggestions([])}
                     className="text-xs text-zinc-500"
                   >
-                    Dismiss All
+                    Dismiss all
                   </Button>
                 </div>
-
                 <div className="space-y-2">
                   {suggestions.map((suggestion, idx) => (
-                    <Card key={`suggestion-${idx}`} className="border-dashed border-teal-200 bg-teal-50/30 dark:border-teal-900/50 dark:bg-teal-950/10">
+                    <Card
+                      key={`suggestion-${idx}`}
+                      className="border-dashed border-primary/40 bg-primary/5 dark:border-primary/30 dark:bg-primary/5"
+                    >
                       <div className="flex items-start gap-3 px-4 py-3">
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                            {suggestion.title}
-                          </h3>
-                          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400 line-clamp-2">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-sm font-medium tracking-tight">{suggestion.title}</h3>
+                          <p className="mt-0.5 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
                             {suggestion.reason}
                           </p>
                           <div className="mt-1.5 flex items-center gap-2">
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
                               {suggestion.chartConfig.type}
                             </Badge>
-                            <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 truncate max-w-[300px]">
-                              {suggestion.sql.slice(0, 80)}{suggestion.sql.length > 80 ? "..." : ""}
+                            <span className="max-w-[40ch] truncate font-mono text-[10px] text-zinc-400 dark:text-zinc-500">
+                              {suggestion.sql.slice(0, 80)}
+                              {suggestion.sql.length > 80 ? "..." : ""}
                             </span>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex shrink-0 items-center gap-1">
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => handleAcceptSuggestion(idx)}
                             disabled={addingSuggestion === idx}
-                            className="h-7 border-teal-300 text-teal-700 hover:bg-teal-100 dark:border-teal-800 dark:text-teal-400 dark:hover:bg-teal-900/30"
+                            className="h-7 border-primary/40 text-primary hover:bg-primary/10"
                           >
                             <Plus className="mr-1 size-3" />
                             {addingSuggestion === idx ? "Adding..." : "Add"}
@@ -569,76 +409,57 @@ export default function DashboardViewPage() {
               </div>
             )}
 
-            {/* Empty state */}
-            {cards.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-24 text-center">
+            {dashboard.cards.length === 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
                 <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
                   <LayoutDashboard className="size-8 text-zinc-400 dark:text-zinc-500" />
                 </div>
-                <h2 className="mb-1 text-base font-medium text-zinc-900 dark:text-zinc-100">
-                  No cards yet
-                </h2>
+                <h2 className="mb-1 text-2xl font-semibold tracking-tight">An empty canvas</h2>
                 <p className="mb-6 max-w-sm text-sm text-zinc-500 dark:text-zinc-400">
-                  Run a query in chat and click the Dashboard button on the result to add it here.
+                  Run a query in chat and click <span className="font-medium">Add to Dashboard</span> on the result to drop your first tile here.
                 </p>
-                <Button variant="outline" size="sm" asChild>
-                  <Link href="/">Go to Chat</Link>
+                <Button asChild size="sm">
+                  <Link href="/">Go to chat</Link>
                 </Button>
               </div>
-            )}
-
-            {/* Sortable cards */}
-            {cards.length > 0 && (
-              <Sortable
-                value={cards.map((c) => c.id)}
-                onValueChange={(ids) => {
-                  // Find which item moved
-                  const oldOrder = cards.map((c) => c.id);
-                  for (let i = 0; i < ids.length; i++) {
-                    if (ids[i] !== oldOrder[i]) {
-                      // First changed index — this is the moved item's new position
-                      const movedId = ids[i];
-                      handleReorder(movedId, oldOrder[i]);
-                      break;
-                    }
-                  }
-                }}
-                orientation="vertical"
-              >
-                <SortableContent className="space-y-4">
-                  {cards.map((card) => (
-                    <SortableItem key={card.id} value={card.id} asChild>
-                      <div>
-                        <DashboardCardView
-                          card={card}
-                          onRefresh={handleRefreshCard}
-                          onDelete={setDeleteCardTarget}
-                          onUpdate={handleUpdateCardTitle}
-                          refreshingId={refreshingCardId}
-                        />
-                      </div>
-                    </SortableItem>
-                  ))}
-                </SortableContent>
-                <SortableOverlay />
-              </Sortable>
+            ) : (
+              <div className="flex-1 overflow-auto px-3 py-4 sm:px-5">
+                <DashboardGrid
+                  cards={cardsForGrid}
+                  editing={editing}
+                  density={density}
+                  refreshingId={refreshingCardId}
+                  onLayoutChange={handleLayoutChange}
+                  onRefresh={handleRefreshCard}
+                  onDuplicate={handleDuplicate}
+                  onDelete={setDeleteCardTarget}
+                  onUpdateTitle={handleUpdateCardTitle}
+                />
+              </div>
             )}
           </>
         )}
       </main>
 
       {/* Delete card confirmation */}
-      <AlertDialog open={!!deleteCardTarget} onOpenChange={(open) => { if (!open) setDeleteCardTarget(null); }}>
+      <AlertDialog
+        open={!!deleteCardTarget}
+        onOpenChange={(open) => { if (!open) setDeleteCardTarget(null); }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove card?</AlertDialogTitle>
+            <AlertDialogTitle>Remove tile?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove &ldquo;{deleteCardTarget?.title}&rdquo; from this dashboard. The underlying query is not affected.
+              This will remove &ldquo;{deleteCardTarget?.title}&rdquo; from this dashboard. The
+              underlying query is not affected.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteCard} className="bg-red-600 text-white hover:bg-red-700">
+            <AlertDialogAction
+              onClick={handleDeleteCard}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
               Remove
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -651,12 +472,16 @@ export default function DashboardViewPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete dashboard?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete &ldquo;{dashboard?.title}&rdquo; and all its cards. This action cannot be undone.
+              This will permanently delete &ldquo;{dashboard?.title}&rdquo; and all its tiles.
+              This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteDashboard} className="bg-red-600 text-white hover:bg-red-700">
+            <AlertDialogAction
+              onClick={handleDeleteDashboard}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>

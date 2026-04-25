@@ -1354,6 +1354,10 @@ export const dashboardCards = pgTable(
     cachedRows: jsonb("cached_rows"),
     cachedAt: timestamp("cached_at", { withTimezone: true }),
     connectionId: text("connection_id"),
+    // `layout` (0041) carries `{ x, y, w, h }` for the freeform 24-col tile
+    // grid on the detail page. NULL means not yet placed → auto-laid-out
+    // client-side from the legacy `position` index.
+    layout: jsonb("layout"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

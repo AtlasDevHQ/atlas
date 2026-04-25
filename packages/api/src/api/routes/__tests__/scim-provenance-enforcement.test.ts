@@ -34,6 +34,7 @@ import {
   type Mock,
 } from "bun:test";
 import { Effect } from "effect";
+import { z } from "@hono/zod-openapi";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -84,6 +85,15 @@ mock.module("@atlas/api/lib/auth/scim-provenance", () => ({
   DEFAULT_SCIM_OVERRIDE_POLICY: "strict",
   SCIM_OVERRIDE_POLICIES: ["strict", "override"] as const,
   SCIM_OVERRIDE_POLICY_SETTING_KEY: "ATLAS_SCIM_OVERRIDE_POLICY",
+  // The helper re-exports SCIMManagedSchema from scim-managed-schema.ts so
+  // partial mocks like this one need to surface the same export shape (the
+  // re-export keeps a single import path for the helper's consumers).
+  SCIMManagedSchema: z.object({
+    error: z.literal("scim_managed"),
+    code: z.literal("SCIM_MANAGED"),
+    message: z.string(),
+    requestId: z.string(),
+  }),
 }));
 
 // Audit logger — capture per-test so we can assert metadata.scim_override.
@@ -324,6 +334,25 @@ describe("F-57 — POST /admin/users/:id/ban (banUser)", () => {
     expect(mockBanUser).not.toHaveBeenCalled();
   });
 
+  it("guard runs cross-provider — orgId is undefined regardless of the actor's active org", async () => {
+    // Ban is a global mutation (`user.banned = true` everywhere). A
+    // platform admin operating from workspace A who bans a user
+    // SCIM-provisioned in workspace B would otherwise bypass the guard
+    // because the join is org-scoped. The handler must pass
+    // orgId: undefined so the guard scans every SCIM provider.
+    mockEvaluateSCIMGuardAsync.mockImplementationOnce(async () => ({ kind: "non_scim" }));
+    await app.fetch(
+      adminRequest(
+        "/api/v1/admin/users/user-scim-1/ban",
+        "POST",
+        { reason: "phishing" },
+      ),
+    );
+    expect(mockEvaluateSCIMGuardAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user-scim-1", orgId: undefined }),
+    );
+  });
+
   it("override policy → ban proceeds + audit metadata.scim_override = true", async () => {
     mockEvaluateSCIMGuardAsync.mockImplementationOnce(async () => ({ kind: "override" }));
 
@@ -403,6 +432,20 @@ describe("F-57 — DELETE /admin/users/:id (deleteUser)", () => {
     expect(mockRemoveUser).not.toHaveBeenCalled();
   });
 
+  it("guard runs cross-provider — orgId is undefined to match the global delete blast-radius", async () => {
+    // deleteUser removes the user globally. Same reasoning as banUser:
+    // an admin operating from workspace A who deletes a user
+    // SCIM-provisioned in workspace B must not bypass the guard via
+    // org-scoped join. Pass orgId: undefined.
+    mockEvaluateSCIMGuardAsync.mockImplementationOnce(async () => ({ kind: "non_scim" }));
+    await app.fetch(
+      adminRequest("/api/v1/admin/users/user-scim-1", "DELETE"),
+    );
+    expect(mockEvaluateSCIMGuardAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user-scim-1", orgId: undefined }),
+    );
+  });
+
   it("override policy → delete proceeds + audit metadata.scim_override = true", async () => {
     mockEvaluateSCIMGuardAsync.mockImplementationOnce(async () => ({ kind: "override" }));
 
@@ -452,6 +495,28 @@ describe("F-57 — POST /admin/users/:id/revoke (revokeUserSessions)", () => {
       (call) => (call[0]?.metadata as Record<string, unknown> | undefined)?.scim_override === true,
     );
     expect(auditCall).toBeDefined();
+  });
+
+  it("override policy + revoke fails → failure audit row carries scim_override + status='failure'", async () => {
+    // The revokeUserSessions handler emits TWO audit rows: one on
+    // success and one on failure. A naive override implementation would
+    // only stamp the success row, leaving a compliance reviewer unable
+    // to reconstruct that the failed override was even attempted on a
+    // SCIM-managed user. Lock both branches.
+    mockEvaluateSCIMGuardAsync.mockImplementationOnce(async () => ({ kind: "override" }));
+    mockRevokeSessions.mockImplementationOnce(() => Promise.reject(new Error("upstream gone")));
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/users/user-scim-1/revoke", "POST"),
+    );
+
+    expect(res.status).toBe(500);
+    const failureAuditCall = mockLogAdminAction.mock.calls.find(
+      (call) =>
+        call[0]?.status === "failure" &&
+        (call[0]?.metadata as Record<string, unknown> | undefined)?.scim_override === true,
+    );
+    expect(failureAuditCall).toBeDefined();
   });
 });
 

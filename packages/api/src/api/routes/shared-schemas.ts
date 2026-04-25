@@ -51,16 +51,14 @@ export const AuthErrorSchema = z.record(z.string(), z.unknown());
 
 /**
  * F-57 — 409 response schema returned by user-mutation routes when the
- * target is SCIM-provisioned and the workspace policy is `strict`. The
- * stable `code: "SCIM_MANAGED"` lets the admin UI match on a single value
- * instead of the localised message. See `lib/auth/scim-provenance.ts`.
+ * target is SCIM-provisioned and the workspace policy is `strict`. Owned
+ * by `lib/auth/scim-managed-schema.ts` (a dependency-free module so both
+ * the lib helper and this route-layer file can import it without crossing
+ * the lib/ → routes/ direction); re-exported here so OpenAPI route
+ * declarations have a single conventional import location.
  */
-export const SCIMManagedSchema = z.object({
-  error: z.literal("scim_managed"),
-  code: z.literal("SCIM_MANAGED"),
-  message: z.string(),
-  requestId: z.string(),
-});
+export { SCIMManagedSchema } from "@atlas/api/lib/auth/scim-managed-schema";
+import { SCIMManagedSchema } from "@atlas/api/lib/auth/scim-managed-schema";
 
 /** Reusable OpenAPI 409 response entry for SCIM-managed user mutations. */
 export const SCIMManagedResponse = {

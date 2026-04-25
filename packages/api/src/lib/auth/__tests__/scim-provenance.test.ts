@@ -119,7 +119,7 @@ describe("isSCIMProvisioned", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("returns false when the scimProvider table does not exist (42P01)", async () => {
+  it("returns false when the scimProvider table does not exist (42P01 message + table name)", async () => {
     // EE flag flipped on but the @better-auth/scim plugin migration hasn't
     // run — common during staged rollouts. Treat as "no SCIM contract"
     // rather than fail closed; admins can still mutate users.
@@ -130,12 +130,45 @@ describe("isSCIMProvisioned", () => {
     expect(result).toBe(false);
   });
 
-  it("returns false when the scimProvider table missing error surfaces with code 42P01 only", async () => {
+  it("returns false when pg DatabaseError surfaces with code 42P01 (canonical SQLSTATE pin)", async () => {
     mockInternalQuery.mockImplementationOnce(async () => {
-      throw new Error("query failed: 42P01");
+      const err = Object.assign(new Error("relation does not exist"), {
+        code: "42P01",
+      });
+      throw err;
     });
     const result = await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
+  });
+
+  it("propagates 42704 'role does not exist' — a bare \"does not exist\" must NOT silently pass through", async () => {
+    // F-57 silent-failure guard: PostgreSQL emits "does not exist" for
+    // 42704 (undefined role/schema/extension), 42883 (function does not
+    // exist), 3F000 (schema does not exist). None of those mean SCIM is
+    // uninstalled. The recovery branch must require BOTH the table name
+    // AND "does not exist" — anything looser silently flips a SCIM-managed
+    // user to non-SCIM on an unrelated DB blip.
+    mockInternalQuery.mockImplementationOnce(async () => {
+      const err = Object.assign(new Error('role "app_user" does not exist'), {
+        code: "42704",
+      });
+      throw err;
+    });
+    await expect(Effect.runPromise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
+      /role "app_user" does not exist/,
+    );
+  });
+
+  it("propagates 3F000 'schema does not exist' — also must NOT pass through", async () => {
+    mockInternalQuery.mockImplementationOnce(async () => {
+      const err = Object.assign(new Error('schema "scim_v2" does not exist'), {
+        code: "3F000",
+      });
+      throw err;
+    });
+    await expect(Effect.runPromise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
+      /schema "scim_v2" does not exist/,
+    );
   });
 
   it("returns true when the join finds at least one row", async () => {

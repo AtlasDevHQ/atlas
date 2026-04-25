@@ -21,10 +21,14 @@
  */
 
 import { Effect } from "effect";
+import type { z } from "@hono/zod-openapi";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSettingAuto } from "@atlas/api/lib/settings";
+import { SCIMManagedSchema } from "@atlas/api/lib/auth/scim-managed-schema";
+
+export { SCIMManagedSchema } from "@atlas/api/lib/auth/scim-managed-schema";
 
 const log = createLogger("scim-provenance");
 
@@ -95,13 +99,25 @@ export const isSCIMProvisioned = (
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(
       Effect.catchAll((err) => {
-        const msg = err.message ?? String(err);
         // 42P01 — relation does not exist. SCIM tables are owned by the
         // @better-auth/scim plugin and only exist after its migration runs.
         // EE flag flipped on but migration pending → treat the user as
         // non-SCIM rather than fail closed; callers will re-evaluate after
         // the migration lands.
-        if (msg.includes("does not exist") || msg.includes("42P01")) {
+        //
+        // Pin on the SQLSTATE first (pg's DatabaseError carries `.code`).
+        // Fall back to a tightened message check requiring BOTH the table
+        // name AND "does not exist" — bare "does not exist" matches
+        // 42704 (undefined role), 42883 (undefined function), 3F000
+        // (schema does not exist), and friends, none of which mean SCIM
+        // is uninstalled. Any of those would let an admin mutate a SCIM
+        // user — exactly the silent failure F-57 forbids.
+        const code = (err as { code?: unknown }).code;
+        const msg = err.message ?? String(err);
+        const isMissingScimProvider =
+          code === "42P01" ||
+          (msg.includes("does not exist") && msg.includes("scimProvider"));
+        if (isMissingScimProvider) {
           log.warn(
             { err: msg, userId, orgId },
             "scimProvider table missing — treating user as non-SCIM",
@@ -116,16 +132,13 @@ export const isSCIMProvisioned = (
   });
 
 /**
- * Standard 409 body for the strict-policy block path. Centralised so every
- * call site emits the same `code: SCIM_MANAGED` shape — the UI banner
- * matches on this code, not on the message text.
+ * TS-side block-body shape. Derived from the Zod schema (defined in the
+ * dependency-free `scim-managed-schema.ts` sibling) so the wire contract
+ * has a single source of truth — adding a field to one without the other
+ * becomes a compile error rather than a silent drift between what the
+ * route returns and what the OpenAPI spec advertises.
  */
-export interface SCIMManagedBlockBody {
-  readonly error: "scim_managed";
-  readonly code: "SCIM_MANAGED";
-  readonly message: string;
-  readonly requestId: string;
-}
+export type SCIMManagedBlockBody = z.infer<typeof SCIMManagedSchema>;
 
 export function scimManagedBlockBody(requestId: string): SCIMManagedBlockBody {
   return {

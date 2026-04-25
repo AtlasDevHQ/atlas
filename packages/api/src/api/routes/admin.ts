@@ -2051,15 +2051,16 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     return c.json({ error: "forbidden", message: "Cannot ban yourself." , requestId}, 403);
   }
 
-  // F-57 — ban is a global state change; if the IdP re-syncs the user the
-  // ban can survive, but the role/group mapping won't reflect the ban so
-  // the user stays in an inconsistent state. Platform admins can opt into
-  // override policy when an emergency ban must trump the SCIM contract.
-  // Platform-admin path has no active org — pass undefined so the guard
-  // searches across all SCIM providers.
+  // F-57 — ban sets `user.banned = true` globally, affecting every workspace
+  // the target belongs to. The platform admin who calls this could be sitting
+  // in workspace A while the user is SCIM-provisioned in workspace B —
+  // scoping the SCIM check to the actor's active org would silently let
+  // the ban through and the next sync from B would re-activate the user.
+  // Pass `orgId: undefined` so the guard searches across ALL SCIM providers
+  // for this user; matches the global blast-radius of the mutation.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    orgId: authResult.user?.activeOrganizationId,
+    orgId: undefined,
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
@@ -2229,14 +2230,17 @@ admin.openapi(deleteUserRoute, async (c) => {
     return c.json({ error: "forbidden", message: "Cannot delete yourself." , requestId}, 403);
   }
 
-  // F-57 — delete is the most severe SCIM-collision case. Better Auth
-  // removes the account row, then the next sync re-provisions the user
-  // with a fresh userId, orphaning every audit_log / RLS reference to
-  // the old id. Strict blocks; override audits the override so the
-  // post-sync orphan trail is at least correlatable to the manual delete.
+  // F-57 — delete is global: Better Auth removes the user + account row
+  // entirely, affecting every workspace the target belonged to. Same
+  // global-blast-radius reasoning as banUserRoute: scoping the SCIM check
+  // to the actor's active org would let a workspace-admin path silently
+  // delete a user provisioned via SCIM in some other workspace, then the
+  // next sync re-provisions them with a fresh userId, orphaning every
+  // audit_log / RLS reference to the old id. Pass `orgId: undefined` so
+  // the guard searches across ALL SCIM providers for this user.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    orgId: authResult.user?.activeOrganizationId,
+    orgId: undefined,
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);

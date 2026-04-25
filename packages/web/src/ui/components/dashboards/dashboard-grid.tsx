@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   GridLayout,
   useContainerWidth,
@@ -8,10 +8,9 @@ import {
   type Layout,
 } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
-import { Keyboard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DashboardCard, DashboardCardLayout } from "@/ui/lib/types";
-import { COLS, ROW_H, GAP, MIN_W, MIN_H } from "./grid-constants";
+import { COLS, ROW_H, GAP, MIN_W, MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
 import { withAutoLayout } from "./auto-layout";
 import { DashboardTile } from "./dashboard-tile";
 
@@ -40,6 +39,20 @@ export function DashboardGrid({
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
   const placed = useMemo(() => withAutoLayout(cards), [cards]);
 
+  // Esc must exit fullscreen *before* the page-level handler exits edit mode,
+  // so the user gets one Esc per dialog-like layer.
+  useEffect(() => {
+    if (!fullscreenId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      e.preventDefault();
+      setFullscreenId(null);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [fullscreenId]);
+
   const layout: Layout = placed.map((p) => ({
     i: p.id,
     x: p.resolvedLayout.x,
@@ -62,11 +75,39 @@ export function DashboardGrid({
     }
   }
 
+  if (placed.length === 0) return null;
+
+  const isMobile = mounted && width > 0 && width < MOBILE_BREAKPOINT;
+
   return (
-    <div ref={containerRef} className="dashboard-app relative flex-1">
-      {placed.length === 0 ? (
-        <EmptyCanvas editing={editing} />
-      ) : mounted && width > 0 ? (
+    <div
+      ref={containerRef}
+      className={cn("dashboard-app relative flex-1", editing && "is-editing")}
+    >
+      {isMobile && (
+        <div className="flex flex-col gap-3">
+          {placed.map((card) => (
+            <div
+              key={card.id}
+              className="dash-mobile-tile"
+              style={{ height: card.resolvedLayout.h * ROW_H }}
+            >
+              <DashboardTile
+                card={card}
+                editing={false}
+                fullscreen={fullscreenId === card.id}
+                isRefreshing={refreshingId === card.id}
+                onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
+                onRefresh={onRefresh}
+                onDuplicate={onDuplicate}
+                onDelete={onDelete}
+                onUpdateTitle={onUpdateTitle}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      {mounted && width > 0 && !isMobile && (
         <GridLayout
           layout={layout}
           width={width}
@@ -109,25 +150,6 @@ export function DashboardGrid({
             </div>
           ))}
         </GridLayout>
-      ) : null}
-    </div>
-  );
-}
-
-function EmptyCanvas({ editing }: { editing: boolean }) {
-  return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
-      <div className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-        An empty canvas
-      </div>
-      <p className="max-w-md text-sm text-zinc-500 dark:text-zinc-400">
-        Run a query in chat and click <span className="font-medium">Add to Dashboard</span> to drop your first tile here.
-      </p>
-      {editing && (
-        <p className="mt-1 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
-          <Keyboard className="size-3" />
-          Press <kbd className="rounded border border-zinc-300 bg-zinc-100 px-1.5 py-0.5 text-[10px] dark:border-zinc-700 dark:bg-zinc-900">E</kbd> to exit edit mode
-        </p>
       )}
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   GripVertical,
@@ -107,15 +107,14 @@ export function DashboardTile({
           editing && "dash-drag-handle cursor-grab active:cursor-grabbing",
         )}
       >
-        <span
-          aria-hidden
-          className={cn(
-            "flex shrink-0 items-center text-zinc-400 transition-opacity dark:text-zinc-500",
-            editing ? "opacity-60 group-hover/head:opacity-100" : "opacity-0 pointer-events-none",
-          )}
-        >
-          <GripVertical className="size-3.5" />
-        </span>
+        {editing && (
+          <span
+            aria-hidden
+            className="flex shrink-0 items-center text-zinc-400 dark:text-zinc-500"
+          >
+            <GripVertical className="size-3.5" />
+          </span>
+        )}
 
         {titleEditing ? (
           <div className="flex flex-1 items-center gap-1.5">
@@ -128,8 +127,15 @@ export function DashboardTile({
               }}
               className="h-7 text-sm"
               autoFocus
+              aria-label="Tile title"
             />
-            <Button variant="ghost" size="icon" className="size-7" onClick={commitTitle}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={commitTitle}
+              aria-label="Save title"
+            >
               <Check className="size-3.5" />
             </Button>
             <Button
@@ -137,25 +143,34 @@ export function DashboardTile({
               size="icon"
               className="size-7"
               onClick={() => setTitleEditing(false)}
+              aria-label="Cancel rename"
             >
               <X className="size-3.5" />
             </Button>
           </div>
         ) : (
-          <h3 className="line-clamp-1 flex-1 text-sm font-medium tracking-tight" title={card.title}>
+          <h3
+            className="line-clamp-1 flex-1 text-sm font-semibold tracking-tight"
+            title={card.title}
+          >
             {card.title}
           </h3>
         )}
 
         {hasChartConfig && hasData && !titleEditing && (
-          <div className="flex shrink-0 items-center gap-0 rounded-md p-0.5">
+          <div
+            role="group"
+            aria-label="View"
+            className="flex shrink-0 items-center gap-0.5 rounded-md border border-zinc-200 bg-zinc-100/60 p-0.5 dark:border-zinc-800 dark:bg-zinc-900"
+          >
             <button
               type="button"
+              aria-pressed={viewMode === "chart"}
               className={cn(
-                "rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors",
+                "rounded px-2 py-0.5 text-xs font-medium transition-colors",
                 viewMode === "chart"
-                  ? "bg-primary/12 text-primary"
-                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-500 dark:hover:text-zinc-200",
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100",
               )}
               onClick={() => setViewMode("chart")}
             >
@@ -163,11 +178,12 @@ export function DashboardTile({
             </button>
             <button
               type="button"
+              aria-pressed={viewMode === "table"}
               className={cn(
-                "rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors",
+                "rounded px-2 py-0.5 text-xs font-medium transition-colors",
                 viewMode === "table"
-                  ? "bg-primary/12 text-primary"
-                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-500 dark:hover:text-zinc-200",
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100",
               )}
               onClick={() => setViewMode("table")}
             >
@@ -177,14 +193,14 @@ export function DashboardTile({
         )}
 
         {!titleEditing && (
-          <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover/head:opacity-100">
+          <div className="flex shrink-0 items-center gap-0.5">
             <Button
               variant="ghost"
               size="icon"
               className="size-7"
               onClick={() => onRefresh(card.id)}
               disabled={isRefreshing}
-              title="Refresh data"
+              aria-label="Refresh tile"
             >
               <RefreshCw className={cn("size-3.5", isRefreshing && "animate-spin")} />
             </Button>
@@ -193,13 +209,13 @@ export function DashboardTile({
               size="icon"
               className="size-7"
               onClick={() => onFullscreen(card.id)}
-              title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+              aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
             >
               {fullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-7" title="More">
+                <Button variant="ghost" size="icon" className="size-7" aria-label="Tile actions">
                   <MoreHorizontal className="size-3.5" />
                 </Button>
               </DropdownMenuTrigger>
@@ -229,9 +245,12 @@ export function DashboardTile({
       <div className="dash-tile-body flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2.5">
         {hasData ? (
           viewMode === "chart" && hasChartConfig ? (
-            <div className="min-h-0 flex-1 [&>div]:aspect-auto! [&>div]:h-full!">
-              <ResultChart headers={columns} rows={stringRows} dark={dark} />
-            </div>
+            <ChartSlot
+              cardId={card.id}
+              columns={columns}
+              stringRows={stringRows}
+              dark={dark}
+            />
           ) : (
             <div className="min-h-0 flex-1 overflow-auto">
               <DataTable columns={columns} rows={rows} />
@@ -239,18 +258,76 @@ export function DashboardTile({
           )
         ) : (
           <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-zinc-500 dark:text-zinc-400">
-            No cached data. Click <RefreshCw className="mx-1 inline size-3" /> to load results.
+            No cached data — refresh to load results.
           </div>
         )}
       </div>
 
-      <div className="flex shrink-0 items-center justify-between border-t border-zinc-100 px-3 py-1.5 font-mono text-[10px] text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-500">
-        <span className="inline-flex items-center gap-1">
+      <div className="flex shrink-0 items-center justify-between border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-500">
+        <span className="inline-flex items-center gap-1 tabular-nums">
           <Clock className="size-2.5" />
           {timeAgo(card.cachedAt)}
         </span>
-        {hasData && <span>{rows.length} rows</span>}
+        {hasData && <span className="tabular-nums">{rows.length} rows</span>}
       </div>
+    </div>
+  );
+}
+
+// Recharts' ResponsiveContainer renders bars/lines as zero-extent shapes when
+// the parent reports 0 width on first measurement. Wait for a real bounding
+// box before mounting ResultChart so the chart's first paint sees stable
+// dimensions.
+function ChartSlot({
+  cardId,
+  columns,
+  stringRows,
+  dark,
+}: {
+  cardId: string;
+  columns: string[];
+  stringRows: string[][];
+  dark: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [ready, setReady] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let raf = 0;
+    const tryReady = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 80 && r.height > 80) {
+        setReady(true);
+        return true;
+      }
+      return false;
+    };
+    if (tryReady()) return;
+    const ro = new ResizeObserver(() => {
+      if (tryReady()) ro.disconnect();
+    });
+    ro.observe(el);
+    raf = requestAnimationFrame(() => {
+      if (tryReady()) ro.disconnect();
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, []);
+
+  return (
+    <div ref={ref} className="min-h-0 flex-1 [&>div]:aspect-auto! [&>div]:h-full!">
+      {ready && (
+        <ResultChart
+          key={cardId}
+          headers={columns}
+          rows={stringRows}
+          dark={dark}
+        />
+      )}
     </div>
   );
 }

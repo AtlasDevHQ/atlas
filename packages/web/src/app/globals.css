@@ -148,29 +148,51 @@
   }
 }
 
-/* Dashboards detail — react-grid-layout overrides (#1867). */
+/* Dashboards detail — react-grid-layout overrides. */
 .react-grid-item.react-grid-placeholder {
-  background: color-mix(in oklch, var(--primary) 10%, transparent);
+  background: color-mix(in oklch, var(--primary) 22%, transparent);
   border: 1.5px dashed color-mix(in oklch, var(--primary) 60%, transparent);
   border-radius: 12px;
   opacity: 1;
 }
 .react-grid-item.react-draggable-dragging {
-  box-shadow: 0 20px 40px oklch(0 0 0 / 0.4);
+  box-shadow: 0 14px 32px oklch(0 0 0 / 0.18);
 }
 .react-grid-item > .react-resizable-handle::after {
   border-right-color: var(--muted-foreground);
   border-bottom-color: var(--muted-foreground);
 }
 
+/* Edit mode tints the canvas so it never visually matches view mode. The
+ * radial dot pattern hints at the underlying grid without distracting from
+ * tile content. */
+.dashboard-app.is-editing {
+  background-image: radial-gradient(
+    color-mix(in oklch, var(--muted-foreground) 45%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 14px 14px;
+  background-position: 7px 7px;
+}
+
+/* Fullscreen tile sits on a fully opaque backdrop so the underlying grid
+ * (and any stale chart bleed) cannot show through the inset gutter. */
 .dash-tile-wrapper.is-fullscreen {
   position: fixed !important;
-  inset: 14px !important;
+  inset: 0 !important;
   width: auto !important;
   height: auto !important;
   transform: none !important;
   z-index: 100;
-  box-shadow: 0 30px 60px oklch(0 0 0 / 0.6);
+  background: var(--background);
+  padding: 14px;
+}
+.dash-tile-wrapper.is-fullscreen > .dash-tile {
+  box-shadow: 0 14px 32px oklch(0 0 0 / 0.18);
+}
+
+.dash-mobile-tile {
+  width: 100%;
 }
 
 .dash-density-compact .dash-tile-head { padding: 7px 10px 6px; }

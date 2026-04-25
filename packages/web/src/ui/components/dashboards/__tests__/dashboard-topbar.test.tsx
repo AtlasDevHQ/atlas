@@ -56,8 +56,6 @@ const baseProps = {
 };
 
 function wrapper({ children }: { children: ReactNode }) {
-  // Isolated TanStack Query client per test so the switcher's list fetch
-  // doesn't bleed across tests.
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });

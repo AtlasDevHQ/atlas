@@ -28,6 +28,7 @@ import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import { selectNextAfterDelete } from "@/app/dashboards/select-recent";
 import type { Density } from "@/ui/components/dashboards/grid-constants";
 import type {
   DashboardCard,
@@ -132,10 +133,10 @@ export default function DashboardViewPage() {
 
   async function handleDeleteDashboard() {
     // Pre-fetch the next-most-recent dashboard so we can land the user on it
-    // after the delete settles. If this was the last dashboard, /dashboards
-    // falls through to the empty state. We compute `next` BEFORE the delete
-    // because `useAdminFetch` invalidations clear the in-memory list first,
-    // and we want the navigation target locked in.
+    // after the delete settles. We compute `next` BEFORE the delete because
+    // `useAdminFetch` invalidations clear the in-memory list first, and we
+    // want the navigation target locked in. On failure we fall back to
+    // /dashboards which will redirect or show the empty state.
     let nextId: string | null = null;
     try {
       const res = await fetch(`${apiUrl}/api/v1/dashboards`, {
@@ -143,14 +144,7 @@ export default function DashboardViewPage() {
       });
       if (res.ok) {
         const json = (await res.json()) as { dashboards?: { id: string; updatedAt: string }[] };
-        const others = (json.dashboards ?? [])
-          .filter((d) => d.id !== id)
-          .toSorted((a, b) => {
-            const diff = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-            if (diff !== 0) return diff;
-            return a.id.localeCompare(b.id);
-          });
-        nextId = others[0]?.id ?? null;
+        nextId = selectNextAfterDelete(json.dashboards ?? [], id);
       }
     } catch (err) {
       console.debug(

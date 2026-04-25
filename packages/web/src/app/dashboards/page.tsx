@@ -52,13 +52,6 @@ async function fetchDashboardsList(): Promise<FetchResult> {
   }
 }
 
-/**
- * /dashboards is no longer a list. The most-recently-updated dashboard *is* the
- * page — this component looks one up server-side and 307s into it. The list
- * view is preserved as a modal launchable from the detail topbar switcher (see
- * dashboard-switcher.tsx). Empty workspaces fall through to an inline
- * empty-state CTA so a brand-new user lands somewhere actionable.
- */
 export default async function DashboardsPage() {
   const result = await fetchDashboardsList();
 

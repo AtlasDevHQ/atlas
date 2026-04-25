@@ -20,12 +20,7 @@ import type { Dashboard } from "@/ui/lib/types";
 interface NewDashboardDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /**
-   * Required. Called with the new dashboard after a successful create. The
-   * dialog has no opinion about navigation — every call site supplies its own
-   * policy. The shared `defaultOnDashboardCreated` helper below covers the
-   * common "navigate to the new dashboard" case.
-   */
+  /** Dialog has no opinion about navigation — every call site supplies its own policy. */
   onCreated: (dashboard: Dashboard) => void;
 }
 
@@ -103,11 +98,6 @@ export function NewDashboardDialog({
   );
 }
 
-/**
- * Default navigation policy for `onCreated`: push the user into the new
- * dashboard's detail page. Mirrors the pre-redesign list-page UX where
- * creating a dashboard moved you straight to it.
- */
 export function defaultOnDashboardCreated(
   router: Pick<ReturnType<typeof useRouter>, "push">,
 ): (d: Dashboard) => void {

@@ -28,7 +28,9 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { cn } from "@/lib/utils";
+import { sortDashboardsByRecent } from "@/app/dashboards/select-recent";
 import { NewDashboardDialog } from "./new-dashboard-dialog";
+import { timeAgo } from "./time-ago";
 import type { Dashboard } from "@/ui/lib/types";
 
 interface ViewAllDashboardsModalProps {
@@ -38,18 +40,6 @@ interface ViewAllDashboardsModalProps {
 }
 
 const SEARCH_THRESHOLD = 6;
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
 
 export function ViewAllDashboardsModal({
   open,
@@ -72,12 +62,7 @@ export function ViewAllDashboardsModal({
   const [deleteTarget, setDeleteTarget] = useState<Dashboard | null>(null);
   const [search, setSearch] = useState("");
 
-  const dashboards = data?.dashboards ?? [];
-  const sorted = dashboards.toSorted((a, b) => {
-    const diff = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    if (diff !== 0) return diff;
-    return a.id.localeCompare(b.id);
-  });
+  const sorted = sortDashboardsByRecent(data?.dashboards ?? []);
   const filtered = search.trim()
     ? sorted.filter((d) =>
         d.title.toLowerCase().includes(search.trim().toLowerCase()),
@@ -168,7 +153,6 @@ export function ViewAllDashboardsModal({
             </div>
           )}
 
-          {/* Tablet+ desktop grid; mobile fallback to a text list. */}
           <div className="max-h-[60vh] overflow-y-auto px-6 pb-6">
             {loading && (
               <div className="hidden grid-cols-2 gap-3 sm:grid lg:grid-cols-3">

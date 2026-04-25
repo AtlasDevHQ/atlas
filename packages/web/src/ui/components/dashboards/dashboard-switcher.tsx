@@ -14,6 +14,7 @@ import {
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { cn } from "@/lib/utils";
+import { sortDashboardsByRecent } from "@/app/dashboards/select-recent";
 import { NewDashboardDialog, defaultOnDashboardCreated } from "./new-dashboard-dialog";
 import { ViewAllDashboardsModal } from "./view-all-modal";
 import type { Dashboard } from "@/ui/lib/types";
@@ -31,11 +32,7 @@ export function DashboardSwitcher({ currentId }: DashboardSwitcherProps) {
     "/api/v1/dashboards",
   );
 
-  const sorted = (data?.dashboards ?? []).toSorted((a, b) => {
-    const diff = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    if (diff !== 0) return diff;
-    return a.id.localeCompare(b.id);
-  });
+  const sorted = sortDashboardsByRecent(data?.dashboards ?? []);
 
   return (
     <>

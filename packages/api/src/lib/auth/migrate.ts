@@ -233,9 +233,12 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
       return;
     }
 
-    // Mark as requiring password change
+    // Mark as requiring password change AND verify the email so the seeded
+    // admin can sign in without a manual SQL update on a fresh DB. The dev
+    // seed only runs when no users exist (idempotency check above), so this
+    // never auto-verifies a real signup.
     await internalQuery(
-      `UPDATE "user" SET password_change_required = true WHERE id = $1`,
+      `UPDATE "user" SET password_change_required = true, "emailVerified" = true WHERE id = $1`,
       [userId],
     );
 

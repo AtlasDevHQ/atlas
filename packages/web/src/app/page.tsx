@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { cn } from "@/lib/utils";
+import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
 import { useQueryStates } from "nuqs";
 import { chatSearchParams } from "./search-params";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
@@ -427,6 +428,44 @@ function ChatPage() {
                       ? parseSuggestions(lastTextWithSuggestions.text).suggestions
                       : [];
 
+                    // Pre-compute SQL-failure dedup map so the renderer can collapse
+                    // identical executeSQL retries — even when separated by explore
+                    // commands or thinking text — into a single card with a "Tried N
+                    // times" badge instead of stacking N identical red blocks (#1883).
+                    // The first occurrence renders with the total count; subsequent
+                    // identical failures are skipped.
+                    const failureRuns = new Map<number, number>(); // first-occurrence index → total count
+                    const skipFailureIndex = new Set<number>();
+                    {
+                      type AnyPart = NonNullable<typeof m.parts>[number];
+                      const sqlFailureKey = (p: AnyPart): string | null => {
+                        if (!isToolUIPart(p) || getToolName(p) !== "executeSQL") return null;
+                        const r = getToolResult(p) as { success?: boolean; error?: unknown } | null;
+                        if (!r || r.success !== false) return null;
+                        const args = getToolArgs(p);
+                        return `${String(args.sql ?? "")} ${String(r.error ?? "")}`;
+                      };
+                      const firstSeen = new Map<string, number>();
+                      const counts = new Map<string, number>();
+                      const parts = m.parts ?? [];
+                      for (let i = 0; i < parts.length; i++) {
+                        const key = sqlFailureKey(parts[i]);
+                        if (!key) continue;
+                        if (firstSeen.has(key)) {
+                          skipFailureIndex.add(i);
+                        } else {
+                          firstSeen.set(key, i);
+                        }
+                        counts.set(key, (counts.get(key) ?? 0) + 1);
+                      }
+                      for (const [key, count] of counts) {
+                        if (count > 1) {
+                          const idx = firstSeen.get(key);
+                          if (idx !== undefined) failureRuns.set(idx, count);
+                        }
+                      }
+                    }
+
                     return (
                       <div
                         key={m.id}
@@ -435,6 +474,8 @@ function ChatPage() {
                         aria-label="Message from Atlas"
                       >
                         {m.parts?.map((part, i) => {
+                          if (skipFailureIndex.has(i)) return null;
+
                           const prevPart = i > 0 ? m.parts?.[i - 1] : undefined;
                           const isExplore =
                             isToolUIPart(part) && getToolName(part) === "explore";
@@ -459,7 +500,7 @@ function ChatPage() {
                           if (isToolUIPart(part)) {
                             return (
                               <div key={i} className={cn("max-w-[95%]", spacing)}>
-                                <ToolPart part={part} />
+                                <ToolPart part={part} repeatedCount={failureRuns.get(i)} />
                               </div>
                             );
                           }

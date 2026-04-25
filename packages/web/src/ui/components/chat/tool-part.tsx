@@ -17,7 +17,22 @@ function getToolInvocationId(part: unknown): string | undefined {
   return typeof p.toolInvocationId === "string" ? p.toolInvocationId : undefined;
 }
 
-export const ToolPart = memo(function ToolPart({ part, pythonProgress, previousExecution }: { part: unknown; pythonProgress?: Map<string, PythonProgressData[]>; previousExecution?: PreviousExecution }) {
+export const ToolPart = memo(function ToolPart({
+  part,
+  pythonProgress,
+  previousExecution,
+  repeatedCount,
+}: {
+  part: unknown;
+  pythonProgress?: Map<string, PythonProgressData[]>;
+  previousExecution?: PreviousExecution;
+  /**
+   * For executeSQL parts only: when the same SQL has just failed N times in a
+   * row, the page-level renderer collapses the run into the last card and
+   * passes the count here (#1883).
+   */
+  repeatedCount?: number;
+}) {
   let name: string;
   try {
     name = getToolName(part as Parameters<typeof getToolName>[0]);
@@ -34,7 +49,7 @@ export const ToolPart = memo(function ToolPart({ part, pythonProgress, previousE
     case "explore":
       return <ExploreCard part={part} />;
     case "executeSQL":
-      return <SQLResultCard part={part} previousExecution={previousExecution} />;
+      return <SQLResultCard part={part} previousExecution={previousExecution} repeatedCount={repeatedCount} />;
     case "executePython": {
       const invocationId = getToolInvocationId(part);
       const events = invocationId ? pythonProgress?.get(invocationId) : undefined;

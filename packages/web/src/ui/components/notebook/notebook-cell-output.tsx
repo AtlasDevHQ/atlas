@@ -7,6 +7,7 @@ import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
 import { parseSuggestions } from "@/ui/lib/helpers";
+import { computeSqlFailureDedup } from "@/ui/lib/sql-failure-dedup";
 
 interface CellOutputProps {
   assistantMessage: UIMessage | null;
@@ -43,15 +44,30 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed, previo
     );
   }
 
+  // Same dedup we apply on the chat surface — collapses identical executeSQL
+  // failures into one card with a "Tried N times" badge instead of stacking
+  // verbatim red blocks (matches packages/web/src/app/page.tsx:431).
+  const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(assistantMessage.parts);
+
+  // Gutter rail visually anchors the answer to the question, mirroring the
+  // chat surface's assistant-turn pattern (packages/web/src/app/page.tsx:436).
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-2 border-l-2 border-primary/40 pl-4 text-sm">
       {assistantMessage.parts.map((part, i) => {
+        if (skipFailureIndex.has(i)) return null;
         if (part.type === "text") {
           const displayText = parseSuggestions(part.text).text;
           return <Markdown key={i} content={displayText} />;
         }
         if (isToolUIPart(part)) {
-          return <ToolPart key={i} part={part} previousExecution={previousExecution} />;
+          return (
+            <ToolPart
+              key={i}
+              part={part}
+              previousExecution={previousExecution}
+              repeatedCount={failureRuns.get(i)}
+            />
+          );
         }
         return null;
       })}

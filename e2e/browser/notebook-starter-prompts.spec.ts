@@ -103,9 +103,11 @@ test.describe("Notebook new-cell starter prompts", () => {
     await expect(
       page.locator('[role="region"][aria-label="Cell 1"]'),
     ).toBeVisible({ timeout: 10_000 });
+    // Target the visible question paragraph, not the sr-only `<h3 class="sr-only">Cell 1: …</h3>`
+    // that also contains the same substring.
     await expect(
-      page.locator('[role="region"][aria-label="Cell 1"]').getByText("Count orders by status"),
-    ).toBeVisible();
+      page.locator('[role="region"][aria-label="Cell 1"] [data-testid="cell-question"]'),
+    ).toHaveText("Count orders by status");
 
     // Confirm the chat POST carried the prompt text — guards against a
     // regression where the empty state renders + clears locally but

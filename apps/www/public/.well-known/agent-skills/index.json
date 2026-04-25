@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "publisher": {
+    "name": "Atlas",
+    "url": "https://www.useatlas.dev"
+  },
+  "skills": [
+    {
+      "name": "atlas-overview",
+      "type": "documentation",
+      "description": "Plain-text overview of Atlas: capabilities, supported databases and LLM providers, security model, deploy options, and quick links into the docs and SDKs.",
+      "url": "https://www.useatlas.dev/llms.txt",
+      "sha256": "f1d953d623d3fc4fa8db4e3a2978850d43447beabb1ceb7eb50af5b5bb947693"
+    },
+    {
+      "name": "atlas-mcp-server",
+      "type": "tool",
+      "description": "MCP server card for Atlas — connect an MCP-compatible client to your data warehouse via Atlas's validated text-to-SQL agent.",
+      "url": "https://www.useatlas.dev/.well-known/mcp/server-card.json"
+    },
+    {
+      "name": "atlas-api-catalog",
+      "type": "discovery",
+      "description": "RFC 9727 API catalog pointing to the OpenAPI spec, hosted documentation, and the public health endpoint for the Atlas API.",
+      "url": "https://www.useatlas.dev/.well-known/api-catalog"
+    }
+  ]
+}

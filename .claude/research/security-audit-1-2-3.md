@@ -3393,25 +3393,25 @@ documentation of any break-glass paths. Currently undocumented for
    admin-action audit row. Default behaviour: SSO is enforced regardless
    of auth mode, with an explicit allow-list of bypass-eligible API keys.
 
-**Status:** **shipped** — `checkSSOEnforcement` factored out of the
-`case "managed":` branch in `packages/api/src/lib/auth/middleware.ts`
-into a `runWithSSOEnforcement(mode, validator)` wrapper that fires
-for both `managed` and `byot`. `simple-key` keeps the explicit
-break-glass bypass (the API-key user label has no `@`, so even a
-shared call site would no-op via `extractEmailDomain`). When the
-check blocks, a `sso.enforcement_block` admin-action row is committed
-via `logAdminActionAwait` BEFORE the 403 returns
-(`targetType: "sso"`, `targetId: <domain>`, `metadata: { authMode,
-userLabel }`) so compliance queries can pivot on the bypass-attempt
-domain regardless of which auth mode tried it. The audit row is the
-security control: fire-and-forget would let a circuit-breaker-open
-state silently drop the row while still 403-ing the user, so the
-emission is awaited and a write failure converts to a 500 fail-closed
-(matching the `lib/audit/admin.ts` pattern documented for
-security-control rows like the audit-retention surface). Three new
-test cases land alongside (closes F-59 — see below) plus a fail-closed
-500 mirror for the byot path and an audit-write-fails-closed test.
-Filed: #1852. Issue pairs with F-59.
+**Status:** **shipped** — SSO enforcement now fires for any
+authenticated path with a resolvable email-domain label (managed and
+byot today; future modes inherit enforcement automatically because the
+enforced set is derived as `Exclude<AuthMode, SSO_BYPASS_MODES>` rather
+than hand-typed). `simple-key` is the documented break-glass bypass
+(the API-key user label is `api-key-<first 4 chars of raw key>` with no
+`@`, so even a shared call site would no-op via `extractEmailDomain`).
+When SSO blocks a login, a `sso.enforcement_block` admin-action row is
+committed via the awaitable `logAdminActionAwait` (no fire-and-forget
+silent-drop), capped by a short timeout so a stalled internal Postgres
+can't hang the auth path. Audit-write failure or timeout converts to
+a 500 fail-closed, matching the `lib/audit/admin.ts` pattern
+documented for security-control rows like the audit-retention surface.
+Closes F-59 alongside (test mix: simple-key bypass, byot block + 403 +
+redirect + audit row, byot pass-through, byot subject-only label,
+managed/byot SSO-lookup-throws-500, managed/byot audit-write-fails-500,
+audit-write-timeout-500). See `packages/api/src/lib/auth/middleware.ts`
+for the current shape and `packages/api/src/lib/audit/actions.ts` for
+the row metadata. Filed: #1852. Issue pairs with F-59.
 
 ---
 

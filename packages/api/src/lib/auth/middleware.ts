@@ -18,6 +18,7 @@ import { getSetting } from "@atlas/api/lib/settings";
 import { Effect } from "effect";
 import { isSSOEnforcedForDomain, extractEmailDomain } from "@atlas/ee/auth/sso";
 import { logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
+import type { AuthMode } from "@useatlas/types";
 
 const log = createLogger("auth");
 
@@ -266,32 +267,58 @@ function categorizeAuthError(err: unknown): string {
   return "unknown";
 }
 
-/** Auth modes that participate in SSO enforcement. */
-type SSOEnforceableMode = "managed" | "byot";
+/**
+ * Auth modes whose authenticated path must run through SSO enforcement.
+ *
+ * Derived from `AuthMode` rather than hand-typed so that adding a new
+ * mode forces an explicit decision at this site. By default the new
+ * mode joins the enforced set automatically — bypass is opt-in via
+ * the explicit `Exclude` list. `none` has no user identity to enforce
+ * against; `simple-key` is the documented break-glass when SSO breaks
+ * (e.g. IdP outage during incident response). Hand-typing the
+ * enforced set as a literal union — what the original F-56 code did —
+ * is what let `byot` silently bypass SSO when it was added.
+ */
+type SSOEnforceableMode = Exclude<AuthMode, "none" | "simple-key">;
+
+/**
+ * Bound on how long the audit-row write may block the auth path.
+ *
+ * The audit row is the security control (see `checkSSOEnforcement`),
+ * so we await its commit before returning the 403 — but the internal
+ * Postgres pool has no `connectionTimeoutMillis` / `statement_timeout`
+ * defaults, which means an unreachable-but-routable DB or a stuck pool
+ * could otherwise stall every blocked SSO login for the full TCP
+ * keepalive window. Cap it: if the write hasn't committed within this
+ * deadline, throw and let the surrounding catch fail closed with 500.
+ */
+const AUDIT_WRITE_TIMEOUT_MS = 5_000;
 
 /**
  * Check SSO enforcement for a user's email domain.
  *
  * Fires for any authenticated path with a resolvable email-domain label
- * — currently `managed` and `byot` (F-56). Returns an `AuthResult`
+ * — managed and byot today; future modes inherit enforcement unless
+ * explicitly added to `SSO_BYPASS_MODES`. Returns an `AuthResult`
  * rejection (403) if enforcement matches; null otherwise. Fails closed
  * on lookup errors AND on audit-write errors (500). When blocking,
  * commits a `sso.enforcement_block` admin-action row before returning
  * the 403 so compliance queries can pivot on the bypass-attempt domain
  * regardless of which auth mode tried it.
  *
- * The audit row IS the security control here: a forensic record that
- * someone tried to bypass SSO. We use `logAdminActionAwait` (not the
- * fire-and-forget `logAdminAction`) so a circuit-breaker-open or
- * connection-pool-down state can't silently drop the row — if the
- * write fails, we 500 the request and rely on the caller to retry,
- * matching the pattern documented for security-control rows in
- * `lib/audit/admin.ts`.
+ * The audit row IS the security control: a forensic record that
+ * someone tried to bypass SSO. `logAdminActionAwait` writes via
+ * `internalQuery` (no circuit breaker, unlike fire-and-forget
+ * `logAdminAction` / `internalExecute`) so it surfaces failures
+ * rather than dropping the row. We additionally cap the wait at
+ * `AUDIT_WRITE_TIMEOUT_MS` — if the row can't commit promptly we
+ * 500 fail-closed instead of stalling auth on an unreachable
+ * internal Postgres. Either failure mode lands in the catch below.
  *
  * Not invoked for `simple-key`: API-key auth has no email domain
- * (`createAtlasUser` labels keys as `api-key-<sha256-prefix>`) and is
- * the documented break-glass bypass when SSO breaks (e.g. IdP outage
- * during incident response).
+ * (`simple-key.ts` labels keys as `api-key-<first 4 chars of raw key>`)
+ * and is the documented break-glass bypass when SSO breaks (e.g. IdP
+ * outage during incident response).
  */
 async function checkSSOEnforcement(
   userLabel: string,
@@ -310,10 +337,9 @@ async function checkSSOEnforcement(
       { domain, userId: userLabel, authMode },
       "Login blocked — SSO enforcement active for domain",
     );
-    // If the audit write throws, the catch below converts it to a 500
-    // fail-closed AuthResult — the user retries, the row eventually
-    // commits, and the forensic trail stays whole. Better to 500 than
-    // to silently 403 with no row.
+    // Audit write is fail-closed: a throw lands in the catch below and
+    // becomes a 500 AuthResult. Better to 500 than to silently 403 with
+    // no forensic row.
     await emitEnforcementBlockAudit({ domain, userLabel, authMode });
     return {
       authenticated: false,
@@ -348,14 +374,16 @@ async function emitEnforcementBlockAudit(args: {
     status: "failure",
     metadata: { authMode: args.authMode, userLabel: args.userLabel },
   };
-  if (_auditEnforcementBlockOverride) {
-    await _auditEnforcementBlockOverride(entry);
-    return;
-  }
-  // logAdminActionAwait throws on internal-DB write failure — see the
-  // function-level comment on checkSSOEnforcement for why we want that
-  // to surface as a 500 fail-closed instead of a silently-dropped row.
-  await logAdminActionAwait(entry);
+  const writer = _auditEnforcementBlockOverride ?? logAdminActionAwait;
+  await Promise.race([
+    writer(entry),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`audit write timed out after ${AUDIT_WRITE_TIMEOUT_MS}ms`)),
+        AUDIT_WRITE_TIMEOUT_MS,
+      ),
+    ),
+  ]);
 }
 
 /** Authenticate an incoming request based on the detected auth mode. */
@@ -367,11 +395,12 @@ export async function authenticateRequest(req: Request): Promise<AuthResult> {
       return { authenticated: true, user: undefined, mode: "none" };
 
     case "simple-key":
-      // simple-key is the documented break-glass bypass for SSO enforcement.
-      // The API-key user label is `api-key-<sha256-prefix>` (no `@`) so even
-      // if checkSSOEnforcement ran here it would no-op via extractEmailDomain.
-      // Skipping the call keeps the bypass intent explicit. Other auth modes
-      // (managed, byot) DO run the check below — see F-56.
+      // simple-key is the documented break-glass bypass for SSO enforcement
+      // (listed in SSO_BYPASS_MODES above). The API-key user label is
+      // `api-key-<first 4 chars of raw key>` (set in `simple-key.ts`); it
+      // has no `@`, so even if checkSSOEnforcement ran here it would no-op
+      // via extractEmailDomain. Skipping the call keeps intent explicit.
+      // Other auth modes (managed, byot) run the check below — see F-56.
       return validateApiKey(req);
 
     case "managed":
@@ -383,12 +412,12 @@ export async function authenticateRequest(req: Request): Promise<AuthResult> {
 }
 
 /**
- * Run a validator and gate the result through SSO enforcement.
+ * Run a validator and gate the authenticated result through SSO enforcement.
  *
- * Folds together the previously-duplicated try/catch + categorize-and-500
- * shape of `case "managed":` and `case "byot":` and adds the F-56 fix:
- * SSO enforcement now fires for any authenticated path that resolves an
- * email-domain label, not just managed-mode password/session auth.
+ * Single entry point for every `SSOEnforceableMode` — managed and byot
+ * share the same gate (F-56), and any future enforced mode joins
+ * automatically. Centralizes the categorize-and-500 fallback so all
+ * enforced modes report uniformly when their validator throws.
  */
 async function runWithSSOEnforcement(
   mode: SSOEnforceableMode,
@@ -405,8 +434,7 @@ async function runWithSSOEnforcement(
     const category = categorizeAuthError(err);
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), mode, category },
-      "%s auth error (%s)",
-      mode === "managed" ? "Managed" : "BYOT",
+      "Auth validator error (%s)",
       category,
     );
     if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {

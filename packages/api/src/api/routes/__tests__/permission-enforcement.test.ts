@@ -279,6 +279,24 @@ const inlineWriteCases: MappingCase[] = [
     body: { email: "x@example.com", role: "member" },
     permission: "admin:users",
   },
+  {
+    name: "POST /admin/users/:id/unban (unbanUser)",
+    url: "/api/v1/admin/users/user_abc123/unban",
+    method: "POST",
+    permission: "admin:users",
+  },
+  {
+    name: "DELETE /admin/users/:id (deleteUser)",
+    url: "/api/v1/admin/users/user_abc123",
+    method: "DELETE",
+    permission: "admin:users",
+  },
+  {
+    name: "POST /admin/users/:id/revoke (revokeUserSessions)",
+    url: "/api/v1/admin/users/user_abc123/revoke",
+    method: "POST",
+    permission: "admin:users",
+  },
 
   // admin:settings — admin.ts settings write handlers
   {
@@ -296,11 +314,25 @@ const inlineWriteCases: MappingCase[] = [
   },
 
   // admin:semantic — admin-semantic.ts (registerSemanticEditorRoutes shim)
+  // and admin.ts org-scoped entity CRUD + import handlers.
   {
     name: "PUT /admin/semantic/entities/edit/:name (semantic editor save)",
     url: "/api/v1/admin/semantic/entities/edit/users",
     method: "PUT",
     body: { table: "users", description: "test", connectionId: "default" },
+    permission: "admin:semantic",
+  },
+  {
+    name: "DELETE /admin/semantic/org/entities/:name (deleteOrgEntity)",
+    url: "/api/v1/admin/semantic/org/entities/users?type=entity",
+    method: "DELETE",
+    permission: "admin:semantic",
+  },
+  {
+    name: "POST /admin/semantic/org/import (importOrgEntities)",
+    url: "/api/v1/admin/semantic/org/import",
+    method: "POST",
+    body: { entities: [] },
     permission: "admin:semantic",
   },
 ];
@@ -364,7 +396,15 @@ describe("F-53 — inline-guard write paths (admin.ts / admin-invitations.ts / a
 describe("F-53 — carve-outs that intentionally skip the permission check", () => {
   it("GET /admin/overview does not invoke checkPermission (general dashboard)", async () => {
     mockCheckPermission.mockClear();
-    await app.fetch(adminRequest("/api/v1/admin/overview"));
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    // Status not 404 — distinguishes "route reached, carve-out honored"
+    // from "route 404 so handler never ran". Without this, a future
+    // refactor that unmounts /overview would let the test pass falsely.
+    // We don't lock the exact 2xx/5xx status because overview's downstream
+    // dependencies (semantic dir, plugin registry) vary per test fixture;
+    // the F-53 contract is "checkPermission was not called", not "the
+    // dashboard renders cleanly".
+    expect(res.status).not.toBe(404);
     const observedPermissions = mockCheckPermission.mock.calls.map((call) => call[1]);
     // overview is intentionally ungated — every authenticated admin sees the
     // dashboard regardless of which admin:* flags their role carries. If a
@@ -380,7 +420,13 @@ describe("F-53 — carve-outs that intentionally skip the permission check", () 
     // The password-status path runs its own light auth (NOT adminAuthAndContext)
     // and never crosses the F-53 chokepoint — every authenticated user can
     // check their own password state.
-    await app.fetch(adminRequest("/api/v1/admin/me/password-status"));
+    const res = await app.fetch(adminRequest("/api/v1/admin/me/password-status"));
+    // 200 confirms the route was reached AND the handler ran successfully.
+    // A 404 here would mean the test is asserting the absence of a
+    // checkPermission call against a route that never ran — defeating the
+    // carve-out lock. Password-status has no downstream deps that vary by
+    // fixture (light auth + return), so 200 is stable to assert.
+    expect(res.status).toBe(200);
     expect(mockCheckPermission).not.toHaveBeenCalled();
   });
 });
@@ -462,11 +508,16 @@ describe("F-53 — admin /semantic GET routes use admin:semantic (inline guard i
 // ---------------------------------------------------------------------------
 
 describe("F-53 — fail-closed when checkPermission defects", () => {
-  it("middleware path returns 503 permissions_unavailable when checkPermission throws", async () => {
-    mockCheckPermission.mockImplementation(() => {
-      // Simulate a defect inside the Effect (e.g. EE module crashed mid-flight)
-      throw new Error("simulated authorization layer crash");
-    });
+  it("middleware path returns 503 permissions_unavailable when checkPermission Effect.die's (DB-error-equivalent path)", async () => {
+    // `resolvePermissions` defects via `Effect.die` on unexpected DB errors.
+    // The runPromise rejection that defect produces must surface as 503
+    // through `requirePermission`'s try/catch — not as the synchronous
+    // throw shape (which the next test exercises). Using a real
+    // `Effect.die` here covers the actual production path, not just the
+    // shape that happens to share the same outer catch.
+    mockCheckPermission.mockImplementation(() =>
+      Effect.die(new Error("simulated DB failure during role lookup")),
+    );
 
     const res = await app.fetch(adminRequest("/api/v1/admin/roles"));
     expect(res.status).toBe(503);
@@ -477,7 +528,7 @@ describe("F-53 — fail-closed when checkPermission defects", () => {
     expect(body.message).not.toContain("insufficient");
   });
 
-  it("inline path (admin.ts) returns 503 permissions_unavailable when checkPermission throws", async () => {
+  it("inline path (admin.ts) returns 503 permissions_unavailable when checkPermission throws synchronously", async () => {
     mockCheckPermission.mockImplementation(() => {
       throw new Error("simulated authorization layer crash");
     });

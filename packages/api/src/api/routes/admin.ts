@@ -154,12 +154,8 @@ async function adminAuthAndContext(
   // reads from c.get("atlasMode") — populate it once per request and log any
   // developer-mode request we downgraded due to insufficient role (matches
   // the security signal emitted by `resolveModeForRequest` on the
-  // adminAuth/standardAuth middleware paths).
-  //
-  // Note: the downgrade branch is defensive — `requireAdminAuth` above
-  // already 403's non-admin users before this point, so in practice the
-  // downgrade never fires for admin routes. It stays for parity with the
-  // other auth preambles in case admin gating is ever relaxed.
+  // adminAuth/standardAuth middleware paths). The downgrade branch stays
+  // for parity in case admin gating is ever relaxed.
   if (typeof c.set === "function") {
     const cookieHeader = c.req.raw.headers.get("cookie");
     const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");

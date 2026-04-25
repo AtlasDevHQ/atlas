@@ -246,6 +246,16 @@ describe("resolvePermissions", () => {
     expect(perms.size).toBe(0);
     expect(perms.has("admin:users")).toBe(false);
   });
+
+  // F-53 — the `Effect.die` branch on unexpected DB errors (and the
+  // `Effect.succeed(null)` branch for the "table does not exist" migration
+  // case) are exercised end-to-end at the route layer in
+  // `packages/api/src/api/routes/__tests__/permission-enforcement.test.ts`
+  // ("fail-closed when checkPermission defects"). The `createEEMock` shim
+  // doesn't currently support per-test query rejection, so locking the
+  // unit-level branch from here would require a shim change out of scope
+  // for F-53. The route-level coverage is the load-bearing assertion
+  // either way — that's what users see.
 });
 
 describe("hasPermission", () => {

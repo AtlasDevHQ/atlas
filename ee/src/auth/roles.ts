@@ -164,15 +164,16 @@ export function isValidRoleName(name: string): boolean {
  * Legacy role-to-permission mapping for non-enterprise deployments and the
  * fall-through path when no custom role row matches the user's `member.role`.
  *
- * `platform_admin` carries all permissions — it sits above the workspace
- * admin tier and must not be downgraded to `member` on lookup miss. Adding a
- * future built-in role to `ATLAS_ROLES` requires an entry here too; the
- * fall-through default below is `member`, which strips admin flags.
+ * **Load-bearing for admin-route access** — `requirePermission` /
+ * `enforcePermission` consult this table whenever a user's role is not in
+ * the `custom_roles` table. Removing or narrowing entries is a security
+ * change: `platform_admin` and `admin` get full PERMISSIONS, `member` gets
+ * the read-only pair, and any role not listed here falls through to the
+ * `member` default below — which strips every admin:* flag. Adding a new
+ * built-in role to `ATLAS_ROLES` requires a matching entry here.
  *
- * F-53 made this table load-bearing: prior to wiring `checkPermission()`
- * into the admin route layer this mapping was only consulted by UI display
- * code, so the omission of `platform_admin` was harmless. Now it gates
- * actual route access.
+ * See F-53 in `.claude/research/security-audit-1-2-3.md` for the full
+ * remediation context.
  */
 const LEGACY_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
   owner: [...PERMISSIONS],

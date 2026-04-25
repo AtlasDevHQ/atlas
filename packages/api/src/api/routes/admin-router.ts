@@ -210,8 +210,10 @@ export function requireOrgContext() {
  * it passes through.
  *
  * `auth mode === "none"` (local dev / self-hosted no-auth) is treated as
- * implicit admin and grants every permission via the same path
- * `resolvePermissions` uses.
+ * implicit admin: `adminAuth` lets the request through with `authResult.user`
+ * possibly undefined, and `resolvePermissions` short-circuits an undefined
+ * user in `mode === "none"` to the full PERMISSIONS set — so every flag
+ * passes without consulting the legacy mapping or the custom-roles table.
  *
  * @example
  * ```ts

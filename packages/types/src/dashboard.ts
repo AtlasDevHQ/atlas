@@ -21,19 +21,6 @@ export interface DashboardCardLayout {
   h: number;
 }
 
-/**
- * Bounds of the dashboard tile grid. Single source of truth shared by the API
- * Zod schema and the web grid math.
- */
-export const DASHBOARD_GRID = {
-  COLS: 24,
-  MIN_W: 3,
-  MAX_W: 24,
-  MIN_H: 4,
-  MAX_H: 200,
-  MAX_Y: 10_000,
-} as const;
-
 // ---------------------------------------------------------------------------
 // API shapes (camelCase)
 // ---------------------------------------------------------------------------

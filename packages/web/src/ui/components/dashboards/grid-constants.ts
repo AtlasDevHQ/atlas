@@ -1,8 +1,13 @@
-import { DASHBOARD_GRID } from "@/ui/lib/types";
+/**
+ * Web-side grid constants. Must mirror `DASHBOARD_GRID` in
+ * `packages/api/src/lib/dashboard-types.ts` (the Zod schema there gates persisted
+ * layouts). They aren't in `@useatlas/types` because that would require an npm
+ * publish + template ref bump for every change.
+ */
 
-export const COLS = DASHBOARD_GRID.COLS;
-export const MIN_W = DASHBOARD_GRID.MIN_W;
-export const MIN_H = DASHBOARD_GRID.MIN_H;
+export const COLS = 24;
+export const MIN_W = 3;
+export const MIN_H = 4;
 
 export const ROW_H = 40;
 export const GAP = 10;

@@ -129,9 +129,35 @@ export default function DashboardViewPage() {
   }
 
   async function handleDeleteDashboard() {
+    // Pre-fetch the next-most-recent dashboard so we can land the user on it
+    // after the delete settles. If this was the last dashboard, /dashboards
+    // falls through to the empty state. We compute `next` BEFORE the delete
+    // because `useAdminFetch` invalidations clear the in-memory list first,
+    // and we want the navigation target locked in.
+    let nextId: string | null = null;
+    try {
+      const res = await fetch(`/api/v1/dashboards`, { credentials: "include" });
+      if (res.ok) {
+        const json = (await res.json()) as { dashboards?: { id: string; updatedAt: string }[] };
+        const others = (json.dashboards ?? [])
+          .filter((d) => d.id !== id)
+          .toSorted((a, b) => {
+            const diff = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+            if (diff !== 0) return diff;
+            return a.id.localeCompare(b.id);
+          });
+        nextId = others[0]?.id ?? null;
+      }
+    } catch (err) {
+      console.debug(
+        "[dashboard] Pre-delete next-dashboard lookup failed; falling back to /dashboards:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
     const result = await mutate({ path: `/api/v1/dashboards/${id}`, method: "DELETE" });
     if (!result.ok) return;
-    router.push("/dashboards");
+    router.push(nextId ? `/dashboards/${nextId}` : "/dashboards");
   }
 
   async function handleUpdateCardTitle(cardId: string, title: string) {
@@ -279,6 +305,7 @@ export default function DashboardViewPage() {
         {!loading && !error && dashboard && (
           <>
             <DashboardTopBar
+              dashboardId={dashboard.id}
               title={dashboard.title}
               cardCount={dashboard.cards.length}
               description={dashboard.description}

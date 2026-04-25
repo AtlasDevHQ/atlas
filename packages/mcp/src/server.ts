@@ -12,24 +12,37 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { initializeConfig } from "@atlas/api/lib/config";
+import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
+import { resolveMcpActor } from "./actor.js";
 
 const VERSION = "0.1.0";
 
 interface CreateMcpServerOptions {
   /** Skip config initialization (useful when config is already loaded). */
   skipConfig?: boolean;
+  /**
+   * Inject a pre-resolved actor (test seam — production callers should
+   * leave this unset and let `resolveMcpActor()` read env vars at boot).
+   */
+  actor?: AtlasUser;
 }
 
 /**
  * Create and configure an Atlas MCP server.
  *
  * 1. Initializes config (atlas.config.ts or env vars) — same as Hono server.ts
- * 2. Registers the core tools (explore, executeSQL) as MCP tools
- * 3. Registers semantic layer YAML files as MCP resources
- * 4. Registers prompt templates (built-in, semantic layer, prompt library)
+ * 2. Resolves the MCP actor identity (#1858) — fails loud at boot when
+ *    approval rules exist without a `ATLAS_MCP_USER_ID` + `ATLAS_MCP_ORG_ID`
+ *    binding, otherwise produces either the bound user or a synthetic
+ *    `system:mcp` actor for trusted-transport mode.
+ * 3. Registers the core tools (explore, executeSQL) as MCP tools, wrapping
+ *    every dispatch in `withRequestContext({ user })` so the approval gate
+ *    sees a bound actor.
+ * 4. Registers semantic layer YAML files as MCP resources
+ * 5. Registers prompt templates (built-in, semantic layer, prompt library)
  */
 export async function createAtlasMcpServer(
   opts?: CreateMcpServerOptions,
@@ -38,12 +51,14 @@ export async function createAtlasMcpServer(
     await initializeConfig();
   }
 
+  const actor = opts?.actor ?? (await resolveMcpActor());
+
   const server = new McpServer({
     name: "atlas",
     version: VERSION,
   });
 
-  registerTools(server);
+  registerTools(server, { actor });
   registerResources(server);
   await registerPrompts(server);
 

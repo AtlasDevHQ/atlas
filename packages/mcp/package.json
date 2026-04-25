@@ -16,7 +16,9 @@
   },
   "dependencies": {
     "@atlas/api": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.28.0"
+    "@atlas/ee": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "effect": "^3.21.0"
   },
   "devDependencies": {
     "zod": "^4.3.6"

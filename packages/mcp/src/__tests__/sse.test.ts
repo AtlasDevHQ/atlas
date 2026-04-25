@@ -1,6 +1,13 @@
 import { describe, expect, it, afterEach, mock } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
+
+// Inject a bound actor so SSE tests don't depend on `resolveMcpActor`.
+const SSE_ACTOR = createAtlasUser("u_sse", "managed", "sse@test", {
+  role: "admin",
+  activeOrganizationId: "org_sse",
+});
 
 // Mock config initialization to avoid requiring a real database
 mock.module("@atlas/api/lib/config", () => ({
@@ -51,7 +58,7 @@ afterEach(async () => {
 
 describe("SSE server — lifecycle", () => {
   it("starts and exposes a health endpoint", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const res = await fetch(`http://localhost:${handle.server.port}/health`);
     expect(res.status).toBe(200);
@@ -62,14 +69,14 @@ describe("SSE server — lifecycle", () => {
   });
 
   it("returns 404 for unknown paths", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const res = await fetch(`http://localhost:${handle.server.port}/unknown`);
     expect(res.status).toBe(404);
   });
 
   it("handles CORS preflight on /mcp", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const res = await fetch(`http://localhost:${handle.server.port}/mcp`, {
       method: "OPTIONS",
@@ -80,14 +87,14 @@ describe("SSE server — lifecycle", () => {
   });
 
   it("includes CORS headers on /health response", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const res = await fetch(`http://localhost:${handle.server.port}/health`);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
   });
 
   it("respects custom CORS origin", async () => {
-    handle = await startSseServer(createAtlasMcpServer, {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
       port: 0,
       corsOrigin: "https://example.com",
     });
@@ -97,7 +104,7 @@ describe("SSE server — lifecycle", () => {
   });
 
   it("close() shuts down cleanly", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
     const port = handle.server.port;
 
     // Verify server is running
@@ -119,14 +126,14 @@ describe("SSE server — lifecycle", () => {
 
   it("rejects invalid port", async () => {
     await expect(
-      startSseServer(createAtlasMcpServer, { port: -1 }),
+      startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: -1 }),
     ).rejects.toThrow("Invalid port");
   });
 });
 
 describe("SSE server — MCP client integration", () => {
   it("connects an MCP client and lists tools", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const client = new Client({ name: "test-sse-client", version: "0.0.1" });
     const transport = new StreamableHTTPClientTransport(
@@ -144,7 +151,7 @@ describe("SSE server — MCP client integration", () => {
   });
 
   it("connects an MCP client and lists resources", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const client = new Client({ name: "test-sse-client", version: "0.0.1" });
     const transport = new StreamableHTTPClientTransport(
@@ -162,7 +169,7 @@ describe("SSE server — MCP client integration", () => {
   });
 
   it("calls explore tool over SSE", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const client = new Client({ name: "test-sse-client", version: "0.0.1" });
     const transport = new StreamableHTTPClientTransport(
@@ -183,7 +190,7 @@ describe("SSE server — MCP client integration", () => {
   });
 
   it("returns 404 for unknown session ID", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const res = await fetch(`http://localhost:${handle.server.port}/mcp`, {
       method: "POST",
@@ -198,7 +205,7 @@ describe("SSE server — MCP client integration", () => {
   });
 
   it("health endpoint shows active sessions", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     // Connect a client to create a session
     const client = new Client({ name: "test-sse-client", version: "0.0.1" });
@@ -215,7 +222,7 @@ describe("SSE server — MCP client integration", () => {
   });
 
   it("handles multiple concurrent clients", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const client1 = new Client({ name: "client-1", version: "0.0.1" });
     const transport1 = new StreamableHTTPClientTransport(
@@ -245,7 +252,7 @@ describe("SSE server — MCP client integration", () => {
   });
 
   it("rejects new sessions when maxSessions is reached", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0, maxSessions: 1 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0, maxSessions: 1 });
 
     // First client connects fine
     const client = new Client({ name: "client-1", version: "0.0.1" });
@@ -275,7 +282,7 @@ describe("SSE server — MCP client integration", () => {
   });
 
   it("returns 500 for malformed requests without crashing", async () => {
-    handle = await startSseServer(createAtlasMcpServer, { port: 0 });
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), { port: 0 });
 
     const res = await fetch(`http://localhost:${handle.server.port}/mcp`, {
       method: "POST",

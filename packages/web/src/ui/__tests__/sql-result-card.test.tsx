@@ -63,7 +63,49 @@ describe("SQLResultCard", () => {
         })}
       />,
     );
+    // Failure card surfaces the actual error message and the SQL that failed,
+    // plus the agent's explanation when present — not a generic "Query failed".
+    expect(container.textContent).toContain("relation does not exist");
+    expect(container.textContent).toContain("SELECT");
+  });
+
+  test("renders generic fallback when failed query has no error message", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          input: { sql: "SELECT 1", explanation: "" },
+          output: { success: false },
+        })}
+      />,
+    );
     expect(container.textContent).toContain("Query failed");
+  });
+
+  test("renders 'Tried N times' badge on failure card when repeatedCount >= 2", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          output: { success: false, error: "table missing" },
+        })}
+        repeatedCount={3}
+      />,
+    );
+    expect(container.textContent).toContain("Tried 3 times");
+  });
+
+  test("does not render the badge when repeatedCount is 1 or undefined", () => {
+    const { container: c1 } = render(
+      <SQLResultCard
+        part={makePart({ output: { success: false, error: "x" } })}
+        repeatedCount={1}
+      />,
+    );
+    expect(c1.textContent).not.toContain("Tried");
+
+    const { container: c2 } = render(
+      <SQLResultCard part={makePart({ output: { success: false, error: "x" } })} />,
+    );
+    expect(c2.textContent).not.toContain("Tried");
   });
 
   test("renders warning when result is null", () => {

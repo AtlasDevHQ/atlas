@@ -24,10 +24,19 @@ function toStringRows(columns: string[], rows: Record<string, unknown>[]): strin
 }
 
 
-export function SQLResultCard({ part, previousExecution }: { part: unknown; previousExecution?: PreviousExecution }) {
+export function SQLResultCard({
+  part,
+  previousExecution,
+  repeatedCount,
+}: {
+  part: unknown;
+  previousExecution?: PreviousExecution;
+  /** Total occurrences when the page-level renderer has collapsed identical failures. >= 2 renders a "Tried N times" badge; otherwise omitted. */
+  repeatedCount?: number;
+}) {
   return (
     <ResultCardErrorBoundary label="SQL">
-      <SQLResultCardInner part={part} previousExecution={previousExecution} />
+      <SQLResultCardInner part={part} previousExecution={previousExecution} repeatedCount={repeatedCount} />
     </ResultCardErrorBoundary>
   );
 }
@@ -56,7 +65,15 @@ function formatPreviousExecution(
   return parts.length > 0 ? `was ${parts.join(" · ")}` : null;
 }
 
-function SQLResultCardInner({ part, previousExecution }: { part: unknown; previousExecution?: PreviousExecution }) {
+function SQLResultCardInner({
+  part,
+  previousExecution,
+  repeatedCount,
+}: {
+  part: unknown;
+  previousExecution?: PreviousExecution;
+  repeatedCount?: number;
+}) {
   const dark = useDarkMode();
   const bridge = useDashboardBridge();
   const args = getToolArgs(part);
@@ -107,9 +124,34 @@ function SQLResultCardInner({ part, previousExecution }: { part: unknown; previo
   }
 
   if (!result.success) {
+    const errorMessage =
+      typeof result.error === "string" && result.error.trim()
+        ? result.error
+        : "Query failed.";
+    const explanation =
+      typeof args.explanation === "string" && args.explanation.trim()
+        ? args.explanation
+        : null;
+    const repeatBadge =
+      typeof repeatedCount === "number" && repeatedCount > 1
+        ? `Tried ${repeatedCount} times`
+        : null;
     return (
-      <div className="my-2 rounded-lg border border-red-300 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 px-3 py-2 text-xs">
-        Query failed. Check the query and try again.
+      <div className="rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
+        <div className="flex items-start justify-between gap-2">
+          {explanation && <p className="font-medium">{explanation}</p>}
+          {repeatBadge && (
+            <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-red-700 dark:bg-red-950/40 dark:text-red-400">
+              {repeatBadge}
+            </span>
+          )}
+        </div>
+        <p className={explanation ? "mt-0.5 opacity-80" : ""}>{errorMessage}</p>
+        {sql && (
+          <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-100/60 px-2 py-1 font-mono text-xs leading-snug text-red-900 dark:bg-red-950/40 dark:text-red-300">
+            {sql}
+          </pre>
+        )}
       </div>
     );
   }

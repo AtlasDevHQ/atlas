@@ -3,7 +3,9 @@
 import { Suspense, useState, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useChat } from "@ai-sdk/react";
-import { isToolUIPart } from "ai";
+import { isToolUIPart, getToolName } from "ai";
+import { cn } from "@/lib/utils";
+import { computeSqlFailureDedup } from "@/ui/lib/sql-failure-dedup";
 import { useQueryStates } from "nuqs";
 import { chatSearchParams } from "./search-params";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
@@ -65,7 +67,6 @@ function ChatPage() {
   const [starterPrompts, setStarterPrompts] = useState<
     Array<{ id: string; text: string; provenance: string }>
   >([]);
-  const [starterPromptsLoading, setStarterPromptsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastLoadedIdRef = useRef<string | null>(null);
 
@@ -131,7 +132,6 @@ function ChatPage() {
   useEffect(() => {
     if (messages.length > 0) return;
     let cancelled = false;
-    setStarterPromptsLoading(true);
     const apiUrl = getApiUrl();
     const credentials: RequestCredentials = isCrossOrigin() ? "include" : "same-origin";
     fetch(`${apiUrl}/api/v1/starter-prompts?limit=6`, {
@@ -158,12 +158,9 @@ function ChatPage() {
         }
       })
       .catch(() => {
-        // intentionally ignored: network/parse failures are non-critical —
-        // HTTP 5xx is logged above, and an empty list renders the
-        // single-CTA cold-start UI.
-      })
-      .finally(() => {
-        if (!cancelled) setStarterPromptsLoading(false);
+        // intentionally ignored: network/parse failures are non-critical.
+        // HTTP 5xx is logged above, and an empty starter list collapses
+        // the grid back to the bare cold-start headline.
       });
     return () => { cancelled = true; };
   }, [messages.length, getHeaders]);
@@ -311,7 +308,7 @@ function ChatPage() {
           <main id="main" className="flex flex-1 flex-col overflow-hidden">
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
               {/* Toolbar */}
-              <div className="mb-3 flex items-center justify-between">
+              <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
                 <div className="flex items-center gap-2">
                   {convos.available && (
                     <Button
@@ -377,16 +374,11 @@ function ChatPage() {
               <ScrollArea viewportRef={scrollRef} className="min-h-0 flex-1">
                 <div className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !chatError && (
-                    <div className="flex h-full flex-col items-center justify-center gap-6 pt-16">
-                      <div className="text-center">
-                        <p className="text-lg font-medium text-zinc-500 dark:text-zinc-400">
-                          What would you like to know?
-                        </p>
-                        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-500">
-                          Ask a question about your data to get started
-                        </p>
-                      </div>
-                      {starterPrompts.length > 0 ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-6">
+                      <p className="text-lg font-medium text-zinc-600 dark:text-zinc-300">
+                        What would you like to know?
+                      </p>
+                      {starterPrompts.length > 0 && (
                         <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                           {starterPrompts.map((prompt) => (
                             <Button
@@ -399,12 +391,6 @@ function ChatPage() {
                             </Button>
                           ))}
                         </div>
-                      ) : (
-                        !starterPromptsLoading && (
-                          <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-500">
-                            Ask your first question below — we&apos;ll learn from your team&apos;s queries and surface their best starters here.
-                          </p>
-                        )
                       )}
                     </div>
                   )}
@@ -442,14 +428,33 @@ function ChatPage() {
                       ? parseSuggestions(lastTextWithSuggestions.text).suggestions
                       : [];
 
+                    const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(m.parts);
+
                     return (
-                      <div key={m.id} className="space-y-2" role="article" aria-label="Message from Atlas">
+                      <div
+                        key={m.id}
+                        className="border-l-2 border-primary/30 pl-4"
+                        role="article"
+                        aria-label="Message from Atlas"
+                      >
                         {m.parts?.map((part, i) => {
+                          if (skipFailureIndex.has(i)) return null;
+
+                          const prevPart = i > 0 ? m.parts?.[i - 1] : undefined;
+                          const isExplore =
+                            isToolUIPart(part) && getToolName(part) === "explore";
+                          const prevIsExplore =
+                            prevPart && isToolUIPart(prevPart) &&
+                            getToolName(prevPart) === "explore";
+                          // Consecutive explore rows sit flush; everything else gets breathing room.
+                          const spacing =
+                            i === 0 ? "" : isExplore && prevIsExplore ? "mt-0" : "mt-2";
+
                           if (part.type === "text" && part.text.trim()) {
                             const displayText = parseSuggestions(part.text).text;
                             if (!displayText.trim()) return null;
                             return (
-                              <div key={i} className="max-w-[90%]">
+                              <div key={i} className={cn("max-w-[90%]", spacing)}>
                                 <div className="rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
                                   <Markdown content={displayText} />
                                 </div>
@@ -458,8 +463,8 @@ function ChatPage() {
                           }
                           if (isToolUIPart(part)) {
                             return (
-                              <div key={i} className="max-w-[95%]">
-                                <ToolPart part={part} />
+                              <div key={i} className={cn("max-w-[95%]", spacing)}>
+                                <ToolPart part={part} repeatedCount={failureRuns.get(i)} />
                               </div>
                             );
                           }

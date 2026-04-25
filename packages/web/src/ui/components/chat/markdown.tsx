@@ -62,7 +62,7 @@ const mdComponents = {
     <p className="mb-3 leading-relaxed last:mb-0">{children}</p>
   ),
   h1: ({ children }: { children?: ReactNode }) => (
-    <h1 className="mb-2 mt-4 text-lg font-bold first:mt-0">{children}</h1>
+    <h1 className="mb-2 mt-4 text-lg font-semibold first:mt-0">{children}</h1>
   ),
   h2: ({ children }: { children?: ReactNode }) => (
     <h2 className="mb-2 mt-3 text-base font-semibold first:mt-0">{children}</h2>

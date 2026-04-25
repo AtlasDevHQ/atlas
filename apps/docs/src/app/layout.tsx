@@ -2,6 +2,7 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
+import WebMCP from "@/components/webmcp";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://docs.useatlas.dev"),
@@ -18,6 +19,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     <html lang="en" suppressHydrationWarning>
       <body className="flex min-h-screen flex-col">
         <RootProvider>{children}</RootProvider>
+        <WebMCP />
       </body>
     </html>
   );

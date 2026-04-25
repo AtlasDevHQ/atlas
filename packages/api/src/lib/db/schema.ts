@@ -130,9 +130,7 @@ export const slackInstallations = pgTable(
   "slack_installations",
   {
     teamId: text("team_id").primaryKey(),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    botToken: text("bot_token"),
-    botTokenEncrypted: text("bot_token_encrypted"),
+    botTokenEncrypted: text("bot_token_encrypted").notNull(),
     // F-47 key version for `bot_token_encrypted`.
     botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
     orgId: text("org_id"),
@@ -1059,8 +1057,7 @@ export const teamsInstallations = pgTable(
     tenantId: text("tenant_id").primaryKey(),
     orgId: text("org_id"),
     tenantName: text("tenant_name"),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    appPassword: text("app_password"),
+    // Stays nullable — admin-consent installs persist no password.
     appPasswordEncrypted: text("app_password_encrypted"),
     // F-47 key version for `app_password_encrypted`.
     appPasswordKeyVersion: integer("app_password_key_version").notNull().default(1),
@@ -1081,8 +1078,7 @@ export const discordInstallations = pgTable(
     guildId: text("guild_id").primaryKey(),
     orgId: text("org_id"),
     guildName: text("guild_name"),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    botToken: text("bot_token"),
+    // Stays nullable — OAuth installs leave bot_token unset until BYOT supplies it.
     botTokenEncrypted: text("bot_token_encrypted"),
     // F-47 key version for `bot_token_encrypted`.
     botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
@@ -1103,9 +1099,7 @@ export const telegramInstallations = pgTable(
   "telegram_installations",
   {
     botId: text("bot_id").primaryKey(),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    botToken: text("bot_token"),
-    botTokenEncrypted: text("bot_token_encrypted"),
+    botTokenEncrypted: text("bot_token_encrypted").notNull(),
     // F-47 key version for `bot_token_encrypted`.
     botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
     botUsername: text("bot_username"),
@@ -1126,9 +1120,7 @@ export const gchatInstallations = pgTable(
   {
     projectId: text("project_id").primaryKey(),
     serviceAccountEmail: text("service_account_email").notNull(),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    credentialsJson: text("credentials_json"),
-    credentialsJsonEncrypted: text("credentials_json_encrypted"),
+    credentialsJsonEncrypted: text("credentials_json_encrypted").notNull(),
     // F-47 key version for `credentials_json_encrypted`.
     credentialsJsonKeyVersion: integer("credentials_json_key_version").notNull().default(1),
     orgId: text("org_id"),
@@ -1147,9 +1139,7 @@ export const githubInstallations = pgTable(
   "github_installations",
   {
     userId: text("user_id").primaryKey(),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    accessToken: text("access_token"),
-    accessTokenEncrypted: text("access_token_encrypted"),
+    accessTokenEncrypted: text("access_token_encrypted").notNull(),
     // F-47 key version for `access_token_encrypted`.
     accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
     username: text("username"),
@@ -1169,9 +1159,7 @@ export const linearInstallations = pgTable(
   "linear_installations",
   {
     userId: text("user_id").primaryKey(),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    apiKey: text("api_key"),
-    apiKeyEncrypted: text("api_key_encrypted"),
+    apiKeyEncrypted: text("api_key_encrypted").notNull(),
     // F-47 key version for `api_key_encrypted`.
     apiKeyKeyVersion: integer("api_key_key_version").notNull().default(1),
     userName: text("user_name"),
@@ -1192,9 +1180,7 @@ export const whatsappInstallations = pgTable(
   "whatsapp_installations",
   {
     phoneNumberId: text("phone_number_id").primaryKey(),
-    // Plaintext column relaxed to nullable for F-41 dual-write back-compat — dropped in #1832.
-    accessToken: text("access_token"),
-    accessTokenEncrypted: text("access_token_encrypted"),
+    accessTokenEncrypted: text("access_token_encrypted").notNull(),
     // F-47 key version for `access_token_encrypted`.
     accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
     displayPhone: text("display_phone"),
@@ -1216,11 +1202,9 @@ export const emailInstallations = pgTable(
     configId: text("config_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     provider: text("provider").notNull(),
     senderAddress: text("sender_address").notNull(),
-    // F-41 dual-write: plaintext JSONB relaxed for back-compat. The
-    // `config_encrypted` TEXT column carries `encryptSecret(JSON.stringify(config))`.
-    // The plaintext JSONB column is dropped in #1832.
-    config: jsonb("config").$type<Record<string, unknown>>(),
-    configEncrypted: text("config_encrypted"),
+    // `config_encrypted` carries `encryptSecret(JSON.stringify(config))` —
+    // the JSONB sibling was dropped in 0040 once F-41 cleared soak.
+    configEncrypted: text("config_encrypted").notNull(),
     // F-47 key version for `config_encrypted`.
     configKeyVersion: integer("config_key_version").notNull().default(1),
     orgId: text("org_id"),
@@ -1385,11 +1369,9 @@ export const sandboxCredentials = pgTable(
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     orgId: text("org_id").notNull(),
     provider: text("provider").notNull(),
-    // F-41 dual-write: plaintext JSONB relaxed for back-compat. The
-    // `credentials_encrypted` TEXT column carries `encryptSecret(JSON.stringify(credentials))`.
-    // The plaintext JSONB column is dropped in #1832.
-    credentials: jsonb("credentials"),
-    credentialsEncrypted: text("credentials_encrypted"),
+    // `credentials_encrypted` carries `encryptSecret(JSON.stringify(credentials))` —
+    // the JSONB sibling was dropped in 0040 once F-41 cleared soak.
+    credentialsEncrypted: text("credentials_encrypted").notNull(),
     // F-47 key version for `credentials_encrypted`.
     credentialsKeyVersion: integer("credentials_key_version").notNull().default(1),
     displayName: text("display_name"),

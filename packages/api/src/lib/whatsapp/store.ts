@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -16,7 +16,7 @@ export type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atla
 
 const log = createLogger("whatsapp-store");
 
-const SELECT_COLS = "phone_number_id, access_token, access_token_encrypted, display_phone, org_id, installed_at::text";
+const SELECT_COLS = "phone_number_id, access_token_encrypted, display_phone, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -27,9 +27,19 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): WhatsAppInstallationWithSecret | null {
   const phoneNumberId = row.phone_number_id;
-  const accessToken = pickDecryptedSecret(row.access_token_encrypted, row.access_token);
-  if (typeof phoneNumberId !== "string" || !phoneNumberId || !accessToken) {
+  const encrypted = row.access_token_encrypted;
+  if (typeof phoneNumberId !== "string" || !phoneNumberId || typeof encrypted !== "string" || encrypted.length === 0) {
     log.warn(context, "Invalid WhatsApp installation record in database");
+    return null;
+  }
+  let accessToken: string;
+  try {
+    accessToken = decryptSecret(encrypted);
+  } catch (err) {
+    log.error(
+      { ...context, err: err instanceof Error ? err.message : String(err) },
+      "Failed to decrypt whatsapp_installations.access_token_encrypted",
+    );
     return null;
   }
   return {
@@ -131,18 +141,17 @@ export async function saveWhatsAppInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ phone_number_id: string }>(
-      `INSERT INTO whatsapp_installations (phone_number_id, access_token, access_token_encrypted, access_token_key_version, display_phone, org_id)
-       VALUES ($1, $2, $3, $6, $4, $5)
+      `INSERT INTO whatsapp_installations (phone_number_id, access_token_encrypted, access_token_key_version, display_phone, org_id)
+       VALUES ($1, $2, $5, $3, $4)
        ON CONFLICT (phone_number_id) DO UPDATE SET
-         access_token = $2,
-         access_token_encrypted = $3,
-         access_token_key_version = $6,
-         display_phone = COALESCE($4, whatsapp_installations.display_phone),
-         org_id = COALESCE($5, whatsapp_installations.org_id),
+         access_token_encrypted = $2,
+         access_token_key_version = $5,
+         display_phone = COALESCE($3, whatsapp_installations.display_phone),
+         org_id = COALESCE($4, whatsapp_installations.org_id),
          installed_at = now()
-       WHERE whatsapp_installations.org_id IS NULL OR whatsapp_installations.org_id = $5
+       WHERE whatsapp_installations.org_id IS NULL OR whatsapp_installations.org_id = $4
        RETURNING phone_number_id`,
-      [phoneNumberId, opts.accessToken, accessTokenEncrypted, displayPhone, orgId, keyVersion],
+      [phoneNumberId, accessTokenEncrypted, displayPhone, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

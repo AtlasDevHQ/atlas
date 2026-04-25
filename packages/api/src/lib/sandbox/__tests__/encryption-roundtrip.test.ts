@@ -53,8 +53,8 @@ describe("F-41 sandbox real-AES round-trip", () => {
     const creds = { token: "vrc_real_round_trip", teamId: "team_xyz" };
     await saveSandboxCredential("org-1", "vercel", creds, "Prod");
     const insert = capturedQueries.find((q) => q.sql.includes("INSERT INTO sandbox_credentials"));
-    const plaintextJson = insert!.params[2] as string;
-    const encryptedBlob = insert!.params[3] as string;
+    // Post-#1832 params: [orgId, provider, credentialsEncrypted, displayName, keyVersion]
+    const encryptedBlob = insert!.params[2] as string;
 
     expect(encryptedBlob.startsWith("enc:v1:")).toBe(true);
     expect(encryptedBlob).not.toContain("vrc_real_round_trip");
@@ -64,7 +64,6 @@ describe("F-41 sandbox real-AES round-trip", () => {
         id: "c-rt",
         org_id: "org-1",
         provider: "vercel",
-        credentials: JSON.parse(plaintextJson),
         credentials_encrypted: encryptedBlob,
         display_name: "Prod",
         validated_at: "2026-04-24T00:00:00Z",

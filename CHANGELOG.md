@@ -10,6 +10,15 @@ Public semver releases will start fresh when the API stabilizes — see
 
 ## [Unreleased]
 
+### Security
+
+- F-41 plaintext-column drop: dropped the plaintext credential columns from all 10 workspace integration tables (`slack_installations.bot_token`, `teams_installations.app_password`, `discord_installations.bot_token`, `telegram_installations.bot_token`, `gchat_installations.credentials_json`, `github_installations.access_token`, `linear_installations.api_key`, `whatsapp_installations.access_token`, `email_installations.config`, `sandbox_credentials.credentials`). Reads now decrypt `<col>_encrypted` directly; the back-compat fall-through in each integration store and `pickDecryptedSecret` / the email/sandbox `pickEncryptedConfig` helpers are deleted. `backfill-integration-credentials.ts` is removed (one-shot tool, never runs again). Operator pre-flight checks against US/EU/APAC must report zero residue rows before applying migration `0040_drop_integration_plaintext.sql` — see `apps/docs/content/docs/platform-ops/plugin-config-residue-audit.mdx`. Closes #1832
+- F-42 plaintext-residue audit + strict mode: new read-only `bun run packages/api/scripts/audit-plugin-config-residue.ts` walks every encrypted column and every `secret: true` field in `plugin_settings.config` / `workspace_plugins.config` and exits `2` with row IDs (no values) when residue is found. New `ATLAS_STRICT_PLUGIN_SECRETS=true` env var rejects plugin admin writes whose catalog schema is corrupt or carries per-key secret-vs-passthrough drift, returning `422 Unprocessable Entity` with an actionable message. Default off preserves the existing tolerant passthrough; SaaS regions opt in. Closes #1835
+
+### Breaking
+
+- The plaintext credential columns listed above are gone. Any downstream tooling that read directly from those columns (custom backups, reporting queries, ad-hoc admin scripts) must migrate to read `<col>_encrypted` and decrypt via `decryptSecret` from `@atlas/api/lib/db/secret-encryption`. The encrypted-only shape was the dual-write contract since 2026-04-24, so the change is a column drop, not a semantic break for callers using `getInstallation*` helpers.
+
 ## 0.2.0 — Plugin Ecosystem (2026-03-10)
 
 ### Added

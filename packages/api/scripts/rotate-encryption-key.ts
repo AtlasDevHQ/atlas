@@ -47,9 +47,9 @@ import {
   encryptSecret,
 } from "@atlas/api/lib/db/secret-encryption";
 import {
-  TABLES as INTEGRATION_TABLES,
-  type TableConfig,
-} from "@atlas/api/lib/db/backfill-integration-credentials";
+  INTEGRATION_TABLES,
+  type IntegrationTable,
+} from "@atlas/api/lib/db/integration-tables";
 
 const log = createLogger("rotate-encryption-key");
 
@@ -59,10 +59,8 @@ const log = createLogger("rotate-encryption-key");
 
 /**
  * A column whose ciphertext the rotation script should re-encrypt. The
- * shape overlaps with F-41's `TableConfig` — every field except
- * `plaintext` (which only matters for backfill) is identical — so we
- * reuse it and tack on a `kind` discriminator to pick the right cipher
- * helper pair:
+ * shape extends `IntegrationTable` (the F-41 catalog) with a `kind`
+ * discriminator that picks the right cipher helper pair:
  *
  *   `url`    → `encryptUrl` / `decryptUrl` (connection URL, with
  *              plaintext `postgres://…` fallback for pre-encryption
@@ -73,21 +71,15 @@ const log = createLogger("rotate-encryption-key");
  *              identically now that both helpers share the versioned-
  *              keyset decryptor)
  */
-type RotateTarget = Omit<TableConfig, "plaintext" | "kind"> & { kind: "url" | "secret" };
+type RotateTarget = IntegrationTable & { kind: "url" | "secret" };
 
 const ROTATION_TABLES: readonly RotateTarget[] = [
   { table: "connections", pk: "id", encrypted: "url", keyVersionColumn: "url_key_version", kind: "url" },
   { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version", kind: "secret" },
   // Derive from F-41's INTEGRATION_TABLES so adding a new integration
-  // in one place covers both backfill and rotation — matches the
-  // "single source of truth" convention already used by F-41.
-  ...INTEGRATION_TABLES.map((t): RotateTarget => ({
-    table: t.table,
-    pk: t.pk,
-    encrypted: t.encrypted,
-    keyVersionColumn: t.keyVersionColumn,
-    kind: "secret",
-  })),
+  // in one place covers rotation, audit, and any future column-walking
+  // tooling — matches the "single source of truth" convention.
+  ...INTEGRATION_TABLES.map((t): RotateTarget => ({ ...t, kind: "secret" })),
 ];
 
 // Parameterize table / column names into validated identifiers — we
@@ -218,7 +210,7 @@ export async function rotateTable(
 // Main
 // ---------------------------------------------------------------------------
 
-/** 32-bit stable hash — same key family as `backfill-integration-credentials` */
+/** 32-bit stable hash — distinct family from any prior backfill scripts */
 const LOCK_KEY = 0x1f47; // arbitrary, stable across runs so concurrent operators block
 
 async function main(): Promise<void> {

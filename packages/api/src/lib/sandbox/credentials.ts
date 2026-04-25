@@ -36,49 +36,39 @@ export interface SandboxCredential {
 // ---------------------------------------------------------------------------
 
 /**
- * Decode the provider credentials blob. Prefer `credentials_encrypted`
- * and fall back to the plaintext JSONB when the encrypted column is
- * missing *or* fails to decrypt. The decrypt-failure fallback is
- * load-bearing during the F-41 soak (see `email/store.ts`'s matching
- * helper for the same rationale).
+ * Decode the provider credentials blob from `credentials_encrypted`.
+ * Two branches:
+ *
+ *   • encrypted column NULL/empty   → return null (caller treats the
+ *                                     record as invalid).
+ *   • encrypted column has data,
+ *     decrypt / JSON.parse throws   → THROW. The route layer surfaces
+ *                                     a 500 with `requestId` so the
+ *                                     admin sees the underlying
+ *                                     decrypt failure rather than a
+ *                                     silently-missing row.
+ *
+ * Throw-on-decrypt-failure is symmetric with `email/store.ts`'s
+ * matching helper. Listing endpoints (`getSandboxCredentials`) let
+ * the throw propagate — one bad row breaks the page until the
+ * operator runs the F-42 audit script and fixes the residue, which
+ * is the "fail loud" outcome the security promise requires.
  */
-function pickEncryptedCredentials(
+function decodeEncryptedCredentials(
   encrypted: unknown,
-  plaintext: unknown,
   context: Record<string, unknown>,
 ): Record<string, unknown> | null {
-  if (typeof encrypted === "string" && encrypted.length > 0) {
-    try {
-      const decoded = decryptSecret(encrypted);
-      const parsed = JSON.parse(decoded) as unknown;
-      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
-      log.warn(context, "Decrypted sandbox credentials is not an object — falling back to plaintext");
-    } catch (err) {
-      log.warn(
-        { ...context, parseError: err instanceof Error ? err.message : String(err) },
-        "Failed to decrypt/parse sandbox credentials — falling back to plaintext (F-41 soak)",
-      );
-    }
+  if (typeof encrypted !== "string" || encrypted.length === 0) {
+    log.warn(context, "Missing credentials_encrypted field in sandbox_credentials record");
+    return null;
   }
-  // Prefer the pg-driver object form first; only fall through to string
-  // parsing for exotic column-parser configurations.
-  if (plaintext && typeof plaintext === "object") {
-    return plaintext as Record<string, unknown>;
+  const decoded = decryptSecret(encrypted);
+  const parsed = JSON.parse(decoded) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    log.error(context, "Decrypted sandbox credentials is not an object");
+    throw new Error("Decrypted sandbox credentials is not an object");
   }
-  if (typeof plaintext === "string") {
-    try {
-      const parsed = JSON.parse(plaintext) as unknown;
-      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
-    } catch (err) {
-      log.warn(
-        { ...context, parseError: err instanceof Error ? err.message : String(err) },
-        "Failed to parse sandbox credentials JSON — treating record as invalid",
-      );
-      return null;
-    }
-  }
-  log.warn(context, "Missing credentials field in sandbox_credentials record");
-  return null;
+  return parsed as Record<string, unknown>;
 }
 
 function parseRow(
@@ -94,14 +84,9 @@ function parseRow(
     return null;
   }
 
-  // F-41: prefer the encrypted blob when present; fall back to the
-  // legacy plaintext JSONB column for rows not yet migrated by the
-  // backfill script.
-  const creds = pickEncryptedCredentials(
-    row.credentials_encrypted,
-    row.credentials,
-    context,
-  );
+  // The plaintext JSONB column was dropped in 0040; reads come from
+  // `credentials_encrypted` only.
+  const creds = decodeEncryptedCredentials(row.credentials_encrypted, context);
   if (!creds) return null;
 
   if (!SANDBOX_PROVIDERS.includes(provider as SandboxProvider)) {
@@ -132,7 +117,7 @@ export async function getSandboxCredentials(orgId: string): Promise<SandboxCrede
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, org_id, provider, credentials, credentials_encrypted, display_name,
+      `SELECT id, org_id, provider, credentials_encrypted, display_name,
               validated_at::text, connected_at::text
        FROM sandbox_credentials
        WHERE org_id = $1
@@ -165,7 +150,7 @@ export async function getSandboxCredentialByProvider(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, org_id, provider, credentials, credentials_encrypted, display_name,
+      `SELECT id, org_id, provider, credentials_encrypted, display_name,
               validated_at::text, connected_at::text
        FROM sandbox_credentials
        WHERE org_id = $1 AND provider = $2`,
@@ -199,23 +184,19 @@ export async function saveSandboxCredential(
     throw new Error("Cannot save sandbox credentials — no internal database configured");
   }
 
-  const credentialsSerialized = JSON.stringify(credentials);
-  // F-41 dual-write: plaintext JSONB for back-compat readers + encrypted
-  // TEXT blob for at-rest protection. Follow-up PR drops plaintext.
-  const credentialsEncrypted = encryptSecret(credentialsSerialized);
+  const credentialsEncrypted = encryptSecret(JSON.stringify(credentials));
   const keyVersion = activeKeyVersion();
 
   try {
     await internalQuery(
-      `INSERT INTO sandbox_credentials (org_id, provider, credentials, credentials_encrypted, credentials_key_version, display_name, validated_at)
-       VALUES ($1, $2, $3, $4, $6, $5, now())
+      `INSERT INTO sandbox_credentials (org_id, provider, credentials_encrypted, credentials_key_version, display_name, validated_at)
+       VALUES ($1, $2, $3, $5, $4, now())
        ON CONFLICT (org_id, provider) DO UPDATE SET
-         credentials = $3,
-         credentials_encrypted = $4,
-         credentials_key_version = $6,
-         display_name = COALESCE($5, sandbox_credentials.display_name),
+         credentials_encrypted = $3,
+         credentials_key_version = $5,
+         display_name = COALESCE($4, sandbox_credentials.display_name),
          validated_at = now()`,
-      [orgId, provider, credentialsSerialized, credentialsEncrypted, displayName ?? null, keyVersion],
+      [orgId, provider, credentialsEncrypted, displayName ?? null, keyVersion],
     );
   } catch (err) {
     log.error(

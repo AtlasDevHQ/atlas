@@ -15,6 +15,7 @@ import {
   MASKED_PLACEHOLDER,
   encryptSecretFields,
   decryptSecretFields,
+  checkStrictPluginSecrets,
   type ConfigSchema,
 } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -180,6 +181,7 @@ const updatePluginConfigRoute = createRoute({
     403: { description: "Forbidden — platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Plugin not found", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "No internal database", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Strict-mode plugin secrets check rejected the write (catalog schema corrupt or per-key secret/passthrough drift)", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -541,6 +543,33 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
   const keysChanged = Object.keys(body)
     .filter((key) => body[key] !== originals[key])
     .toSorted();
+
+  // F-42 strict-mode (#1835): reject writes the encryptor can't soundly
+  // process — corrupt schema (would over-encrypt) or per-key secret-vs-
+  // passthrough drift. Default off; SaaS regions opt in via env var.
+  const strictRejection = checkStrictPluginSecrets(configSchemaForEncrypt);
+  if (strictRejection !== null) {
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.plugin.configUpdate,
+      targetType: "plugin",
+      targetId: id,
+      scope: "platform",
+      status: "failure",
+      metadata: {
+        pluginId: id,
+        pluginSlug: id,
+        strictModeRejection: strictRejection.state,
+        ...(strictRejection.state === "passthrough_with_secret" ? { conflictKey: strictRejection.key } : {}),
+      },
+    });
+    return c.json({
+      error: "strict_plugin_secrets",
+      message: strictRejection.state === "corrupt"
+        ? `Plugin config schema is unreadable (${strictRejection.reason}); fix the catalog row before saving.`
+        : `Catalog schema for "${strictRejection.key}" disagrees on secret vs non-secret; resolve the schema before saving.`,
+      requestId,
+    }, 422);
+  }
 
   // F-42: encrypt `secret: true` fields before persisting. Non-secret fields
   // pass through as plain JSONB so DB ops stays grep-able.

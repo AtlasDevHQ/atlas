@@ -41,46 +41,44 @@ function isEmailProvider(value: string): value is EmailProvider {
 }
 
 /**
- * Decode the provider-config payload. Prefer `config_encrypted` and fall
- * back to the plaintext `config` JSONB when the encrypted column is
- * missing *or* fails to decrypt. The decrypt-failure fallback is
- * load-bearing during the F-41 soak — a single bad ciphertext must not
- * hide a working plaintext copy (which would cause the admin UI to show
- * "no provider configured" and invite an overwrite that loses the
- * working config). Post-#1832 (plaintext drop), decrypt failure becomes
- * terminal naturally.
+ * Decode the provider-config payload from `config_encrypted`. Two
+ * branches:
+ *
+ *   • encrypted column NULL/empty   → row is in a transitional state
+ *                                     (e.g. mid-install) — return null
+ *                                     and the caller surfaces "no
+ *                                     provider configured".
+ *   • encrypted column has data,
+ *     decrypt or JSON.parse throws  → THROW. The caller (route handler)
+ *                                     surfaces a 500 with `requestId`
+ *                                     and the admin sees an actionable
+ *                                     error.
+ *
+ * The throw-on-decrypt-failure semantic prevents the silent footgun
+ * where "decrypt failed" looks like "no provider configured" — under
+ * the old null-return semantics an operator could click Save on a
+ * row that's actually unreadable, overwriting evidence of corruption
+ * (or a botched key rotation) with a fresh ciphertext under the active
+ * key. Forcing the 500 makes the underlying problem visible.
  */
-function pickEncryptedConfig(
+function decodeEncryptedConfig(
   encrypted: unknown,
-  plaintext: unknown,
   context: Record<string, unknown>,
 ): Record<string, unknown> | null {
-  if (typeof encrypted === "string" && encrypted.length > 0) {
-    try {
-      const decoded = decryptSecret(encrypted);
-      const parsed = JSON.parse(decoded) as unknown;
-      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
-      log.warn({ ...context }, "Decrypted email config is not an object — falling back to plaintext");
-    } catch (err) {
-      log.warn(
-        { ...context, parseError: err instanceof Error ? err.message : String(err) },
-        "Failed to decrypt/parse email config — falling back to plaintext (F-41 soak)",
-      );
-    }
+  if (typeof encrypted !== "string" || encrypted.length === 0) {
+    log.warn(context, "Email installation config_encrypted column is missing");
+    return null;
   }
-  if (plaintext && typeof plaintext === "object") {
-    return plaintext as Record<string, unknown>;
+  // Let decrypt + JSON.parse failures propagate — the route layer maps
+  // them to 500 with a scrubbed message and the admin UI surfaces the
+  // error rather than silently inviting an overwrite.
+  const decoded = decryptSecret(encrypted);
+  const parsed = JSON.parse(decoded) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    log.error({ ...context }, "Decrypted email config is not an object");
+    throw new Error("Decrypted email config is not an object");
   }
-  if (typeof plaintext === "string") {
-    try {
-      const parsed = JSON.parse(plaintext) as unknown;
-      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
-    } catch {
-      // fall through to the warn log
-    }
-  }
-  log.warn(context, "Email installation config column is missing or unreadable");
-  return null;
+  return parsed as Record<string, unknown>;
 }
 
 /**
@@ -133,9 +131,11 @@ function parseInstallationRow(
     );
     return null;
   }
-  // F-41: prefer the encrypted blob when present; fall back to the
-  // plaintext JSONB column for rows not yet migrated by the backfill.
-  const rawConfigRecord = pickEncryptedConfig(row.config_encrypted, row.config, context);
+  // The plaintext JSONB column was dropped in 0040; reads come from
+  // `config_encrypted` only. A decrypt/parse failure returns null and
+  // the caller surfaces "no provider configured" so the operator can
+  // re-enter the config.
+  const rawConfigRecord = decodeEncryptedConfig(row.config_encrypted, context);
   if (!rawConfigRecord) return null;
   if (
     typeof rawConfigRecord.provider === "string" &&
@@ -179,7 +179,7 @@ export async function getEmailInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT config_id, provider, sender_address, config, config_encrypted, org_id, installed_at::text FROM email_installations WHERE org_id = $1",
+      "SELECT config_id, provider, sender_address, config_encrypted, org_id, installed_at::text FROM email_installations WHERE org_id = $1",
       [orgId],
     );
     if (rows.length > 0) {
@@ -226,21 +226,18 @@ export async function saveEmailInstallation(
     // diverged.
     const { provider: _provider, ...configJson } = opts.config;
     const configSerialized = JSON.stringify(configJson);
-    // F-41 dual-write: plaintext JSONB for back-compat readers + encrypted
-    // TEXT blob for at-rest protection. Follow-up PR drops plaintext.
     const configEncrypted = encryptSecret(configSerialized);
     const keyVersion = activeKeyVersion();
     await internalQuery(
-      `INSERT INTO email_installations (provider, sender_address, config, config_encrypted, config_key_version, org_id)
-       VALUES ($1, $2, $3, $4, $6, $5)
+      `INSERT INTO email_installations (provider, sender_address, config_encrypted, config_key_version, org_id)
+       VALUES ($1, $2, $3, $5, $4)
        ON CONFLICT (org_id) DO UPDATE SET
          provider = $1,
          sender_address = $2,
-         config = $3,
-         config_encrypted = $4,
-         config_key_version = $6,
+         config_encrypted = $3,
+         config_key_version = $5,
          installed_at = now()`,
-      [opts.provider, opts.senderAddress, configSerialized, configEncrypted, orgId, keyVersion],
+      [opts.provider, opts.senderAddress, configEncrypted, orgId, keyVersion],
     );
   } catch (err) {
     log.error(

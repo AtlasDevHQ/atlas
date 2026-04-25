@@ -6,7 +6,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -15,7 +15,7 @@ export type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/ap
 
 const log = createLogger("linear-store");
 
-const SELECT_COLS = "user_id, api_key, api_key_encrypted, user_name, user_email, org_id, installed_at::text";
+const SELECT_COLS = "user_id, api_key_encrypted, user_name, user_email, org_id, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -26,9 +26,19 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): LinearInstallationWithSecret | null {
   const userId = row.user_id;
-  const apiKey = pickDecryptedSecret(row.api_key_encrypted, row.api_key);
-  if (typeof userId !== "string" || !userId || !apiKey) {
+  const encrypted = row.api_key_encrypted;
+  if (typeof userId !== "string" || !userId || typeof encrypted !== "string" || encrypted.length === 0) {
     log.warn(context, "Invalid Linear installation record in database");
+    return null;
+  }
+  let apiKey: string;
+  try {
+    apiKey = decryptSecret(encrypted);
+  } catch (err) {
+    log.error(
+      { ...context, err: err instanceof Error ? err.message : String(err) },
+      "Failed to decrypt linear_installations.api_key_encrypted",
+    );
     return null;
   }
   return {
@@ -132,19 +142,18 @@ export async function saveLinearInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ user_id: string }>(
-      `INSERT INTO linear_installations (user_id, api_key, api_key_encrypted, api_key_key_version, user_name, user_email, org_id)
-       VALUES ($1, $2, $3, $7, $4, $5, $6)
+      `INSERT INTO linear_installations (user_id, api_key_encrypted, api_key_key_version, user_name, user_email, org_id)
+       VALUES ($1, $2, $6, $3, $4, $5)
        ON CONFLICT (user_id) DO UPDATE SET
-         api_key = $2,
-         api_key_encrypted = $3,
-         api_key_key_version = $7,
-         user_name = COALESCE($4, linear_installations.user_name),
-         user_email = COALESCE($5, linear_installations.user_email),
-         org_id = COALESCE($6, linear_installations.org_id),
+         api_key_encrypted = $2,
+         api_key_key_version = $6,
+         user_name = COALESCE($3, linear_installations.user_name),
+         user_email = COALESCE($4, linear_installations.user_email),
+         org_id = COALESCE($5, linear_installations.org_id),
          installed_at = now()
-       WHERE linear_installations.org_id IS NULL OR linear_installations.org_id = $6
+       WHERE linear_installations.org_id IS NULL OR linear_installations.org_id = $5
        RETURNING user_id`,
-      [userId, opts.apiKey, apiKeyEncrypted, userName, userEmail, orgId, keyVersion],
+      [userId, apiKeyEncrypted, userName, userEmail, orgId, keyVersion],
     );
 
     if (rows.length === 0) {

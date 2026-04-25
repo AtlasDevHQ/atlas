@@ -1783,6 +1783,30 @@ and the fix is mechanical given the `encryptUrl` precedent.
 
 **Issue:** #1815.
 
+**Step 4 shipped (PR #N — F-41 + F-42 soak cleanup, closes #1832):**
+plaintext columns dropped after soak (migration
+`0040_drop_integration_plaintext.sql`); `_encrypted` columns are now
+NOT NULL on every table whose original plaintext was NOT NULL pre-0036
+(Slack `bot_token_encrypted`, Telegram `bot_token_encrypted`, GChat
+`credentials_json_encrypted`, GitHub `access_token_encrypted`, Linear
+`api_key_encrypted`, WhatsApp `access_token_encrypted`, Email
+`config_encrypted`, Sandbox `credentials_encrypted`); Teams + Discord
+encrypted columns stay nullable because admin-consent / OAuth-only
+installs persist no bearer credential by design. Back-compat
+fall-through in every integration store deleted — reads call
+`decryptSecret(<col>_encrypted)` directly, and the JSONB carriers
+(email + sandbox) call `JSON.parse(decryptSecret(...))` inline instead
+of `pickEncryptedConfig` / `pickEncryptedCredentials`. Helper functions
+`pickDecryptedSecret` (and the email/sandbox config-pick variants) are
+removed from `secret-encryption.ts` along with their unit tests; the
+F-47 `UnknownKeyVersionError` discriminator stays exported for
+rotation tooling. `packages/api/src/lib/db/backfill-integration-credentials.ts`
+deleted with its test file (one-shot tool — never runs post-drop).
+Pre-flight enforced by the F-42 audit script (#1835) — every region
+must report zero residue rows before merge; the migration's leading
+comment + this PR's description enumerate the operator checks
+explicitly. Status flipped from open → shipped.
+
 ---
 
 **F-42 — Plugin config stored as plaintext JSONB (platform + workspace)** — P1
@@ -1830,6 +1854,28 @@ surface at once.
 exists.
 
 **Issue:** #1816.
+
+**Soak audit shipped (PR #N — F-41 + F-42 soak cleanup, closes #1835):**
+new read-only `packages/api/scripts/audit-plugin-config-residue.ts`
+walks every `plugin_settings.config` and `workspace_plugins.config`
+row, joins on `plugin_catalog.config_schema` to identify per-plugin
+secret keys, asserts every `secret: true` value matches the
+`enc:v\d+:` prefix, and folds in the F-41 invariant
+(`<col>_encrypted IS NOT NULL` for every row in `NON_NULL_ENCRYPTED_TABLES`)
+in the same pass. Exits `0` with a single-line JSON report (scanned
+counts + secret-fields-verified count) when clean; exits `2` with
+row IDs (NOT values) per affected table/key when any residue is
+found. Idempotent and safe against a production replica. Strict-mode
+opt-in `ATLAS_STRICT_PLUGIN_SECRETS=true` rejects plugin admin writes
+whose catalog schema is corrupt or carries per-key secret-vs-passthrough
+drift, returning `422 Unprocessable Entity` with an actionable
+message — wired into all three write surfaces (`admin-plugins.ts` PUT,
+`admin-marketplace.ts` POST install, `admin-marketplace.ts` PUT). Default
+off preserves the historical idempotent-but-tolerant baseline; SaaS
+regions opt in via env var. `INTEGRATION_TABLES` extracted to
+`packages/api/src/lib/db/integration-tables.ts` as the single source
+of truth shared by rotation + audit (replaces the dropped backfill's
+`TABLES` constant). Status flipped from open → shipped.
 
 ---
 
@@ -2283,8 +2329,8 @@ field-name redact rules stay in lockstep.
 
 | ID | Severity | Type | Surface | Compliance lens | Issue | Status |
 |---|---|---|---|---|---|---|
-| F-41 | P1 | At-rest encryption gap | Workspace integration tokens (Slack/Teams/Discord/Telegram/GChat/GitHub/Linear/WhatsApp/email/sandbox) | SOC 2 CC6.1 / GDPR A32 / ISO A.10.1 | #1815 | open |
-| F-42 | P1 | At-rest encryption gap | `plugin_settings.config` + `workspace_plugins.config` plaintext JSONB | SOC 2 CC6.1 / GDPR A32 | #1816 | open |
+| F-41 | P1 | At-rest encryption gap | Workspace integration tokens (Slack/Teams/Discord/Telegram/GChat/GitHub/Linear/WhatsApp/email/sandbox) | SOC 2 CC6.1 / GDPR A32 / ISO A.10.1 | #1815 / #1832 | shipped |
+| F-42 | P1 | At-rest encryption gap | `plugin_settings.config` + `workspace_plugins.config` plaintext JSONB | SOC 2 CC6.1 / GDPR A32 | #1816 / #1835 | shipped |
 | F-43 | P1 | Live disclosure | Marketplace `GET /available` returns `installedConfig` raw (no secret mask) | SOC 2 CC6.7 (logical access) | #1817 | open |
 | F-44 | P2 | Log redaction | pino `err.message` passes through driver-echoed connection strings | SOC 2 CC7.2 (monitoring) | #1818 | open |
 | F-45 | P3 | Hygiene | Duplicate `errorMessage`/`causeToError` helpers in 3 routes | — | merged into F-44 (#1818) | deferred |

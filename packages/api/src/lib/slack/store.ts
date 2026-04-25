@@ -10,7 +10,7 @@ import {
   internalQuery,
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -36,9 +36,19 @@ function parseInstallationRow(
 ): SlackInstallationWithSecret | null {
   const teamIdVal = row.team_id;
   const installedAt = row.installed_at;
-  const botToken = pickDecryptedSecret(row.bot_token_encrypted, row.bot_token);
-  if (typeof teamIdVal !== "string" || !botToken) {
+  const encrypted = row.bot_token_encrypted;
+  if (typeof teamIdVal !== "string" || typeof encrypted !== "string" || encrypted.length === 0) {
     log.warn(context, "Invalid installation record in database");
+    return null;
+  }
+  let botToken: string;
+  try {
+    botToken = decryptSecret(encrypted);
+  } catch (err) {
+    log.error(
+      { ...context, err: err instanceof Error ? err.message : String(err) },
+      "Failed to decrypt slack_installations.bot_token_encrypted",
+    );
     return null;
   }
   return {
@@ -50,7 +60,7 @@ function parseInstallationRow(
   };
 }
 
-const SELECT_COLS = "team_id, bot_token, bot_token_encrypted, org_id, workspace_name, installed_at::text";
+const SELECT_COLS = "team_id, bot_token_encrypted, org_id, workspace_name, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Read operations
@@ -157,18 +167,17 @@ export async function saveInstallation(
   // Atomic upsert with hijack protection — the WHERE clause rejects rows
   // bound to a different org in one statement (no TOCTOU race).
   const result = await pool.query(
-    `INSERT INTO slack_installations (team_id, bot_token, bot_token_encrypted, bot_token_key_version, org_id, workspace_name)
-     VALUES ($1, $2, $3, $6, $4, $5)
+    `INSERT INTO slack_installations (team_id, bot_token_encrypted, bot_token_key_version, org_id, workspace_name)
+     VALUES ($1, $2, $5, $3, $4)
      ON CONFLICT (team_id) DO UPDATE SET
-       bot_token = $2,
-       bot_token_encrypted = $3,
-       bot_token_key_version = $6,
-       org_id = COALESCE($4, slack_installations.org_id),
-       workspace_name = COALESCE($5, slack_installations.workspace_name),
+       bot_token_encrypted = $2,
+       bot_token_key_version = $5,
+       org_id = COALESCE($3, slack_installations.org_id),
+       workspace_name = COALESCE($4, slack_installations.workspace_name),
        installed_at = now()
-     WHERE slack_installations.org_id IS NULL OR slack_installations.org_id = $4
+     WHERE slack_installations.org_id IS NULL OR slack_installations.org_id = $3
      RETURNING team_id`,
-    [teamId, botToken, botTokenEncrypted, orgId, workspaceName, keyVersion],
+    [teamId, botTokenEncrypted, orgId, workspaceName, keyVersion],
   );
 
   if (result.rows.length === 0) {

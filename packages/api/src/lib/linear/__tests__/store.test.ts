@@ -1,5 +1,6 @@
 /**
  * F-41 integration-credential encryption tests for the Linear store.
+ * Post-#1832: encrypted column is the only carrier.
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
@@ -21,13 +22,6 @@ mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   encryptSecret: (plaintext: string) => `enc:v1:test:${plaintext}`,
   decryptSecret: (stored: string) =>
     stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored,
-  pickDecryptedSecret: (encrypted: unknown, plaintext: unknown): string | null => {
-    if (typeof encrypted === "string" && encrypted.length > 0) {
-      return encrypted.startsWith("enc:v1:test:") ? encrypted.slice("enc:v1:test:".length) : encrypted;
-    }
-    if (typeof plaintext === "string" && plaintext.length > 0) return plaintext;
-    return null;
-  },
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -45,8 +39,8 @@ beforeEach(() => {
   mockHasDB = true;
 });
 
-describe("F-41 linear dual-write + read priority", () => {
-  it("saveLinearInstallation dual-writes plaintext + encrypted api_key", async () => {
+describe("F-41 linear encrypted-only writes + reads", () => {
+  it("saveLinearInstallation writes only the encrypted api_key", async () => {
     mockInternalQueryResult = [{ user_id: "u-1" }];
     await saveLinearInstallation("u-1", {
       orgId: "org-1",
@@ -57,16 +51,14 @@ describe("F-41 linear dual-write + read priority", () => {
     const insert = capturedQueries.find((q) => q.sql.includes("INSERT INTO linear_installations"));
     expect(insert).toBeDefined();
     expect(insert!.sql).toContain("api_key_encrypted");
-    // params: [userId, apiKey, apiKeyEncrypted, userName, userEmail, orgId]
-    expect(insert!.params[1]).toBe("lin_api_key_12345");
-    expect(insert!.params[2]).toBe("enc:v1:test:lin_api_key_12345");
+    // params: [userId, apiKeyEncrypted, userName, userEmail, orgId, keyVersion]
+    expect(insert!.params[1]).toBe("enc:v1:test:lin_api_key_12345");
   });
 
-  it("getLinearInstallation prefers api_key_encrypted over plaintext", async () => {
+  it("getLinearInstallation decrypts api_key_encrypted", async () => {
     mockInternalQueryResult = [
       {
         user_id: "u-1",
-        api_key: "stale-key",
         api_key_encrypted: "enc:v1:test:fresh-key",
         user_name: "Alice",
         user_email: "a@example.com",
@@ -78,11 +70,10 @@ describe("F-41 linear dual-write + read priority", () => {
     expect(install?.api_key).toBe("fresh-key");
   });
 
-  it("falls back to plaintext when encrypted is NULL", async () => {
+  it("returns null when api_key_encrypted is missing (malformed row)", async () => {
     mockInternalQueryResult = [
       {
         user_id: "u-1",
-        api_key: "legacy-key",
         api_key_encrypted: null,
         user_name: "Alice",
         user_email: "a@example.com",
@@ -91,6 +82,6 @@ describe("F-41 linear dual-write + read priority", () => {
       },
     ];
     const install = await getLinearInstallation("u-1");
-    expect(install?.api_key).toBe("legacy-key");
+    expect(install).toBeNull();
   });
 });

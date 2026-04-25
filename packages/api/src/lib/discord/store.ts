@@ -9,7 +9,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, pickDecryptedSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -18,7 +18,7 @@ export type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/
 
 const log = createLogger("discord-store");
 
-const SELECT_COLS = "guild_id, org_id, guild_name, bot_token, bot_token_encrypted, application_id, public_key, installed_at::text";
+const SELECT_COLS = "guild_id, org_id, guild_name, bot_token_encrypted, application_id, public_key, installed_at::text";
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -37,11 +37,40 @@ function parseInstallationRow(
     log.warn(context, "Invalid Discord installation record in database");
     return null;
   }
+  // bot_token_encrypted stays nullable — OAuth installs leave it NULL
+  // until BYOT supplies one. Three cases:
+  //
+  //   • encrypted column NULL/empty   → OAuth-only install. Return row
+  //                                     with `bot_token: null`.
+  //   • encrypted column has data,
+  //     decryptSecret succeeds        → BYOT install. Return row with
+  //                                     decrypted token.
+  //   • encrypted column has data,
+  //     decryptSecret throws          → return null for the whole row
+  //                                     (matches Slack/Telegram). Letting
+  //                                     `bot_token: null` flow through
+  //                                     would be indistinguishable from
+  //                                     a healthy OAuth-only install and
+  //                                     the caller would treat the
+  //                                     broken row as connected.
+  const encrypted = row.bot_token_encrypted;
+  let botToken: string | null = null;
+  if (typeof encrypted === "string" && encrypted.length > 0) {
+    try {
+      botToken = decryptSecret(encrypted);
+    } catch (err) {
+      log.error(
+        { ...context, err: err instanceof Error ? err.message : String(err) },
+        "Failed to decrypt discord_installations.bot_token_encrypted — row hidden from API; F-42 audit script catches residue",
+      );
+      return null;
+    }
+  }
   return {
     guild_id: guildIdVal,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     guild_name: typeof row.guild_name === "string" ? row.guild_name : null,
-    bot_token: pickDecryptedSecret(row.bot_token_encrypted, row.bot_token),
+    bot_token: botToken,
     application_id: typeof row.application_id === "string" ? row.application_id : null,
     public_key: typeof row.public_key === "string" ? row.public_key : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
@@ -159,20 +188,19 @@ export async function saveDiscordInstallation(
     // Atomic upsert with hijack protection — the WHERE clause rejects rows
     // bound to a different org in one statement (no TOCTOU race).
     const rows = await internalQuery<{ guild_id: string }>(
-      `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token, bot_token_encrypted, bot_token_key_version, application_id, public_key)
-       VALUES ($1, $2, $3, $4, $5, COALESCE($8, 1), $6, $7)
+      `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token_encrypted, bot_token_key_version, application_id, public_key)
+       VALUES ($1, $2, $3, $4, COALESCE($7, 1), $5, $6)
        ON CONFLICT (guild_id) DO UPDATE SET
          org_id = COALESCE($2, discord_installations.org_id),
          guild_name = COALESCE($3, discord_installations.guild_name),
-         bot_token = COALESCE($4, discord_installations.bot_token),
-         bot_token_encrypted = COALESCE($5, discord_installations.bot_token_encrypted),
-         bot_token_key_version = COALESCE($8, discord_installations.bot_token_key_version),
-         application_id = COALESCE($6, discord_installations.application_id),
-         public_key = COALESCE($7, discord_installations.public_key),
+         bot_token_encrypted = COALESCE($4, discord_installations.bot_token_encrypted),
+         bot_token_key_version = COALESCE($7, discord_installations.bot_token_key_version),
+         application_id = COALESCE($5, discord_installations.application_id),
+         public_key = COALESCE($6, discord_installations.public_key),
          installed_at = now()
        WHERE discord_installations.org_id IS NULL OR discord_installations.org_id = $2
        RETURNING guild_id`,
-      [guildId, orgId, guildName, botToken, botTokenEncrypted, applicationId, publicKey, botTokenKeyVersion],
+      [guildId, orgId, guildName, botTokenEncrypted, applicationId, publicKey, botTokenKeyVersion],
     );
 
     if (rows.length === 0) {

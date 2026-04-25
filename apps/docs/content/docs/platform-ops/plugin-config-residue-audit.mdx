@@ -1,0 +1,128 @@
+---
+title: Plugin Config Residue Audit
+description: Verify no plaintext secret residue exists in plugin configs or integration tables before promoting a region
+---
+
+Atlas encrypts plugin secret fields and workspace integration credentials
+at rest under AES-256-GCM. After F-41's plaintext-column drop, the
+encrypted column is the only carrier — a row whose `<col>_encrypted` is
+NULL, or a JSONB `secret: true` field that doesn't start with
+`enc:v<N>:`, is **residue**: a credential that slipped past the at-rest
+encryption invariant.
+
+The residue audit script reports residue without modifying any rows and
+without ever logging the offending values. Use it as a pre-flight check
+before destructive migrations and as a periodic compliance run against
+each region.
+
+## What it scans
+
+| Surface | Tables | Invariant |
+| --- | --- | --- |
+| F-41 integration credentials | `slack_installations`, `telegram_installations`, `gchat_installations`, `github_installations`, `linear_installations`, `whatsapp_installations`, `email_installations`, `sandbox_credentials` | `<col>_encrypted IS NOT NULL` AND value matches `enc:v\d+:` |
+| F-41 nullable-by-design | `teams_installations`, `discord_installations` | NULL allowed (admin-consent / OAuth-only); when present, must match `enc:v\d+:` |
+| F-42 platform plugin config | `plugin_settings.config` | every catalog `secret: true` field must match `enc:v\d+:` |
+| F-42 workspace plugin config | `workspace_plugins.config` | every catalog `secret: true` field must match `enc:v\d+:` |
+
+When the catalog schema is corrupt (not parseable as an array of field
+descriptors), the audit fails closed and flags **every** non-empty
+string value in that row's config — symmetric with the encryptor's
+fail-closed branch in `packages/api/src/lib/plugins/secrets.ts`.
+
+## Running the audit
+
+```bash
+# Set DATABASE_URL to the region you want to audit. Read-only Postgres
+# credentials are sufficient.
+export DATABASE_URL='postgres://readonly@us-internal.atlas/internal'
+
+bun run packages/api/scripts/audit-plugin-config-residue.ts
+```
+
+The script writes a single line of JSON to stdout and exits with one
+of three codes:
+
+| Exit | Meaning | Output shape |
+| --- | --- | --- |
+| `0` | Clean — no residue. Safe to proceed with destructive migrations like `0040_drop_integration_plaintext.sql`. | `{ "ok": true, "scanned": { "integrationRows": …, "pluginSettingsRows": …, "workspacePluginsRows": …, "secretFieldsVerified": … }, "findings": [] }` |
+| `2` | Residue found. The migration must NOT be applied. | `{ "ok": false, …, "findings": [ { "table": "workspace_plugins", "rowId": "wp-leaky", "reason": "plaintext_secret_field", "key": "apiKey" } ] }` |
+| `1` | Script failure (DB connection, unexpected error). Logged via pino, `stderr`. | — |
+
+The script never logs values — only locator IDs and JSONB key names —
+so the output can be safely captured in CI logs.
+
+## Pre-flight before the F-41 plaintext column drop
+
+The 0040 migration is a one-way door: dropping a plaintext column for a
+row whose encrypted column is NULL nulls out the live credential. Per
+the runbook, every region must report a clean audit before merging the
+plaintext-drop PR:
+
+1. **Run the audit against US, EU, APAC.** All three must exit `0`.
+
+   ```bash
+   for region in us eu apac; do
+     DATABASE_URL="$(secrets get internal-db-${region}-readonly)" \
+       bun run packages/api/scripts/audit-plugin-config-residue.ts \
+       | tee "audit-${region}.json"
+   done
+   ```
+
+2. **One last idempotent backfill per region** (only on regions that
+   were created before F-41 shipped — newer regions will be 0-row).
+   Pre-#1832 the integration-credential backfill script lived at
+   `packages/api/src/lib/db/backfill-integration-credentials.ts`; it
+   was deleted alongside the plaintext columns.
+
+3. **Cross-check directly:** for each region, expect zero rows from
+   ```sql
+   SELECT count(*) FROM <table> WHERE <col>_encrypted IS NULL;
+   ```
+   for the eight tables in `NON_NULL_ENCRYPTED_TABLES`. The audit
+   script bundles this check, so passing it in step 1 covers this.
+
+If any of the three checks fails, **do not merge** the destructive
+migration. Recovery from a botched drop is a backup restore — there is
+no schema-level rollback.
+
+## Strict-mode opt-in
+
+For regions where the residue audit must never have anything to find,
+set:
+
+```bash
+ATLAS_STRICT_PLUGIN_SECRETS=true
+```
+
+This flips the plugin admin write paths into a stricter mode that
+rejects writes the encryptor can't soundly process — corrupt catalog
+schemas (would over-encrypt) and per-key secret-vs-passthrough drift
+(would let a key change classification mid-flight). The default `false`
+preserves the historical "idempotent-but-tolerant passthrough" baseline
+because self-hosted deploys can't be expected to invariant-fix every
+plugin schema mismatch on a live instance.
+
+The flag is read at request time, not boot — flipping it in env only
+takes effect on the next request after the runtime config refresh
+loop picks it up.
+
+## What gets emitted, what doesn't
+
+| Emitted | Not emitted |
+| --- | --- |
+| Row ID (primary key value) | The plaintext secret value |
+| JSONB key name (when applicable) | The full row contents |
+| `reason` enum | Any HTTP request body |
+| Per-table scanned-row counts | Any encryption key material |
+
+The locator-only contract is intentional: the audit must be safe to run
+in CI on shared infrastructure. Operators pivot from `rowId` to a
+manual investigation in the admin UI if they need to look at the
+underlying value.
+
+## Related
+
+- **F-42 audit row**: `.claude/research/security-audit-1-2-3.md`
+- **Tracker**: [issue #1835](https://github.com/AtlasDevHQ/atlas/issues/1835)
+- **F-41 plaintext drop**: [issue #1832](https://github.com/AtlasDevHQ/atlas/issues/1832)
+- **Compliance mapping**: SOC 2 CC6.1 (data-at-rest encryption), GDPR Article 32

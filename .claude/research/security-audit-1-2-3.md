@@ -3052,7 +3052,7 @@ to this entry point by design (the cell links to the rationale).
 | Scheduled-task executor (`/tick` + bun in-process loop) | n/a — system-initiated | n/a | n/a — server-internal call, not a request | **yes** — `executeAgentQuery(question, requestId)` drops user (F-54) | n/a — system context |
 | Stripe webhook (`/api/auth/stripe/*`) | n/a — Stripe-originated | n/a | n/a — third-party | n/a | n/a |
 | OAuth install (`/api/v1/{slack,teams,discord}/install`) | n/a — pre-auth handshake; admin gate enforced via `adminAuthPreamble` (F-04 fix) | n/a | no — `adminAuthPreamble` does not invoke `rateLimitAndIPCheck` directly, but admin role is required (gap noted, low risk) | n/a | n/a |
-| MCP server (stdio + SSE) | n/a — local stdio + bearer over SSE | n/a — separate identity model | n/a — outside the Hono app | n/a — runs separately from agent loop | n/a |
+| MCP server (stdio + SSE) | n/a — local stdio + bearer over SSE | n/a — separate identity model | n/a — outside the Hono app | no — `resolveMcpActor` binds `ATLAS_MCP_USER_ID`/`ATLAS_MCP_ORG_ID` at boot or fails-loud (#1858) | n/a |
 | Embedded widget (`/widget`, `/widget.js`) | n/a — public static asset | n/a | n/a — public static asset | n/a — widget calls back into authenticated API which enforces approval | n/a |
 | Plugin callbacks (Better Auth Stripe plugin, plugin SDK hooks) | n/a — server-internal | n/a | n/a | n/a | n/a |
 
@@ -3714,9 +3714,16 @@ for each so future audits can short-circuit:
   admin UI ("the following users authenticated from outside the
   allowlist") but not a bypass finding.
 - **MCP server access** — the MCP server (stdio + SSE transport) is a
-  separate runtime from the Hono app. It owns its own auth (bearer over
-  SSE) and tool authorization. Not under Phase 7 scope; will be revisited
-  during the MCP hardening pass.
+  separate runtime from the Hono app. Originally noted as out-of-scope
+  for Phase 7. Hardened post-audit via **#1858** in the 1.2.4 cleanup
+  tail: `packages/mcp/src/actor.ts → resolveMcpActor()` runs at server
+  boot, requires both `ATLAS_MCP_USER_ID` + `ATLAS_MCP_ORG_ID` whenever
+  any approval rule exists, and otherwise binds a synthetic
+  `system:mcp` actor (mirrors the F-27 `system:audit-purge-scheduler`
+  convention). `packages/mcp/src/tools.ts` wraps every tool dispatch in
+  `withRequestContext({ user, requestId })` so the approval gate inside
+  `executeSQL` sees a bound actor — same shape as the F-54/F-55 fix
+  applied to scheduler + Slack. **MCP actor binding — fixed via #1858.**
 - **Better Auth bearer plugin token revocation** — Phase 1 F-11
   identified that bearer + apiKey co-existence has no documented
   revocation flow. Re-reading in Phase 7: revocation is delegated to

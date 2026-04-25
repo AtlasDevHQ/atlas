@@ -2,7 +2,14 @@ import { describe, expect, it, mock, beforeEach } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import { getRequestContext } from "@atlas/api/lib/logger";
 import { registerTools } from "../tools.js";
+
+const TEST_ACTOR = createAtlasUser("u_test", "managed", "test@example.com", {
+  role: "admin",
+  activeOrganizationId: "org_test",
+});
 
 // --- Mocks for AI SDK tool execute functions ---
 // Use `unknown` return type so mockResolvedValueOnce can return different shapes.
@@ -41,9 +48,9 @@ function getContentText(content: unknown): string {
   return arr[0]?.text ?? "";
 }
 
-async function createTestClient() {
+async function createTestClient(actor = TEST_ACTOR) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
-  registerTools(server);
+  registerTools(server, { actor });
 
   const client = new Client({ name: "test-client", version: "0.0.1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -204,6 +211,44 @@ describe("MCP tools", () => {
 
     expect(result.isError).toBe(true);
     expect(getContentText(result.content)).toBe("Query failed");
+  });
+
+  // #1858 — actor binding regression. Inside executeSQL the approval gate
+  // reads `getRequestContext()?.user?.activeOrganizationId`; if MCP forgot
+  // to wrap the dispatch, the user is undefined and any approval-rule-
+  // matching query silently bypasses governance (the F-54/F-55 shape).
+  it("executeSQL dispatch sees the bound actor via getRequestContext", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExecuteSQLExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return { success: true, explanation: "noop", row_count: 0, columns: [], rows: [] };
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "Bound-actor probe" },
+    });
+
+    expect(observed).toBeDefined();
+    expect(observed!.user?.id).toBe(TEST_ACTOR.id);
+    expect(observed!.user?.activeOrganizationId).toBe("org_test");
+    expect(typeof observed!.requestId).toBe("string");
+    expect(observed!.requestId.length).toBeGreaterThan(0);
+  });
+
+  it("explore dispatch sees the bound actor via getRequestContext", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExploreExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return "ls output";
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({ name: "explore", arguments: { command: "ls" } });
+
+    expect(observed).toBeDefined();
+    expect(observed!.user?.id).toBe(TEST_ACTOR.id);
   });
 
 });

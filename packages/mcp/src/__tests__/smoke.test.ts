@@ -9,6 +9,14 @@
 import { describe, expect, it, mock } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
+
+// Inject a bound actor so smoke tests don't depend on `resolveMcpActor`
+// (mock leakage across files would otherwise break unrelated assertions).
+const SMOKE_ACTOR = createAtlasUser("u_smoke", "managed", "smoke@test", {
+  role: "admin",
+  activeOrganizationId: "org_smoke",
+});
 
 // ---------------------------------------------------------------------------
 // Module mocks — mock the named exports consumed by the server module
@@ -74,7 +82,7 @@ const { createAtlasMcpServer } = await import("../server.js");
 // ---------------------------------------------------------------------------
 
 async function createTestPair() {
-  const server = await createAtlasMcpServer();
+  const server = await createAtlasMcpServer({ actor: SMOKE_ACTOR });
   const client = new Client({ name: "smoke-test", version: "0.0.1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -178,7 +186,7 @@ describe("MCP smoke — error handling", () => {
 
 describe("MCP smoke — server lifecycle", () => {
   it("server connects, operates, and shuts down cleanly", async () => {
-    const server = await createAtlasMcpServer();
+    const server = await createAtlasMcpServer({ actor: SMOKE_ACTOR });
     const client = new Client({ name: "lifecycle-test", version: "0.0.1" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 

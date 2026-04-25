@@ -81,6 +81,33 @@ describe("SQLResultCard", () => {
     expect(container.textContent).toContain("Query failed");
   });
 
+  test("renders 'Tried N times' badge on failure card when repeatedCount >= 2", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          output: { success: false, error: "table missing" },
+        })}
+        repeatedCount={3}
+      />,
+    );
+    expect(container.textContent).toContain("Tried 3 times");
+  });
+
+  test("does not render the badge when repeatedCount is 1 or undefined", () => {
+    const { container: c1 } = render(
+      <SQLResultCard
+        part={makePart({ output: { success: false, error: "x" } })}
+        repeatedCount={1}
+      />,
+    );
+    expect(c1.textContent).not.toContain("Tried");
+
+    const { container: c2 } = render(
+      <SQLResultCard part={makePart({ output: { success: false, error: "x" } })} />,
+    );
+    expect(c2.textContent).not.toContain("Tried");
+  });
+
   test("renders warning when result is null", () => {
     const { container } = render(
       <SQLResultCard part={makePart({ output: null })} />,

@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { cn } from "@/lib/utils";
-import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
+import { computeSqlFailureDedup } from "@/ui/lib/sql-failure-dedup";
 import { useQueryStates } from "nuqs";
 import { chatSearchParams } from "./search-params";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
@@ -158,9 +158,9 @@ function ChatPage() {
         }
       })
       .catch(() => {
-        // intentionally ignored: network/parse failures are non-critical —
-        // HTTP 5xx is logged above, and an empty list renders the
-        // single-CTA cold-start UI.
+        // intentionally ignored: network/parse failures are non-critical.
+        // HTTP 5xx is logged above, and an empty starter list collapses
+        // the grid back to the bare cold-start headline.
       });
     return () => { cancelled = true; };
   }, [messages.length, getHeaders]);
@@ -428,43 +428,7 @@ function ChatPage() {
                       ? parseSuggestions(lastTextWithSuggestions.text).suggestions
                       : [];
 
-                    // Pre-compute SQL-failure dedup map so the renderer can collapse
-                    // identical executeSQL retries — even when separated by explore
-                    // commands or thinking text — into a single card with a "Tried N
-                    // times" badge instead of stacking N identical red blocks (#1883).
-                    // The first occurrence renders with the total count; subsequent
-                    // identical failures are skipped.
-                    const failureRuns = new Map<number, number>(); // first-occurrence index → total count
-                    const skipFailureIndex = new Set<number>();
-                    {
-                      type AnyPart = NonNullable<typeof m.parts>[number];
-                      const sqlFailureKey = (p: AnyPart): string | null => {
-                        if (!isToolUIPart(p) || getToolName(p) !== "executeSQL") return null;
-                        const r = getToolResult(p) as { success?: boolean; error?: unknown } | null;
-                        if (!r || r.success !== false) return null;
-                        const args = getToolArgs(p);
-                        return `${String(args.sql ?? "")} ${String(r.error ?? "")}`;
-                      };
-                      const firstSeen = new Map<string, number>();
-                      const counts = new Map<string, number>();
-                      const parts = m.parts ?? [];
-                      for (let i = 0; i < parts.length; i++) {
-                        const key = sqlFailureKey(parts[i]);
-                        if (!key) continue;
-                        if (firstSeen.has(key)) {
-                          skipFailureIndex.add(i);
-                        } else {
-                          firstSeen.set(key, i);
-                        }
-                        counts.set(key, (counts.get(key) ?? 0) + 1);
-                      }
-                      for (const [key, count] of counts) {
-                        if (count > 1) {
-                          const idx = firstSeen.get(key);
-                          if (idx !== undefined) failureRuns.set(idx, count);
-                        }
-                      }
-                    }
+                    const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(m.parts);
 
                     return (
                       <div

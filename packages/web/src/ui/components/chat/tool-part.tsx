@@ -26,11 +26,7 @@ export const ToolPart = memo(function ToolPart({
   part: unknown;
   pythonProgress?: Map<string, PythonProgressData[]>;
   previousExecution?: PreviousExecution;
-  /**
-   * For executeSQL parts only: when the same SQL has just failed N times in a
-   * row, the page-level renderer collapses the run into the last card and
-   * passes the count here (#1883).
-   */
+  /** Forwarded to executeSQL failure cards; see SQLResultCard's `repeatedCount`. */
   repeatedCount?: number;
 }) {
   let name: string;

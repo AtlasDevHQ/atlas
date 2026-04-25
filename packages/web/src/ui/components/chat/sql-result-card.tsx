@@ -31,12 +31,7 @@ export function SQLResultCard({
 }: {
   part: unknown;
   previousExecution?: PreviousExecution;
-  /**
-   * When the agent retries the same SQL verbatim and it fails again, the
-   * page-level renderer collapses consecutive identical failures into one
-   * card and passes a count > 1 here so we can show "Failed N times" without
-   * stacking N identical red blocks (#1883).
-   */
+  /** Total occurrences when the page-level renderer has collapsed identical failures. >= 2 renders a "Tried N times" badge; otherwise omitted. */
   repeatedCount?: number;
 }) {
   return (

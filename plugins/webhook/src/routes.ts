@@ -4,11 +4,13 @@
  * - POST /webhook/:channelId — inbound webhook endpoint
  *
  * Authentication is per-channel: API key via `X-Webhook-Secret` header,
- * or HMAC-SHA256 via `X-Webhook-Signature` header. Both modes verify the
- * `X-Webhook-Timestamp` header and reject requests outside a 5-minute
- * window (F-75 — set ATLAS_WEBHOOK_REPLAY_LEGACY=true to soft-fail on a
- * missing timestamp during the upgrade window). Each channel also has a
- * per-channel RPM + concurrency throttle (F-76).
+ * or HMAC-SHA256 via `X-Webhook-Signature` header. HMAC channels always
+ * verify the `X-Webhook-Timestamp` header and reject requests outside a
+ * 5-minute window; api-key channels can opt in to the same check via
+ * `requireTimestamp: true`. Operators can stage upstream senders through
+ * the wire-format change with `ATLAS_WEBHOOK_REPLAY_LEGACY=true` (HMAC
+ * mode only, soft-fail on missing timestamp; default fail-closed). Each
+ * channel also has a per-channel RPM + concurrency throttle.
  *
  * Async mode provides at-most-once delivery — no retry on callback failure.
  */
@@ -58,7 +60,14 @@ function verifyApiKey(channel: WebhookChannel, request: Request): boolean {
   const expected = Buffer.from(channel.secret);
   const actual = Buffer.from(provided);
   if (expected.length !== actual.length) return false;
-  return crypto.timingSafeEqual(expected, actual);
+  try {
+    return crypto.timingSafeEqual(expected, actual);
+  } catch {
+    // intentionally ignored: timingSafeEqual only throws on length mismatch
+    // (already filtered above) or non-Buffer args. Fail closed if the
+    // runtime contract ever changes.
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +224,15 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
 
     let payload: Record<string, unknown>;
     try {
-      payload = JSON.parse(body);
+      const parsed: unknown = JSON.parse(body);
+      // JSON.parse accepts `null`, `[]`, and primitives — none of which can
+      // carry a `query` field. Reject before the property read so a
+      // malformed body can never strand a concurrency slot.
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        slot.release();
+        return c.json({ error: "Invalid JSON body" }, 400);
+      }
+      payload = parsed as Record<string, unknown>;
     } catch (err) {
       slot.release();
       log.warn(

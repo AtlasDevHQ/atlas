@@ -20,12 +20,12 @@ export const WebhookChannelSchema = z.object({
   callbackUrl: z.string().url().optional(),
   /**
    * Per-channel rate limit (requests per minute). Defaults to 60.
-   * Caps LLM/sandbox cost when a channel secret leaks (F-76).
+   * Caps LLM/sandbox cost when a channel secret leaks.
    */
   rateLimitRpm: z.number().int().min(1).optional(),
   /**
    * Per-channel concurrent in-flight request cap. Defaults to 3.
-   * Excess requests are rejected with 429 + Retry-After (F-76).
+   * Excess requests are rejected with 429 + Retry-After.
    */
   concurrencyLimit: z.number().int().min(1).optional(),
   /**

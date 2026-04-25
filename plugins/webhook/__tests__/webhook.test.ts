@@ -895,20 +895,47 @@ describe("F-76 — per-channel rate limit", () => {
     expect(json.reason).toBe("rate");
   });
 
-  test("default limits apply when channel does not specify them", async () => {
-    // 60 RPM / 3 concurrent ceilings. We only verify defaults via a small
-    // burst — the assertion is that requests succeed under the default
-    // ceiling, not that we exhaust it.
-    const app = createTestApp(createMockConfig());
+  test("default concurrencyLimit is 3 when channel does not specify it", async () => {
+    const pending: Array<(value: WebhookQueryResult) => void> = [];
+    const slowQuery = mock(
+      () =>
+        new Promise<WebhookQueryResult>((resolve) => {
+          pending.push(resolve);
+        }),
+    ) as unknown as WebhookPluginConfig["executeQuery"];
 
-    for (let i = 0; i < 5; i++) {
-      const resp = await app.request("/webhook/test-channel", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
-        body: JSON.stringify({ query: `q-${i}` }),
-      });
-      expect(resp.status).toBe(200);
-    }
+    const app = createTestApp(
+      createMockConfig({
+        // Channel deliberately does NOT set concurrencyLimit / rateLimitRpm.
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+          },
+        ],
+        executeQuery: slowQuery,
+      }),
+    );
+    const headers = { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET };
+
+    // 3 in-flight allowed under the default ceiling.
+    const a = app.request("/webhook/test-channel", { method: "POST", headers, body: JSON.stringify({ query: "1" }) });
+    const b = app.request("/webhook/test-channel", { method: "POST", headers, body: JSON.stringify({ query: "2" }) });
+    const c = app.request("/webhook/test-channel", { method: "POST", headers, body: JSON.stringify({ query: "3" }) });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // 4th must 429 — proves the default cap is exactly 3, not higher.
+    const overflow = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: "4" }),
+    });
+    expect(overflow.status).toBe(429);
+
+    for (const resolve of pending) resolve(defaultQueryResult);
+    await Promise.all([a, b, c]);
   });
 
   test("slot is released on validation failure (e.g. invalid JSON body)", async () => {
@@ -939,6 +966,98 @@ describe("F-76 — per-channel rate limit", () => {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET },
       body: JSON.stringify({ query: "after-bad" }),
+    });
+    expect(good.status).toBe(200);
+  });
+
+  test("slot is released on JSON null body (regression — used to TypeError after acquire)", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            concurrencyLimit: 1,
+            rateLimitRpm: 60,
+          },
+        ],
+      }),
+    );
+    const headers = { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET };
+
+    const bad = await app.request("/webhook/test-channel", { method: "POST", headers, body: "null" });
+    expect(bad.status).toBe(400);
+
+    const good = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: "after-null" }),
+    });
+    expect(good.status).toBe(200);
+  });
+
+  test("slot is released when query field is missing", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            concurrencyLimit: 1,
+            rateLimitRpm: 60,
+          },
+        ],
+      }),
+    );
+    const headers = { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET };
+
+    const bad = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ notQuery: "x" }),
+    });
+    expect(bad.status).toBe(400);
+
+    const good = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: "after-missing-field" }),
+    });
+    expect(good.status).toBe(200);
+  });
+
+  test("slot is released when callback URL is rejected by SSRF guard", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            concurrencyLimit: 1,
+            rateLimitRpm: 60,
+          },
+        ],
+      }),
+    );
+    const headers = { "Content-Type": "application/json", "X-Webhook-Secret": TEST_SECRET };
+
+    const bad = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: "x", callbackUrl: "http://169.254.169.254/" }),
+    });
+    expect(bad.status).toBe(400);
+
+    const good = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: "after-bad-callback" }),
     });
     expect(good.status).toBe(200);
   });

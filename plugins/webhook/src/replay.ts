@@ -1,10 +1,11 @@
 /**
- * Replay protection for the webhook plugin (F-75).
+ * Replay protection for the webhook plugin.
  *
- * Mirrors the Slack pattern (`packages/api/src/lib/slack/verify.ts`) — the
- * signing input is `${timestamp}:${body}`, requests outside a 5-minute window
- * are rejected, and a small per-channel signature cache blocks in-window
- * replays. TTL is 305s so entries expire just after the window closes.
+ * Mirrors the Slack pattern (`packages/api/src/lib/slack/verify.ts`) but drops
+ * the `v0:` version prefix — the signing input here is `${timestamp}:${body}`.
+ * Requests outside a 5-minute window are rejected, and a small per-channel
+ * signature cache blocks in-window replays. TTL is 305s so entries expire
+ * just after the window closes.
  *
  * Legacy soft-fail (`ATLAS_WEBHOOK_REPLAY_LEGACY=true`) lets operators stage
  * the upgrade — it tolerates a missing `X-Webhook-Timestamp` header and
@@ -51,7 +52,7 @@ export function checkTimestamp(
 /**
  * Verify HMAC-SHA256 with timestamped signing input `${timestamp}:${body}`.
  * Falls back to body-only signing under `legacy` mode when the timestamp is
- * absent, matching the pre-F-75 wire format so operators can stage the
+ * absent, matching the pre-v0.0.7 wire format so operators can stage the
  * upgrade.
  */
 export function verifyHmacWithTimestamp(
@@ -67,6 +68,8 @@ export function verifyHmacWithTimestamp(
 
   const tsCheck = checkTimestamp(rawTimestamp);
   if (!tsCheck.valid) {
+    // Legacy fallback only applies when the timestamp is absent — a stale or
+    // tampered timestamp still 401s.
     if (mode === "legacy" && tsCheck.error === "Missing X-Webhook-Timestamp header") {
       const expected = crypto.createHmac("sha256", secret).update(body).digest("hex");
       return verifyDigest(expected, signature) ? { valid: true, timestamp: null } : { valid: false, error: "Invalid signature" };
@@ -88,14 +91,28 @@ function verifyDigest(expectedHex: string, providedHex: string): boolean {
   try {
     return crypto.timingSafeEqual(expected, actual);
   } catch {
+    // intentionally ignored: timingSafeEqual only throws on length mismatch
+    // (already filtered above). Fail closed if the runtime contract changes.
     return false;
   }
 }
 
+/** Soft trigger: walk the map to drop expired entries past this size. */
+const NONCE_CACHE_PRUNE_THRESHOLD = 1024;
+/**
+ * Hard cap on the in-memory cache. A single channel running well above its
+ * default rate limit could otherwise add entries faster than the 305s TTL
+ * expires them. Past this size the oldest-by-expiry entries are evicted —
+ * those signatures briefly become replayable again, which is the right
+ * tradeoff vs unbounded memory growth.
+ */
+const NONCE_CACHE_HARD_CAP = 8192;
+
 /**
  * In-memory recent-signature cache, keyed by `${channelId}:${signature}`.
- * Entries expire after `NONCE_TTL_MS` so the cache never grows unbounded.
- * Lookup filters expired entries lazily on read.
+ * Entries expire after `NONCE_TTL_MS`; when the map outgrows the prune
+ * threshold the expired entries are dropped, and a hard cap bounds the
+ * worst case under sustained high traffic.
  */
 export function createNonceCache(now: () => number = () => Date.now()) {
   const seen = new Map<string, number>();
@@ -105,9 +122,19 @@ export function createNonceCache(now: () => number = () => Date.now()) {
   }
 
   function pruneIfDue(currentMs: number): void {
-    if (seen.size < 1024) return;
+    if (seen.size < NONCE_CACHE_PRUNE_THRESHOLD) return;
     for (const [k, expiresAt] of seen) {
       if (expiresAt <= currentMs) seen.delete(k);
+    }
+    if (seen.size < NONCE_CACHE_HARD_CAP) return;
+    // Evict the oldest entries (by expiry) back down to the prune threshold.
+    // Map iteration order in JS is insertion order, so the first half of the
+    // entries are also the oldest insertions — sorting by expiresAt is
+    // equivalent but explicit.
+    const entries = [...seen.entries()].sort((a, b) => a[1] - b[1]);
+    const dropCount = seen.size - NONCE_CACHE_PRUNE_THRESHOLD;
+    for (let i = 0; i < dropCount; i++) {
+      seen.delete(entries[i][0]);
     }
   }
 

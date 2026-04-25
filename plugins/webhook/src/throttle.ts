@@ -1,13 +1,13 @@
 /**
- * Per-channel rate limit + concurrency throttle for the webhook plugin (F-76).
+ * Per-channel rate limit + concurrency throttle for the webhook plugin.
  *
  * Each channel gets its own QPM (queries-per-minute) bucket and a concurrent
  * in-flight counter. Stale QPM timestamps are filtered lazily on read — no
- * timer needed. The API mirrors `acquireSlot` / `withSourceSlot` from
- * `packages/api/src/lib/db/source-rate-limit.ts`, but stays in-plugin so the
- * @useatlas/webhook package keeps its standalone npm shape (no dependency on
- * @atlas/api or Effect.ts). Lift to a shared module once a second plugin
- * needs it.
+ * timer needed. Conceptually borrows the acquire/release shape from
+ * `packages/api/src/lib/db/source-rate-limit.ts`, but exposes a synchronous
+ * `acquire(channelId, limit) -> AcquireResult` (no Effect.ts dep) so
+ * @useatlas/webhook keeps its standalone npm shape. Lift to a shared module
+ * once a second plugin needs it.
  */
 export const RATE_LIMIT_WINDOW_MS = 60_000;
 

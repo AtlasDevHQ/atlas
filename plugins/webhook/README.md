@@ -98,8 +98,9 @@ timestamp. Operators who can't update upstream senders immediately can set
   is observable.
 - A timestamp that IS provided is still validated — only the missing case
   soft-fails. A stale or future-dated timestamp still 401s.
-- Replay-cache protection only applies to requests that include a timestamp
-  (legacy upstream senders aren't covered).
+- Replay-cache protection only applies to HMAC channels with a timestamp;
+  api-key channels (even with `requireTimestamp`) are not replay-cache-
+  protected because the cache is keyed on the HMAC signature.
 
 Plan to flip the env var off within one week of upgrading. Default is
 fail-closed (strict mode).

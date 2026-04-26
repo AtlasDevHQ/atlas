@@ -60,9 +60,10 @@ export function ConversationItem({
               await onDelete();
               setConfirmDelete(false);
             } catch (err: unknown) {
-              console.warn("Failed to delete conversation:", err instanceof Error ? err.message : String(err));
-              setError("Failed to delete conversation. Please try again.");
-              setTimeout(() => setError(null), 3000);
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn("Failed to delete conversation:", msg);
+              setError(`Couldn't delete — ${msg}`);
+              setTimeout(() => setError(null), 4000);
             } finally {
               setDeleting(false);
             }
@@ -74,7 +75,7 @@ export function ConversationItem({
 
   return (
     <div
-      className={`group flex w-full items-center gap-1 rounded-lg pr-1 transition-colors ${
+      className={`group flex w-full items-center rounded-lg transition-colors ${
         isActive
           ? "bg-primary/10 ring-1 ring-inset ring-primary/30 dark:bg-primary/15 dark:ring-primary/40"
           : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
@@ -94,7 +95,7 @@ export function ConversationItem({
           {conversation.title || "New conversation"}
         </p>
         {error ? (
-          <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
+          <p role="alert" className="text-xs text-red-600 dark:text-red-400">{error}</p>
         ) : (
           <p className="text-xs text-zinc-600 dark:text-zinc-400">
             {relativeTime(conversation.updatedAt)}
@@ -111,9 +112,10 @@ export function ConversationItem({
             try {
               await onStar(!conversation.starred);
             } catch (err: unknown) {
-              console.warn("Failed to update star:", err instanceof Error ? err.message : String(err));
-              setError("Failed to update. Please try again.");
-              setTimeout(() => setError(null), 3000);
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn("Failed to update star:", msg);
+              setError(`Couldn't update star — ${msg}`);
+              setTimeout(() => setError(null), 4000);
             } finally {
               setStarPending(false);
             }
@@ -143,9 +145,10 @@ export function ConversationItem({
                 const { id } = await onConvertToNotebook();
                 router.push(`/notebook?id=${id}`);
               } catch (err: unknown) {
-                console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));
-                setError("Failed to convert. Please try again.");
-                setTimeout(() => setError(null), 3000);
+                const msg = err instanceof Error ? err.message : String(err);
+                console.warn("Failed to convert to notebook:", msg);
+                setError(`Couldn't convert — ${msg}`);
+                setTimeout(() => setError(null), 4000);
               } finally {
                 setConverting(false);
               }

@@ -207,14 +207,14 @@ export default function SLAPage() {
               id="worked-example-heading"
               className="mb-6 text-base font-medium text-zinc-100 md:text-lg"
             >
-              If a Business team hits 99.4% uptime in March on a $1,980/mo plan
+              If a Business team hits 98.4% uptime in March on a $1,980/mo plan
               (20 seats × $99) …
             </h2>
             <ol className="grid items-center gap-5 md:grid-cols-[1fr_auto_1fr_auto_1fr] md:gap-4">
               <WorkedExampleStep
                 label="actual uptime"
-                value="99.40%"
-                note="≈ 268 min downtime"
+                value="98.40%"
+                note="≈ 715 min downtime"
               />
               <WorkedExampleArrow />
               <WorkedExampleStep

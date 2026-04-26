@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Service Level Agreement</title>
+<link rel="stylesheet" href="../atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="chrome.jsx"></script>
+<script type="text/babel" src="legal.jsx"></script>
+
+<script type="text/babel">
+const SLA_TARGETS = [
+  { tier: "team", uptime: "99.9%", credits: ["<99.9%: 10%", "<99.0%: 25%", "<95.0%: 50%"] },
+  { tier: "enterprise (default)", uptime: "99.95%", credits: ["<99.95%: 10%", "<99.5%: 25%", "<98.0%: 50%"] },
+  { tier: "enterprise (custom)", uptime: "up to 99.99%", credits: ["negotiated"] },
+];
+
+const sections = [
+  { id: "definitions", title: "Definitions",
+    legal: [
+      "\"Service\" means the Atlas Cloud product accessed via app.useatlas.dev, including the query API, semantic-layer service, and dashboard. The Service does not include the open-source distribution, customer-hosted deployments, or third-party data warehouses connected by Customer.",
+      "\"Downtime\" means any minute during which the Service returns a 5xx response or fails to respond within 30 seconds for >50% of requests originating from Customer's account, as measured by Atlas's external monitoring (Pingdom + internal probes).",
+      "\"Monthly Uptime Percentage\" is calculated as (Total Minutes − Downtime Minutes) / Total Minutes for a calendar month, rounded to two decimal places.",
+      "\"Service Credit\" means the percentage of monthly subscription fees applied to Customer's next invoice when an Uptime Target is missed.",
+    ],
+    plain: "If Atlas Cloud returns errors or times out, that counts as downtime. If we miss our promise for the month, you receive a credit on the next invoice."
+  },
+  { id: "targets", title: "Uptime Targets & Credits",
+    legal: [
+      "Atlas commits to the following Monthly Uptime Percentage targets, by tier:",
+      "Team — 99.9% (≈ 43 minutes/month allowance). Enterprise default — 99.95% (≈ 21 min/month). Enterprise custom — up to 99.99% (≈ 4 min/month) where negotiated in an order form.",
+      "If a target is missed, Service Credits are applied automatically to the next invoice. Credits do not require Customer to file a claim, though Customer may request retroactive review for up to 30 days after the month in question.",
+      "Service Credits are Customer's sole and exclusive remedy for any unavailability or non-performance of the Service. The maximum credit in any single month is 50% of that month's subscription fees.",
+    ],
+    plain: "We target 99.9% on Team and 99.95% on Enterprise. If we miss, you receive an automatic credit, capped at half of that month's fees."
+  },
+  { id: "exclusions", title: "Exclusions",
+    legal: [
+      "Downtime does not include unavailability caused by: (a) scheduled maintenance announced ≥7 days in advance via status.useatlas.dev; (b) Customer-caused issues, including misconfiguration, exceeding rate limits, or use of unsupported model endpoints; (c) failures of Customer's data warehouse, identity provider, or model provider; (d) force majeure events; (e) suspension of the account for non-payment or violation of the Acceptable Use Policy.",
+      "Maintenance windows are limited to 2 hours per month and are scheduled outside 09:00–18:00 in Customer's primary business timezone where reasonably possible.",
+    ],
+    plain: "A few things don't count as our downtime: announced maintenance windows, your warehouse or model API failing, force majeure, and accounts suspended for non-payment."
+  },
+  { id: "support", title: "Support Response Times",
+    legal: [
+      "Atlas provides email support at support@useatlas.dev with the following first-response targets, measured 24×7 from the time a ticket is opened:",
+      "Severity 1 (Service unavailable, no workaround): Team — 4 hours. Enterprise — 1 hour. Severity 2 (Major feature broken, workaround exists): Team — 8 business hours. Enterprise — 4 hours. Severity 3 (Minor issue, request for information): Team — 1 business day. Enterprise — 8 business hours.",
+      "Enterprise customers receive a named Customer Success Manager and a dedicated Slack Connect channel. Sev-1 issues on Enterprise trigger immediate paging of the on-call engineer.",
+    ],
+    plain: "Email reaches a real engineer. Severity 1 issues on Enterprise page our on-call team immediately, day or night."
+  },
+  { id: "status", title: "Status, Incidents & Postmortems",
+    legal: [
+      "Atlas maintains a public status page at status.useatlas.dev showing current Service health, ongoing incidents, and historical uptime by region.",
+      "For any Severity 1 incident, Atlas will publish a written postmortem within 5 business days of resolution. Postmortems include timeline, root cause, remediation steps, and a list of preventive measures.",
+      "Customers may subscribe to status updates via email, RSS, Slack, or webhook.",
+    ],
+    plain: "Our public status page shows current health and history. After any major incident we publish a written postmortem within 5 business days."
+  },
+  { id: "data", title: "Data Durability",
+    legal: [
+      "Customer data stored in the Service (semantic-layer definitions, audit logs, user accounts) is replicated across at least three availability zones in the Customer's selected region. Atlas targets a Recovery Point Objective (RPO) of 5 minutes and a Recovery Time Objective (RTO) of 1 hour for catastrophic failure scenarios.",
+      "Atlas does not store the contents of Customer's data warehouse. Query execution is read-only and pass-through; result sets are cached in-memory only for the duration of the user session.",
+    ],
+    plain: "Your configuration and audit logs are replicated across three availability zones with a 5-minute RPO. Your warehouse data is never stored on our side — queries pass through in-memory only."
+  },
+  { id: "termination", title: "Termination for Chronic Breach",
+    legal: [
+      "If Atlas misses its Uptime Target in any three consecutive calendar months, or in any four months within a rolling twelve-month period, Customer may terminate the agreement for cause with 30 days' written notice and receive a pro-rata refund of any prepaid fees for the remaining term.",
+    ],
+    plain: "If we repeatedly miss our targets, you may terminate for cause and receive a pro-rata refund of any prepaid fees."
+  },
+];
+
+const SLAPage = () => (
+  <div>
+    <AtlasNav active="" />
+    <PageHeader
+      eye="// legal · sla"
+      title="Service Level Agreement."
+      dek="What we promise on Atlas Cloud — uptime targets, credits, response times, and what happens if we miss."
+      meta={<>
+        <span>effective 2026-01-15</span>
+        <span>v3.2</span>
+        <span>applies to: atlas cloud</span>
+      </>}
+    />
+
+    {/* Worked example */}
+    <div style={slaStyles.exWrap}>
+      <div style={wwwStyles.eye}>// worked example</div>
+      <div style={slaStyles.exCard}>
+        <div style={slaStyles.exHead}>If a Team customer hits 99.4% in March on a $2,030/mo plan…</div>
+        <div style={slaStyles.exGrid}>
+          <div style={slaStyles.exCol}>
+            <div style={slaStyles.exLabel}>actual uptime</div>
+            <div style={slaStyles.exVal}>99.40%</div>
+            <div style={slaStyles.exNote}>≈ 268 min downtime</div>
+          </div>
+          <div style={slaStyles.exArrow}>→</div>
+          <div style={slaStyles.exCol}>
+            <div style={slaStyles.exLabel}>credit tier hit</div>
+            <div style={slaStyles.exVal}>25%</div>
+            <div style={slaStyles.exNote}>uptime &lt; 99.0%</div>
+          </div>
+          <div style={slaStyles.exArrow}>→</div>
+          <div style={slaStyles.exCol}>
+            <div style={slaStyles.exLabel}>April invoice</div>
+            <div style={{ ...slaStyles.exVal, color: "var(--atlas-brand)" }}>−$507.50</div>
+            <div style={slaStyles.exNote}>auto-applied · no claim filing</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {/* Targets table */}
+    <div style={slaStyles.targets}>
+      <div style={{ ...wwwStyles.eye }}>// uptime targets at a glance</div>
+      <div style={slaStyles.targetGrid}>
+        {SLA_TARGETS.map(t => (
+          <div key={t.tier} style={slaStyles.tCard}>
+            <div style={slaStyles.tTier}>{t.tier}</div>
+            <div style={slaStyles.tUptime}>{t.uptime}</div>
+            <div style={slaStyles.tCreditsHead}>// service credits</div>
+            <ul style={slaStyles.tCreditsList}>
+              {t.credits.map(c => <li key={c} style={slaStyles.tCreditItem}>{c}</li>)}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <LegalDoc sections={sections} />
+    <AtlasFooter />
+  </div>
+);
+
+const slaStyles = {
+  targets: { maxWidth: 1100, margin: "0 auto", padding: "40px 64px 0" },
+  targetGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginTop: 18 },
+  tCard: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 10, padding: 22, background: "oklch(0.18 0 0 / 0.4)" },
+  tTier: { fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.06em", color: "oklch(0.708 0 0)", marginBottom: 10, textTransform: "uppercase" },
+  tUptime: { fontSize: 36, fontWeight: 600, letterSpacing: "-0.03em", color: "var(--atlas-brand)", marginBottom: 18 },
+  tCreditsHead: { fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.06em", color: "oklch(0.443 0 0)", marginBottom: 8, textTransform: "uppercase" },
+  tCreditsList: { listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6 },
+  tCreditItem: { fontFamily: "var(--font-mono)", fontSize: 12, color: "oklch(0.871 0 0)" },
+
+  exWrap: { maxWidth: 1100, margin: "0 auto", padding: "40px 64px 0" },
+  exCard: { border: "1px solid color-mix(in oklch, var(--atlas-brand) 32%, transparent)", borderRadius: 12, padding: 28, background: "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.18 0 0 / 0.4))", marginTop: 16 },
+  exHead: { fontSize: 16, fontWeight: 500, color: "oklch(0.985 0 0)", marginBottom: 22 },
+  exGrid: { display: "grid", gridTemplateColumns: "1fr auto 1fr auto 1fr", gap: 18, alignItems: "center" },
+  exCol: { padding: "4px 0" },
+  exLabel: { fontFamily: "var(--font-mono)", fontSize: 10.5, color: "oklch(0.443 0 0)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 },
+  exVal: { fontSize: 30, fontWeight: 600, letterSpacing: "-0.025em", color: "oklch(0.985 0 0)", marginBottom: 6, lineHeight: 1 },
+  exNote: { fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.708 0 0)", letterSpacing: "0.04em" },
+  exArrow: { fontSize: 22, color: "oklch(0.443 0 0)" },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<SLAPage />);
+</script>
+</body>
+</html>

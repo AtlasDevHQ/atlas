@@ -16,13 +16,13 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Atlas — Quit copying SQL from ChatGPT",
+  title: "Atlas — Text-to-SQL, that actually ships.",
   description:
-    "Stop pasting AI-generated SQL into your database client and hoping it works. Atlas connects to your actual schema, writes validated queries, and runs them. Open-source, self-hosted or cloud.",
+    "Atlas reads your semantic layer, writes deterministic SQL, and runs it through 7 validators before it ever touches your warehouse. Open-source, self-hosted or cloud.",
   openGraph: {
-    title: "Atlas — Quit copying SQL from ChatGPT",
+    title: "Atlas — Text-to-SQL, that actually ships.",
     description:
-      "AI writes better SQL than you — let it. Atlas connects to your schema, validates queries, and runs them. Open-source with 7 databases, 21+ plugins, and enterprise cloud.",
+      "94% of AI-generated SQL fails at least one Atlas validator. Atlas reads your schema, writes deterministic SQL, and runs it through 7 gates before execution. Self-host or cloud.",
     url: "https://www.useatlas.dev",
     siteName: "Atlas",
     type: "website",
@@ -31,15 +31,15 @@ export const metadata: Metadata = {
         url: "/og.png",
         width: 1200,
         height: 630,
-        alt: "Atlas — Quit copying SQL from ChatGPT",
+        alt: "Atlas — Text-to-SQL, that actually ships.",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Atlas — Quit copying SQL from ChatGPT",
+    title: "Atlas — Text-to-SQL, that actually ships.",
     description:
-      "Stop pasting AI-generated SQL and hoping it works. Atlas connects to your schema, validates every query, and runs it. Open-source or cloud.",
+      "Atlas reads your schema, writes deterministic SQL, and runs it through 7 validators. Open-source or cloud.",
     images: ["/og.png"],
   },
 };

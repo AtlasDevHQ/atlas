@@ -37,7 +37,7 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
                 className={`text-sm transition-colors ${
                   isActive
                     ? "text-zinc-300 hover:text-zinc-100"
-                    : "text-zinc-500 hover:text-zinc-300"
+                    : "text-zinc-400 hover:text-zinc-300"
                 }`}
               >
                 {link.label}

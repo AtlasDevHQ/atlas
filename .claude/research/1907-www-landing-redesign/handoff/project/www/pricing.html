@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Pricing</title>
+<link rel="stylesheet" href="../atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+  @keyframes termBlink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+  button { font-family: inherit; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  window.TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+    "billing": "annual",
+    "currency": "USD"
+  }/*EDITMODE-END*/;
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="../tweaks-panel.jsx"></script>
+<script type="text/babel" src="chrome.jsx"></script>
+
+<script type="text/babel">
+const PRICE = {
+  annual: { team: 29, ent: "talk" },
+  monthly: { team: 35, ent: "talk" },
+};
+const CUR = { USD: "$", EUR: "€", GBP: "£" };
+const RATE = { USD: 1, EUR: 0.92, GBP: 0.79 };
+
+const PricingPage = () => {
+  const [t, setTweak] = useTweaks(window.TWEAK_DEFAULTS || {});
+  const sym = CUR[t.currency] || "$";
+  const team = Math.round(PRICE[t.billing].team * (RATE[t.currency] || 1));
+
+  const tiers = [
+    {
+      kind: "self-host", name: "open source", price: "$0", priceL: "free, forever",
+      sub: "Your infra. Your data.", recommend: false,
+      features: [
+        "Every Atlas feature",
+        "Unlimited seats, unlimited queries",
+        "MIT-licensed source",
+        "BYO model key",
+        "No telemetry, ever",
+        "Community Discord support",
+      ],
+      cta: "$ bun create @useatlas", ctaSec: "read the docs →",
+    },
+    {
+      kind: "atlas cloud", name: "team", price: `${sym}${team}`, priceL: `/ seat / ${t.billing === "annual" ? "month, billed annually" : "month"}`,
+      sub: "Hosted. Zero ops.", recommend: true,
+      features: [
+        "Everything in open source",
+        "Hosted, monitored, backed up",
+        "99.9% uptime SLA",
+        "SSO · SAML · SCIM",
+        "Audit log export (CSV / S3)",
+        "Priority support · 4h response",
+      ],
+      cta: "start 14-day trial", ctaSec: "no card required",
+    },
+    {
+      kind: "enterprise", name: "enterprise", price: "talk", priceL: "volume, VPC, custom terms",
+      sub: "For regulated industries.", recommend: false,
+      features: [
+        "Everything in team",
+        "Single-tenant deployment (BYO VPC)",
+        "Custom SLA up to 99.99%",
+        "SOC 2 Type II report",
+        "DPA + sub-processor list",
+        "Dedicated CSM · SSO IdP integration",
+      ],
+      cta: "book 30-min call", ctaSec: "or email sales@",
+    },
+  ];
+
+  return (
+    <div>
+      <AtlasNav active="pricing" />
+      <PageHeader
+        eye="// pricing"
+        title="Honest pricing. Per seat, per month."
+        dek="Self-host is free and always will be. Cloud adds the things you'd build anyway: SSO, audit, uptime, support."
+      />
+
+      {/* Billing toggle */}
+      <div style={pStyles.toggleRow}>
+        <div style={pStyles.toggle}>
+          {["monthly", "annual"].map(opt => (
+            <button key={opt}
+              onClick={() => setTweak("billing", opt)}
+              style={{ ...pStyles.toggleBtn, ...(t.billing === opt ? pStyles.toggleBtnOn : {}) }}>
+              {opt}
+              {opt === "annual" && <span style={pStyles.savePill}>save 17%</span>}
+            </button>
+          ))}
+        </div>
+        <div style={pStyles.curRow}>
+          {Object.keys(CUR).map(c => (
+            <button key={c}
+              onClick={() => setTweak("currency", c)}
+              style={{ ...pStyles.curBtn, ...(t.currency === c ? pStyles.curBtnOn : {}) }}>
+              {CUR[c]} {c}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Why-this-matters stat */}
+      <div style={pStyles.statWrap}>
+        <div style={pStyles.statCard}>
+          <div style={pStyles.statBig}>94%</div>
+          <div style={pStyles.statBody}>
+            <div style={pStyles.statHead}>of AI-generated SQL fails at least one Atlas validator.</div>
+            <div style={pStyles.statSub}>Sample: 12,418 queries across our beta cohort. Every tier ships the same 7 gates — the difference is who runs the servers.</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tiers */}
+      <div style={pStyles.tierGrid}>
+        {tiers.map(tier => (
+          <div key={tier.name} style={{ ...pStyles.tier, ...(tier.recommend ? pStyles.tierPri : {}) }}>
+            <div style={pStyles.tierKind}>// {tier.kind}</div>
+            <div style={pStyles.tierName}>{tier.name}</div>
+            {tier.recommend && <div style={pStyles.recPill}>recommended</div>}
+            <div style={pStyles.priceRow}>
+              <div style={pStyles.priceN}>{tier.price}</div>
+              <div style={pStyles.priceL}>{tier.priceL}</div>
+            </div>
+            <div style={pStyles.sub}>{tier.sub}</div>
+            <ul style={pStyles.features}>
+              {tier.features.map(f => (
+                <li key={f} style={pStyles.fLi}><span style={pStyles.tick}>✓</span>{f}</li>
+              ))}
+            </ul>
+            <button style={tier.recommend ? pStyles.btnPri : pStyles.btnSec}>{tier.cta} →</button>
+            <div style={pStyles.ctaSec}>{tier.ctaSec}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Comparison table */}
+      <section style={pStyles.cmpSec}>
+        <div style={pStyles.eye}>// detailed comparison</div>
+        <h2 style={pStyles.h2}>What you get at every tier.</h2>
+        <table style={pStyles.cmpTable}>
+          <thead>
+            <tr>
+              <th style={pStyles.cmpThL}>feature</th>
+              <th style={pStyles.cmpTh}>open source</th>
+              <th style={{ ...pStyles.cmpTh, color: "var(--atlas-brand)" }}>team</th>
+              <th style={pStyles.cmpTh}>enterprise</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              ["core", null, null, null, null],
+              ["7 validation gates", "✓", "✓", "✓"],
+              ["Semantic layer · YAML", "✓", "✓", "✓"],
+              ["React widget · CLI", "✓", "✓", "✓"],
+              ["Postgres · Snowflake · BQ · DuckDB", "✓", "✓", "✓"],
+              ["hosting", null, null, null, null],
+              ["Self-hosted", "✓", "—", "✓"],
+              ["Atlas Cloud (multi-tenant)", "—", "✓", "—"],
+              ["Single-tenant VPC", "—", "—", "✓"],
+              ["Uptime SLA", "—", "99.9%", "up to 99.99%"],
+              ["security & compliance", null, null, null, null],
+              ["SSO · SAML · SCIM", "—", "✓", "✓"],
+              ["Audit log export", "—", "CSV", "CSV · S3 · webhook"],
+              ["SOC 2 Type II report", "—", "on request", "✓"],
+              ["DPA · sub-processor list", "—", "✓", "✓"],
+              ["support", null, null, null, null],
+              ["Community Discord", "✓", "✓", "✓"],
+              ["Email support", "—", "4h", "1h"],
+              ["Dedicated CSM", "—", "—", "✓"],
+              ["Custom training", "—", "—", "✓"],
+            ].map((row, i) => {
+              if (row[1] === null) return (
+                <tr key={i}>
+                  <td colSpan={4} style={pStyles.cmpHeadRow}>// {row[0]}</td>
+                </tr>
+              );
+              return (
+                <tr key={i} style={pStyles.cmpRow}>
+                  <td style={pStyles.cmpCellL}>{row[0]}</td>
+                  <td style={pStyles.cmpCell}>{row[1]}</td>
+                  <td style={{ ...pStyles.cmpCell, background: "color-mix(in oklch, var(--atlas-brand) 4%, transparent)" }}>{row[2]}</td>
+                  <td style={pStyles.cmpCell}>{row[3]}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      {/* FAQ */}
+      <section style={pStyles.faqSec}>
+        <div style={pStyles.eye}>// frequently asked</div>
+        <h2 style={pStyles.h2}>Pricing questions.</h2>
+        <div style={pStyles.faqGrid}>
+          {[
+            ["Can I really self-host every feature?", "Yes. The OSS distribution is the same code we run in cloud, MIT-licensed, no feature gates, no phone-home."],
+            ["What counts as a seat?", "Anyone who runs queries through the Atlas UI or the React widget. API-only service accounts don't count."],
+            ["Do you charge for queries?", "No per-query pricing on team. Reasonable use only — see SLA. Enterprise deals can include query budgets."],
+            ["BYO model key on cloud?", "Yes. Cloud supports OpenAI, Anthropic, and self-hosted endpoints (vLLM, llama.cpp). Your key never leaves our KMS."],
+            ["What about my warehouse credits?", "Atlas runs read-only against your warehouse, so warehouse credits are billed by your provider as normal."],
+            ["Can I switch plans later?", "Up or down, any time, prorated. Self-host → cloud is a single command. Cloud → self-host is a data export."],
+          ].map(([q, a]) => (
+            <div key={q} style={pStyles.faqCard}>
+              <div style={pStyles.faqQ}>{q}</div>
+              <div style={pStyles.faqA}>{a}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <AtlasFooter />
+
+      <TweaksPanel>
+        <TweakSection label="Pricing" />
+        <TweakRadio label="Billing" value={t.billing} options={["monthly", "annual"]} onChange={v => setTweak("billing", v)} />
+        <TweakRadio label="Currency" value={t.currency} options={["USD", "EUR", "GBP"]} onChange={v => setTweak("currency", v)} />
+      </TweaksPanel>
+    </div>
+  );
+};
+
+const pStyles = {
+  toggleRow: { display: "flex", justifyContent: "center", gap: 16, alignItems: "center", padding: "32px 64px 16px", flexWrap: "wrap" },
+  toggle: { display: "flex", border: "1px solid oklch(1 0 0 / 0.1)", borderRadius: 999, padding: 4, background: "oklch(0.16 0 0)" },
+  toggleBtn: { background: "transparent", border: "none", color: "oklch(0.708 0 0)", padding: "8px 18px", borderRadius: 999, cursor: "pointer", fontSize: 13, display: "inline-flex", alignItems: "center", gap: 8 },
+  toggleBtnOn: { background: "var(--atlas-brand)", color: "oklch(0.145 0 0)", fontWeight: 600 },
+  savePill: { fontFamily: "var(--font-mono)", fontSize: 9.5, padding: "2px 6px", borderRadius: 999, background: "oklch(0.145 0 0 / 0.25)", letterSpacing: "0.04em" },
+  curRow: { display: "flex", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11 },
+  curBtn: { background: "transparent", border: "1px solid oklch(1 0 0 / 0.08)", color: "oklch(0.556 0 0)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.04em" },
+  curBtnOn: { color: "var(--atlas-brand)", borderColor: "color-mix(in oklch, var(--atlas-brand) 38%, transparent)" },
+
+  statWrap: { maxWidth: 1280, margin: "0 auto", padding: "24px 64px 0" },
+  statCard: { display: "grid", gridTemplateColumns: "auto 1fr", gap: 28, alignItems: "center", padding: "22px 28px", border: "1px solid color-mix(in oklch, var(--atlas-brand) 28%, transparent)", borderRadius: 12, background: "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.16 0 0 / 0.5))" },
+  statBig: { fontSize: 60, fontWeight: 600, letterSpacing: "-0.04em", color: "var(--atlas-brand)", lineHeight: 1, fontFamily: "var(--font-mono)" },
+  statBody: { display: "flex", flexDirection: "column", gap: 4 },
+  statHead: { fontSize: 17, fontWeight: 500, color: "oklch(0.985 0 0)", lineHeight: 1.35 },
+  statSub: { fontFamily: "var(--font-mono)", fontSize: 11.5, color: "oklch(0.708 0 0)", letterSpacing: "0.04em", lineHeight: 1.55 },
+
+  tierGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, padding: "24px 64px 80px", maxWidth: 1280, margin: "0 auto" },
+  tier: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 14, padding: 32, background: "oklch(0.18 0 0 / 0.35)", display: "flex", flexDirection: "column", position: "relative" },
+  tierPri: { border: "1px solid color-mix(in oklch, var(--atlas-brand) 38%, transparent)", background: "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.18 0 0 / 0.4))" },
+  tierKind: { fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.708 0 0)", letterSpacing: "0.06em", marginBottom: 10 },
+  tierName: { fontSize: 24, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 16 },
+  recPill: { position: "absolute", top: 24, right: 24, fontFamily: "var(--font-mono)", fontSize: 10, padding: "4px 8px", border: "1px solid var(--atlas-brand)", color: "var(--atlas-brand)", borderRadius: 999, letterSpacing: "0.08em", textTransform: "uppercase" },
+  priceRow: { display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 },
+  priceN: { fontSize: 48, fontWeight: 600, letterSpacing: "-0.04em", color: "oklch(0.985 0 0)" },
+  priceL: { fontSize: 12, color: "oklch(0.556 0 0)" },
+  sub: { fontSize: 14, color: "oklch(0.871 0 0)", marginBottom: 24 },
+  features: { listStyle: "none", padding: 0, margin: "0 0 28px", display: "flex", flexDirection: "column", gap: 9 },
+  fLi: { fontSize: 13.5, color: "oklch(0.871 0 0)", display: "flex", alignItems: "center", gap: 10 },
+  tick: { color: "var(--atlas-brand)", fontFamily: "var(--font-mono)", fontSize: 12 },
+  btnPri: { width: "100%", marginTop: "auto", background: "var(--atlas-brand)", color: "oklch(0.145 0 0)", border: "none", borderRadius: 8, padding: "12px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "var(--font-sans)" },
+  btnSec: { width: "100%", marginTop: "auto", background: "transparent", color: "oklch(0.985 0 0)", border: "1px solid oklch(1 0 0 / 0.15)", borderRadius: 8, padding: "12px 16px", fontWeight: 500, fontSize: 14, cursor: "pointer", fontFamily: "var(--font-sans)" },
+  ctaSec: { fontFamily: "var(--font-mono)", fontSize: 10.5, color: "oklch(0.443 0 0)", textAlign: "center", marginTop: 10, letterSpacing: "0.04em" },
+
+  cmpSec: { padding: "80px 64px", borderTop: "1px solid oklch(1 0 0 / 0.05)", maxWidth: 1280, margin: "0 auto" },
+  eye: { fontFamily: "var(--font-mono)", fontSize: 11.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--atlas-brand)", marginBottom: 14 },
+  h2: { fontSize: 36, fontWeight: 600, letterSpacing: "-0.03em", margin: "0 0 32px" },
+  cmpTable: { width: "100%", borderCollapse: "collapse", fontSize: 13.5 },
+  cmpTh: { textAlign: "center", padding: "14px 16px", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.06em", color: "oklch(0.708 0 0)", borderBottom: "1px solid oklch(1 0 0 / 0.1)", textTransform: "uppercase" },
+  cmpThL: { textAlign: "left", padding: "14px 16px", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.06em", color: "oklch(0.443 0 0)", borderBottom: "1px solid oklch(1 0 0 / 0.1)", textTransform: "uppercase" },
+  cmpHeadRow: { fontFamily: "var(--font-mono)", fontSize: 10.5, letterSpacing: "0.08em", color: "var(--atlas-brand)", padding: "20px 16px 8px", textTransform: "uppercase" },
+  cmpRow: { borderBottom: "1px solid oklch(1 0 0 / 0.05)" },
+  cmpCellL: { padding: "12px 16px", color: "oklch(0.871 0 0)" },
+  cmpCell: { padding: "12px 16px", textAlign: "center", color: "oklch(0.871 0 0)", fontFamily: "var(--font-mono)", fontSize: 12.5 },
+
+  faqSec: { padding: "80px 64px", borderTop: "1px solid oklch(1 0 0 / 0.05)", maxWidth: 1280, margin: "0 auto" },
+  faqGrid: { display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 },
+  faqCard: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 10, padding: 24, background: "oklch(0.18 0 0 / 0.4)" },
+  faqQ: { fontSize: 15, fontWeight: 600, marginBottom: 10 },
+  faqA: { fontSize: 13.5, lineHeight: 1.65, color: "oklch(0.708 0 0)" },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<PricingPage />);
+</script>
+</body>
+</html>

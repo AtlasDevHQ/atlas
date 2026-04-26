@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Landing Redesign</title>
+<link rel="stylesheet" href="atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+  @keyframes termBlink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="variants/terminal.jsx"></script>
+<script type="text/babel" src="variants/editorial.jsx"></script>
+<script type="text/babel" src="variants/schema.jsx"></script>
+
+<script type="text/babel">
+const App = () => (
+  <DesignCanvas
+    title="Atlas — Landing redesign"
+    subtitle="Three directions, none of them a single-column LP. All three stay in the existing brand: dark surface, teal accent, Sora + JetBrains Mono."
+  >
+    <DCSection
+      id="dirs"
+      title="Three directions"
+      description="Each variant breaks the AI-default LP layout in a different way. A — Terminal IDE: page IS the product, three-column editor. B — Editorial: long-form publication, asymmetric grid, marginalia. C — Schema Map: hero is an ER-diagram-style canvas with sections as nodes."
+    >
+      <DCArtboard id="schema" label="C — Schema Map" width={1440} height={3380}>
+        <SchemaVariant />
+      </DCArtboard>
+      <DCArtboard id="terminal" label="A — Terminal IDE" width={1440} height={3520}>
+        <TerminalVariant />
+      </DCArtboard>
+      <DCArtboard id="editorial" label="B — Editorial" width={1440} height={4400}>
+        <EditorialVariant />
+      </DCArtboard>
+    </DCSection>
+  </DesignCanvas>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

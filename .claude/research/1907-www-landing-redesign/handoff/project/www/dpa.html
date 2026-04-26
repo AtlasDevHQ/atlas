@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Data Processing Addendum</title>
+<link rel="stylesheet" href="../atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="chrome.jsx"></script>
+<script type="text/babel" src="legal.jsx"></script>
+
+<script type="text/babel">
+const SUBPROCESSORS = [
+  { name: "AWS",          purpose: "Cloud infrastructure (compute, storage)",  region: "Customer's selected region",  since: "2024-03" },
+  { name: "Cloudflare",   purpose: "CDN, WAF, DDoS protection",                  region: "Global edge",                 since: "2024-03" },
+  { name: "Stripe",       purpose: "Payment processing",                          region: "United States",               since: "2024-03" },
+  { name: "Postmark",     purpose: "Transactional email (receipts, alerts)",      region: "United States",               since: "2024-04" },
+  { name: "Sentry",       purpose: "Error monitoring (sampled, scrubbed)",        region: "EU (eu.sentry.io)",           since: "2024-05" },
+  { name: "OpenAI",       purpose: "Hosted model inference (opt-in)",             region: "United States",               since: "2024-08" },
+  { name: "Anthropic",    purpose: "Hosted model inference (opt-in)",             region: "United States",               since: "2024-08" },
+  { name: "DataDog",      purpose: "Operational metrics & alerts",                region: "EU (datadoghq.eu)",           since: "2025-02" },
+];
+
+const sections = [
+  { id: "scope", title: "Scope & Roles",
+    legal: [
+      "This Data Processing Addendum (\"DPA\") supplements the Atlas Terms of Service or any signed master agreement (the \"Agreement\") between Atlas Defense Corp. (\"Processor\") and the Customer (\"Controller\").",
+      "Where Customer is itself a processor for its end users, Atlas acts as a sub-processor. The terms of this DPA apply with equivalent force.",
+      "In case of conflict between the Agreement and this DPA, this DPA controls for the processing of Personal Data.",
+    ],
+    plain: "You act as Controller; Atlas acts as Processor. This addendum governs how we handle personal data on your behalf."
+  },
+  { id: "details", title: "Processing Details (Art. 28(3) GDPR)",
+    legal: [
+      "Subject matter: provision of the Atlas Cloud text-to-SQL service.",
+      "Duration: for the term of the Agreement plus the retention periods set out in the Privacy Policy.",
+      "Nature & purpose: storing semantic-layer configuration; routing queries between Customer's authorized users, model providers, and Customer's data warehouse; producing audit logs.",
+      "Categories of data subjects: Customer's employees, contractors, and any individuals whose data resides in Customer's data warehouse and is returned in query results.",
+      "Categories of personal data: identifiers (name, email, SSO subject), business contact info, query text and results when audit logging is enabled, IP addresses, device metadata.",
+      "Atlas does not process special categories of personal data (Art. 9 GDPR) on Customer's behalf in the ordinary course. Customer is responsible for not submitting such data without notifying Atlas in writing.",
+    ],
+    plain: "Required by Art. 28(3) GDPR. This section specifies the subject matter, duration, nature, purpose, and categories of data and data subjects involved in our processing."
+  },
+  { id: "obligations", title: "Processor Obligations",
+    legal: [
+      "Atlas processes Personal Data only on documented instructions from Customer (the Agreement, this DPA, and Customer's reasonable written instructions thereafter), unless required to do otherwise by EU/EEA/UK law (in which case Atlas notifies Customer unless prohibited).",
+      "Atlas ensures that personnel authorized to process Personal Data are bound by appropriate confidentiality obligations.",
+      "Atlas implements the technical and organizational measures listed in Annex II.",
+      "Atlas assists Customer in responding to data-subject requests (access, rectification, erasure, restriction, portability, objection) by providing tools and reasonable cooperation.",
+      "Atlas assists Customer with DPIAs and prior consultations (Art. 35–36 GDPR) by providing relevant information about the Service.",
+    ],
+    plain: "We process only on your documented instructions. Our personnel are bound by confidentiality. We maintain the technical and organizational measures in Annex II and assist with data-subject requests and DPIAs."
+  },
+  { id: "subprocessors", title: "Sub-processors",
+    legal: [
+      "Customer authorizes Atlas to engage the sub-processors listed in Annex I, provided that Atlas: (a) imposes data-protection obligations on each sub-processor that are equivalent to those in this DPA; (b) remains liable for the acts and omissions of its sub-processors as for its own.",
+      "Atlas notifies Customer at least 30 days before adding or replacing a sub-processor. Customer may object on reasonable, documented data-protection grounds within that period; if the parties cannot agree, Customer may terminate the affected portion of the Service for cause and receive a pro-rata refund.",
+    ],
+    plain: "Annex I lists current sub-processors. We provide 30 days' notice before adding or replacing one, and you may object on documented data-protection grounds."
+  },
+  { id: "transfers", title: "International Transfers",
+    legal: [
+      "Where Personal Data originating in the EEA, the United Kingdom, or Switzerland is transferred to a country not subject to an adequacy decision, the Standard Contractual Clauses (Module Two: controller-to-processor; Module Three: processor-to-processor where Customer is itself a processor) are incorporated by reference, with the docking clause and option clauses completed in Annex III.",
+      "For UK transfers, the UK International Data Transfer Addendum issued by the ICO is incorporated. For Swiss transfers, equivalent supplementary measures apply.",
+    ],
+    plain: "Transfers from the EEA, UK, or Switzerland to non-adequate jurisdictions are governed by the Standard Contractual Clauses, incorporated by reference — no separate signature required."
+  },
+  { id: "security", title: "Security Incidents",
+    legal: [
+      "Atlas notifies Customer without undue delay, and in any event within 48 hours, after becoming aware of a Personal Data Breach affecting Customer Data, providing the information required by Art. 33(3) GDPR to the extent then known.",
+      "Atlas updates Customer as facts develop and cooperates with Customer in remediating the breach and notifying affected data subjects or supervisory authorities where required.",
+    ],
+    plain: "We notify you of any Personal Data Breach without undue delay and within 48 hours, providing the information required by Art. 33(3) GDPR and cooperating on remediation."
+  },
+  { id: "audit", title: "Audits",
+    legal: [
+      "Atlas makes available to Customer all information necessary to demonstrate compliance with Art. 28 GDPR, including its current SOC 2 Type II report and ISO 27001 certificate (where applicable).",
+      "Once per twelve-month period, on at least 30 days' notice and during normal business hours, Customer may conduct, or have a third party conduct under appropriate confidentiality, an audit of Atlas's processing activities, limited to information reasonably necessary to verify compliance and conducted in a manner that does not unreasonably interfere with Atlas's operations.",
+    ],
+    plain: "We share our SOC 2 Type II report and ISO 27001 certificate on request. You may audit our processing once per year with appropriate notice and confidentiality protections."
+  },
+  { id: "deletion", title: "Return & Deletion",
+    legal: [
+      "On termination of the Agreement, Atlas will, at Customer's election, return or delete all Personal Data within 90 days, except to the extent applicable law requires retention. Backups are deleted within an additional 90 days as part of the standard backup-rotation cycle.",
+      "Atlas will provide written confirmation of deletion on request.",
+    ],
+    plain: "On termination, we return or delete your data within 90 days, with backups deleted within an additional 90 days. Written confirmation is provided on request."
+  },
+  { id: "annex", title: "Annexes",
+    legal: [
+      "Annex I — List of Sub-processors (current version maintained at useatlas.dev/sub-processors and reproduced below for reference).",
+      "Annex II — Technical and Organizational Measures: encryption (TLS 1.3 in transit, AES-256 at rest), customer-managed KMS keys on Enterprise, MFA-required admin access, least-privilege IAM, audit logging of administrative operations, automated vulnerability scanning, annual third-party penetration testing, ISO 27001-aligned ISMS, SOC 2 Type II reported annually, secure SDLC with mandatory code review, segregated production access, documented incident-response runbook with quarterly drills.",
+      "Annex III — Standard Contractual Clauses, Module Two (controller-to-processor) selected by default. Optional Clause 7 (Docking Clause) is included. Clause 9 sub-processor option (b) — general written authorization with 30-day notice — applies. Clause 11 dispute-resolution option (a) is selected. Clause 17 governing law: Ireland. Clause 18 forum: Ireland.",
+    ],
+    plain: "Annex I lists current sub-processors. Annex II details our security controls. Annex III incorporates the EU Standard Contractual Clauses (Module Two), with Ireland as governing law and forum."
+  },
+];
+
+const DPAPage = () => (
+  <div>
+    <AtlasNav active="" />
+    <PageHeader
+      eye="// legal · dpa"
+      title="Data Processing Addendum."
+      dek="Article 28 GDPR-compliant DPA, with SCCs by reference. Pre-signed and downloadable below — no negotiation needed for standard deals."
+      meta={<>
+        <span>effective 2026-01-15</span>
+        <span>v2.4</span>
+        <span>incorporates: SCCs (2021/914), UK IDTA</span>
+      </>}
+    />
+
+    {/* Pre-signed download row */}
+    <div style={dpaStyles.preSignedWrap}>
+      <div style={dpaStyles.preCard}>
+        <div>
+          <div style={wwwStyles.eye}>// pre-signed</div>
+          <div style={dpaStyles.preTitle}>DPA-v2.4-pre-signed.pdf</div>
+          <div style={dpaStyles.preMeta}>countersigned by Atlas · valid through 2027-01-15 · 12 pages</div>
+        </div>
+        <button style={dpaStyles.preBtn}>download PDF →</button>
+      </div>
+    </div>
+
+    <LegalDoc sections={sections} />
+
+    {/* Sub-processors annex */}
+    <section style={dpaStyles.subSec}>
+      <div style={dpaStyles.subHeadRow}>
+        <div>
+          <div style={wwwStyles.eye}>// annex i — sub-processors</div>
+          <h2 style={dpaStyles.subH2}>Current sub-processors.</h2>
+          <p style={dpaStyles.subDek}>This list is the source of truth. We notify you 30 days before any change.</p>
+        </div>
+        <div style={dpaStyles.subSubBox}>
+          <div style={dpaStyles.subSubHead}>// subscribe to changes</div>
+          <div style={dpaStyles.subSubRow}>
+            <input style={dpaStyles.subSubIn} placeholder="procurement@your-co.com" />
+            <button style={dpaStyles.subSubBtn}>subscribe →</button>
+          </div>
+          <div style={dpaStyles.subSubMeta}>or RSS · webhook · Slack — <a href="#" style={dpaStyles.subSubLink}>useatlas.dev/sub-processors/feed</a></div>
+        </div>
+      </div>
+      <table style={dpaStyles.subTable}>
+        <thead>
+          <tr>
+            <th style={dpaStyles.subTh}>vendor</th>
+            <th style={dpaStyles.subTh}>purpose</th>
+            <th style={dpaStyles.subTh}>region</th>
+            <th style={dpaStyles.subTh}>since</th>
+          </tr>
+        </thead>
+        <tbody>
+          {SUBPROCESSORS.map(s => (
+            <tr key={s.name} style={dpaStyles.subRow}>
+              <td style={dpaStyles.subCellL}>{s.name}</td>
+              <td style={dpaStyles.subCell}>{s.purpose}</td>
+              <td style={dpaStyles.subCell}>{s.region}</td>
+              <td style={dpaStyles.subCellMono}>{s.since}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+
+    <AtlasFooter />
+  </div>
+);
+
+const dpaStyles = {
+  preSignedWrap: { maxWidth: 1100, margin: "0 auto", padding: "40px 64px 0" },
+  preCard: { border: "1px solid color-mix(in oklch, var(--atlas-brand) 38%, transparent)", borderRadius: 12, padding: 24, background: "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.18 0 0 / 0.4))", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 24 },
+  preTitle: { fontSize: 18, fontWeight: 600, fontFamily: "var(--font-mono)", margin: "8px 0 6px" },
+  preMeta: { fontFamily: "var(--font-mono)", fontSize: 12, color: "oklch(0.708 0 0)", letterSpacing: "0.04em" },
+  preBtn: { background: "var(--atlas-brand)", color: "oklch(0.145 0 0)", border: "none", borderRadius: 8, padding: "12px 20px", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "var(--font-sans)" },
+
+  subSec: { maxWidth: 1100, margin: "0 auto", padding: "40px 64px 80px" },
+  subHeadRow: { display: "grid", gridTemplateColumns: "1fr 360px", gap: 32, alignItems: "end", marginBottom: 28 },
+  subSubBox: { border: "1px solid color-mix(in oklch, var(--atlas-brand) 32%, transparent)", borderRadius: 10, padding: 18, background: "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.18 0 0 / 0.4))" },
+  subSubHead: { fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--atlas-brand)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 },
+  subSubRow: { display: "flex", gap: 8, marginBottom: 10 },
+  subSubIn: { flex: 1, background: "oklch(0.16 0 0)", border: "1px solid oklch(1 0 0 / 0.1)", borderRadius: 6, padding: "8px 10px", color: "oklch(0.985 0 0)", fontSize: 13, fontFamily: "var(--font-sans)", outline: "none" },
+  subSubBtn: { background: "var(--atlas-brand)", color: "oklch(0.145 0 0)", border: "none", borderRadius: 6, padding: "8px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "var(--font-sans)" },
+  subSubMeta: { fontFamily: "var(--font-mono)", fontSize: 10.5, color: "oklch(0.708 0 0)", letterSpacing: "0.04em" },
+  subSubLink: { color: "var(--atlas-brand)", textDecoration: "none" },
+  subH2: { fontSize: 28, fontWeight: 600, letterSpacing: "-0.025em", margin: "8px 0 8px" },
+  subDek: { fontSize: 14, color: "oklch(0.708 0 0)", margin: 0 },
+  subTable: { width: "100%", borderCollapse: "collapse" },
+  subTh: { textAlign: "left", padding: "12px 16px", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.06em", color: "oklch(0.443 0 0)", borderBottom: "1px solid oklch(1 0 0 / 0.1)", textTransform: "uppercase" },
+  subRow: { borderBottom: "1px solid oklch(1 0 0 / 0.05)" },
+  subCellL: { padding: "12px 16px", fontWeight: 600, fontSize: 14 },
+  subCell: { padding: "12px 16px", fontSize: 13.5, color: "oklch(0.871 0 0)" },
+  subCellMono: { padding: "12px 16px", fontFamily: "var(--font-mono)", fontSize: 12, color: "oklch(0.708 0 0)", letterSpacing: "0.04em" },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<DPAPage />);
+</script>
+</body>
+</html>

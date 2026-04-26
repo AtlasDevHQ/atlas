@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Privacy Policy</title>
+<link rel="stylesheet" href="../atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="chrome.jsx"></script>
+<script type="text/babel" src="legal.jsx"></script>
+
+<script type="text/babel">
+const PROMISES = [
+  { mono: "no_train", label: "We don't train on your data", sub: "Not your queries, not your warehouse contents, not your prompts. Ever." },
+  { mono: "no_sell", label: "We don't sell your data", sub: "No data brokers, no ad networks, no \"partners.\" Subscription fees are how we make money." },
+  { mono: "no_warehouse_read", label: "We don't read your warehouse", sub: "Atlas runs queries you authorize. We don't browse, sample, or index your tables." },
+  { mono: "encrypted", label: "Encrypted in transit + at rest", sub: "TLS 1.3 in flight. AES-256 on disk. Per-customer KMS keys on Enterprise." },
+];
+
+const sections = [
+  { id: "intro", title: "Who we are & what this covers",
+    legal: [
+      "This Privacy Policy describes how Atlas Defense Corp. (\"Atlas\", \"we\") collects and processes personal information when you use Atlas Cloud, our website at useatlas.dev, our documentation, and related communications.",
+      "It does not cover the open-source Atlas distribution that you self-host — when you run Atlas in your own infrastructure, we don't see your data and there is nothing for us to collect.",
+      "If you are a Customer's end user (e.g. someone whose company uses Atlas Cloud), the Customer is the controller of your personal data and you should consult their privacy policy. We process your data on the Customer's behalf, as described in the Data Processing Addendum.",
+    ],
+    plain: "This describes Atlas Cloud only. If you self-host, your data never reaches us — nothing in this policy applies to that deployment."
+  },
+  { id: "what", title: "What we collect",
+    legal: [
+      "Account data: name, email, organization, role, hashed password (or SSO subject identifier).",
+      "Configuration data: semantic-layer YAML, validator rules, warehouse connection metadata (host, database, schema names — never credentials in plaintext).",
+      "Operational data: query metadata (timestamp, gate outcomes, execution time, row count, error class). Query SQL and natural-language prompts are stored only when audit logging is enabled by the Customer admin.",
+      "Telemetry: IP address, browser user-agent, page-load timing, error stack traces. Telemetry is sampled and retained for 30 days.",
+      "Billing data: company name, billing address, tax ID, payment method tokens. We use Stripe as our payment processor; we never store full card numbers.",
+    ],
+    plain: "Account information, your configuration, query metadata (query text only when your admin enables audit logging), error and performance telemetry, and billing details handled by Stripe."
+  },
+  { id: "why", title: "Why we collect it",
+    legal: [
+      "To provide the Service: authenticate users, execute queries, render dashboards, send transactional email.",
+      "To improve the Service: aggregate, anonymized telemetry to find slow paths, broken flows, and common errors. We do not use Customer Data to train models.",
+      "To bill you: process payments, send invoices, comply with tax law.",
+      "To keep the Service safe: detect abuse, rate-limit attackers, investigate security incidents.",
+      "To support you: respond to email, debug your issue with your explicit permission to read configuration data.",
+    ],
+    plain: "To operate the Service, improve it through aggregate telemetry, process payments, prevent abuse, and respond to support requests."
+  },
+  { id: "no-train", title: "What we DO NOT do",
+    legal: [
+      "We do not use Customer Data — including queries, prompts, semantic-layer definitions, and any data returned from your warehouse — to train, fine-tune, or evaluate AI models.",
+      "We do not sell or rent personal data to third parties.",
+      "We do not share personal data with advertising networks.",
+      "We do not access Customer's data warehouse content for any purpose other than executing queries that Customer's authorized users have explicitly issued.",
+      "We do not retain query result sets in persistent storage; results live in encrypted memory for the duration of a session and are evicted within minutes of the session ending.",
+    ],
+    plain: "Four commitments: we do not train models on Customer Data, sell it, access your warehouse beyond authorized queries, or persist query result sets."
+  },
+  { id: "share", title: "Who we share with",
+    legal: [
+      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, error monitoring, payment processing). The current list is published at useatlas.dev/sub-processors and customers receive 30 days' notice of additions.",
+      "Model providers: when Customer uses Atlas's hosted models, prompts are sent to the model provider configured for that Customer (e.g. OpenAI, Anthropic). Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies.",
+      "Legal: we may disclose information when required by law, court order, or to protect our rights, with notice to Customer where legally permitted.",
+      "Successors: in a merger or sale of substantially all assets, the acquirer takes on the same obligations under this Policy.",
+    ],
+    plain: "A short list of operational vendors (cloud infra, error monitoring, payments), the model provider you select, and disclosures required by valid legal process."
+  },
+  { id: "rights", title: "Your rights",
+    legal: [
+      "Depending on your location, you may have rights to access, correct, delete, port, or restrict processing of your personal data, and to object to certain processing. To exercise these rights, email privacy@useatlas.dev.",
+      "If you are a Customer's end user, please contact the Customer first; we will assist them in responding within 30 days.",
+      "You have the right to lodge a complaint with a data protection authority. We hope you'll give us a chance to resolve it first.",
+    ],
+    plain: "Email privacy@useatlas.dev to exercise access, correction, deletion, or other rights. We respond within 30 days."
+  },
+  { id: "transfers", title: "International transfers",
+    legal: [
+      "Atlas Cloud is hosted in Customer-selected regions (us-east-1, us-west-2, eu-west-1, eu-central-1, ap-southeast-2). Customer Data does not leave the selected region except for transactional services (auth, billing, status email) which are processed in the United States.",
+      "Where personal data is transferred from the EEA, UK, or Switzerland to the US, we rely on Standard Contractual Clauses and the EU-US Data Privacy Framework where available.",
+    ],
+    plain: "Customer Data stays in the region you select. Auth and billing are processed in the US under Standard Contractual Clauses where applicable."
+  },
+  { id: "retention", title: "Retention",
+    legal: [
+      "Account data: retained for the duration of the account plus 90 days after closure.",
+      "Audit logs: retained for the period configured by the Customer admin, default 365 days.",
+      "Telemetry: 30 days, then aggregated and de-identified.",
+      "Backups: production data is retained in encrypted backups for up to 90 days.",
+    ],
+    plain: "Account data: term plus 90 days. Audit logs: 365 days by default, configurable. Telemetry: 30 days. Encrypted backups: up to 90 days."
+  },
+  { id: "security", title: "Security",
+    legal: [
+      "Atlas maintains a security program based on ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.3 in transit, AES-256 at rest, customer-managed KMS keys on Enterprise, MFA-required admin access, least-privilege IAM, automated vulnerability scanning, and external penetration tests at least annually.",
+      "Suspected security incidents may be reported to security@useatlas.dev; PGP key published at useatlas.dev/.well-known/security.txt.",
+    ],
+    plain: "TLS 1.3 in transit, AES-256 at rest, MFA-required admin access, and annual third-party penetration testing. Report suspected issues to security@useatlas.dev."
+  },
+  { id: "cookies", title: "Cookies & tracking",
+    legal: [
+      "We use first-party cookies for authentication and CSRF protection. We use a single first-party analytics tool (Plausible, EU-hosted, no IP storage) on the marketing site. We do not use third-party advertising or behavioral tracking.",
+      "You can disable cookies in your browser; some Service features (notably login) will not work without them.",
+    ],
+    plain: "First-party cookies for authentication and CSRF protection plus EU-hosted, IP-free analytics on the marketing site. No advertising or behavioral cookies. Disabling cookies prevents sign-in."
+  },
+  { id: "kids", title: "Children",
+    legal: [
+      "The Service is not intended for individuals under 16. We do not knowingly collect personal data from children. If you believe a child has provided us personal data, contact privacy@useatlas.dev and we will delete it.",
+    ],
+    plain: "The Service is not intended for users under 16. Contact privacy@useatlas.dev if you believe a child has submitted personal data and we will delete it."
+  },
+  { id: "changes", title: "Changes",
+    legal: [
+      "We may update this Policy. Material changes will be announced by email to account admins and posted on this page with an updated effective date at least 30 days before taking effect.",
+    ],
+    plain: "Material changes are announced to account admins by email at least 30 days before taking effect."
+  },
+];
+
+const PrivacyPage = () => (
+  <div>
+    <AtlasNav active="" />
+    <PageHeader
+      eye="// legal · privacy"
+      title="Privacy Policy."
+      dek="What we collect, what we don't, and exactly what we do with it. We are aggressively boring about this on purpose."
+      meta={<>
+        <span>effective 2026-01-15</span>
+        <span>v3.0</span>
+        <span>questions: privacy@useatlas.dev</span>
+      </>}
+    />
+
+    {/* The four promises */}
+    <div style={privStyles.promisesWrap}>
+      <div style={wwwStyles.eye}>// the four promises</div>
+      <div style={privStyles.promiseGrid}>
+        {PROMISES.map(p => (
+          <div key={p.mono} style={privStyles.promCard}>
+            <div style={privStyles.promMono}>{p.mono}</div>
+            <div style={privStyles.promLabel}>{p.label}</div>
+            <div style={privStyles.promSub}>{p.sub}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <LegalDoc sections={sections} />
+    <AtlasFooter />
+  </div>
+);
+
+const privStyles = {
+  promisesWrap: { maxWidth: 1100, margin: "0 auto", padding: "40px 64px 0" },
+  promiseGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 18 },
+  promCard: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 10, padding: 22, background: "oklch(0.18 0 0 / 0.4)" },
+  promMono: { fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--atlas-brand)", marginBottom: 12, letterSpacing: "0.04em" },
+  promLabel: { fontSize: 15, fontWeight: 600, marginBottom: 8, lineHeight: 1.3 },
+  promSub: { fontSize: 12.5, lineHeight: 1.55, color: "oklch(0.708 0 0)" },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<PrivacyPage />);
+</script>
+</body>
+</html>

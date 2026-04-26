@@ -1,0 +1,9 @@
+# Atlas Security Disclosure Policy
+# https://www.useatlas.dev/.well-known/security.txt
+# RFC 9116 — Security.txt
+
+Contact: mailto:security@useatlas.dev
+Expires: 2027-04-26T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://www.useatlas.dev/.well-known/security.txt
+Policy: https://www.useatlas.dev/privacy#security

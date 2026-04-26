@@ -134,7 +134,7 @@ export default async function SharedConversationPage({
 
   return (
     <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950 print:bg-white print:text-black">
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8 print:p-0">
+      <main id="main" className="mx-auto w-full max-w-3xl flex-1 px-4 py-8 print:p-0">
         <header className="mb-6 border-b border-zinc-200 pb-4 dark:border-zinc-800 print:border-zinc-300">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
@@ -153,7 +153,7 @@ export default async function SharedConversationPage({
             </div>
             <Link
               href="/signup"
-              className="inline-flex items-center gap-1 text-sm font-medium text-primary transition-colors hover:text-primary/80 print:hidden"
+              className="inline-flex items-center gap-1 text-sm font-medium text-teal-700 transition-colors hover:text-teal-800 dark:text-teal-300 dark:hover:text-teal-200 print:hidden"
             >
               Try Atlas free
               <ArrowUpRight className="h-3.5 w-3.5" />
@@ -184,7 +184,7 @@ export default async function SharedConversationPage({
                     className={`text-[10px] font-semibold uppercase tracking-wider ${
                       isUser
                         ? "text-zinc-500 dark:text-zinc-400"
-                        : "text-primary"
+                        : "text-teal-700 dark:text-teal-300"
                     }`}
                   >
                     {isUser ? "User" : "Atlas"}
@@ -207,7 +207,7 @@ export default async function SharedConversationPage({
         {hiddenStepCount > 0 && (
           <p className="mt-8 border-t border-zinc-200 pt-4 text-xs text-zinc-600 dark:border-zinc-800 dark:text-zinc-400 print:hidden">
             {hiddenStepCount} analysis step{hiddenStepCount === 1 ? "" : "s"} not shown.{" "}
-            <Link href="/signup" className="text-primary hover:underline">
+            <Link href="/signup" className="text-teal-700 hover:underline dark:text-teal-300">
               View the full conversation in Atlas
               <ArrowUpRight className="ml-0.5 inline h-3 w-3" aria-hidden="true" />
             </Link>

@@ -140,7 +140,7 @@ const SECTIONS: LegalSection[] = [
     id: "term",
     title: "Term & Termination",
     legal: [
-      "These Terms remain in effect while Customer has an active subscription. Either party may terminate for material breach uncured 30 days after written notice. Customer may terminate immediately if Atlas misses its SLA targets in three consecutive months (see useatlas.dev/sla).",
+      "These Terms remain in effect while Customer has an active subscription. Either party may terminate for material breach uncured 30 days after written notice. Customer may terminate for cause with 30 days’ written notice if Atlas misses its SLA targets in any three consecutive calendar months, or in any four months within a rolling twelve-month period (see useatlas.dev/sla), and receive a pro-rata refund of any prepaid fees for the remaining term.",
       "On termination, Atlas will, on request, make Customer Data available for export for 30 days, after which it will be deleted from production systems within 30 days and from backups within 90 days.",
       "Sections that by nature should survive termination (Confidentiality, IP, Warranty disclaimers, Liability limits, Indemnification, Governing Law) survive.",
     ],

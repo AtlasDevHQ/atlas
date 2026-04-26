@@ -256,16 +256,23 @@ function formatPrice(
   monthlyPrice: number | null,
   billing: BillingPeriod,
   currency: Currency,
-): { price: string; suffix: string } {
+): { price: string; suffix: string; annualTotal?: string } {
   if (monthlyPrice === null) {
     return { price: "Free", suffix: "forever" };
   }
   const symbol = CURRENCY_SYMBOL[currency];
   const rate = CURRENCY_RATE[currency];
   if (billing === "annual") {
-    // 10 months for 12 — show effective monthly rate
-    const effectiveMonthly = Math.round((monthlyPrice * 10 * rate) / 12);
-    return { price: `${symbol}${effectiveMonthly}`, suffix: "/ seat / mo, billed annually" };
+    // 10 months billed for 12. We round at the annual-total level so the
+    // displayed total matches Stripe's actual charge, then derive the
+    // per-month for tier-to-tier comparison.
+    const annual = Math.round(monthlyPrice * 10 * rate);
+    const effectiveMonthly = Math.round(annual / 12);
+    return {
+      price: `${symbol}${effectiveMonthly}`,
+      suffix: "/ seat / mo",
+      annualTotal: `${symbol}${annual} per seat, billed yearly`,
+    };
   }
   return { price: `${symbol}${Math.round(monthlyPrice * rate)}`, suffix: "/ seat / mo" };
 }
@@ -303,7 +310,7 @@ function BillingCurrencyToggle({
   return (
     <div className="animate-fade-in-up delay-300 mb-8 flex flex-col items-center justify-center gap-4 sm:flex-row sm:gap-6">
       <div
-        role="radiogroup"
+        role="group"
         aria-label="Billing period"
         className="inline-flex rounded-full border border-zinc-800 bg-zinc-900/60 p-1"
       >
@@ -311,8 +318,7 @@ function BillingCurrencyToggle({
           <button
             key={period}
             type="button"
-            role="radio"
-            aria-checked={billing === period}
+            aria-pressed={billing === period}
             onClick={() => onBillingChange(period)}
             className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm transition-colors ${
               billing === period
@@ -336,13 +342,12 @@ function BillingCurrencyToggle({
         ))}
       </div>
 
-      <div role="radiogroup" aria-label="Display currency" className="flex gap-1">
+      <div role="group" aria-label="Display currency" className="flex gap-1">
         {(Object.keys(CURRENCY_SYMBOL) as Currency[]).map((c) => (
           <button
             key={c}
             type="button"
-            role="radio"
-            aria-checked={currency === c}
+            aria-pressed={currency === c}
             onClick={() => onCurrencyChange(c)}
             className={`rounded-md border px-2.5 py-1 font-mono text-[11px] tracking-wider transition-colors ${
               currency === c
@@ -360,7 +365,7 @@ function BillingCurrencyToggle({
 
 function StatCard() {
   return (
-    <div className="animate-fade-in-up delay-400 mb-10 grid items-center gap-6 rounded-xl border border-brand/25 bg-brand/[0.04] p-6 md:grid-cols-[auto_1fr] md:gap-7 md:p-7">
+    <div className="animate-fade-in-up delay-400 mb-10 grid items-center gap-6 rounded-xl border border-brand/25 bg-brand/4 p-6 md:grid-cols-[auto_1fr] md:gap-7 md:p-7">
       <div className="font-mono text-5xl font-semibold tracking-tight text-brand md:text-[60px]">
         94%
       </div>
@@ -386,7 +391,7 @@ function TierCard({
   billing: BillingPeriod;
   currency: Currency;
 }) {
-  const { price, suffix } = formatPrice(tier.monthlyPrice, billing, currency);
+  const { price, suffix, annualTotal } = formatPrice(tier.monthlyPrice, billing, currency);
 
   let ctaStyle: string;
   if (tier.highlighted) {
@@ -424,6 +429,11 @@ function TierCard({
         </span>
         <span className="text-xs text-zinc-400">{suffix}</span>
       </div>
+      {annualTotal && (
+        <p className="mb-3 font-mono text-[11px] tracking-wider text-zinc-400">
+          {annualTotal}
+        </p>
+      )}
       <p className="mb-5 text-sm leading-relaxed text-zinc-400">{tier.tagline}</p>
       <ul className="mb-6 space-y-2.5">
         {tier.features.map((feature) => (
@@ -514,7 +524,6 @@ export function PricingContent() {
           What you get at every tier.
         </h2>
 
-        {/* Desktop table — sectioned by // core / // hosting / // security / // support */}
         <div className="hidden overflow-hidden rounded-xl border border-zinc-800/60 lg:block">
           <table className="w-full">
             <thead>
@@ -539,7 +548,7 @@ export function PricingContent() {
                 </th>
                 <th
                   scope="col"
-                  className="bg-brand/[0.04] px-5 py-4 text-center font-mono text-[11px] tracking-widest text-brand uppercase"
+                  className="bg-brand/4 px-5 py-4 text-center font-mono text-[11px] tracking-widest text-brand uppercase"
                 >
                   Pro
                 </th>
@@ -564,12 +573,19 @@ export function PricingContent() {
           {TIER_KEYS.map((tierKey) => (
             <div
               key={tierKey}
-              className="overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/30"
+              className={`overflow-hidden rounded-xl border bg-zinc-900/30 ${
+                tierKey === "pro" ? "border-brand/40" : "border-zinc-800/60"
+              }`}
             >
-              <div className="border-b border-zinc-800/60 px-5 py-3">
+              <div className="flex items-center justify-between gap-2 border-b border-zinc-800/60 px-5 py-3">
                 <h3 className="font-mono text-sm font-medium text-zinc-100">
                   {TIER_LABELS[tierKey]}
                 </h3>
+                {tierKey === "pro" && (
+                  <span className="rounded-full border border-brand/60 px-2 py-0.5 font-mono text-[9.5px] tracking-wider text-brand uppercase">
+                    recommended
+                  </span>
+                )}
               </div>
               <div className="px-5 pb-2">
                 {COMPARISON_SECTIONS.map((section) => (
@@ -646,7 +662,7 @@ function SectionRows({ section, isFirst }: { section: ComparisonSection; isFirst
               <ComparisonCell value={row.starter} />
             </span>
           </td>
-          <td className="bg-brand/[0.04] px-5 py-3 text-center">
+          <td className="bg-brand/4 px-5 py-3 text-center">
             <span className="inline-flex justify-center">
               <ComparisonCell value={row.pro} />
             </span>

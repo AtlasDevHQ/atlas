@@ -163,8 +163,8 @@ export default async function SharedDashboardPage({
       result.reason === "auth-required" ? "This dashboard is shared within an organization. Please log in to view it."
         : result.reason === "expired" ? "This share link has expired. Ask the dashboard owner to create a new one."
         : result.reason === "not-found" ? "This dashboard may have been removed or the link may be invalid."
-        : result.reason === "network-error" ? "Could not reach the server. Check your connection and try again."
-        : "The server encountered an error loading this dashboard. Try refreshing the page.";
+        : result.reason === "network-error" ? "We couldn’t reach Atlas. Check your connection and try again."
+        : "Something went wrong on our end loading this dashboard. Please try again in a moment.";
 
     return (
       <ErrorShell

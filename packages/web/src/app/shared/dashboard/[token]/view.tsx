@@ -1,62 +1,19 @@
+// server-only — do not add "use client" to this file. The header's `timeAgo`
+// runs once at request time and per-tile `cachedLabel` strings are pre-computed
+// here and shipped to <SharedTile> as plain props. If this becomes a client
+// component, `Date.now()` will diverge between SSR and CSR for those values.
+
 import Link from "next/link";
 import { ArrowUpRight, Clock, LayoutDashboard } from "lucide-react";
 import { ResultCardErrorBoundary } from "@/ui/components/chat/result-card-base";
 import { SharedTile } from "./tile";
-import type { SharedDashboard, SharedCard } from "./types";
-
-/**
- * Format a timestamp relative to "now". Computed once on the server (this is a
- * server component) so SSR + hydration agree to the second — no `Date.now()`
- * drift across the boundary.
- */
-function timeAgo(iso: string | null): string | null {
-  if (!iso) return null;
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return null;
-  const diff = Date.now() - t;
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-/** Most recent cache time across all cards — one freshness signal beats six. */
-function mostRecentCachedAt(cards: SharedCard[]): string | null {
-  let latestMs: number | null = null;
-  let raw: string | null = null;
-  for (const c of cards) {
-    if (!c.cachedAt) continue;
-    const t = new Date(c.cachedAt).getTime();
-    if (Number.isFinite(t) && (latestMs === null || t > latestMs)) {
-      latestMs = t;
-      raw = c.cachedAt;
-    }
-  }
-  return raw;
-}
-
-/**
- * Map a saved tile width (1–24 grid units from the editor) to a 2-column
- * shared-view span. ≥13 = full row; ≤12 = half. Mobile (`<md`) is always
- * single-column — RGL has no responsive breakpoints in our config (project
- * memory note), and the read-only stack drops `overflow-auto` per #1867.
- */
-function tileSpanClass(layout: SharedCard["layout"]): string {
-  const w = layout?.w ?? 12;
-  return w >= 13 ? "md:col-span-2" : "md:col-span-1";
-}
-
-function isoOrUndefined(value: string | null): string | undefined {
-  if (!value) return undefined;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
-}
+import { isoOrUndefined, mostRecentCachedAt, tileSpanClass, timeAgo } from "./helpers";
+import type { SharedDashboard } from "./types";
 
 export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard }) {
+  // `lastRefreshAt` (server-stamped) wins; fall back to the freshest card cache
+  // so older API builds still surface a freshness signal. If both are absent
+  // (no refresh has ever run), the chip is omitted.
   const lastRefreshed = dashboard.lastRefreshAt ?? mostRecentCachedAt(dashboard.cards);
   const lastRefreshedIso = isoOrUndefined(lastRefreshed);
   const lastRefreshedLabel = timeAgo(lastRefreshed);

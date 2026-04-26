@@ -17,7 +17,7 @@ function toStringRows(columns: string[], rows: Record<string, unknown>[]): strin
   return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col]))));
 }
 
-/** Render-time guard: tile rows are wire `Record<string, unknown>[] | null` so a malformed cache row stays defensive. */
+/** Cached rows come from a JSONB column — drop anything that isn't a plain object so a stale or corrupt row can't crash render. */
 function validateRows(raw: unknown[] | null): Record<string, unknown>[] {
   if (!raw) return [];
   return raw.filter(
@@ -30,7 +30,6 @@ export interface SharedTileProps {
   spanClass: string;
   /** Pre-computed on the server so SSR text matches client text exactly (no `Date.now()` drift). */
   cachedLabel: string | null;
-  /** Pre-computed ISO for the `<time dateTime>` attribute. */
   cachedIso: string | undefined;
 }
 

@@ -15,7 +15,6 @@ import type {
 
 interface ReportCellBase {
   id: string;
-  number: number;
   collapsed: boolean;
 }
 
@@ -113,7 +112,6 @@ export function resolveCells(conversation: SharedConversation): ReportCell[] {
 
     queryCells.push({
       id: cellId,
-      number: cellNum,
       type: "query",
       collapsed,
       userMessage: toUIMessage(msg, `user-${cellNum}`),
@@ -130,7 +128,6 @@ export function resolveCells(conversation: SharedConversation): ReportCell[] {
       const collapsed = state.cellProps?.[id]?.collapsed ?? false;
       textCells.push({
         id,
-        number: 0, // will be renumbered
         type: "text",
         collapsed,
         content,
@@ -139,12 +136,10 @@ export function resolveCells(conversation: SharedConversation): ReportCell[] {
   }
 
   // Merge cells according to cellOrder (if present)
-  const allCells: ReportCell[] = [...queryCells, ...textCells];
-  const cellMap = new Map(allCells.map((c) => [c.id, c]));
-
-  let ordered: ReportCell[];
   if (state?.cellOrder && state.cellOrder.length > 0) {
-    ordered = state.cellOrder
+    const allCells: ReportCell[] = [...queryCells, ...textCells];
+    const cellMap = new Map(allCells.map((c) => [c.id, c]));
+    const ordered = state.cellOrder
       .map((id) => cellMap.get(id))
       .filter((c): c is ReportCell => c !== undefined);
     // Append any cells not in the order
@@ -152,30 +147,17 @@ export function resolveCells(conversation: SharedConversation): ReportCell[] {
     for (const cell of allCells) {
       if (!inOrder.has(cell.id)) ordered.push(cell);
     }
-  } else {
-    // No cellOrder — show query cells only. Text cells are omitted because
-    // their position is undefined without an explicit ordering.
-    if (textCells.length > 0) {
-      console.warn(
-        `[report-view] ${textCells.length} text cell(s) dropped: cellOrder is empty but textCells exist`,
-      );
-    }
-    ordered = queryCells;
+    return ordered;
   }
 
-  // Renumber query cells for display by their position among query cells only.
-  // Text cells in `cellOrder` consume sequence indices but render no number;
-  // counting all cells produces sparse numbering ([2], [4], [5]) that reads as
-  // a bug. Numbering only query cells keeps the sequence dense and matches the
-  // notebook editor's authoring numbering.
-  let queryIndex = 0;
-  return ordered.map((cell) => {
-    if (cell.type === "query") {
-      queryIndex += 1;
-      return { ...cell, number: queryIndex };
-    }
-    return cell;
-  });
+  // No cellOrder — show query cells only. Text cells are omitted because
+  // their position is undefined without an explicit ordering.
+  if (textCells.length > 0) {
+    console.warn(
+      `[report-view] ${textCells.length} text cell(s) dropped: cellOrder is empty but textCells exist`,
+    );
+  }
+  return queryCells;
 }
 
 /** Extract displayable text from a UIMessage. */

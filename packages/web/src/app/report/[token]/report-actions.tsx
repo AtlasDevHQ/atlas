@@ -30,13 +30,25 @@ export function ReportActions() {
       ta.style.left = "-9999px";
       document.body.appendChild(ta);
       ta.select();
+      // `execCommand("copy")` returns `false` (without throwing) when the
+      // browser silently denies copy — sandboxed iframes, document-not-
+      // focused, certain Safari WebView states. Treating reach-of-finally
+      // as success would show the green "Copied" affordance with nothing
+      // in the clipboard.
+      let ok = false;
       try {
-        document.execCommand("copy");
+        ok = document.execCommand("copy");
       } catch (err) {
-        console.warn("[report-actions] copy fallback failed:", err instanceof Error ? err.message : err);
-        return;
+        console.warn(
+          "[report-actions] copy fallback threw:",
+          err instanceof Error ? err.message : String(err),
+        );
       } finally {
         document.body.removeChild(ta);
+      }
+      if (!ok) {
+        console.warn("[report-actions] document.execCommand('copy') returned false");
+        return;
       }
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);

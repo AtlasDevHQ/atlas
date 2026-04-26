@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Terms of Service</title>
+<link rel="stylesheet" href="../atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="chrome.jsx"></script>
+<script type="text/babel" src="legal.jsx"></script>
+
+<script type="text/babel">
+const sections = [
+  { id: "agreement", title: "The Agreement",
+    legal: [
+      "These Terms of Service (\"Terms\") are entered into between Atlas Defense Corp. (\"Atlas\", \"we\") and the entity or individual agreeing to them (\"Customer\", \"you\"). By creating an account, signing an order form, or using the Service, you accept these Terms.",
+      "If you are accepting on behalf of a company, you represent that you have authority to bind that company. \"You\" then refers to that company.",
+      "These Terms govern Atlas Cloud. The open-source Atlas distribution is licensed separately under the MIT License and is not subject to these Terms.",
+    ],
+    plain: "These rules apply when you use Atlas Cloud. The open-source distribution is licensed separately under MIT and is not governed by these Terms."
+  },
+  { id: "service", title: "The Service",
+    legal: [
+      "Atlas provides a hosted text-to-SQL platform. Customer authenticates against its own data warehouse and identity provider; Atlas executes queries on Customer's behalf in read-only mode (or write mode where Customer has explicitly granted such permission).",
+      "Atlas may modify, add, or remove features at any time, but will not materially reduce the functionality of any feature included in Customer's plan during the current paid term without 30 days' notice.",
+      "Beta and \"Labs\" features are provided as-is, may be removed at any time, and are excluded from the SLA.",
+    ],
+    plain: "We provide the hosted Atlas service. We will continue to ship improvements, but we will not materially reduce features included in your plan during the paid term without 30 days' notice."
+  },
+  { id: "accounts", title: "Accounts & Acceptable Use",
+    legal: [
+      "Customer is responsible for maintaining the confidentiality of credentials and for all activity that occurs under its account. Customer must notify Atlas promptly of any unauthorized access.",
+      "Customer agrees not to: (a) use the Service to violate any law or third-party right; (b) attempt to reverse-engineer, decompile, or scrape the Service except as permitted by applicable law; (c) use the Service to develop a competing product; (d) probe, scan, or test the vulnerability of the Service without prior written consent; (e) submit data containing malware, exploits, or content prohibited by the Acceptable Use Policy at useatlas.dev/aup.",
+      "Atlas may suspend access without notice for activity that materially threatens the security or availability of the Service for other customers. Where suspension is appropriate, Atlas will use commercially reasonable efforts to provide notice.",
+    ],
+    plain: "Use Atlas lawfully and as documented. Don't probe our security without permission, don't build a competing product on our service, and don't submit malicious content. Standard acceptable-use rules."
+  },
+  { id: "fees", title: "Fees & Payment",
+    legal: [
+      "Customer agrees to pay all fees stated in the order form or on the pricing page in effect at the time of purchase. Fees are exclusive of taxes; Customer is responsible for sales, use, VAT, and similar taxes.",
+      "Subscriptions auto-renew for the same term unless either party gives written notice of non-renewal at least 30 days before the renewal date. Atlas may increase prices at renewal with 60 days' written notice.",
+      "Invoices are due within 30 days. Past-due amounts accrue interest at 1.5%/month or the maximum allowed by law. Atlas may suspend the Service for accounts more than 60 days past due.",
+    ],
+    plain: "Pay invoices within 30 days. Subscriptions renew automatically; give 30 days' notice to cancel. Price changes at renewal require 60 days' written notice."
+  },
+  { id: "data", title: "Customer Data",
+    legal: [
+      "As between the parties, Customer owns Customer Data. Customer grants Atlas a limited license to process Customer Data solely to provide the Service.",
+      "Atlas does not use Customer Data to train AI models. Atlas does not sell Customer Data. Atlas does not access Customer's data warehouse contents except to execute queries that Customer's authorized users explicitly issue.",
+      "Atlas implements technical and organizational measures consistent with industry standards (encryption in transit and at rest, least-privilege access, logged admin operations) and as further described in the Data Processing Addendum.",
+    ],
+    plain: "You retain ownership of your data. We do not train models on it, sell it, or access your warehouse beyond executing queries your users explicitly issue."
+  },
+  { id: "ip", title: "Intellectual Property",
+    legal: [
+      "Atlas owns all rights in the Service, including the Atlas software, models, semantic-layer compiler, and documentation. Subject to these Terms, Atlas grants Customer a non-exclusive, non-transferable license to access and use the Service during the term.",
+      "Feedback that Customer provides about the Service is given without restriction; Atlas may use it without obligation.",
+      "Trademarks of Atlas may not be used without prior written consent except to factually describe the use of the Service.",
+    ],
+    plain: "We own the Atlas software and grant you a license to use it. Feedback you share is unrestricted on our side. Use of our trademarks requires written consent."
+  },
+  { id: "confidentiality", title: "Confidentiality",
+    legal: [
+      "Each party will protect the other's Confidential Information using the same degree of care it uses for its own (no less than reasonable care), and will not disclose it except to its employees, contractors, and advisors who need to know and are bound by confidentiality obligations.",
+      "Confidential Information does not include information that is publicly available, independently developed without reference to the other party's information, or rightfully obtained from a third party without confidentiality obligations.",
+    ],
+    plain: "Each side protects the other's confidential information with the same care as its own."
+  },
+  { id: "warranty", title: "Warranties & Disclaimer",
+    legal: [
+      "Atlas warrants that the Service will materially perform as described in the documentation. Customer's exclusive remedy and Atlas's sole liability for breach of this warranty is, at Atlas's option, to repair the Service or terminate the agreement and refund unused prepaid fees.",
+      "EXCEPT AS EXPRESSLY STATED, THE SERVICE IS PROVIDED \"AS IS\" AND ATLAS DISCLAIMS ALL OTHER WARRANTIES, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.",
+      "AI-generated SQL is non-deterministic. Atlas's validators reduce risk; they do not eliminate it. Customer remains responsible for reviewing query output and for the appropriateness of using AI-generated SQL in its environment.",
+    ],
+    plain: "We warrant that the product works as documented. Beyond that, AI-generated SQL is non-deterministic — our validators reduce risk but you remain responsible for reviewing query output before using it."
+  },
+  { id: "liability", title: "Limitation of Liability",
+    legal: [
+      "TO THE FULLEST EXTENT PERMITTED BY LAW, NEITHER PARTY WILL BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR EXEMPLARY DAMAGES, OR FOR LOST PROFITS, REVENUE, OR DATA, EVEN IF ADVISED OF THE POSSIBILITY.",
+      "EACH PARTY'S TOTAL AGGREGATE LIABILITY UNDER THESE TERMS WILL NOT EXCEED THE FEES PAID BY CUSTOMER TO ATLAS IN THE TWELVE MONTHS PRECEDING THE CLAIM.",
+      "These limitations do not apply to: (a) breach of confidentiality; (b) infringement of the other party's intellectual-property rights; (c) gross negligence, fraud, or willful misconduct; (d) Customer's payment obligations.",
+    ],
+    plain: "Liability is capped at fees paid in the prior 12 months. Carve-outs for confidentiality breach, IP infringement, gross negligence, fraud, and willful misconduct."
+  },
+  { id: "indemnity", title: "Indemnification",
+    legal: [
+      "Atlas will defend Customer against any third-party claim that the Service, when used in accordance with these Terms, infringes a U.S. patent, copyright, or trade secret, and will pay damages awarded by a court or agreed in settlement.",
+      "Customer will defend Atlas against claims arising from Customer Data, Customer's use of the Service in violation of law, or Customer's breach of these Terms.",
+      "The indemnifying party's obligations are conditional on the indemnified party giving prompt notice, sole control of the defense, and reasonable cooperation.",
+    ],
+    plain: "We defend you against IP claims arising from the Service. You defend us against claims arising from your data or your use of the Service in violation of law."
+  },
+  { id: "term", title: "Term & Termination",
+    legal: [
+      "These Terms remain in effect while Customer has an active subscription. Either party may terminate for material breach uncured 30 days after written notice. Customer may terminate immediately if Atlas misses its SLA targets in three consecutive months.",
+      "On termination, Atlas will, on request, make Customer Data available for export for 30 days, after which it will be deleted from production systems within 30 days and from backups within 90 days.",
+      "Sections that by nature should survive termination (Confidentiality, IP, Warranty disclaimers, Liability limits, Indemnification, Governing Law) survive.",
+    ],
+    plain: "Either party may terminate with notice. On termination, we make your data available for export for 30 days, then delete from production within 30 days and from backups within 90."
+  },
+  { id: "law", title: "Governing Law & Disputes",
+    legal: [
+      "These Terms are governed by the laws of the State of Delaware, USA, without regard to conflict-of-laws principles. The parties consent to exclusive jurisdiction in the state and federal courts located in Wilmington, Delaware for any dispute not subject to arbitration.",
+      "Either party may seek injunctive relief in court for breach of confidentiality or IP rights.",
+    ],
+    plain: "Disputes are governed by Delaware law and resolved in Delaware courts."
+  },
+  { id: "misc", title: "Miscellaneous",
+    legal: [
+      "These Terms, plus any order forms and the DPA, form the entire agreement and supersede prior discussions. Amendments must be in writing and signed by both parties, except Atlas may update these Terms with 30 days' notice; continued use after that constitutes acceptance.",
+      "If any provision is unenforceable, the remainder remains in effect. Failure to enforce a right is not a waiver. Customer may not assign these Terms without consent; Atlas may assign in connection with a merger or sale of substantially all assets.",
+      "Notices to Atlas must be sent to legal@useatlas.dev with a copy to Atlas Defense Corp., 851 Mission St, San Francisco CA 94103.",
+    ],
+    plain: "Standard closing provisions: this is the entire agreement, amendments require writing, partial unenforceability doesn't void the rest, and legal notices go to legal@useatlas.dev."
+  },
+];
+
+const TermsPage = () => (
+  <div>
+    <AtlasNav active="" />
+    <PageHeader
+      eye="// legal · terms"
+      title="Terms of Service."
+      dek="The deal between Atlas and the people who use Atlas Cloud. Two columns: the contract on the left, plain English on the right."
+      meta={<>
+        <span>effective 2026-01-15</span>
+        <span>v4.1</span>
+        <span>last updated 2026-01-08</span>
+      </>}
+    />
+    <LegalDoc sections={sections} />
+    <AtlasFooter />
+  </div>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<TermsPage />);
+</script>
+</body>
+</html>

@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Status</title>
+<link rel="stylesheet" href="../atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+  @keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="chrome.jsx"></script>
+
+<script type="text/babel">
+const COMPONENTS = [
+  { name: "Query API",          regions: ["us-east", "us-west", "eu-west", "eu-central", "ap-se"], status: "operational" },
+  { name: "Semantic Layer",     regions: ["us-east", "us-west", "eu-west", "eu-central", "ap-se"], status: "operational" },
+  { name: "Dashboard",          regions: ["global"], status: "operational" },
+  { name: "Audit Log Export",   regions: ["us-east", "eu-west"], status: "degraded", note: "elevated p99 latency on s3 export · 2026-01-09 14:22 UTC" },
+  { name: "Webhook Delivery",   regions: ["global"], status: "operational" },
+  { name: "Auth (SSO/SAML)",    regions: ["us-east", "eu-west"], status: "operational" },
+  { name: "Stripe Billing",     regions: ["us-east"], status: "operational" },
+  { name: "Status Page",        regions: ["global"], status: "operational" },
+];
+
+// 90 days of synthetic uptime data — mostly green with a few incidents
+const seed = (i) => {
+  // deterministic-ish "random"
+  const x = Math.sin(i * 9.13) * 1e4;
+  return x - Math.floor(x);
+};
+const HISTORY = Array.from({ length: 90 }, (_, i) => {
+  const r = seed(i);
+  if (i === 41) return "outage";
+  if (i === 17 || i === 64 || i === 78) return "degraded";
+  if (r < 0.04) return "degraded";
+  return "ok";
+});
+
+const INCIDENTS = [
+  {
+    when: "2026-01-09 14:22 UTC",
+    title: "Elevated p99 latency on audit log S3 export",
+    sev: "Sev-3",
+    state: "monitoring",
+    updates: [
+      { t: "15:08", s: "monitoring",   m: "Latency back to baseline. Continuing to monitor for 2h before resolving." },
+      { t: "14:45", s: "identified",   m: "Root cause: undersized worker pool on eu-west audit shipper. Scaled 2x." },
+      { t: "14:22", s: "investigating", m: "p99 export latency above 5s on eu-west. Investigating." },
+    ],
+  },
+  {
+    when: "2025-12-28 03:14 UTC",
+    title: "Query API unavailable — us-east-1",
+    sev: "Sev-1",
+    state: "resolved",
+    updates: [
+      { t: "04:48", s: "resolved",      m: "Service fully restored. Postmortem to follow within 5 business days." },
+      { t: "04:21", s: "monitoring",    m: "Failover to us-east-2 complete. Watching for residual errors." },
+      { t: "03:39", s: "identified",    m: "Failed deploy of router-v94 caused 5xx storm. Rolling back." },
+      { t: "03:14", s: "investigating", m: "Receiving alerts on elevated 5xx rate from us-east." },
+    ],
+    postmortem: "/blog/postmortem-2025-12-28",
+  },
+];
+
+const STATUS_COLORS = {
+  operational: "var(--atlas-brand)",
+  degraded:    "oklch(0.78 0.16 75)",
+  outage:      "oklch(0.65 0.22 25)",
+};
+const HISTORY_COLORS = {
+  ok:       "color-mix(in oklch, var(--atlas-brand) 65%, transparent)",
+  degraded: "oklch(0.78 0.16 75)",
+  outage:   "oklch(0.65 0.22 25)",
+};
+
+const StatusPage = () => {
+  const allOk = COMPONENTS.every(c => c.status === "operational");
+
+  return (
+    <div>
+      <AtlasNav active="" />
+
+      {/* Top banner */}
+      <div style={sStyles.bannerWrap}>
+        <div style={sStyles.banner}>
+          <div style={sStyles.bDot}>
+            <span style={{ ...sStyles.dotInner, background: allOk ? "var(--atlas-brand)" : "oklch(0.78 0.16 75)" }} />
+            <span style={{ ...sStyles.dotPulse, background: allOk ? "var(--atlas-brand)" : "oklch(0.78 0.16 75)" }} />
+          </div>
+          <div style={sStyles.bBody}>
+            <div style={sStyles.bHead}>{allOk ? "All systems operational" : "Partial degradation"}</div>
+            <div style={sStyles.bSub}>One component reporting degraded performance · checked 14s ago</div>
+          </div>
+          <div style={sStyles.bMeta}>
+            <div style={sStyles.bMetaCol}>
+              <div style={sStyles.bMetaLab}>uptime · 90d</div>
+              <div style={sStyles.bMetaVal}>99.94%</div>
+            </div>
+            <div style={sStyles.bMetaCol}>
+              <div style={sStyles.bMetaLab}>incidents · 90d</div>
+              <div style={sStyles.bMetaVal}>2</div>
+            </div>
+            <div style={sStyles.bMetaCol}>
+              <div style={sStyles.bMetaLab}>response · sev-1</div>
+              <div style={sStyles.bMetaVal}>21 min</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Subscribe row */}
+      <div style={sStyles.subRow}>
+        <span style={sStyles.subLab}>// subscribe to updates</span>
+        {["email", "rss", "slack", "webhook"].map(c => (
+          <button key={c} style={sStyles.subBtn}>{c}</button>
+        ))}
+      </div>
+
+      {/* Components */}
+      <section style={sStyles.section}>
+        <div style={sStyles.secHead}>
+          <div style={wwwStyles.eye}>// components</div>
+          <h2 style={sStyles.h2}>Service health.</h2>
+        </div>
+        <div style={sStyles.compList}>
+          {COMPONENTS.map(c => (
+            <div key={c.name} style={sStyles.compRow}>
+              <div style={sStyles.compName}>
+                <span style={{ ...sStyles.compDot, background: STATUS_COLORS[c.status] }} />
+                {c.name}
+              </div>
+              <div style={sStyles.compRegions}>
+                {c.regions.map(r => (
+                  <span key={r} style={{ ...sStyles.regionPill, color: STATUS_COLORS[c.status], borderColor: `color-mix(in oklch, ${STATUS_COLORS[c.status]} 38%, transparent)` }}>{r}</span>
+                ))}
+              </div>
+              <div style={sStyles.compStatus}>
+                <span style={{ color: STATUS_COLORS[c.status], textTransform: "capitalize", fontWeight: 500 }}>{c.status}</span>
+                {c.note && <div style={sStyles.compNote}>{c.note}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 90-day history */}
+      <section style={sStyles.section}>
+        <div style={sStyles.secHead}>
+          <div style={wwwStyles.eye}>// 90-day uptime</div>
+          <h2 style={sStyles.h2}>History.</h2>
+        </div>
+        <div style={sStyles.historyWrap}>
+          <div style={sStyles.historyBars}>
+            {HISTORY.map((s, i) => (
+              <div key={i} title={`Day ${i + 1}: ${s}`} style={{ ...sStyles.histBar, background: HISTORY_COLORS[s], opacity: s === "ok" ? 0.85 : 1 }} />
+            ))}
+          </div>
+          <div style={sStyles.historyAxis}>
+            <span>90 days ago</span>
+            <span>60</span>
+            <span>30</span>
+            <span>today</span>
+          </div>
+          <div style={sStyles.historyLegend}>
+            {[["ok", "operational"], ["degraded", "degraded"], ["outage", "outage"]].map(([k, l]) => (
+              <span key={k} style={sStyles.legItem}>
+                <span style={{ ...sStyles.legSwatch, background: HISTORY_COLORS[k] }} />
+                {l}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Recent incidents */}
+      <section style={sStyles.section}>
+        <div style={sStyles.secHead}>
+          <div style={wwwStyles.eye}>// recent incidents</div>
+          <h2 style={sStyles.h2}>What happened.</h2>
+        </div>
+        <div style={sStyles.incList}>
+          {INCIDENTS.map(inc => (
+            <div key={inc.when} style={sStyles.incCard}>
+              <div style={sStyles.incHead}>
+                <div style={sStyles.incHeadL}>
+                  <span style={{
+                    ...sStyles.incSev,
+                    color: inc.sev === "Sev-1" ? "oklch(0.65 0.22 25)" : "oklch(0.78 0.16 75)",
+                    borderColor: `color-mix(in oklch, ${inc.sev === "Sev-1" ? "oklch(0.65 0.22 25)" : "oklch(0.78 0.16 75)"} 38%, transparent)`,
+                  }}>{inc.sev}</span>
+                  <span style={sStyles.incTitle}>{inc.title}</span>
+                </div>
+                <span style={sStyles.incWhen}>{inc.when}</span>
+              </div>
+              <div style={sStyles.incTimeline}>
+                {inc.updates.map((u, i) => (
+                  <div key={i} style={sStyles.incUp}>
+                    <div style={sStyles.incUpTime}>{u.t}</div>
+                    <div style={sStyles.incUpDot} />
+                    <div style={sStyles.incUpBody}>
+                      <span style={sStyles.incUpState}>{u.s}</span>
+                      <span style={sStyles.incUpMsg}>{u.m}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {inc.postmortem && (
+                <a href={inc.postmortem} style={sStyles.incPm}>read postmortem →</a>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <AtlasFooter />
+    </div>
+  );
+};
+
+const sStyles = {
+  bannerWrap: { padding: "32px 64px 0", maxWidth: 1280, margin: "0 auto" },
+  banner: { display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 28, padding: 26, border: "1px solid color-mix(in oklch, var(--atlas-brand) 28%, transparent)", borderRadius: 14, background: "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.16 0 0 / 0.5))", alignItems: "center" },
+  bDot: { position: "relative", width: 14, height: 14, marginLeft: 6 },
+  dotInner: { position: "absolute", inset: 3, borderRadius: "50%", animation: "pulseDot 2s ease-in-out infinite" },
+  dotPulse: { position: "absolute", inset: 0, borderRadius: "50%", opacity: 0.25 },
+  bBody: {},
+  bHead: { fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 4 },
+  bSub: { fontFamily: "var(--font-mono)", fontSize: 11.5, color: "oklch(0.708 0 0)", letterSpacing: "0.04em" },
+  bMeta: { display: "flex", gap: 36 },
+  bMetaCol: { textAlign: "right" },
+  bMetaLab: { fontFamily: "var(--font-mono)", fontSize: 10, color: "oklch(0.443 0 0)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 },
+  bMetaVal: { fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", color: "var(--atlas-brand)", fontFamily: "var(--font-mono)" },
+
+  subRow: { padding: "20px 64px 0", maxWidth: 1280, margin: "0 auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  subLab: { fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.443 0 0)", letterSpacing: "0.08em", textTransform: "uppercase", marginRight: 8 },
+  subBtn: { fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.871 0 0)", padding: "6px 12px", border: "1px solid oklch(1 0 0 / 0.1)", borderRadius: 6, background: "transparent", cursor: "pointer", letterSpacing: "0.04em" },
+
+  section: { padding: "44px 64px 0", maxWidth: 1280, margin: "0 auto" },
+  secHead: { marginBottom: 18 },
+  h2: { fontSize: 28, fontWeight: 600, letterSpacing: "-0.025em", margin: "8px 0 0" },
+
+  compList: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 12, overflow: "hidden", background: "oklch(0.18 0 0 / 0.4)" },
+  compRow: { display: "grid", gridTemplateColumns: "1.4fr 1.6fr 1.4fr", gap: 24, padding: "16px 22px", borderBottom: "1px solid oklch(1 0 0 / 0.05)", alignItems: "center" },
+  compName: { display: "flex", alignItems: "center", gap: 12, fontSize: 14.5, fontWeight: 500 },
+  compDot: { width: 8, height: 8, borderRadius: "50%" },
+  compRegions: { display: "flex", gap: 6, flexWrap: "wrap" },
+  regionPill: { fontFamily: "var(--font-mono)", fontSize: 10.5, padding: "3px 8px", border: "1px solid", borderRadius: 4, letterSpacing: "0.04em" },
+  compStatus: { textAlign: "right", fontSize: 13.5 },
+  compNote: { fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.708 0 0)", marginTop: 4, letterSpacing: "0.04em" },
+
+  historyWrap: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 12, padding: 22, background: "oklch(0.18 0 0 / 0.4)" },
+  historyBars: { display: "flex", gap: 2, height: 56, marginBottom: 10 },
+  histBar: { flex: 1, borderRadius: 1.5, minWidth: 4 },
+  historyAxis: { display: "flex", justifyContent: "space-between", fontFamily: "var(--font-mono)", fontSize: 10.5, color: "oklch(0.443 0 0)", letterSpacing: "0.04em", marginBottom: 16 },
+  historyLegend: { display: "flex", gap: 18, paddingTop: 12, borderTop: "1px solid oklch(1 0 0 / 0.05)" },
+  legItem: { display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.708 0 0)", letterSpacing: "0.04em" },
+  legSwatch: { width: 14, height: 8, borderRadius: 2 },
+
+  incList: { display: "flex", flexDirection: "column", gap: 14, paddingBottom: 80 },
+  incCard: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 12, padding: 24, background: "oklch(0.18 0 0 / 0.4)" },
+  incHead: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 18, gap: 16, flexWrap: "wrap" },
+  incHeadL: { display: "flex", alignItems: "center", gap: 12 },
+  incSev: { fontFamily: "var(--font-mono)", fontSize: 10.5, padding: "3px 8px", border: "1px solid", borderRadius: 4, letterSpacing: "0.06em", textTransform: "uppercase" },
+  incTitle: { fontSize: 16, fontWeight: 600 },
+  incWhen: { fontFamily: "var(--font-mono)", fontSize: 11.5, color: "oklch(0.443 0 0)", letterSpacing: "0.04em" },
+  incTimeline: { display: "flex", flexDirection: "column", gap: 10 },
+  incUp: { display: "grid", gridTemplateColumns: "60px 14px 1fr", gap: 12, alignItems: "start" },
+  incUpTime: { fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.708 0 0)", letterSpacing: "0.04em", paddingTop: 3 },
+  incUpDot: { width: 6, height: 6, borderRadius: "50%", background: "var(--atlas-brand)", marginTop: 8, justifySelf: "center" },
+  incUpBody: { display: "flex", gap: 10, fontSize: 13, lineHeight: 1.5 },
+  incUpState: { fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--atlas-brand)", letterSpacing: "0.06em", textTransform: "uppercase", paddingTop: 2, minWidth: 92 },
+  incUpMsg: { color: "oklch(0.871 0 0)", flex: 1 },
+  incPm: { display: "inline-block", marginTop: 16, fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--atlas-brand)", textDecoration: "none", letterSpacing: "0.04em" },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<StatusPage />);
+</script>
+</body>
+</html>

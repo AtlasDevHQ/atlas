@@ -1,0 +1,311 @@
+/* =====================================================================
+ * Atlas — Design Tokens
+ * =====================================================================
+ * Color space is oklch throughout (per .impeccable.md: "oklch throughout —
+ * never hardcoded values"). Tokens mirror the shadcn/ui v2 new-york neutral
+ * theme used in packages/web/src/app/globals.css + apps/www brand.css.
+ *
+ * Usage:
+ *   <html class="dark">  for dark theme (brand personality, landing + docs)
+ *   <html>              for light theme (hosted SaaS default)
+ * ===================================================================== */
+
+/* ---------- Fonts (Google Fonts; self-host in production) ------------ */
+@import url("https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+/* =====================================================================
+ *  1. BRAND — single source of truth
+ * ===================================================================== */
+:root {
+  /* Atlas teal — the one accent color, used sparingly for emphasis. */
+  --atlas-brand:            oklch(0.759 0.148 167.71);  /* #23CE9E */
+  --atlas-brand-hover:      oklch(0.82  0.148 167.71);  /* #1A9B76 lighter hover */
+  --atlas-brand-deep:       oklch(0.58  0.132 167.71);  /* #148060 hover/active UI only */
+  --atlas-brand-foreground: oklch(0.145 0 0);           /* ink on brand fills */
+
+  /* Surfaces — pinned from brand README */
+  --atlas-dark-surface:  oklch(0.12 0.005 280);  /* #0C0C10 */
+  --atlas-light-surface: oklch(0.97 0.004 280);  /* #F6F6F8 */
+}
+
+/* =====================================================================
+ *  2. TYPOGRAPHY — Sora + JetBrains Mono
+ * ===================================================================== */
+:root {
+  --font-sans: "Sora", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Scale — matches Tailwind defaults used across the codebase */
+  --text-2xs:  0.6875rem; /* 11px — micro labels, data-table headers */
+  --text-xs:   0.75rem;   /* 12px — captions, code labels */
+  --text-sm:   0.875rem;  /* 14px — body, UI default */
+  --text-base: 1rem;      /* 16px */
+  --text-lg:   1.125rem;  /* 18px */
+  --text-xl:   1.25rem;   /* 20px */
+  --text-2xl:  1.5rem;    /* 24px — section H2 */
+  --text-3xl:  1.875rem;  /* 30px */
+  --text-4xl:  2.25rem;   /* 36px */
+  --text-5xl:  3rem;      /* 48px */
+  --text-6xl:  3.75rem;   /* 60px — hero H1 */
+
+  --leading-tight:   1.1;
+  --leading-snug:    1.3;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.625;
+
+  --tracking-tight:  -0.02em;  /* display */
+  --tracking-normal: 0;
+  --tracking-wide:   0.025em;  /* mono eyebrows */
+  --tracking-wider:  0.05em;   /* small caps labels */
+  --tracking-widest: 0.1em;    /* mono section labels */
+
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+}
+
+/* =====================================================================
+ *  3. SPACING, RADII, SHADOWS
+ * ===================================================================== */
+:root {
+  --radius:     0.625rem; /* 10px — shadcn base */
+  --radius-sm:  calc(var(--radius) - 4px);  /* 6px */
+  --radius-md:  calc(var(--radius) - 2px);  /* 8px */
+  --radius-lg:  var(--radius);              /* 10px */
+  --radius-xl:  calc(var(--radius) + 4px);  /* 14px */
+  --radius-2xl: calc(var(--radius) + 8px);  /* 18px */
+  --radius-3xl: calc(var(--radius) + 12px); /* 22px */
+  --radius-full: 9999px;
+
+  /* Tailwind default 4px scale — used throughout */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+
+  /* Shadows — very subtle. Dark-first; cards use borders not shadows. */
+  --shadow-xs: 0 1px 0 0 oklch(0 0 0 / 0.04);
+  --shadow-sm: 0 1px 2px 0 oklch(0 0 0 / 0.06);
+  --shadow-md: 0 2px 6px -1px oklch(0 0 0 / 0.08), 0 1px 2px oklch(0 0 0 / 0.04);
+  --shadow-lg: 0 8px 24px -6px oklch(0 0 0 / 0.12);
+  --shadow-2xl: 0 24px 48px -12px oklch(0 0 0 / 0.35);
+
+  /* Focus ring — always brand */
+  --ring: var(--atlas-brand);
+}
+
+/* =====================================================================
+ *  4. SEMANTIC COLORS — LIGHT (hosted SaaS default)
+ * ===================================================================== */
+:root {
+  --background:          oklch(1 0 0);
+  --foreground:          oklch(0.145 0 0);
+
+  --card:                oklch(1 0 0);
+  --card-foreground:     oklch(0.145 0 0);
+  --popover:             oklch(1 0 0);
+  --popover-foreground:  oklch(0.145 0 0);
+
+  --primary:             var(--atlas-brand);
+  --primary-foreground:  var(--atlas-brand-foreground);
+
+  --secondary:           oklch(0.97 0 0);
+  --secondary-foreground:oklch(0.205 0 0);
+
+  --muted:               oklch(0.97 0 0);
+  --muted-foreground:    oklch(0.556 0 0);
+
+  --accent:              oklch(0.97 0 0);
+  --accent-foreground:   oklch(0.205 0 0);
+
+  --destructive:         oklch(0.577 0.245 27.325);
+
+  --border:              oklch(0.922 0 0);
+  --input:               oklch(0.922 0 0);
+
+  /* Sidebar surface — slightly cooler than the app body */
+  --sidebar:                      oklch(0.985 0 0);
+  --sidebar-foreground:           oklch(0.145 0 0);
+  --sidebar-primary:              var(--atlas-brand);
+  --sidebar-primary-foreground:   var(--atlas-brand-foreground);
+  --sidebar-accent:               oklch(0.97 0 0);
+  --sidebar-accent-foreground:    oklch(0.205 0 0);
+  --sidebar-border:               oklch(0.922 0 0);
+  --sidebar-ring:                 var(--atlas-brand);
+
+  /* Charts — dataviz palette (desaturated, paired with brand teal) */
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6   0.118 184.704);
+  --chart-3: oklch(0.398 0.07  227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+}
+
+/* =====================================================================
+ *  5. SEMANTIC COLORS — DARK (brand personality; landing, docs, default)
+ * ===================================================================== */
+.dark {
+  --background:          oklch(0.145 0 0);
+  --foreground:          oklch(0.985 0 0);
+
+  --card:                oklch(0.205 0 0);
+  --card-foreground:     oklch(0.985 0 0);
+  --popover:             oklch(0.205 0 0);
+  --popover-foreground:  oklch(0.985 0 0);
+
+  --primary:             var(--atlas-brand);
+  --primary-foreground:  var(--atlas-brand-foreground);
+
+  --secondary:           oklch(0.269 0 0);
+  --secondary-foreground:oklch(0.985 0 0);
+
+  --muted:               oklch(0.269 0 0);
+  --muted-foreground:    oklch(0.708 0 0);
+
+  --accent:              oklch(0.269 0 0);
+  --accent-foreground:   oklch(0.985 0 0);
+
+  --destructive:         oklch(0.704 0.191 22.216);
+
+  --border:              oklch(1 0 0 / 10%);
+  --input:               oklch(1 0 0 / 15%);
+
+  --sidebar:                     oklch(0.205 0 0);
+  --sidebar-foreground:          oklch(0.985 0 0);
+  --sidebar-primary:             var(--atlas-brand);
+  --sidebar-primary-foreground:  var(--atlas-brand-foreground);
+  --sidebar-accent:              oklch(0.269 0 0);
+  --sidebar-accent-foreground:   oklch(0.985 0 0);
+  --sidebar-border:              oklch(1 0 0 / 10%);
+  --sidebar-ring:                var(--atlas-brand);
+
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17  162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+}
+
+/* =====================================================================
+ *  6. LANDING-PAGE ZINC PALETTE (apps/www)
+ *     www.useatlas.dev is ALWAYS dark. It uses zinc-* utility classes
+ *     directly instead of semantic tokens. Exposed here for reference.
+ * ===================================================================== */
+:root {
+  --zinc-50:  oklch(0.985 0     0);
+  --zinc-100: oklch(0.97  0     0);
+  --zinc-200: oklch(0.922 0     0);
+  --zinc-300: oklch(0.871 0     0);
+  --zinc-400: oklch(0.708 0     0);
+  --zinc-500: oklch(0.556 0     0);
+  --zinc-600: oklch(0.443 0     0);
+  --zinc-700: oklch(0.37  0     0);
+  --zinc-800: oklch(0.269 0     0);
+  --zinc-900: oklch(0.205 0     0);
+  --zinc-950: oklch(0.145 0     0);
+}
+
+/* =====================================================================
+ *  7. TYPE SEMANTIC STYLES
+ *     Reference utilities — marketing / chat / admin surfaces compose
+ *     from these via Tailwind utilities. Use these class hooks when
+ *     writing raw HTML specimens or design-system previews.
+ * ===================================================================== */
+
+html, body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.display-xl {
+  /* hero on landing */
+  font-family: var(--font-sans);
+  font-size: var(--text-6xl);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--weight-semibold);
+}
+.display-lg {
+  font-family: var(--font-sans);
+  font-size: var(--text-5xl);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--weight-semibold);
+}
+.h1 {
+  font-family: var(--font-sans);
+  font-size: var(--text-4xl);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--weight-semibold);
+}
+.h2 {
+  font-family: var(--font-sans);
+  font-size: var(--text-3xl);
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--weight-semibold);
+}
+.h3 {
+  font-family: var(--font-sans);
+  font-size: var(--text-xl);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-semibold);
+}
+.body {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  font-weight: var(--weight-regular);
+}
+.body-lg {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  line-height: var(--leading-relaxed);
+}
+.lede {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  line-height: var(--leading-relaxed);
+  color: var(--muted-foreground);
+}
+.caption {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+}
+.label-mono {
+  /* Brand signature — mono eyebrow over every section on landing */
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  color: color-mix(in oklch, var(--atlas-brand) 80%, transparent);
+  font-weight: var(--weight-medium);
+}
+.code, pre, code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+}
+.sql {
+  /* SQL in chat result cards */
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
+::selection {
+  background: color-mix(in oklch, var(--atlas-brand) 30%, transparent);
+}

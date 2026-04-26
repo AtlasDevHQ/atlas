@@ -35,6 +35,32 @@
   50% { opacity: 0; }
 }
 
+/* Schema-map hero — sequenced wire / node fade-in
+ * Each wire/node sets its own animation-delay for the 01→06 sequence.
+ * After the run-once fade-in, the dashed-pulse along the wire is handled
+ * by an SMIL animate inside the SVG and runs forever. */
+@keyframes schema-fade-in {
+  from { opacity: var(--schema-from, 0.25); }
+  to   { opacity: 1; }
+}
+
+.schema-edge,
+.schema-node {
+  opacity: var(--schema-from, 0.25);
+  animation: schema-fade-in 600ms ease forwards;
+  animation-delay: var(--schema-delay, 0ms);
+}
+
+/* Terminal cursor blink — used in the self-host card */
+@keyframes term-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.term-caret {
+  animation: term-blink 1s step-end infinite;
+}
+
 @keyframes fade-in-up {
   from {
     opacity: 0;
@@ -78,32 +104,20 @@
 .delay-700 { animation-delay: 700ms; }
 .delay-800 { animation-delay: 800ms; }
 
-/* Widget showcase animations — used by components/widget-showcase.tsx */
-@keyframes showcase-dot-bounce {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
-}
-
-.showcase-dot {
-  animation: showcase-dot-bounce 1s ease-in-out infinite;
-}
-
-@keyframes showcase-bar-grow {
-  from { width: 0; }
-}
-
-.showcase-bar {
-  animation: showcase-bar-grow 0.6s ease-out both;
-}
-
 /* Respect reduced motion preferences */
 @media (prefers-reduced-motion: reduce) {
   .animate-blink,
   .animate-fade-in-up,
   .animate-fade-in,
-  .showcase-dot,
-  .showcase-bar {
+  .schema-edge,
+  .schema-node,
+  .term-caret {
     animation: none !important;
+  }
+
+  .schema-edge,
+  .schema-node {
+    opacity: 1 !important;
   }
 
   .animate-fade-in-up,

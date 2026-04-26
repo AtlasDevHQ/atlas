@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas — Docs</title>
+<link rel="stylesheet" href="../atlas-tokens.css" />
+<style>
+  html, body { background: #0C0C10; color: oklch(0.985 0 0); margin: 0; font-family: var(--font-sans); }
+  * { box-sizing: border-box; }
+  ::selection { background: color-mix(in oklch, var(--atlas-brand) 30%, transparent); }
+  pre { margin: 0; }
+  code { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="chrome.jsx"></script>
+
+<script type="text/babel">
+const NAV = [
+  { head: "start here", items: [
+    { id: "overview", label: "Overview", time: "2 min" },
+    { id: "quickstart", label: "Quickstart", time: "5 min", active: true },
+    { id: "concepts", label: "Core concepts", time: "8 min" },
+    { id: "first-query", label: "Your first query", time: "10 min" },
+  ]},
+  { head: "semantic layer", items: [
+    { id: "models", label: "Models" },
+    { id: "metrics", label: "Metrics" },
+    { id: "joins", label: "Joins" },
+    { id: "synonyms", label: "Synonyms" },
+  ]},
+  { head: "validators", items: [
+    { id: "shape", label: "Shape gate" },
+    { id: "schema", label: "Schema gate" },
+    { id: "metric", label: "Metric whitelist" },
+    { id: "policy", label: "Row-level policy" },
+    { id: "explain", label: "EXPLAIN gate" },
+    { id: "cost", label: "Cost gate" },
+    { id: "audit", label: "Audit gate" },
+  ]},
+  { head: "warehouses", items: [
+    { id: "postgres", label: "Postgres" },
+    { id: "snowflake", label: "Snowflake" },
+    { id: "bigquery", label: "BigQuery" },
+    { id: "duckdb", label: "DuckDB" },
+  ]},
+  { head: "deploy", items: [
+    { id: "self-host", label: "Self-host" },
+    { id: "cloud", label: "Atlas Cloud" },
+    { id: "vpc", label: "VPC / single-tenant" },
+  ]},
+  { head: "reference", items: [
+    { id: "cli", label: "CLI" },
+    { id: "react", label: "React widget" },
+    { id: "api", label: "REST API" },
+    { id: "yaml", label: "YAML schema" },
+  ]},
+];
+
+const POPULAR = [
+  { tag: "guide", title: "Mapping a star schema in YAML", read: "12 min" },
+  { tag: "guide", title: "Migrating from LangChain SQLAgent", read: "8 min" },
+  { tag: "recipe", title: "Multi-tenant row-level policies", read: "6 min" },
+  { tag: "recipe", title: "Cost-capping expensive joins", read: "4 min" },
+  { tag: "ref",   title: "All seven validation gates explained", read: "15 min" },
+  { tag: "ref",   title: "Anatomy of an audit-log entry", read: "5 min" },
+];
+
+const DocsPage = () => {
+  const [q, setQ] = React.useState("");
+
+  return (
+    <div>
+      <AtlasNav active="docs" />
+      <div style={dStyles.layout}>
+        {/* Sidebar */}
+        <aside style={dStyles.side}>
+          <div style={dStyles.search}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="oklch(0.556 0 0)" strokeWidth="2" style={{ flexShrink: 0 }}>
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" strokeLinecap="round" />
+            </svg>
+            <input
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="search docs…"
+              style={dStyles.searchIn}
+            />
+          </div>
+          {NAV.map(g => (
+            <div key={g.head} style={dStyles.navGrp}>
+              <div style={dStyles.navHead}>// {g.head}</div>
+              <ul style={dStyles.navList}>
+                {g.items.map(it => (
+                  <li key={it.id}>
+                    <a href={`#${it.id}`} style={{ ...dStyles.navLink, ...(it.active ? dStyles.navLinkActive : {}) }}>
+                      <span>{it.label}</span>
+                      {it.time && <span style={dStyles.navTime}>{it.time}</span>}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </aside>
+
+        {/* Main */}
+        <main style={dStyles.main}>
+          <div style={dStyles.crumbs}>
+            <span>docs</span>
+            <span style={dStyles.crumbSep}>/</span>
+            <span>start here</span>
+            <span style={dStyles.crumbSep}>/</span>
+            <span style={{ color: "var(--atlas-brand)" }}>quickstart</span>
+          </div>
+
+          <div style={dStyles.eye}>// quickstart · 5 min</div>
+          <h1 style={dStyles.h1}>Atlas in five minutes.</h1>
+          <p style={dStyles.dek}>
+            Run a local Atlas instance against the sample <em style={dStyles.em}>Northwind</em> database, define one metric in YAML, and trace a query end-to-end through every validator.
+          </p>
+
+          {/* Step rail */}
+          <div style={dStyles.stepRail}>
+            {[
+              { n: "01", l: "install", a: true },
+              { n: "02", l: "connect" },
+              { n: "03", l: "model" },
+              { n: "04", l: "ask" },
+              { n: "05", l: "trace" },
+            ].map((s, i) => (
+              <div key={s.n} style={dStyles.stepWrap}>
+                <div style={{ ...dStyles.stepDot, ...(s.a ? dStyles.stepDotActive : {}) }}>{s.n}</div>
+                <div style={{ ...dStyles.stepL, ...(s.a ? { color: "var(--atlas-brand)" } : {}) }}>{s.l}</div>
+                {i < 4 && <div style={dStyles.stepLine} />}
+              </div>
+            ))}
+          </div>
+
+          {/* Step 1 */}
+          <h2 style={dStyles.h2}><span style={dStyles.h2Num}>01</span> Install</h2>
+          <p style={dStyles.p}>One command. The CLI ships everything: server, semantic-layer compiler, the React widget bundle, and a sample warehouse seeded with Northwind.</p>
+
+          <CodeBlock title="terminal" lang="sh" lines={[
+            { p: "$", c: "bun create @useatlas my-atlas" },
+            { d: "✓ scaffolded ./my-atlas (12 files)" },
+            { d: "✓ installed dependencies (24 packages, 1.2s)" },
+            { d: "✓ seeded sample warehouse → ./my-atlas/data/northwind.duckdb" },
+            { p: "$", c: "cd my-atlas && bun atlas dev" },
+            { d: "atlas v0.94.2 listening on http://localhost:4711" },
+            { d: "├─ docs:    /docs" },
+            { d: "├─ api:     /api/query" },
+            { d: "└─ widget:  <Atlas endpoint=\"/api/query\" />" },
+          ]} />
+
+          <Callout kind="tip" title="No Bun?">
+            <code>npx @useatlas/cli init</code> works too — same scaffold, marginally slower install.
+          </Callout>
+
+          {/* Step 2 */}
+          <h2 style={dStyles.h2}><span style={dStyles.h2Num}>02</span> Connect your warehouse</h2>
+          <p style={dStyles.p}>Atlas connects read-only by default. The sample DuckDB connection is wired automatically — for a real warehouse, edit <code style={dStyles.codeI}>atlas.config.ts</code>:</p>
+
+          <CodeBlock title="atlas.config.ts" lang="ts" lines={[
+            { c: "export default {" },
+            { c: "  warehouses: {" },
+            { c: "    main: {" },
+            { c: "      kind:     'snowflake'," },
+            { c: "      account:  process.env.SNOWFLAKE_ACCOUNT," },
+            { c: "      database: 'ANALYTICS'," },
+            { c: "      role:     'ATLAS_READONLY',  // best practice: dedicated role" },
+            { c: "      readOnly: true," },
+            { c: "    }," },
+            { c: "  }," },
+            { c: "}" },
+          ]} />
+
+          {/* Step 3 */}
+          <h2 style={dStyles.h2}><span style={dStyles.h2Num}>03</span> Model one metric</h2>
+          <p style={dStyles.p}>The semantic layer is the contract between English and SQL. It lives in YAML and is the file your data team will spend the most time in.</p>
+
+          <CodeBlock title="semantic/orders.yml" lang="yaml" lines={[
+            { c: "model: orders" },
+            { c: "table: main.orders" },
+            { c: "primary_key: order_id" },
+            { c: "" },
+            { c: "dimensions:" },
+            { c: "  - name: status" },
+            { c: "    sql: order_status" },
+            { c: "    enum: [placed, fulfilled, cancelled]" },
+            { c: "  - name: ordered_at" },
+            { c: "    sql: created_at" },
+            { c: "    type: timestamp" },
+            { c: "" },
+            { c: "metrics:" },
+            { c: "  - name: revenue" },
+            { c: "    expr: SUM(line_items.unit_price * line_items.qty)" },
+            { c: "    join: line_items" },
+            { c: "    synonyms: [sales, gross_revenue, top_line]" },
+          ]} />
+
+          <Callout kind="why" title="Why YAML, not LLM-inferred schema?">
+            Inferred schemas drift. A reviewed PR on a YAML file is the cheapest, most-auditable way to ship a metric definition that an analyst, an auditor, and a model all agree on.
+          </Callout>
+
+          {/* Step 4 */}
+          <h2 style={dStyles.h2}><span style={dStyles.h2Num}>04</span> Ask a question</h2>
+          <p style={dStyles.p}>Drop the React widget anywhere — internal tool, customer dashboard, Notion embed.</p>
+
+          <CodeBlock title="App.tsx" lang="tsx" lines={[
+            { c: "import { Atlas } from '@useatlas/react';" },
+            { c: "" },
+            { c: "export default () => (" },
+            { c: "  <Atlas" },
+            { c: "    endpoint=\"/api/query\"" },
+            { c: "    suggestions={['top customers last quarter', 'revenue by month']}" },
+            { c: "  />" },
+            { c: ")" },
+          ]} />
+
+          {/* Step 5 */}
+          <h2 style={dStyles.h2}><span style={dStyles.h2Num}>05</span> Trace it</h2>
+          <p style={dStyles.p}>Every query writes a structured trace. Inspect it from the CLI, the dashboard, or pipe it into your existing observability stack.</p>
+
+          <CodeBlock title="terminal" lang="sh" lines={[
+            { p: "$", c: "bun atlas trace q_8a2f1b" },
+            { d: "trace q_8a2f1b · 1.34s · gates 7/7" },
+            { d: "├─ shape          ✓  18ms     valid sql, single SELECT, 0 mutations" },
+            { d: "├─ schema         ✓  4ms      4 refs · all in semantic layer" },
+            { d: "├─ metric_wl      ✓  2ms      revenue ∈ whitelist" },
+            { d: "├─ rls            ✓  6ms      tenant_id=acme injected" },
+            { d: "├─ explain        ✓  240ms    cost=8.2  rows=120  bytes=1.4MB" },
+            { d: "├─ cost_cap       ✓  1ms      under 50.0 budget" },
+            { d: "└─ audit          ✓  3ms      logged → s3://atlas-audit/2026/…" },
+          ]} />
+
+          <Callout kind="next" title="Where to go next">
+            <ul style={dStyles.calloutList}>
+              <li><a href="#concepts" style={dStyles.calloutLink}>Core concepts</a> — what's actually in the semantic layer</li>
+              <li><a href="#shape" style={dStyles.calloutLink}>The seven validation gates</a> — what each one does and why</li>
+              <li><a href="#cloud" style={dStyles.calloutLink}>Move to Atlas Cloud</a> — same code, hosted, with SSO + audit export</li>
+            </ul>
+          </Callout>
+
+          {/* Footer nav */}
+          <div style={dStyles.pageNav}>
+            <a href="#overview" style={dStyles.pageNavL}>
+              <div style={dStyles.pageNavLab}>← previous</div>
+              <div style={dStyles.pageNavTitle}>Overview</div>
+            </a>
+            <a href="#concepts" style={dStyles.pageNavR}>
+              <div style={dStyles.pageNavLab}>next →</div>
+              <div style={dStyles.pageNavTitle}>Core concepts</div>
+            </a>
+          </div>
+        </main>
+
+        {/* Right rail */}
+        <aside style={dStyles.right}>
+          <div style={dStyles.rightHead}>// on this page</div>
+          <ul style={dStyles.tocList}>
+            {["Install", "Connect your warehouse", "Model one metric", "Ask a question", "Trace it"].map((t, i) => (
+              <li key={t}>
+                <a href="#" style={{ ...dStyles.tocLink, ...(i === 0 ? { color: "var(--atlas-brand)" } : {}) }}>{t}</a>
+              </li>
+            ))}
+          </ul>
+
+          <div style={{ ...dStyles.rightHead, marginTop: 32 }}>// popular</div>
+          <ul style={dStyles.popList}>
+            {POPULAR.map(p => (
+              <li key={p.title} style={dStyles.popItem}>
+                <span style={dStyles.popTag}>{p.tag}</span>
+                <a href="#" style={dStyles.popLink}>{p.title}</a>
+                <span style={dStyles.popRead}>{p.read}</span>
+              </li>
+            ))}
+          </ul>
+
+          <div style={dStyles.helpCard}>
+            <div style={dStyles.helpHead}>// stuck?</div>
+            <div style={dStyles.helpBody}>Discord is the fastest place. ~2k devs, the core team hangs out there.</div>
+            <a href="#" style={dStyles.helpBtn}>join discord →</a>
+          </div>
+        </aside>
+      </div>
+
+      <AtlasFooter />
+    </div>
+  );
+};
+
+const Callout = ({ kind, title, children }) => {
+  const colors = {
+    tip:  "color-mix(in oklch, var(--atlas-brand) 38%, transparent)",
+    why:  "oklch(0.7 0.18 65)",
+    next: "color-mix(in oklch, var(--atlas-brand) 38%, transparent)",
+  };
+  return (
+    <div style={{ ...dStyles.callout, borderLeftColor: colors[kind] }}>
+      <div style={{ ...dStyles.calloutHead, color: colors[kind] }}>// {kind}</div>
+      <div style={dStyles.calloutTitle}>{title}</div>
+      <div style={dStyles.calloutBody}>{children}</div>
+    </div>
+  );
+};
+
+const CodeBlock = ({ title, lang, lines }) => (
+  <div style={dStyles.codeWrap}>
+    <div style={dStyles.codeHead}>
+      <div style={dStyles.codeDots}>
+        <span style={{ ...dStyles.codeDot, background: "#FF5F57" }} />
+        <span style={{ ...dStyles.codeDot, background: "#FEBC2E" }} />
+        <span style={{ ...dStyles.codeDot, background: "#28C840" }} />
+      </div>
+      <div style={dStyles.codeTitle}>{title}</div>
+      <div style={dStyles.codeLang}>{lang}</div>
+    </div>
+    <pre style={dStyles.codeBody}>
+      {lines.map((l, i) => (
+        <div key={i} style={dStyles.codeLine}>
+          <span style={dStyles.codeGutter}>{String(i + 1).padStart(2, " ")}</span>
+          {l.p && <span style={dStyles.codePrompt}>{l.p}</span>}
+          {l.c && <span style={dStyles.codeC}>{l.c}</span>}
+          {l.d && <span style={dStyles.codeD}>{l.d}</span>}
+        </div>
+      ))}
+    </pre>
+  </div>
+);
+
+const dStyles = {
+  layout: { display: "grid", gridTemplateColumns: "260px 1fr 240px", gap: 0, maxWidth: 1480, margin: "0 auto" },
+  side: { borderRight: "1px solid oklch(1 0 0 / 0.05)", padding: "32px 24px", position: "sticky", top: 64, alignSelf: "start", maxHeight: "calc(100vh - 64px)", overflowY: "auto" },
+  search: { display: "flex", alignItems: "center", gap: 8, border: "1px solid oklch(1 0 0 / 0.1)", borderRadius: 8, padding: "8px 10px", marginBottom: 24, background: "oklch(0.16 0 0 / 0.5)" },
+  searchKbd: { fontFamily: "var(--font-mono)", fontSize: 10, color: "oklch(0.443 0 0)", padding: "2px 5px", border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 3, letterSpacing: "0.04em" },
+  searchIn: { background: "transparent", border: "none", outline: "none", color: "oklch(0.985 0 0)", fontSize: 13, flex: 1, fontFamily: "var(--font-sans)" },
+  navGrp: { marginBottom: 24 },
+  navHead: { fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "oklch(0.443 0 0)", marginBottom: 8 },
+  navList: { listStyle: "none", padding: 0, margin: 0 },
+  navLink: { display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13, color: "oklch(0.708 0 0)", textDecoration: "none" },
+  navLinkActive: { color: "var(--atlas-brand)", fontWeight: 500 },
+  navTime: { fontFamily: "var(--font-mono)", fontSize: 10.5, color: "oklch(0.443 0 0)", letterSpacing: "0.04em" },
+
+  main: { padding: "32px 56px 80px", minWidth: 0 },
+  crumbs: { fontFamily: "var(--font-mono)", fontSize: 11, color: "oklch(0.443 0 0)", letterSpacing: "0.04em", marginBottom: 22, display: "flex", gap: 8, alignItems: "center" },
+  crumbSep: { color: "oklch(0.3 0 0)" },
+  eye: { fontFamily: "var(--font-mono)", fontSize: 11.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--atlas-brand)", marginBottom: 14 },
+  h1: { fontSize: 44, fontWeight: 600, letterSpacing: "-0.035em", lineHeight: 1.05, margin: "0 0 18px" },
+  dek: { fontSize: 17, lineHeight: 1.55, color: "oklch(0.708 0 0)", margin: "0 0 36px", maxWidth: 700 },
+  em: { color: "var(--atlas-brand)", fontStyle: "italic" },
+
+  stepRail: { display: "flex", alignItems: "center", gap: 0, padding: "20px 0 36px", flexWrap: "wrap" },
+  stepWrap: { display: "flex", alignItems: "center", flex: "1 0 auto" },
+  stepDot: { fontFamily: "var(--font-mono)", fontSize: 11, padding: "5px 8px", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 6, color: "oklch(0.708 0 0)", letterSpacing: "0.04em", background: "oklch(0.16 0 0)" },
+  stepDotActive: { borderColor: "var(--atlas-brand)", color: "var(--atlas-brand)", background: "color-mix(in oklch, var(--atlas-brand) 8%, oklch(0.16 0 0))" },
+  stepL: { fontFamily: "var(--font-mono)", fontSize: 11, marginLeft: 10, color: "oklch(0.556 0 0)", letterSpacing: "0.04em", textTransform: "uppercase" },
+  stepLine: { flex: 1, height: 1, background: "oklch(1 0 0 / 0.08)", margin: "0 14px", minWidth: 18 },
+
+  h2: { fontSize: 26, fontWeight: 600, letterSpacing: "-0.025em", margin: "44px 0 14px", display: "flex", alignItems: "baseline", gap: 14 },
+  h2Num: { fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--atlas-brand)", letterSpacing: "0.04em" },
+  p: { fontSize: 15, lineHeight: 1.65, color: "oklch(0.871 0 0)", margin: "0 0 18px" },
+  codeI: { fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--atlas-brand)", background: "color-mix(in oklch, var(--atlas-brand) 10%, transparent)", padding: "1px 6px", borderRadius: 4 },
+
+  codeWrap: { border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 10, overflow: "hidden", margin: "8px 0 24px", background: "#0A0A0E" },
+  codeHead: { display: "flex", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid oklch(1 0 0 / 0.06)", gap: 14, background: "oklch(0.16 0 0 / 0.6)" },
+  codeDots: { display: "flex", gap: 6 },
+  codeDot: { width: 10, height: 10, borderRadius: "50%" },
+  codeTitle: { fontFamily: "var(--font-mono)", fontSize: 12, color: "oklch(0.708 0 0)", letterSpacing: "0.04em", flex: 1 },
+  codeLang: { fontFamily: "var(--font-mono)", fontSize: 10, color: "oklch(0.443 0 0)", padding: "2px 7px", border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 4, letterSpacing: "0.06em", textTransform: "uppercase" },
+  codeBody: { padding: "14px 0", fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.7, color: "oklch(0.871 0 0)", overflowX: "auto" },
+  codeLine: { display: "flex", padding: "0 16px", whiteSpace: "pre" },
+  codeGutter: { color: "oklch(0.3 0 0)", marginRight: 18, userSelect: "none", minWidth: 22, textAlign: "right" },
+  codePrompt: { color: "var(--atlas-brand)", marginRight: 8 },
+  codeC: { color: "oklch(0.871 0 0)" },
+  codeD: { color: "oklch(0.556 0 0)" },
+
+  callout: { borderLeft: "2px solid", borderRadius: "0 8px 8px 0", padding: "14px 20px", margin: "8px 0 24px", background: "oklch(0.18 0 0 / 0.4)" },
+  calloutHead: { fontFamily: "var(--font-mono)", fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 },
+  calloutTitle: { fontSize: 14, fontWeight: 600, marginBottom: 6 },
+  calloutBody: { fontSize: 13.5, lineHeight: 1.6, color: "oklch(0.708 0 0)" },
+  calloutList: { margin: 0, padding: "4px 0 0 16px", display: "flex", flexDirection: "column", gap: 4 },
+  calloutLink: { color: "var(--atlas-brand)", textDecoration: "none" },
+
+  pageNav: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 56 },
+  pageNavL: { padding: 18, border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 10, textDecoration: "none", color: "inherit" },
+  pageNavR: { padding: 18, border: "1px solid oklch(1 0 0 / 0.08)", borderRadius: 10, textDecoration: "none", color: "inherit", textAlign: "right" },
+  pageNavLab: { fontFamily: "var(--font-mono)", fontSize: 10.5, color: "oklch(0.443 0 0)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 },
+  pageNavTitle: { fontSize: 14, fontWeight: 500 },
+
+  right: { padding: "32px 24px", borderLeft: "1px solid oklch(1 0 0 / 0.05)", position: "sticky", top: 64, alignSelf: "start", maxHeight: "calc(100vh - 64px)", overflowY: "auto" },
+  rightHead: { fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "oklch(0.443 0 0)", marginBottom: 12 },
+  tocList: { listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6 },
+  tocLink: { fontSize: 12.5, color: "oklch(0.708 0 0)", textDecoration: "none" },
+
+  popList: { listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 14 },
+  popItem: { display: "flex", flexDirection: "column", gap: 4 },
+  popTag: { fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--atlas-brand)", letterSpacing: "0.06em", textTransform: "uppercase" },
+  popLink: { fontSize: 13, color: "oklch(0.871 0 0)", textDecoration: "none", lineHeight: 1.4 },
+  popRead: { fontFamily: "var(--font-mono)", fontSize: 10.5, color: "oklch(0.443 0 0)", letterSpacing: "0.04em" },
+
+  helpCard: { marginTop: 32, padding: 16, border: "1px solid color-mix(in oklch, var(--atlas-brand) 38%, transparent)", borderRadius: 10, background: "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.18 0 0 / 0.4))" },
+  helpHead: { fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--atlas-brand)", marginBottom: 8 },
+  helpBody: { fontSize: 12.5, lineHeight: 1.55, color: "oklch(0.871 0 0)", marginBottom: 12 },
+  helpBtn: { fontSize: 12, color: "var(--atlas-brand)", fontWeight: 600, textDecoration: "none" },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<DocsPage />);
+</script>
+</body>
+</html>

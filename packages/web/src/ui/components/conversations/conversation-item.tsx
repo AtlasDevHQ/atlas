@@ -26,6 +26,11 @@ function relativeTime(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function explainError(err: unknown): string {
+  if (err instanceof TypeError) return "network error";
+  return "try again";
+}
+
 export function ConversationItem({
   conversation,
   isActive,
@@ -61,8 +66,8 @@ export function ConversationItem({
               setConfirmDelete(false);
             } catch (err: unknown) {
               console.warn("Failed to delete conversation:", err instanceof Error ? err.message : String(err));
-              setError("Failed to delete conversation. Please try again.");
-              setTimeout(() => setError(null), 3000);
+              setError(`Couldn't delete — ${explainError(err)}.`);
+              setTimeout(() => setError(null), 4000);
             } finally {
               setDeleting(false);
             }
@@ -74,30 +79,33 @@ export function ConversationItem({
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-      className={`group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+      className={`group flex w-full items-center rounded-lg transition-colors ${
         isActive
-          ? "bg-primary/10 text-primary dark:bg-primary/10 dark:text-primary"
-          : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          ? "bg-primary/10 ring-1 ring-inset ring-primary/30 dark:bg-primary/15 dark:ring-primary/40"
+          : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
       }`}
     >
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium">
-          {conversation.title || "New conversation"}
-        </p>
-        {error ? (
-          <p className="text-xs text-red-500 dark:text-red-400">{error}</p>
-        ) : (
-          <p className="text-xs text-zinc-400 dark:text-zinc-500">
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-current={isActive ? "page" : undefined}
+          className={`block w-full cursor-pointer rounded-l-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+            isActive
+              ? "text-zinc-900 dark:text-zinc-100"
+              : "text-zinc-700 dark:text-zinc-300"
+          }`}
+        >
+          <span className="block truncate text-sm font-medium">
+            {conversation.title || "New conversation"}
+          </span>
+          <span className="block text-xs text-zinc-600 dark:text-zinc-400">
             {relativeTime(conversation.updatedAt)}
+          </span>
+        </button>
+        {error && (
+          <p role="alert" className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">
+            {error}
           </p>
         )}
       </div>
@@ -105,16 +113,15 @@ export function ConversationItem({
         <Button
           variant="ghost"
           size="icon"
-          onClick={async (e) => {
-            e.stopPropagation();
+          onClick={async () => {
             if (starPending) return;
             setStarPending(true);
             try {
               await onStar(!conversation.starred);
             } catch (err: unknown) {
               console.warn("Failed to update star:", err instanceof Error ? err.message : String(err));
-              setError("Failed to update. Please try again.");
-              setTimeout(() => setError(null), 3000);
+              setError(`Couldn't update star — ${explainError(err)}.`);
+              setTimeout(() => setError(null), 4000);
             } finally {
               setStarPending(false);
             }
@@ -137,8 +144,7 @@ export function ConversationItem({
           <Button
             variant="ghost"
             size="icon"
-            onClick={async (e) => {
-              e.stopPropagation();
+            onClick={async () => {
               if (converting) return;
               setConverting(true);
               try {
@@ -146,8 +152,8 @@ export function ConversationItem({
                 router.push(`/notebook?id=${id}`);
               } catch (err: unknown) {
                 console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));
-                setError("Failed to convert. Please try again.");
-                setTimeout(() => setError(null), 3000);
+                setError(`Couldn't convert — ${explainError(err)}.`);
+                setTimeout(() => setError(null), 4000);
               } finally {
                 setConverting(false);
               }
@@ -166,10 +172,7 @@ export function ConversationItem({
         <Button
           variant="ghost"
           size="icon"
-          onClick={(e) => {
-            e.stopPropagation();
-            setConfirmDelete(true);
-          }}
+          onClick={() => setConfirmDelete(true)}
           disabled={deleting}
           className="size-8 shrink-0 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:bg-red-50 hover:text-red-500 md:group-hover:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
           aria-label="Delete conversation"

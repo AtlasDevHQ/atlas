@@ -1,25 +1,19 @@
-"use client";
-
-import dynamic from "next/dynamic";
-import { Card } from "@/components/ui/card";
-import { useDarkMode } from "@/ui/hooks/use-dark-mode";
-import { DataTable } from "@/ui/components/chat/data-table";
+import Link from "next/link";
+import { ArrowUpRight, Clock, LayoutDashboard } from "lucide-react";
 import { ResultCardErrorBoundary } from "@/ui/components/chat/result-card-base";
-import { Clock } from "lucide-react";
+import { SharedTile } from "./tile";
 import type { SharedDashboard, SharedCard } from "./types";
 
-const ResultChart = dynamic(
-  () => import("@/ui/components/chart/result-chart").then((m) => ({ default: m.ResultChart })),
-  { ssr: false, loading: () => <div className="h-48 animate-pulse rounded-lg bg-zinc-100 dark:bg-zinc-800" /> },
-);
-
-function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
-  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col]))));
-}
-
-function timeAgo(iso: string | null): string {
-  if (!iso) return "never";
-  const diff = Date.now() - new Date(iso).getTime();
+/**
+ * Format a timestamp relative to "now". Computed once on the server (this is a
+ * server component) so SSR + hydration agree to the second — no `Date.now()`
+ * drift across the boundary.
+ */
+function timeAgo(iso: string | null): string | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  const diff = Date.now() - t;
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
@@ -30,87 +24,156 @@ function timeAgo(iso: string | null): string {
   return new Date(iso).toLocaleDateString();
 }
 
-/** Validate that cachedRows entries are actually objects. */
-function validateRows(raw: unknown[] | null): Record<string, unknown>[] {
-  if (!raw) return [];
-  return raw.filter(
-    (r): r is Record<string, unknown> => typeof r === "object" && r !== null && !Array.isArray(r),
-  );
+/** Most recent cache time across all cards — one freshness signal beats six. */
+function mostRecentCachedAt(cards: SharedCard[]): string | null {
+  let latestMs: number | null = null;
+  let raw: string | null = null;
+  for (const c of cards) {
+    if (!c.cachedAt) continue;
+    const t = new Date(c.cachedAt).getTime();
+    if (Number.isFinite(t) && (latestMs === null || t > latestMs)) {
+      latestMs = t;
+      raw = c.cachedAt;
+    }
+  }
+  return raw;
 }
 
-function SharedCardView({ card }: { card: SharedCard }) {
-  const dark = useDarkMode();
-  const columns = card.cachedColumns ?? [];
-  const rows = validateRows(card.cachedRows);
-  const hasData = columns.length > 0 && rows.length > 0;
-  const stringRows = hasData ? toStringRows(columns, rows) : [];
-  const chartConfig = card.chartConfig as { type?: string } | null;
+/**
+ * Map a saved tile width (1–24 grid units from the editor) to a 2-column
+ * shared-view span. ≥13 = full row; ≤12 = half. Mobile (`<md`) is always
+ * single-column — RGL has no responsive breakpoints in our config (project
+ * memory note), and the read-only stack drops `overflow-auto` per #1867.
+ */
+function tileSpanClass(layout: SharedCard["layout"]): string {
+  const w = layout?.w ?? 12;
+  return w >= 13 ? "md:col-span-2" : "md:col-span-1";
+}
 
-  return (
-    <Card className="overflow-hidden">
-      <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
-        <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-          {card.title}
-        </h3>
-        <span className="text-xs text-zinc-400 dark:text-zinc-500">
-          <Clock className="mr-0.5 inline size-3" />
-          {timeAgo(card.cachedAt)}
-        </span>
-      </div>
-      {hasData ? (
-        <div>
-          {chartConfig && chartConfig.type && chartConfig.type !== "table" && (
-            <ResultCardErrorBoundary label="Chart">
-              <div className="px-4 py-3">
-                <ResultChart headers={columns} rows={stringRows} dark={dark} />
-              </div>
-            </ResultCardErrorBoundary>
-          )}
-          <DataTable columns={columns} rows={rows} />
-        </div>
-      ) : (
-        <div className="px-4 py-8 text-center text-xs text-zinc-500 dark:text-zinc-400">
-          No data available for this card.
-        </div>
-      )}
-    </Card>
-  );
+function isoOrUndefined(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
 export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard }) {
-  return (
-    <div className="mx-auto max-w-4xl px-4 py-8">
-      <header className="mb-8 border-b border-zinc-200 pb-4 dark:border-zinc-800">
-        <div className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-          <span className="font-medium text-zinc-900 dark:text-zinc-100">Atlas</span>
-          <span aria-hidden="true">&middot;</span>
-          <span>Shared dashboard</span>
-          <span aria-hidden="true">&middot;</span>
-          <span>{dashboard.cards.length} card{dashboard.cards.length !== 1 ? "s" : ""}</span>
-        </div>
-        <h1 className="mt-2 text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-          {dashboard.title}
-        </h1>
-        {dashboard.description && (
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            {dashboard.description}
-          </p>
-        )}
-      </header>
+  const lastRefreshed = dashboard.lastRefreshAt ?? mostRecentCachedAt(dashboard.cards);
+  const lastRefreshedIso = isoOrUndefined(lastRefreshed);
+  const lastRefreshedLabel = timeAgo(lastRefreshed);
+  const capturedIso = isoOrUndefined(dashboard.createdAt);
+  const capturedDate = capturedIso
+    ? new Date(capturedIso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+    : null;
+  const tileCount = dashboard.cards.length;
 
-      {dashboard.cards.length === 0 ? (
-        <p className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
-          This dashboard has no cards yet.
-        </p>
-      ) : (
-        <div className="space-y-4">
-          {dashboard.cards.map((card) => (
-            <ResultCardErrorBoundary key={card.id} label={card.title}>
-              <SharedCardView card={card} />
-            </ResultCardErrorBoundary>
-          ))}
-        </div>
-      )}
+  return (
+    <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950 print:bg-white print:text-black">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 focus:outline-none print:max-w-full print:p-0"
+      >
+        <header className="mb-6 border-b border-zinc-200 pb-4 dark:border-zinc-800 print:border-zinc-300">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+              <span className="font-medium text-zinc-900 dark:text-zinc-100">Atlas</span>
+              <span aria-hidden="true">&middot;</span>
+              <span
+                className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 print:bg-transparent print:px-0"
+                aria-label="This is a read-only snapshot"
+              >
+                Read-only
+              </span>
+              {capturedDate && capturedIso && (
+                <>
+                  <span aria-hidden="true">&middot;</span>
+                  <time dateTime={capturedIso}>Captured {capturedDate}</time>
+                </>
+              )}
+            </div>
+            <Link
+              href="/signup"
+              className="inline-flex items-center gap-1 text-sm font-medium text-teal-700 transition-colors hover:text-teal-800 dark:text-teal-300 dark:hover:text-teal-200 print:hidden"
+            >
+              Try Atlas free
+              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+            </Link>
+          </div>
+          <h1 className="mt-3 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+            {dashboard.title}
+          </h1>
+          {dashboard.description && (
+            <p className="mt-1 max-w-3xl text-sm text-zinc-600 dark:text-zinc-400">
+              {dashboard.description}
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
+            <span>
+              {tileCount} tile{tileCount === 1 ? "" : "s"}
+            </span>
+            {lastRefreshedLabel && lastRefreshedIso && (
+              <>
+                <span aria-hidden="true">&middot;</span>
+                <span className="inline-flex items-center gap-1">
+                  <Clock className="size-3" aria-hidden="true" />
+                  Last refreshed{" "}
+                  <time dateTime={lastRefreshedIso}>{lastRefreshedLabel}</time>
+                </span>
+              </>
+            )}
+          </div>
+        </header>
+
+        {tileCount === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+            <div className="grid size-12 place-items-center rounded-2xl bg-teal-50 text-teal-700 dark:bg-teal-950/40 dark:text-teal-300">
+              <LayoutDashboard className="size-6" aria-hidden="true" />
+            </div>
+            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+              Nothing to show yet
+            </h2>
+            <p className="max-w-sm text-sm text-zinc-600 dark:text-zinc-400">
+              The dashboard owner hasn&rsquo;t added any tiles to share. Check back later, or build your own with Atlas.
+            </p>
+            <Link
+              href="/signup"
+              className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-teal-700 hover:text-teal-800 dark:text-teal-300 dark:hover:text-teal-200 print:hidden"
+            >
+              Try Atlas free
+              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+            </Link>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {dashboard.cards.map((card) => {
+              // Single-tile dashboards always render full width — a half-width tile
+              // floating in a half-empty grid reads like a bug, not intent.
+              const spanClass = tileCount === 1 ? "md:col-span-2" : tileSpanClass(card.layout);
+              return (
+                <ResultCardErrorBoundary key={card.id} label={card.title}>
+                  <SharedTile
+                    card={card}
+                    spanClass={spanClass}
+                    cachedLabel={timeAgo(card.cachedAt)}
+                    cachedIso={isoOrUndefined(card.cachedAt)}
+                  />
+                </ResultCardErrorBoundary>
+              );
+            })}
+          </div>
+        )}
+      </main>
+
+      <footer className="border-t border-zinc-200 px-4 py-4 text-center dark:border-zinc-800 print:hidden">
+        <a
+          href="https://www.useatlas.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-zinc-600 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+        >
+          Powered by Atlas
+        </a>
+      </footer>
     </div>
   );
 }

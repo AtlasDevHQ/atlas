@@ -1,12 +1,15 @@
+import type { DashboardCardLayout, DashboardChartConfig } from "@/ui/lib/types";
+
 export interface SharedCard {
   id: string;
   title: string;
   sql: string;
-  chartConfig: unknown;
+  chartConfig: DashboardChartConfig | null;
   cachedColumns: string[] | null;
   cachedRows: Record<string, unknown>[] | null;
   cachedAt: string | null;
   position: number;
+  layout: DashboardCardLayout | null;
 }
 
 export interface SharedDashboard {
@@ -16,4 +19,5 @@ export interface SharedDashboard {
   cards: SharedCard[];
   createdAt: string;
   updatedAt: string;
+  lastRefreshAt: string | null;
 }

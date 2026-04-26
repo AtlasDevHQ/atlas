@@ -26,3 +26,7 @@ e2e/browser/storage-state.json
 e2e/browser/test-results/
 .playwright-mcp/
 docs/superpowers/
+
+# Lighthouse CLI dumps Chrome's profile dir into cwd as a Windows-shaped path
+# under WSL2. Pre-empt it so `git add` doesn't sweep ~50KB of garbage in.
+C:\\Users\\*

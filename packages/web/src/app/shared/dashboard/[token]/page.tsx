@@ -54,7 +54,7 @@ export async function generateMetadata({
   const { token } = await params;
   const result = await fetchSharedDashboard(token);
 
-  const fallbackTitle = "Atlas \u2014 Shared Dashboard";
+  const fallbackTitle = "Atlas — Shared Dashboard";
   const fallbackDescription = "A shared dashboard from Atlas, the text-to-SQL data analyst.";
 
   if (!result.ok) {
@@ -71,7 +71,7 @@ export async function generateMetadata({
   const cardCount = dash.cards.length;
   const description = dash.description
     ? truncate(dash.description, 160)
-    : `Dashboard with ${cardCount} card${cardCount !== 1 ? "s" : ""} — shared from Atlas.`;
+    : `Dashboard with ${cardCount} tile${cardCount !== 1 ? "s" : ""} — shared from Atlas.`;
 
   return {
     title,
@@ -84,6 +84,65 @@ export async function generateMetadata({
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
+
+type FailReason = Extract<FetchResult, { ok: false }>["reason"];
+
+function ErrorShell({
+  token,
+  heading,
+  message,
+  reason,
+}: {
+  token: string;
+  heading: string;
+  message: string;
+  reason: FailReason;
+}) {
+  return (
+    <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950 print:bg-white print:text-black">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="flex flex-1 items-center justify-center px-4 focus:outline-none"
+      >
+        <div className="text-center">
+          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">{heading}</h1>
+          <p className="mt-2 text-zinc-600 dark:text-zinc-400">{message}</p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            {reason === "auth-required" ? (
+              <Link
+                href={`/login?redirect=${encodeURIComponent(`/shared/dashboard/${token}`)}`}
+                className={buttonVariants()}
+              >
+                Log in
+              </Link>
+            ) : (
+              <Link href="/" className={buttonVariants()}>Go to Atlas</Link>
+            )}
+            {reason !== "not-found" && reason !== "auth-required" && (
+              <Link
+                href={`/shared/dashboard/${token}`}
+                className={buttonVariants({ variant: "outline" })}
+              >
+                Try again
+              </Link>
+            )}
+          </div>
+        </div>
+      </main>
+      <footer className="border-t border-zinc-200 px-4 py-4 text-center dark:border-zinc-800 print:hidden">
+        <a
+          href="https://www.useatlas.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-zinc-600 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+        >
+          Powered by Atlas
+        </a>
+      </footer>
+    </div>
+  );
+}
 
 export default async function SharedDashboardPage({
   params,
@@ -104,36 +163,16 @@ export default async function SharedDashboardPage({
       result.reason === "auth-required" ? "This dashboard is shared within an organization. Please log in to view it."
         : result.reason === "expired" ? "This share link has expired. Ask the dashboard owner to create a new one."
         : result.reason === "not-found" ? "This dashboard may have been removed or the link may be invalid."
-        : result.reason === "network-error" ? "Could not reach the server. Check your connection and try again."
-        : "The server encountered an error loading this dashboard. Try refreshing the page.";
+        : result.reason === "network-error" ? "We couldn’t reach Atlas. Check your connection and try again."
+        : "Something went wrong on our end loading this dashboard. Please try again in a moment.";
 
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">{heading}</h1>
-          <p className="mt-2 text-zinc-500 dark:text-zinc-400">{message}</p>
-          <div className="mt-4 flex items-center justify-center gap-3">
-            {result.reason === "auth-required" ? (
-              <Link
-                href={`/login?redirect=${encodeURIComponent(`/shared/dashboard/${token}`)}`}
-                className={buttonVariants()}
-              >
-                Log in
-              </Link>
-            ) : (
-              <Link href="/" className={buttonVariants()}>Go to Atlas</Link>
-            )}
-            {result.reason !== "not-found" && result.reason !== "auth-required" && (
-              <Link
-                href={`/shared/dashboard/${token}`}
-                className={buttonVariants({ variant: "outline" })}
-              >
-                Try again
-              </Link>
-            )}
-          </div>
-        </div>
-      </div>
+      <ErrorShell
+        token={token}
+        heading={heading}
+        message={message}
+        reason={result.reason}
+      />
     );
   }
 

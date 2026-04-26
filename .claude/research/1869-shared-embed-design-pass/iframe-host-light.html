@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Iframe host (light) — embed visual harness</title>
+    <style>
+      :root {
+        font-family:
+          ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        background: #f4f4f5;
+        color: #18181b;
+        min-height: 100vh;
+      }
+      .partner-shell {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 32px 24px 64px;
+      }
+      .partner-nav {
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        font-size: 14px;
+        color: #52525b;
+        padding-bottom: 18px;
+        border-bottom: 1px solid #e4e4e7;
+      }
+      .partner-nav .logo {
+        font-weight: 600;
+        color: #18181b;
+        letter-spacing: -0.01em;
+      }
+      .partner-headline {
+        margin: 28px 0 6px;
+        font-size: 24px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+      .partner-sub {
+        color: #52525b;
+        font-size: 14px;
+        max-width: 60ch;
+        margin: 0 0 28px;
+      }
+      .embed-card {
+        background: #ffffff;
+        border: 1px solid #e4e4e7;
+        border-radius: 12px;
+        box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04);
+        overflow: hidden;
+      }
+      .embed-card iframe {
+        display: block;
+        border: 0;
+        width: 100%;
+        height: 640px;
+        background: transparent;
+      }
+      .embed-caption {
+        font-size: 12px;
+        color: #71717a;
+        padding: 8px 16px 12px;
+        border-top: 1px solid #f4f4f5;
+        background: #fafafa;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="partner-shell">
+      <div class="partner-nav">
+        <span class="logo">Acme Analytics</span>
+        <span>Dashboards</span>
+        <span>Reports</span>
+        <span style="margin-left: auto; color: #71717a">jamie@acme.com</span>
+      </div>
+      <h1 class="partner-headline">Q1 customer revenue review</h1>
+      <p class="partner-sub">
+        Embedded analysis pulled from Atlas — kept in line so the discussion
+        stays with the data.
+      </p>
+      <div class="embed-card">
+        <iframe
+          src="http://localhost:3000/shared/demo-share-token-1868/embed"
+          title="Atlas shared conversation embed"
+        ></iframe>
+        <div class="embed-caption">Embedded via Atlas · live snapshot</div>
+      </div>
+    </div>
+  </body>
+</html>

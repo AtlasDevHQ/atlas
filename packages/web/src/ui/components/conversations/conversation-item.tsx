@@ -26,6 +26,11 @@ function relativeTime(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function explainError(err: unknown): string {
+  if (err instanceof TypeError) return "network error";
+  return "try again";
+}
+
 export function ConversationItem({
   conversation,
   isActive,
@@ -60,9 +65,8 @@ export function ConversationItem({
               await onDelete();
               setConfirmDelete(false);
             } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              console.warn("Failed to delete conversation:", msg);
-              setError(`Couldn't delete — ${msg}`);
+              console.warn("Failed to delete conversation:", err instanceof Error ? err.message : String(err));
+              setError(`Couldn't delete — ${explainError(err)}.`);
               setTimeout(() => setError(null), 4000);
             } finally {
               setDeleting(false);
@@ -81,27 +85,30 @@ export function ConversationItem({
           : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
       }`}
     >
-      <button
-        type="button"
-        onClick={onSelect}
-        aria-current={isActive ? "page" : undefined}
-        className={`min-w-0 flex-1 cursor-pointer rounded-l-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
-          isActive
-            ? "text-zinc-900 dark:text-zinc-100"
-            : "text-zinc-700 dark:text-zinc-300"
-        }`}
-      >
-        <p className="truncate text-sm font-medium">
-          {conversation.title || "New conversation"}
-        </p>
-        {error ? (
-          <p role="alert" className="text-xs text-red-600 dark:text-red-400">{error}</p>
-        ) : (
-          <p className="text-xs text-zinc-600 dark:text-zinc-400">
+      <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-current={isActive ? "page" : undefined}
+          className={`block w-full cursor-pointer rounded-l-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+            isActive
+              ? "text-zinc-900 dark:text-zinc-100"
+              : "text-zinc-700 dark:text-zinc-300"
+          }`}
+        >
+          <span className="block truncate text-sm font-medium">
+            {conversation.title || "New conversation"}
+          </span>
+          <span className="block text-xs text-zinc-600 dark:text-zinc-400">
             {relativeTime(conversation.updatedAt)}
+          </span>
+        </button>
+        {error && (
+          <p role="alert" className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">
+            {error}
           </p>
         )}
-      </button>
+      </div>
       <div className="flex shrink-0 items-center gap-0.5">
         <Button
           variant="ghost"
@@ -112,9 +119,8 @@ export function ConversationItem({
             try {
               await onStar(!conversation.starred);
             } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              console.warn("Failed to update star:", msg);
-              setError(`Couldn't update star — ${msg}`);
+              console.warn("Failed to update star:", err instanceof Error ? err.message : String(err));
+              setError(`Couldn't update star — ${explainError(err)}.`);
               setTimeout(() => setError(null), 4000);
             } finally {
               setStarPending(false);
@@ -145,9 +151,8 @@ export function ConversationItem({
                 const { id } = await onConvertToNotebook();
                 router.push(`/notebook?id=${id}`);
               } catch (err: unknown) {
-                const msg = err instanceof Error ? err.message : String(err);
-                console.warn("Failed to convert to notebook:", msg);
-                setError(`Couldn't convert — ${msg}`);
+                console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));
+                setError(`Couldn't convert — ${explainError(err)}.`);
                 setTimeout(() => setError(null), 4000);
               } finally {
                 setConverting(false);

@@ -156,7 +156,7 @@ const SECTIONS: LegalSection[] = [
     title: "Security",
     legal: [
       "Atlas maintains a security program based on ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, least-privilege IAM, automated vulnerability scanning, and external penetration tests at least annually. Per-customer KMS keys are negotiable on enterprise contracts.",
-      "Suspected security incidents may be reported to security@useatlas.dev. A PGP key is available on request.",
+      "Suspected security incidents may be reported to security@useatlas.dev. Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). A PGP key is available on request.",
     ],
     plain:
       "TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, annual third-party pen tests. Report suspected issues to security@useatlas.dev (PGP key on request).",

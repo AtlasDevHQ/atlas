@@ -1,5 +1,3 @@
-// server-only — renders without client interactivity. The Markdown child
-// component runs on the client; everything else here is static markup.
 import { Markdown } from "@/ui/components/chat/markdown";
 import {
   type SharedConversation,
@@ -9,16 +7,16 @@ import {
 
 export type EmbedTheme = "light" | "dark";
 
-/** Resolve a `?theme=` query value to a known theme. Anything other than `dark` falls back to light. */
 export function resolveEmbedTheme(raw: string | string[] | undefined): EmbedTheme {
   const value = Array.isArray(raw) ? raw[0] : raw;
-  return value === "dark" ? "dark" : "light";
+  if (value === "dark") return "dark";
+  if (value == null || value === "" || value === "light") return "light";
+  console.warn(
+    `[shared-conversation/embed] Unrecognized ?theme= value (got ${JSON.stringify(value)}); falling back to "light".`,
+  );
+  return "light";
 }
 
-/**
- * Compute the embed h1 text. Title → first user message → static fallback.
- * Always returns a non-empty string so the h1 is never absent.
- */
 export function resolveEmbedHeading(data: SharedConversation): string {
   if (data.title && data.title.trim().length > 0) return data.title;
   const firstUser = data.messages.find((m) => m.role === "user");
@@ -26,6 +24,9 @@ export function resolveEmbedHeading(data: SharedConversation): string {
     const text = extractTextContent(firstUser.content).trim();
     if (text.length > 0) return truncate(text, 80);
   }
+  console.warn(
+    "[shared-conversation/embed] No usable heading source (title empty + no user messages with text); using static label.",
+  );
   return "Atlas Conversation";
 }
 
@@ -106,12 +107,8 @@ export function EmbedErrorView({ reason, theme }: EmbedErrorViewProps) {
   );
 }
 
-/**
- * Outer chrome shared by success + error states. Adds `dark` to the wrapper
- * when the partner passes `?theme=dark`, gives the global skip link a target,
- * and keeps the visible chrome to a single `Atlas · Read-only` line + a small
- * "Powered by Atlas" wordmark — embed contract: attributable, never pushy.
- */
+// Embed contract: attributable, never pushy. Do not add a "Try Atlas" CTA
+// inside the partner UX — locked in by shared-embed-view.test.tsx.
 function EmbedShell({
   theme,
   children,

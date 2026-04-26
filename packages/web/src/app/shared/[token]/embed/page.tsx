@@ -1,6 +1,3 @@
-// server-only — `Date.now()` and theme resolution must run server-side so SSR
-// matches the rendered output. The `<Markdown>` component imported by view.tsx
-// is the only client island.
 import { fetchSharedConversation } from "../../lib";
 import { EmbedView, EmbedErrorView, resolveEmbedTheme } from "./view";
 

@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, afterEach, spyOn } from "bun:test";
 import { render, cleanup } from "@testing-library/react";
 import {
   EmbedView,
@@ -36,10 +36,25 @@ describe("resolveEmbedTheme", () => {
   test("dark when ?theme=dark", () => {
     expect(resolveEmbedTheme("dark")).toBe("dark");
   });
-  test("light otherwise (light, missing, garbage)", () => {
+  test("light when ?theme=light or missing", () => {
     expect(resolveEmbedTheme("light")).toBe("light");
     expect(resolveEmbedTheme(undefined)).toBe("light");
+    expect(resolveEmbedTheme("")).toBe("light");
+  });
+  test("warns and falls back to light for unrecognized values", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
     expect(resolveEmbedTheme("hot-pink")).toBe("light");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("hot-pink");
+    warn.mockRestore();
+  });
+  test("does not warn when value is absent or empty (legitimately unset)", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    resolveEmbedTheme(undefined);
+    resolveEmbedTheme("");
+    resolveEmbedTheme("light");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
   test("first value wins when array passed (Next can yield string[])", () => {
     expect(resolveEmbedTheme(["dark", "light"])).toBe("dark");
@@ -57,21 +72,31 @@ describe("resolveEmbedHeading", () => {
     const heading = resolveEmbedHeading(convo({ title: null }));
     expect(heading).toBe("Who are our top 10 customers by revenue last quarter?");
   });
-  test("falls back to static label when title null and no user messages", () => {
-    expect(
-      resolveEmbedHeading(
-        convo({
-          title: null,
-          messages: [
-            {
-              role: "assistant",
-              content: "ack",
-              createdAt: "2026-04-26T00:00:00Z",
-            },
-          ],
-        }),
-      ),
-    ).toBe("Atlas Conversation");
+  test("treats empty / whitespace-only title as missing", () => {
+    expect(resolveEmbedHeading(convo({ title: "" }))).toBe(
+      "Who are our top 10 customers by revenue last quarter?",
+    );
+    expect(resolveEmbedHeading(convo({ title: "   " }))).toBe(
+      "Who are our top 10 customers by revenue last quarter?",
+    );
+  });
+  test("falls back to static label and warns when title null and no user messages", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const heading = resolveEmbedHeading(
+      convo({
+        title: null,
+        messages: [
+          {
+            role: "assistant",
+            content: "ack",
+            createdAt: "2026-04-26T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    expect(heading).toBe("Atlas Conversation");
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
   test("truncates very long fallback text", () => {
     const long = "x".repeat(200);
@@ -97,6 +122,18 @@ describe("<EmbedView>", () => {
     expect(h1).not.toBeNull();
     expect(h1?.textContent).toBe("Atlas demo");
     expect(h1?.className).toContain("sr-only");
+  });
+
+  test("h1 falls back through resolveEmbedHeading when title is null", () => {
+    // Locks in that EmbedView routes through resolveEmbedHeading rather than
+    // wiring data.title directly into the JSX — the fallback chain matters.
+    const { container } = render(
+      <EmbedView data={convo({ title: null })} theme="light" />,
+    );
+    const h1 = container.querySelector("h1");
+    expect(h1?.textContent).toBe(
+      "Who are our top 10 customers by revenue last quarter?",
+    );
   });
 
   test("renders a <main id='main'> as the global skip-link target", () => {
@@ -215,6 +252,16 @@ describe("<EmbedErrorView>", () => {
     const h1 = container.querySelector("h1");
     expect(h1).not.toBeNull();
     expect(h1?.className).toContain("sr-only");
+  });
+
+  test("forwards theme=dark through to the shell wrapper-dance", () => {
+    // Mirrors the success-side assertion so an error-state refactor that
+    // strips theme handling can't regress to always-light embeds.
+    const { container } = render(
+      <EmbedErrorView reason="not-found" theme="dark" />,
+    );
+    const outer = container.querySelector('[data-theme="dark"]');
+    expect(outer?.classList.contains("dark")).toBe(true);
   });
 
   test("uses a distinct message per reason", () => {

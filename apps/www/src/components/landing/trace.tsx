@@ -190,13 +190,15 @@ export function Trace() {
   useEffect(() => {
     if (hasAutoPlayed || prefersReducedMotion() || !rootRef.current) return;
 
+    let kickoffTimer: ReturnType<typeof setTimeout> | null = null;
+
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting && !hasAutoPlayed) {
             setHasAutoPlayed(true);
             setIdx(0);
-            window.setTimeout(() => setPlaying(true), 400);
+            kickoffTimer = setTimeout(() => setPlaying(true), 400);
             observer.disconnect();
             break;
           }
@@ -205,10 +207,12 @@ export function Trace() {
       { threshold: 0.3 },
     );
     observer.observe(rootRef.current);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (kickoffTimer) clearTimeout(kickoffTimer);
+    };
   }, [hasAutoPlayed]);
 
-  // Advance through steps while playing.
   useEffect(() => {
     if (!playing) return;
     if (idx >= LAST_INDEX) {
@@ -218,10 +222,11 @@ export function Trace() {
     const cur = TRACE_STEPS[idx]!.t;
     const nxt = TRACE_STEPS[idx + 1]!.t;
     const dwell = Math.max(120, Math.min(900, (nxt - cur) * 800));
-    playTimer.current = setTimeout(() => setIdx((i) => i + 1), dwell);
-    return () => {
-      if (playTimer.current) clearTimeout(playTimer.current);
-    };
+    // Capture the local id so cleanup clears *this* run's timer, not whichever
+    // one happens to be in `playTimer.current` when cleanup runs.
+    const id = setTimeout(() => setIdx((i) => i + 1), dwell);
+    playTimer.current = id;
+    return () => clearTimeout(id);
   }, [playing, idx]);
 
   const onPlay = () => {
@@ -232,7 +237,6 @@ export function Trace() {
   const cur = TRACE_STEPS[idx]!;
   const totalT = TRACE_STEPS[LAST_INDEX]!.t;
 
-  // SQL appears character-by-character starting once compile is done (idx 2).
   const sqlReveal = idx < 2 ? 0 : Math.min(1, (idx - 1) / 8);
   const visibleSqlChars = Math.floor(SQL_TOTAL * sqlReveal);
 

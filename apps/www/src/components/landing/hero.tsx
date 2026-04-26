@@ -241,8 +241,7 @@ function SchemaMap() {
 export function Hero() {
   return (
     <section className="relative overflow-hidden border-b border-white/5">
-      {/* Headline overlay — absolute on desktop where the schema map is wide enough,
-       * stacked above the map on narrow viewports where the SVG shrinks. */}
+      {/* Absolute over the SVG on desktop, stacked above on mobile where the SVG shrinks. */}
       <div className="relative md:absolute md:top-20 md:left-20 md:z-[2] md:max-w-[460px] px-6 pt-16 md:px-0 md:pt-0">
         <p className="mb-[18px] font-mono text-[11.5px] uppercase tracking-[0.16em] text-brand">
           // the schema is the product
@@ -282,7 +281,6 @@ export function Hero() {
         </p>
       </div>
 
-      {/* Schema-map sits behind the headline on desktop, below it on mobile */}
       <div className="md:pt-0 pt-8">
         <SchemaMap />
       </div>

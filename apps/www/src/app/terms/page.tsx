@@ -3,539 +3,301 @@ import type { Metadata } from "next";
 import { Footer } from "../../components/footer";
 import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
+import { StickyNav } from "../../components/sticky-nav";
 
 export const metadata: Metadata = {
   title: "Terms of Service — Atlas",
   description:
-    "Atlas Terms of Service — acceptable use, account terms, payment terms, data handling, and more.",
+    "The agreement between Atlas DevHQ and the people who use Atlas Cloud. 13 sections, dual-column legal / plain-english layout so the deal is readable.",
   openGraph: {
     title: "Terms of Service — Atlas",
     description:
-      "Atlas Terms of Service for Atlas Cloud (app.useatlas.dev) and self-hosted deployments.",
+      "Atlas Cloud terms of service: account terms, fees, customer data, IP, warranty, liability, indemnification, termination, governing law.",
     url: "https://www.useatlas.dev/terms",
     siteName: "Atlas",
     type: "website",
   },
 };
 
-// ---------------------------------------------------------------------------
-// Content sections
-// ---------------------------------------------------------------------------
-
-interface Section {
+interface LegalSection {
   id: string;
   title: string;
-  content: React.ReactNode;
+  legal: string[];
+  plain: string;
 }
 
-const LAST_UPDATED = "April 2, 2026";
-
-const SECTIONS: Section[] = [
+const SECTIONS: LegalSection[] = [
   {
-    id: "overview",
-    title: "1. Overview",
-    content: (
-      <>
-        <p>
-          These Terms of Service (&quot;Terms&quot;) govern your use of Atlas, a
-          text-to-SQL data analyst agent, operated by Atlas DevHQ
-          (&quot;Atlas&quot;, &quot;we&quot;, &quot;us&quot;, &quot;our&quot;).
-        </p>
-        <p>
-          Atlas is available in two modes:
-        </p>
-        <ul>
-          <li>
-            <strong>Self-hosted</strong> — free under the{" "}
-            <a
-              href="https://github.com/AtlasDevHQ/atlas/blob/main/LICENSE"
-  
-            >
-              AGPL-3.0 license
-            </a>
-            . You deploy Atlas on your own infrastructure with full control over
-            your data.
-          </li>
-          <li>
-            <strong>Atlas Cloud</strong> — hosted at{" "}
-            <a
-              href="https://app.useatlas.dev"
-  
-            >
-              app.useatlas.dev
-            </a>
-            . These Terms apply primarily to Atlas Cloud. Additional features are
-            available under a separate{" "}
-            <a
-              href="https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE"
-  
-            >
-              commercial license
-            </a>
-            .
-          </li>
-        </ul>
-        <p>
-          By creating an account or using Atlas Cloud, you agree to these Terms.
-          If you do not agree, do not use the service.
-        </p>
-      </>
-    ),
+    id: "agreement",
+    title: "The Agreement",
+    legal: [
+      'These Terms of Service ("Terms") are entered into between Atlas DevHQ ("Atlas", "we") and the entity or individual agreeing to them ("Customer", "you"). By creating an account, signing an order form, or using the Service, you accept these Terms.',
+      "If you are accepting on behalf of a company, you represent that you have authority to bind that company. “You” then refers to that company.",
+      "These Terms govern Atlas Cloud at app.useatlas.dev. The open-source Atlas distribution is licensed separately under AGPL-3.0 and is not subject to these Terms; commercial features in the /ee directory are licensed under the separate Atlas Commercial License.",
+    ],
+    plain:
+      "These rules apply when you use Atlas Cloud. The open-source distribution is AGPL-3.0 and isn’t covered here; the commercial /ee features have their own license.",
   },
   {
-    id: "account-terms",
-    title: "2. Account Terms",
-    content: (
-      <>
-        <p>
-          You must provide accurate information when creating an account. You are
-          responsible for maintaining the security of your account credentials and
-          for all activity under your account.
-        </p>
-        <ul>
-          <li>You must be 18 years or older to use Atlas Cloud.</li>
-          <li>
-            One person or entity may not maintain more than one free trial at a
-            time.
-          </li>
-          <li>
-            You are responsible for all content and queries executed through your
-            account.
-          </li>
-          <li>
-            You must promptly notify us of any unauthorized access to your
-            account.
-          </li>
-        </ul>
-      </>
-    ),
+    id: "service",
+    title: "The Service",
+    legal: [
+      "Atlas provides a hosted text-to-SQL platform. Customer authenticates against its own data warehouse and identity provider; Atlas executes queries on Customer’s behalf in read-only mode (or write mode where Customer has explicitly granted such permission).",
+      "Atlas may modify, add, or remove features at any time, but will not materially reduce the functionality of any feature included in Customer’s plan during the current paid term without 30 days’ notice.",
+      'Beta and "Labs" features are provided as-is, may be removed at any time, and are excluded from the SLA.',
+    ],
+    plain:
+      "We provide the hosted Atlas service. Improvements ship continuously, but we won’t materially reduce features in your plan during the paid term without 30 days’ notice.",
   },
   {
-    id: "acceptable-use",
-    title: "3. Acceptable Use",
-    content: (
-      <>
-        <p>You agree not to use Atlas to:</p>
-        <ul>
-          <li>
-            Violate any applicable laws or regulations.
-          </li>
-          <li>
-            Attempt to gain unauthorized access to other users&apos; data or
-            systems.
-          </li>
-          <li>
-            Transmit malicious code, SQL injection attacks, or exploit
-            vulnerabilities in the service.
-          </li>
-          <li>
-            Reverse-engineer, decompile, or attempt to extract the source code of
-            Atlas Cloud (the self-hosted version is open-source under AGPL-3.0).
-          </li>
-          <li>
-            Use Atlas Cloud to build a competing hosted service using our{" "}
-            <a
-              href="https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE"
-  
-            >
-              enterprise features
-            </a>
-            .
-          </li>
-          <li>
-            Exceed published rate limits or otherwise abuse the service in a way
-            that degrades performance for other users.
-          </li>
-        </ul>
-        <p>
-          We reserve the right to suspend or terminate accounts that violate
-          these terms.
-        </p>
-      </>
-    ),
+    id: "accounts",
+    title: "Accounts & Acceptable Use",
+    legal: [
+      "Customer is responsible for maintaining the confidentiality of credentials and for all activity that occurs under its account. Customer must notify Atlas promptly of any unauthorized access. Account holders must be 18 years or older.",
+      "Customer agrees not to: (a) use the Service to violate any law or third-party right; (b) attempt to reverse-engineer, decompile, or scrape the Service except as permitted by applicable law; (c) use the Service to develop a competing hosted product using the /ee commercial features; (d) probe, scan, or test the vulnerability of the Service without prior written consent; (e) submit data containing malware, exploits, or content prohibited by the Acceptable Use Policy at useatlas.dev/aup; (f) exceed published rate limits or otherwise abuse the Service in a way that degrades performance for other customers.",
+      "Atlas may suspend access without notice for activity that materially threatens the security or availability of the Service for other customers. Where suspension is appropriate, Atlas will use commercially reasonable efforts to provide notice.",
+    ],
+    plain:
+      "Use Atlas lawfully and as documented. Don’t probe our security without permission, don’t build a competing hosted product on the commercial /ee features, and don’t submit malicious content.",
   },
   {
-    id: "payment-terms",
-    title: "4. Payment Terms",
-    content: (
-      <>
-        <p>
-          Atlas Cloud offers Starter, Pro, and Business plans billed through Stripe.
-          The self-hosted version is free and always will be.
-        </p>
-        <ul>
-          <li>
-            <strong>Trial.</strong> All paid plans include a 14-day free trial. No
-            credit card is required to start. Free trial accounts are provided
-            without any service level commitment, support obligation, or
-            liability on our part — see Sections 8 and 9.
-          </li>
-          <li>
-            <strong>Billing cycle.</strong> Subscriptions are billed monthly or
-            annually, at the beginning of each period.
-          </li>
-          <li>
-            <strong>No overage charges.</strong> When you approach your plan
-            limits, you&apos;ll receive warnings. If you hit a limit, queries
-            pause until the next billing cycle or you upgrade.
-          </li>
-          <li>
-            <strong>Refunds.</strong> We do not provide refunds for partial billing
-            periods. You may cancel at any time and retain access through the end
-            of your current billing period.
-          </li>
-          <li>
-            <strong>Price changes.</strong> We will provide at least 30 days&apos;
-            notice before any price increase takes effect.
-          </li>
-          <li>
-            <strong>BYOT.</strong> Bring-your-own-token users pay their LLM
-            provider directly. Atlas only charges for infrastructure in BYOT mode.
-          </li>
-        </ul>
-      </>
-    ),
+    id: "fees",
+    title: "Fees & Payment",
+    legal: [
+      "Customer agrees to pay all fees stated in the order form or on the pricing page in effect at the time of purchase. Fees are exclusive of taxes; Customer is responsible for sales, use, VAT, and similar taxes. Atlas Cloud paid plans include a 14-day free trial; trial accounts are provided without service-level commitment, support obligation, or liability — see Sections 8 and 9.",
+      "Subscriptions auto-renew for the same term unless either party gives written notice of non-renewal at least 30 days before the renewal date. Atlas may increase prices at renewal with 30 days’ written notice. Bring-your-own-token (BYOK) usage is billed by the LLM provider directly; Atlas charges only for infrastructure under BYOK.",
+      "Invoices are due within 30 days. Past-due amounts accrue interest at 1.5%/month or the maximum allowed by law. Atlas may suspend the Service for accounts more than 60 days past due. Refunds are not provided for partial billing periods; cancellation retains access through the end of the current period.",
+    ],
+    plain:
+      "Pay invoices within 30 days. Subscriptions renew automatically; give 30 days’ notice to cancel. BYOK pays the LLM provider directly. No partial-period refunds.",
   },
   {
-    id: "data-handling",
-    title: "5. Data Handling",
-    content: (
-      <>
-        <p>
-          Atlas connects to your analytics databases to execute read-only queries
-          on your behalf. We take data handling seriously:
-        </p>
-        <ul>
-          <li>
-            <strong>Read-only access.</strong> Atlas enforces read-only database
-            connections. All SQL is validated through a 4-layer security pipeline
-            (empty check, regex guard, AST parse, table whitelist) before
-            execution.
-          </li>
-          <li>
-            <strong>Data residency.</strong> Business plan customers can choose their
-            data residency region. Query data is processed in the selected region
-            and does not leave it.
-          </li>
-          <li>
-            <strong>Query history.</strong> Conversation and query history is
-            stored in Atlas Cloud&apos;s internal database for your access.
-            Retention periods are configurable by workspace administrators.
-          </li>
-          <li>
-            <strong>No training on your data.</strong> We do not use your queries,
-            results, or datasource content to train AI models. Query text is sent
-            to the configured LLM provider (Anthropic, OpenAI, etc.) for
-            processing under their terms.
-          </li>
-          <li>
-            <strong>Encryption.</strong> All data is encrypted in transit (TLS 1.2+)
-            and at rest (AES-256).
-          </li>
-          <li>
-            <strong>PII detection.</strong> Atlas includes configurable PII
-            detection to flag sensitive data in query results.
-          </li>
-        </ul>
-        <p>
-          For full details, see our{" "}
-          <a
-            href="/privacy"
-
-          >
-            Privacy Policy
-          </a>{" "}
-          and{" "}
-          <a
-            href="/dpa"
-
-          >
-            Data Processing Agreement
-          </a>
-          .
-        </p>
-      </>
-    ),
+    id: "data",
+    title: "Customer Data",
+    legal: [
+      "As between the parties, Customer owns Customer Data. Customer grants Atlas a limited license to process Customer Data solely to provide the Service.",
+      "Atlas does not use Customer Data to train AI models. Atlas does not sell Customer Data. Atlas does not access Customer’s data warehouse contents except to execute queries that Customer’s authorized users explicitly issue. Query text is forwarded to the configured LLM provider (Anthropic, OpenAI, etc.) for processing under that provider’s terms.",
+      "Atlas implements technical and organizational measures consistent with industry standards: encryption in transit (TLS 1.2+) and at rest (AES-256), least-privilege access, logged admin operations, configurable PII detection on result sets, and Business-plan data residency. Further detail is in the Data Processing Addendum at useatlas.dev/dpa.",
+    ],
+    plain:
+      "You retain ownership of your data. We do not train models on it, sell it, or access your warehouse beyond executing queries your users explicitly issue. Encrypted in transit and at rest.",
   },
   {
-    id: "intellectual-property",
-    title: "6. Intellectual Property",
-    content: (
-      <>
-        <p>
-          <strong>Your data.</strong> You retain all rights to your data, queries,
-          and results. Atlas does not claim ownership of any content you create or
-          access through the service.
-        </p>
-        <p>
-          <strong>Atlas software.</strong> The core Atlas platform is licensed
-          under AGPL-3.0. Additional features in the <code>/ee</code> directory
-          are licensed under a separate commercial license. Atlas Cloud&apos;s
-          hosted infrastructure and proprietary service components remain the
-          property of Atlas DevHQ.
-        </p>
-        <p>
-          <strong>Feedback.</strong> If you provide suggestions or feedback about
-          Atlas, we may use it to improve the product without obligation to you.
-        </p>
-      </>
-    ),
+    id: "ip",
+    title: "Intellectual Property",
+    legal: [
+      "Atlas owns all rights in the Service, including the Atlas software, models, semantic-layer compiler, and documentation. Subject to these Terms, Atlas grants Customer a non-exclusive, non-transferable license to access and use the Service during the term. The open-source Atlas distribution is AGPL-3.0; commercial features in /ee are licensed under the separate Atlas Commercial License.",
+      "Feedback that Customer provides about the Service is given without restriction; Atlas may use it without obligation.",
+      "Trademarks of Atlas may not be used without prior written consent except to factually describe the use of the Service.",
+    ],
+    plain:
+      "We own the Atlas software and grant you a license to use it. Open-source code is AGPL-3.0; commercial features have a separate license. Feedback you share is unrestricted on our side.",
   },
   {
-    id: "service-availability",
-    title: "7. Service Availability",
-    content: (
-      <>
-        <p>
-          We strive to maintain high availability for Atlas Cloud. Current system
-          status is available at{" "}
-          <a
-            href="/status"
-
-          >
-            www.useatlas.dev/status
-          </a>
-          .
-        </p>
-        <ul>
-          <li>
-            We do not guarantee 100% uptime. Planned maintenance will be
-            communicated in advance.
-          </li>
-          <li>
-            Business plan customers receive SLA commitments with guaranteed
-            uptime and response times.
-          </li>
-          <li>
-            We are not liable for downtime caused by third-party services
-            (database providers, LLM APIs, cloud infrastructure).
-          </li>
-        </ul>
-      </>
-    ),
+    id: "confidentiality",
+    title: "Confidentiality",
+    legal: [
+      "Each party will protect the other’s Confidential Information using the same degree of care it uses for its own (no less than reasonable care), and will not disclose it except to its employees, contractors, and advisors who need to know and are bound by confidentiality obligations.",
+      "Confidential Information does not include information that is publicly available, independently developed without reference to the other party’s information, or rightfully obtained from a third party without confidentiality obligations.",
+    ],
+    plain:
+      "Each side protects the other’s confidential information with the same care as its own.",
   },
   {
-    id: "disclaimer-of-warranties",
-    title: "8. Disclaimer of Warranties",
-    content: (
-      <>
-        <p>
-          ATLAS CLOUD IS PROVIDED &quot;AS IS&quot; AND &quot;AS AVAILABLE&quot;
-          WITHOUT WARRANTIES OF ANY KIND, WHETHER EXPRESS, IMPLIED, OR STATUTORY,
-          INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY,
-          FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
-        </p>
-        <p>
-          Without limiting the foregoing, Atlas does not warrant that: (a) the
-          service will be uninterrupted or error-free; (b) AI-generated SQL
-          queries or results will be accurate, complete, or suitable for any
-          particular purpose; (c) any defects will be corrected; or (d) the
-          service will meet your specific requirements.
-        </p>
-        <p>
-          You are responsible for evaluating AI-generated queries before relying
-          on results for business decisions.
-        </p>
-      </>
-    ),
+    id: "warranty",
+    title: "Warranties & Disclaimer",
+    legal: [
+      "Atlas warrants that the Service will materially perform as described in the documentation. Customer’s exclusive remedy and Atlas’s sole liability for breach of this warranty is, at Atlas’s option, to repair the Service or terminate the agreement and refund unused prepaid fees.",
+      'EXCEPT AS EXPRESSLY STATED, THE SERVICE IS PROVIDED "AS IS" AND ATLAS DISCLAIMS ALL OTHER WARRANTIES, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.',
+      "AI-generated SQL is non-deterministic. Atlas’s 4-layer validation pipeline (empty check, regex guard, AST parse, table whitelist) reduces risk; it does not eliminate it. Customer remains responsible for reviewing query output and for the appropriateness of using AI-generated SQL in its environment.",
+    ],
+    plain:
+      "We warrant the product works as documented. Beyond that, AI-generated SQL is non-deterministic — our validators reduce risk, but you remain responsible for reviewing query output before acting on it.",
   },
   {
-    id: "limitation-of-liability",
-    title: "9. Limitation of Liability",
-    content: (
-      <>
-        <p>
-          TO THE MAXIMUM EXTENT PERMITTED BY LAW, ATLAS DEVHQ SHALL NOT BE
-          LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR
-          PUNITIVE DAMAGES, INCLUDING BUT NOT LIMITED TO LOSS OF DATA, PROFITS,
-          OR BUSINESS OPPORTUNITIES, ARISING OUT OF OR IN CONNECTION WITH THESE
-          TERMS OR YOUR USE OF ATLAS CLOUD.
-        </p>
-        <p>
-          <strong>Free and trial accounts.</strong> IF YOU ARE USING ATLAS CLOUD
-          ON A FREE TRIAL OR OTHERWISE WITHOUT A PAID SUBSCRIPTION, THE SERVICE
-          IS PROVIDED AT YOUR SOLE RISK. OUR TOTAL LIABILITY TO YOU IS ZERO
-          DOLLARS ($0). YOU EXPRESSLY ACKNOWLEDGE THAT FREE AND TRIAL ACCESS
-          CARRIES NO WARRANTY, NO SLA, NO SUPPORT OBLIGATION, AND NO LIABILITY
-          OF ANY KIND ON THE PART OF ATLAS DEVHQ.
-        </p>
-        <p>
-          <strong>Paid accounts.</strong> For active paid subscriptions, our
-          total aggregate liability for any claim arising from these Terms or
-          your use of Atlas Cloud shall not exceed the amount you actually paid
-          us in the 12 months preceding the claim.
-        </p>
-        <p>
-          Atlas executes read-only queries against your databases. While we
-          enforce strict validation, you are responsible for ensuring your
-          datasource credentials have appropriate permissions. You are solely
-          responsible for the data you connect to Atlas and for verifying the
-          accuracy of AI-generated queries and results before acting on them.
-        </p>
-      </>
-    ),
+    id: "liability",
+    title: "Limitation of Liability",
+    legal: [
+      "TO THE FULLEST EXTENT PERMITTED BY LAW, NEITHER PARTY WILL BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR EXEMPLARY DAMAGES, OR FOR LOST PROFITS, REVENUE, OR DATA, EVEN IF ADVISED OF THE POSSIBILITY.",
+      "EACH PARTY’S TOTAL AGGREGATE LIABILITY UNDER THESE TERMS WILL NOT EXCEED THE FEES PAID BY CUSTOMER TO ATLAS IN THE TWELVE MONTHS PRECEDING THE CLAIM. FOR FREE TRIAL ACCOUNTS, ATLAS’S TOTAL AGGREGATE LIABILITY IS ZERO DOLLARS ($0).",
+      "These limitations do not apply to: (a) breach of confidentiality; (b) infringement of the other party’s intellectual-property rights; (c) gross negligence, fraud, or willful misconduct; (d) Customer’s payment obligations.",
+    ],
+    plain:
+      "Liability is capped at fees paid in the prior 12 months (or $0 for free trials). Carve-outs for confidentiality breach, IP infringement, gross negligence, fraud, and willful misconduct.",
   },
   {
-    id: "indemnification",
-    title: "10. Indemnification",
-    content: (
-      <>
-        <p>
-          <strong>By you.</strong> You agree to indemnify and hold harmless Atlas
-          DevHQ from any claims, damages, losses, liabilities, and expenses
-          (including reasonable attorney&apos;s fees) arising from: (a) your
-          violation of these Terms; (b) your use of Atlas Cloud; (c) any data
-          you submit or make accessible through Atlas Cloud; or (d) your
-          violation of any third-party rights.
-        </p>
-        <p>
-          <strong>By us (paid accounts only).</strong> For customers with an
-          active paid subscription, Atlas DevHQ will indemnify you from
-          third-party claims alleging that Atlas Cloud infringes the intellectual
-          property rights of a third party, provided that: (a) you promptly
-          notify us of the claim; (b) you give us sole control over the defense;
-          and (c) you provide reasonable cooperation. This indemnification does
-          not apply to claims arising from your data, your modifications to the
-          self-hosted version, use in combination with non-Atlas products, or
-          free or trial usage.
-        </p>
-      </>
-    ),
+    id: "indemnity",
+    title: "Indemnification",
+    legal: [
+      "Atlas will defend Customer against any third-party claim that the Service, when used in accordance with these Terms, infringes a U.S. patent, copyright, or trade secret, and will pay damages awarded by a court or agreed in settlement. This indemnification does not apply to claims arising from Customer Data, Customer modifications to the self-hosted distribution, combination with non-Atlas products, or free-trial usage.",
+      "Customer will defend Atlas against claims arising from Customer Data, Customer’s use of the Service in violation of law, or Customer’s breach of these Terms.",
+      "The indemnifying party’s obligations are conditional on the indemnified party giving prompt notice, sole control of the defense, and reasonable cooperation.",
+    ],
+    plain:
+      "We defend you against IP claims arising from the Service. You defend us against claims arising from your data or your use of the Service in violation of law.",
   },
   {
-    id: "termination",
-    title: "11. Termination",
-    content: (
-      <>
-        <p>
-          <strong>By you.</strong> You may cancel your account at any time from the
-          admin console. Upon cancellation, your access continues through the end
-          of the current billing period. After that, your workspace becomes
-          read-only for 30 days, then data is deleted.
-        </p>
-        <p>
-          <strong>By us.</strong> We may suspend or terminate your account if you
-          violate these Terms, fail to pay, or if required by law. We will
-          provide reasonable notice when possible.
-        </p>
-        <p>
-          <strong>Data export.</strong> You may export your data (conversations,
-          audit logs, semantic layer configurations) at any time before account
-          deletion.
-        </p>
-      </>
-    ),
+    id: "term",
+    title: "Term & Termination",
+    legal: [
+      "These Terms remain in effect while Customer has an active subscription. Either party may terminate for material breach uncured 30 days after written notice. Customer may terminate immediately if Atlas misses its SLA targets in three consecutive months (see useatlas.dev/sla).",
+      "On termination, Atlas will, on request, make Customer Data available for export for 30 days, after which it will be deleted from production systems within 30 days and from backups within 90 days.",
+      "Sections that by nature should survive termination (Confidentiality, IP, Warranty disclaimers, Liability limits, Indemnification, Governing Law) survive.",
+    ],
+    plain:
+      "Either party may terminate with notice. On termination, we make your data available for export for 30 days, then delete from production within 30 days and from backups within 90.",
   },
   {
-    id: "changes",
-    title: "12. Changes to Terms",
-    content: (
-      <>
-        <p>
-          We may update these Terms from time to time. Material changes will be
-          communicated via email or an in-app notice at least 30 days before they
-          take effect. Continued use of Atlas Cloud after changes take effect
-          constitutes acceptance.
-        </p>
-      </>
-    ),
+    id: "law",
+    title: "Governing Law & Disputes",
+    legal: [
+      "These Terms are governed by the laws of the State of Delaware, USA, without regard to conflict-of-laws principles. The parties consent to exclusive jurisdiction in the state and federal courts located in Wilmington, Delaware for any dispute not subject to arbitration.",
+      "Disputes that are subject to arbitration will be resolved by binding arbitration administered by the American Arbitration Association under its Commercial Arbitration Rules, by a single arbitrator in Wilmington, Delaware.",
+      "Either party may seek injunctive relief in court for breach of confidentiality or IP rights. The parties agree to bring claims only in their individual capacity, and not as a plaintiff or class member in any purported class or representative proceeding.",
+    ],
+    plain:
+      "Disputes are governed by Delaware law and resolved in Delaware (court or AAA arbitration). No class actions; injunctive relief is still available for confidentiality / IP breaches.",
   },
   {
-    id: "governing-law",
-    title: "13. Governing Law and Disputes",
-    content: (
-      <>
-        <p>
-          These Terms are governed by the laws of the State of Delaware, United
-          States, without regard to conflict of law principles.
-        </p>
-        <p>
-          Any dispute arising from these Terms or your use of Atlas Cloud shall
-          be resolved through binding arbitration administered by the American
-          Arbitration Association (AAA) under its Commercial Arbitration Rules.
-          Arbitration shall be conducted by a single arbitrator in Wilmington,
-          Delaware. The arbitrator&apos;s decision shall be final and binding.
-        </p>
-        <p>
-          YOU AND ATLAS DEVHQ AGREE THAT EACH MAY BRING CLAIMS AGAINST THE
-          OTHER ONLY IN YOUR OR ITS INDIVIDUAL CAPACITY, AND NOT AS A PLAINTIFF
-          OR CLASS MEMBER IN ANY PURPORTED CLASS OR REPRESENTATIVE PROCEEDING.
-        </p>
-        <p>
-          Either party may seek injunctive or equitable relief in any court of
-          competent jurisdiction to protect its intellectual property rights.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "contact",
-    title: "14. Contact",
-    content: (
-      <>
-        <p>
-          Questions about these Terms? Contact us at{" "}
-          <a
-            href="mailto:legal@useatlas.dev"
-
-          >
-            legal@useatlas.dev
-          </a>
-          .
-        </p>
-      </>
-    ),
+    id: "misc",
+    title: "Miscellaneous",
+    legal: [
+      "These Terms, plus any order forms and the Data Processing Addendum, form the entire agreement and supersede prior discussions. Amendments must be in writing and signed by both parties, except Atlas may update these Terms with 30 days’ notice; continued use after that constitutes acceptance.",
+      "If any provision is unenforceable, the remainder remains in effect. Failure to enforce a right is not a waiver. Customer may not assign these Terms without consent; Atlas may assign in connection with a merger or sale of substantially all assets.",
+      "Notices to Atlas must be sent to legal@useatlas.dev. Notices to Customer will be sent to the email address on the account.",
+    ],
+    plain:
+      "Standard closing provisions: this is the entire agreement, amendments require writing, partial unenforceability doesn’t void the rest, and legal notices go to legal@useatlas.dev.",
   },
 ];
-
-// ---------------------------------------------------------------------------
-// Components
-// ---------------------------------------------------------------------------
-
-function LegalSection({ section }: { section: Section }) {
-  return (
-    <section id={section.id} className="scroll-mt-20">
-      <h2 className="mb-4 font-mono text-base font-semibold tracking-tight text-zinc-100">
-        {section.title}
-      </h2>
-      <div className="legal-prose space-y-3 text-sm leading-relaxed text-zinc-400">
-        {section.content}
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
 
 export default function TermsPage() {
   return (
     <div className="relative min-h-screen">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+      >
+        Skip to content
+      </a>
+
+      <StickyNav />
       <TopGlow />
-      <Nav />
+      <Nav currentPage="/terms" />
 
-      <article className="mx-auto max-w-3xl px-6 pt-8 pb-20 md:pt-12">
-        <header className="mb-12">
-          <p className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
-            Legal
+      <main id="main" tabIndex={-1} className="focus:outline-none">
+        {/* Hero */}
+        <section className="mx-auto max-w-4xl px-6 pt-16 pb-10 text-center md:pt-24 md:pb-14">
+          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+            // legal · terms
           </p>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
-            Terms of Service
+          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
+            Terms of Service.
           </h1>
-          <p className="mt-3 text-sm text-zinc-500">
-            Last updated: {LAST_UPDATED}
+          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+            The agreement between Atlas DevHQ and the people who use Atlas
+            Cloud. Two columns: the contract on the left, plain English on the
+            right.
           </p>
-        </header>
+          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+            <span>effective 2026-01-15</span>
+            <span aria-hidden="true">·</span>
+            <span>v4.1</span>
+            <span aria-hidden="true">·</span>
+            <span>last updated 2026-04-02</span>
+          </div>
+        </section>
 
-        <div className="space-y-10">
-          {SECTIONS.map((section) => (
-            <LegalSection key={section.id} section={section} />
-          ))}
-        </div>
-      </article>
+        {/* Legal sections — TOC + dual-column body */}
+        <section className="mx-auto max-w-7xl px-6 py-8 md:py-12">
+          <div className="grid gap-12 lg:grid-cols-[220px_1fr] lg:gap-16">
+            <aside aria-label="Document contents" className="lg:sticky lg:top-24 lg:self-start">
+              <p className="mb-4 font-mono text-[11px] tracking-widest text-brand uppercase">
+                // contents
+              </p>
+              <ol className="space-y-1">
+                {SECTIONS.map((section, i) => (
+                  <li key={section.id}>
+                    <a
+                      href={`#${section.id}`}
+                      className="-ml-3.5 flex items-baseline gap-2.5 border-l-2 border-transparent py-1.5 pl-3 text-[13px] text-zinc-400 transition-colors hover:border-brand/60 hover:text-brand"
+                    >
+                      <span className="font-mono text-[10px] tracking-wider text-zinc-400">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <span>{section.title}</span>
+                    </a>
+                  </li>
+                ))}
+              </ol>
+            </aside>
+
+            <article className="flex flex-col gap-12 md:gap-16">
+              {SECTIONS.map((section, i) => (
+                <TermsLegalSection key={section.id} section={section} index={i} />
+              ))}
+            </article>
+          </div>
+        </section>
+
+        {/* Closing CTA */}
+        <section className="mx-auto max-w-4xl px-6 py-16 text-center md:py-24">
+          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
+            Questions about these terms?
+          </h2>
+          <p className="mx-auto mb-6 max-w-xl text-zinc-400">
+            Reach out to legal for clarifications, or to sales for negotiated
+            terms on enterprise contracts.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <a
+              href="mailto:legal@useatlas.dev"
+              className="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white"
+            >
+              Email legal
+            </a>
+            <a
+              href="mailto:sales@useatlas.dev"
+              className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
+            >
+              Talk to sales
+            </a>
+          </div>
+        </section>
+      </main>
 
       <Footer />
     </div>
+  );
+}
+
+function TermsLegalSection({ section, index }: { section: LegalSection; index: number }) {
+  return (
+    <section id={section.id} aria-labelledby={`${section.id}-heading`} className="scroll-mt-24">
+      <div className="mb-6 flex items-baseline gap-4 border-b border-zinc-800/40 pb-4">
+        <span className="font-mono text-[13px] tracking-wider text-brand">
+          {String(index + 1).padStart(2, "0")}
+        </span>
+        <h2
+          id={`${section.id}-heading`}
+          className="text-xl font-semibold tracking-tight text-zinc-100 md:text-2xl"
+        >
+          {section.title}
+        </h2>
+      </div>
+      <div className="grid gap-8 md:grid-cols-[1fr_280px] md:gap-10">
+        <div className="space-y-4 text-[14.5px] leading-7 text-zinc-300">
+          {section.legal.map((paragraph, i) => (
+            <p key={i}>{paragraph}</p>
+          ))}
+        </div>
+        <aside className="border-l border-dashed border-zinc-700/60 pl-6">
+          <p className="mb-3 font-mono text-[10.5px] tracking-widest text-brand uppercase">
+            // plain english
+          </p>
+          <p className="text-[13px] leading-6 text-zinc-400">{section.plain}</p>
+        </aside>
+      </div>
+    </section>
   );
 }

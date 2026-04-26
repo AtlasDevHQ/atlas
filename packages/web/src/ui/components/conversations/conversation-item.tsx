@@ -74,39 +74,38 @@ export function ConversationItem({
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-      className={`group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+      className={`group flex w-full items-center gap-1 rounded-lg pr-1 transition-colors ${
         isActive
-          ? "bg-primary/10 text-primary dark:bg-primary/10 dark:text-primary"
-          : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          ? "bg-primary/10 ring-1 ring-inset ring-primary/30 dark:bg-primary/15 dark:ring-primary/40"
+          : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
       }`}
     >
-      <div className="min-w-0 flex-1">
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={isActive ? "page" : undefined}
+        className={`min-w-0 flex-1 cursor-pointer rounded-l-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+          isActive
+            ? "text-zinc-900 dark:text-zinc-100"
+            : "text-zinc-700 dark:text-zinc-300"
+        }`}
+      >
         <p className="truncate text-sm font-medium">
           {conversation.title || "New conversation"}
         </p>
         {error ? (
-          <p className="text-xs text-red-500 dark:text-red-400">{error}</p>
+          <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
         ) : (
-          <p className="text-xs text-zinc-400 dark:text-zinc-500">
+          <p className="text-xs text-zinc-600 dark:text-zinc-400">
             {relativeTime(conversation.updatedAt)}
           </p>
         )}
-      </div>
+      </button>
       <div className="flex shrink-0 items-center gap-0.5">
         <Button
           variant="ghost"
           size="icon"
-          onClick={async (e) => {
-            e.stopPropagation();
+          onClick={async () => {
             if (starPending) return;
             setStarPending(true);
             try {
@@ -137,8 +136,7 @@ export function ConversationItem({
           <Button
             variant="ghost"
             size="icon"
-            onClick={async (e) => {
-              e.stopPropagation();
+            onClick={async () => {
               if (converting) return;
               setConverting(true);
               try {
@@ -166,10 +164,7 @@ export function ConversationItem({
         <Button
           variant="ghost"
           size="icon"
-          onClick={(e) => {
-            e.stopPropagation();
-            setConfirmDelete(true);
-          }}
+          onClick={() => setConfirmDelete(true)}
           disabled={deleting}
           className="size-8 shrink-0 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:bg-red-50 hover:text-red-500 md:group-hover:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
           aria-label="Delete conversation"

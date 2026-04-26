@@ -33,7 +33,7 @@ export function ConversationList({
           {emptyMessage ?? "No conversations yet"}
         </p>
         {!isSaved && (
-          <p className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500">
+          <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
             Ask a question to get started
           </p>
         )}
@@ -66,12 +66,12 @@ export function ConversationList({
     <div className="space-y-1">
       {starred.length > 0 && (
         <>
-          <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+          <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
             Starred
           </div>
           {renderItems(starred)}
           {unstarred.length > 0 && (
-            <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+            <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
               Recent
             </div>
           )}

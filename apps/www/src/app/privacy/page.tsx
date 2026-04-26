@@ -159,11 +159,11 @@ const SECTIONS: LegalSectionData[] = [
     id: "cookies",
     title: "Cookies & tracking",
     legal: [
-      "We use first-party cookies for authentication and CSRF protection. We use a single first-party analytics tool (Plausible, EU-hosted, no IP storage) on the marketing site. We do not use third-party advertising or behavioral tracking.",
-      "You can disable cookies in your browser; some Service features (notably login) will not work without them.",
+      "We use first-party cookies on Atlas Cloud for authentication and CSRF protection. The marketing site at useatlas.dev currently runs no analytics or behavioral tracking — no Plausible, no Google Analytics, no third-party advertising pixels, no cross-site cookies.",
+      "You can disable cookies in your browser; some Service features (notably login on Atlas Cloud) will not work without them.",
     ],
     plain:
-      "First-party cookies for auth and CSRF protection plus EU-hosted, IP-free analytics on the marketing site. No advertising or behavioral cookies. Disabling cookies prevents sign-in.",
+      "First-party auth + CSRF cookies on Atlas Cloud. Zero analytics or advertising tracking on the marketing site. Disabling cookies prevents sign-in.",
   },
   {
     id: "kids",

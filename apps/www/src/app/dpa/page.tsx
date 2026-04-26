@@ -64,13 +64,6 @@ const SUBPROCESSORS: SubProcessor[] = [
     region: "European Union",
     since: "2026-01",
   },
-  {
-    name: "Plausible",
-    purpose:
-      "First-party analytics on the marketing site only (no IP storage, no Customer Data)",
-    region: "European Union",
-    since: "2026-01",
-  },
 ];
 
 const SECTIONS: LegalSectionData[] = [

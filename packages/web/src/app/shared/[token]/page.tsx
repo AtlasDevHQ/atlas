@@ -134,7 +134,7 @@ export default async function SharedConversationPage({
 
   return (
     <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950 print:bg-white print:text-black">
-      <main id="main" className="mx-auto w-full max-w-3xl flex-1 px-4 py-8 print:p-0">
+      <main id="main" tabIndex={-1} className="mx-auto w-full max-w-3xl flex-1 px-4 py-8 focus:outline-none print:p-0">
         <header className="mb-6 border-b border-zinc-200 pb-4 dark:border-zinc-800 print:border-zinc-300">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">

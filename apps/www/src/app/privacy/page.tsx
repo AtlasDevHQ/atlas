@@ -3,508 +3,351 @@ import type { Metadata } from "next";
 import { Footer } from "../../components/footer";
 import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
+import { StickyNav } from "../../components/sticky-nav";
 
 export const metadata: Metadata = {
   title: "Privacy Policy — Atlas",
   description:
-    "Atlas Privacy Policy — what data we collect, how we use it, your rights under GDPR, and our subprocessors.",
+    "What Atlas DevHQ collects, what it doesn't, and exactly what's done with it. Four promises up top, twelve sections below.",
   openGraph: {
     title: "Privacy Policy — Atlas",
     description:
-      "How Atlas handles your data: collection, use, retention, GDPR rights, and subprocessors.",
+      "Atlas Cloud privacy policy: what we collect, what we DON'T do (no model training, no selling data, no warehouse reads beyond authorized queries), GDPR / CCPA rights, sub-processors.",
     url: "https://www.useatlas.dev/privacy",
     siteName: "Atlas",
     type: "website",
   },
 };
 
-// ---------------------------------------------------------------------------
-// Content sections
-// ---------------------------------------------------------------------------
-
-interface Section {
-  id: string;
-  title: string;
-  content: React.ReactNode;
+interface Promise {
+  mono: string;
+  label: string;
+  sub: string;
 }
 
-const LAST_UPDATED = "April 2, 2026";
-
-const SECTIONS: Section[] = [
+const PROMISES: Promise[] = [
   {
-    id: "overview",
-    title: "1. Overview",
-    content: (
-      <>
-        <p>
-          This Privacy Policy explains how Atlas DevHQ (&quot;Atlas&quot;,
-          &quot;we&quot;, &quot;us&quot;, &quot;our&quot;) collects, uses, and
-          protects your information when you use Atlas Cloud at{" "}
-          <a
-            href="https://app.useatlas.dev"
-
-          >
-            app.useatlas.dev
-          </a>
-          .
-        </p>
-        <p>
-          If you self-host Atlas, your data stays entirely on your
-          infrastructure. This policy applies to Atlas Cloud only.
-        </p>
-      </>
-    ),
+    mono: "no_train",
+    label: "We don’t train on your data",
+    sub: "Not your queries, not your warehouse contents, not your prompts. Ever.",
   },
   {
-    id: "data-we-collect",
-    title: "2. Data We Collect",
-    content: (
-      <>
-        <p>We collect the following categories of data:</p>
-        <p>
-          <strong>Account information.</strong> Name, email address, and
-          organization details provided during signup. If you use SSO, we receive
-          identity attributes from your identity provider.
-        </p>
-        <p>
-          <strong>Query and conversation history.</strong> The natural-language
-          questions you ask, the SQL queries Atlas generates, and the results
-          returned. This data is stored in your workspace and is accessible to
-          your team.
-        </p>
-        <p>
-          <strong>Semantic layer configuration.</strong> Entity definitions, metrics,
-          glossary terms, and query patterns you configure to describe your
-          datasources.
-        </p>
-        <p>
-          <strong>Usage metrics.</strong> Query counts, token usage, feature
-          usage, and performance data. These are used for billing, capacity
-          planning, and service improvement.
-        </p>
-        <p>
-          <strong>Audit logs.</strong> Records of administrative actions (user
-          management, configuration changes, access events) for security and
-          compliance.
-        </p>
-        <p>
-          <strong>Technical data.</strong> IP addresses, browser type, and device
-          information collected automatically for security and debugging.
-        </p>
-      </>
-    ),
+    mono: "no_sell",
+    label: "We don’t sell your data",
+    sub: "No data brokers, no ad networks, no “partners.” Subscription fees are how we pay the bills.",
   },
   {
-    id: "how-we-use-data",
-    title: "3. How We Use Your Data",
-    content: (
-      <>
-        <ul>
-          <li>
-            <strong>Service operation.</strong> Processing your queries, managing
-            your workspace, and providing the Atlas agent experience.
-          </li>
-          <li>
-            <strong>Billing.</strong> Tracking usage against your plan limits and
-            processing payments through Stripe.
-          </li>
-          <li>
-            <strong>Security.</strong> Detecting abuse, enforcing rate limits, and
-            maintaining audit trails.
-          </li>
-          <li>
-            <strong>Service improvement.</strong> Aggregate, anonymized usage
-            patterns to improve Atlas. We do not use your queries, results, or
-            datasource content to train AI models.
-          </li>
-          <li>
-            <strong>Communication.</strong> Account notifications, security
-            alerts, and product updates. You can unsubscribe from non-essential
-            emails at any time.
-          </li>
-        </ul>
-      </>
-    ),
+    mono: "no_warehouse_read",
+    label: "We don’t read your warehouse",
+    sub: "Atlas runs queries you authorize. We don’t browse, sample, or index your tables.",
   },
   {
-    id: "llm-providers",
-    title: "4. LLM Providers",
-    content: (
-      <>
-        <p>
-          Atlas sends your natural-language questions, relevant semantic
-          context, and query results to the configured LLM provider (Anthropic,
-          OpenAI, or another provider you select) so the agent can generate SQL,
-          interpret results, and respond. Result data is not stored by Atlas
-          beyond what is retained in your conversation history.
-        </p>
-        <p>
-          Each LLM provider has its own data handling policies. When using BYOT
-          (bring your own token), your queries are processed under your direct
-          agreement with the LLM provider.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "data-retention",
-    title: "5. Data Retention and Deletion",
-    content: (
-      <>
-        <ul>
-          <li>
-            <strong>Conversation history.</strong> Retained for the duration of
-            your subscription. Workspace administrators can configure retention
-            periods.
-          </li>
-          <li>
-            <strong>Audit logs.</strong> Retained according to your plan&apos;s
-            audit retention policy (configurable on the Business plan).
-          </li>
-          <li>
-            <strong>Account data.</strong> Retained while your account is active.
-            After cancellation, data is available read-only for 30 days, then
-            permanently deleted.
-          </li>
-          <li>
-            <strong>Backups.</strong> Encrypted backups are retained for disaster
-            recovery and are purged on the same schedule as primary data.
-          </li>
-        </ul>
-        <p>
-          You can request immediate deletion of your data at any time by
-          contacting{" "}
-          <a
-            href="mailto:privacy@useatlas.dev"
-
-          >
-            privacy@useatlas.dev
-          </a>
-          .
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "subprocessors",
-    title: "6. Subprocessors",
-    content: (
-      <>
-        <p>We use the following subprocessors to operate Atlas Cloud:</p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-zinc-800/60">
-                <th className="py-2 pr-6 text-left font-medium text-zinc-300">
-                  Provider
-                </th>
-                <th className="py-2 pr-6 text-left font-medium text-zinc-300">
-                  Purpose
-                </th>
-                <th className="py-2 text-left font-medium text-zinc-300">
-                  Location
-                </th>
-              </tr>
-            </thead>
-            <tbody className="text-zinc-400">
-              <tr className="border-b border-zinc-800/40">
-                <td className="py-2 pr-6">Railway</td>
-                <td className="py-2 pr-6">Infrastructure hosting</td>
-                <td className="py-2">US / EU (configurable)</td>
-              </tr>
-              <tr className="border-b border-zinc-800/40">
-                <td className="py-2 pr-6">Stripe</td>
-                <td className="py-2 pr-6">Payment processing</td>
-                <td className="py-2">US</td>
-              </tr>
-              <tr className="border-b border-zinc-800/40">
-                <td className="py-2 pr-6">OpenStatus</td>
-                <td className="py-2 pr-6">Uptime monitoring</td>
-                <td className="py-2">EU</td>
-              </tr>
-              <tr>
-                <td className="py-2 pr-6">Anthropic</td>
-                <td className="py-2 pr-6">Default LLM provider</td>
-                <td className="py-2">US</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p>
-          Business plan customers with data residency requirements can choose their
-          deployment region. We will notify you of changes to our subprocessor
-          list at least 30 days in advance.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "gdpr-rights",
-    title: "7. Your Rights (GDPR)",
-    content: (
-      <>
-        <p>
-          If you are located in the European Economic Area (EEA), you have the
-          following rights under the General Data Protection Regulation:
-        </p>
-        <ul>
-          <li>
-            <strong>Access.</strong> Request a copy of the personal data we hold
-            about you.
-          </li>
-          <li>
-            <strong>Rectification.</strong> Request correction of inaccurate
-            personal data.
-          </li>
-          <li>
-            <strong>Erasure.</strong> Request deletion of your personal data
-            (&quot;right to be forgotten&quot;).
-          </li>
-          <li>
-            <strong>Portability.</strong> Request your data in a structured,
-            machine-readable format.
-          </li>
-          <li>
-            <strong>Restriction.</strong> Request that we limit the processing
-            of your data.
-          </li>
-          <li>
-            <strong>Objection.</strong> Object to processing based on legitimate
-            interests.
-          </li>
-        </ul>
-        <p>
-          To exercise these rights, contact{" "}
-          <a
-            href="mailto:privacy@useatlas.dev"
-
-          >
-            privacy@useatlas.dev
-          </a>
-          . We will respond within 30 days. If you are unsatisfied with our
-          response, you may lodge a complaint with your local data protection
-          authority.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "ccpa-rights",
-    title: "8. Your Rights (CCPA)",
-    content: (
-      <>
-        <p>
-          If you are a California resident, the California Consumer Privacy Act
-          (CCPA) provides you with additional rights:
-        </p>
-        <ul>
-          <li>
-            <strong>Right to know.</strong> You may request that we disclose the
-            categories and specific pieces of personal information we have
-            collected about you, the sources of that information, and the
-            business purposes for collecting it.
-          </li>
-          <li>
-            <strong>Right to delete.</strong> You may request deletion of your
-            personal information, subject to certain exceptions (e.g., data
-            needed to complete a transaction or comply with legal obligations).
-          </li>
-          <li>
-            <strong>Right to opt-out of sale.</strong> We do not sell personal
-            information. We do not share personal information for cross-context
-            behavioral advertising.
-          </li>
-          <li>
-            <strong>Non-discrimination.</strong> We will not discriminate against
-            you for exercising your CCPA rights.
-          </li>
-        </ul>
-        <p>
-          To exercise these rights, contact{" "}
-          <a
-            href="mailto:privacy@useatlas.dev"
-
-          >
-            privacy@useatlas.dev
-          </a>
-          . We will verify your identity before processing your request and
-          respond within 45 days.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "cookies",
-    title: "9. Cookies",
-    content: (
-      <>
-        <p>
-          Atlas Cloud uses only essential cookies required for the service to
-          function:
-        </p>
-        <ul>
-          <li>
-            <strong>Session cookies.</strong> Used to maintain your authenticated
-            session. These expire when you log out or after a period of
-            inactivity.
-          </li>
-          <li>
-            <strong>Preference cookies.</strong> Used to remember your workspace
-            settings (theme, layout).
-          </li>
-        </ul>
-        <p>
-          We do not use third-party tracking cookies, advertising cookies, or
-          analytics cookies. We do not participate in cross-site tracking or
-          behavioral advertising.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "security",
-    title: "10. Security",
-    content: (
-      <>
-        <p>
-          We implement industry-standard security measures to protect your data:
-        </p>
-        <ul>
-          <li>Encryption in transit (TLS 1.2+) and at rest (AES-256).</li>
-          <li>
-            Role-based access control (RBAC) with configurable custom roles on
-            the Business plan.
-          </li>
-          <li>
-            SQL validation through a 4-layer pipeline to prevent injection and
-            unauthorized data access.
-          </li>
-          <li>
-            IP allowlisting and SSO/SCIM integration for Business plan customers.
-          </li>
-          <li>Audit logging of all administrative and data access events.</li>
-          <li>
-            PII detection to flag sensitive data in query results.
-          </li>
-          <li>
-            Sandboxed code execution for explore operations.
-          </li>
-        </ul>
-        <p>
-          For details on our security practices, see our{" "}
-          <a
-            href="/dpa"
-
-          >
-            Data Processing Agreement
-          </a>
-          .
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "children",
-    title: "11. Children's Privacy",
-    content: (
-      <p>
-        Atlas Cloud is not intended for use by individuals under 18 years of age.
-        We do not knowingly collect personal data from children. If you believe
-        a child has provided us with personal data, please contact us and we will
-        delete it.
-      </p>
-    ),
-  },
-  {
-    id: "changes",
-    title: "12. Changes to This Policy",
-    content: (
-      <p>
-        We may update this Privacy Policy from time to time. Material changes
-        will be communicated via email or an in-app notice at least 30 days
-        before they take effect. The &quot;Last updated&quot; date at the top of
-        this page reflects the most recent revision.
-      </p>
-    ),
-  },
-  {
-    id: "contact",
-    title: "13. Contact",
-    content: (
-      <>
-        <p>
-          For privacy-related questions or requests, contact us at{" "}
-          <a
-            href="mailto:privacy@useatlas.dev"
-
-          >
-            privacy@useatlas.dev
-          </a>
-          .
-        </p>
-        <p>
-          For general inquiries, contact{" "}
-          <a
-            href="mailto:support@useatlas.dev"
-
-          >
-            support@useatlas.dev
-          </a>
-          .
-        </p>
-      </>
-    ),
+    mono: "encrypted",
+    label: "Encrypted in transit + at rest",
+    sub: "TLS 1.2+ in flight. AES-256 on disk. Per-customer KMS keys negotiable on enterprise contracts.",
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Components
-// ---------------------------------------------------------------------------
-
-function LegalSection({ section }: { section: Section }) {
-  return (
-    <section id={section.id} className="scroll-mt-20">
-      <h2 className="mb-4 font-mono text-base font-semibold tracking-tight text-zinc-100">
-        {section.title}
-      </h2>
-      <div className="legal-prose space-y-3 text-sm leading-relaxed text-zinc-400">
-        {section.content}
-      </div>
-    </section>
-  );
+interface LegalSection {
+  id: string;
+  title: string;
+  legal: string[];
+  plain: string;
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+const SECTIONS: LegalSection[] = [
+  {
+    id: "intro",
+    title: "Who we are & what this covers",
+    legal: [
+      'This Privacy Policy describes how Atlas DevHQ ("Atlas", "we") collects and processes personal information when you use Atlas Cloud, our website at useatlas.dev, our documentation, and related communications.',
+      "It does not cover the open-source Atlas distribution that you self-host — when you run Atlas in your own infrastructure under AGPL-3.0, we don’t see your data and there is nothing for us to collect.",
+      "If you are a Customer’s end user (e.g. someone whose company uses Atlas Cloud), the Customer is the controller of your personal data and you should consult their privacy policy. We process your data on the Customer’s behalf, as described in the Data Processing Addendum at useatlas.dev/dpa.",
+    ],
+    plain:
+      "This describes Atlas Cloud only. If you self-host, your data never reaches us — nothing in this policy applies to that deployment.",
+  },
+  {
+    id: "what",
+    title: "What we collect",
+    legal: [
+      "Account data: name, email, organization, role, hashed password (or SSO subject identifier).",
+      "Configuration data: semantic-layer YAML, validator rules, warehouse connection metadata (host, database, schema names — never credentials in plaintext).",
+      "Operational data: query metadata (timestamp, gate outcomes, execution time, row count, error class). Query SQL and natural-language prompts are stored only when audit logging is enabled by the Customer admin.",
+      "Telemetry: IP address, browser user-agent, page-load timing, error stack traces. Telemetry is sampled and retained for 30 days.",
+      "Billing data: company name, billing address, tax ID, payment method tokens. We use Stripe as our payment processor; we never store full card numbers.",
+    ],
+    plain:
+      "Account info, your configuration, query metadata (query text only when your admin enables audit logging), error and performance telemetry, and billing details handled by Stripe.",
+  },
+  {
+    id: "why",
+    title: "Why we collect it",
+    legal: [
+      "To provide the Service: authenticate users, execute queries, render dashboards, send transactional email.",
+      "To improve the Service: aggregate, anonymized telemetry to find slow paths, broken flows, and common errors. We do not use Customer Data to train models.",
+      "To bill you: process payments, send invoices, comply with tax law.",
+      "To keep the Service safe: detect abuse, rate-limit attackers, investigate security incidents.",
+      "To support you: respond to email, debug your issue with your explicit permission to read configuration data.",
+    ],
+    plain:
+      "To operate the Service, improve it through aggregate telemetry, process payments, prevent abuse, and respond to support requests.",
+  },
+  {
+    id: "no-train",
+    title: "What we DO NOT do",
+    legal: [
+      "We do not use Customer Data — including queries, prompts, semantic-layer definitions, and any data returned from your warehouse — to train, fine-tune, or evaluate AI models.",
+      "We do not sell or rent personal data to third parties.",
+      "We do not share personal data with advertising networks.",
+      "We do not access Customer’s data warehouse content for any purpose other than executing queries that Customer’s authorized users have explicitly issued.",
+      "We do not retain query result sets in persistent storage; results live in encrypted memory for the duration of a session and are evicted within minutes of the session ending.",
+    ],
+    plain:
+      "Five commitments, each one expanded above: no training on Customer Data, no selling, no ad-network sharing, no warehouse reads beyond authorized queries, no persistent result-set storage.",
+  },
+  {
+    id: "share",
+    title: "Who we share with",
+    legal: [
+      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, error monitoring, payment processing). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
+      "Model providers: when Customer uses Atlas’s hosted models, prompts are sent to the model provider configured for that Customer (e.g. Anthropic, OpenAI). Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies.",
+      "Legal: we may disclose information when required by law, court order, or to protect our rights, with notice to Customer where legally permitted.",
+      "Successors: in a merger or sale of substantially all assets, the acquirer takes on the same obligations under this Policy.",
+    ],
+    plain:
+      "A short list of operational vendors (cloud infra, error monitoring, payments), the model provider you select, and disclosures required by valid legal process.",
+  },
+  {
+    id: "rights",
+    title: "Your rights (GDPR, CCPA & similar)",
+    legal: [
+      "Depending on your location, you may have rights to access, correct, delete, port, or restrict processing of your personal data, and to object to certain processing. California residents have rights under the CCPA including the right to know, the right to delete, and the right to opt out of any sale of personal information (Atlas does not sell personal information). To exercise these rights, email privacy@useatlas.dev.",
+      "If you are a Customer’s end user, please contact the Customer first; we will assist them in responding within 30 days.",
+      "You have the right to lodge a complaint with a data protection authority. We hope you’ll give us a chance to resolve it first.",
+    ],
+    plain:
+      "Email privacy@useatlas.dev to exercise access, correction, deletion, or other rights. We respond within 30 days. CCPA + GDPR rights both honored from the same intake.",
+  },
+  {
+    id: "transfers",
+    title: "International transfers",
+    legal: [
+      "Atlas Cloud is hosted in three Customer-selectable regions on the Business plan: us-east-1 (Virginia), eu-west-1 (Ireland), and ap-southeast-2 (Sydney). Customer Data does not leave the selected region except for transactional services (auth, billing, status email) which are processed in the United States.",
+      "Where personal data is transferred from the EEA, UK, or Switzerland to the US, we rely on Standard Contractual Clauses and the EU-US Data Privacy Framework where available. Custom enterprise contracts can negotiate additional regions.",
+    ],
+    plain:
+      "Customer Data stays in the region you select (US East, EU West, or APAC Southeast on Business). Auth and billing are processed in the US under Standard Contractual Clauses where applicable.",
+  },
+  {
+    id: "retention",
+    title: "Retention",
+    legal: [
+      "Account data: retained for the duration of the account plus 90 days after closure.",
+      "Audit logs: retained for the period configured by the Customer admin (default 365 days on Business; configurable per-workspace).",
+      "Telemetry: 30 days, then aggregated and de-identified.",
+      "Backups: production data is retained in encrypted backups for up to 90 days.",
+    ],
+    plain:
+      "Account data: term + 90 days. Audit logs: 365 days by default, configurable. Telemetry: 30 days then aggregated. Encrypted backups: up to 90 days.",
+  },
+  {
+    id: "security",
+    title: "Security",
+    legal: [
+      "Atlas maintains a security program based on ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, least-privilege IAM, automated vulnerability scanning, and external penetration tests at least annually. Per-customer KMS keys are negotiable on enterprise contracts.",
+      "Suspected security incidents may be reported to security@useatlas.dev; PGP key published at useatlas.dev/.well-known/security.txt.",
+    ],
+    plain:
+      "TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, annual third-party pen tests. Report suspected issues to security@useatlas.dev.",
+  },
+  {
+    id: "cookies",
+    title: "Cookies & tracking",
+    legal: [
+      "We use first-party cookies for authentication and CSRF protection. We use a single first-party analytics tool (Plausible, EU-hosted, no IP storage) on the marketing site. We do not use third-party advertising or behavioral tracking.",
+      "You can disable cookies in your browser; some Service features (notably login) will not work without them.",
+    ],
+    plain:
+      "First-party cookies for auth and CSRF protection plus EU-hosted, IP-free analytics on the marketing site. No advertising or behavioral cookies. Disabling cookies prevents sign-in.",
+  },
+  {
+    id: "kids",
+    title: "Children",
+    legal: [
+      "The Service is not intended for individuals under 16. We do not knowingly collect personal data from children. If you believe a child has provided us personal data, contact privacy@useatlas.dev and we will delete it.",
+    ],
+    plain:
+      "The Service is not intended for users under 16. Contact privacy@useatlas.dev if a child has submitted personal data and we will delete it.",
+  },
+  {
+    id: "changes",
+    title: "Changes",
+    legal: [
+      "We may update this Policy. Material changes will be announced by email to account admins and posted on this page with an updated effective date at least 30 days before taking effect.",
+    ],
+    plain:
+      "Material changes are announced to account admins by email at least 30 days before taking effect.",
+  },
+];
 
 export default function PrivacyPage() {
   return (
     <div className="relative min-h-screen">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+      >
+        Skip to content
+      </a>
+
+      <StickyNav />
       <TopGlow />
-      <Nav />
+      <Nav currentPage="/privacy" />
 
-      <article className="mx-auto max-w-3xl px-6 pt-8 pb-20 md:pt-12">
-        <header className="mb-12">
-          <p className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
-            Legal
+      <main id="main" tabIndex={-1} className="focus:outline-none">
+        {/* Hero */}
+        <section className="mx-auto max-w-4xl px-6 pt-16 pb-10 text-center md:pt-24 md:pb-14">
+          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+            // legal · privacy
           </p>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
-            Privacy Policy
+          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
+            Privacy Policy.
           </h1>
-          <p className="mt-3 text-sm text-zinc-500">
-            Last updated: {LAST_UPDATED}
+          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+            What we collect, what we don&rsquo;t, and exactly what we do with
+            it. Aggressively boring on purpose.
           </p>
-        </header>
+          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+            <span>effective 2026-01-15</span>
+            <span aria-hidden="true">·</span>
+            <span>v3.0</span>
+            <span aria-hidden="true">·</span>
+            <span>questions: privacy@useatlas.dev</span>
+          </div>
+        </section>
 
-        <div className="space-y-10">
-          {SECTIONS.map((section) => (
-            <LegalSection key={section.id} section={section} />
-          ))}
-        </div>
-      </article>
+        {/* Four promises */}
+        <section
+          aria-labelledby="four-promises-heading"
+          className="mx-auto max-w-5xl px-6 pt-6 pb-4 md:pt-8"
+        >
+          <p
+            id="four-promises-heading"
+            className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase"
+          >
+            // the four promises
+          </p>
+          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {PROMISES.map((p) => (
+              <li
+                key={p.mono}
+                className="rounded-xl border border-brand/30 bg-brand/4 p-5 md:p-6"
+              >
+                <p className="mb-3 font-mono text-[12px] tracking-wider text-brand">
+                  {p.mono}
+                </p>
+                <p className="mb-2 text-[15px] leading-snug font-semibold text-zinc-100">
+                  {p.label}
+                </p>
+                <p className="text-[12.5px] leading-relaxed text-zinc-400">
+                  {p.sub}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        {/* Legal sections — TOC + dual-column body */}
+        <section className="mx-auto max-w-7xl px-6 py-12 md:py-16">
+          <div className="grid gap-12 lg:grid-cols-[220px_1fr] lg:gap-16">
+            <aside aria-label="Document contents" className="lg:sticky lg:top-24 lg:self-start">
+              <p className="mb-4 font-mono text-[11px] tracking-widest text-brand uppercase">
+                // contents
+              </p>
+              <ol className="space-y-1">
+                {SECTIONS.map((section, i) => (
+                  <li key={section.id}>
+                    <a
+                      href={`#${section.id}`}
+                      className="-ml-3.5 flex items-baseline gap-2.5 border-l-2 border-transparent py-1.5 pl-3 text-[13px] text-zinc-400 transition-colors hover:border-brand/60 hover:text-brand"
+                    >
+                      <span className="font-mono text-[10px] tracking-wider text-zinc-400">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <span>{section.title}</span>
+                    </a>
+                  </li>
+                ))}
+              </ol>
+            </aside>
+
+            <article className="flex flex-col gap-12 md:gap-16">
+              {SECTIONS.map((section, i) => (
+                <PrivacyLegalSection key={section.id} section={section} index={i} />
+              ))}
+            </article>
+          </div>
+        </section>
+
+        {/* Closing CTA */}
+        <section className="mx-auto max-w-4xl px-6 py-16 text-center md:py-24">
+          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
+            Privacy questions?
+          </h2>
+          <p className="mx-auto mb-6 max-w-xl text-zinc-400">
+            Email privacy for data-rights requests, security for suspected
+            incidents, or sales for negotiated DPAs on enterprise contracts.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <a
+              href="mailto:privacy@useatlas.dev"
+              className="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white"
+            >
+              Email privacy
+            </a>
+            <a
+              href="mailto:security@useatlas.dev"
+              className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
+            >
+              Email security
+            </a>
+          </div>
+        </section>
+      </main>
 
       <Footer />
     </div>
+  );
+}
+
+function PrivacyLegalSection({ section, index }: { section: LegalSection; index: number }) {
+  return (
+    <section id={section.id} aria-labelledby={`${section.id}-heading`} className="scroll-mt-24">
+      <div className="mb-6 flex items-baseline gap-4 border-b border-zinc-800/40 pb-4">
+        <span className="font-mono text-[13px] tracking-wider text-brand">
+          {String(index + 1).padStart(2, "0")}
+        </span>
+        <h2
+          id={`${section.id}-heading`}
+          className="text-xl font-semibold tracking-tight text-zinc-100 md:text-2xl"
+        >
+          {section.title}
+        </h2>
+      </div>
+      <div className="grid gap-8 md:grid-cols-[1fr_280px] md:gap-10">
+        <div className="space-y-4 text-[14.5px] leading-7 text-zinc-300">
+          {section.legal.map((paragraph, i) => (
+            <p key={i}>{paragraph}</p>
+          ))}
+        </div>
+        <aside className="border-l border-dashed border-zinc-700/60 pl-6">
+          <p className="mb-3 font-mono text-[10.5px] tracking-widest text-brand uppercase">
+            // plain english
+          </p>
+          <p className="text-[13px] leading-6 text-zinc-400">{section.plain}</p>
+        </aside>
+      </div>
+    </section>
   );
 }

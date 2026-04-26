@@ -199,3 +199,21 @@
 .dash-density-compact .dash-tile-body { padding: 6px 10px 8px; }
 .dash-density-spacious .dash-tile-head { padding: 14px 16px 11px; }
 .dash-density-spacious .dash-tile-body { padding: 12px 16px 14px; }
+
+/* /report/[token] print stylesheet — print-first layout for the shared
+   report. `@page`, `break-inside: avoid`, and `white-space: pre-wrap` belong
+   here rather than as Tailwind `print:` utilities; scoped to `.report-view`
+   so nothing leaks into the auth-guard provider tree. */
+@media print {
+  @page { margin: 1.5cm 2cm; size: A4; }
+  html { color-scheme: light; }
+  body { background: white; color: #18181b; }
+  .report-view .report-cell { break-inside: avoid; page-break-inside: avoid; }
+  .report-view h1,
+  .report-view h2 { break-after: avoid; page-break-after: avoid; }
+  .report-view table { font-size: 9pt; }
+  .report-view th,
+  .report-view td { padding: 4px 6px; }
+  .report-view .recharts-wrapper { max-width: 100%; }
+  .report-view pre { white-space: pre-wrap; word-break: break-word; font-size: 8pt; }
+}

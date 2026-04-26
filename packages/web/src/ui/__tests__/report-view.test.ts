@@ -128,8 +128,8 @@ describe("resolveCells", () => {
     const cells = resolveCells(makeConvo([userMsg("q1"), assistantMsg("a1"), userMsg("q2"), assistantMsg("a2")]));
     expect(cells).toHaveLength(2);
     expect(cells[0].type).toBe("query");
-    expect(cells[0].number).toBe(1);
-    expect(cells[1].number).toBe(2);
+    expect(cells[0].id).toBe("cell-1");
+    expect(cells[1].id).toBe("cell-2");
     const c1 = cells[0] as { type: "query"; assistantMessage: { parts: { text: string }[] } };
     expect(c1.assistantMessage.parts[0].text).toBe("a1");
   });
@@ -152,9 +152,7 @@ describe("resolveCells", () => {
     );
     expect(cells).toHaveLength(2);
     expect(cells[0].id).toBe("cell-2");
-    expect(cells[0].number).toBe(1);
     expect(cells[1].id).toBe("cell-1");
-    expect(cells[1].number).toBe(2);
   });
 
   test("respects collapsed state from cellProps", () => {
@@ -218,7 +216,6 @@ describe("resolveCells", () => {
     );
     expect(cells).toHaveLength(1);
     expect(cells[0].id).toBe("cell-1");
-    expect(cells[0].number).toBe(1);
   });
 
   test("filters out system and tool messages", () => {
@@ -233,10 +230,35 @@ describe("resolveCells", () => {
     expect(cells).toHaveLength(1);
   });
 
-  test("renumbers cells sequentially from 1", () => {
+  test("returns all query cells in input order", () => {
     const cells = resolveCells(
       makeConvo([userMsg("q1"), assistantMsg("a1"), userMsg("q2"), assistantMsg("a2"), userMsg("q3"), assistantMsg("a3")]),
     );
-    expect(cells.map((c) => c.number)).toEqual([1, 2, 3]);
+    expect(cells.map((c) => c.id)).toEqual(["cell-1", "cell-2", "cell-3"]);
+  });
+
+  test("preserves query order when interleaved with text cells in cellOrder", () => {
+    const cells = resolveCells(
+      makeConvo(
+        [userMsg("q1"), assistantMsg("a1"), userMsg("q2"), assistantMsg("a2"), userMsg("q3"), assistantMsg("a3")],
+        {
+          version: 3,
+          cellOrder: ["text-intro", "cell-1", "text-mid", "cell-2", "cell-3", "text-close"],
+          textCells: {
+            "text-intro": { content: "# Intro" },
+            "text-mid": { content: "## Section break" },
+            "text-close": { content: "## Closing" },
+          },
+        },
+      ),
+    );
+    expect(cells.map((c) => c.id)).toEqual([
+      "text-intro",
+      "cell-1",
+      "text-mid",
+      "cell-2",
+      "cell-3",
+      "text-close",
+    ]);
   });
 });

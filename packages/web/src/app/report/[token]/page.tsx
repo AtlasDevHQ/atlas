@@ -31,7 +31,7 @@ export async function generateMetadata({
         siteName: "Atlas",
       },
       twitter: {
-        card: "summary",
+        card: "summary_large_image",
         title: fallbackTitle,
         description: fallbackDescription,
       },
@@ -65,11 +65,65 @@ export async function generateMetadata({
       siteName: "Atlas",
     },
     twitter: {
-      card: "summary",
+      card: "summary_large_image",
       title,
       description,
     },
   };
+}
+
+type FailReason = "not-found" | "server-error" | "network-error";
+
+function ReportErrorShell({
+  token,
+  heading,
+  message,
+  reason,
+}: {
+  token: string;
+  heading: string;
+  message: string;
+  reason: FailReason;
+}) {
+  return (
+    <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950 print:bg-white print:text-black">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="flex flex-1 items-center justify-center px-4 focus:outline-none"
+      >
+        <div className="text-center">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+            {heading}
+          </h1>
+          <p className="mt-2 text-zinc-600 dark:text-zinc-400">{message}</p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            <Link href="/" className={buttonVariants()}>
+              Go to Atlas
+            </Link>
+            {reason !== "not-found" && (
+              <Link
+                href={`/report/${token}`}
+                className={buttonVariants({ variant: "outline" })}
+              >
+                Try again
+              </Link>
+            )}
+          </div>
+        </div>
+      </main>
+      <footer className="border-t border-zinc-200 px-4 py-4 text-center dark:border-zinc-800 print:hidden">
+        <a
+          href="https://www.useatlas.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs font-medium text-teal-700 transition-colors hover:text-teal-800 dark:text-teal-300 dark:hover:text-teal-200"
+        >
+          Powered by Atlas
+        </a>
+      </footer>
+    </div>
+  );
 }
 
 export default async function ReportPage({
@@ -81,40 +135,25 @@ export default async function ReportPage({
   const result = await fetchSharedConversation(token);
 
   if (!result.ok) {
-    const message =
-      result.reason === "not-found"
-        ? "This report may have been removed or the link may be invalid."
-        : result.reason === "network-error"
-          ? "Could not reach the server. Check your connection and try again."
-          : "This report may have expired or been deleted. Check the link and try again.";
     const heading =
       result.reason === "not-found"
         ? "Report not found"
         : result.reason === "network-error"
           ? "Connection failed"
           : "Unable to load report";
+    const message =
+      result.reason === "not-found"
+        ? "This report may have been removed or the link may be invalid."
+        : result.reason === "network-error"
+          ? "We couldn’t reach Atlas. Check your connection and try again."
+          : "Something went wrong on our end loading this report. Please try again in a moment.";
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
-            {heading}
-          </h1>
-          <p className="mt-2 text-zinc-500 dark:text-zinc-400">{message}</p>
-          <div className="mt-4 flex items-center justify-center gap-3">
-            <Link href="/" className={buttonVariants()}>
-              Go to Atlas
-            </Link>
-            {result.reason !== "not-found" && (
-              <Link
-                href={`/report/${token}`}
-                className={buttonVariants({ variant: "outline" })}
-              >
-                Try again
-              </Link>
-            )}
-          </div>
-        </div>
-      </div>
+      <ReportErrorShell
+        token={token}
+        heading={heading}
+        message={message}
+        reason={result.reason}
+      />
     );
   }
 

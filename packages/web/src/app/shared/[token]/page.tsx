@@ -120,13 +120,11 @@ export default async function SharedConversationPage({
   }
 
   const convo = result.data;
-  const visibleMessages = convo.messages.filter(
-    (m) => m.role === "user" || m.role === "assistant",
-  );
-  const hiddenStepCount = convo.messages.length - visibleMessages.length;
-  const renderedMessages = visibleMessages
+  const renderedMessages = convo.messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
     .map((msg) => ({ msg, text: extractTextContent(msg.content) }))
     .filter(({ text }) => text.trim().length > 0);
+  const hiddenStepCount = convo.messages.length - renderedMessages.length;
 
   const formattedDate = new Date(convo.createdAt).toLocaleDateString(undefined, {
     year: "numeric",

@@ -25,7 +25,7 @@ const VALID_MODES = new Set<string>(ATLAS_MODES);
 const authRoutes = ["/signup", "/login"];
 
 /** Routes that are always accessible regardless of auth state. */
-const publicPrefixes = ["/demo", "/shared", "/api", "/_next"];
+const publicPrefixes = ["/demo", "/shared", "/report", "/api", "/_next"];
 
 function isPublicRoute(pathname: string): boolean {
   return publicPrefixes.some((prefix) => pathname.startsWith(prefix));

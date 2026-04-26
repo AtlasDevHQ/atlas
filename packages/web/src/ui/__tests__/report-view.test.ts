@@ -239,4 +239,28 @@ describe("resolveCells", () => {
     );
     expect(cells.map((c) => c.number)).toEqual([1, 2, 3]);
   });
+
+  test("numbers query cells densely even with interleaved text cells", () => {
+    // Without dense numbering, text cells consume sequence indices and the
+    // visible query-cell numbers go [2], [4], [5] — looks like a bug.
+    const cells = resolveCells(
+      makeConvo(
+        [userMsg("q1"), assistantMsg("a1"), userMsg("q2"), assistantMsg("a2"), userMsg("q3"), assistantMsg("a3")],
+        {
+          version: 3,
+          cellOrder: ["text-intro", "cell-1", "text-mid", "cell-2", "cell-3", "text-close"],
+          textCells: {
+            "text-intro": { content: "# Intro" },
+            "text-mid": { content: "## Section break" },
+            "text-close": { content: "## Closing" },
+          },
+        },
+      ),
+    );
+    expect(cells).toHaveLength(6);
+    const queryNumbers = cells
+      .filter((c): c is Extract<typeof c, { type: "query" }> => c.type === "query")
+      .map((c) => c.number);
+    expect(queryNumbers).toEqual([1, 2, 3]);
+  });
 });

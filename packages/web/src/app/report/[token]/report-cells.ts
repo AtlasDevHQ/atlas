@@ -163,8 +163,19 @@ export function resolveCells(conversation: SharedConversation): ReportCell[] {
     ordered = queryCells;
   }
 
-  // Renumber for display
-  return ordered.map((cell, i) => ({ ...cell, number: i + 1 }));
+  // Renumber query cells for display by their position among query cells only.
+  // Text cells in `cellOrder` consume sequence indices but render no number;
+  // counting all cells produces sparse numbering ([2], [4], [5]) that reads as
+  // a bug. Numbering only query cells keeps the sequence dense and matches the
+  // notebook editor's authoring numbering.
+  let queryIndex = 0;
+  return ordered.map((cell) => {
+    if (cell.type === "query") {
+      queryIndex += 1;
+      return { ...cell, number: queryIndex };
+    }
+    return cell;
+  });
 }
 
 /** Extract displayable text from a UIMessage. */

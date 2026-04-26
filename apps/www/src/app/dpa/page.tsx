@@ -41,14 +41,20 @@ const SUBPROCESSORS: SubProcessor[] = [
     since: "2026-01",
   },
   {
+    name: "Vercel",
+    purpose: "AI Gateway — routes hosted model requests to upstream providers",
+    region: "United States",
+    since: "2026-01",
+  },
+  {
     name: "Anthropic",
-    purpose: "Hosted model inference (default + opt-in)",
+    purpose: "Upstream hosted model inference (default; reached via Vercel AI Gateway)",
     region: "United States",
     since: "2026-01",
   },
   {
     name: "OpenAI",
-    purpose: "Hosted model inference (opt-in)",
+    purpose: "Upstream hosted model inference (opt-in; reached via Vercel AI Gateway)",
     region: "United States",
     since: "2026-01",
   },

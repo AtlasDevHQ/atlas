@@ -39,7 +39,7 @@ const PROMISES: Promise[] = [
   {
     mono: "no_warehouse_read",
     label: "We don’t read your warehouse",
-    sub: "Atlas runs queries you authorize. We don’t browse, sample, or index your tables.",
+    sub: "Queries run only when your users authorize them. Schema profiling samples a small set of rows — Customer-initiated, only to seed the semantic-layer YAML.",
   },
   {
     mono: "encrypted",
@@ -100,11 +100,11 @@ const SECTIONS: LegalSection[] = [
       "We do not use Customer Data — including queries, prompts, semantic-layer definitions, and any data returned from your warehouse — to train, fine-tune, or evaluate AI models.",
       "We do not sell or rent personal data to third parties.",
       "We do not share personal data with advertising networks.",
-      "We do not access Customer’s data warehouse content for any purpose other than executing queries that Customer’s authorized users have explicitly issued.",
+      "We do not access Customer’s data warehouse content for any purpose other than (a) executing queries that Customer’s authorized users have explicitly issued, and (b) the Customer-initiated schema profiling step (`atlas init` or the Connect Wizard) which samples a small set of rows from each table to seed the semantic-layer YAML. Profiling does not run on a recurring basis — only when the Customer adds or refreshes a connection.",
       "We do not retain query result sets in persistent storage; results live in encrypted memory for the duration of a session and are evicted within minutes of the session ending.",
     ],
     plain:
-      "Five commitments, each one expanded above: no training on Customer Data, no selling, no ad-network sharing, no warehouse reads beyond authorized queries, no persistent result-set storage.",
+      "Five commitments, each one expanded above: no training on Customer Data, no selling, no ad-network sharing, no warehouse reads beyond authorized queries (with one Customer-initiated carve-out for first-time schema profiling), no persistent result-set storage.",
   },
   {
     id: "share",
@@ -156,10 +156,10 @@ const SECTIONS: LegalSection[] = [
     title: "Security",
     legal: [
       "Atlas maintains a security program based on ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, least-privilege IAM, automated vulnerability scanning, and external penetration tests at least annually. Per-customer KMS keys are negotiable on enterprise contracts.",
-      "Suspected security incidents may be reported to security@useatlas.dev; PGP key published at useatlas.dev/.well-known/security.txt.",
+      "Suspected security incidents may be reported to security@useatlas.dev. A PGP key is available on request.",
     ],
     plain:
-      "TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, annual third-party pen tests. Report suspected issues to security@useatlas.dev.",
+      "TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, annual third-party pen tests. Report suspected issues to security@useatlas.dev (PGP key on request).",
   },
   {
     id: "cookies",

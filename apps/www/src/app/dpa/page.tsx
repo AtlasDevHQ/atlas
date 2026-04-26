@@ -1,525 +1,397 @@
 import type { Metadata } from "next";
 
 import { Footer } from "../../components/footer";
+import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/legal";
 import { Nav } from "../../components/nav";
-import { TopGlow } from "../../components/shared";
+import { ArrowIcon, TopGlow } from "../../components/shared";
+import { StickyNav } from "../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Data Processing Agreement — Atlas",
+  title: "Data Processing Addendum — Atlas",
   description:
-    "Atlas Data Processing Agreement (DPA) — data processing terms, security measures, subprocessors, and breach notification procedures.",
+    "Atlas Cloud Article 28 GDPR-compliant DPA, with the EU Standard Contractual Clauses incorporated by reference. Pre-signed via legal@useatlas.dev — no negotiation needed for standard deals.",
   openGraph: {
-    title: "Data Processing Agreement — Atlas",
+    title: "Data Processing Addendum — Atlas",
     description:
-      "Standard DPA for Atlas Cloud covering data processing, security, subprocessors, and GDPR compliance.",
+      "Article 28 GDPR DPA + SCCs by reference + sub-processors annex + subscribe-to-changes for procurement.",
     url: "https://www.useatlas.dev/dpa",
     siteName: "Atlas",
     type: "website",
   },
 };
 
-// ---------------------------------------------------------------------------
-// Content sections
-// ---------------------------------------------------------------------------
-
-interface Section {
-  id: string;
-  title: string;
-  content: React.ReactNode;
+interface SubProcessor {
+  name: string;
+  purpose: string;
+  region: string;
+  since: string;
 }
 
-const LAST_UPDATED = "April 2, 2026";
-
-const SECTIONS: Section[] = [
+const SUBPROCESSORS: SubProcessor[] = [
   {
-    id: "overview",
-    title: "1. Overview",
-    content: (
-      <>
-        <p>
-          This Data Processing Agreement (&quot;DPA&quot;) forms part of the{" "}
-          <a
-            href="/terms"
-
-          >
-            Terms of Service
-          </a>{" "}
-          between Atlas DevHQ (&quot;Processor&quot;) and you
-          (&quot;Controller&quot;) for the processing of personal data through
-          Atlas Cloud.
-        </p>
-        <p>
-          This DPA applies when Atlas processes personal data on your behalf as
-          part of providing Atlas Cloud services. For a signed copy of this DPA,
-          contact{" "}
-          <a
-            href="mailto:sales@useatlas.dev"
-
-          >
-            sales@useatlas.dev
-          </a>
-          .
-        </p>
-      </>
-    ),
+    name: "Railway",
+    purpose: "Cloud infrastructure (compute, storage, Postgres)",
+    region: "Customer’s selected region (US East, EU West, APAC SE)",
+    since: "2026-01",
   },
   {
-    id: "definitions",
-    title: "2. Definitions",
-    content: (
-      <ul>
-        <li>
-          <strong>&quot;Personal Data&quot;</strong> means any information
-          relating to an identified or identifiable natural person as defined in
-          GDPR Article 4(1).
-        </li>
-        <li>
-          <strong>&quot;Processing&quot;</strong> means any operation performed on
-          personal data, including collection, storage, retrieval, use,
-          disclosure, and deletion.
-        </li>
-        <li>
-          <strong>&quot;Subprocessor&quot;</strong> means a third party engaged by
-          Atlas to process personal data on behalf of the Controller.
-        </li>
-        <li>
-          <strong>&quot;Data Subject&quot;</strong> means the individual to whom
-          personal data relates.
-        </li>
-      </ul>
-    ),
+    name: "Stripe",
+    purpose: "Payment processing",
+    region: "United States",
+    since: "2026-01",
   },
   {
-    id: "scope",
-    title: "3. Scope of Processing",
-    content: (
-      <>
-        <p>Atlas processes personal data in the following context:</p>
-        <ul>
-          <li>
-            <strong>Subject matter.</strong> Providing text-to-SQL agent services
-            via Atlas Cloud.
-          </li>
-          <li>
-            <strong>Duration.</strong> For the term of your subscription plus
-            the data retention period described in our{" "}
-            <a
-              href="/privacy"
-  
-            >
-              Privacy Policy
-            </a>
-            .
-          </li>
-          <li>
-            <strong>Nature and purpose.</strong> Executing database queries,
-            storing conversation history, managing user accounts, processing
-            payments, and maintaining audit logs.
-          </li>
-          <li>
-            <strong>Categories of data.</strong> Account information (name,
-            email), query text, query results, usage metrics, audit logs.
-          </li>
-          <li>
-            <strong>Data subjects.</strong> Your employees, contractors, and
-            authorized users who access Atlas Cloud, and any individuals whose
-            personal data may appear in your datasource query results.
-          </li>
-        </ul>
-      </>
-    ),
+    name: "Anthropic",
+    purpose: "Hosted model inference (default + opt-in)",
+    region: "United States",
+    since: "2026-01",
   },
   {
-    id: "obligations",
-    title: "4. Processor Obligations",
-    content: (
-      <>
-        <p>Atlas (as Processor) shall:</p>
-        <ul>
-          <li>
-            Process personal data only on documented instructions from the
-            Controller, unless required by law.
-          </li>
-          <li>
-            Ensure that persons authorized to process personal data have
-            committed to confidentiality.
-          </li>
-          <li>
-            Implement appropriate technical and organizational security measures
-            (see Section 6).
-          </li>
-          <li>
-            Engage subprocessors only with prior notice and subject to equivalent
-            data protection obligations.
-          </li>
-          <li>
-            Assist the Controller in responding to data subject requests
-            (access, rectification, erasure, portability).
-          </li>
-          <li>
-            Delete or return all personal data upon termination of the service,
-            at the Controller&apos;s choice.
-          </li>
-          <li>
-            Make available to the Controller all information necessary to
-            demonstrate compliance with this DPA.
-          </li>
-        </ul>
-      </>
-    ),
+    name: "OpenAI",
+    purpose: "Hosted model inference (opt-in)",
+    region: "United States",
+    since: "2026-01",
   },
   {
-    id: "data-residency",
-    title: "5. Data Residency",
-    content: (
-      <>
-        <p>
-          Atlas Cloud supports configurable data residency for Business plan
-          customers. You may select the region where your data is stored and
-          processed:
-        </p>
-        <ul>
-          <li>
-            <strong>Region selection.</strong> Choose your preferred region
-            during workspace setup or from the admin console. Available regions
-            include US and EU.
-          </li>
-          <li>
-            <strong>Data isolation.</strong> Query data is processed in the
-            selected region and does not leave it. Internal routing ensures
-            queries are directed to region-local infrastructure.
-          </li>
-          <li>
-            <strong>Migration.</strong> Region migration is supported for
-            Business plan customers via our migration tooling, with planned
-            downtime coordinated in advance.
-          </li>
-        </ul>
-        <p>
-          For Starter and Pro plans, data is processed in the US region by
-          default.
-        </p>
-      </>
-    ),
+    name: "Resend",
+    purpose: "Transactional email (receipts, alerts, invitations)",
+    region: "United States",
+    since: "2026-01",
   },
   {
-    id: "security-measures",
-    title: "6. Security Measures",
-    content: (
-      <>
-        <p>
-          Atlas implements the following technical and organizational measures to
-          protect personal data:
-        </p>
-        <p>
-          <strong>Encryption.</strong>
-        </p>
-        <ul>
-          <li>Data in transit: TLS 1.2+ for all connections.</li>
-          <li>Data at rest: AES-256 encryption for stored data and backups.</li>
-          <li>Database credentials: encrypted at rest, never exposed in logs or API responses.</li>
-        </ul>
-        <p>
-          <strong>Access controls.</strong>
-        </p>
-        <ul>
-          <li>Role-based access control (RBAC) with configurable custom roles.</li>
-          <li>SSO and SCIM provisioning for Business plan customers.</li>
-          <li>IP allowlisting for workspace access restriction.</li>
-          <li>Multi-factor authentication support.</li>
-        </ul>
-        <p>
-          <strong>Application security.</strong>
-        </p>
-        <ul>
-          <li>
-            4-layer SQL validation pipeline preventing injection and unauthorized
-            data access.
-          </li>
-          <li>Read-only database connections enforced at both application and connection level.</li>
-          <li>Sandboxed code execution for explore operations.</li>
-          <li>PII detection to flag sensitive data in query results.</li>
-          <li>Table whitelisting ensuring only approved datasource tables are queryable.</li>
-        </ul>
-        <p>
-          <strong>Infrastructure security.</strong>
-        </p>
-        <ul>
-          <li>Automated backups with configurable retention.</li>
-          <li>Network isolation between tenant workspaces.</li>
-          <li>Comprehensive audit logging of all administrative and data access events.</li>
-          <li>Incident monitoring via OpenStatus with public status page.</li>
-        </ul>
-      </>
-    ),
-  },
-  {
-    id: "subprocessors",
-    title: "7. Subprocessors",
-    content: (
-      <>
-        <p>
-          Atlas uses the following subprocessors. We will notify you at least 30
-          days before adding or replacing a subprocessor.
-        </p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-zinc-800/60">
-                <th className="py-2 pr-6 text-left font-medium text-zinc-300">
-                  Provider
-                </th>
-                <th className="py-2 pr-6 text-left font-medium text-zinc-300">
-                  Purpose
-                </th>
-                <th className="py-2 text-left font-medium text-zinc-300">
-                  Location
-                </th>
-              </tr>
-            </thead>
-            <tbody className="text-zinc-400">
-              <tr className="border-b border-zinc-800/40">
-                <td className="py-2 pr-6">Railway</td>
-                <td className="py-2 pr-6">Infrastructure hosting</td>
-                <td className="py-2">US / EU</td>
-              </tr>
-              <tr className="border-b border-zinc-800/40">
-                <td className="py-2 pr-6">Stripe</td>
-                <td className="py-2 pr-6">Payment processing</td>
-                <td className="py-2">US</td>
-              </tr>
-              <tr className="border-b border-zinc-800/40">
-                <td className="py-2 pr-6">OpenStatus</td>
-                <td className="py-2 pr-6">Uptime monitoring</td>
-                <td className="py-2">EU</td>
-              </tr>
-              <tr>
-                <td className="py-2 pr-6">Anthropic</td>
-                <td className="py-2 pr-6">Default LLM provider</td>
-                <td className="py-2">US</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p>
-          You may object to a new subprocessor within 30 days of notification. If
-          we cannot reasonably accommodate your objection, you may terminate the
-          affected services.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "breach-notification",
-    title: "8. Breach Notification",
-    content: (
-      <>
-        <p>
-          In the event of a personal data breach, Atlas will:
-        </p>
-        <ul>
-          <li>
-            Notify the Controller without undue delay and in any event within 72
-            hours of becoming aware of the breach.
-          </li>
-          <li>
-            Provide sufficient detail for the Controller to meet its own
-            notification obligations, including: the nature of the breach,
-            categories and approximate number of data subjects affected,
-            likely consequences, and measures taken or proposed to mitigate the
-            breach.
-          </li>
-          <li>
-            Cooperate with the Controller in investigating and remediating the
-            breach.
-          </li>
-          <li>
-            Document all breaches, including facts, effects, and remedial
-            actions taken, regardless of whether notification is required.
-          </li>
-        </ul>
-      </>
-    ),
-  },
-  {
-    id: "data-subject-requests",
-    title: "9. Data Subject Requests",
-    content: (
-      <>
-        <p>
-          Atlas will assist the Controller in responding to data subject requests
-          exercising their rights under GDPR (access, rectification, erasure,
-          restriction, portability, objection).
-        </p>
-        <p>
-          If Atlas receives a request directly from a data subject, we will
-          promptly notify the Controller and will not respond to the request
-          without the Controller&apos;s instructions, unless legally required.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "audits",
-    title: "10. Audits",
-    content: (
-      <>
-        <p>
-          Atlas will make available to the Controller all information necessary
-          to demonstrate compliance with this DPA and allow for audits,
-          including inspections, conducted by the Controller or an auditor
-          mandated by the Controller.
-        </p>
-        <p>
-          Audit requests should be directed to{" "}
-          <a
-            href="mailto:security@useatlas.dev"
-
-          >
-            security@useatlas.dev
-          </a>{" "}
-          with reasonable advance notice.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "international-transfers",
-    title: "11. International Transfers",
-    content: (
-      <>
-        <p>
-          Where personal data is transferred outside the EEA, Atlas ensures
-          appropriate safeguards are in place, including:
-        </p>
-        <ul>
-          <li>
-            Standard Contractual Clauses (SCCs) as approved by the European
-            Commission.
-          </li>
-          <li>
-            Data residency controls that keep data within the selected region
-            (Business plan).
-          </li>
-          <li>
-            Transfer impact assessments for each subprocessor.
-          </li>
-        </ul>
-      </>
-    ),
-  },
-  {
-    id: "termination",
-    title: "12. Termination",
-    content: (
-      <>
-        <p>
-          Upon termination of the service agreement, Atlas will, at the
-          Controller&apos;s choice:
-        </p>
-        <ul>
-          <li>
-            Return all personal data in a structured, machine-readable format
-            (data export via admin console or API).
-          </li>
-          <li>
-            Delete all personal data within 30 days, unless retention is
-            required by law.
-          </li>
-        </ul>
-        <p>
-          Atlas will certify deletion upon the Controller&apos;s request.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "contact",
-    title: "13. Contact",
-    content: (
-      <>
-        <p>
-          For a signed copy of this DPA or questions about data processing,
-          contact{" "}
-          <a
-            href="mailto:sales@useatlas.dev"
-
-          >
-            sales@useatlas.dev
-          </a>
-          .
-        </p>
-        <p>
-          For security inquiries, contact{" "}
-          <a
-            href="mailto:security@useatlas.dev"
-
-          >
-            security@useatlas.dev
-          </a>
-          .
-        </p>
-      </>
-    ),
+    name: "OpenStatus",
+    purpose: "External uptime monitoring + status page",
+    region: "European Union",
+    since: "2026-01",
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Components
-// ---------------------------------------------------------------------------
+const SECTIONS: LegalSectionData[] = [
+  {
+    id: "scope",
+    title: "Scope & Roles",
+    legal: [
+      'This Data Processing Addendum ("DPA") supplements the Atlas Terms of Service or any signed master agreement (the "Agreement") between Atlas DevHQ ("Processor") and the Customer ("Controller").',
+      "Where Customer is itself a processor for its end users, Atlas acts as a sub-processor; the terms of this DPA apply with equivalent force.",
+      "In case of conflict between the Agreement and this DPA, this DPA controls for the processing of Personal Data.",
+    ],
+    plain:
+      "You act as Controller; Atlas acts as Processor. This addendum governs how we handle personal data on your behalf.",
+  },
+  {
+    id: "details",
+    title: "Processing Details (Art. 28(3) GDPR)",
+    legal: [
+      "Subject matter: provision of the Atlas Cloud text-to-SQL service.",
+      "Duration: for the term of the Agreement plus the retention periods set out in the Privacy Policy.",
+      "Nature & purpose: storing semantic-layer configuration; routing queries between Customer’s authorized users, model providers, and Customer’s data warehouse; producing audit logs.",
+      "Categories of data subjects: Customer’s employees, contractors, and any individuals whose data resides in Customer’s data warehouse and is returned in query results.",
+      "Categories of personal data: identifiers (name, email, SSO subject), business contact info, query text and results when audit logging is enabled, IP addresses, device metadata.",
+      "Atlas does not process special categories of personal data (Art. 9 GDPR) on Customer’s behalf in the ordinary course. Customer is responsible for not submitting such data without notifying Atlas in writing.",
+    ],
+    plain:
+      "Required by Art. 28(3) GDPR. Subject matter, duration, nature, purpose, and categories of data and data subjects all specified above.",
+  },
+  {
+    id: "obligations",
+    title: "Processor Obligations",
+    legal: [
+      "Atlas processes Personal Data only on documented instructions from Customer (the Agreement, this DPA, and Customer’s reasonable written instructions thereafter), unless required to do otherwise by EU/EEA/UK law (in which case Atlas notifies Customer unless prohibited).",
+      "Atlas ensures that personnel authorized to process Personal Data are bound by appropriate confidentiality obligations.",
+      "Atlas implements the technical and organizational measures listed in Annex II.",
+      "Atlas assists Customer in responding to data-subject requests (access, rectification, erasure, restriction, portability, objection) by providing tools and reasonable cooperation.",
+      "Atlas assists Customer with DPIAs and prior consultations (Art. 35–36 GDPR) by providing relevant information about the Service.",
+    ],
+    plain:
+      "We process only on your documented instructions. Personnel are bound by confidentiality. We maintain the controls in Annex II and assist with data-subject requests and DPIAs.",
+  },
+  {
+    id: "subprocessors",
+    title: "Sub-processors",
+    legal: [
+      "Customer authorizes Atlas to engage the sub-processors listed in Annex I (rendered as a table at the bottom of this page), provided that Atlas: (a) imposes data-protection obligations on each sub-processor that are equivalent to those in this DPA; (b) remains liable for the acts and omissions of its sub-processors as for its own.",
+      "Atlas notifies Customer at least 30 days before adding or replacing a sub-processor. Customer may object on reasonable, documented data-protection grounds within that period; if the parties cannot agree, Customer may terminate the affected portion of the Service for cause and receive a pro-rata refund.",
+    ],
+    plain:
+      "Annex I (below) lists current sub-processors. We provide 30 days’ notice before adding or replacing one, and you may object on documented data-protection grounds.",
+  },
+  {
+    id: "transfers",
+    title: "International Transfers",
+    legal: [
+      "Where Personal Data originating in the EEA, the United Kingdom, or Switzerland is transferred to a country not subject to an adequacy decision, the EU Standard Contractual Clauses (Module Two: controller-to-processor; Module Three: processor-to-processor where Customer is itself a processor) are incorporated by reference, with the docking clause and option clauses completed in Annex III.",
+      "For UK transfers, the UK International Data Transfer Addendum issued by the ICO is incorporated. For Swiss transfers, equivalent supplementary measures apply.",
+    ],
+    plain:
+      "Transfers from the EEA, UK, or Switzerland to non-adequate jurisdictions are governed by the Standard Contractual Clauses, incorporated by reference — no separate signature required.",
+  },
+  {
+    id: "security",
+    title: "Security Incidents",
+    legal: [
+      "Atlas notifies Customer without undue delay, and in any event within 48 hours, after becoming aware of a Personal Data Breach affecting Customer Data, providing the information required by Art. 33(3) GDPR to the extent then known.",
+      "Atlas updates Customer as facts develop and cooperates with Customer in remediating the breach and notifying affected data subjects or supervisory authorities where required.",
+    ],
+    plain:
+      "We notify you of any Personal Data Breach without undue delay and within 48 hours, with the information Art. 33(3) GDPR requires, and cooperate on remediation.",
+  },
+  {
+    id: "audit",
+    title: "Audits",
+    legal: [
+      "Atlas makes available to Customer all information necessary to demonstrate compliance with Art. 28 GDPR, including its current SOC 2 Type II report and ISO 27001 certificate where applicable. Reports are available on request under appropriate confidentiality terms.",
+      "Once per twelve-month period, on at least 30 days’ notice and during normal business hours, Customer may conduct, or have a third party conduct under appropriate confidentiality, an audit of Atlas’s processing activities, limited to information reasonably necessary to verify compliance and conducted in a manner that does not unreasonably interfere with Atlas’s operations.",
+    ],
+    plain:
+      "We share our SOC 2 Type II report and ISO 27001 certificate on request. You may audit our processing once per year with 30 days’ notice and confidentiality protections.",
+  },
+  {
+    id: "deletion",
+    title: "Return & Deletion",
+    legal: [
+      "On termination of the Agreement, Atlas will, at Customer’s election, return or delete all Personal Data within 90 days, except to the extent applicable law requires retention. Encrypted backups are deleted within an additional 90 days as part of the standard backup-rotation cycle.",
+      "Atlas will provide written confirmation of deletion on request.",
+    ],
+    plain:
+      "On termination we return or delete your data within 90 days; encrypted backups within an additional 90. Written confirmation on request.",
+  },
+  {
+    id: "annex",
+    title: "Annexes",
+    legal: [
+      "Annex I — List of Sub-processors. The current list is rendered as a table at the bottom of this page and is the source of truth.",
+      "Annex II — Technical and Organizational Measures: encryption (TLS 1.2+ in transit, AES-256 at rest), customer-managed KMS keys negotiable on enterprise contracts, MFA-required admin access, least-privilege IAM, audit logging of administrative operations, automated vulnerability scanning, annual third-party penetration testing, ISO 27001-aligned ISMS, SOC 2 Type II reported annually, secure SDLC with mandatory code review, segregated production access, documented incident-response runbook with quarterly drills.",
+      "Annex III — Standard Contractual Clauses, Module Two (controller-to-processor) selected by default. Optional Clause 7 (Docking Clause) is included. Clause 9 sub-processor option (b) — general written authorization with 30-day notice — applies. Clause 11 dispute-resolution option (a) is selected. Clause 17 governing law: Ireland. Clause 18 forum: Ireland.",
+    ],
+    plain:
+      "Annex I lists current sub-processors. Annex II details our security controls. Annex III incorporates the EU SCCs (Module Two), with Ireland as governing law and forum.",
+  },
+];
 
-function LegalSection({ section }: { section: Section }) {
-  return (
-    <section id={section.id} className="scroll-mt-20">
-      <h2 className="mb-4 font-mono text-base font-semibold tracking-tight text-zinc-100">
-        {section.title}
-      </h2>
-      <div className="legal-prose space-y-3 text-sm leading-relaxed text-zinc-400">
-        {section.content}
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
-
-export default function DpaPage() {
+export default function DPAPage() {
   return (
     <div className="relative min-h-screen">
-      <TopGlow />
-      <Nav />
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+      >
+        Skip to content
+      </a>
 
-      <article className="mx-auto max-w-3xl px-6 pt-8 pb-20 md:pt-12">
-        <header className="mb-12">
-          <p className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
-            Legal
+      <StickyNav />
+      <TopGlow />
+      <Nav currentPage="/dpa" />
+
+      <main id="main" tabIndex={-1} className="focus:outline-none">
+        {/* Hero */}
+        <section className="mx-auto max-w-4xl px-6 pt-16 pb-10 text-center md:pt-24 md:pb-14">
+          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+            // legal · dpa
           </p>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
-            Data Processing Agreement
+          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
+            Data Processing Addendum.
           </h1>
-          <p className="mt-3 text-sm text-zinc-500">
-            Last updated: {LAST_UPDATED}
+          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+            Article 28 GDPR-compliant DPA, with the EU Standard Contractual
+            Clauses incorporated by reference. Pre-signed for standard deals —
+            no negotiation needed.
           </p>
-          <div className="mt-4 rounded-lg border border-brand/20 bg-brand/5 px-4 py-3 text-sm text-zinc-400">
-            For a signed copy of this DPA, contact{" "}
+          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+            <span>effective 2026-01-15</span>
+            <span aria-hidden="true">·</span>
+            <span>v2.4</span>
+            <span aria-hidden="true">·</span>
+            <span>incorporates: SCCs (2021/914), UK IDTA</span>
+          </div>
+        </section>
+
+        {/* Pre-signed request card */}
+        <section
+          aria-labelledby="presigned-heading"
+          className="mx-auto max-w-5xl px-6 pt-6 pb-4 md:pt-8"
+        >
+          <p
+            id="presigned-heading"
+            className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase"
+          >
+            // pre-signed
+          </p>
+          <div className="rounded-2xl border border-brand/30 bg-brand/4 p-5 md:p-6">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between md:gap-6">
+              <div>
+                <p className="mb-1 font-mono text-[15px] font-semibold text-zinc-100 md:text-base">
+                  DPA-v2.4-pre-signed.pdf
+                </p>
+                <p className="font-mono text-[11px] tracking-wider text-zinc-400">
+                  Countersigned by Atlas · valid through 2027-01-15 ·
+                  available on request
+                </p>
+              </div>
+              <a
+                href="mailto:legal@useatlas.dev?subject=DPA%20countersigned%20PDF%20request"
+                className="group inline-flex shrink-0 items-center gap-2 self-start rounded-lg bg-brand px-5 py-2.5 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover md:self-auto"
+              >
+                Request countersigned PDF
+                <ArrowIcon />
+              </a>
+            </div>
+          </div>
+        </section>
+
+        {/* Legal sections — TOC + dual-column body */}
+        <section className="mx-auto max-w-7xl px-6 py-12 md:py-16">
+          <div className="grid gap-12 lg:grid-cols-[220px_1fr] lg:gap-16">
+            <LegalTOC sections={SECTIONS} />
+            <article className="flex flex-col gap-12 md:gap-16">
+              {SECTIONS.map((section, i) => (
+                <LegalSection key={section.id} section={section} index={i} />
+              ))}
+            </article>
+          </div>
+        </section>
+
+        {/* Annex I — Sub-processors */}
+        <section
+          id="annex-i-subprocessors"
+          aria-labelledby="annex-i-heading"
+          className="mx-auto max-w-7xl px-6 py-12 md:py-16"
+        >
+          <div className="mb-8 flex flex-col items-start gap-6 lg:flex-row lg:items-end lg:justify-between lg:gap-10">
+            <div>
+              <p className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase">
+                // annex i — sub-processors
+              </p>
+              <h2
+                id="annex-i-heading"
+                className="text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl"
+              >
+                Current sub-processors.
+              </h2>
+              <p className="mt-2 max-w-xl text-sm text-zinc-400">
+                This list is the source of truth. We notify Customer at least
+                30 days before any addition or replacement.
+              </p>
+            </div>
+
+            <div className="w-full max-w-sm rounded-xl border border-brand/30 bg-brand/4 p-5">
+              <p className="mb-3 font-mono text-[10px] tracking-widest text-brand uppercase">
+                // subscribe to changes
+              </p>
+              <p className="mb-3 text-[13px] leading-relaxed text-zinc-400">
+                We email account admins automatically. Procurement teams can
+                add a separate distribution list:
+              </p>
+              <a
+                href="mailto:legal@useatlas.dev?subject=Subscribe%20to%20sub-processor%20notifications&body=Please%20add%20the%20following%20address%20to%20the%20sub-processor%20notification%20list%3A%0A"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
+              >
+                Subscribe via email
+                <ArrowIcon />
+              </a>
+            </div>
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden overflow-hidden rounded-xl border border-zinc-800/60 md:block">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-zinc-800/60 bg-zinc-900/50">
+                  <th
+                    scope="col"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                  >
+                    vendor
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                  >
+                    purpose
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                  >
+                    region
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                  >
+                    since
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {SUBPROCESSORS.map((sp) => (
+                  <tr
+                    key={sp.name}
+                    className="border-b border-zinc-800/30 last:border-0"
+                  >
+                    <td className="px-5 py-3.5 text-sm font-semibold text-zinc-100">
+                      {sp.name}
+                    </td>
+                    <td className="px-5 py-3.5 text-sm text-zinc-300">
+                      {sp.purpose}
+                    </td>
+                    <td className="px-5 py-3.5 text-sm text-zinc-300">
+                      {sp.region}
+                    </td>
+                    <td className="px-5 py-3.5 font-mono text-xs text-zinc-400">
+                      {sp.since}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile / tablet — stacked cards */}
+          <ul className="space-y-4 md:hidden">
+            {SUBPROCESSORS.map((sp) => (
+              <li
+                key={sp.name}
+                className="rounded-xl border border-zinc-800/60 bg-zinc-900/30 p-5"
+              >
+                <p className="mb-2 text-sm font-semibold text-zinc-100">
+                  {sp.name}
+                </p>
+                <p className="mb-3 text-sm text-zinc-300">{sp.purpose}</p>
+                <div className="flex items-center justify-between font-mono text-[11px] tracking-wider text-zinc-400">
+                  <span>{sp.region}</span>
+                  <span>{sp.since}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        {/* Closing CTA */}
+        <section className="mx-auto max-w-4xl px-6 py-16 text-center md:py-24">
+          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
+            Procurement questions?
+          </h2>
+          <p className="mx-auto mb-6 max-w-xl text-zinc-400">
+            For DPA negotiation, custom enterprise terms, or audit-package
+            requests (SOC 2, ISO 27001, pen-test summary), reach out to legal
+            or sales.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <a
+              href="mailto:legal@useatlas.dev"
+              className="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white"
+            >
+              Email legal
+            </a>
             <a
               href="mailto:sales@useatlas.dev"
-  
+              className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
             >
-              sales@useatlas.dev
+              Talk to sales
             </a>
-            .
           </div>
-        </header>
-
-        <div className="space-y-10">
-          {SECTIONS.map((section) => (
-            <LegalSection key={section.id} section={section} />
-          ))}
-        </div>
-      </article>
+        </section>
+      </main>
 
       <Footer />
     </div>

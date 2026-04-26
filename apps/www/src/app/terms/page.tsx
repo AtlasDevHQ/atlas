@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { Footer } from "../../components/footer";
+import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/legal";
 import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
@@ -19,14 +20,7 @@ export const metadata: Metadata = {
   },
 };
 
-interface LegalSection {
-  id: string;
-  title: string;
-  legal: string[];
-  plain: string;
-}
-
-const SECTIONS: LegalSection[] = [
+const SECTIONS: LegalSectionData[] = [
   {
     id: "agreement",
     title: "The Agreement",
@@ -211,30 +205,10 @@ export default function TermsPage() {
         {/* Legal sections — TOC + dual-column body */}
         <section className="mx-auto max-w-7xl px-6 py-8 md:py-12">
           <div className="grid gap-12 lg:grid-cols-[220px_1fr] lg:gap-16">
-            <aside aria-label="Document contents" className="lg:sticky lg:top-24 lg:self-start">
-              <p className="mb-4 font-mono text-[11px] tracking-widest text-brand uppercase">
-                // contents
-              </p>
-              <ol className="space-y-1">
-                {SECTIONS.map((section, i) => (
-                  <li key={section.id}>
-                    <a
-                      href={`#${section.id}`}
-                      className="-ml-3.5 flex items-baseline gap-2.5 border-l-2 border-transparent py-1.5 pl-3 text-[13px] text-zinc-400 transition-colors hover:border-brand/60 hover:text-brand"
-                    >
-                      <span className="font-mono text-[10px] tracking-wider text-zinc-400">
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <span>{section.title}</span>
-                    </a>
-                  </li>
-                ))}
-              </ol>
-            </aside>
-
+            <LegalTOC sections={SECTIONS} />
             <article className="flex flex-col gap-12 md:gap-16">
               {SECTIONS.map((section, i) => (
-                <TermsLegalSection key={section.id} section={section} index={i} />
+                <LegalSection key={section.id} section={section} index={i} />
               ))}
             </article>
           </div>
@@ -271,33 +245,3 @@ export default function TermsPage() {
   );
 }
 
-function TermsLegalSection({ section, index }: { section: LegalSection; index: number }) {
-  return (
-    <section id={section.id} aria-labelledby={`${section.id}-heading`} className="scroll-mt-24">
-      <div className="mb-6 flex items-baseline gap-4 border-b border-zinc-800/40 pb-4">
-        <span className="font-mono text-[13px] tracking-wider text-brand">
-          {String(index + 1).padStart(2, "0")}
-        </span>
-        <h2
-          id={`${section.id}-heading`}
-          className="text-xl font-semibold tracking-tight text-zinc-100 md:text-2xl"
-        >
-          {section.title}
-        </h2>
-      </div>
-      <div className="grid gap-8 md:grid-cols-[1fr_280px] md:gap-10">
-        <div className="space-y-4 text-[14.5px] leading-7 text-zinc-300">
-          {section.legal.map((paragraph, i) => (
-            <p key={i}>{paragraph}</p>
-          ))}
-        </div>
-        <aside className="border-l border-dashed border-zinc-700/60 pl-6">
-          <p className="mb-3 font-mono text-[10.5px] tracking-widest text-brand uppercase">
-            // plain english
-          </p>
-          <p className="text-[13px] leading-6 text-zinc-400">{section.plain}</p>
-        </aside>
-      </div>
-    </section>
-  );
-}

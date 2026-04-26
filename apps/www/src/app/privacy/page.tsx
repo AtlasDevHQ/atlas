@@ -20,13 +20,13 @@ export const metadata: Metadata = {
   },
 };
 
-interface Promise {
+interface PromiseCard {
   mono: string;
   label: string;
   sub: string;
 }
 
-const PROMISES: Promise[] = [
+const PROMISES: PromiseCard[] = [
   {
     mono: "no_train",
     label: "We don’t train on your data",

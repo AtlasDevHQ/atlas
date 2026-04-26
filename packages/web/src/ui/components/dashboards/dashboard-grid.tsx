@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   GridLayout,
   useContainerWidth,
-  noCompactor,
+  verticalCompactor,
   type Layout,
   type LayoutItem,
 } from "react-grid-layout";
@@ -139,7 +139,7 @@ export function DashboardGrid({
             cancel: "button, input, [role='button']",
           }}
           resizeConfig={{ enabled: editing, handles: ["e", "s", "se"] }}
-          compactor={noCompactor}
+          compactor={verticalCompactor}
           onDragStop={handleRGLDragOrResizeStop}
           onResizeStop={handleRGLDragOrResizeStop}
         >

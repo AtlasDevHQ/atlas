@@ -1,21 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowIcon, CheckIcon, Divider, SectionLabel } from "../../components/shared";
+import { ArrowIcon, CheckIcon } from "../../components/shared";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 type BillingPeriod = "monthly" | "annual";
+type Currency = "USD" | "EUR" | "GBP";
 
 interface Tier {
+  kind: string;
   name: string;
   monthlyPrice: number | null; // null = free
   tagline: string;
   badge?: string;
   cta: string;
   ctaHref: string;
+  ctaSecondary: string;
   highlighted?: boolean;
   features: string[];
 }
@@ -31,10 +34,22 @@ interface ComparisonRow {
   business: CellValue;
 }
 
+interface ComparisonSection {
+  label: string;
+  rows: ComparisonRow[];
+}
+
 interface FAQ {
   question: string;
   answer: string;
 }
+
+// ---------------------------------------------------------------------------
+// FX rates — display-only courtesy conversion. Stripe billing is in USD.
+// ---------------------------------------------------------------------------
+
+const CURRENCY_SYMBOL: Record<Currency, string> = { USD: "$", EUR: "€", GBP: "£" };
+const CURRENCY_RATE: Record<Currency, number> = { USD: 1, EUR: 0.92, GBP: 0.79 };
 
 // ---------------------------------------------------------------------------
 // Data
@@ -42,11 +57,13 @@ interface FAQ {
 
 const TIERS: Tier[] = [
   {
+    kind: "open source",
     name: "Self-Hosted",
     monthlyPrice: null,
-    tagline: "Deploy anywhere, your infrastructure",
+    tagline: "Your infra. Your data.",
     cta: "Deploy now",
     ctaHref: "https://docs.useatlas.dev/getting-started",
+    ctaSecondary: "Free, AGPL-3.0",
     features: [
       "BYOK — unlimited queries",
       "Unlimited seats",
@@ -58,12 +75,14 @@ const TIERS: Tier[] = [
     ],
   },
   {
+    kind: "atlas cloud",
     name: "Starter",
     monthlyPrice: 29,
-    tagline: "For individuals and small teams",
+    tagline: "Solo + small teams.",
     badge: "14-day free trial",
     cta: "Start free trial",
     ctaHref: "https://app.useatlas.dev/signup?plan=starter",
+    ctaSecondary: "no card required",
     features: [
       "~100 AI queries/seat/mo included",
       "Up to 10 seats",
@@ -76,12 +95,14 @@ const TIERS: Tier[] = [
     ],
   },
   {
+    kind: "atlas cloud",
     name: "Pro",
     monthlyPrice: 59,
-    tagline: "For growing teams",
+    tagline: "Growing teams.",
     badge: "14-day free trial",
     cta: "Start free trial",
     ctaHref: "https://app.useatlas.dev/signup?plan=pro",
+    ctaSecondary: "no card required",
     highlighted: true,
     features: [
       "~250 AI queries/seat/mo included",
@@ -96,12 +117,14 @@ const TIERS: Tier[] = [
     ],
   },
   {
+    kind: "enterprise",
     name: "Business",
     monthlyPrice: 99,
-    tagline: "For organizations at scale",
+    tagline: "Regulated teams at scale.",
     badge: "14-day free trial",
     cta: "Start free trial",
     ctaHref: "https://app.useatlas.dev/signup?plan=business",
+    ctaSecondary: "or talk to sales",
     features: [
       "~750 AI queries/seat/mo included",
       "Unlimited seats & connections",
@@ -122,41 +145,55 @@ const TIERS: Tier[] = [
   },
 ];
 
-const COMPARISON: ComparisonRow[] = [
-  // Core features
-  { feature: "Text-to-SQL agent", selfHosted: true, starter: true, pro: true, business: true },
-  { feature: "Semantic layer", selfHosted: true, starter: true, pro: true, business: true },
-  { feature: "All databases & plugins", selfHosted: true, starter: true, pro: true, business: true },
-  { feature: "Notebooks", selfHosted: true, starter: true, pro: true, business: true },
-  { feature: "Dashboards", selfHosted: true, starter: true, pro: true, business: true },
-  { feature: "Admin console & API", selfHosted: true, starter: true, pro: true, business: true },
-  { feature: "MCP server", selfHosted: true, starter: true, pro: true, business: true },
-  // Limits
-  { feature: "AI queries/seat/mo", selfHosted: "Unlimited (BYOK)", starter: "~100", pro: "~250", business: "~750" },
-  { feature: "BYOK (unlimited queries)", selfHosted: "Default", starter: true, pro: true, business: true },
-  { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 4.6", business: "Sonnet 4.6" },
-  { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
-  { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
-  { feature: "Extra connections", selfHosted: false, starter: "+$10/mo each", pro: "+$10/mo each", business: "Included" },
-  { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 8" },
-  { feature: "Overage rate", selfHosted: false, starter: "$0.10/query", pro: "$0.10/query", business: "$0.10/query" },
-  // Identity & access (Business)
-  { feature: "SSO (SAML + OIDC)", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "SCIM directory sync", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "Custom roles & permissions", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "IP allowlisting", selfHosted: false, starter: false, pro: false, business: true },
-  // Governance & compliance (Business)
-  { feature: "Approval workflows", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "Audit log retention policies", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "PII detection & masking", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "Compliance reports (SOC2/HIPAA)", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "Automated backups", selfHosted: false, starter: false, pro: false, business: true },
-  // Brand & platform
-  { feature: "Custom domain", selfHosted: false, starter: false, pro: true, business: true },
-  { feature: "White-label branding", selfHosted: false, starter: false, pro: false, business: true },
-  { feature: "Data residency", selfHosted: false, starter: false, pro: false, business: "3 regions" },
-  { feature: "Uptime SLA", selfHosted: false, starter: false, pro: false, business: "99.9%" },
-  { feature: "Support", selfHosted: "Community", starter: "Email", pro: "Priority email", business: "Priority + Slack" },
+const COMPARISON_SECTIONS: ComparisonSection[] = [
+  {
+    label: "core",
+    rows: [
+      { feature: "Text-to-SQL agent", selfHosted: true, starter: true, pro: true, business: true },
+      { feature: "Semantic layer", selfHosted: true, starter: true, pro: true, business: true },
+      { feature: "All databases & plugins", selfHosted: true, starter: true, pro: true, business: true },
+      { feature: "Notebooks & dashboards", selfHosted: true, starter: true, pro: true, business: true },
+      { feature: "Admin console & API", selfHosted: true, starter: true, pro: true, business: true },
+      { feature: "MCP server", selfHosted: true, starter: true, pro: true, business: true },
+      { feature: "AI queries/seat/mo", selfHosted: "Unlimited (BYOK)", starter: "~100", pro: "~250", business: "~750" },
+      { feature: "BYOK (unlimited queries)", selfHosted: "Default", starter: true, pro: true, business: true },
+      { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 4.6", business: "Sonnet 4.6" },
+      { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
+      { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
+      { feature: "Extra connections", selfHosted: false, starter: "+$10/mo each", pro: "+$10/mo each", business: "Included" },
+      { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 8" },
+      { feature: "Overage rate", selfHosted: false, starter: "$0.10/query", pro: "$0.10/query", business: "$0.10/query" },
+    ],
+  },
+  {
+    label: "hosting",
+    rows: [
+      { feature: "Custom domain", selfHosted: false, starter: false, pro: true, business: true },
+      { feature: "White-label branding", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "Data residency", selfHosted: false, starter: false, pro: false, business: "3 regions" },
+      { feature: "Uptime SLA", selfHosted: false, starter: false, pro: false, business: "99.9%" },
+      { feature: "Automated backups", selfHosted: false, starter: false, pro: false, business: true },
+    ],
+  },
+  {
+    label: "security & compliance",
+    rows: [
+      { feature: "SSO (SAML + OIDC)", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "SCIM directory sync", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "Custom roles & permissions", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "IP allowlisting", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "Approval workflows", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "Audit log retention policies", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "PII detection & masking", selfHosted: false, starter: false, pro: false, business: true },
+      { feature: "Compliance reports (SOC2/HIPAA)", selfHosted: false, starter: false, pro: false, business: true },
+    ],
+  },
+  {
+    label: "support",
+    rows: [
+      { feature: "Support channel", selfHosted: "Community", starter: "Email", pro: "Priority email", business: "Priority + Slack" },
+    ],
+  },
 ];
 
 const FAQS: FAQ[] = [
@@ -188,7 +225,7 @@ const FAQS: FAQ[] = [
   {
     question: "Do you offer annual billing?",
     answer:
-      "Yes. Annual billing saves you 2 months (pay for 10, get 12). Toggle the billing period at the top of this page to see annual prices.",
+      "Yes. Annual billing saves ~17% (10 months for 12). Toggle the billing period at the top of this page to see annual prices.",
   },
   {
     question: "Can I add more database connections?",
@@ -212,24 +249,29 @@ const TIER_LABELS: Record<TierKey, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// Helper: price formatting
+// Helpers
 // ---------------------------------------------------------------------------
 
-function formatPrice(monthlyPrice: number | null, billing: BillingPeriod): { price: string; suffix: string } {
+function formatPrice(
+  monthlyPrice: number | null,
+  billing: BillingPeriod,
+  currency: Currency,
+): { price: string; suffix: string } {
   if (monthlyPrice === null) {
     return { price: "Free", suffix: "forever" };
   }
+  const symbol = CURRENCY_SYMBOL[currency];
+  const rate = CURRENCY_RATE[currency];
   if (billing === "annual") {
     // 10 months for 12 — show effective monthly rate
-    const annualTotal = monthlyPrice * 10;
-    const effectiveMonthly = Math.round(annualTotal / 12);
-    return { price: `$${effectiveMonthly}`, suffix: "/ seat / mo" };
+    const effectiveMonthly = Math.round((monthlyPrice * 10 * rate) / 12);
+    return { price: `${symbol}${effectiveMonthly}`, suffix: "/ seat / mo, billed annually" };
   }
-  return { price: `$${monthlyPrice}`, suffix: "/ seat / mo" };
+  return { price: `${symbol}${Math.round(monthlyPrice * rate)}`, suffix: "/ seat / mo" };
 }
 
 // ---------------------------------------------------------------------------
-// Components
+// Sub-components
 // ---------------------------------------------------------------------------
 
 function DashIcon() {
@@ -240,52 +282,111 @@ function DashIcon() {
       viewBox="0 0 24 24"
       stroke="currentColor"
       strokeWidth={2.5}
+      aria-hidden="true"
     >
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
     </svg>
   );
 }
 
-function BillingToggle({
+function BillingCurrencyToggle({
   billing,
-  onChange,
+  currency,
+  onBillingChange,
+  onCurrencyChange,
 }: {
   billing: BillingPeriod;
-  onChange: (period: BillingPeriod) => void;
+  currency: Currency;
+  onBillingChange: (period: BillingPeriod) => void;
+  onCurrencyChange: (c: Currency) => void;
 }) {
   return (
-    <div className="animate-fade-in-up delay-300 mb-10 flex items-center justify-center gap-3">
-      <button
-        type="button"
-        onClick={() => onChange("monthly")}
-        className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-          billing === "monthly"
-            ? "bg-zinc-800 text-zinc-100"
-            : "text-zinc-500 hover:text-zinc-300"
-        }`}
+    <div className="animate-fade-in-up delay-300 mb-8 flex flex-col items-center justify-center gap-4 sm:flex-row sm:gap-6">
+      <div
+        role="radiogroup"
+        aria-label="Billing period"
+        className="inline-flex rounded-full border border-zinc-800 bg-zinc-900/60 p-1"
       >
-        Monthly
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange("annual")}
-        className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-          billing === "annual"
-            ? "bg-zinc-800 text-zinc-100"
-            : "text-zinc-500 hover:text-zinc-300"
-        }`}
-      >
-        Annual
-        <span className="rounded-full bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand">
-          2 months free
-        </span>
-      </button>
+        {(["monthly", "annual"] as const).map((period) => (
+          <button
+            key={period}
+            type="button"
+            role="radio"
+            aria-checked={billing === period}
+            onClick={() => onBillingChange(period)}
+            className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm transition-colors ${
+              billing === period
+                ? "bg-brand font-semibold text-zinc-950"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            {period === "monthly" ? "Monthly" : "Annual"}
+            {period === "annual" && (
+              <span
+                className={`rounded-full px-1.5 py-0.5 font-mono text-[9.5px] tracking-wider ${
+                  billing === "annual"
+                    ? "bg-zinc-950/25 text-zinc-950"
+                    : "bg-brand/15 text-brand"
+                }`}
+              >
+                save 17%
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <div role="radiogroup" aria-label="Display currency" className="flex gap-1">
+        {(Object.keys(CURRENCY_SYMBOL) as Currency[]).map((c) => (
+          <button
+            key={c}
+            type="button"
+            role="radio"
+            aria-checked={currency === c}
+            onClick={() => onCurrencyChange(c)}
+            className={`rounded-md border px-2.5 py-1 font-mono text-[11px] tracking-wider transition-colors ${
+              currency === c
+                ? "border-brand/40 text-brand"
+                : "border-zinc-800 text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            {CURRENCY_SYMBOL[c]} {c}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
-function TierCard({ tier, billing }: { tier: Tier; billing: BillingPeriod }) {
-  const { price, suffix } = formatPrice(tier.monthlyPrice, billing);
+function StatCard() {
+  return (
+    <div className="animate-fade-in-up delay-400 mb-10 grid items-center gap-6 rounded-xl border border-brand/25 bg-brand/[0.04] p-6 md:grid-cols-[auto_1fr] md:gap-7 md:p-7">
+      <div className="font-mono text-5xl font-semibold tracking-tight text-brand md:text-[60px]">
+        94%
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className="text-base leading-snug font-medium text-zinc-100 md:text-[17px]">
+          of AI-generated SQL fails at least one Atlas validator.
+        </p>
+        <p className="font-mono text-[11.5px] leading-relaxed tracking-wider text-zinc-400">
+          Sample: 12,418 queries across our beta cohort. Every tier ships the same
+          7 gates — the difference is who runs the servers.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TierCard({
+  tier,
+  billing,
+  currency,
+}: {
+  tier: Tier;
+  billing: BillingPeriod;
+  currency: Currency;
+}) {
+  const { price, suffix } = formatPrice(tier.monthlyPrice, billing, currency);
 
   let ctaStyle: string;
   if (tier.highlighted) {
@@ -296,44 +397,34 @@ function TierCard({ tier, billing }: { tier: Tier; billing: BillingPeriod }) {
     ctaStyle = "border border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:text-zinc-100";
   }
 
-  // Show annual total for paid plans on annual billing
-  const showAnnualTotal = billing === "annual" && tier.monthlyPrice !== null;
-  const annualTotal = tier.monthlyPrice !== null ? tier.monthlyPrice * 10 : 0;
-
   return (
     <div
-      className={`flex flex-col rounded-xl p-6 md:p-8 ${
+      className={`relative flex flex-col rounded-2xl p-6 md:p-7 ${
         tier.highlighted
-          ? "cloud-glow bg-zinc-900/50"
+          ? "cloud-glow bg-zinc-900/55"
           : "border border-zinc-800/60 bg-zinc-900/30"
       }`}
     >
-      <div className="mb-1">
-        <span className="font-mono text-xs tracking-widest text-brand/80 uppercase">
-          {tier.name}
-        </span>
+      <div className="mb-2 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+        // {tier.kind}
       </div>
-      <div className="mb-2 min-h-5.5">
-        {tier.badge && (
-          <span className="inline-block rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
-            {tier.badge}
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className="text-2xl font-semibold tracking-tight text-zinc-100">
+          {tier.name}
+        </h2>
+        {tier.highlighted && (
+          <span className="rounded-full border border-brand/60 px-2 py-0.5 font-mono text-[9.5px] tracking-wider text-brand uppercase">
+            recommended
           </span>
         )}
       </div>
-      <div className="mb-0.5 flex items-baseline gap-1.5">
-        <span className="text-3xl font-semibold tracking-tight text-zinc-100">
+      <div className="mb-1 flex items-baseline gap-2">
+        <span className="text-[44px] leading-none font-semibold tracking-tight text-zinc-100">
           {price}
         </span>
-        <span className="text-sm text-zinc-500">{suffix}</span>
+        <span className="text-xs text-zinc-400">{suffix}</span>
       </div>
-      {showAnnualTotal && (
-        <p className="mb-1 text-xs text-zinc-600">
-          ${annualTotal}/seat billed annually
-        </p>
-      )}
-      <p className="mb-5 text-sm leading-relaxed text-zinc-400">
-        {tier.tagline}
-      </p>
+      <p className="mb-5 text-sm leading-relaxed text-zinc-400">{tier.tagline}</p>
       <ul className="mb-6 space-y-2.5">
         {tier.features.map((feature) => (
           <li key={feature} className="flex items-start gap-2.5">
@@ -345,11 +436,14 @@ function TierCard({ tier, billing }: { tier: Tier; billing: BillingPeriod }) {
       <div className="mt-auto">
         <a
           href={tier.ctaHref}
-          className={`group inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-all ${ctaStyle}`}
+          className={`group inline-flex w-full items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-all ${ctaStyle}`}
         >
           {tier.cta}
           <ArrowIcon />
         </a>
+        <p className="mt-2.5 text-center font-mono text-[10.5px] tracking-wider text-zinc-400">
+          {tier.ctaSecondary}
+        </p>
       </div>
     </div>
   );
@@ -357,15 +451,15 @@ function TierCard({ tier, billing }: { tier: Tier; billing: BillingPeriod }) {
 
 function ComparisonCell({ value }: { value: CellValue }) {
   if (typeof value === "string") {
-    return <span className="text-sm text-zinc-400">{value}</span>;
+    return <span className="font-mono text-xs text-zinc-300">{value}</span>;
   }
   return value ? <CheckIcon /> : <DashIcon />;
 }
 
-function FAQItem({ faq }: { faq: FAQ }) {
+function FAQCard({ faq }: { faq: FAQ }) {
   return (
-    <div className="border-b border-zinc-800/60 py-6 last:border-0 last:pb-0">
-      <h3 className="mb-2 text-sm font-medium text-zinc-100">{faq.question}</h3>
+    <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/30 p-5 md:p-6">
+      <h3 className="mb-2 text-[15px] font-semibold text-zinc-100">{faq.question}</h3>
       <p className="text-sm leading-relaxed text-zinc-400">{faq.answer}</p>
     </div>
   );
@@ -376,100 +470,123 @@ function FAQItem({ faq }: { faq: FAQ }) {
 // ---------------------------------------------------------------------------
 
 export function PricingContent() {
-  const [billing, setBilling] = useState<BillingPeriod>("monthly");
-  const faqHalf = Math.ceil(FAQS.length / 2);
+  const [billing, setBilling] = useState<BillingPeriod>("annual");
+  const [currency, setCurrency] = useState<Currency>("USD");
 
   return (
     <>
-      {/* Billing toggle + Tier cards */}
-      <section className="mx-auto max-w-6xl px-6 pb-20 md:pb-28">
-        <BillingToggle billing={billing} onChange={setBilling} />
+      {/* Toggles + stat card + tier cards */}
+      <section className="mx-auto max-w-6xl px-6 pb-16 md:pb-24">
+        <BillingCurrencyToggle
+          billing={billing}
+          currency={currency}
+          onBillingChange={setBilling}
+          onCurrencyChange={setCurrency}
+        />
+
+        <StatCard />
 
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
           {TIERS.map((tier) => (
-            <TierCard key={tier.name} tier={tier} billing={billing} />
+            <TierCard key={tier.name} tier={tier} billing={billing} currency={currency} />
           ))}
         </div>
+
+        {currency !== "USD" && (
+          <p className="mt-5 text-center font-mono text-[10.5px] tracking-wider text-zinc-400">
+            Billed in USD; {currency} shown at indicative rates for reference.
+          </p>
+        )}
       </section>
 
-      {/* BYOK callout */}
-      <section className="mx-auto max-w-6xl px-6 pb-20 md:pb-28">
-        <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/30 p-8 md:flex md:items-center md:gap-8 md:p-10">
-          <div className="mb-6 flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-zinc-800 text-brand md:mb-0">
-            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
-            </svg>
-          </div>
-          <div>
-            <h3 className="mb-2 text-base font-semibold text-zinc-100">
-              Bring your own API key for unlimited queries on any plan
-            </h3>
-            <p className="text-sm leading-relaxed text-zinc-400">
-              Use your own Anthropic, OpenAI, or other LLM API keys instead of included query credits.
-              You pay the LLM provider directly at their rates — your Atlas bill only covers
-              infrastructure. Available on every paid plan. Self-hosted always uses your own keys.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <Divider />
-
-      {/* Feature comparison table */}
-      <section className="mx-auto max-w-6xl px-6 py-20 md:py-28">
-        <SectionLabel>Compare plans</SectionLabel>
-        <h2 className="mb-10 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
-          Feature comparison
+      {/* Feature comparison */}
+      <section
+        aria-labelledby="compare-plans-heading"
+        className="mx-auto max-w-6xl px-6 py-16 md:py-24"
+      >
+        <p className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          // detailed comparison
+        </p>
+        <h2
+          id="compare-plans-heading"
+          className="mb-10 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl"
+        >
+          What you get at every tier.
         </h2>
 
-        {/* Desktop table */}
+        {/* Desktop table — sectioned by // core / // hosting / // security / // support */}
         <div className="hidden overflow-hidden rounded-xl border border-zinc-800/60 lg:block">
           <table className="w-full">
             <thead>
               <tr className="border-b border-zinc-800/60 bg-zinc-900/50">
-                <th scope="col" className="px-5 py-4 text-left text-sm font-medium text-zinc-300">Feature</th>
-                <th scope="col" className="px-5 py-4 text-center text-sm font-medium text-zinc-300">Self-Hosted</th>
-                <th scope="col" className="px-5 py-4 text-center text-sm font-medium text-zinc-300">Starter</th>
-                <th scope="col" className="px-5 py-4 text-center text-sm font-medium text-zinc-300">Pro</th>
-                <th scope="col" className="px-5 py-4 text-center text-sm font-medium text-zinc-300">Business</th>
+                <th
+                  scope="col"
+                  className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                >
+                  feature
+                </th>
+                <th
+                  scope="col"
+                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-zinc-300 uppercase"
+                >
+                  Self-Hosted
+                </th>
+                <th
+                  scope="col"
+                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-zinc-300 uppercase"
+                >
+                  Starter
+                </th>
+                <th
+                  scope="col"
+                  className="bg-brand/[0.04] px-5 py-4 text-center font-mono text-[11px] tracking-widest text-brand uppercase"
+                >
+                  Pro
+                </th>
+                <th
+                  scope="col"
+                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-zinc-300 uppercase"
+                >
+                  Business
+                </th>
               </tr>
             </thead>
             <tbody>
-              {COMPARISON.map((row) => (
-                <tr key={row.feature} className="border-b border-zinc-800/40 last:border-0">
-                  <td className="px-5 py-3.5 text-sm text-zinc-400">{row.feature}</td>
-                  <td className="px-5 py-3.5 text-center">
-                    <span className="inline-flex justify-center"><ComparisonCell value={row.selfHosted} /></span>
-                  </td>
-                  <td className="px-5 py-3.5 text-center">
-                    <span className="inline-flex justify-center"><ComparisonCell value={row.starter} /></span>
-                  </td>
-                  <td className="px-5 py-3.5 text-center">
-                    <span className="inline-flex justify-center"><ComparisonCell value={row.pro} /></span>
-                  </td>
-                  <td className="px-5 py-3.5 text-center">
-                    <span className="inline-flex justify-center"><ComparisonCell value={row.business} /></span>
-                  </td>
-                </tr>
+              {COMPARISON_SECTIONS.map((section, i) => (
+                <SectionRows key={section.label} section={section} isFirst={i === 0} />
               ))}
             </tbody>
           </table>
         </div>
 
-        {/* Mobile comparison (stacked cards) */}
+        {/* Mobile / tablet — stacked per-tier */}
         <div className="space-y-6 lg:hidden">
           {TIER_KEYS.map((tierKey) => (
-            <div key={tierKey} className="rounded-xl border border-zinc-800/60 bg-zinc-900/30">
+            <div
+              key={tierKey}
+              className="overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/30"
+            >
               <div className="border-b border-zinc-800/60 px-5 py-3">
-                <h3 className="font-mono text-sm font-medium text-zinc-100">{TIER_LABELS[tierKey]}</h3>
+                <h3 className="font-mono text-sm font-medium text-zinc-100">
+                  {TIER_LABELS[tierKey]}
+                </h3>
               </div>
-              <div className="divide-y divide-zinc-800/40 px-5">
-                {COMPARISON.map((row) => (
-                  <div key={row.feature} className="flex items-center justify-between py-3">
-                    <span className="text-sm text-zinc-400">{row.feature}</span>
-                    <span className="ml-4 shrink-0">
-                      <ComparisonCell value={row[tierKey]} />
-                    </span>
+              <div className="px-5 pb-2">
+                {COMPARISON_SECTIONS.map((section) => (
+                  <div key={section.label}>
+                    <p className="mt-3 mb-1 font-mono text-[10.5px] tracking-widest text-brand/80 uppercase">
+                      // {section.label}
+                    </p>
+                    <div className="divide-y divide-zinc-800/40">
+                      {section.rows.map((row) => (
+                        <div key={row.feature} className="flex items-center justify-between py-2.5">
+                          <span className="text-sm text-zinc-400">{row.feature}</span>
+                          <span className="ml-4 shrink-0">
+                            <ComparisonCell value={row[tierKey]} />
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -478,27 +595,69 @@ export function PricingContent() {
         </div>
       </section>
 
-      <Divider />
-
       {/* FAQ */}
-      <section className="mx-auto max-w-6xl px-6 py-20 md:py-28">
-        <SectionLabel>FAQ</SectionLabel>
-        <h2 className="mb-8 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
-          Common questions
+      <section
+        aria-labelledby="pricing-faq-heading"
+        className="mx-auto max-w-6xl px-6 py-16 md:py-24"
+      >
+        <p className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          // frequently asked
+        </p>
+        <h2
+          id="pricing-faq-heading"
+          className="mb-8 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl"
+        >
+          Pricing questions.
         </h2>
-        <div className="grid gap-0 md:grid-cols-2 md:gap-x-12">
-          <div>
-            {FAQS.slice(0, faqHalf).map((faq) => (
-              <FAQItem key={faq.question} faq={faq} />
-            ))}
-          </div>
-          <div className="border-t border-zinc-800/60 md:border-0">
-            {FAQS.slice(faqHalf).map((faq) => (
-              <FAQItem key={faq.question} faq={faq} />
-            ))}
-          </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          {FAQS.map((faq) => (
+            <FAQCard key={faq.question} faq={faq} />
+          ))}
         </div>
       </section>
+    </>
+  );
+}
+
+function SectionRows({ section, isFirst }: { section: ComparisonSection; isFirst: boolean }) {
+  return (
+    <>
+      <tr>
+        <th
+          colSpan={5}
+          scope="colgroup"
+          className={`bg-zinc-900/30 px-5 pt-5 pb-2 text-left font-mono text-[10.5px] tracking-widest text-brand/80 uppercase ${
+            isFirst ? "" : "border-t border-zinc-800/40"
+          }`}
+        >
+          // {section.label}
+        </th>
+      </tr>
+      {section.rows.map((row) => (
+        <tr key={row.feature} className="border-b border-zinc-800/30 last:border-0">
+          <td className="px-5 py-3 text-sm text-zinc-300">{row.feature}</td>
+          <td className="px-5 py-3 text-center">
+            <span className="inline-flex justify-center">
+              <ComparisonCell value={row.selfHosted} />
+            </span>
+          </td>
+          <td className="px-5 py-3 text-center">
+            <span className="inline-flex justify-center">
+              <ComparisonCell value={row.starter} />
+            </span>
+          </td>
+          <td className="bg-brand/[0.04] px-5 py-3 text-center">
+            <span className="inline-flex justify-center">
+              <ComparisonCell value={row.pro} />
+            </span>
+          </td>
+          <td className="px-5 py-3 text-center">
+            <span className="inline-flex justify-center">
+              <ComparisonCell value={row.business} />
+            </span>
+          </td>
+        </tr>
+      ))}
     </>
   );
 }

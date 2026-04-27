@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 // External status page redirect
 // ---------------------------------------------------------------------------
 // When NEXT_PUBLIC_STATUS_URL is set (SaaS deployment), redirect to the
-// external status page (e.g. OpenStatus at status.useatlas.dev). The external
+// external status page (e.g. OpenStatus at atlas.openstatus.dev). The external
 // page runs on independent infrastructure so it's reachable during outages.
 // Self-hosted deployments leave this unset and get the built-in health checks.
 const EXTERNAL_STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL;

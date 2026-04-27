@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   },
 };
 
-const STATUS_PAGE_URL = "https://status.useatlas.dev";
+const STATUS_PAGE_URL = "https://atlas.openstatus.dev";
 
 interface UptimeCard {
   tier: string;
@@ -92,7 +92,7 @@ const SECTIONS: LegalSectionData[] = [
     id: "exclusions",
     title: "Exclusions",
     legal: [
-      "Downtime does not include unavailability caused by: (a) scheduled maintenance announced ≥7 days in advance via status.useatlas.dev; (b) Customer-caused issues, including misconfiguration, exceeding rate limits, or use of unsupported model endpoints; (c) failures of Customer’s data warehouse, identity provider, or model provider; (d) force majeure events; (e) suspension of the account for non-payment or violation of the Acceptable Use Policy.",
+      "Downtime does not include unavailability caused by: (a) scheduled maintenance announced ≥7 days in advance via atlas.openstatus.dev; (b) Customer-caused issues, including misconfiguration, exceeding rate limits, or use of unsupported model endpoints; (c) failures of Customer’s data warehouse, identity provider, or model provider; (d) force majeure events; (e) suspension of the account for non-payment or violation of the Acceptable Use Policy.",
       "Maintenance windows are limited to 2 hours per month and are scheduled outside 09:00–18:00 in Customer’s primary business timezone where reasonably possible.",
     ],
     plain:
@@ -113,7 +113,7 @@ const SECTIONS: LegalSectionData[] = [
     id: "status",
     title: "Status, Incidents & Postmortems",
     legal: [
-      "Atlas maintains a public status page at status.useatlas.dev showing current Service health, ongoing incidents, and historical uptime by region.",
+      "Atlas maintains a public status page at atlas.openstatus.dev showing current Service health, ongoing incidents, and historical uptime.",
       "For any Severity 1 incident, Atlas will publish a written postmortem within 5 business days of resolution. Postmortems include timeline, root cause, remediation steps, and a list of preventive measures.",
       "Customers may subscribe to status updates via email, RSS, Slack, or webhook.",
     ],

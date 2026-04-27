@@ -142,11 +142,11 @@ Revamp end-user facing surfaces using the treatment pattern from the 1.2.1/1.2.2
   - [x] 3b detail (`/dashboards/[id]`, #1867, PR #1889 + #1893) — freeform RGL tile grid + critique pass: chart-on-mount fix, mobile single-column read-only fallback, edit-mode dot tint + Esc banner, opaque fullscreen, tile-head a11y. Adjacent: #1891 / #1892
   - [x] 3a list (`/dashboards`, #1866 → superseded by #1895, PR #1896) — **completed by deletion**. `/dashboards` server-side redirects to the most-recently-updated dashboard; switcher dropdown + View All modal replace the standalone list. Pre-fetched after-delete redirect, multi-agent review fixes inline.
 - [x] Bucket 4 — Public views — shared chat (#1868, PR #1902 + a11y #1903), embed (#1869, PR #1906), shared dashboard (#1870, PR #1904), report (#1871, PR #1905)
-- [ ] Bucket 5 — Onboarding (#1872 login, #1873 signup flow, #1874 create-org, #1875 wizard)
-- [ ] Bucket 6 — Demo (`/demo`, #1876) — the marketing hand-off surface
+- [ ] Bucket 5 — Onboarding — login (#1872, PR #1941) ✓, signup flow (#1873, PR #1943) ✓ with shared `<SignupShell>` + `<StepIndicator>`; create-org (#1874) + wizard (#1875) remain
+- [x] Bucket 6 — Demo (`/demo`, #1876, PR #1942) — two-column hero with dataset preview + curated cybersecurity starter prompts; bonus widget P0 fix so `propApiKey` bypasses `ManagedAuthCard` in managed-auth mode
 - [x] Bucket 7 — Landing page (`/`, #1907, PR #1908) — Schema Map direction
 - [x] Bucket 8 — apps/www legal + marketing — #1910 pricing (PR #1917), #1911 sla (PR #1918), #1912 terms (PR #1919), #1913 privacy (PR #1920), #1915 dpa + `LegalSection` extraction (PR #1921)
-- [x] Post-Bucket 8 — public-page audit (PR #1933) — caught license/region/retention/MFA/cert drift; follow-ups: #1925 TOTP MFA (PR #1939), #1927 365-day audit retention default (PR #1937), #1929 pricing wording (PR #1934), #1930 status URL regression (PR #1935). Parked: #1928 (SOC 2 / ISO / pen test program), #1936 (OpenStatus Starter upgrade)
+- [x] Post-Bucket 8 — public-page audit (PR #1933) — caught license/region/retention/MFA/cert drift; follow-ups: #1925 TOTP MFA (PR #1939), #1927 365-day audit retention default (PR #1937), #1929 pricing wording (PR #1934), #1930 status URL regression (PR #1935). Parked: #1922 (pre-signed DPA PDF), #1923 (security@ PGP key), #1924 (sub-processor change feed), #1928 (SOC 2 / ISO / pen test program), #1936 (OpenStatus Starter upgrade)
 
 ---
 

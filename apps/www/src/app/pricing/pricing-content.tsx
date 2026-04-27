@@ -160,9 +160,8 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
       { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 4.6", business: "Sonnet 4.6" },
       { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
       { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
-      { feature: "Extra connections", selfHosted: false, starter: "+$10/mo each", pro: "+$10/mo each", business: "Included" },
       { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 8" },
-      { feature: "Overage rate", selfHosted: false, starter: "$0.10/query", pro: "$0.10/query", business: "$0.10/query" },
+      { feature: "Overage rate", selfHosted: false, starter: "$1 / 1M tokens", pro: "$1 / 1M tokens", business: "$1 / 1M tokens" },
     ],
   },
   {
@@ -215,7 +214,7 @@ const FAQS: FAQ[] = [
   {
     question: "What happens when I hit my query limit?",
     answer:
-      "You'll get warnings as you approach your limit. You have a 10% grace buffer beyond your included budget, and additional queries in that range are billed at $0.10 per query. To avoid overages entirely, switch to BYOK at any time — your own API key means unlimited queries.",
+      "You'll get warnings as you approach your limit. You have a 10% grace buffer beyond your included token budget; usage past that is billed at $1 per 1M output-equivalent tokens (roughly $0.10 per typical query, depending on the model). To avoid overages entirely, switch to BYOK at any time — your own API key means unlimited queries.",
   },
   {
     question: "Is there a free option?",
@@ -230,7 +229,7 @@ const FAQS: FAQ[] = [
   {
     question: "Can I add more database connections?",
     answer:
-      "Starter and Pro plans can add extra connections for $10/month each. Business plans include unlimited connections.",
+      "Starter includes 1 connection and Pro includes 3. Business includes unlimited connections. If you need more on Starter or Pro, upgrade your plan or contact sales.",
   },
   {
     question: "Can I change plans later?",
@@ -263,9 +262,10 @@ function formatPrice(
   const symbol = CURRENCY_SYMBOL[currency];
   const rate = CURRENCY_RATE[currency];
   if (billing === "annual") {
-    // 10 months billed for 12. We round at the annual-total level so the
-    // displayed total matches Stripe's actual charge, then derive the
-    // per-month for tier-to-tier comparison.
+    // ASSUMPTION: STRIPE_*_ANNUAL_PRICE_ID products are configured as
+    // exactly 10 × monthly (≈17% off, "10 months for 12"). The toggle copy
+    // and FAQ both depend on this. If you change Stripe's annual prices,
+    // update this multiplier and the "save 17%" / FAQ copy together.
     const annual = Math.round(monthlyPrice * 10 * rate);
     const effectiveMonthly = Math.round(annual / 12);
     return {

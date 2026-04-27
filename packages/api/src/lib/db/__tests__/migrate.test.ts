@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(42);
+    expect(count).toBe(43);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -150,6 +150,7 @@ describe("runMigrations", () => {
         "0039_conversation_step_cap.sql",
         "0040_drop_integration_plaintext.sql",
         "0041_dashboard_card_layout.sql",
+        "0042_audit_retention_default.sql",
       ],
     });
 
@@ -616,6 +617,70 @@ describe("0035_admin_action_retention.sql", () => {
     const sql = fs.readFileSync(filePath, "utf-8");
     expect(sql).toMatch(/admin-action-log-retention\.md/);
     expect(sql).toMatch(/F-36/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0042_audit_retention_default.sql  (#1927)
+// ---------------------------------------------------------------------------
+
+describe("0042_audit_retention_default.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0042_audit_retention_default.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("sets audit_retention_config.retention_days DEFAULT to 365", () => {
+    // The default backs the /privacy §8 "365 days by default" claim — any
+    // drift in the value would silently weaken what we promise customers
+    // without a corresponding privacy-page revert. Pin the literal.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /ALTER\s+TABLE\s+audit_retention_config\s+ALTER\s+COLUMN\s+retention_days\s+SET\s+DEFAULT\s+365/i,
+    );
+  });
+
+  it("backfills existing orgs with a 365-day, 30-day-hard-delete config row", () => {
+    // The backfill is the half of the migration that closes the gap on
+    // existing tenants — without it, only orgs created post-migration
+    // pick up the new default and the privacy-page claim is false for
+    // every existing customer.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /INSERT\s+INTO\s+audit_retention_config\s*\(\s*org_id\s*,\s*retention_days\s*,\s*hard_delete_delay_days\s*\)\s*SELECT\s+id\s*,\s*365\s*,\s*30\s+FROM\s+organization/i,
+    );
+  });
+
+  it("backfill is idempotent via WHERE NOT EXISTS — re-run is a no-op for existing config rows", () => {
+    // The migration runner is gated by __atlas_migrations so a successful
+    // apply only runs once. But operators sometimes hand-replay a single
+    // file during recovery, and a second apply must NOT double-insert
+    // (would hit the org_id UNIQUE constraint and abort) NOR silently
+    // overwrite an admin's explicit policy choice (e.g., "unlimited").
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /WHERE\s+NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+audit_retention_config\s+arc\s+WHERE\s+arc\.org_id\s*=\s*organization\.id\s*\)/i,
+    );
+  });
+
+  it("does not touch hard_delete_delay_days default — that one stays at 30 from baseline", () => {
+    // 0000_baseline.sql already pins `hard_delete_delay_days INTEGER NOT
+    // NULL DEFAULT 30`. This migration must not redundantly ALTER it —
+    // a duplicate ALTER would noise up the SQL and obscure intent.
+    // Ensures we don't drift into changing two defaults at once.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).not.toMatch(
+      /ALTER\s+COLUMN\s+hard_delete_delay_days\s+SET\s+DEFAULT/i,
+    );
+  });
+
+  it("references issue #1927 in header comments", () => {
+    // Pins the canonical context — a future reader (or AGENTS.md sweep)
+    // can trace the privacy-page revert back to the migration that made
+    // the new claim true.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(/#1927/);
   });
 });
 

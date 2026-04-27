@@ -138,12 +138,12 @@ const SECTIONS: LegalSectionData[] = [
     title: "Retention",
     legal: [
       "Account data: retained for the duration of the account plus 90 days after closure.",
-      "Audit logs: retained indefinitely until the Customer admin configures a retention policy. Once configured, retention is at least 7 days, with soft-delete plus a hard-delete delay for compliance export.",
+      "Audit logs: 365 days by default on Business; configurable per-workspace with a 7-day floor and a hard-delete delay for compliance export.",
       "Telemetry: 30 days, then aggregated and de-identified.",
       "Backups: production data is retained in encrypted backups for up to 90 days.",
     ],
     plain:
-      "Account data: term + 90 days. Audit logs: kept until you configure a retention policy (minimum 7 days). Telemetry: 30 days then aggregated. Encrypted backups: up to 90 days.",
+      "Account data: term + 90 days. Audit logs: 365 days by default, configurable per-workspace (7-day floor). Telemetry: 30 days then aggregated. Encrypted backups: up to 90 days.",
   },
   {
     id: "security",

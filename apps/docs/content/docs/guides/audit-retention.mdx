@@ -21,11 +21,12 @@ Atlas includes configurable audit log retention with automatic purging and compl
 
 ## How It Works
 
-1. An admin sets a retention policy (30 days, 90 days, 1 year, custom, or unlimited)
-2. A daily purge scheduler soft-deletes audit entries older than the retention window
-3. Soft-deleted entries are permanently removed after a configurable hard-delete delay (default 30 days)
-4. Soft-deleted entries are hidden from normal audit views but recoverable during the delay period
-5. Compliance exports exclude soft-deleted entries and support date range filtering
+1. Every workspace starts with a **365-day** retention window — the same window /privacy §8 commits to. New workspaces are seeded automatically; pre-existing workspaces are backfilled in migration `0042_audit_retention_default.sql`.
+2. An admin can override the default at any time (30 days, 90 days, 1 year, custom, or unlimited) — the floor is **7 days** so an admin can't shorten the window below the validator threshold.
+3. A daily purge scheduler soft-deletes audit entries older than the retention window
+4. Soft-deleted entries are permanently removed after a configurable hard-delete delay (default 30 days)
+5. Soft-deleted entries are hidden from normal audit views but recoverable during the delay period
+6. Compliance exports exclude soft-deleted entries and support date range filtering
 
 ---
 
@@ -44,9 +45,10 @@ curl -X PUT /api/v1/admin/audit/retention \
 
 | Setting | Values | Default |
 |---------|--------|---------|
-| `retentionDays` | 7+ or `null` (unlimited) | `null` (unlimited) |
+| `retentionDays` | 7+ or `null` (unlimited) | `365` |
 | `hardDeleteDelayDays` | 0+ | 30 |
 
+- Default retention is **365 days** — chosen to back the /privacy §8 commitment
 - Minimum retention period is **7 days** (enforced by validation)
 - Setting `retentionDays` to `null` disables automatic purging (unlimited retention)
 - `hardDeleteDelayDays` controls how long soft-deleted entries remain recoverable

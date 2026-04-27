@@ -70,10 +70,13 @@ export default function SignupPage() {
       }
       router.push("/signup/workspace");
     } catch (err) {
+      console.warn("Signup failed:", err instanceof Error ? err.message : String(err));
       setError(
         err instanceof TypeError
           ? "Unable to reach the server. Check your connection and try again."
-          : "Sign up failed. Please try again.",
+          : err instanceof Error
+            ? err.message
+            : "Sign up failed. Please try again.",
       );
     } finally {
       setLoading(false);
@@ -89,6 +92,7 @@ export default function SignupPage() {
         callbackURL: "/signup/workspace",
       });
     } catch (err) {
+      console.warn("Social login failed:", err instanceof Error ? err.message : String(err));
       setError(err instanceof Error ? err.message : "Social login failed");
     } finally {
       setSocialLoading(null);

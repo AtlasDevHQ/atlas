@@ -14,7 +14,7 @@ interface StepIndicatorProps {
  * Numbered, labeled step indicator shared across the signup flow.
  *
  * Mobile (<sm): renders a compact "Step X of Y · Current label" pill plus a
- * progress bar so the indicator never wraps awkwardly.
+ * decorative progress bar so the indicator never wraps awkwardly.
  *
  * Desktop (>=sm): renders the full named track. Steps before the current step
  * appear as filled circles with a check; the current step is highlighted; later
@@ -24,7 +24,7 @@ export function StepIndicator({ current, showRegion, className }: StepIndicatorP
   const steps = stepsFor(showRegion);
   const activeIndex = stepIndex(steps, current);
   const total = steps.length;
-  const currentLabel = steps[activeIndex]?.label ?? "";
+  const currentLabel = steps[activeIndex].label;
   const progressPct = total > 1 ? (activeIndex / (total - 1)) * 100 : 100;
 
   return (
@@ -37,12 +37,8 @@ export function StepIndicator({ current, showRegion, className }: StepIndicatorP
           <span className="text-muted-foreground">{currentLabel}</span>
         </div>
         <div
+          aria-hidden="true"
           className="mt-2 h-1 overflow-hidden rounded-full bg-muted"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={total}
-          aria-valuenow={activeIndex + 1}
-          aria-label={`Step ${activeIndex + 1} of ${total}: ${currentLabel}`}
         >
           <div
             className="h-full bg-primary transition-all duration-300"

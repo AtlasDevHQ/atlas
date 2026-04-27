@@ -64,8 +64,9 @@ export default function WorkspacePage() {
     mode: "onBlur",
   });
 
-  function handleNameChange(value: string) {
-    form.setValue("name", value, { shouldValidate: false });
+  // RHF's `field.onChange` already wrote the new name; this only mirrors it
+  // into the slug field while the user hasn't manually edited the slug.
+  function syncSlugFromName(value: string) {
     if (!slugManual) {
       form.setValue("slug", slugify(value), { shouldValidate: false });
     }
@@ -139,7 +140,7 @@ export default function WorkspacePage() {
                         {...field}
                         onChange={(e) => {
                           field.onChange(e);
-                          handleNameChange(e.target.value);
+                          syncSlugFromName(e.target.value);
                         }}
                       />
                     </FormControl>

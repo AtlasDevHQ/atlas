@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { StepIndicator } from "./step-indicator";
-import { useSignupContext } from "./use-signup-context";
+import { useSignupContext } from "./signup-context-provider";
 import type { SignupStepId } from "./signup-steps";
 
 const WIDTHS = {
@@ -45,10 +45,11 @@ const AtlasMark = (
  * across all four routes.
  */
 export function SignupShell({ step, width = "default", back, children }: SignupShellProps) {
-  const { showRegion: detected } = useSignupContext();
-  // If the user is actually on the region step (e.g. navigated directly), the
-  // indicator must include it — otherwise we'd label "Region" as some earlier
-  // step. The detector is best-effort; the current `step` prop is authoritative.
+  const ctx = useSignupContext();
+  const detected = ctx.status === "ready" ? ctx.showRegion : false;
+  // If a user lands directly on /signup/region while the availability probe is
+  // still loading (or returned false), force the region step into the indicator
+  // — otherwise stepsFor() omits it and the active step has no slot.
   const showRegion = detected || step === "region";
 
   return (

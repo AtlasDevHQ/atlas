@@ -18,9 +18,18 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
+// Mutable so individual tests can flip the auth result returned by the
+// shared auth-middleware mock — needed to exercise the managed-mode +
+// admin-role path through `mfaRequired`, which is wired into both
+// router factories.
+let mockAuthResult: unknown = {
+  authenticated: true,
+  mode: "none",
+  user: undefined,
+};
+
 mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: () =>
-    Promise.resolve({ authenticated: true, mode: "none", user: undefined }),
+  authenticateRequest: () => Promise.resolve(mockAuthResult),
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
 }));
@@ -236,5 +245,121 @@ describe("createPlatformRouter", () => {
   it("returns an OpenAPIHono instance", () => {
     const router = createPlatformRouter();
     expect(router).toBeInstanceOf(OpenAPIHono);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mfaRequired wiring — proves the gate is applied to BOTH router factories
+// in the managed-mode + admin-role path that the unit middleware tests
+// can't cover (those tests build their own OpenAPIHono).
+// ---------------------------------------------------------------------------
+
+describe("mfaRequired is wired into createAdminRouter / createPlatformRouter", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+  });
+
+  it("createAdminRouter blocks managed admin without enrolled MFA with 403", async () => {
+    mockAuthResult = {
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "admin-1",
+        mode: "managed",
+        label: "admin@test.com",
+        role: "admin",
+        activeOrganizationId: "org-1",
+        // No claims.twoFactorEnabled — this must trigger the gate.
+      },
+    };
+
+    const router = createAdminRouter();
+    const ok = createRoute({
+      method: "get",
+      path: "/protected",
+      responses: {
+        200: {
+          description: "OK",
+          content: { "application/json": { schema: z.object({ ok: z.boolean() }) } },
+        },
+      },
+    });
+    router.openapi(ok, (c) => c.json({ ok: true }, 200));
+
+    const res = await router.request("/protected");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; enrollmentUrl: string };
+    expect(body.error).toBe("mfa_enrollment_required");
+    expect(body.enrollmentUrl).toBe("/admin/settings/security");
+
+    // Reset for siblings.
+    mockAuthResult = { authenticated: true, mode: "none", user: undefined };
+  });
+
+  it("createAdminRouter passes managed admin WITH enrolled MFA through to the handler", async () => {
+    mockAuthResult = {
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "admin-1",
+        mode: "managed",
+        label: "admin@test.com",
+        role: "admin",
+        activeOrganizationId: "org-1",
+        claims: { twoFactorEnabled: true },
+      },
+    };
+
+    const router = createAdminRouter();
+    const ok = createRoute({
+      method: "get",
+      path: "/protected",
+      responses: {
+        200: {
+          description: "OK",
+          content: { "application/json": { schema: z.object({ ok: z.boolean() }) } },
+        },
+      },
+    });
+    router.openapi(ok, (c) => c.json({ ok: true }, 200));
+
+    const res = await router.request("/protected");
+    expect(res.status).toBe(200);
+
+    mockAuthResult = { authenticated: true, mode: "none", user: undefined };
+  });
+
+  it("createPlatformRouter blocks managed platform_admin without enrolled MFA", async () => {
+    mockAuthResult = {
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "platform-1",
+        mode: "managed",
+        label: "platform@test.com",
+        role: "platform_admin",
+        activeOrganizationId: "org-1",
+      },
+    };
+
+    const router = createPlatformRouter();
+    const ok = createRoute({
+      method: "get",
+      path: "/platform-protected",
+      responses: {
+        200: {
+          description: "OK",
+          content: { "application/json": { schema: z.object({ ok: z.boolean() }) } },
+        },
+      },
+    });
+    router.openapi(ok, (c) => c.json({ ok: true }, 200));
+
+    const res = await router.request("/platform-protected");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("mfa_enrollment_required");
+
+    mockAuthResult = { authenticated: true, mode: "none", user: undefined };
   });
 });

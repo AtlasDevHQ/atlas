@@ -1,16 +1,24 @@
 /**
  * Unit tests for the {@link mfaRequired} middleware.
  *
- * Covers the role × mode × enrollment-state × url-bypass matrix:
+ * Covers the role × mode × enrollment-state matrix:
  *   - managed admin without MFA → 403 with mfa_enrollment_required
  *   - managed admin with MFA → pass-through
  *   - managed platform_admin without MFA → 403
+ *   - managed owner without MFA → 403 (mirrors adminAuth's role admit-list)
  *   - managed member without MFA → pass-through (not enforced for members)
  *   - simple-key admin without MFA → pass-through (programmatic, no TOTP)
  *   - byot admin without MFA → pass-through (MFA delegated to issuer)
  *   - mode "none" (local-dev) → pass-through (no user, nothing to gate)
- *   - managed admin without MFA hitting /api/auth/two-factor/* → pass-through
- *   - managed admin without MFA hitting /api/auth/sign-out → pass-through
+ *   - missing authResult (middleware misorder) → 500 fail-closed with auth_misconfigured
+ *
+ * The 403 response shape is part of the public API — every key is asserted
+ * by literal value, not by comparison against the module's own constants.
+ *
+ * Better Auth's enrollment routes (`/api/auth/two-factor/*`) and sign-out
+ * are NOT exercised here — they live on a different sub-app
+ * (`api/index.ts`) and never traverse this middleware. See the file
+ * header in `admin-mfa-required.ts`.
  *
  * @see packages/api/src/api/routes/admin-mfa-required.ts
  */
@@ -29,7 +37,7 @@ mock.module("@atlas/api/lib/logger", () => {
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { createMiddleware } from "hono/factory";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
-import { mfaRequired, ENROLLMENT_URL } from "../admin-mfa-required";
+import { mfaRequired } from "../admin-mfa-required";
 import type { AuthEnv } from "../middleware";
 
 // ---------------------------------------------------------------------------
@@ -86,28 +94,6 @@ const okRoute = createRoute({
   },
 });
 
-const enrollRoute = createRoute({
-  method: "get",
-  path: "/api/auth/two-factor/enable",
-  responses: {
-    200: {
-      description: "OK",
-      content: { "application/json": { schema: z.object({ ok: z.boolean() }) } },
-    },
-  },
-});
-
-const signOutRoute = createRoute({
-  method: "get",
-  path: "/api/auth/sign-out",
-  responses: {
-    200: {
-      description: "OK",
-      content: { "application/json": { schema: z.object({ ok: z.boolean() }) } },
-    },
-  },
-});
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -122,21 +108,42 @@ describe("mfaRequired middleware", () => {
     const res = await app.request("/admin/anything");
     expect(res.status).toBe(403);
 
-    const body = (await res.json()) as {
-      error: string;
-      message: string;
-      enrollmentUrl: string;
-      requestId: string;
-    };
+    // Wire-format contract — every key is asserted by literal value so a
+    // future rename (e.g. ENROLLMENT_URL drift) breaks this test rather
+    // than slipping past silently.
+    const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("mfa_enrollment_required");
-    expect(body.enrollmentUrl).toBe(ENROLLMENT_URL);
+    expect(body.enrollmentUrl).toBe("/admin/settings/security");
     expect(body.requestId).toBe("test-req-id");
-    expect(body.message).toMatch(/two-factor/i);
+    expect(typeof body.message).toBe("string");
+    expect((body.message as string).toLowerCase()).toContain("two-factor");
+    // Lock the body shape — no leakage of internal fields like userId/role/claims.
+    expect(Object.keys(body).toSorted()).toEqual(
+      ["enrollmentUrl", "error", "message", "requestId"].toSorted(),
+    );
   });
 
   it("blocks a platform_admin user without MFA enrolled with 403", async () => {
     const app = new OpenAPIHono<AuthEnv>();
     injectAuth(app, fakeAuthResult({ role: "platform_admin", twoFactorEnabled: false }));
+    app.use(mfaRequired);
+    app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/admin/anything");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("mfa_enrollment_required");
+  });
+
+  it("blocks an owner-role user without MFA (mirrors adminAuth's admit-list)", async () => {
+    // `managed.ts:resolveEffectiveRole` returns "owner" whenever the user's
+    // org-level role outranks their user-level role. `adminAuth` admits
+    // owner alongside admin/platform_admin (`middleware.ts:ADMIN_ROLE_SET`).
+    // If `mfaRequired` exempted owner, every workspace owner would silently
+    // bypass the gate — the `/privacy` §9 + `/dpa` Annex II promise has to
+    // hold for every role that can reach an admin route.
+    const app = new OpenAPIHono<AuthEnv>();
+    injectAuth(app, fakeAuthResult({ role: "owner", twoFactorEnabled: false }));
     app.use(mfaRequired);
     app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
 
@@ -156,9 +163,9 @@ describe("mfaRequired middleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("passes through for member-role users (gate is admin-only)", async () => {
+  it("passes through when an owner user has MFA enrolled", async () => {
     const app = new OpenAPIHono<AuthEnv>();
-    injectAuth(app, fakeAuthResult({ role: "member", twoFactorEnabled: false }));
+    injectAuth(app, fakeAuthResult({ role: "owner", twoFactorEnabled: true }));
     app.use(mfaRequired);
     app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
 
@@ -166,11 +173,9 @@ describe("mfaRequired middleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("passes through for owner-role users (gate is admin/platform_admin only)", async () => {
-    // owner is a separate role from admin in some auth modes — verify it
-    // is not enforced unless an explicit policy expansion lands.
+  it("passes through for member-role users (gate is admin-only)", async () => {
     const app = new OpenAPIHono<AuthEnv>();
-    injectAuth(app, fakeAuthResult({ role: "owner", twoFactorEnabled: false }));
+    injectAuth(app, fakeAuthResult({ role: "member", twoFactorEnabled: false }));
     app.use(mfaRequired);
     app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
 
@@ -246,26 +251,6 @@ describe("mfaRequired middleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("lets an admin without MFA reach /api/auth/two-factor/* (enrollment endpoints)", async () => {
-    const app = new OpenAPIHono<AuthEnv>();
-    injectAuth(app, fakeAuthResult({ role: "admin", twoFactorEnabled: false }));
-    app.use(mfaRequired);
-    app.openapi(enrollRoute, (c) => c.json({ ok: true }, 200));
-
-    const res = await app.request("/api/auth/two-factor/enable");
-    expect(res.status).toBe(200);
-  });
-
-  it("lets an admin without MFA reach /api/auth/sign-out (escape hatch)", async () => {
-    const app = new OpenAPIHono<AuthEnv>();
-    injectAuth(app, fakeAuthResult({ role: "admin", twoFactorEnabled: false }));
-    app.use(mfaRequired);
-    app.openapi(signOutRoute, (c) => c.json({ ok: true }, 200));
-
-    const res = await app.request("/api/auth/sign-out");
-    expect(res.status).toBe(200);
-  });
-
   it("treats missing claims object as not-enrolled (fail closed)", async () => {
     const app = new OpenAPIHono<AuthEnv>();
     app.use(
@@ -322,5 +307,28 @@ describe("mfaRequired middleware", () => {
 
     const res = await app.request("/admin/anything");
     expect(res.status).toBe(403);
+  });
+
+  it("returns 500 auth_misconfigured when authResult is missing (middleware-order contract)", async () => {
+    // If somebody mounts mfaRequired without adminAuth in front of it, the
+    // gate must fail closed with a clear error rather than throwing a bare
+    // TypeError that surfaces as an opaque 500.
+    const app = new OpenAPIHono<AuthEnv>();
+    app.use(
+      createMiddleware<AuthEnv>(async (c, next) => {
+        c.set("requestId", "test-req-id");
+        // intentionally no c.set("authResult", ...)
+        c.set("atlasMode", "published");
+        await next();
+      }),
+    );
+    app.use(mfaRequired);
+    app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/admin/anything");
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; requestId: string };
+    expect(body.error).toBe("auth_misconfigured");
+    expect(body.requestId).toBe("test-req-id");
   });
 });

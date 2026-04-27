@@ -1,11 +1,10 @@
 /**
- * MFA-required gate for admin and platform_admin sessions.
+ * MFA-required gate for managed-mode admin sessions.
  *
- * Backs the `/privacy` §9 + `/dpa` Annex II "MFA-required admin access"
- * commitment (#1925). Once a user with role `admin` or `platform_admin`
- * has authenticated, this middleware refuses to serve any route until
- * they have enrolled a TOTP second factor — except the enrollment surface
- * itself and sign-out, so the user can complete enrollment or back out.
+ * Delivers the admin-MFA promise from `/privacy` §9 + `/dpa` Annex II
+ * (#1925). When a user with role `admin`, `owner`, or `platform_admin`
+ * authenticates against an admin router, this middleware refuses to
+ * serve any route until they have enrolled a TOTP second factor.
  *
  * Apply downstream of {@link adminAuth} or {@link platformAdminAuth}: this
  * middleware reads `c.get("authResult")` and never re-authenticates.
@@ -18,8 +17,21 @@
  *     enrollmentUrl: "/admin/settings/security",
  *     requestId }
  *
- * Member-role users are NEVER gated here. The enrollment surface is
- * available to them voluntarily; the policy in this milestone is admin-only.
+ * ### What is NOT gated by this middleware
+ *
+ * The middleware is mounted on `/api/v1/admin/*` and `/api/v1/platform/*`
+ * via `createAdminRouter()` / `createPlatformRouter()`. Better Auth's
+ * own routes — `/api/auth/two-factor/*` (enrollment) and `/api/auth/sign-out`
+ * — are mounted on a separate sub-app at `/api/auth` (`api/index.ts`)
+ * and therefore never traverse this middleware. Admins without an
+ * enrolled second factor reach those endpoints regardless of role: the
+ * gate sits in front of admin-data routes, not in front of Better Auth.
+ *
+ * The Next.js page at `/admin/settings/security` is rendered by the
+ * frontend, not the API admin router, so it is also not gated here.
+ *
+ * Member-role users are NEVER gated. The enrollment surface is available
+ * to them voluntarily; the policy in this milestone is admin-only.
  */
 
 import type { Context } from "hono";
@@ -29,64 +41,47 @@ import type { AuthEnv } from "@atlas/api/api/routes/middleware";
 
 const log = createLogger("middleware:mfa");
 
-/** User-level roles that must have a verified second factor on file. */
-const ENFORCED_ROLES = new Set(["admin", "platform_admin"]);
-
 /**
- * URL prefixes that bypass the gate so the user can finish enrollment
- * (or sign out and choose a different account). The enrollment surface
- * is the admin TOTP routes plus the page that hosts them; sign-out is
- * Better Auth's own endpoint.
+ * User-level roles that must have a verified second factor on file.
  *
- * Anything else returns 403 until `user.twoFactorEnabled` is true.
+ * Mirrors `ADMIN_ROLE_SET` in `middleware.ts`: every role that
+ * `adminAuth` admits to admin routes must also be gated, otherwise the
+ * `/privacy` §9 + `/dpa` Annex II promise is false for that role. Org
+ * owners receive `effectiveRole = "owner"` from `managed.ts:resolveEffectiveRole`
+ * (org-level role outranks user-level), so missing `owner` here would
+ * silently exempt every workspace owner — exactly the gap reviewers
+ * called out before merge.
  */
-const ENROLLMENT_BYPASS_PREFIXES = [
-  // Better Auth's own two-factor endpoints (enable/verify/disable/regenerate).
-  "/api/auth/two-factor/",
-  // Sign-out — let the user back out of an account they cannot finish
-  // enrolling on (e.g. lost authenticator).
-  "/api/auth/sign-out",
-] as const;
+const ENFORCED_ROLES = new Set(["admin", "owner", "platform_admin"]);
 
 /**
- * Where the web app should send the user to complete enrollment. Surfaced
- * in the 403 body so clients don't have to hard-code the path.
+ * Where the web app should send the user to complete enrollment.
+ * Surfaced in the 403 body so clients don't have to hard-code the path.
  */
 export const ENROLLMENT_URL = "/admin/settings/security";
 
-/**
- * Whether the request URL falls under a bypass prefix. We match on
- * pathname only; query strings are irrelevant for the gate.
- */
-function isEnrollmentRequest(url: string): boolean {
-  let pathname: string;
-  try {
-    pathname = new URL(url).pathname;
-  } catch {
-    // Malformed URL — fail closed.
-    return false;
-  }
-  return ENROLLMENT_BYPASS_PREFIXES.some((prefix) => pathname.startsWith(prefix));
-}
+/** Wire-format error code in the 403 body. Public API — exported for tests. */
+export const MFA_ENROLLMENT_REQUIRED = "mfa_enrollment_required";
 
 /**
  * Read `twoFactorEnabled` off the auth result. Better Auth's two-factor
- * plugin adds the field to the `user` table; managed.ts spreads the
- * session user object into `claims`, so the field lands here without
- * any extra wiring.
+ * plugin adds the field to the `user` table; `managed.ts` spreads the
+ * session user object into `claims` (see `claims = { ...sessionUser, sub }`),
+ * so the field lands here without any extra wiring.
  *
- * Treat `undefined` as not-enabled — the safer default.
+ * Treat anything other than the strict boolean `true` as not-enabled —
+ * the safer default. A `1` / `"true"` / wrapped object from a future
+ * Better Auth shape change must continue to fail closed.
  */
 function isTwoFactorEnabled(c: Context<AuthEnv>): boolean {
   const authResult = c.get("authResult");
-  const claims = authResult.user?.claims;
+  const claims = authResult?.user?.claims;
   if (!claims) return false;
-  const value = claims.twoFactorEnabled;
-  return value === true;
+  return claims.twoFactorEnabled === true;
 }
 
 /**
- * Middleware — gates admin/platform_admin sessions on enrolled MFA.
+ * Middleware — gates admin/owner/platform_admin sessions on enrolled MFA.
  *
  * Place AFTER {@link adminAuth} / {@link platformAdminAuth} on a router
  * that should require MFA. Member-role users will never be gated even
@@ -96,6 +91,25 @@ function isTwoFactorEnabled(c: Context<AuthEnv>): boolean {
 export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
   const authResult = c.get("authResult");
   const requestId = c.get("requestId");
+
+  // Defensive: this middleware MUST run after `adminAuth` / `platformAdminAuth`.
+  // If somebody reorders middleware or mounts `mfaRequired` on a router that
+  // never set `authResult`, fail closed loudly rather than throwing a bare
+  // TypeError that would surface as an opaque 500 with no requestId trail.
+  if (!authResult) {
+    log.error(
+      { requestId, path: c.req.path },
+      "mfaRequired ran without authResult — middleware ordering is broken; mfaRequired must follow adminAuth/platformAdminAuth",
+    );
+    return c.json(
+      {
+        error: "auth_misconfigured",
+        message: "Authorization layer misconfigured.",
+        requestId,
+      },
+      500,
+    );
+  }
 
   // MFA only applies to interactive Better Auth sessions ("managed" mode).
   //   - "none"          local-dev no-auth carve-out — no user to gate
@@ -107,8 +121,8 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
   //   - "managed"       Better Auth session via /api/auth/* — MFA enforced
   //                     here, which is the only flow where it can be
   //
-  // The deploy-mode guard in platformAdminAuth already prevents `mode:"none"`
-  // from being a SaaS escape hatch.
+  // The deploy-mode guard in `platformAdminAuth` already prevents
+  // `mode:"none"` from being a SaaS escape hatch.
   if (authResult.mode !== "managed") {
     await next();
     return;
@@ -116,13 +130,8 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
 
   const role = authResult.user?.role;
   if (!role || !ENFORCED_ROLES.has(role)) {
-    // Non-admin user reached an MFA-gated router — let the normal admin
-    // gate produce the 403; this middleware doesn't second-guess role.
-    await next();
-    return;
-  }
-
-  if (isEnrollmentRequest(c.req.url)) {
+    // Non-enforced role reached an MFA-gated router. Let the normal admin
+    // gate decide whether to 403 — this middleware doesn't second-guess role.
     await next();
     return;
   }
@@ -132,13 +141,17 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
     return;
   }
 
-  log.warn(
-    { requestId, userId: authResult.user?.id, role },
-    "Admin request blocked — MFA enrollment required",
+  // Expected enforcement event, not a warning condition. `info` keeps the
+  // signal-to-noise reasonable on SaaS deploys where unenrolled admin
+  // sessions can replay this gate hundreds of times before enrollment.
+  // SREs should track `mfa_gate.blocked` as a metric, not as a log volume.
+  log.info(
+    { requestId, userId: authResult.user?.id, role, path: c.req.path },
+    "mfa_gate.blocked",
   );
   return c.json(
     {
-      error: "mfa_enrollment_required",
+      error: MFA_ENROLLMENT_REQUIRED,
       message:
         "Two-factor authentication is required for admin accounts. Enroll a TOTP authenticator to continue.",
       enrollmentUrl: ENROLLMENT_URL,

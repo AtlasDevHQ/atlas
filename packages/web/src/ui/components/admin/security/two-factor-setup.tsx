@@ -1,29 +1,28 @@
 "use client";
 
 /**
- * Two-factor (TOTP) enrollment for admin and platform_admin accounts.
+ * Two-factor (TOTP) enrollment for admin, owner, and platform_admin accounts.
  *
- * Backs the `/privacy` §9 + `/dpa` Annex II "MFA-required admin access" claim
- * (#1925). Mounted under `/admin/settings/security`. The page surfaces three
- * states:
+ * Mounted under `/admin/settings/security`. The component renders three
+ * top-level views, with the middle one stepping through password-confirm
+ * and code-confirm sub-stages (see {@link EnrollStage}):
  *
- *   1. Not enrolled       — show "Enable two-factor" button. Triggers
- *                           authClient.twoFactor.enable() which returns
- *                           `{ totpURI, backupCodes }`. Render the URI as
- *                           a copyable text plus the backup codes (one
- *                           time only — admins are warned to save them).
- *   2. Pending verify     — show a 6-digit input. Submit calls
- *                           authClient.twoFactor.verifyTotp() which flips
- *                           `user.twoFactorEnabled` to true on success and
- *                           clears the mfa_enrollment_required gate.
- *   3. Enrolled           — show "Regenerate backup codes" + "Disable"
- *                           controls, both behind a password-confirm dialog.
+ *   1. Not enrolled       — "Set up two-factor" button. The first sub-stage
+ *                           collects the user's password; the second renders
+ *                           the otpauth URI + manual key + one-time backup
+ *                           codes alongside a 6-digit verification input.
+ *   2. Mid-enrollment     — internal state of view 1, modeled by the
+ *                           {@link EnrollStage} discriminated union.
+ *   3. Enrolled           — "Regenerate backup codes" and "Disable two-factor"
+ *                           controls, both gated behind a password-confirm
+ *                           AlertDialog.
  *
- * No QR code library is bundled. Authenticator apps that support otpauth://
- * URIs (Google Authenticator, 1Password, Authy, Bitwarden) accept the URI
- * directly. The page also surfaces the manual TOTP secret for users on
- * authenticators that need it. This keeps the bundle out of the React
- * Compiler's hot path; we can revisit if user feedback warrants.
+ * No QR code library is bundled. Desktop password managers (1Password,
+ * Bitwarden, Authy desktop) accept the pasted `otpauth://` URI directly.
+ * Mobile authenticator apps (Google Authenticator, Authy mobile) need the
+ * manual base32 secret instead — both are surfaced. Skipping the QR
+ * library keeps the bundle out of the React Compiler's hot path; we can
+ * revisit if user feedback warrants.
  */
 
 import { useState } from "react";
@@ -65,25 +64,64 @@ interface EnableResponse {
 }
 
 /**
- * Result wrapper Better Auth uses for client actions. `data` is null on
- * error, `error` is null on success — we narrow at the call site.
+ * Result envelope Better Auth uses for client actions. Better Auth's wire
+ * shape allows `{ data: null, error: null }` (e.g. an unexpected 204) so the
+ * call sites must check both fields — see {@link unwrapResult}.
+ *
+ * Carries `code` and `status` alongside `message` so the component can log
+ * the structured failure for support, even though it only surfaces `message`
+ * in the UI.
  */
-type ClientResult<T> = { data: T | null; error: { message?: string } | null };
+type ClientResult<T> = {
+  data: T | null;
+  error: { message?: string; code?: string; status?: number } | null;
+};
+
+/**
+ * Normalize a Better Auth result into a tagged union so call sites don't
+ * have to repeat the `result.error || !result.data` defensive narrowing
+ * — and so a `{ data: null, error: null }` response is treated as failure
+ * rather than silent success (verifyTotp regression caught pre-merge).
+ */
+type Outcome<T> = { ok: true; data: T } | { ok: false; message: string; raw: ClientResult<T>["error"] };
+
+function unwrapResult<T>(result: ClientResult<T>, fallback: string): Outcome<T> {
+  if (result.error) {
+    return { ok: false, message: result.error.message ?? fallback, raw: result.error };
+  }
+  if (!result.data) {
+    return { ok: false, message: fallback, raw: null };
+  }
+  return { ok: true, data: result.data };
+}
 
 // Minimal contract for the parts of authClient.twoFactor we use. Keeps the
 // component working under TS6's stricter inference of plugin-augmented
 // clients without resorting to `any`.
 interface TwoFactorClient {
   enable: (opts: { password: string }) => Promise<ClientResult<EnableResponse>>;
-  verifyTotp: (opts: { code: string }) => Promise<ClientResult<unknown>>;
-  disable: (opts: { password: string }) => Promise<ClientResult<unknown>>;
+  verifyTotp: (opts: { code: string }) => Promise<ClientResult<{ token?: string }>>;
+  disable: (opts: { password: string }) => Promise<ClientResult<{ status?: boolean }>>;
   generateBackupCodes: (opts: {
     password: string;
   }) => Promise<ClientResult<{ backupCodes: string[] }>>;
 }
 
+/**
+ * Resolve the `twoFactor` namespace off authClient. The cast through
+ * `unknown` is the documented workaround for TS6's plugin-inference gap;
+ * the runtime guard turns "plugin not loaded" from a `Cannot read
+ * properties of undefined` deep in a handler into a clear up-front error
+ * a caller can surface.
+ */
 function getTwoFactor(): TwoFactorClient {
-  return (authClient as unknown as { twoFactor: TwoFactorClient }).twoFactor;
+  const namespace = (authClient as unknown as { twoFactor?: TwoFactorClient }).twoFactor;
+  if (!namespace) {
+    throw new Error(
+      "Better Auth twoFactor client plugin is not loaded — check packages/web/src/lib/auth/client.ts",
+    );
+  }
+  return namespace;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +287,16 @@ export interface TwoFactorSetupProps {
 type EnrollStage =
   | { kind: "idle" }
   | { kind: "password" }
-  | { kind: "confirm"; totpURI: string; backupCodes: string[] }
-  | { kind: "verifying" };
+  | { kind: "confirm"; totpURI: string; backupCodes: string[] };
+
+/**
+ * Surface the structured Better Auth error to the browser console so
+ * support can still recover the `code` / `status` / `cause` from a user
+ * report even though only `message` is shown in the UI.
+ */
+function logFailure(action: string, raw: ClientResult<unknown>["error"]): void {
+  console.warn(`[two-factor] ${action} failed`, raw);
+}
 
 export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
   const [stage, setStage] = useState<EnrollStage>({ kind: "idle" });
@@ -276,14 +322,16 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
     setError(null);
     const result = await getTwoFactor().enable({ password });
     setBusy(false);
-    if (result.error || !result.data) {
-      setError(result.error?.message ?? "Could not enable two-factor authentication.");
+    const outcome = unwrapResult(result, "Could not enable two-factor authentication.");
+    if (!outcome.ok) {
+      logFailure("enable", outcome.raw);
+      setError(outcome.message);
       return;
     }
     setStage({
       kind: "confirm",
-      totpURI: result.data.totpURI,
-      backupCodes: result.data.backupCodes,
+      totpURI: outcome.data.totpURI,
+      backupCodes: outcome.data.backupCodes,
     });
   }
 
@@ -292,8 +340,12 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
     setError(null);
     const result = await getTwoFactor().verifyTotp({ code });
     setBusy(false);
-    if (result.error) {
-      setError(result.error.message ?? "That code didn't match. Try again.");
+    // Treat `{ data: null, error: null }` as failure — the regression Better
+    // Auth client envelopes can produce on a 204-style response.
+    const outcome = unwrapResult(result, "That code didn't match. Try again.");
+    if (!outcome.ok) {
+      logFailure("verifyTotp", outcome.raw);
+      setError(outcome.message);
       return;
     }
     reset();
@@ -306,12 +358,16 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
     const result = await getTwoFactor().generateBackupCodes({ password: confirmPassword });
     setBusy(false);
     setConfirmPassword("");
-    if (result.error || !result.data) {
-      setError(result.error?.message ?? "Could not regenerate backup codes.");
+    const outcome = unwrapResult(result, "Could not regenerate backup codes.");
+    if (!outcome.ok) {
+      logFailure("generateBackupCodes", outcome.raw);
+      setError(outcome.message);
       return;
     }
-    setRegenCodes(result.data.backupCodes);
-    setRegenOpen(false);
+    // Render the codes inside the still-open dialog. The user must hit
+    // "Done" to dismiss, which prevents accidental tab-close before the
+    // codes are saved (the prior set is already invalidated server-side).
+    setRegenCodes(outcome.data.backupCodes);
   }
 
   async function handleDisable() {
@@ -320,8 +376,10 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
     const result = await getTwoFactor().disable({ password: confirmPassword });
     setBusy(false);
     setConfirmPassword("");
-    if (result.error) {
-      setError(result.error.message ?? "Could not disable two-factor authentication.");
+    const outcome = unwrapResult(result, "Could not disable two-factor authentication.");
+    if (!outcome.ok) {
+      logFailure("disable", outcome.raw);
+      setError(outcome.message);
       return;
     }
     setDisableOpen(false);
@@ -355,44 +413,76 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
           </CardContent>
         </Card>
 
-        {regenCodes && <BackupCodes codes={regenCodes} />}
         {error && (
           <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
             {error}
           </div>
         )}
 
-        <AlertDialog open={regenOpen} onOpenChange={setRegenOpen}>
+        <AlertDialog
+          open={regenOpen}
+          onOpenChange={(open) => {
+            setRegenOpen(open);
+            if (!open) {
+              // Closing the dialog (via Cancel, Done, or Escape) clears the
+              // session-scoped copy of the codes — they exist on the server
+              // either way, but holding them in component state past the
+              // dialog adds no value.
+              setRegenCodes(null);
+              setConfirmPassword("");
+            }
+          }}
+        >
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Regenerate backup codes?</AlertDialogTitle>
+              <AlertDialogTitle>
+                {regenCodes ? "Save your new backup codes" : "Regenerate backup codes?"}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                This invalidates your existing backup codes. Make sure to save the new
-                codes — they won't be shown again.
+                {regenCodes
+                  ? "Each code lets you sign in once if your authenticator is unavailable. They will not be shown again."
+                  : "This invalidates your existing backup codes. Make sure to save the new codes — they won't be shown again."}
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <div className="space-y-1.5 py-2">
-              <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Confirm with your password
-              </label>
-              <Input
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                autoFocus
-              />
-            </div>
+            {regenCodes ? (
+              <div className="py-2">
+                <BackupCodes codes={regenCodes} />
+              </div>
+            ) : (
+              <div className="space-y-1.5 py-2">
+                <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Confirm with your password
+                </label>
+                <Input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  autoFocus
+                />
+              </div>
+            )}
             <AlertDialogFooter>
-              <AlertDialogCancel onClick={() => setConfirmPassword("")}>
-                Cancel
-              </AlertDialogCancel>
-              <AlertDialogAction
-                onClick={handleRegenerate}
-                disabled={busy || !confirmPassword}
-              >
-                {busy ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
-                Regenerate
-              </AlertDialogAction>
+              {regenCodes ? (
+                <AlertDialogAction onClick={() => setRegenOpen(false)}>
+                  Done — I've saved them
+                </AlertDialogAction>
+              ) : (
+                <>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={(e) => {
+                      // Suppress the default Radix close-on-action behavior so
+                      // the dialog stays open to render the new codes.
+                      e.preventDefault();
+                      void handleRegenerate();
+                    }}
+                    disabled={busy || !confirmPassword}
+                  >
+                    {busy ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
+                    Regenerate
+                  </AlertDialogAction>
+                </>
+              )}
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
@@ -489,24 +579,23 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
           </CardContent>
         )}
 
-        {stage.kind === "confirm" && (
+        {stage.kind === "confirm" && (() => {
+          const manualSecret = extractSecret(stage.totpURI);
+          return (
           <CardContent className="space-y-4 pt-0">
             <ol className="ml-4 list-decimal space-y-1 text-sm text-muted-foreground">
               <li>
-                Add Atlas to your authenticator app — paste the URI below or scan
-                its QR code in your password manager.
+                Add Atlas to your authenticator app. Desktop password managers
+                accept the otpauth URI directly; mobile apps need the manual
+                setup key.
               </li>
               <li>Save the backup codes somewhere safe.</li>
               <li>Enter the 6-digit code your authenticator generates.</li>
             </ol>
 
             <CopyField label="Otpauth URI" value={stage.totpURI} monospace />
-            {extractSecret(stage.totpURI) && (
-              <CopyField
-                label="Manual setup key"
-                value={extractSecret(stage.totpURI) ?? ""}
-                monospace
-              />
+            {manualSecret && (
+              <CopyField label="Manual setup key" value={manualSecret} monospace />
             )}
 
             <BackupCodes codes={stage.backupCodes} />
@@ -538,7 +627,8 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
               <p className="text-sm text-destructive">{error}</p>
             )}
           </CardContent>
-        )}
+          );
+        })()}
       </Card>
     </div>
   );

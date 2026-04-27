@@ -681,7 +681,7 @@ describe("Regression — pre-handler rejections do not emit audit", () => {
           label: "Admin",
           role: "admin",
           activeOrganizationId: undefined,
-        claims: { twoFactorEnabled: true },
+          claims: { twoFactorEnabled: true },
         },
       }),
     );
@@ -703,7 +703,7 @@ describe("Regression — pre-handler rejections do not emit audit", () => {
           label: "Admin",
           role: "admin",
           activeOrganizationId: undefined,
-        claims: { twoFactorEnabled: true },
+          claims: { twoFactorEnabled: true },
         },
       }),
     );

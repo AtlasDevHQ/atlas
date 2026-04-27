@@ -4,30 +4,42 @@
  * Admin → Settings → Security
  *
  * Single-purpose page for managing two-factor authentication on the
- * currently-signed-in account. Backs the `/privacy` §9 + `/dpa` Annex II
- * "MFA-required admin access" claim (#1925).
+ * currently-signed-in account.
  *
- * The route is intentionally bypassed by the F-MFA gate (see
- * `packages/api/src/api/routes/admin-mfa-required.ts`) so admins who
- * haven't enrolled yet can still reach this page to complete enrollment.
+ * This page is rendered by Next.js, not by Atlas's API admin router, so
+ * the `mfaRequired` API gate doesn't run on the page itself — admins who
+ * haven't enrolled can always reach the page to complete enrollment.
+ * The Better Auth TOTP endpoints (`/api/auth/two-factor/*`) the page
+ * calls are likewise mounted outside the admin router (see
+ * `packages/api/src/api/index.ts:153` and the file header in
+ * `packages/api/src/api/routes/admin-mfa-required.ts`).
  */
 
 import { ShieldCheck } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
 import { TwoFactorSetup } from "@/ui/components/admin/security/two-factor-setup";
 
+/**
+ * Narrow read of `session.data.user`. Better Auth's session always
+ * populates `email` and `role` when the session exists, but the
+ * plugin-augmented client type isn't reachable through
+ * `createAuthClient`'s generic chain — `twoFactorEnabled` arrives via
+ * the `twoFactor` plugin and is missing on accounts that never enrolled,
+ * so it stays optional.
+ */
 interface SessionUser {
+  email: string;
+  role: string;
   twoFactorEnabled?: boolean;
-  email?: string;
-  role?: string;
 }
 
 export default function SecurityPage() {
   const session = authClient.useSession();
 
   // Better Auth's session reactivity is the source of truth for
-  // `twoFactorEnabled`. Casting through `unknown` because the plugin-augmented
-  // client type isn't reachable through createAuthClient's generic chain.
+  // `twoFactorEnabled`. The cast goes from the plugin-erased session shape
+  // to the narrow read above; an `unknown` step would be wider than the
+  // value already is, so we cast directly.
   const user = (session.data?.user ?? null) as SessionUser | null;
   const enabled = user?.twoFactorEnabled === true;
 

@@ -464,23 +464,22 @@ function buildPlugins() {
     }),
   ];
 
-  // Two-factor (TOTP + recovery codes) — required for admin and platform_admin
-  // accounts via the session before-hook below. Loaded unconditionally so the
-  // backing schema (twoFactor table + user.twoFactorEnabled) is always in
-  // place; enforcement is gated by role.
+  // Two-factor (TOTP + recovery codes) — required for admin / owner /
+  // platform_admin sessions via the `mfaRequired` middleware in
+  // packages/api/src/api/routes/admin-mfa-required.ts. Loaded
+  // unconditionally so the backing schema (twoFactor table +
+  // user.twoFactorEnabled) is always in place; enforcement is gated by
+  // role at the router layer, not here.
   //
-  // The `if (true)` block is intentional — it keeps the future opt-out
-  // (`ATLAS_REQUIRE_ADMIN_MFA=false`, tracked separately) a one-line edit
-  // without restructuring the array. Operators who want member-role users to
-  // also enroll can flip the role check in the session hook.
-  // eslint-disable-next-line no-constant-condition -- intentional future-proofing per the comment above
-  if (true) {
-    plugins.push(
-      twoFactor({
-        issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
-      }),
-    );
-  }
+  // Plugin remains in the array as a flat push (rather than a wrapping
+  // `if (...)`) so the schema can never be conditionally absent —
+  // dropping the plugin while `mfaRequired` is still wired would lock
+  // every admin out of the console.
+  plugins.push(
+    twoFactor({
+      issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
+    }),
+  );
 
   // SCIM directory sync — enterprise only.
   // No try/catch: if the plugin fails to initialize (missing dep, bad config),

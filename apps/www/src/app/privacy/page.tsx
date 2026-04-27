@@ -149,11 +149,11 @@ const SECTIONS: LegalSectionData[] = [
     id: "security",
     title: "Security",
     legal: [
-      "Atlas maintains a security program aligned with ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, encrypted internal-database storage of all integration credentials and connection strings, and automated vulnerability scanning of container images and dependencies. Two-factor authentication for admin accounts and per-customer KMS keys are on the public roadmap and negotiable on enterprise contracts.",
+      "Atlas maintains a security program aligned with ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, encrypted internal-database storage of all integration credentials and connection strings, automated vulnerability scanning of container images and dependencies, and TOTP two-factor authentication required for every administrator account on managed-mode sessions. Per-customer KMS keys are on the public roadmap and negotiable on enterprise contracts.",
       "Suspected security incidents may be reported to security@useatlas.dev. Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). A PGP key is available on request.",
     ],
     plain:
-      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM. Working toward formal SOC 2 Type II + ISO 27001 certifications and admin MFA. Report suspected issues to security@useatlas.dev (PGP key on request).",
+      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, TOTP two-factor required for admin accounts. Working toward formal SOC 2 Type II + ISO 27001 certifications. Report suspected issues to security@useatlas.dev (PGP key on request).",
   },
   {
     id: "cookies",

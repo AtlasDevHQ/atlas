@@ -193,13 +193,16 @@ export function createApiTestMocks(
 
   // ── Auth middleware ────────────────────────────────────────────
 
-  // F-MFA — default admin/platform_admin users to "MFA enrolled" so existing
-  // admin route tests pass through the mfaRequired gate. Tests that exercise
-  // the gate itself live in src/api/routes/__tests__/admin-mfa-required.test.ts
-  // and build their own auth result. Override per-test by passing a `claims`
-  // object on `authUser`.
+  // F-MFA — default admin/owner/platform_admin users to "MFA enrolled" so
+  // existing admin route tests pass through the `mfaRequired` gate. Tests
+  // that exercise the gate itself live in
+  // src/api/routes/__tests__/admin-mfa-required.test.ts and build their own
+  // auth result. Override per-test by passing a `claims` object on
+  // `authUser`. Mirrors the role admit-list in `mfaRequired.ENFORCED_ROLES`.
   const defaultClaims =
-    authUser.role === "admin" || authUser.role === "platform_admin"
+    authUser.role === "admin"
+    || authUser.role === "owner"
+    || authUser.role === "platform_admin"
       ? { twoFactorEnabled: true }
       : undefined;
 
@@ -745,9 +748,13 @@ export function createApiTestMocks(
   // ── Role helper functions ─────────────────────────────────────
 
   function setOrgAdmin(orgId: string): void {
-    // F-MFA — admin/platform_admin users default to MFA-enrolled so existing
-    // admin route tests pass through the mfaRequired gate. Tests that need
-    // the unenrolled path build their own auth result.
+    // F-MFA — admin/owner/platform_admin users default to MFA-enrolled so
+    // existing admin route tests pass through the `mfaRequired` gate.
+    // NOTE: this helper REPLACES the entire mock implementation, including
+    // any per-call configuration set earlier (e.g. by `createApiTestMocks`).
+    // Tests that need a non-default `claims` shape must call
+    // `mockAuthenticateRequest.mockImplementation(...)` directly instead of
+    // combining `setOrgAdmin` + a `claims` override.
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -765,7 +772,7 @@ export function createApiTestMocks(
   }
 
   function setPlatformAdmin(orgId = "org-test"): void {
-    // F-MFA — see setOrgAdmin.
+    // F-MFA — same override-everything semantic as `setOrgAdmin`.
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,

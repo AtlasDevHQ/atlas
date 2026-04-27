@@ -31,7 +31,7 @@ const SUBPROCESSORS: SubProcessor[] = [
   {
     name: "Railway",
     purpose: "Cloud infrastructure (compute, storage, Postgres)",
-    region: "Customer’s selected region (US East, EU West, APAC SE)",
+    region: "Customer’s selected region — United States (Virginia), Europe (Netherlands), or Asia Pacific (Singapore)",
     since: "2026-01",
   },
   {
@@ -145,11 +145,11 @@ const SECTIONS: LegalSectionData[] = [
     id: "audit",
     title: "Audits",
     legal: [
-      "Atlas makes available to Customer all information necessary to demonstrate compliance with Art. 28 GDPR, including its current SOC 2 Type II report and ISO 27001 certificate where applicable. Reports are available on request under appropriate confidentiality terms.",
+      "Atlas makes available to Customer all information reasonably necessary to demonstrate compliance with Art. 28 GDPR. Atlas operates a security program aligned with SOC 2 Type II and ISO 27001 controls; formal certification is on the roadmap and the certification status, including any third-party report or attestation, is available on request under appropriate confidentiality terms.",
       "Once per twelve-month period, on at least 30 days’ notice and during normal business hours, Customer may conduct, or have a third party conduct under appropriate confidentiality, an audit of Atlas’s processing activities, limited to information reasonably necessary to verify compliance and conducted in a manner that does not unreasonably interfere with Atlas’s operations.",
     ],
     plain:
-      "We share our SOC 2 Type II report and ISO 27001 certificate on request. You may audit our processing once per year with 30 days’ notice and confidentiality protections.",
+      "We share our current security-program documentation and any completed third-party report on request. You may audit our processing once per year with 30 days’ notice and confidentiality protections.",
   },
   {
     id: "deletion",
@@ -166,7 +166,7 @@ const SECTIONS: LegalSectionData[] = [
     title: "Annexes",
     legal: [
       "Annex I — List of Sub-processors. The current list is rendered as a table at the bottom of this page and is the source of truth.",
-      "Annex II — Technical and Organizational Measures: encryption (TLS 1.2+ in transit, AES-256 at rest), customer-managed KMS keys negotiable on enterprise contracts, MFA-required admin access, least-privilege IAM, audit logging of administrative operations, automated vulnerability scanning, annual third-party penetration testing, ISO 27001-aligned ISMS, SOC 2 Type II reported annually, secure SDLC with mandatory code review, segregated production access, documented incident-response runbook with quarterly drills.",
+      "Annex II — Technical and Organizational Measures: encryption (TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation; integration credentials and connection strings encrypted in the internal database), customer-managed KMS keys negotiable on enterprise contracts, least-privilege IAM, audit logging of administrative operations, automated vulnerability scanning of container images and dependencies, ISO 27001-aligned ISMS, security program aligned with SOC 2 Type II controls (formal certification on the roadmap), secure SDLC with mandatory code review, segregated production access, documented incident-response runbook. Two-factor authentication for admin accounts and a third-party penetration-testing program are on the public roadmap.",
       "Annex III — Standard Contractual Clauses, Module Two (controller-to-processor) selected by default. Optional Clause 7 (Docking Clause) is included. Clause 9 sub-processor option (b) — general written authorization with 30-day notice — applies. Clause 11 dispute-resolution option (a) is selected. Clause 17 governing law: Ireland. Clause 18 forum: Ireland.",
     ],
     plain:
@@ -378,9 +378,9 @@ export default function DPAPage() {
             Procurement questions?
           </h2>
           <p className="mx-auto mb-6 max-w-xl text-zinc-400">
-            For DPA negotiation, custom enterprise terms, or audit-package
-            requests (SOC 2, ISO 27001, pen-test summary), reach out to legal
-            or sales.
+            For DPA negotiation, custom enterprise terms, or to ask about our
+            security-program documentation and certification roadmap, reach
+            out to legal or sales.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
             <a

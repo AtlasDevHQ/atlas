@@ -42,6 +42,9 @@ export function Footer() {
           <a href="/privacy" className="text-xs text-zinc-400 transition-colors hover:text-zinc-200">
             Privacy
           </a>
+          <a href="/aup" className="text-xs text-zinc-400 transition-colors hover:text-zinc-200">
+            AUP
+          </a>
           <a href="/dpa" className="text-xs text-zinc-400 transition-colors hover:text-zinc-200">
             DPA
           </a>

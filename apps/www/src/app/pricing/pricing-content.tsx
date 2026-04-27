@@ -266,6 +266,8 @@ function formatPrice(
     // exactly 10 × monthly (≈17% off, "10 months for 12"). The toggle copy
     // and FAQ both depend on this. If you change Stripe's annual prices,
     // update this multiplier and the "save 17%" / FAQ copy together.
+    // Round the annual total first so the displayed amount matches the
+    // post-FX charge; the per-month figure below is derived for display only.
     const annual = Math.round(monthlyPrice * 10 * rate);
     const effectiveMonthly = Math.round(annual / 12);
     return {

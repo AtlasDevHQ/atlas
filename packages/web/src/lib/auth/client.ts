@@ -18,7 +18,11 @@
 import { createAuthClient } from "better-auth/react";
 import { apiKeyClient } from "@better-auth/api-key/client";
 import { stripeClient } from "@better-auth/stripe/client";
-import { adminClient, organizationClient } from "better-auth/client/plugins";
+import {
+  adminClient,
+  organizationClient,
+  twoFactorClient,
+} from "better-auth/client/plugins";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
 import { adminAccessControl, adminRole, platformAdminRole } from "./admin-permissions";
@@ -51,6 +55,10 @@ const _authClient = createAuthClient({
       ac,
       roles: { owner, admin, member },
     }),
+    // Two-factor (TOTP + backup codes). The server plugin (#1925) is loaded
+    // unconditionally; the client mirror gives us authClient.twoFactor.*
+    // for the enrollment UI in /admin/settings/security.
+    twoFactorClient(),
     stripeClient({ subscription: true }),
   ],
   // Cross-origin deployments (app.useatlas.dev → api.useatlas.dev) require

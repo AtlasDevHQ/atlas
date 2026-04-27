@@ -1813,7 +1813,14 @@ function setOrgAdmin(orgId: string): void {
   mockAuthenticateRequest.mockResolvedValue({
     authenticated: true,
     mode: "managed",
-    user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: orgId },
+    user: {
+      id: "admin-1",
+      mode: "managed",
+      label: "admin@test.com",
+      role: "admin",
+      activeOrganizationId: orgId,
+      claims: { twoFactorEnabled: true },
+    },
   });
   mockCheckRateLimit.mockReturnValue({ allowed: true });
 }

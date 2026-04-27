@@ -1,0 +1,141 @@
+---
+title: Two-Factor Authentication
+description: TOTP-based second factor for admin and platform_admin accounts. Required by default once enabled, with backup codes for recovery.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+This page covers content for **admin users** (enrolling and recovering),
+**operators** (rollout, scope, and opt-out), and **end users** (members are
+not affected). Jump to the section relevant to your role.
+</Callout>
+
+Atlas requires a TOTP second factor on every interactive sign-in for users
+with role `admin` or `platform_admin`. The gate is enforced by the API; an
+admin who has not enrolled receives `403 mfa_enrollment_required` on every
+admin route until they complete enrollment at `/admin/settings/security`.
+
+The feature backs the public-facing privacy and DPA commitments at
+[useatlas.dev/privacy](https://useatlas.dev/privacy) §9 and
+[useatlas.dev/dpa](https://useatlas.dev/dpa) Annex II.
+
+<Callout type="warn">
+Two-factor is **fail-closed** for managed-mode admin sessions. If a session
+user has role `admin` and `twoFactorEnabled !== true`, no admin route serves
+them — only enrollment endpoints (`/api/auth/two-factor/*`) and sign-out are
+reachable. There is no environment variable that disables the gate at runtime.
+</Callout>
+
+## Scope
+
+Two-factor enforcement applies only when **all** of the following hold:
+
+- Auth mode is `managed` (Better Auth interactive sessions). Programmatic
+  callers (`simple-key`, `byot`) and the local-dev `none` mode bypass the
+  gate, since TOTP cannot be collected by an API-key client and BYOT JWTs
+  delegate MFA to the upstream identity provider.
+- The user's role is `admin` or `platform_admin`. `member` and `owner` users
+  are unaffected — they may still enroll voluntarily from the same page,
+  but the gate does not block them.
+- The request is for an admin route. Public and signed-in-user routes do not
+  go through the gate; the enforcement is wired into `createAdminRouter()`
+  and `createPlatformRouter()`.
+
+## Enrolling (Admin Users)
+
+1. Sign in to Atlas. Open **Admin → Settings → Security**.
+2. Click **Set up two-factor**. Confirm with your password.
+3. Atlas shows your TOTP otpauth URI, a manual setup key, and a one-time
+   list of backup codes. Add the otpauth URI to your authenticator (Google
+   Authenticator, 1Password, Authy, Bitwarden) and **save the backup codes
+   somewhere safe — they will not be shown again**.
+4. Enter the 6-digit code your authenticator generates and click
+   **Verify and finish**.
+
+Once enrolled, every subsequent sign-in prompts for a fresh TOTP code before
+the session is authorized. If you lose access to your authenticator, use a
+backup code (each one is single-use). If you exhaust all backup codes,
+contact a `platform_admin` to reset your account.
+
+### Regenerating Backup Codes
+
+If a backup code is exposed (or you suspect it was), regenerate the full
+set:
+
+1. **Admin → Settings → Security**
+2. Click **Regenerate backup codes**, confirm with your password.
+3. Save the new codes. The old set is invalidated immediately.
+
+### Disabling Two-Factor
+
+`admin` and `platform_admin` accounts are gated by the API, so disabling
+two-factor will lock you out of the admin console on the next request.
+Disabling is only useful before changing your account role.
+
+## Operator Reference
+
+### What's stored
+
+Better Auth's two-factor plugin manages all storage:
+
+- `user.twoFactorEnabled` — boolean. Source of truth for the gate.
+- `twoFactor.userId` — references the user.
+- `twoFactor.secret` — the TOTP shared secret. Returned by the plugin only
+  during enrollment; never echoed in subsequent reads.
+- `twoFactor.backupCodes` — comma-separated, hashed at rest by Better Auth.
+
+The `twoFactor` table and `user.twoFactorEnabled` column are created at
+boot by Better Auth's `runMigrations()`, the same path that creates
+`user`, `session`, `account`, `apikey`, and the organization tables. No
+hand-written SQL migration is required.
+
+### How the gate works
+
+[`packages/api/src/api/routes/admin-mfa-required.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/api/routes/admin-mfa-required.ts)
+is a Hono middleware applied by `createAdminRouter()` and
+`createPlatformRouter()`, immediately after `adminAuth`/`platformAdminAuth`.
+It reads `c.get("authResult").user.claims.twoFactorEnabled` (managed.ts
+spreads the Better Auth session-user fields into `claims`) and returns
+`403 mfa_enrollment_required` when the flag is missing or not strictly
+`true`.
+
+The gate lets two URL prefixes through unconditionally so admins can
+finish enrollment or sign out:
+
+- `/api/auth/two-factor/*`
+- `/api/auth/sign-out`
+
+### Opt-out and customization
+
+Two-factor is loaded unconditionally in `buildPlugins()` so the schema is
+always present. Operators who need a per-deployment opt-out should fork
+the `if (true)` block in
+[`packages/api/src/lib/auth/server.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/server.ts)
+or skip `mfaRequired` in `admin-router.ts` — both are one-line edits and
+both regress the privacy / DPA claim, so document the deviation.
+
+The `ATLAS_MFA_ISSUER` environment variable customizes the `Issuer:` field
+shown in authenticator apps. Defaults to `Atlas`.
+
+## End Users (Members)
+
+Two-factor is not required for `member` and `owner` accounts. The
+enrollment surface is still available at **Admin → Settings → Security**
+if you want the extra factor on your account; the API will not gate your
+routes either way.
+
+## Limitations
+
+- TOTP only. WebAuthn / passkeys and SMS are out of scope for this feature.
+- SCIM-managed MFA enforcement is not coupled to this gate. If your IdP
+  enforces MFA through SCIM, that policy is enforced upstream of Atlas;
+  this gate is independent.
+- Atlas's enforcement is per-account, not per-org. There is no setting to
+  require MFA only for a specific workspace.
+
+## See Also
+
+- [Row-Level Security](./row-level-security) — tenant data isolation, also fail-closed.
+- [SQL Validation](./sql-validation) — the four-layer query gate, the
+  other half of the admin-side defense in depth.

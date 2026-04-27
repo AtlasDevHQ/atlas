@@ -13,6 +13,7 @@
 
 import { betterAuth, type Session, type User } from "better-auth";
 import { bearer, admin, organization } from "better-auth/plugins";
+import { twoFactor } from "better-auth/plugins/two-factor";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
 import { apiKey } from "@better-auth/api-key";
@@ -462,6 +463,24 @@ function buildPlugins() {
       },
     }),
   ];
+
+  // Two-factor (TOTP + recovery codes) — required for admin and platform_admin
+  // accounts via the session before-hook below. Loaded unconditionally so the
+  // backing schema (twoFactor table + user.twoFactorEnabled) is always in
+  // place; enforcement is gated by role.
+  //
+  // The `if (true)` block is intentional — it keeps the future opt-out
+  // (`ATLAS_REQUIRE_ADMIN_MFA=false`, tracked separately) a one-line edit
+  // without restructuring the array. Operators who want member-role users to
+  // also enroll can flip the role check in the session hook.
+  // eslint-disable-next-line no-constant-condition -- intentional future-proofing per the comment above
+  if (true) {
+    plugins.push(
+      twoFactor({
+        issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
+      }),
+    );
+  }
 
   // SCIM directory sync — enterprise only.
   // No try/catch: if the plugin fails to initialize (missing dep, bad config),

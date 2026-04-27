@@ -146,7 +146,13 @@ describe("admin token usage routes", () => {
         Promise.resolve({
           authenticated: true,
           mode: "managed",
-          user: { id: "admin-1", mode: "managed", label: "Admin", role: "admin" },
+          user: {
+            id: "admin-1",
+            mode: "managed",
+            label: "Admin",
+            role: "admin",
+            claims: { twoFactorEnabled: true },
+          },
         }),
       );
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));

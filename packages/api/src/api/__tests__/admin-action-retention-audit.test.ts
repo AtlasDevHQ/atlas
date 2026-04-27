@@ -31,6 +31,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
         label: "Admin",
         role: "admin",
         activeOrganizationId: "org-1",
+        claims: { twoFactorEnabled: true },
       },
     }),
 );
@@ -217,6 +218,7 @@ function resetMocks(): void {
         label: "Admin",
         role: "admin",
         activeOrganizationId: "org-1",
+        claims: { twoFactorEnabled: true },
       },
     }),
   );
@@ -679,6 +681,7 @@ describe("Regression — pre-handler rejections do not emit audit", () => {
           label: "Admin",
           role: "admin",
           activeOrganizationId: undefined,
+        claims: { twoFactorEnabled: true },
         },
       }),
     );
@@ -700,6 +703,7 @@ describe("Regression — pre-handler rejections do not emit audit", () => {
           label: "Admin",
           role: "admin",
           activeOrganizationId: undefined,
+        claims: { twoFactorEnabled: true },
         },
       }),
     );

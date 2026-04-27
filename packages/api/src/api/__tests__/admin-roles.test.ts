@@ -781,6 +781,7 @@ describe("admin roles — middleware short-circuits don't emit audit", () => {
           mode: "managed",
           label: "admin@test.com",
           role: "admin",
+          claims: { twoFactorEnabled: true },
           // no activeOrganizationId
         },
       }),

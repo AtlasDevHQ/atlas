@@ -45,7 +45,7 @@ const PROMISES: PromiseCard[] = [
   {
     mono: "encrypted",
     label: "Encrypted in transit + at rest",
-    sub: "TLS 1.2+ in flight. AES-256 on disk. Per-customer KMS keys negotiable on enterprise contracts.",
+    sub: "TLS 1.2+ in flight. AES-256-GCM on disk with versioned key rotation. Per-customer KMS keys negotiable on enterprise contracts.",
   },
 ];
 
@@ -127,33 +127,33 @@ const SECTIONS: LegalSectionData[] = [
     id: "transfers",
     title: "International transfers",
     legal: [
-      "Atlas Cloud is hosted in three Customer-selectable regions on the Business plan: us-east-1 (Virginia), eu-west-1 (Ireland), and ap-southeast-2 (Sydney). Customer Data does not leave the selected region except for transactional services (auth, billing, status email) which are processed in the United States.",
+      "Atlas Cloud is hosted in three Customer-selectable regions on the Business plan: United States (Ashburn, Virginia), Europe (Eemshaven, Netherlands), and Asia Pacific (Singapore). Customer Data does not leave the selected region except for transactional services (billing, status email) which are processed in the United States.",
       "Where personal data is transferred from the EEA, UK, or Switzerland to the US, we rely on Standard Contractual Clauses and the EU-US Data Privacy Framework where available. Custom enterprise contracts can negotiate additional regions.",
     ],
     plain:
-      "Customer Data stays in the region you select (US East, EU West, or APAC Southeast on Business). Auth and billing are processed in the US under Standard Contractual Clauses where applicable.",
+      "Customer Data stays in the region you select (United States, Europe, or Asia Pacific on Business). Billing and outbound email are processed in the US under Standard Contractual Clauses where applicable.",
   },
   {
     id: "retention",
     title: "Retention",
     legal: [
       "Account data: retained for the duration of the account plus 90 days after closure.",
-      "Audit logs: retained for the period configured by the Customer admin (default 365 days on Business; configurable per-workspace).",
+      "Audit logs: retained indefinitely until the Customer admin configures a retention policy. Once configured, retention is at least 7 days, with soft-delete plus a hard-delete delay for compliance export.",
       "Telemetry: 30 days, then aggregated and de-identified.",
       "Backups: production data is retained in encrypted backups for up to 90 days.",
     ],
     plain:
-      "Account data: term + 90 days. Audit logs: 365 days by default, configurable. Telemetry: 30 days then aggregated. Encrypted backups: up to 90 days.",
+      "Account data: term + 90 days. Audit logs: kept until you configure a retention policy (minimum 7 days). Telemetry: 30 days then aggregated. Encrypted backups: up to 90 days.",
   },
   {
     id: "security",
     title: "Security",
     legal: [
-      "Atlas maintains a security program based on ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, least-privilege IAM, automated vulnerability scanning, and external penetration tests at least annually. Per-customer KMS keys are negotiable on enterprise contracts.",
+      "Atlas maintains a security program aligned with ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, encrypted internal-database storage of all integration credentials and connection strings, and automated vulnerability scanning of container images and dependencies. Two-factor authentication for admin accounts and per-customer KMS keys are on the public roadmap and negotiable on enterprise contracts.",
       "Suspected security incidents may be reported to security@useatlas.dev. Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). A PGP key is available on request.",
     ],
     plain:
-      "TLS 1.2+ in transit, AES-256 at rest, MFA-required admin access, annual third-party pen tests. Report suspected issues to security@useatlas.dev (PGP key on request).",
+      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM. Working toward formal SOC 2 Type II + ISO 27001 certifications and admin MFA. Report suspected issues to security@useatlas.dev (PGP key on request).",
   },
   {
     id: "cookies",

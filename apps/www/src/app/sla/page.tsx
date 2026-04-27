@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   },
 };
 
-const STATUS_PAGE_URL = "https://atlas.openstatus.dev";
+const STATUS_PAGE_URL = "https://status.useatlas.dev";
 
 interface UptimeCard {
   tier: string;

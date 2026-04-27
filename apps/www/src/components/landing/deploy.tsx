@@ -36,7 +36,7 @@ function SelfHostCard() {
       </header>
 
       <p className="m-0 mb-5 text-sm leading-[1.6] text-zinc-400">
-        One command. Bun, Docker, or k8s. MIT-licensed.
+        One command. Bun, Docker, or k8s. AGPL-3.0.
         <br />
         Every feature, no limits.
       </p>

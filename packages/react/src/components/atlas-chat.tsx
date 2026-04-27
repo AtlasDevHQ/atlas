@@ -319,12 +319,11 @@ function AtlasChatInner({
   const authResolved = authMode !== null;
   const isManaged = authMode === "managed";
   const isSignedIn = isManaged && !!managedSession.data?.user;
-  // `propApiKey` is the documented escape hatch for embedded surfaces that
-  // carry their own bearer token (the `/demo` flow signs a short-lived demo
-  // JWT). When supplied, treat the request as authenticated via simple-key
-  // and skip the managed sign-in card / password-change dialog — those gate
-  // off Better Auth sessions which the embedder isn't using.
+  // When the embedder supplies its own bearer token, skip the managed
+  // sign-in card — that card gates off Better Auth sessions, which a
+  // simple-key bearer caller doesn't have.
   const hasEmbedderApiKey = !!propApiKey;
+  const showManagedSignInCard = isManaged && !isSignedIn && !hasEmbedderApiKey;
 
   const getHeaders = useCallback(() => {
     const headers: Record<string, string> = {};
@@ -624,7 +623,7 @@ function AtlasChatInner({
               <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || convos.fetchError}</p>
             )}
 
-            {isManaged && !isSignedIn && !hasEmbedderApiKey ? (
+            {showManagedSignInCard ? (
               <ManagedAuthCard />
             ) : (
               <ActionAuthProvider getHeaders={getHeaders} getCredentials={getCredentials}>

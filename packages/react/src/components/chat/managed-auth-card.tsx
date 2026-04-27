@@ -43,7 +43,7 @@ export function ManagedAuthCard() {
   }
 
   return (
-    <div className="flex h-full items-center justify-center">
+    <div className="flex h-full items-center justify-center" data-testid="managed-auth-card">
       <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-zinc-50 p-6 dark:border-zinc-700 dark:bg-zinc-900">
         <div className="text-center">
           <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">

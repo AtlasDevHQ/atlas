@@ -17,6 +17,7 @@ import {
   Crosshair,
   Database,
   Lock,
+  type LucideIcon,
 } from "lucide-react";
 
 const DEMO_TOKEN_KEY = "atlas-demo-token";
@@ -24,9 +25,9 @@ const DEMO_EMAIL_KEY = "atlas-demo-email";
 const DEMO_EXPIRES_KEY = "atlas-demo-expires";
 
 /**
- * Static curated starter prompts for the demo cohort. Bypasses
- * `/api/v1/starter-prompts` (which the auth pipeline rejects for demo
- * tokens) — `<AtlasChat starterPrompts={...}>` short-circuits the fetch.
+ * Static curated starter prompts for the demo cohort. `/api/v1/starter-prompts`
+ * runs under standardAuth; demo JWTs are only honored under `/api/v1/demo/*`.
+ * Inline the list to avoid a 401 on the public demo.
  */
 const DEMO_STARTER_PROMPTS = [
   "Which alerts had the highest severity in the last 7 days?",
@@ -38,7 +39,7 @@ const DEMO_STARTER_PROMPTS = [
 ] as const;
 
 type DatasetEntry = {
-  icon: typeof ShieldAlert;
+  icon: LucideIcon;
   table: string;
   description: string;
 };
@@ -122,6 +123,10 @@ export default function DemoPage() {
         // intentionally ignored: sessionStorage unavailable — token lives in state only
       }
     } catch (err) {
+      console.warn(
+        "[Atlas] demo start failed:",
+        err instanceof Error ? err.message : String(err),
+      );
       setError(
         err instanceof TypeError
           ? "Unable to reach the server"

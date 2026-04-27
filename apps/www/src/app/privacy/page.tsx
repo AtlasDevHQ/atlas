@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { Footer } from "../../components/footer";
+import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/legal";
 import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
@@ -19,13 +20,13 @@ export const metadata: Metadata = {
   },
 };
 
-interface Promise {
+interface PromiseCard {
   mono: string;
   label: string;
   sub: string;
 }
 
-const PROMISES: Promise[] = [
+const PROMISES: PromiseCard[] = [
   {
     mono: "no_train",
     label: "We don’t train on your data",
@@ -48,14 +49,7 @@ const PROMISES: Promise[] = [
   },
 ];
 
-interface LegalSection {
-  id: string;
-  title: string;
-  legal: string[];
-  plain: string;
-}
-
-const SECTIONS: LegalSection[] = [
+const SECTIONS: LegalSectionData[] = [
   {
     id: "intro",
     title: "Who we are & what this covers",
@@ -111,7 +105,7 @@ const SECTIONS: LegalSection[] = [
     title: "Who we share with",
     legal: [
       "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, error monitoring, payment processing). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
-      "Model providers: when Customer uses Atlas’s hosted models, prompts are sent to the model provider configured for that Customer (e.g. Anthropic, OpenAI). Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies.",
+      "Model providers: when Customer uses Atlas’s hosted models, prompts are routed through Vercel AI Gateway, which forwards them to the upstream model provider configured for that Customer (e.g. Anthropic, OpenAI). Vercel acts as a sub-processor for routing, observability, and fallback. Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies and does not transit Vercel.",
       "Legal: we may disclose information when required by law, court order, or to protect our rights, with notice to Customer where legally permitted.",
       "Successors: in a merger or sale of substantially all assets, the acquirer takes on the same obligations under this Policy.",
     ],
@@ -165,11 +159,11 @@ const SECTIONS: LegalSection[] = [
     id: "cookies",
     title: "Cookies & tracking",
     legal: [
-      "We use first-party cookies for authentication and CSRF protection. We use a single first-party analytics tool (Plausible, EU-hosted, no IP storage) on the marketing site. We do not use third-party advertising or behavioral tracking.",
-      "You can disable cookies in your browser; some Service features (notably login) will not work without them.",
+      "We use first-party cookies on Atlas Cloud for authentication and CSRF protection. The marketing site at useatlas.dev currently runs no analytics or behavioral tracking — no Plausible, no Google Analytics, no third-party advertising pixels, no cross-site cookies.",
+      "You can disable cookies in your browser; some Service features (notably login on Atlas Cloud) will not work without them.",
     ],
     plain:
-      "First-party cookies for auth and CSRF protection plus EU-hosted, IP-free analytics on the marketing site. No advertising or behavioral cookies. Disabling cookies prevents sign-in.",
+      "First-party auth + CSRF cookies on Atlas Cloud. Zero analytics or advertising tracking on the marketing site. Disabling cookies prevents sign-in.",
   },
   {
     id: "kids",
@@ -261,30 +255,10 @@ export default function PrivacyPage() {
         {/* Legal sections — TOC + dual-column body */}
         <section className="mx-auto max-w-7xl px-6 py-12 md:py-16">
           <div className="grid gap-12 lg:grid-cols-[220px_1fr] lg:gap-16">
-            <aside aria-label="Document contents" className="lg:sticky lg:top-24 lg:self-start">
-              <p className="mb-4 font-mono text-[11px] tracking-widest text-brand uppercase">
-                // contents
-              </p>
-              <ol className="space-y-1">
-                {SECTIONS.map((section, i) => (
-                  <li key={section.id}>
-                    <a
-                      href={`#${section.id}`}
-                      className="-ml-3.5 flex items-baseline gap-2.5 border-l-2 border-transparent py-1.5 pl-3 text-[13px] text-zinc-400 transition-colors hover:border-brand/60 hover:text-brand"
-                    >
-                      <span className="font-mono text-[10px] tracking-wider text-zinc-400">
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <span>{section.title}</span>
-                    </a>
-                  </li>
-                ))}
-              </ol>
-            </aside>
-
+            <LegalTOC sections={SECTIONS} />
             <article className="flex flex-col gap-12 md:gap-16">
               {SECTIONS.map((section, i) => (
-                <PrivacyLegalSection key={section.id} section={section} index={i} />
+                <LegalSection key={section.id} section={section} index={i} />
               ))}
             </article>
           </div>
@@ -321,33 +295,3 @@ export default function PrivacyPage() {
   );
 }
 
-function PrivacyLegalSection({ section, index }: { section: LegalSection; index: number }) {
-  return (
-    <section id={section.id} aria-labelledby={`${section.id}-heading`} className="scroll-mt-24">
-      <div className="mb-6 flex items-baseline gap-4 border-b border-zinc-800/40 pb-4">
-        <span className="font-mono text-[13px] tracking-wider text-brand">
-          {String(index + 1).padStart(2, "0")}
-        </span>
-        <h2
-          id={`${section.id}-heading`}
-          className="text-xl font-semibold tracking-tight text-zinc-100 md:text-2xl"
-        >
-          {section.title}
-        </h2>
-      </div>
-      <div className="grid gap-8 md:grid-cols-[1fr_280px] md:gap-10">
-        <div className="space-y-4 text-[14.5px] leading-7 text-zinc-300">
-          {section.legal.map((paragraph, i) => (
-            <p key={i}>{paragraph}</p>
-          ))}
-        </div>
-        <aside className="border-l border-dashed border-zinc-700/60 pl-6">
-          <p className="mb-3 font-mono text-[10.5px] tracking-widest text-brand uppercase">
-            // plain english
-          </p>
-          <p className="text-[13px] leading-6 text-zinc-400">{section.plain}</p>
-        </aside>
-      </div>
-    </section>
-  );
-}

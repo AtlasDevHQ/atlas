@@ -15,8 +15,6 @@ export default function LoginLayout({
       id="main"
       className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-background p-4"
     >
-      {/* Soft brand backdrop — radial wash sits well below the card so the
-       * focal point is the form, not the aura. */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 -z-10

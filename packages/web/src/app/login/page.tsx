@@ -25,119 +25,21 @@ import {
   GitHubIcon,
   MicrosoftIcon,
 } from "@/ui/components/social-icons";
+import { parseSignInError, type SignInErrorState } from "./parse-sign-in-error";
 
 type SocialProvider = "google" | "github" | "microsoft";
 
 const SOCIAL_PROVIDERS: ReadonlyArray<{
   id: SocialProvider;
   label: string;
-  Icon: () => React.JSX.Element;
+  Icon: React.ComponentType;
 }> = [
   { id: "google", label: "Continue with Google", Icon: GoogleIcon },
   { id: "github", label: "Continue with GitHub", Icon: GitHubIcon },
   { id: "microsoft", label: "Continue with Microsoft", Icon: MicrosoftIcon },
 ];
 
-type SignInErrorKind =
-  | "network"
-  | "invalid_credentials"
-  | "rate_limited"
-  | "email_unverified"
-  | "sso_required"
-  | "unknown";
-
-interface SignInErrorState {
-  kind: SignInErrorKind;
-  title: string;
-  body: string;
-  action?: { label: string; href: string };
-}
-
-/**
- * Map a Better Auth sign-in error or thrown exception to a categorized,
- * user-facing alert. Falls back to a generic "try again" if the shape is
- * unfamiliar — never collapses to a silent no-op.
- */
-function parseSignInError(input: {
-  error?: { message?: string | null; code?: string | null; status?: number | null };
-  thrown?: unknown;
-}): SignInErrorState {
-  if (input.thrown !== undefined) {
-    if (input.thrown instanceof TypeError) {
-      return {
-        kind: "network",
-        title: "Can't reach the server",
-        body: "Check your connection and try again. If this keeps happening, your workspace may be offline.",
-      };
-    }
-    const message =
-      input.thrown instanceof Error ? input.thrown.message : String(input.thrown);
-    return {
-      kind: "unknown",
-      title: "Sign in failed",
-      body: message || "Something went wrong. Try again in a moment.",
-    };
-  }
-
-  const err = input.error ?? {};
-  const code = (err.code ?? "").toUpperCase();
-  const message = err.message ?? "";
-  const status = err.status ?? 0;
-
-  if (status === 429 || code.includes("RATE") || /too many|rate limit/i.test(message)) {
-    return {
-      kind: "rate_limited",
-      title: "Too many sign-in attempts",
-      body: "We've temporarily paused sign-ins from this device. Wait a minute and try again.",
-    };
-  }
-
-  // Better Auth's standard wrong-credentials envelope. Keep the word
-  // "incorrect" — the e2e suite (auth.spec.ts) asserts /invalid|incorrect/i.
-  if (
-    status === 401 ||
-    code.includes("INVALID_EMAIL_OR_PASSWORD") ||
-    /invalid|incorrect|password/i.test(message)
-  ) {
-    return {
-      kind: "invalid_credentials",
-      title: "Email or password is incorrect",
-      body: "Double-check your credentials. If you forgot your password, contact your workspace admin to reset it.",
-    };
-  }
-
-  if (code.includes("EMAIL_NOT_VERIFIED") || /verify|verification/i.test(message)) {
-    return {
-      kind: "email_unverified",
-      title: "Verify your email first",
-      body: "We sent a verification link to your inbox. Open it to activate your account, then sign in.",
-    };
-  }
-
-  // Server may emit SSO_REQUIRED for domains that enforce single sign-on
-  // (F-56). When the response carries a redirect URL, surface it as a
-  // one-click action.
-  if (code.includes("SSO") || /single sign-on|sso required/i.test(message)) {
-    const redirect =
-      "ssoRedirectUrl" in (err as Record<string, unknown>)
-        ? String((err as Record<string, unknown>).ssoRedirectUrl ?? "")
-        : "";
-    return {
-      kind: "sso_required",
-      title: "Your workspace requires single sign-on",
-      body: "Sign in with your company's identity provider to continue.",
-      action: redirect
-        ? { label: "Continue with SSO", href: redirect }
-        : undefined,
-    };
-  }
-
-  return {
-    kind: "unknown",
-    title: "Sign in failed",
-    body: message || "Something went wrong. Try again in a moment.",
-  };
-}
+const KNOWN_PROVIDERS = new Set<SocialProvider>(["google", "github", "microsoft"]);
 
 function getApiBase(): string {
   const url = getApiUrl();
@@ -156,29 +58,30 @@ export default function LoginPage() {
   const [socialProviders, setSocialProviders] = useState<readonly SocialProvider[]>([]);
 
   useEffect(() => {
-    const base = getApiBase();
-    fetch(`${base}/api/v1/onboarding/social-providers`)
+    const controller = new AbortController();
+    fetch(`${getApiBase()}/api/v1/onboarding/social-providers`, { signal: controller.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`Social providers returned ${r.status}`);
         return r.json();
       })
       .then((data: { providers?: string[] }) => {
-        if (Array.isArray(data.providers)) {
-          const known = new Set<SocialProvider>(["google", "github", "microsoft"]);
-          setSocialProviders(
-            data.providers.filter((p): p is SocialProvider =>
-              known.has(p as SocialProvider),
-            ),
-          );
-        }
+        if (controller.signal.aborted || !Array.isArray(data.providers)) return;
+        // Filter to providers we render UI for; unknown ids (e.g. saml/oidc)
+        // fall through silently to the email/password form.
+        setSocialProviders(
+          data.providers.filter((p): p is SocialProvider =>
+            KNOWN_PROVIDERS.has(p as SocialProvider),
+          ),
+        );
       })
       .catch((err: unknown) => {
-        // Graceful degradation: email/password form still works
+        if (err instanceof Error && err.name === "AbortError") return;
         console.warn(
           "Social providers unavailable:",
           err instanceof Error ? err.message : String(err),
         );
       });
+    return () => controller.abort();
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -277,6 +180,7 @@ export default function LoginPage() {
             </>
           )}
 
+          {/* noValidate: defer to <SignInErrorAlert> instead of native popups. */}
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <div className="space-y-2">
               <Label htmlFor="login-email">Email</Label>
@@ -350,18 +254,19 @@ export default function LoginPage() {
 }
 
 function SignInErrorAlert({ error }: { error: SignInErrorState }) {
+  const isSso = error.kind === "sso_required";
   return (
     <div
       role="alert"
       aria-live="polite"
       className={cn(
         "flex items-start gap-3 rounded-md border p-3 text-sm",
-        error.kind === "sso_required"
+        isSso
           ? "border-primary/30 bg-primary/5 text-foreground"
           : "border-red-200 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200",
       )}
     >
-      {error.kind === "sso_required" ? (
+      {isSso ? (
         <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
       ) : (
         <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
@@ -371,14 +276,12 @@ function SignInErrorAlert({ error }: { error: SignInErrorState }) {
         <p
           className={cn(
             "text-xs leading-relaxed",
-            error.kind === "sso_required"
-              ? "text-muted-foreground"
-              : "text-red-800/90 dark:text-red-200/90",
+            isSso ? "text-muted-foreground" : "text-red-800/90 dark:text-red-200/90",
           )}
         >
           {error.body}
         </p>
-        {error.action && (
+        {error.kind === "sso_required" && error.action && (
           <a
             href={error.action.href}
             className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"

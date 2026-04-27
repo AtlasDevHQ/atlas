@@ -39,7 +39,7 @@ setup("authenticate as admin", async ({ page }) => {
 
     // Wait for either: chat UI loads, or error appears (locator.or avoids dangling promises)
     const chatInput = page.locator('input[placeholder="Ask a question about your data..."]');
-    const errorMsg = page.locator("text=Invalid email or password");
+    const errorMsg = page.getByText(/invalid|incorrect/i).first();
     const outcome = chatInput.or(errorMsg);
 
     try {

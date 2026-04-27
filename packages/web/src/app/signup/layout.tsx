@@ -10,9 +10,9 @@ export default function SignupLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <main className="flex min-h-dvh items-center justify-center bg-background p-4">
-      {children}
-    </main>
-  );
+  // Each /signup/* route renders its own <SignupShell>, which provides the
+  // top bar (logo + step indicator) and the centered content area. This
+  // layout intentionally stays a passthrough so the shell isn't wrapped in
+  // a competing <main>.
+  return <>{children}</>;
 }

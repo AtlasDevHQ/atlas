@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Card,
   CardContent,
@@ -13,7 +15,33 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Building2 } from "lucide-react";
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import { Loader2 } from "lucide-react";
+import { SignupShell } from "@/ui/components/signup/signup-shell";
+
+const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
+
+const WorkspaceSchema = z.object({
+  name: z
+    .string()
+    .min(1, "Give your workspace a name")
+    .max(64, "Name is too long"),
+  slug: z
+    .string()
+    .min(2, "Slugs must be at least 2 characters")
+    .max(48, "Slugs must be 48 characters or fewer")
+    .regex(SLUG_PATTERN, "Lowercase letters, numbers, and hyphens only"),
+});
+
+type WorkspaceForm = z.infer<typeof WorkspaceSchema>;
 
 function slugify(text: string): string {
   return text
@@ -27,38 +55,36 @@ function slugify(text: string): string {
 
 export default function WorkspacePage() {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [slug, setSlug] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [slugManual, setSlugManual] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const form = useForm<WorkspaceForm>({
+    resolver: zodResolver(WorkspaceSchema),
+    defaultValues: { name: "", slug: "" },
+    mode: "onBlur",
+  });
 
   function handleNameChange(value: string) {
-    setName(value);
+    form.setValue("name", value, { shouldValidate: false });
     if (!slugManual) {
-      setSlug(slugify(value));
+      form.setValue("slug", slugify(value), { shouldValidate: false });
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!name.trim()) return;
-
-    setLoading(true);
-    setError(null);
+  async function onSubmit(values: WorkspaceForm) {
+    setSubmitError(null);
 
     try {
       const result = await authClient.organization.create({
-        name: name.trim(),
-        slug: slug || slugify(name),
+        name: values.name.trim(),
+        slug: values.slug,
       });
 
       if (result.error) {
-        setError(result.error.message ?? "Failed to create workspace");
+        setSubmitError(result.error.message ?? "Failed to create workspace");
         return;
       }
 
-      // Set the new org as active — required for the next step
       if (result.data?.id) {
         try {
           await authClient.organization.setActive({
@@ -66,7 +92,7 @@ export default function WorkspacePage() {
           });
         } catch (err) {
           console.error("Failed to activate workspace:", err);
-          setError(
+          setSubmitError(
             "Workspace created, but we couldn't activate it. Please reload and try again.",
           );
           return;
@@ -75,84 +101,100 @@ export default function WorkspacePage() {
 
       router.push("/signup/region");
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to create workspace",
+      setSubmitError(
+        err instanceof TypeError
+          ? "Unable to reach the server. Check your connection and try again."
+          : err instanceof Error
+            ? err.message
+            : "Failed to create workspace",
       );
-    } finally {
-      setLoading(false);
     }
   }
 
-  return (
-    <Card className="w-full max-w-md">
-      <CardHeader className="text-center">
-        <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-primary/10">
-          <Building2 className="size-6 text-primary" />
-        </div>
-        <CardTitle className="text-2xl">Name your workspace</CardTitle>
-        <CardDescription>
-          A workspace is where your team queries data together.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="ws-name">Workspace name</Label>
-            <Input
-              id="ws-name"
-              placeholder="Acme Corp"
-              value={name}
-              onChange={(e) => handleNameChange(e.target.value)}
-              autoFocus
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="ws-slug">URL slug</Label>
-            <Input
-              id="ws-slug"
-              placeholder="acme-corp"
-              value={slug}
-              onChange={(e) => {
-                setSlug(e.target.value);
-                setSlugManual(true);
-              }}
-              className="font-mono text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              Lowercase letters, numbers, and hyphens only.
-            </p>
-          </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={loading || !name.trim()}
-          >
-            {loading ? "Creating..." : "Continue"}
-          </Button>
-        </form>
+  const submitting = form.formState.isSubmitting;
 
-        <div className="mt-4 flex justify-center">
-          <StepIndicator current={2} total={5} />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function StepIndicator({ current, total }: { current: number; total: number }) {
   return (
-    <div className="flex items-center gap-1.5">
-      {Array.from({ length: total }, (_, i) => (
-        <div
-          key={i}
-          className={`h-1.5 rounded-full transition-all ${
-            i < current
-              ? "w-6 bg-primary"
-              : "w-1.5 bg-muted-foreground/30"
-          }`}
-        />
-      ))}
-    </div>
+    <SignupShell step="workspace">
+      <Card>
+        <CardHeader className="space-y-1.5 text-center">
+          <CardTitle className="text-2xl tracking-tight">Name your workspace</CardTitle>
+          <CardDescription>
+            A workspace is where your team queries data together. You can rename it later.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Workspace name</FormLabel>
+                    <FormControl>
+                      <Input
+                        autoFocus
+                        placeholder="Acme Corp"
+                        disabled={submitting}
+                        {...field}
+                        onChange={(e) => {
+                          field.onChange(e);
+                          handleNameChange(e.target.value);
+                        }}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="slug"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>URL slug</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="acme-corp"
+                        className="font-mono text-sm"
+                        disabled={submitting}
+                        {...field}
+                        onChange={(e) => {
+                          field.onChange(e);
+                          setSlugManual(true);
+                        }}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      Lowercase letters, numbers, and hyphens. Used in URLs and API tokens.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              {submitError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {submitError}
+                </p>
+              )}
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={submitting || !form.watch("name").trim()}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    Creating workspace...
+                  </>
+                ) : (
+                  "Continue"
+                )}
+              </Button>
+            </form>
+          </Form>
+        </CardContent>
+      </Card>
+    </SignupShell>
   );
 }

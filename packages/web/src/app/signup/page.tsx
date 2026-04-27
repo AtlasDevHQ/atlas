@@ -15,8 +15,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { Database } from "lucide-react";
 import { GoogleIcon, GitHubIcon, MicrosoftIcon } from "@/ui/components/social-icons";
+import { SignupShell } from "@/ui/components/signup/signup-shell";
 
 function getApiBase(): string {
   const url = getApiUrl();
@@ -72,8 +72,8 @@ export default function SignupPage() {
     } catch (err) {
       setError(
         err instanceof TypeError
-          ? "Unable to reach the server"
-          : "Sign up failed",
+          ? "Unable to reach the server. Check your connection and try again."
+          : "Sign up failed. Please try again.",
       );
     } finally {
       setLoading(false);
@@ -96,127 +96,129 @@ export default function SignupPage() {
   }
 
   return (
-    <Card className="w-full max-w-md">
-      <CardHeader className="text-center">
-        <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-primary/10">
-          <Database className="size-6 text-primary" />
-        </div>
-        <CardTitle className="text-2xl">Create your account</CardTitle>
-        <CardDescription>
-          Get started with Atlas — your AI data analyst.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {socialProviders.length > 0 && (
-          <>
-            <div className="grid gap-2">
-              {socialProviders.includes("google") && (
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  disabled={socialLoading !== null}
-                  onClick={() => handleSocialLogin("google")}
-                >
-                  <GoogleIcon />
-                  {socialLoading === "google" ? "Redirecting..." : "Continue with Google"}
-                </Button>
-              )}
-              {socialProviders.includes("github") && (
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  disabled={socialLoading !== null}
-                  onClick={() => handleSocialLogin("github")}
-                >
-                  <GitHubIcon />
-                  {socialLoading === "github" ? "Redirecting..." : "Continue with GitHub"}
-                </Button>
-              )}
-              {socialProviders.includes("microsoft") && (
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  disabled={socialLoading !== null}
-                  onClick={() => handleSocialLogin("microsoft")}
-                >
-                  <MicrosoftIcon />
-                  {socialLoading === "microsoft" ? "Redirecting..." : "Continue with Microsoft"}
-                </Button>
-              )}
+    <SignupShell step="account">
+      <Card>
+        <CardHeader className="space-y-1.5 text-center">
+          <CardTitle className="text-2xl tracking-tight">Create your account</CardTitle>
+          <CardDescription>
+            Get started with Atlas — your AI data analyst.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {socialProviders.length > 0 && (
+            <>
+              <div className="grid gap-2">
+                {socialProviders.includes("google") && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    disabled={socialLoading !== null}
+                    onClick={() => handleSocialLogin("google")}
+                  >
+                    <GoogleIcon />
+                    {socialLoading === "google" ? "Redirecting..." : "Continue with Google"}
+                  </Button>
+                )}
+                {socialProviders.includes("github") && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    disabled={socialLoading !== null}
+                    onClick={() => handleSocialLogin("github")}
+                  >
+                    <GitHubIcon />
+                    {socialLoading === "github" ? "Redirecting..." : "Continue with GitHub"}
+                  </Button>
+                )}
+                {socialProviders.includes("microsoft") && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    disabled={socialLoading !== null}
+                    onClick={() => handleSocialLogin("microsoft")}
+                  >
+                    <MicrosoftIcon />
+                    {socialLoading === "microsoft" ? "Redirecting..." : "Continue with Microsoft"}
+                  </Button>
+                )}
+              </div>
+              <div className="relative">
+                <Separator />
+                <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-[11px] uppercase tracking-wider text-muted-foreground">
+                  or
+                </span>
+              </div>
+            </>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="signup-name">Name</Label>
+              <Input
+                id="signup-name"
+                placeholder="Jane Doe"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+              />
             </div>
-            <div className="relative">
-              <Separator />
-              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-xs text-muted-foreground">
-                or
-              </span>
+            <div className="space-y-2">
+              <Label htmlFor="signup-email">Work email</Label>
+              <Input
+                id="signup-email"
+                type="email"
+                placeholder="jane@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
             </div>
-          </>
-        )}
+            <div className="space-y-2">
+              <Label htmlFor="signup-password">Password</Label>
+              <Input
+                id="signup-password"
+                type="password"
+                placeholder="At least 8 characters"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+              />
+            </div>
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={loading || !email || !password}
+            >
+              {loading ? "Creating account..." : "Create account"}
+            </Button>
+          </form>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="signup-name">Name</Label>
-            <Input
-              id="signup-name"
-              placeholder="Jane Doe"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="signup-email">Email</Label>
-            <Input
-              id="signup-email"
-              type="email"
-              placeholder="jane@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="signup-password">Password</Label>
-            <Input
-              id="signup-password"
-              type="password"
-              placeholder="At least 8 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={8}
-            />
-          </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={loading || !email || !password}
-          >
-            {loading ? "Creating account..." : "Create account"}
-          </Button>
-        </form>
+          <p className="text-center text-xs text-muted-foreground">
+            By signing up, you agree to our{" "}
+            <a href="https://www.useatlas.dev/terms" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
+              Terms of Service
+            </a>{" "}
+            and{" "}
+            <a href="https://www.useatlas.dev/privacy" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
+              Privacy Policy
+            </a>
+            .
+          </p>
 
-        <p className="text-center text-xs text-muted-foreground">
-          By signing up, you agree to our{" "}
-          <a href="https://www.useatlas.dev/terms" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
-            Terms of Service
-          </a>{" "}
-          and{" "}
-          <a href="https://www.useatlas.dev/privacy" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
-            Privacy Policy
-          </a>
-          .
-        </p>
-
-        <p className="text-center text-sm text-muted-foreground">
-          Already have an account?{" "}
-          <a href="/login" className="text-primary hover:underline">
-            Sign in
-          </a>
-        </p>
-      </CardContent>
-    </Card>
+          <p className="text-center text-sm text-muted-foreground">
+            Already have an account?{" "}
+            <a href="/login" className="font-medium text-primary hover:underline">
+              Sign in
+            </a>
+          </p>
+        </CardContent>
+      </Card>
+    </SignupShell>
   );
 }
-

@@ -732,7 +732,10 @@ export const auditRetentionConfig = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     orgId: text("org_id").notNull().unique(),
-    retentionDays: integer("retention_days"),
+    // Default 365 days mirrors migration 0042 (#1927). The DB default and
+    // this Drizzle declaration must agree — otherwise `drizzle-kit generate`
+    // would emit a migration to remove the DEFAULT on the next schema diff.
+    retentionDays: integer("retention_days").default(365),
     hardDeleteDelayDays: integer("hard_delete_delay_days").notNull().default(30),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     updatedBy: text("updated_by"),

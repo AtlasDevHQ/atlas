@@ -138,7 +138,7 @@ const SECTIONS: LegalSectionData[] = [
     title: "Retention",
     legal: [
       "Account data: retained for the duration of the account plus 90 days after closure.",
-      "Audit logs: 365 days by default on Business; configurable per-workspace with a 7-day floor and a hard-delete delay for compliance export.",
+      "Audit logs: 365 days by default; configurable per-workspace with a 7-day floor and a hard-delete delay for compliance export.",
       "Telemetry: 30 days, then aggregated and de-identified.",
       "Backups: production data is retained in encrypted backups for up to 90 days.",
     ],

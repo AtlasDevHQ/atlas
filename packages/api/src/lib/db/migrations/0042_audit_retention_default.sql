@@ -3,8 +3,8 @@
 -- Pre-#1927: `audit_retention_config.retention_days INTEGER` had no DEFAULT,
 -- and orgs without an explicit policy row were treated as "unlimited" by the
 -- EE retention library (`getRetentionPolicy` returned null → no purging).
--- That left /privacy §8 making the weaker "retained indefinitely until the
--- Customer admin configures a retention policy" claim.
+-- That left the Retention section of /privacy making the weaker "retained
+-- indefinitely until the Customer admin configures a retention policy" claim.
 --
 -- This migration:
 --   1. Sets the column DEFAULT to 365 so any future INSERT that omits
@@ -15,15 +15,31 @@
 --      that explicitly chose `retention_days = NULL` (unlimited) — are not
 --      touched. The `WHERE NOT EXISTS` guard makes the backfill idempotent.
 --
--- 365 is well above the EE library's `MIN_RETENTION_DAYS = 7` floor
--- (ee/src/audit/retention.ts:152) so the validator on `setRetentionPolicy`
+-- 365 is well above the EE library's `MIN_RETENTION_DAYS` floor (see
+-- `ee/src/audit/retention.ts`) so the validator on `setRetentionPolicy`
 -- continues to accept the new default if a future admin reads-then-writes it.
 -- `hard_delete_delay_days` defaults to 30 in the table definition; the
 -- backfill states it explicitly so a reader doesn't have to cross-reference.
 --
--- The backfill row is keyed on `organization.id` — Better Auth's organization
--- table. On non-EE deploys without the org table, the INSERT is a no-op
--- (no rows to scan); the ALTER COLUMN succeeds either way.
+-- Drizzle parity: `auditRetentionConfig.retentionDays` in
+-- `packages/api/src/lib/db/schema.ts` carries the matching `.default(365)`.
+-- The two literals must agree — `migrate.test.ts` pins both.
+--
+-- ──────────────────────────────────────────────────────────────────
+-- Non-managed-auth deploy guard (#1472)
+-- ──────────────────────────────────────────────────────────────────
+-- The backfill references `organization` — Better Auth's table — without an
+-- IF EXISTS guard. Postgres resolves the table at parse time, so on a deploy
+-- without Better Auth's organization plugin the file would fail to parse and
+-- abort boot. That is the wrong behavior for self-hosted single-user mode,
+-- where `audit_retention_config` is unused but the runner would still
+-- attempt to apply this file.
+--
+-- Resolution: this file is registered in `ORG_DEPENDENT_MIGRATIONS` in
+-- `packages/api/src/lib/db/internal.ts` and skipped on
+-- `detectAuthMode() !== "managed"` boots. It is then applied automatically
+-- on a future boot if the deploy switches to managed auth. This mirrors the
+-- 0027 pattern — see `migrate.test.ts` for the assertion that pins this.
 --
 -- Issue: #1927
 

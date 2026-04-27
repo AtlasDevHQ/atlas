@@ -632,55 +632,74 @@ describe("0042_audit_retention_default.sql", () => {
   });
 
   it("sets audit_retention_config.retention_days DEFAULT to 365", () => {
-    // The default backs the /privacy §8 "365 days by default" claim — any
-    // drift in the value would silently weaken what we promise customers
-    // without a corresponding privacy-page revert. Pin the literal.
+    // Pins the literal `365` in the migration SQL. The privacy page also
+    // pins the literal — drift between the two is then visible at code
+    // review (no shared symbol, but no silent skew either).
     const sql = fs.readFileSync(filePath, "utf-8");
     expect(sql).toMatch(
       /ALTER\s+TABLE\s+audit_retention_config\s+ALTER\s+COLUMN\s+retention_days\s+SET\s+DEFAULT\s+365/i,
     );
   });
 
-  it("backfills existing orgs with a 365-day, 30-day-hard-delete config row", () => {
-    // The backfill is the half of the migration that closes the gap on
-    // existing tenants — without it, only orgs created post-migration
-    // pick up the new default and the privacy-page claim is false for
-    // every existing customer.
+  it("backfills existing orgs with retention_days=365 and hard_delete_delay_days=30, in that column order", () => {
+    // Single regex pins BOTH the INSERT column order AND the SELECT
+    // projection so a future edit that reorders one without the other
+    // (e.g., flips the column list to put hard_delete_delay_days second
+    // while leaving SELECT id, 365, 30 unchanged) silently inverts the
+    // values — admins would get 30-day retention and 365-day hard-delete
+    // delay. The combined pattern catches that drift.
     const sql = fs.readFileSync(filePath, "utf-8");
     expect(sql).toMatch(
       /INSERT\s+INTO\s+audit_retention_config\s*\(\s*org_id\s*,\s*retention_days\s*,\s*hard_delete_delay_days\s*\)\s*SELECT\s+id\s*,\s*365\s*,\s*30\s+FROM\s+organization/i,
     );
   });
 
-  it("backfill is idempotent via WHERE NOT EXISTS — re-run is a no-op for existing config rows", () => {
-    // The migration runner is gated by __atlas_migrations so a successful
-    // apply only runs once. But operators sometimes hand-replay a single
-    // file during recovery, and a second apply must NOT double-insert
-    // (would hit the org_id UNIQUE constraint and abort) NOR silently
-    // overwrite an admin's explicit policy choice (e.g., "unlimited").
+  it("backfill is idempotent via WHERE NOT EXISTS — never via ON CONFLICT", () => {
+    // `WHERE NOT EXISTS` and `ON CONFLICT (org_id) DO NOTHING` look
+    // interchangeable, but the design point is "don't touch an admin's
+    // explicit policy row." `ON CONFLICT DO UPDATE` is the easy-to-miss
+    // edit that would silently overwrite an admin's `retention_days =
+    // NULL` (unlimited) choice with the 365-day default. Pin the chosen
+    // mechanism and forbid the alternative outright.
     const sql = fs.readFileSync(filePath, "utf-8");
     expect(sql).toMatch(
       /WHERE\s+NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+audit_retention_config\s+arc\s+WHERE\s+arc\.org_id\s*=\s*organization\.id\s*\)/i,
     );
+    expect(sql).not.toMatch(/ON\s+CONFLICT/i);
   });
 
   it("does not touch hard_delete_delay_days default — that one stays at 30 from baseline", () => {
-    // 0000_baseline.sql already pins `hard_delete_delay_days INTEGER NOT
-    // NULL DEFAULT 30`. This migration must not redundantly ALTER it —
-    // a duplicate ALTER would noise up the SQL and obscure intent.
-    // Ensures we don't drift into changing two defaults at once.
+    // Bisecting a regression should land on a single column at a time. A
+    // future edit that bundles a second ALTER COLUMN ... SET DEFAULT in
+    // here would couple two retention-policy concerns into one revert.
     const sql = fs.readFileSync(filePath, "utf-8");
     expect(sql).not.toMatch(
       /ALTER\s+COLUMN\s+hard_delete_delay_days\s+SET\s+DEFAULT/i,
     );
   });
 
-  it("references issue #1927 in header comments", () => {
-    // Pins the canonical context — a future reader (or AGENTS.md sweep)
-    // can trace the privacy-page revert back to the migration that made
-    // the new claim true.
-    const sql = fs.readFileSync(filePath, "utf-8");
-    expect(sql).toMatch(/#1927/);
+  it("Drizzle schema declares the matching .default(365) on retentionDays", () => {
+    // The DB DEFAULT lives in this migration; the ORM-level default lives
+    // in `schema.ts`. If they diverge, `bun x drizzle-kit generate` on
+    // the next schema diff would emit a migration to REMOVE the DB
+    // DEFAULT (silent rollback of #1927). This test pins them in lockstep.
+    const schemaPath = path.join(import.meta.dir, "..", "schema.ts");
+    const schemaSrc = fs.readFileSync(schemaPath, "utf-8");
+    expect(schemaSrc).toMatch(
+      /retentionDays:\s*integer\(\s*"retention_days"\s*\)\.default\(365\)/,
+    );
+  });
+
+  it("is registered in ORG_DEPENDENT_MIGRATIONS so non-managed deploys skip it (#1472)", () => {
+    // Postgres parses `INSERT … FROM organization` at plan time, so on
+    // a non-managed deploy without Better Auth's organization plugin the
+    // migration aborts boot before evaluating row count. The skip list in
+    // `internal.ts` keeps the file out of the runner's pending set in
+    // that mode (mirrors the 0027 contract). Pin the registration so a
+    // future `internal.ts` cleanup can't silently drop it.
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(/ORG_DEPENDENT_MIGRATIONS\s*=\s*\[[^\]]*"0042_audit_retention_default\.sql"/);
   });
 });
 

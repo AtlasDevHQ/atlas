@@ -732,7 +732,10 @@ function warnIfSharedDatabase(): void {
 }
 
 /** Migrations that depend on Better Auth's organization table (#1472). */
-const ORG_DEPENDENT_MIGRATIONS = ["0027_organization_saas_columns.sql"];
+const ORG_DEPENDENT_MIGRATIONS = [
+  "0027_organization_saas_columns.sql",
+  "0042_audit_retention_default.sql",
+];
 
 /**
  * Idempotent migration: runs versioned SQL migrations from `migrations/`

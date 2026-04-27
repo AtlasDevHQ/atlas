@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(42);
+    expect(count).toBe(43);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -150,6 +150,7 @@ describe("runMigrations", () => {
         "0039_conversation_step_cap.sql",
         "0040_drop_integration_plaintext.sql",
         "0041_dashboard_card_layout.sql",
+        "0042_audit_retention_default.sql",
       ],
     });
 
@@ -616,6 +617,89 @@ describe("0035_admin_action_retention.sql", () => {
     const sql = fs.readFileSync(filePath, "utf-8");
     expect(sql).toMatch(/admin-action-log-retention\.md/);
     expect(sql).toMatch(/F-36/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0042_audit_retention_default.sql  (#1927)
+// ---------------------------------------------------------------------------
+
+describe("0042_audit_retention_default.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0042_audit_retention_default.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("sets audit_retention_config.retention_days DEFAULT to 365", () => {
+    // Pins the literal `365` in the migration SQL. The privacy page also
+    // pins the literal — drift between the two is then visible at code
+    // review (no shared symbol, but no silent skew either).
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /ALTER\s+TABLE\s+audit_retention_config\s+ALTER\s+COLUMN\s+retention_days\s+SET\s+DEFAULT\s+365/i,
+    );
+  });
+
+  it("backfills existing orgs with retention_days=365 and hard_delete_delay_days=30, in that column order", () => {
+    // Single regex pins BOTH the INSERT column order AND the SELECT
+    // projection so a future edit that reorders one without the other
+    // (e.g., flips the column list to put hard_delete_delay_days second
+    // while leaving SELECT id, 365, 30 unchanged) silently inverts the
+    // values — admins would get 30-day retention and 365-day hard-delete
+    // delay. The combined pattern catches that drift.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /INSERT\s+INTO\s+audit_retention_config\s*\(\s*org_id\s*,\s*retention_days\s*,\s*hard_delete_delay_days\s*\)\s*SELECT\s+id\s*,\s*365\s*,\s*30\s+FROM\s+organization/i,
+    );
+  });
+
+  it("backfill is idempotent via WHERE NOT EXISTS — never via ON CONFLICT", () => {
+    // `WHERE NOT EXISTS` and `ON CONFLICT (org_id) DO NOTHING` look
+    // interchangeable, but the design point is "don't touch an admin's
+    // explicit policy row." `ON CONFLICT DO UPDATE` is the easy-to-miss
+    // edit that would silently overwrite an admin's `retention_days =
+    // NULL` (unlimited) choice with the 365-day default. Pin the chosen
+    // mechanism and forbid the alternative outright.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(
+      /WHERE\s+NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+audit_retention_config\s+arc\s+WHERE\s+arc\.org_id\s*=\s*organization\.id\s*\)/i,
+    );
+    expect(sql).not.toMatch(/ON\s+CONFLICT/i);
+  });
+
+  it("does not touch hard_delete_delay_days default — that one stays at 30 from baseline", () => {
+    // Bisecting a regression should land on a single column at a time. A
+    // future edit that bundles a second ALTER COLUMN ... SET DEFAULT in
+    // here would couple two retention-policy concerns into one revert.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).not.toMatch(
+      /ALTER\s+COLUMN\s+hard_delete_delay_days\s+SET\s+DEFAULT/i,
+    );
+  });
+
+  it("Drizzle schema declares the matching .default(365) on retentionDays", () => {
+    // The DB DEFAULT lives in this migration; the ORM-level default lives
+    // in `schema.ts`. If they diverge, `bun x drizzle-kit generate` on
+    // the next schema diff would emit a migration to REMOVE the DB
+    // DEFAULT (silent rollback of #1927). This test pins them in lockstep.
+    const schemaPath = path.join(import.meta.dir, "..", "schema.ts");
+    const schemaSrc = fs.readFileSync(schemaPath, "utf-8");
+    expect(schemaSrc).toMatch(
+      /retentionDays:\s*integer\(\s*"retention_days"\s*\)\.default\(365\)/,
+    );
+  });
+
+  it("is registered in ORG_DEPENDENT_MIGRATIONS so non-managed deploys skip it (#1472)", () => {
+    // Postgres parses `INSERT … FROM organization` at plan time, so on
+    // a non-managed deploy without Better Auth's organization plugin the
+    // migration aborts boot before evaluating row count. The skip list in
+    // `internal.ts` keeps the file out of the runner's pending set in
+    // that mode (mirrors the 0027 contract). Pin the registration so a
+    // future `internal.ts` cleanup can't silently drop it.
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(/ORG_DEPENDENT_MIGRATIONS\s*=\s*\[[^\]]*"0042_audit_retention_default\.sql"/);
   });
 });
 

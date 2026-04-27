@@ -27,6 +27,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
         label: "Admin",
         role: "admin",
         activeOrganizationId: "org-1",
+        claims: { twoFactorEnabled: true },
       },
     }),
 );
@@ -211,6 +212,7 @@ function resetMocks(): void {
         label: "Admin",
         role: "admin",
         activeOrganizationId: "org-1",
+        claims: { twoFactorEnabled: true },
       },
     }),
   );
@@ -587,6 +589,7 @@ describe("Regression — pre-handler rejections do not emit audit", () => {
           // reject with 400 before the handler runs, so a missing-org probe
           // can't land an audit row with `targetId: undefined`.
           activeOrganizationId: undefined,
+          claims: { twoFactorEnabled: true },
         },
       }),
     );

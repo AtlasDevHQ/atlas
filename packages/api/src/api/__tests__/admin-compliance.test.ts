@@ -33,6 +33,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
         label: "admin@example.com",
         role: "admin",
         activeOrganizationId: "org-1",
+        claims: { twoFactorEnabled: true },
       },
     }),
 );
@@ -213,6 +214,7 @@ function resetMocks(): void {
         label: "admin@example.com",
         role: "admin",
         activeOrganizationId: "org-1",
+        claims: { twoFactorEnabled: true },
       },
     }),
   );

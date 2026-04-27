@@ -35,6 +35,7 @@ import {
   requestContext,
   type AuthEnv,
 } from "./middleware";
+import { mfaRequired } from "./admin-mfa-required";
 import type { Permission } from "@atlas/ee/auth/roles";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 
@@ -132,6 +133,11 @@ export type OrgContextEnv = AuthEnv & {
 export function createAdminRouter() {
   const router = new OpenAPIHono<OrgContextEnv>({ defaultHook: validationHook });
   router.use(adminAuth);
+  // F-MFA — block admin access until the user has enrolled a TOTP second
+  // factor. Order matters: must run after adminAuth (which sets authResult)
+  // and before any handler. The middleware lets enrollment + sign-out
+  // through so the user can complete setup. See #1925.
+  router.use(mfaRequired);
   router.use(requestContext);
   router.onError(eeOnError);
   return router;
@@ -145,6 +151,9 @@ export function createAdminRouter() {
 export function createPlatformRouter() {
   const router = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
   router.use(platformAdminAuth);
+  // F-MFA — same gate as createAdminRouter. platform_admin role is
+  // explicitly enforced inside mfaRequired.
+  router.use(mfaRequired);
   router.use(requestContext);
   router.onError(eeOnError);
   return router;

@@ -13,6 +13,7 @@
 
 import { betterAuth, type Session, type User } from "better-auth";
 import { bearer, admin, organization } from "better-auth/plugins";
+import { twoFactor } from "better-auth/plugins/two-factor";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
 import { apiKey } from "@better-auth/api-key";
@@ -462,6 +463,23 @@ function buildPlugins() {
       },
     }),
   ];
+
+  // Two-factor (TOTP + recovery codes) — required for admin / owner /
+  // platform_admin sessions via the `mfaRequired` middleware in
+  // packages/api/src/api/routes/admin-mfa-required.ts. Loaded
+  // unconditionally so the backing schema (twoFactor table +
+  // user.twoFactorEnabled) is always in place; enforcement is gated by
+  // role at the router layer, not here.
+  //
+  // Plugin remains in the array as a flat push (rather than a wrapping
+  // `if (...)`) so the schema can never be conditionally absent —
+  // dropping the plugin while `mfaRequired` is still wired would lock
+  // every admin out of the console.
+  plugins.push(
+    twoFactor({
+      issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
+    }),
+  );
 
   // SCIM directory sync — enterprise only.
   // No try/catch: if the plugin fails to initialize (missing dep, bad config),

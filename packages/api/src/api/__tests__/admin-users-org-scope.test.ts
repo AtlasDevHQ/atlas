@@ -87,7 +87,14 @@ function setWorkspaceAdmin(orgId = "org-1"): void {
   mocks.mockAuthenticateRequest.mockResolvedValue({
     authenticated: true,
     mode: "managed",
-    user: { id: "admin-1", mode: "managed", label: "Admin", role: "admin", activeOrganizationId: orgId },
+    user: {
+      id: "admin-1",
+      mode: "managed",
+      label: "Admin",
+      role: "admin",
+      activeOrganizationId: orgId,
+      claims: { twoFactorEnabled: true },
+    },
   });
 }
 
@@ -96,7 +103,13 @@ function setPlatformAdmin(): void {
   mocks.mockAuthenticateRequest.mockResolvedValue({
     authenticated: true,
     mode: "managed",
-    user: { id: "platform-1", mode: "managed", label: "Platform Admin", role: "platform_admin" },
+    user: {
+      id: "platform-1",
+      mode: "managed",
+      label: "Platform Admin",
+      role: "platform_admin",
+      claims: { twoFactorEnabled: true },
+    },
   });
 }
 

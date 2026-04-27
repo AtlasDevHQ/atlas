@@ -102,6 +102,14 @@ export interface AuthUser {
   label: string;
   role: string;
   activeOrganizationId?: string;
+  /**
+   * Session-user claims. Mirrors `AtlasUser.claims` and is used by the F-MFA
+   * gate (see admin-mfa-required.ts) to decide whether the caller has an
+   * enrolled second factor. Tests that need to exercise the unenrolled path
+   * pass `{ twoFactorEnabled: false }` here; otherwise the factory injects
+   * `{ twoFactorEnabled: true }` for admin/platform_admin roles.
+   */
+  claims?: Record<string, unknown>;
 }
 
 export interface ApiTestMockOverrides {
@@ -185,12 +193,30 @@ export function createApiTestMocks(
 
   // ── Auth middleware ────────────────────────────────────────────
 
+  // F-MFA — default admin/owner/platform_admin users to "MFA enrolled" so
+  // existing admin route tests pass through the `mfaRequired` gate. Tests
+  // that exercise the gate itself live in
+  // src/api/routes/__tests__/admin-mfa-required.test.ts and build their own
+  // auth result. Override per-test by passing a `claims` object on
+  // `authUser`. Mirrors the role admit-list in `mfaRequired.ENFORCED_ROLES`.
+  const defaultClaims =
+    authUser.role === "admin"
+    || authUser.role === "owner"
+    || authUser.role === "platform_admin"
+      ? { twoFactorEnabled: true }
+      : undefined;
+
   const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> =
     mock(() =>
       Promise.resolve({
         authenticated: true,
         mode: authUser.mode,
-        user: { ...authUser },
+        user: {
+          ...authUser,
+          ...(defaultClaims !== undefined
+            ? { claims: { ...defaultClaims, ...(authUser.claims ?? {}) } }
+            : {}),
+        },
       }),
     );
 
@@ -722,6 +748,13 @@ export function createApiTestMocks(
   // ── Role helper functions ─────────────────────────────────────
 
   function setOrgAdmin(orgId: string): void {
+    // F-MFA — admin/owner/platform_admin users default to MFA-enrolled so
+    // existing admin route tests pass through the `mfaRequired` gate.
+    // NOTE: this helper REPLACES the entire mock implementation, including
+    // any per-call configuration set earlier (e.g. by `createApiTestMocks`).
+    // Tests that need a non-default `claims` shape must call
+    // `mockAuthenticateRequest.mockImplementation(...)` directly instead of
+    // combining `setOrgAdmin` + a `claims` override.
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -732,12 +765,14 @@ export function createApiTestMocks(
           label: "admin@test.com",
           role: "admin",
           activeOrganizationId: orgId,
+          claims: { twoFactorEnabled: true },
         },
       }),
     );
   }
 
   function setPlatformAdmin(orgId = "org-test"): void {
+    // F-MFA — same override-everything semantic as `setOrgAdmin`.
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -748,6 +783,7 @@ export function createApiTestMocks(
           label: "platform@test.com",
           role: "platform_admin",
           activeOrganizationId: orgId,
+          claims: { twoFactorEnabled: true },
         },
       }),
     );

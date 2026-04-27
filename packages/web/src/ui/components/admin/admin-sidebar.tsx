@@ -141,6 +141,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/sandbox", label: "Sandbox" },
       { href: "/admin/residency", label: "Data Residency" },
       { href: "/admin/settings", label: "Settings" },
+      { href: "/admin/settings/security", label: "Security" },
     ],
   },
   {

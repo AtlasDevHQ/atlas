@@ -41,6 +41,7 @@ const defaultAuthResponse = () =>
       label: "admin@test.dev",
       role: "admin",
       activeOrganizationId: "org-test",
+      claims: { twoFactorEnabled: true },
     },
   });
 
@@ -219,7 +220,7 @@ describe("POST /expire — org scope (F-13)", () => {
       Promise.resolve({
         authenticated: true,
         mode: "managed",
-        user: { id: "admin-1", mode: "managed", label: "admin@test.dev", role: "admin" },
+        user: { id: "admin-1", mode: "managed", label: "admin@test.dev", role: "admin", claims: { twoFactorEnabled: true } },
       }),
     );
 

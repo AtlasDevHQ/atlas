@@ -34,6 +34,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
         label: "admin@test.dev",
         role: "admin",
         activeOrganizationId: "org-test",
+        claims: { twoFactorEnabled: true },
       },
     }),
   checkRateLimit: () => ({ allowed: true }),

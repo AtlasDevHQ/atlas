@@ -27,7 +27,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     Promise.resolve({
       authenticated: true,
       mode: "managed",
-      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-test-1" },
+      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-test-1", claims: { twoFactorEnabled: true } },
     }),
 );
 
@@ -274,7 +274,7 @@ describe("Admin session routes", () => {
       Promise.resolve({
         authenticated: true,
         mode: "managed",
-        user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-test-1" },
+        user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-test-1", claims: { twoFactorEnabled: true } },
       }),
     );
   });

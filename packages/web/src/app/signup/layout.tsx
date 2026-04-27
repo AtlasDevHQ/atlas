@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { SignupContextProvider } from "@/ui/components/signup/signup-context-provider";
 
 export const metadata: Metadata = {
   title: "Sign up — Atlas",
@@ -10,9 +11,8 @@ export default function SignupLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <main className="flex min-h-dvh items-center justify-center bg-background p-4">
-      {children}
-    </main>
-  );
+  // The provider does the residency probe once for the whole signup session
+  // so the step indicator never reflows between routes. Each /signup/* page
+  // then renders its own <SignupShell> for the visible chrome.
+  return <SignupContextProvider>{children}</SignupContextProvider>;
 }

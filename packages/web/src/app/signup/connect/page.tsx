@@ -26,6 +26,7 @@ import {
   Sparkles,
   RefreshCw,
 } from "lucide-react";
+import { SignupShell } from "@/ui/components/signup/signup-shell";
 
 type ConnectionStatus = "idle" | "testing" | "success" | "error";
 type DemoType = "demo" | "cybersec" | "ecommerce";
@@ -203,15 +204,12 @@ export default function ConnectPage() {
   const showDemoCard = demoAvailability === "available" || demoAvailability === "error";
 
   return (
-    <div className={cn("w-full", showDemoCard ? "max-w-4xl" : "max-w-lg")}>
-      <div className="mb-6 flex flex-col items-center text-center">
-        <div className="mb-3 flex size-12 items-center justify-center rounded-lg bg-primary/10">
-          <Database className="size-6 text-primary" />
-        </div>
+    <SignupShell step="connect" width={showDemoCard ? "xwide" : "default"}>
+      <div className="mb-6 text-center">
         <h1 className="text-2xl font-semibold tracking-tight">
           Get started with your data
         </h1>
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+        <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
           Connect your own database or explore Atlas with a pre-loaded demo dataset.
         </p>
       </div>
@@ -389,32 +387,16 @@ export default function ConnectPage() {
         )}
       </div>
 
-      <div className="mt-6 flex flex-col items-center gap-4">
+      <div className="mt-6 flex justify-center">
         <button
           type="button"
           onClick={() => router.push("/signup/success")}
           disabled={anyLoading}
-          className="text-sm text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          className="rounded text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
         >
           Skip for now — I&apos;ll connect later
         </button>
-        <StepIndicator current={4} total={5} />
       </div>
-    </div>
-  );
-}
-
-function StepIndicator({ current, total }: { current: number; total: number }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      {Array.from({ length: total }, (_, i) => (
-        <div
-          key={i}
-          className={`h-1.5 rounded-full transition-all ${
-            i < current ? "w-6 bg-primary" : "w-1.5 bg-muted-foreground/30"
-          }`}
-        />
-      ))}
-    </div>
+    </SignupShell>
   );
 }

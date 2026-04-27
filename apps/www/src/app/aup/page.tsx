@@ -9,7 +9,7 @@ import { StickyNav } from "../../components/sticky-nav";
 export const metadata: Metadata = {
   title: "Acceptable Use Policy — Atlas",
   description:
-    "What you can't do with Atlas Cloud. Five prohibited categories up top, eight sections below — short, specific, and enforceable.",
+    "What you can't do with Atlas Cloud. Four prohibited categories up top, nine sections below — short, specific, and enforceable.",
   openGraph: {
     title: "Acceptable Use Policy — Atlas",
     description:

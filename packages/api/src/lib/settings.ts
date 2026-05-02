@@ -22,11 +22,6 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
 import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
 
-// Re-export for back-compat — new callers should prefer importing from
-// `@atlas/api/lib/settings-errors` so partial-mock sites of `settings.ts`
-// don't need stubbing this class.
-export { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
-
 const log = createLogger("settings");
 
 // ---------------------------------------------------------------------------
@@ -56,6 +51,14 @@ export interface SettingDefinition {
 export interface SettingWithValue extends SettingDefinition {
   currentValue: string | undefined;
   source: "env" | "override" | "workspace-override" | "default";
+  /**
+   * #1978 — true when the key participates in a boot-time contract guard
+   * AND deploy mode is SaaS. The admin UI uses this to disable the input
+   * (or render a tooltip) so a SaaS admin sees the immutability before
+   * submit. Without this signal, the only feedback would be a 409 after
+   * clicking Save. Always undefined in self-hosted.
+   */
+  saasImmutable?: boolean;
 }
 
 export interface SettingRow {
@@ -531,23 +534,99 @@ interface LiveCacheEntry {
 
 const _liveCache = new Map<string, LiveCacheEntry>();
 
-/** Check if the current deploy mode is SaaS (lazy — avoids circular import at module load). */
-function isSaasMode(): boolean {
-  // Lazy-import to avoid circular dependency at module evaluation time.
-  // getConfig() is a cheap singleton read after boot.
+/**
+ * Resolve current deploy mode (lazy — avoids circular import at module load).
+ *
+ * Three return states:
+ *   - `"saas"` / `"self-hosted"` — `getConfig()` returned a resolved
+ *     config object with a known `deployMode`.
+ *   - `"unloaded"` — `getConfig()` returned `null`. Config singleton
+ *     hasn't been initialized yet — legitimate at early module init
+ *     and for AGPL builds that never call `loadConfig()`. Treated as
+ *     self-hosted by all callers.
+ *   - `"errored"` — the lazy `require()` itself threw, or `getConfig()`
+ *     threw. This is a circular-import or instrumentation hiccup, NOT
+ *     a legitimate self-hosted state. Contract guards treat this as
+ *     fail-closed.
+ *
+ * The three-state distinction is load-bearing — see #1978 silent-failure
+ * finding. A single `boolean` returning false on every non-saas case
+ * conflated "config legitimately absent" (self-hosted) with "config
+ * resolution itself failed" (suspicious), forcing the contract guard
+ * to share the UX path's permissive default.
+ */
+type DeployModeSnapshot = "saas" | "self-hosted" | "unloaded" | "errored";
+
+function resolveDeployModeSnapshot(): DeployModeSnapshot {
+  let configMod: { getConfig: () => { deployMode?: string } | null };
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
-    return getConfig()?.deployMode === "saas";
+    configMod = require("@atlas/api/lib/config") as typeof configMod;
   } catch (err) {
-    // Config module may not be ready during early module init — that's expected.
-    // Log at debug so it's quiet in normal operation but visible when diagnosing.
     log.debug(
       { err: err instanceof Error ? err.message : String(err) },
-      "isSaasMode: config not yet available; treating as non-SaaS",
+      "resolveDeployModeSnapshot: require('@atlas/api/lib/config') threw",
     );
-    return false;
+    return "errored";
   }
+  let resolved: { deployMode?: string } | null;
+  try {
+    resolved = configMod.getConfig();
+  } catch (err) {
+    log.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      "resolveDeployModeSnapshot: getConfig() threw",
+    );
+    return "errored";
+  }
+  if (resolved === null) return "unloaded";
+  if (resolved.deployMode === "saas") return "saas";
+  if (resolved.deployMode === "self-hosted") return "self-hosted";
+  // Resolved object exists but deployMode isn't one of the canonical
+  // values (still "auto", or future-added value) — treat as unloaded.
+  return "unloaded";
+}
+
+/**
+ * UX-oriented SaaS check — fail open (treat unloaded/errored as
+ * non-SaaS) so the `requiresRestart` metadata suppression and
+ * `SIDE_EFFECT_KEYS` gating don't render spurious banners during
+ * early module init. Used by `getSettingsForAdmin` and
+ * `applySettingSideEffect`.
+ */
+function isSaasMode(): boolean {
+  return resolveDeployModeSnapshot() === "saas";
+}
+
+/**
+ * Guard-oriented SaaS check — used by `setSetting` only.
+ *
+ * Fails CLOSED on `"errored"` (require() or getConfig() threw, which
+ * shouldn't happen at request-handling time and is the silent-bypass
+ * vector #1978's silent-failure finding flagged). Treats `"unloaded"`
+ * as non-SaaS, matching the legitimate AGPL/dev case where config
+ * was never loaded.
+ *
+ * Asymmetry rationale: the boot guards in `lib/effect/saas-guards.ts`
+ * read `config.deployMode` via `yield* Config` (typed, no fallback);
+ * this runtime check is the only place a permissive fallback on the
+ * "errored" state could silently let a SaaS admin persist a value the
+ * running process won't honor. Better to over-reject (operator
+ * restarts and retries) than under-reject (operator clicks Save, sees
+ * "ok", walks away while the contract is silently broken on next
+ * restart).
+ */
+function isSaasModeForGuard(): boolean {
+  const snapshot = resolveDeployModeSnapshot();
+  if (snapshot === "saas") return true;
+  if (snapshot === "errored") {
+    log.warn(
+      "isSaasModeForGuard: config resolution threw at runtime — failing closed (assuming SaaS) to preserve #1978 contract",
+    );
+    return true;
+  }
+  // self-hosted or unloaded — both legitimate non-SaaS states.
+  return false;
 }
 
 /**
@@ -688,9 +767,6 @@ export function getSetting(key: string, orgId?: string): string | undefined {
  * workspace-level override. Platform-scoped settings ignore orgId.
  */
 export async function setSetting(key: string, value: string, userId?: string, orgId?: string): Promise<void> {
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required to persist settings overrides");
-  }
   const def = SETTINGS_MAP.get(key);
   if (!def) {
     throw new Error(`Unknown setting key: "${key}"`);
@@ -700,8 +776,17 @@ export async function setSetting(key: string, value: string, userId?: string, or
   // contract guards (DPA, deploy mode) must not be hot-reloaded in SaaS,
   // or the guard would be silently bypassed until next restart. Reject
   // the write rather than persist a value the running process won't honor.
-  if (SAAS_IMMUTABLE_KEYS.has(key) && isSaasMode()) {
+  // Runs BEFORE the hasInternalDB() check so the more-specific contract
+  // error fires first — an operator hitting "Internal database required"
+  // when the value was definitionally rejectable would waste time
+  // debugging the DB. Uses isSaasModeForGuard() (fails closed) rather
+  // than isSaasMode() so a transient getConfig() failure cannot bypass.
+  if (isSaasImmutableKey(key) && isSaasModeForGuard()) {
     throw new SaasImmutableSettingError(key);
+  }
+
+  if (!hasInternalDB()) {
+    throw new Error("Internal database required to persist settings overrides");
   }
 
   // Platform-scoped settings always store globally
@@ -860,11 +945,18 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
       }
 
       // In SaaS mode, hot-reloadable settings don't require restart
-      const requiresRestart = (def.requiresRestart && !isSaasMode())
+      const inSaas = isSaasMode();
+      const requiresRestart = (def.requiresRestart && !inSaas)
         ? true
         : undefined;
 
-      return { ...def, requiresRestart, currentValue, source };
+      // #1978 — surface SaaS immutability so the admin UI can disable
+      // the input rather than letting the operator submit and get a 409.
+      // Only set the field when true so consumers without #1978 awareness
+      // don't see a noisy `false` everywhere.
+      const saasImmutable = inSaas && isSaasImmutableKey(def.key) ? true : undefined;
+
+      return { ...def, requiresRestart, saasImmutable, currentValue, source };
     });
 }
 
@@ -911,11 +1003,24 @@ const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
  *
  * Self-hosted preserves the runtime-mutable behavior — the guards
  * either don't run there (DPA) or are advisory (#1978 family).
+ *
+ * The `as const` is load-bearing: it preserves literal types so
+ * `SaasImmutableKey` is a closed union and `SaasImmutableSettingError`
+ * can refuse construction with an unknown key at compile time.
  */
-const SAAS_IMMUTABLE_KEYS = new Set([
+const SAAS_IMMUTABLE_KEYS_LITERAL = [
   "ATLAS_EMAIL_PROVIDER",
   "ATLAS_DEPLOY_MODE",
-]);
+] as const;
+const SAAS_IMMUTABLE_KEYS: ReadonlySet<SaasImmutableKey> = new Set(SAAS_IMMUTABLE_KEYS_LITERAL);
+
+/** Closed union of keys that are immutable in SaaS mode. */
+export type SaasImmutableKey = (typeof SAAS_IMMUTABLE_KEYS_LITERAL)[number];
+
+/** Type-guard that narrows `string` → `SaasImmutableKey` at the throw site. */
+function isSaasImmutableKey(key: string): key is SaasImmutableKey {
+  return (SAAS_IMMUTABLE_KEYS as ReadonlySet<string>).has(key);
+}
 
 /**
  * Apply runtime side effects after a setting value changes.

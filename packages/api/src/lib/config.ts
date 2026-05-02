@@ -1100,11 +1100,28 @@ async function applyDeployMode(
     const { resolveDeployMode } = await import("@atlas/ee/deploy-mode");
     resolved.deployMode = resolveDeployMode(rawSetting);
   } catch (err) {
-    // ee/ module not available — default to self-hosted
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Deploy mode resolution unavailable — defaulting to self-hosted",
-    );
+    // The expected case is "AGPL-only build, ee/ legitimately absent" —
+    // log at debug, default to self-hosted. Anything else (syntax error
+    // in a transitive ee/ import, version skew between @atlas/api and
+    // @atlas/ee, bundler/runtime resolution failure) is a real bug that
+    // would otherwise hide as a silent self-hosted downgrade. Surface
+    // the unexpected case at error level so production telemetry catches
+    // it. #1978 finding 3.
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    const isModuleNotFound =
+      code === "ERR_MODULE_NOT_FOUND" ||
+      code === "MODULE_NOT_FOUND" ||
+      // bun's dynamic-import error before it sets a code
+      (err instanceof Error && /Cannot find (module|package)/i.test(err.message));
+    const detail = err instanceof Error ? err.message : String(err);
+    if (isModuleNotFound) {
+      log.debug({ err: detail }, "ee/ module not installed — defaulting to self-hosted");
+    } else {
+      log.error(
+        { err: detail, code },
+        "ee/ module load FAILED unexpectedly (not a missing-module error) — defaulting to self-hosted. Check the @atlas/ee install / version skew",
+      );
+    }
     resolved.deployMode = "self-hosted";
   }
   log.info({ deployMode: resolved.deployMode }, "Deploy mode resolved");

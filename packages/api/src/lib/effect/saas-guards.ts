@@ -34,6 +34,11 @@
  * `ATLAS_ERROR_TAG_LIST`/`mapTaggedError()` — same precedent as
  * `DpaInconsistencyError`. These guards fail process boot before any
  * HTTP listener starts, so an HTTP status mapping would be misleading.
+ *
+ * Naming note: section dividers below use `(#1)`, `(#2 + #3)`, `(#5)` —
+ * those are the issue's sub-finding numbers (#1978 enumerated findings
+ * 1-6 with no #4 by the auditor's convention). They're kept verbatim
+ * so cross-references back to the issue stay grep-able.
  */
 
 import { Data, Effect, Layer } from "effect";
@@ -52,11 +57,14 @@ const ISSUE_REF = "#1978";
  * `ATLAS_DEPLOY_MODE=saas` was requested in the env but enterprise is
  * not enabled, so `resolveDeployMode` silently returned `self-hosted`.
  * Env-set is operator intent — fail boot rather than run degraded.
+ *
+ * Config-file rejections do NOT construct this error — they fall
+ * through to `warnIfDeployModeSilentlyDowngraded()`, which emits a
+ * CRITICAL log line. The intent-strength split is documented under
+ * `EnterpriseGuardLive` and `warnIfDeployModeSilentlyDowngraded`.
  */
 export class EnterpriseRequiredError extends Data.TaggedError("EnterpriseRequiredError")<{
   readonly message: string;
-  /** Where the rejected `saas` value originated — only "env" fails boot. */
-  readonly source: "env" | "config";
 }> {}
 
 /**
@@ -74,10 +82,14 @@ export class EncryptionKeyMissingError extends Data.TaggedError("EncryptionKeyMi
  * versions, mixed prefix/bare entries, non-numeric labels, empty
  * material). Without this guard the parser throws lazily at first
  * credential I/O — minutes or hours after boot.
+ *
+ * `cause` carries the original `Error` from the parser (not a
+ * stringified message) so the stack trace is preserved for telemetry.
+ * The user-readable message is built into `.message` separately.
  */
 export class EncryptionKeyMalformedError extends Data.TaggedError("EncryptionKeyMalformedError")<{
   readonly message: string;
-  readonly cause: string;
+  readonly cause: Error;
 }> {}
 
 /**
@@ -132,7 +144,6 @@ export const EnterpriseGuardLive: Layer.Layer<never, EnterpriseRequiredError, Co
     if (requestedSaas && !resolvedSaas) {
       yield* Effect.fail(
         new EnterpriseRequiredError({
-          source: "env",
           message:
             `ATLAS_DEPLOY_MODE=saas is set in the environment but enterprise is not enabled — ` +
             `the resolved deploy mode silently downgraded to "self-hosted", which would skip the ` +
@@ -155,9 +166,12 @@ export const EnterpriseGuardLive: Layer.Layer<never, EnterpriseRequiredError, Co
  *
  * Self-hosted preserves the dev-friendly passthrough: an operator
  * spinning up Atlas locally without any key gets plaintext writes
- * (loud `log.error` already fires from `secret-encryption.ts`) but
- * boot succeeds. SaaS regions cannot tolerate that — the silent
- * passthrough would land integration credentials in the DB un-encrypted.
+ * and boot succeeds. (`secret-encryption.ts`'s module-load IIFE also
+ * fires a `log.error`, but only when `NODE_ENV=production` or
+ * `ATLAS_DEPLOY_MODE=saas` — pure self-hosted dev gets a silent
+ * passthrough by design.) SaaS regions cannot tolerate that — the
+ * silent passthrough would land integration credentials in the DB
+ * un-encrypted, which is why the SaaS path fails boot here.
  */
 export const EncryptionKeyGuardLive: Layer.Layer<never, EncryptionKeyMissingError | EncryptionKeyMalformedError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -172,39 +186,40 @@ export const EncryptionKeyGuardLive: Layer.Layer<never, EncryptionKeyMissingErro
     type Keyset = ReturnType<
       typeof import("@atlas/api/lib/db/encryption-keys").getEncryptionKeyset
     >;
-    // The inner async function catches synchronously-thrown parser errors
-    // and converts them into a discriminated result so this Effect never
-    // rejects — keeping the E channel narrowed to the two tagged errors
-    // produced by the explicit `Effect.fail` calls below.
+    // The inner async function catches every synchronous throw and the
+    // dynamic `import()` rejection, converting both into a discriminated
+    // `{ ok, ... }` result. This keeps the surrounding Effect's E channel
+    // narrowed to the two tagged errors produced by `Effect.fail` below
+    // (without the inner catch a generic `Error` from a rejected import
+    // would widen the channel and break the typed Layer signature).
     const result = yield* Effect.promise(
-      async (): Promise<{ ok: true; keyset: Keyset } | { ok: false; reason: string }> => {
-        const { getEncryptionKeyset } = await import(
-          "@atlas/api/lib/db/encryption-keys"
-        );
+      async (): Promise<{ ok: true; keyset: Keyset } | { ok: false; cause: Error }> => {
         try {
+          const { getEncryptionKeyset } = await import(
+            "@atlas/api/lib/db/encryption-keys"
+          );
           return { ok: true, keyset: getEncryptionKeyset() };
         } catch (err) {
-          return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+          return { ok: false, cause: err instanceof Error ? err : new Error(String(err)) };
         }
       },
     );
 
     if (!result.ok) {
-      yield* Effect.fail(
+      return yield* Effect.fail(
         new EncryptionKeyMalformedError({
-          cause: result.reason,
+          cause: result.cause,
           message:
-            `ATLAS_ENCRYPTION_KEYS failed to parse: ${result.reason}. ` +
+            `ATLAS_ENCRYPTION_KEYS failed to parse: ${result.cause.message}. ` +
             `Without a valid keyset, every new credential would land plaintext and every ` +
             `existing encrypted value would 500 on first read. Fix the env var format ` +
             `(see docs/platform-ops/encryption-key-rotation) before booting. See ${ISSUE_REF}.`,
         }),
       );
-      return;
     }
 
     if (!result.keyset) {
-      yield* Effect.fail(
+      return yield* Effect.fail(
         new EncryptionKeyMissingError({
           message:
             `SaaS region booted without an encryption key — set ATLAS_ENCRYPTION_KEYS=v1:<base64> ` +

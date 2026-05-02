@@ -1121,6 +1121,7 @@ const getSettingsRoute = createRoute({
           secret: z.boolean().optional(),
           envVar: z.string(),
           requiresRestart: z.boolean().optional(),
+          saasImmutable: z.boolean().optional().describe("#1978 — true when the key is in SAAS_IMMUTABLE_KEYS and deploy mode is SaaS. Admin UI should disable the input."),
           scope: z.enum(["platform", "workspace"]),
           currentValue: z.string().optional(),
           source: z.enum(["env", "override", "workspace-override", "default"]),

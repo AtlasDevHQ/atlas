@@ -8105,6 +8105,36 @@
         "operationId": "getOnboardingSocialProviders"
       }
     },
+    "/api/v1/onboarding/password-reset-status": {
+      "get": {
+        "tags": [
+          "Onboarding"
+        ],
+        "summary": "Whether password reset emails can be sent",
+        "description": "Returns whether the deployment has an email provider wired so the /login page can decide whether to render the 'Forgot password?' link. The Better Auth password-reset endpoints are always enabled (email send is fire-and-forget); this flag is purely a UI hint to avoid showing a recovery affordance that goes nowhere on a deployment with no SMTP configured. Public endpoint — no authentication required.",
+        "responses": {
+          "200": {
+            "description": "Password reset configuration status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getOnboardingPasswordResetStatus"
+      }
+    },
     "/api/v1/onboarding/test-connection": {
       "post": {
         "tags": [

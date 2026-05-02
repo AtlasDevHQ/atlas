@@ -169,9 +169,9 @@ export default function SLAPage() {
             times, and what happens if we miss.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
-            <span>effective 2026-01-15</span>
+            <span>effective 2026-05-02</span>
             <span aria-hidden="true">·</span>
-            <span>v3.2</span>
+            <span>v3.3</span>
             <span aria-hidden="true">·</span>
             <span>applies to: atlas cloud</span>
           </div>

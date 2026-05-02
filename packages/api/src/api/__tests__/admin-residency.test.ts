@@ -74,21 +74,32 @@ function withPipe(iter: { [Symbol.iterator]: () => Iterator<unknown, unknown> })
       [Symbol.iterator]() {
         const inner = iter[Symbol.iterator]();
         let firstCall = true;
+        function fireHooks(err: unknown): never {
+          const cause: MockCause = { _mockKind: mockAssignCauseKind, error: err };
+          for (const h of hooks) {
+            // Each hook invokes `Effect.sync(() => logAdminAction(...))`; in
+            // the mock `Effect.sync` executes its callback on invocation, so
+            // the audit emission lands before we re-throw. Swallow hook
+            // errors so the original failure still surfaces.
+            try { h.fn(cause); } catch { /* intentionally ignored */ }
+          }
+          throw err;
+        }
         return {
           next(value?: unknown): IteratorResult<unknown, unknown> {
             try {
               return firstCall ? (firstCall = false, inner.next()) : inner.next(value);
             } catch (err) {
-              const cause: MockCause = { _mockKind: mockAssignCauseKind, error: err };
-              for (const h of hooks) {
-                // Each hook invokes `Effect.sync(() => logAdminAction(...))`;
-                // in the mock `Effect.sync` executes its callback on
-                // invocation, so the audit emission lands before we re-throw.
-                // Swallow hook errors so the original failure still surfaces.
-                try { h.fn(cause); } catch { /* intentionally ignored */ }
-              }
-              throw err;
+              return fireHooks(err);
             }
+          },
+          // Generator delegation forwards `gen.throw(err)` to the inner
+          // iterator's `throw` method when the outer generator is suspended
+          // inside a `yield*`. Without this, async-rejection paths (the
+          // runEffect mock awaits an Effect.promise sentinel and calls
+          // `gen.throw` on rejection) would bypass the tapErrorCause hooks.
+          throw(err: unknown): IteratorResult<unknown, unknown> {
+            return fireHooks(err);
           },
         };
       },
@@ -1036,14 +1047,42 @@ describe("admin residency — F-32 audit emission", () => {
     expect(entry.targetId).toBe("mig-1");
   });
 
-  it("POST /migrate/:id/retry does NOT emit audit when retry is rejected", async () => {
-    // Pre-handler rejection (resetMigrationForRetry returned ok:false) should
-    // not land an audit row — the migration wasn't actually retried, and
-    // emitting would pollute the forensic record with no-op retry attempts.
+  it("POST /migrate/:id/retry emits a failure audit when retry is rejected", async () => {
+    // Rejected retries are compliance-relevant: a 4xx here can fingerprint a
+    // probe (operator attempting to undo a half-completed cross-region cutover).
+    // The runbook requires a forensic trail showing every guard outcome; the
+    // route emits a `status: "failure"` audit with the rejection reason.
     mockResetResult = { ok: false, reason: "invalid_status", error: "Cannot retry" };
     const res = await request("POST", "/migrate/mig-1/retry");
     expect(res.status).toBe(400);
-    expect(mockLogAdminAction).not.toHaveBeenCalled();
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.migration_retry");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata.reason).toBe("invalid_status");
+  });
+
+  it("POST /migrate/:id/retry emits a failure audit when reset throws (409 path)", async () => {
+    // The unsafe-reset throw path must also land an audit. tapErrorCause fires
+    // before the bridge converts the tagged error to 409, so the forensic
+    // trail captures the most compliance-relevant outcome in this file.
+    mockResetThrow = Object.assign(
+      new Error("Migration cannot be reset: workspace already moved to eu-west"),
+      {
+        _tag: "UnsafeRegionMigrationResetError" as const,
+        migrationId: "mig-1",
+        workspaceId: "org-1",
+        targetRegion: "eu-west",
+        sourceRegion: "us-east",
+      },
+    );
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(409);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.migration_retry");
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata.error).toContain("already moved");
   });
 
   it("POST /migrate/:id/cancel emits residency.migration_cancel on success", async () => {

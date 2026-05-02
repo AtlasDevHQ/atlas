@@ -12,6 +12,10 @@ import { describe, it, expect, beforeEach, mock, afterEach } from "bun:test";
 let mockHasInternalDB = true;
 let mockQueryResults: Record<string, unknown[]> = {};
 let mockQueryError: Error | null = null;
+// Per-SQL injection: when set, internalQuery rejects on the first call whose
+// SQL contains the pattern. Used to exercise transient-failure paths on a
+// specific statement without breaking unrelated queries.
+let mockInternalQueryRejectPattern: { pattern: string; error: Error } | null = null;
 let mockPoolQueryResult = { rows: [{ id: "org-1" }] };
 let mockPoolQueryError: Error | null = null;
 const capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
@@ -36,6 +40,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: (sql: string, params: unknown[]) => {
     capturedQueries.push({ sql, params });
     if (mockQueryError) return Promise.reject(mockQueryError);
+    if (mockInternalQueryRejectPattern && sql.includes(mockInternalQueryRejectPattern.pattern)) {
+      return Promise.reject(mockInternalQueryRejectPattern.error);
+    }
     // Match query to result based on SQL pattern
     for (const [key, value] of Object.entries(mockQueryResults)) {
       if (sql.includes(key)) return Promise.resolve(value);
@@ -116,6 +123,7 @@ function resetMocks() {
   mockHasInternalDB = true;
   mockQueryResults = {};
   mockQueryError = null;
+  mockInternalQueryRejectPattern = null;
   mockPoolQueryResult = { rows: [{ id: "org-1" }] };
   mockPoolQueryError = null;
   capturedQueries.length = 0;
@@ -301,6 +309,107 @@ describe("executeRegionMigration", () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toContain("connection refused");
   });
+
+  // Regression: the dedicated Phase 3 persist runs immediately after the org
+  // region UPDATE and before the status='completed' write. If a refactor moves
+  // it behind the cache flush (or a Phase 4 step) a future failure between
+  // those points would leave the guard column in a stale state.
+  it("persists region_updated=TRUE between the org cutover and status=completed", async () => {
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(true);
+
+    const orgUpdateIdx = capturedQueries.findIndex((q) => q.sql.includes("UPDATE organization"));
+    const persistIdx = capturedQueries.findIndex((q) => q.sql.includes("region_updated = TRUE"));
+    const completeIdx = capturedQueries.findIndex(
+      (q) => q.sql.includes("UPDATE region_migrations") && q.params[0] === "completed",
+    );
+
+    expect(orgUpdateIdx).toBeGreaterThanOrEqual(0);
+    expect(persistIdx).toBeGreaterThanOrEqual(0);
+    expect(completeIdx).toBeGreaterThanOrEqual(0);
+    // Strict ordering: cutover → persist → completed.
+    expect(persistIdx).toBeGreaterThan(orgUpdateIdx);
+    expect(persistIdx).toBeLessThan(completeIdx);
+    // The persist UPDATE targets the right migration row.
+    expect(capturedQueries[persistIdx].params).toContain("mig-1");
+  });
+
+  // Regression: even if the dedicated Phase 3 persist fails (transient pool
+  // blip), the failure-path catch must atomically stamp region_updated=true
+  // alongside status='failed' from the in-memory flag — otherwise the guard
+  // fails open and the workspace ends up reset-eligible despite having moved.
+  it("stamps region_updated=true atomically with status=failed when the dedicated persist throws", async () => {
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    // Targeted injection: the dedicated `region_updated = TRUE` UPDATE
+    // throws; every other write keeps working. This is the exact transient-
+    // failure profile that, before the catch-block atomic stamp was added,
+    // would leave the row with status='failed' and region_updated=FALSE
+    // even though `organization.region` had already been flipped.
+    mockInternalQueryRejectPattern = {
+      pattern: "SET region_updated = TRUE",
+      error: new Error("transient pool drop"),
+    };
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(false);
+
+    // The org cutover succeeded before the persist throw fired.
+    const orgUpdate = capturedQueries.find((q) => q.sql.includes("UPDATE organization"));
+    expect(orgUpdate).toBeDefined();
+    expect(orgUpdate!.params).toContain("eu-west");
+
+    // The catch block writes status='failed' AND region_updated=true in a
+    // single UPDATE via updateMigrationStatus. Confirm both land in the
+    // same statement — partial state would mean the guard fails open.
+    const failedUpdate = capturedQueries.find(
+      (q) =>
+        q.sql.includes("UPDATE region_migrations")
+        && q.sql.includes("region_updated")
+        && q.params.includes("failed"),
+    );
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate!.params).toContain(true);
+  });
+
+  // Regression: when the failure happens before Phase 3, the catch stamps
+  // region_updated=FALSE — a no-op against the default but truthful about
+  // the executor's observation. A future retry then legitimately re-runs
+  // Phase 1 because the guard sees region_updated=FALSE.
+  it("stamps region_updated=false when failure occurs before Phase 3", async () => {
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+    mockFetchResponse = { ok: false, status: 500, body: { message: "Import failed" } };
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(false);
+
+    // Phase 3 never ran, so no org UPDATE.
+    const orgUpdate = capturedQueries.find((q) => q.sql.includes("UPDATE organization"));
+    expect(orgUpdate).toBeUndefined();
+
+    // The failed-status UPDATE includes region_updated=FALSE — the catch
+    // converges on the executor's observation in both directions.
+    const failedUpdate = capturedQueries.find(
+      (q) =>
+        q.sql.includes("UPDATE region_migrations")
+        && q.sql.includes("region_updated")
+        && q.params.includes("failed"),
+    );
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate!.params).toContain(false);
+    expect(failedUpdate!.params).not.toContain(true);
+  });
 });
 
 describe("failStaleMigrations", () => {
@@ -402,7 +511,7 @@ describe("resetMigrationForRetry", () => {
 
   it("resets a failed migration to pending", async () => {
     mockQueryResults["SELECT id, status"] = [
-      { id: "mig-1", status: "failed", workspace_id: "org-1", region_updated: false },
+      { id: "mig-1", status: "failed", workspace_id: "org-1", region_updated: false, target_region: "eu-west", source_region: "us-east" },
     ];
     mockQueryResults["UPDATE region_migrations"] = [];
 
@@ -415,13 +524,13 @@ describe("resetMigrationForRetry", () => {
     expect(resetQuery).toBeDefined();
   });
 
-  // #1986 — once Phase 3 has flipped the workspace into the destination region,
+  // Once Phase 3 has flipped the workspace into the destination region,
   // re-running Phase 1 (export from source) would re-export a workspace that
   // already moved. The guard makes the unsafe reset impossible from code; the
   // operator is forced to follow the manual-intervention runbook.
   it("throws UnsafeRegionMigrationResetError when region_updated=true", async () => {
     mockQueryResults["SELECT id, status"] = [
-      { id: "mig-1", status: "failed", workspace_id: "org-1", region_updated: true },
+      { id: "mig-1", status: "failed", workspace_id: "org-1", region_updated: true, target_region: "eu-west", source_region: "us-east" },
     ];
     mockQueryResults["UPDATE region_migrations"] = [];
 
@@ -433,8 +542,14 @@ describe("resetMigrationForRetry", () => {
     }
 
     expect(thrown).toBeDefined();
-    expect((thrown as { _tag?: string })._tag).toBe("UnsafeRegionMigrationResetError");
-    expect((thrown as { migrationId?: string }).migrationId).toBe("mig-1");
+    const tagged = thrown as { _tag?: string; migrationId?: string; sourceRegion?: string; targetRegion?: string; message?: string };
+    expect(tagged._tag).toBe("UnsafeRegionMigrationResetError");
+    expect(tagged.migrationId).toBe("mig-1");
+    expect(tagged.sourceRegion).toBe("us-east");
+    expect(tagged.targetRegion).toBe("eu-west");
+    // Message names both regions so operators can find the orphaned source bundle.
+    expect(tagged.message).toContain("us-east");
+    expect(tagged.message).toContain("eu-west");
 
     // Critically: no UPDATE was issued. The row must remain in `failed` so
     // operators see it in the audit trail and follow the runbook.

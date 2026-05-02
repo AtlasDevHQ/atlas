@@ -63,7 +63,7 @@ function logMigrationEvent(
 async function updateMigrationStatus(
   migrationId: string,
   status: MigrationStatus,
-  extra?: { errorMessage?: string; completedAt?: string },
+  extra?: { errorMessage?: string; completedAt?: string; regionUpdated?: boolean },
 ): Promise<void> {
   const sets = [`status = $1`];
   const params: unknown[] = [status];
@@ -77,6 +77,16 @@ async function updateMigrationStatus(
   if (extra?.errorMessage !== undefined) {
     sets.push(`error_message = $${idx}`);
     params.push(extra.errorMessage);
+    idx++;
+  }
+  // Folded into the same UPDATE so the failure path stamps the guard column
+  // atomically with the status flip. Without this, a Phase 4 failure that
+  // survived the dedicated `region_updated` persist (or a transient failure
+  // on the persist itself) would leave status='failed' + region_updated=FALSE
+  // and the resetMigrationForRetry guard would fail open.
+  if (extra?.regionUpdated !== undefined) {
+    sets.push(`region_updated = $${idx}`);
+    params.push(extra.regionUpdated);
     idx++;
   }
 
@@ -273,12 +283,12 @@ export async function executeRegionMigration(
     }
     regionUpdated = true;
 
-    // #1986 — Persist the cutover *immediately*, before flush/Phase 4 can
-    // throw, so a Phase 4 failure surfaces as `failed` + `region_updated=true`
-    // and resetMigrationForRetry() refuses to re-run Phase 1 (which would
-    // re-export a workspace that already moved). The only way to lose this
-    // signal is if the persist itself fails — in which case we throw and
-    // the catch block re-records the error with the region-updated warning.
+    // Persist the cutover happy-path before flush/Phase 4 can throw so the
+    // column reflects reality the instant the destination takes ownership.
+    // If this UPDATE itself fails, the failure-path catch (below) re-stamps
+    // from the local `regionUpdated` flag via updateMigrationStatus, so
+    // both write paths converge on the same column value — the guard's
+    // correctness does not depend on this UPDATE succeeding.
     await internalQuery(
       `UPDATE region_migrations SET region_updated = TRUE WHERE id = $1`,
       [migrationId],
@@ -346,17 +356,21 @@ export async function executeRegionMigration(
       regionUpdated,
     });
 
-    // Mark as failed — the region update may have already happened.
-    // The error message includes a warning if retry would be unsafe.
+    // Mark as failed and atomically stamp `region_updated` from the local
+    // var. This single UPDATE is the load-bearing convergence point for the
+    // guard column: regardless of whether the dedicated cutover persist at
+    // line 282 succeeded, threw, or was never reached, the failed row's
+    // `region_updated` will mirror what the executor actually observed.
     try {
       await updateMigrationStatus(migrationId, "failed", {
         errorMessage,
         completedAt: new Date().toISOString(),
+        regionUpdated,
       });
     } catch (updateErr) {
       log.error(
-        { err: updateErr instanceof Error ? updateErr.message : String(updateErr), migrationId },
-        "Failed to update migration status to 'failed'",
+        { err: updateErr instanceof Error ? updateErr.message : String(updateErr), migrationId, regionUpdated },
+        "Failed to update migration status to 'failed' — region_updated column may not reflect actual cutover state",
       );
     }
 
@@ -478,8 +492,8 @@ export async function getCleanupDueMigrations(): Promise<
  * Reset a failed migration to "pending" so it can be re-executed.
  * Only works for migrations in "failed" status.
  *
- * #1986 — Throws `UnsafeRegionMigrationResetError` (mapped to HTTP 409) when
- * the failed row has `region_updated = TRUE`. Phase 3 already flipped the
+ * Throws `UnsafeRegionMigrationResetError` (mapped to HTTP 409) when the
+ * failed row has `region_updated = TRUE`. Phase 3 already flipped the
  * workspace into the destination; re-running Phase 1 would re-export a
  * workspace that already moved. Recovery requires the manual-intervention
  * runbook, not retry.
@@ -494,7 +508,14 @@ export async function resetMigrationForRetry(
     return { ok: false, reason: "no_db", error: "Internal database not available" };
   }
 
-  let rows: Array<{ id: string; status: string; workspace_id: string; region_updated: boolean; target_region: string }>;
+  let rows: Array<{
+    id: string;
+    status: string;
+    workspace_id: string;
+    region_updated: boolean;
+    target_region: string;
+    source_region: string;
+  }>;
   try {
     rows = await internalQuery<{
       id: string;
@@ -502,8 +523,9 @@ export async function resetMigrationForRetry(
       workspace_id: string;
       region_updated: boolean;
       target_region: string;
+      source_region: string;
     }>(
-      `SELECT id, status, workspace_id, region_updated, target_region FROM region_migrations WHERE id = $1`,
+      `SELECT id, status, workspace_id, region_updated, target_region, source_region FROM region_migrations WHERE id = $1`,
       [migrationId],
     );
   } catch (err) {
@@ -525,22 +547,23 @@ export async function resetMigrationForRetry(
     return { ok: false, reason: "invalid_status", error: `Cannot retry migration in "${row.status}" status` };
   }
 
-  // #1986 — Hard guard: never re-run Phase 1 on a row where Phase 3 already
-  // succeeded. Throw a typed error so the route handler maps it to 409 and
-  // the operator is forced through the manual-intervention runbook.
+  // Hard guard: never re-run Phase 1 on a row where Phase 3 already succeeded.
+  // Throw a typed error so the route handler maps it to 409 and the operator
+  // is forced through the manual-intervention runbook.
   if (row.region_updated) {
     log.warn(
-      { migrationId, workspaceId, targetRegion: row.target_region },
+      { migrationId, workspaceId, targetRegion: row.target_region, sourceRegion: row.source_region },
       "Refused to reset migration — region was already updated to destination",
     );
     throw new UnsafeRegionMigrationResetError({
       message:
-        `Migration "${migrationId}" cannot be reset: the workspace has already moved to ` +
-        `"${row.target_region}". Re-running export from the source would corrupt the ` +
-        `destination. Follow the manual-intervention runbook in the data-residency docs.`,
+        `Migration "${migrationId}" cannot be reset: the workspace has already moved from ` +
+        `"${row.source_region}" to "${row.target_region}". Re-running export from the source ` +
+        `would corrupt the destination. Follow the manual-intervention runbook in the data-residency docs.`,
       migrationId,
       workspaceId,
       targetRegion: row.target_region,
+      sourceRegion: row.source_region,
     });
   }
 

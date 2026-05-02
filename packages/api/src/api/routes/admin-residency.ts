@@ -772,6 +772,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 adminResidency.openapi(retryMigrationRoute, async (c) => {
+  const ipAddress = clientIP(c);
   return runEffect(
     c,
     Effect.gen(function* () {
@@ -783,17 +784,46 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      // #1986 — `resetMigrationForRetry` throws `UnsafeRegionMigrationResetError`
-      // when the workspace already moved to the destination region. `tryPromise`
-      // (with a normalized catch — never `(err) => err`) preserves the tagged
-      // error in the failure channel so `runEffect` → `mapTaggedError` returns
-      // 409 Conflict. Returning a result variant for this case would let an
-      // operator paper over the data-integrity hazard with a 400 retry button.
+      // `resetMigrationForRetry` throws `UnsafeRegionMigrationResetError`
+      // when the workspace already moved to the destination region. The
+      // tryPromise catch (normalized — never `(err) => err`) preserves the
+      // tagged error so runEffect → mapTaggedError returns 409 Conflict.
+      // tapErrorCause covers BOTH typed failures and defects, mirroring the
+      // assignWorkspaceRegion pattern: a 409 here is the most compliance-
+      // relevant outcome in the file (an operator attempted to undo a
+      // half-completed cross-region cutover) and the runbook explicitly
+      // requires a forensic trail showing the guard fired.
       const result = yield* Effect.tryPromise({
         try: () => resetMigrationForRetry(id, orgId!),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      }).pipe(
+        Effect.tapErrorCause((cause) => {
+          const err = causeToError(cause);
+          if (err === undefined) return Effect.void;
+          return Effect.sync(() =>
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.residency.migrationRetry,
+              targetType: "residency",
+              targetId: id,
+              status: "failure",
+              ipAddress,
+              metadata: { workspaceId: orgId, error: errorMessage(err) },
+            }),
+          );
+        }),
+      );
       if (!result.ok) {
+        // Result-variant rejection (not_found / invalid_status / db_error /
+        // no_db). Audit the attempt so the forensic trail covers operator
+        // probes that never reach the unsafe-reset throw path.
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.residency.migrationRetry,
+          targetType: "residency",
+          targetId: id,
+          status: "failure",
+          ipAddress,
+          metadata: { workspaceId: orgId, reason: result.reason, error: result.error },
+        });
         const status = result.reason === "not_found" ? 404 : 400;
         return c.json({ error: "retry_failed", message: result.error, requestId }, status as 400 | 404);
       }

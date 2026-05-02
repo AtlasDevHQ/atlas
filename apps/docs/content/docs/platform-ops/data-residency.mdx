@@ -265,7 +265,7 @@ When `executeRegionMigration` fails after Phase 3 succeeded, the row will be `st
 2. **Confirm Phase 4 (cleanup scheduling) is what failed.** Inspect the `region_migration_failed` audit event and the `error_message` column on the migration row. If the failure was earlier (Phase 2 transfer or Phase 3 organization update), `region_updated` would not be `TRUE` — the guard would not have fired and the retry endpoint would have accepted the reset normally. A 409 specifically means the destination has taken ownership.
 
 3. **Pick a recovery direction.**
-   - **Forward (preferred):** the destination has the data, only post-cutover bookkeeping failed. Re-issue the cleanup scheduling and any other Phase 4 side effects manually, then mark the migration as completed:
+   - **Forward (preferred):** the destination has the data, only post-cutover bookkeeping failed. Re-issue the cleanup scheduling and any other Phase 4 side effects manually, then mark the migration as completed. `region_updated` stays `TRUE` — the destination still owns the data:
      ```sql
      UPDATE region_migrations
         SET status = 'completed',
@@ -274,9 +274,26 @@ When `executeRegionMigration` fails after Phase 3 succeeded, the row will be `st
       WHERE id = '<migrationId>';
      ```
      Verify the workspace is reachable in the destination region (`/api/v1/admin/residency` returns the new region) before declaring done.
-   - **Backward (rare):** unwind from the destination if the post-cutover work is not recoverable and the destination state is known-bad. Restore the source-region snapshot taken before the migration, then update `organization.region` back to the source region and the migration row to `status = 'cancelled'` with an explanatory `error_message`. Do not flip the migration back to `pending` — the row records the historical attempt; create a new migration request for any future retry.
+   - **Backward (rare):** unwind from the destination if the post-cutover work is not recoverable and the destination state is known-bad. This is destructive and should not be self-service — open an incident first. The mechanical steps, after restoring the source-region snapshot taken before the migration:
+     ```sql
+     -- 1. Point the workspace back at the source region
+     UPDATE organization
+        SET region = '<sourceRegion>',
+            region_assigned_at = now()
+      WHERE id = '<workspaceId>';
 
-4. **Audit the recovery.** File an `admin_action` row referencing the migration ID, the chosen direction, and the operator who performed it. The forensic trail must show that the 409 guard fired and was resolved deliberately, not papered over.
+     -- 2. Mark the migration cancelled and clear region_updated so the
+     --    column reflects post-unwind reality (source owns the data again).
+     UPDATE region_migrations
+        SET status = 'cancelled',
+            completed_at = now(),
+            region_updated = FALSE,
+            error_message = 'Unwound after Phase 4 failure — see incident <ID>'
+      WHERE id = '<migrationId>';
+     ```
+     Do not flip the migration back to `pending` — the row records the historical attempt; create a new migration request for any future retry.
+
+4. **Audit the recovery.** File an `admin_action_log` row referencing the migration ID, the chosen direction, and the operator who performed it. The forensic trail must show that the 409 guard fired and was resolved deliberately, not papered over. The `/migrate/:id/retry` endpoint already records the rejected attempt with `status = 'failure'`; the recovery action is the matching follow-up.
 
 > The `region_updated` column is the single source of truth for "destination has taken ownership." It is set inside the same migration executor process that performs the cutover, immediately after `organization.region` is updated, before Phase 4 starts. If you ever need to manually flip `region_updated`, treat it as a destructive operation — the guard exists exactly because the wrong value here corrupts customer data.
 

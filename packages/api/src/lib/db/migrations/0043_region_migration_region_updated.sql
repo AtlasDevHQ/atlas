@@ -19,8 +19,11 @@
 -- persist region_updated. Those rows are conservatively safe to retry from
 -- Phase 1 only because the legacy executor never had a way to leak Phase 3
 -- success into a `failed` state — the warning was always operator-readable.
--- New writes from the executor flip the column to TRUE the moment Phase 3
--- succeeds, well before Phase 4 starts.
+-- New writes from the executor stamp the column from a process-local flag
+-- inside Phase 3 (immediately after `organization.region` is updated) AND
+-- inside the failure-path catch (atomically with status='failed'), so the
+-- column converges on the executor's observed state regardless of which
+-- write path runs.
 --
 -- Issue: #1986
 

@@ -153,9 +153,6 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
       return { status: 404, code: "not_found", message: error.message };
 
     // ── 409 Conflict — operation rejected because of resource state ─
-    // #1986 — `resetMigrationForRetry` rejects when Phase 3 already
-    // flipped the workspace into the destination region. The caller
-    // can't progress without out-of-band runbook steps.
     case "UnsafeRegionMigrationResetError":
       return { status: 409, code: "conflict", message: error.message };
 

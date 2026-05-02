@@ -193,8 +193,8 @@ export class ConversationBudgetExceededError extends Data.TaggedError("Conversat
  * already flipped the workspace into the destination region. Re-running
  * Phase 1 (export from source) on a workspace that already moved would
  * re-export stale data and corrupt the destination — so the code path
- * is closed entirely. Operators must follow the manual-intervention
- * runbook in apps/docs/content/docs/platform-ops/data-residency.mdx.
+ * is closed entirely. Operators must follow the data-residency
+ * manual-intervention runbook.
  *
  * Maps to HTTP 409 Conflict.
  */
@@ -202,7 +202,10 @@ export class UnsafeRegionMigrationResetError extends Data.TaggedError("UnsafeReg
   readonly message: string;
   readonly migrationId: string;
   readonly workspaceId: string;
+  /** Region the workspace already moved to (i.e. the destination that took ownership). */
   readonly targetRegion: string;
+  /** Region the workspace moved from — runbook step 1 needs it to locate the orphaned source bundle. */
+  readonly sourceRegion: string;
 }> {}
 
 // ── Scheduler ──────────────────────────────────────────────────────

@@ -7,8 +7,7 @@ export const metadata: Metadata = {
 };
 
 export default function WizardLayout({ children }: { children: React.ReactNode }) {
-  // The wizard page renders its own <OnboardingShell /> — this layout exists
-  // only to host page metadata and the Suspense boundary that nuqs needs for
-  // useQueryStates to read URL params on first render.
+  // Suspense boundary is required by nuqs `useQueryStates` to read URL params
+  // during the first render of the page below.
   return <Suspense>{children}</Suspense>;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryStates } from "nuqs";
 import { useAtlasConfig } from "@/ui/context";
@@ -60,24 +60,69 @@ import {
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
-// Status banner for top-of-shell errors (e.g. save failures)
+// Error UI shared across steps
 // ---------------------------------------------------------------------------
 
-function ErrorBanner({ message, requestId }: { message: string; requestId?: string }) {
+interface WizardError {
+  message: string;
+  requestId?: string;
+}
+
+function ErrorBanner({ error }: { error: WizardError }) {
   return (
     <div
       role="alert"
-      className="mb-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+      className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
     >
-      <AlertCircle className="mt-0.5 size-4 shrink-0" />
+      <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <div className="space-y-1">
-        <p>{message}</p>
-        {requestId && (
-          <p className="font-mono text-[11px] opacity-80">requestId: {requestId}</p>
+        <p>{error.message}</p>
+        {error.requestId && (
+          <p className="font-mono text-[11px] opacity-80">
+            requestId: {error.requestId}
+          </p>
         )}
       </div>
     </div>
   );
+}
+
+interface ApiErrorBody {
+  message?: unknown;
+  requestId?: unknown;
+}
+
+/**
+ * Read a non-OK response body as JSON. Logs (not silently swallows) when the
+ * server returns non-JSON (e.g. an HTML 500 page from a misconfigured proxy)
+ * so ops can see the version drift.
+ */
+async function readErrorBody(res: Response, label: string): Promise<ApiErrorBody> {
+  try {
+    return (await res.json()) as ApiErrorBody;
+  } catch (parseErr) {
+    console.warn(
+      `[wizard] non-JSON ${label} error body (status ${res.status}):`,
+      parseErr instanceof Error ? parseErr.message : String(parseErr),
+    );
+    return {};
+  }
+}
+
+/**
+ * Translate an HTTP error response into a UI-safe `WizardError`. The raw
+ * `message` from the server may concatenate driver / filesystem detail
+ * (`api/routes/wizard.ts` builds messages like `\`Failed to save: ${err.message}\``),
+ * so it MUST be passed through `userMessageFor` before display.
+ */
+function errorFromResponse(
+  res: Response,
+  body: ApiErrorBody,
+  fallback: string,
+): WizardError {
+  const raw = typeof body.message === "string" ? body.message : `HTTP ${res.status}`;
+  const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+  return { message: userMessageFor(new Error(raw), fallback), requestId };
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +157,11 @@ function StepDatasource({
     return (
       <Card>
         <CardContent className="py-8">
-          <ErrorBanner message={`Couldn't load your saved connections. ${error.message}`} />
+          <ErrorBanner
+            error={{
+              message: `Couldn't load your saved connections. ${error.message}`,
+            }}
+          />
         </CardContent>
       </Card>
     );
@@ -299,11 +348,8 @@ function StepTables({
 }) {
   const [tables, setTables] = useState<WizardTableEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<WizardError | null>(null);
   const [filterText, setFilterText] = useState("");
-  // Track whether we've ever seeded selection from the API. On retry, we want
-  // to preserve the user's manual deselections — only seed on first load.
-  const seededRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -317,21 +363,34 @@ function StepTables({
         });
         if (cancelled) return;
         if (!res.ok) {
-          const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-          setError(typeof data.message === "string" ? data.message : `HTTP ${res.status}`);
+          const body = await readErrorBody(res, "profile");
+          console.warn("[wizard] profile failed:", {
+            status: res.status,
+            requestId: body.requestId,
+            message: body.message,
+          });
+          setError(errorFromResponse(res, body, "Couldn't list tables. Try again in a moment."));
           return;
         }
         const data = await res.json();
         const fetched = (data.tables ?? []) as WizardTableEntry[];
         setTables(fetched);
-        if (!seededRef.current) {
+        // Seed selection with every table the first time this connection's
+        // tables load. Only seeds when the parent's `selectedTables` is empty
+        // so a back-navigation that already has a saved selection doesn't
+        // clobber the user's deselections.
+        if (selectedTables.length === 0) {
           setSelectedTables(fetched.map((t) => t.name));
-          seededRef.current = true;
         }
       } catch (err) {
         if (!cancelled) {
-          console.warn("[wizard] profile failed:", err instanceof Error ? err.message : String(err));
-          setError(userMessageFor(err, "Couldn't list tables. Try again in a moment."));
+          console.warn(
+            "[wizard] profile error:",
+            err instanceof Error ? err.message : String(err),
+          );
+          setError({
+            message: userMessageFor(err, "Couldn't list tables. Try again in a moment."),
+          });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -340,8 +399,6 @@ function StepTables({
     return () => {
       cancelled = true;
     };
-    // connectionId/apiUrl/credentials are passed once per session-step; the
-    // empty deps + `cancelled` flag keep this effect a one-shot fetch.
   }, []);
 
   const filtered = tables.filter((t) =>
@@ -377,7 +434,7 @@ function StepTables({
     return (
       <Card>
         <CardContent className="space-y-4 py-8">
-          <ErrorBanner message={error} />
+          <ErrorBanner error={error} />
           <p className="text-xs text-muted-foreground">
             Common causes: the connection no longer exists, or the database role doesn&apos;t
             have read access to system catalogs. Manage connections in{" "}
@@ -524,10 +581,10 @@ function StepReview({
   entities: WizardEntityResult[];
   setEntities: (e: WizardEntityResult[]) => void;
   saving: boolean;
-  saveError: string | null;
+  saveError: WizardError | null;
 }) {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<WizardError | null>(null);
   const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
   const [editingYaml, setEditingYaml] = useState<Record<string, string>>({});
 
@@ -545,8 +602,13 @@ function StepReview({
         });
         if (cancelled) return;
         if (!res.ok) {
-          const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-          setError(typeof data.message === "string" ? data.message : `HTTP ${res.status}`);
+          const body = await readErrorBody(res, "generate");
+          console.warn("[wizard] generate failed:", {
+            status: res.status,
+            requestId: body.requestId,
+            message: body.message,
+          });
+          setError(errorFromResponse(res, body, "Couldn't profile the tables. Try again in a moment."));
           return;
         }
         const data = await res.json();
@@ -557,8 +619,13 @@ function StepReview({
         setEditingYaml(yamlMap);
       } catch (err) {
         if (!cancelled) {
-          console.warn("[wizard] generate failed:", err instanceof Error ? err.message : String(err));
-          setError(userMessageFor(err, "Couldn't profile the tables. Try again in a moment."));
+          console.warn(
+            "[wizard] generate error:",
+            err instanceof Error ? err.message : String(err),
+          );
+          setError({
+            message: userMessageFor(err, "Couldn't profile the tables. Try again in a moment."),
+          });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -567,8 +634,6 @@ function StepReview({
     return () => {
       cancelled = true;
     };
-    // Effect runs once per mount; the entities-length guard re-uses cached
-    // results when navigating back from a future step (none after step 3 today).
   }, []);
 
   function handleYamlChange(tableName: string, yaml: string) {
@@ -597,7 +662,7 @@ function StepReview({
     return (
       <Card>
         <CardContent className="space-y-4 py-8">
-          <ErrorBanner message={error} />
+          <ErrorBanner error={error} />
           <div className="flex justify-start">
             <Button variant="outline" onClick={onBack}>
               <ChevronLeft className="mr-1 size-4" aria-hidden="true" />
@@ -626,7 +691,7 @@ function StepReview({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {saveError && <ErrorBanner message={saveError} />}
+        {saveError && <ErrorBanner error={saveError} />}
 
         <ul className="max-h-[600px] space-y-2 overflow-auto pr-1">
           {entities.map((entity) => {
@@ -919,10 +984,17 @@ export default function WizardPage() {
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [entities, setEntities] = useState<WizardEntityResult[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<WizardError | null>(null);
 
   function goTo(nextStep: number) {
     setParams({ step: nextStep, connectionId });
+  }
+
+  // Going back from Review invalidates cached entities — the user may change
+  // their table selection, and the regenerate run must reflect the new set.
+  function goBackFromReview() {
+    setEntities([]);
+    goTo(2);
   }
 
   async function handleSave() {
@@ -939,16 +1011,24 @@ export default function WizardPage() {
         }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-        const message = typeof data.message === "string" ? data.message : `HTTP ${res.status}`;
-        console.warn("[wizard] save failed:", message);
-        setSaveError(userMessageFor(new Error(message), "Couldn't save the semantic layer."));
+        const body = await readErrorBody(res, "save");
+        console.warn("[wizard] save failed:", {
+          status: res.status,
+          requestId: body.requestId,
+          message: body.message,
+        });
+        setSaveError(errorFromResponse(res, body, "Couldn't save the semantic layer."));
         return;
       }
       goTo(4);
     } catch (err) {
-      console.warn("[wizard] save error:", err instanceof Error ? err.message : String(err));
-      setSaveError(userMessageFor(err, "Couldn't save the semantic layer."));
+      console.warn(
+        "[wizard] save error:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setSaveError({
+        message: userMessageFor(err, "Couldn't save the semantic layer."),
+      });
     } finally {
       setSaving(false);
     }
@@ -991,7 +1071,7 @@ export default function WizardPage() {
           onNext={() => {
             if (!saving) handleSave();
           }}
-          onBack={() => goTo(2)}
+          onBack={goBackFromReview}
           saving={saving}
           saveError={saveError}
         />

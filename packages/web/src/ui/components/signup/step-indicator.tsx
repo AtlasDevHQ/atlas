@@ -9,10 +9,6 @@ interface StepIndicatorProps {
   className?: string;
 }
 
-/**
- * Signup-specific wrapper around the shared `<StepTrack />`. Picks the right
- * step list based on whether multi-region residency is configured.
- */
 export function StepIndicator({ current, showRegion, className }: StepIndicatorProps) {
   return (
     <StepTrack

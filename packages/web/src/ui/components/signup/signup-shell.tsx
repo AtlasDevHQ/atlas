@@ -14,18 +14,12 @@ interface SignupShellProps {
   children: React.ReactNode;
 }
 
-/**
- * Shared chrome for the signup flow. Reads residency context to decide whether
- * the indicator should include the Region step, then composes the generic
- * `<OnboardingShell />` with a signup-specific `<StepIndicator />`.
- *
- * If a user lands directly on /signup/region while the availability probe is
- * still loading (or returned false), force the region step into the indicator
- * — otherwise stepsFor() omits it and the active step has no slot.
- */
 export function SignupShell({ step, width = "default", back, children }: SignupShellProps) {
   const ctx = useSignupContext();
   const detected = ctx.status === "ready" ? ctx.showRegion : false;
+  // If a user lands directly on /signup/region while the availability probe is
+  // still loading (or returned false), force the region step into the indicator
+  // — otherwise stepsFor() omits it and the active step has no slot.
   const showRegion = detected || step === "region";
 
   return (

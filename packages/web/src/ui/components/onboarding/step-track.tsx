@@ -8,31 +8,26 @@ export interface StepTrackItem {
   readonly label: string;
 }
 
-interface StepTrackProps {
-  /** Ordered list of steps, used both for layout and for resolving `current`. */
-  steps: readonly StepTrackItem[];
+interface StepTrackProps<T extends StepTrackItem> {
+  /** Ordered list of steps. */
+  steps: readonly T[];
   /** ID of the active step. Must be present in `steps`. */
-  current: string;
+  current: T["id"];
   /** Optional aria-label for the nav. Falls back to "Progress". */
   ariaLabel?: string;
   className?: string;
 }
 
 /**
- * Numbered, labeled step indicator shared across onboarding flows.
- *
- * Mobile (<sm): renders a compact "Step X of Y · Current label" pill plus a
- * decorative progress bar so the indicator never wraps awkwardly.
- *
- * Desktop (>=sm): renders the full named track. Steps before the current step
- * appear as filled circles with a check; the current step is highlighted; later
- * steps are muted. Connectors fill as you progress.
- *
- * Generic over the step list: signup, wizard, and any future onboarding flow
- * pass their own `steps` array. Throws at render time if `current` isn't in
- * `steps`, so callers can't get into the "Step 1 of 4 / unknown" UI bug.
+ * Throws synchronously if `current` isn't in `steps` so callers can't ship a
+ * "Step 1 of N / unknown" indicator if their step id drifts from the list.
  */
-export function StepTrack({ steps, current, ariaLabel = "Progress", className }: StepTrackProps) {
+export function StepTrack<T extends StepTrackItem>({
+  steps,
+  current,
+  ariaLabel = "Progress",
+  className,
+}: StepTrackProps<T>) {
   const total = steps.length;
   const activeIndex = steps.findIndex((s) => s.id === current);
   if (activeIndex === -1) {

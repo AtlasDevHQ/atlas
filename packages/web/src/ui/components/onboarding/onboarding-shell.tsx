@@ -17,9 +17,9 @@ interface OnboardingShellProps {
   width?: OnboardingShellWidth;
   /** Optional back-link target. Renders a back affordance above the content. */
   back?: { href: string; label?: string };
-  /** Optional skip-link rendered in the top right. Wizard uses this; signup doesn't. */
+  /** Optional skip-link rendered in the top right. */
   skip?: { href: string; label: string };
-  /** The step indicator slot. Pages compose their own <StepTrack /> here. */
+  /** The step indicator slot. */
   indicator: React.ReactNode;
   children: React.ReactNode;
 }
@@ -38,11 +38,9 @@ const AtlasMark = (
 );
 
 /**
- * Shared chrome for onboarding flows (signup, wizard). Renders the page header
- * (Atlas mark + step indicator slot + optional skip link) and a centered,
- * width-constrained main area. Pages drop their step-specific content into the
- * `children` slot and pass the indicator (a `<StepTrack />` or signup's
- * specialized indicator) so the shell stays unaware of the step list shape.
+ * The shell is intentionally agnostic to step shape — callers pass an
+ * `indicator` node so different flows can use different step layouts without
+ * forcing a shared step type into this file.
  */
 export function OnboardingShell({
   width = "default",

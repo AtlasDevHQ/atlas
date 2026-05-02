@@ -36,16 +36,46 @@ describe("wizard-helpers", () => {
       );
     });
 
+    it("recognizes EPERM", () => {
+      expect(userMessageFor(new Error("EPERM: operation not permitted"), "fallback")).toMatch(
+        /semantic layer directory/i,
+      );
+    });
+
+    it("is case-insensitive on permission patterns", () => {
+      expect(userMessageFor(new Error("Permission Denied"), "fallback")).toMatch(
+        /semantic layer directory/i,
+      );
+    });
+
     it("recognizes timeouts", () => {
       expect(userMessageFor(new Error("Request timed out after 30s"), "fallback")).toMatch(
         /took too long/i,
       );
     });
 
-    it("preserves not-found errors verbatim (the message is already user-friendly)", () => {
+    it("forwards clean not-found messages verbatim", () => {
       expect(userMessageFor(new Error('Connection "default" not found'), "fallback")).toBe(
         'Connection "default" not found',
       );
+    });
+
+    it("strips paths from not-found messages even if backend leaks one", () => {
+      const result = userMessageFor(
+        new Error("file not found: /etc/atlas/secret.key"),
+        "fallback",
+      );
+      expect(result).not.toContain("/etc/atlas/secret.key");
+      expect(result).toContain("<path>");
+    });
+
+    it("prioritizes EACCES over not-found when both phrases appear", () => {
+      const result = userMessageFor(
+        new Error("EACCES: connection 'foo' not found in /srv/atlas/secret.json"),
+        "fallback",
+      );
+      expect(result).toMatch(/semantic layer directory/i);
+      expect(result).not.toContain("/srv/atlas/secret.json");
     });
 
     it("falls back for unknown errors", () => {
@@ -71,7 +101,6 @@ describe("wizard-helpers", () => {
   describe("partitionConnections", () => {
     it("returns empty buckets when input is null", () => {
       const result = partitionConnections(null);
-      expect(result.connections).toHaveLength(0);
       expect(result.demo).toBeNull();
       expect(result.user).toHaveLength(0);
     });
@@ -92,6 +121,12 @@ describe("wizard-helpers", () => {
       ];
       const result = partitionConnections(all);
       expect(result.user.map((c) => c.id)).toEqual(["default", "warehouse"]);
+    });
+
+    it("filters empty and whitespace-only ids defensively", () => {
+      const all = [conn(""), conn("   "), conn("default")];
+      const result = partitionConnections(all);
+      expect(result.user.map((c) => c.id)).toEqual(["default"]);
     });
 
     it("returns no demo when demo connection is absent", () => {

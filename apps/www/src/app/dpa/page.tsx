@@ -203,9 +203,9 @@ export default function DPAPage() {
             no negotiation needed.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
-            <span>effective 2026-01-15</span>
+            <span>effective 2026-05-02</span>
             <span aria-hidden="true">·</span>
-            <span>v2.4</span>
+            <span>v2.5</span>
             <span aria-hidden="true">·</span>
             <span>incorporates: SCCs (2021/914), UK IDTA</span>
           </div>
@@ -226,10 +226,10 @@ export default function DPAPage() {
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between md:gap-6">
               <div>
                 <p className="mb-1 font-mono text-[15px] font-semibold text-zinc-100 md:text-base">
-                  DPA-v2.4-pre-signed.pdf
+                  DPA-v2.5-pre-signed.pdf
                 </p>
                 <p className="font-mono text-[11px] tracking-wider text-zinc-400">
-                  Countersigned by Atlas · valid through 2027-01-15 ·
+                  Countersigned by Atlas · valid through 2027-05-02 ·
                   available on request
                 </p>
               </div>

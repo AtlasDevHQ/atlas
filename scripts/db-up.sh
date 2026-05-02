@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # Pre-create bind-mount source directories with host-user ownership.
-# docker-compose mounts ./semantic into the sandbox container; if the host
-# path doesn't exist, the docker daemon creates it as root, which then
-# breaks wizard save (EACCES on mkdir semantic/.orgs/) and `atlas init`.
-# See issue #1951.
+# Any host path bind-mounted into a container must exist before
+# `docker compose up`, otherwise the docker daemon creates it as root.
+# Today this only applies to ./semantic (sandbox sidecar) — when the host
+# path is missing, the resulting root-owned dir breaks wizard save (EACCES
+# on mkdir semantic/.orgs/) and `atlas init`. See issue #1951. Add new
+# bind-mount sources here as compose services are introduced.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if ! mkdir -p "$REPO_ROOT/semantic"; then

@@ -1132,13 +1132,32 @@ async function applyDeployMode(
   // `EnterpriseGuardLive` (fail boot); the config-file path falls back
   // to a CRITICAL warning here because the config file may legitimately
   // be checked into a self-hosted distribution that lacks `@atlas/ee`.
-  const { warnIfDeployModeSilentlyDowngraded } = await import(
-    "@atlas/api/lib/effect/saas-guards"
-  );
-  warnIfDeployModeSilentlyDowngraded({
-    resolvedDeployMode: resolved.deployMode,
-    configFileValue,
-  });
+  //
+  // Inlined rather than imported from `lib/effect/saas-guards.ts`
+  // because that module's static import of `Config` from `./layers`
+  // makes `layers.ts` (and its dynamic `await import("@atlas/api/lib/telemetry")`
+  // chain) statically reachable from any consumer of `config.ts`.
+  // Next.js's App Router tracer follows dynamic imports too, so the
+  // create-atlas standalone scaffold would fail at build time trying to
+  // resolve `@opentelemetry/sdk-node`. Keeping the helper inline here
+  // walls the boot-only modules off from request-path consumers.
+  if (
+    resolved.deployMode !== "saas" &&
+    process.env.ATLAS_DEPLOY_MODE !== "saas" &&
+    configFileValue === "saas"
+  ) {
+    log.error(
+      {
+        requested: "saas",
+        resolved: resolved.deployMode,
+        source: "atlas.config.ts",
+      },
+      `CRITICAL: atlas.config.ts requested deployMode "saas" but enterprise is not enabled — ` +
+        `silently downgraded to "${resolved.deployMode}". DPA, encryption, and internal-DB ` +
+        `guards will NOT run. Build with @atlas/ee installed and ATLAS_ENTERPRISE_ENABLED=true, ` +
+        `or remove the deployMode override from atlas.config.ts. See #1978.`,
+    );
+  }
 }
 
 export async function loadConfig(

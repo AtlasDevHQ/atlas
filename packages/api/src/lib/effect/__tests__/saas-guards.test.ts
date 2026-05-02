@@ -6,30 +6,29 @@
  * directly on the failure cause so the `_tag` field's purpose
  * (discriminating which misconfig class fired) is exercised.
  *
- * The logger is mocked at module level so that
- * `warnIfDeployModeSilentlyDowngraded` log emissions can be observed
- * directly — without that, tests can only assert "doesn't throw"
- * which would pass even for a no-op helper.
+ * The logger mock at module level was originally introduced to capture
+ * `warnIfDeployModeSilentlyDowngraded` emissions. That helper has since
+ * moved to `lib/config.ts` (its tests moved with it); the mock stays
+ * here so future tests in this file can observe `saas-guards.ts` log
+ * output without rewiring imports.
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, mock } from "bun:test";
 import { Effect, Exit, Layer } from "effect";
 
-// Logger spy — captures every log call from saas-guards.ts. Must be
-// installed before `../saas-guards` is imported. The spy resets in
-// `beforeEach` for each test file group below.
-type LogCall = { level: "error" | "warn" | "info" | "debug"; payload: unknown; message: string };
-const _logCalls: LogCall[] = [];
-
+// Logger no-op mock — keeps these tests quiet (and isolated from any
+// real logger configuration the test runner has set up). All log calls
+// inside `saas-guards.ts` are observational; nothing in this file
+// asserts log content (the deploy-mode-warning emission test moved to
+// `lib/__tests__/config-deploy-mode-warning.test.ts` when the helper
+// was inlined into `lib/config.ts`).
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
-    error: (payload: unknown, message: string) => _logCalls.push({ level: "error", payload, message }),
-    warn: (payload: unknown, message: string) => _logCalls.push({ level: "warn", payload, message }),
-    info: (payload: unknown, message: string) => _logCalls.push({ level: "info", payload, message }),
-    debug: (payload: unknown, message: string) => _logCalls.push({ level: "debug", payload, message }),
+    error: () => {},
+    warn: () => {},
+    info: () => {},
+    debug: () => {},
   }),
-  // Other logger exports kept as no-ops; callers in saas-guards.ts only
-  // touch createLogger.
   getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
   setLogLevel: () => true,
   getRequestContext: () => undefined,
@@ -55,7 +54,6 @@ const {
   EncryptionKeyMalformedError,
   InternalDbGuardLive,
   InternalDatabaseRequiredError,
-  warnIfDeployModeSilentlyDowngraded,
 } = await import("../saas-guards");
 const { Config } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
@@ -406,62 +404,11 @@ describe("InternalDbGuardLive", () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════
-// ██  warnIfDeployModeSilentlyDowngraded — no throw, just observable log
-// ══════════════════════════════════════════════════════════════════════
-
-describe("warnIfDeployModeSilentlyDowngraded", () => {
-  let savedEnv: string | undefined;
-
-  beforeEach(() => {
-    savedEnv = process.env.ATLAS_DEPLOY_MODE;
-    delete process.env.ATLAS_DEPLOY_MODE;
-    _logCalls.length = 0;
-  });
-
-  afterEach(() => {
-    if (savedEnv !== undefined) process.env.ATLAS_DEPLOY_MODE = savedEnv;
-    else delete process.env.ATLAS_DEPLOY_MODE;
-  });
-
-  // Asserting the log emission directly — without this, a regression
-  // that turned the helper into a no-op would still pass `not.toThrow()`.
-  test("emits CRITICAL error log when config file requests saas but resolved is self-hosted", () => {
-    warnIfDeployModeSilentlyDowngraded({
-      resolvedDeployMode: "self-hosted",
-      configFileValue: "saas",
-    });
-
-    const errorLogs = _logCalls.filter((c) => c.level === "error");
-    expect(errorLogs).toHaveLength(1);
-    expect(errorLogs[0].message).toContain("CRITICAL");
-    expect(errorLogs[0].message).toContain("#1978");
-    expect((errorLogs[0].payload as Record<string, unknown>).source).toBe("atlas.config.ts");
-    expect((errorLogs[0].payload as Record<string, unknown>).requested).toBe("saas");
-  });
-
-  test("does NOT log when resolved is saas (no downgrade)", () => {
-    warnIfDeployModeSilentlyDowngraded({
-      resolvedDeployMode: "saas",
-      configFileValue: "saas",
-    });
-    expect(_logCalls.filter((c) => c.level === "error")).toHaveLength(0);
-  });
-
-  test("does NOT log when env is set to saas (handled by EnterpriseGuardLive)", () => {
-    process.env.ATLAS_DEPLOY_MODE = "saas";
-    warnIfDeployModeSilentlyDowngraded({
-      resolvedDeployMode: "self-hosted",
-      configFileValue: "saas",
-    });
-    expect(_logCalls.filter((c) => c.level === "error")).toHaveLength(0);
-  });
-
-  test("does NOT log when config file did not request saas", () => {
-    warnIfDeployModeSilentlyDowngraded({
-      resolvedDeployMode: "self-hosted",
-      configFileValue: "auto",
-    });
-    expect(_logCalls.filter((c) => c.level === "error")).toHaveLength(0);
-  });
-});
+// Note: tests for `warnIfDeployModeSilentlyDowngraded` previously lived
+// here. The helper was inlined into `lib/config.ts` to break a static-
+// reachability chain that broke the create-atlas standalone scaffold
+// build (Next.js's App Router tracer pulled `lib/effect/layers.ts` and
+// its dynamic `@opentelemetry/sdk-node` import into the request graph).
+// The replacement coverage lives in
+// `lib/__tests__/config-deploy-mode-warning.test.ts`, which spies the
+// logger via `mock.module` to verify the inlined log emission.

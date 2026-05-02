@@ -42,10 +42,7 @@
  */
 
 import { Data, Effect, Layer } from "effect";
-import { createLogger } from "@atlas/api/lib/logger";
 import { Config } from "./layers";
-
-const log = createLogger("saas-guards");
 
 const ISSUE_REF = "#1978";
 
@@ -59,9 +56,9 @@ const ISSUE_REF = "#1978";
  * Env-set is operator intent — fail boot rather than run degraded.
  *
  * Config-file rejections do NOT construct this error — they fall
- * through to `warnIfDeployModeSilentlyDowngraded()`, which emits a
- * CRITICAL log line. The intent-strength split is documented under
- * `EnterpriseGuardLive` and `warnIfDeployModeSilentlyDowngraded`.
+ * through to a CRITICAL log line emitted directly from
+ * `lib/config.ts:applyDeployMode()`. The intent-strength split is
+ * documented under `EnterpriseGuardLive`.
  */
 export class EnterpriseRequiredError extends Data.TaggedError("EnterpriseRequiredError")<{
   readonly message: string;
@@ -268,37 +265,12 @@ export const InternalDbGuardLive: Layer.Layer<never, InternalDatabaseRequiredErr
   }),
 );
 
-// ══════════════════════════════════════════════════════════════════════
-// ██  Critical-warning helper for config-file-only deploy-mode rejection
-// ══════════════════════════════════════════════════════════════════════
-
-/**
- * Log a CRITICAL-level warning when `deployMode: "saas"` was requested
- * via the config file (not env) but enterprise is not enabled. The env
- * case is fail-fast in {@link EnterpriseGuardLive}; the config case
- * stays as a loud warning because the config file may be checked into
- * a self-hosted distribution where the `ee/` module legitimately isn't
- * installed.
- *
- * Called from `applyDeployMode` after resolution.
- */
-export function warnIfDeployModeSilentlyDowngraded(opts: {
-  resolvedDeployMode: "saas" | "self-hosted";
-  configFileValue: "auto" | "saas" | "self-hosted" | undefined;
-}): void {
-  if (opts.resolvedDeployMode === "saas") return;
-  if (process.env.ATLAS_DEPLOY_MODE === "saas") return; // env case → EnterpriseGuardLive fails boot
-  if (opts.configFileValue !== "saas") return;
-
-  log.error(
-    {
-      requested: "saas",
-      resolved: opts.resolvedDeployMode,
-      source: "atlas.config.ts",
-    },
-    `CRITICAL: atlas.config.ts requested deployMode "saas" but enterprise is not enabled — ` +
-      `silently downgraded to "${opts.resolvedDeployMode}". DPA, encryption, and internal-DB ` +
-      `guards will NOT run. Build with @atlas/ee installed and ATLAS_ENTERPRISE_ENABLED=true, ` +
-      `or remove the deployMode override from atlas.config.ts. See ${ISSUE_REF}.`,
-  );
-}
+// Note: `warnIfDeployModeSilentlyDowngraded()` previously lived here.
+// It was inlined into `lib/config.ts` because importing the helper
+// from this module forced `layers.ts` (and its dynamic
+// `@atlas/api/lib/telemetry` import) into the static reachability
+// graph of every `config.ts` consumer. Next.js App Router tracing
+// then failed the `create-atlas` standalone scaffold build trying to
+// resolve `@opentelemetry/sdk-node`. Keeping the boot-time guards
+// here and the config-file warning in `config.ts` walls the
+// boot-only modules off from request-path consumers.

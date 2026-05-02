@@ -1,0 +1,31 @@
+-- 0043 — Persist region_updated on region_migrations rows (#1986).
+--
+-- Phase 3 of executeRegionMigration() (the cutover) flips the workspace into
+-- the destination region by updating organization.region. Before this column
+-- existed, that fact lived only in a local variable in the executor process
+-- — so a Phase 4 failure would mark the row `failed` with a warning baked
+-- into error_message, and resetMigrationForRetry() had no way to tell that
+-- re-running Phase 1 (export from source) would re-export a workspace that
+-- already moved to the destination → data integrity hazard.
+--
+-- region_updated = TRUE means: the destination has taken ownership. The
+-- guard in resetMigrationForRetry() (lib/residency/migrate.ts) refuses to
+-- flip such a row back to `pending` and surfaces UnsafeRegionMigrationResetError
+-- (mapped to HTTP 409). Recovery requires the manual-intervention runbook in
+-- apps/docs/content/docs/platform-ops/data-residency.mdx.
+--
+-- DEFAULT FALSE backfills cleanly: any pre-existing `failed` row predates
+-- this migration and was therefore created by an executor that did not
+-- persist region_updated. Those rows are conservatively safe to retry from
+-- Phase 1 only because the legacy executor never had a way to leak Phase 3
+-- success into a `failed` state — the warning was always operator-readable.
+-- New writes from the executor stamp the column from a process-local flag
+-- inside Phase 3 (immediately after `organization.region` is updated) AND
+-- inside the failure-path catch (atomically with status='failed'), so the
+-- column converges on the executor's observed state regardless of which
+-- write path runs.
+--
+-- Issue: #1986
+
+ALTER TABLE region_migrations
+  ADD COLUMN IF NOT EXISTS region_updated BOOLEAN NOT NULL DEFAULT FALSE;

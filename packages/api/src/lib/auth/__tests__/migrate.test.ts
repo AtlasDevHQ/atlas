@@ -288,6 +288,7 @@ describe("migrateAuthTables", () => {
             { name: "0040_drop_integration_plaintext.sql" },
             { name: "0041_dashboard_card_layout.sql" },
             { name: "0042_audit_retention_default.sql" },
+            { name: "0043_region_migration_region_updated.sql" },
           ],
         };
       }

@@ -74,21 +74,32 @@ function withPipe(iter: { [Symbol.iterator]: () => Iterator<unknown, unknown> })
       [Symbol.iterator]() {
         const inner = iter[Symbol.iterator]();
         let firstCall = true;
+        function fireHooks(err: unknown): never {
+          const cause: MockCause = { _mockKind: mockAssignCauseKind, error: err };
+          for (const h of hooks) {
+            // Each hook invokes `Effect.sync(() => logAdminAction(...))`; in
+            // the mock `Effect.sync` executes its callback on invocation, so
+            // the audit emission lands before we re-throw. Swallow hook
+            // errors so the original failure still surfaces.
+            try { h.fn(cause); } catch { /* intentionally ignored */ }
+          }
+          throw err;
+        }
         return {
           next(value?: unknown): IteratorResult<unknown, unknown> {
             try {
               return firstCall ? (firstCall = false, inner.next()) : inner.next(value);
             } catch (err) {
-              const cause: MockCause = { _mockKind: mockAssignCauseKind, error: err };
-              for (const h of hooks) {
-                // Each hook invokes `Effect.sync(() => logAdminAction(...))`;
-                // in the mock `Effect.sync` executes its callback on
-                // invocation, so the audit emission lands before we re-throw.
-                // Swallow hook errors so the original failure still surfaces.
-                try { h.fn(cause); } catch { /* intentionally ignored */ }
-              }
-              throw err;
+              return fireHooks(err);
             }
+          },
+          // Generator delegation forwards `gen.throw(err)` to the inner
+          // iterator's `throw` method when the outer generator is suspended
+          // inside a `yield*`. Without this, async-rejection paths (the
+          // runEffect mock awaits an Effect.promise sentinel and calls
+          // `gen.throw` on rejection) would bypass the tapErrorCause hooks.
+          throw(err: unknown): IteratorResult<unknown, unknown> {
+            return fireHooks(err);
           },
         };
       },
@@ -154,6 +165,15 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   makeAuthContextLayer: () => ({}),
 }));
 
+// #1986 — Mirror the production tagged-error → HTTP mapping so route tests
+// can assert the 409 surfaced by the unsafe-reset guard. Keeping this map
+// keyed off `_tag` (the Data.TaggedError discriminant) avoids importing the
+// real classes here — tests pass any object with the matching `_tag` and
+// `message` and get the realistic Response shape back.
+const TAGGED_ERROR_HTTP_MAP: Record<string, { status: number; code: string }> = {
+  UnsafeRegionMigrationResetError: { status: 409, code: "conflict" },
+};
+
 mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (_c: unknown, effect: { _tag: string; genFn: () => Generator }, opts?: { domainErrors?: [unknown, Record<string, number>][] }) => {
     try {
@@ -183,6 +203,18 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
             const status = statusMap[code] ?? 500;
             return new Response(JSON.stringify({ error: code, message: err.message, requestId: "test-req-1" }), { status });
           }
+        }
+      }
+      // Classify Atlas tagged errors (mirrors mapTaggedError dispatch)
+      if (err && typeof err === "object" && "_tag" in err && typeof (err as { _tag?: unknown })._tag === "string") {
+        const tag = (err as { _tag: string })._tag;
+        const mapping = TAGGED_ERROR_HTTP_MAP[tag];
+        if (mapping) {
+          const message = (err as { message?: unknown }).message;
+          return new Response(
+            JSON.stringify({ error: mapping.code, message: typeof message === "string" ? message : tag, requestId: "test-req-1" }),
+            { status: mapping.status },
+          );
         }
       }
       // Unknown / defect errors land as 500 in production. Return the same
@@ -398,11 +430,17 @@ mock.module("@atlas/api/lib/audit", () => ({
 
 let mockResetResult: { ok: true } | { ok: false; reason: string; error: string } = { ok: true };
 let mockCancelResult: { ok: true } | { ok: false; reason: string; error: string } = { ok: true };
+// #1986 — optional throw to exercise the 409 mapping for the unsafe-reset guard
+// without dragging in the real migrate module's DB plumbing.
+let mockResetThrow: Error | null = null;
 
 mock.module("@atlas/api/lib/residency/migrate", () => ({
   triggerMigrationExecution: () => {},
   failStaleMigrations: () => Promise.resolve(0),
-  resetMigrationForRetry: () => Promise.resolve(mockResetResult),
+  resetMigrationForRetry: () => {
+    if (mockResetThrow) return Promise.reject(mockResetThrow);
+    return Promise.resolve(mockResetResult);
+  },
   cancelMigration: () => Promise.resolve(mockCancelResult),
 }));
 
@@ -433,6 +471,7 @@ function resetMocks() {
   };
   mockInternalQueryResult = [];
   mockResetResult = { ok: true };
+  mockResetThrow = null;
   mockCancelResult = { ok: true };
   mockAssignCauseKind = "fail";
   mockEffectUser = {
@@ -822,6 +861,26 @@ describe("POST /migrate/:id/retry", () => {
     const res = await request("POST", "/migrate/mig-1/retry");
     expect(res.status).toBe(404);
   });
+
+  // #1986 — End-to-end: when resetMigrationForRetry throws the typed
+  // UnsafeRegionMigrationResetError (Phase 3 already cut over), the bridge
+  // must classify it via mapTaggedError and respond 409, not 400/500.
+  it("returns 409 when reset is rejected as unsafe (region already updated)", async () => {
+    mockResetThrow = Object.assign(
+      new Error("Migration cannot be reset: workspace already moved to eu-west"),
+      {
+        _tag: "UnsafeRegionMigrationResetError" as const,
+        migrationId: "mig-1",
+        workspaceId: "org-1",
+        targetRegion: "eu-west",
+      },
+    );
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(409);
+    const json = (await res.json()) as { error: string; message: string };
+    expect(json.error).toBe("conflict");
+    expect(json.message).toContain("already moved");
+  });
 });
 
 describe("POST /migrate/:id/cancel", () => {
@@ -988,14 +1047,42 @@ describe("admin residency — F-32 audit emission", () => {
     expect(entry.targetId).toBe("mig-1");
   });
 
-  it("POST /migrate/:id/retry does NOT emit audit when retry is rejected", async () => {
-    // Pre-handler rejection (resetMigrationForRetry returned ok:false) should
-    // not land an audit row — the migration wasn't actually retried, and
-    // emitting would pollute the forensic record with no-op retry attempts.
+  it("POST /migrate/:id/retry emits a failure audit when retry is rejected", async () => {
+    // Rejected retries are compliance-relevant: a 4xx here can fingerprint a
+    // probe (operator attempting to undo a half-completed cross-region cutover).
+    // The runbook requires a forensic trail showing every guard outcome; the
+    // route emits a `status: "failure"` audit with the rejection reason.
     mockResetResult = { ok: false, reason: "invalid_status", error: "Cannot retry" };
     const res = await request("POST", "/migrate/mig-1/retry");
     expect(res.status).toBe(400);
-    expect(mockLogAdminAction).not.toHaveBeenCalled();
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.migration_retry");
+    expect(entry.status).toBe("failure");
+    expect((entry.metadata as { reason?: string } | undefined)?.reason).toBe("invalid_status");
+  });
+
+  it("POST /migrate/:id/retry emits a failure audit when reset throws (409 path)", async () => {
+    // The unsafe-reset throw path must also land an audit. tapErrorCause fires
+    // before the bridge converts the tagged error to 409, so the forensic
+    // trail captures the most compliance-relevant outcome in this file.
+    mockResetThrow = Object.assign(
+      new Error("Migration cannot be reset: workspace already moved to eu-west"),
+      {
+        _tag: "UnsafeRegionMigrationResetError" as const,
+        migrationId: "mig-1",
+        workspaceId: "org-1",
+        targetRegion: "eu-west",
+        sourceRegion: "us-east",
+      },
+    );
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(409);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = mockLogAdminAction.mock.calls[0]![0];
+    expect(entry.actionType).toBe("residency.migration_retry");
+    expect(entry.status).toBe("failure");
+    expect((entry.metadata as { error?: string } | undefined)?.error).toContain("already moved");
   });
 
   it("POST /migrate/:id/cancel emits residency.migration_cancel on success", async () => {

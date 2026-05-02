@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(43);
+    expect(count).toBe(44);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -151,6 +151,7 @@ describe("runMigrations", () => {
         "0040_drop_integration_plaintext.sql",
         "0041_dashboard_card_layout.sql",
         "0042_audit_retention_default.sql",
+        "0043_region_migration_region_updated.sql",
       ],
     });
 

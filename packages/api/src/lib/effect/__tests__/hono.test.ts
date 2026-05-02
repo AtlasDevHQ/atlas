@@ -43,6 +43,7 @@ const {
   SchedulerTaskTimeoutError,
   SchedulerExecutionError,
   DeliveryError,
+  UnsafeRegionMigrationResetError,
 } = await import("../errors");
 
 // ---------------------------------------------------------------------------
@@ -226,6 +227,21 @@ describe("mapTaggedError", () => {
     const result = mapTaggedError(new DeliveryError({ message: "Failed", channel: "webhook", recipient: "url", permanent: false }));
     expect(result.status).toBe(502);
     expect(result.code).toBe("upstream_error");
+  });
+
+  it("maps UnsafeRegionMigrationResetError to 409", () => {
+    const result = mapTaggedError(
+      new UnsafeRegionMigrationResetError({
+        message: "Cannot reset",
+        migrationId: "mig-1",
+        workspaceId: "org-1",
+        targetRegion: "eu-west",
+        sourceRegion: "us-east",
+      }),
+    );
+    expect(result.status).toBe(409);
+    expect(result.code).toBe("conflict");
+    expect(result.message).toBe("Cannot reset");
   });
 });
 

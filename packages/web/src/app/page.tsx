@@ -128,6 +128,21 @@ function ChatPage() {
 
   const isLoading = status === "streaming" || status === "submitted";
 
+  // When a caller deep-links with `?prompt=...` (wizard Done, signup success
+  // starters), prefill the input. We only set the input here — auto-submit
+  // would race with auth/transport readiness; users press Enter or click Send.
+  const prefilledRef = useRef(false);
+  useEffect(() => {
+    if (prefilledRef.current) return;
+    if (!params.prompt) return;
+    prefilledRef.current = true;
+    setInput(params.prompt);
+    // Clear the param so a refresh doesn't re-prefill, and the URL stays clean.
+    setParams({ prompt: "" }).catch((err: unknown) => {
+      console.warn("[chat] failed to clear prompt param:", err instanceof Error ? err.message : String(err));
+    });
+  }, [params.prompt, setParams]);
+
   // Fetch adaptive starter prompts for the empty state (#1474)
   useEffect(() => {
     if (messages.length > 0) return;

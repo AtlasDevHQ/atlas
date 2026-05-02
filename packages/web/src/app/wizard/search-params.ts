@@ -1,4 +1,4 @@
-import { parseAsString, parseAsInteger } from "nuqs";
+import { parseAsInteger, parseAsString } from "nuqs";
 
 export const wizardSearchParams = {
   step: parseAsInteger.withDefault(1),

@@ -21,6 +21,8 @@ The headers come from three places:
 - **`packages/web/next.config.ts`** — `headers()` config for the app. The `/shared/:token/embed` route overrides `frame-ancestors` to `*`; everywhere else inherits `frame-ancestors 'self'`.
 - **`apps/www/serve.ts`** — Bun static-server that fronts the `next export` output. The marketing CSP is intentionally simpler since the site is fully static.
 
+Scaffolds (`bun create @useatlas`, `examples/nextjs-standalone`, `examples/docker`) inherit the same `headers()` block out of the box, so a fresh install ships hardened by default — there is nothing extra to wire up. If you fork the scaffold and customise CSP, edit the `next.config.ts` at the project root and the same guidance below applies.
+
 ## Verifying the headers
 
 Confirm any deployed surface with `curl -I`:

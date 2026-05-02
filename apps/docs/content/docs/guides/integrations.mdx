@@ -285,6 +285,10 @@ When connected, the card shows:
 
 Click **Disconnect** and confirm. Email delivery will fall back to environment variables (`ATLAS_SMTP_URL` or `RESEND_API_KEY`) or be disabled until reconnected.
 
+### Auth Emails (Password Reset, Verification)
+
+The same email transport powers password reset and email verification. The workspace-level provider you configure here is used when a user is signed in (verification re-sends, magic links). The unauthenticated **Forgot password?** flow on `/login` runs without a session and therefore can't see workspace overrides — it falls through to the platform-level provider (`ATLAS_EMAIL_PROVIDER` settings or the `RESEND_API_KEY` / `ATLAS_SMTP_URL` env vars). On a deployment with no platform-level provider, the **Forgot password?** link on `/login` is hidden — see [Password reset](/deployment/authentication#password-reset) for the full flow.
+
 ### Self-Hosted
 
 For self-hosted deployments without an internal database, email delivery is configured via environment variables:

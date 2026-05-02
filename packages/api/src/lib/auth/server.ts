@@ -82,7 +82,7 @@ const AUTH_RATE_LIMIT_DEFAULTS = {
   max: 100,
   signInEmail: { window: 60, max: 10 },
   signUpEmail: { window: 60, max: 5 },
-  forgetPassword: { window: 60, max: 5 },
+  requestPasswordReset: { window: 60, max: 5 },
   resetPassword: { window: 60, max: 5 },
   sendVerificationEmail: { window: 60, max: 5 },
   verifyEmail: { window: 60, max: 10 },
@@ -154,13 +154,25 @@ export function resolveAuthRateLimitConfig(
     customRules: {
       "/sign-in/email": { ...AUTH_RATE_LIMIT_DEFAULTS.signInEmail },
       "/sign-up/email": { ...AUTH_RATE_LIMIT_DEFAULTS.signUpEmail },
-      "/forget-password": { ...AUTH_RATE_LIMIT_DEFAULTS.forgetPassword },
+      // Better Auth 1.4+ renamed /forget-password → /request-password-reset.
+      // The earlier key was a no-op (no endpoint at that path); a future
+      // version bump must not silently de-rate-limit this surface.
+      "/request-password-reset": { ...AUTH_RATE_LIMIT_DEFAULTS.requestPasswordReset },
       "/reset-password": { ...AUTH_RATE_LIMIT_DEFAULTS.resetPassword },
       "/send-verification-email": { ...AUTH_RATE_LIMIT_DEFAULTS.sendVerificationEmail },
       "/verify-email": { ...AUTH_RATE_LIMIT_DEFAULTS.verifyEmail },
     },
   };
 }
+
+/**
+ * Default reset-password token TTL (seconds). Better Auth's own default is
+ * also 1 hour, but pinning it explicitly here means a future Better Auth
+ * version bump can't silently widen the window — a single-use token that
+ * lives 24 hours is fine; one that lives a week is a credential lying
+ * around in the user's inbox.
+ */
+export const RESET_PASSWORD_TOKEN_EXPIRES_IN_SEC = 60 * 60;
 
 /**
  * Build the Better Auth `emailAndPassword` config block.
@@ -171,16 +183,39 @@ export function resolveAuthRateLimitConfig(
  * a future refactor would silently turn signup into a login oracle
  * (attacker signs up with a victim's email → gets a session regardless
  * of whether the account existed). The unit tests pin this exactly.
+ *
+ * `sendResetPassword` and `revokeSessionsOnPasswordReset` are wired here
+ * so password-reset behavior travels with the rest of email/password
+ * config — the test suite pins both so a future refactor can't silently
+ * drop the email send (reopening F-09 — silent password-reset) or the
+ * session revocation (a stolen reset link would leave the attacker's
+ * old session live alongside the legitimate user's new one).
  */
-export function buildEmailAndPasswordConfig(requireEmailVerification: boolean): {
+export interface BuildEmailAndPasswordConfigDeps {
+  requireEmailVerification: boolean;
+  sendResetPassword: (data: { user: User; url: string; token: string }) => Promise<void>;
+  resetPasswordTokenExpiresIn?: number;
+}
+
+export function buildEmailAndPasswordConfig(deps: BuildEmailAndPasswordConfigDeps): {
   enabled: true;
   requireEmailVerification: boolean;
   autoSignIn: boolean;
+  sendResetPassword: (data: { user: User; url: string; token: string }) => Promise<void>;
+  resetPasswordTokenExpiresIn: number;
+  revokeSessionsOnPasswordReset: true;
 } {
   return {
     enabled: true,
-    requireEmailVerification,
-    autoSignIn: !requireEmailVerification,
+    requireEmailVerification: deps.requireEmailVerification,
+    autoSignIn: !deps.requireEmailVerification,
+    sendResetPassword: deps.sendResetPassword,
+    resetPasswordTokenExpiresIn: deps.resetPasswordTokenExpiresIn ?? RESET_PASSWORD_TOKEN_EXPIRES_IN_SEC,
+    // Always revoke other sessions on a successful reset. A reset is the
+    // recovery path for "I think someone else has my password" — leaving
+    // any other live session is the wrong default. Better Auth defaults
+    // this to false; opt in here.
+    revokeSessionsOnPasswordReset: true,
   };
 }
 
@@ -397,6 +432,51 @@ export async function _sendVerificationEmail(opts: { to: string; url: string }):
     log.warn(
       { to: opts.to, err: errorMessage(err) },
       "Email verification dispatch crashed — signup response is still 200 to preserve enumeration protection; user may need to retry via /send-verification-email",
+    );
+  }
+}
+
+/**
+ * Send the password reset email via Atlas's email delivery layer.
+ *
+ * Symmetric with {@link _sendVerificationEmail} — same fire-and-forget
+ * contract, same `try/catch` discipline, same enumeration-safe response
+ * parity. The Better Auth `requestPasswordReset` handler returns the
+ * exact same 200 response whether or not the email exists; awaiting
+ * SMTP here would extend the attacker's timing oracle and chain the
+ * email provider's uptime to the auth response.
+ *
+ * @internal — exported for testing.
+ */
+export async function _sendPasswordResetEmail(opts: {
+  to: string;
+  url: string;
+}): Promise<void> {
+  try {
+    const { sendEmail } = await import("@atlas/api/lib/email/delivery");
+    const result = await sendEmail({
+      to: opts.to,
+      subject: "Reset your Atlas password",
+      html: `<!doctype html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #222;">
+    <p>We received a request to reset the password for your Atlas account.</p>
+    <p><a href="${encodeAttributeValue(opts.url)}" style="color:#0ea5e9;">Reset your password</a></p>
+    <p style="color:#666; font-size:13px;">This link expires in one hour and can be used only once. If you did not request a password reset, you can safely ignore this message — your password will not change.</p>
+    <p>— Atlas</p>
+  </body>
+</html>`,
+    });
+    if (!result.success) {
+      log.warn(
+        { to: opts.to, provider: result.provider, error: result.error },
+        "Password reset email delivery did not complete — user may need to request another reset",
+      );
+    }
+  } catch (err) {
+    log.warn(
+      { to: opts.to, err: errorMessage(err) },
+      "Password reset email dispatch crashed — request response stays 200 to preserve enumeration protection",
     );
   }
 }
@@ -917,6 +997,14 @@ export interface BuildAuthOptionsDeps {
      * without rebinding module-local references.
      */
     sendVerificationEmail?: typeof _sendVerificationEmail;
+    /**
+     * Replace the password-reset-email dispatcher. Same shape as
+     * `sendVerificationEmail` and the test seam exists for the same
+     * reason — pin the outer `.catch()` so a future refactor can't
+     * silently turn rejections into floating promises that crash the
+     * process under `--unhandled-rejections=strict`.
+     */
+    sendPasswordResetEmail?: typeof _sendPasswordResetEmail;
   };
 }
 
@@ -938,6 +1026,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
   const requireEmailVerification = resolveRequireEmailVerification(deps.env);
   const rateLimitConfig = resolveAuthRateLimitConfig(deps.env, internalDbAvailable);
   const sendVerification = deps.testOverrides?.sendVerificationEmail ?? _sendVerificationEmail;
+  const sendReset = deps.testOverrides?.sendPasswordResetEmail ?? _sendPasswordResetEmail;
 
   // Unfold the tagged bootstrap-admin config into the flat args
   // `computeBootstrapRole` expects. Keeping the flat pair confined to
@@ -963,7 +1052,28 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
     // F-05: closes the signup-enumeration oracle and blocks unverified
     // accounts from claiming SSO auto-provision / invitation workflows.
     // See `buildEmailAndPasswordConfig` for the `autoSignIn` invariant.
-    emailAndPassword: buildEmailAndPasswordConfig(requireEmailVerification),
+    // The `sendResetPassword` callback wires Atlas's email-delivery
+    // layer into Better Auth's password-reset flow; without it, the
+    // request endpoint would 400 with `RESET_PASSWORD_DISABLED` and the
+    // /forgot-password UI would have no recovery path.
+    emailAndPassword: buildEmailAndPasswordConfig({
+      requireEmailVerification,
+      sendResetPassword: async (data) => {
+        // Mirror the verification-email contract: never await the dispatch
+        // and never let a thrown rejection escape. The `.catch()` here is
+        // belt-and-suspenders — `_sendPasswordResetEmail` already wraps
+        // every failure path — but a future refactor that drops the inner
+        // try/catch must still not be able to crash the request handler
+        // (which would reopen an enumeration oracle as a 500 vs 200 side
+        // channel) or print to stderr with no correlation.
+        sendReset({ to: data.user.email, url: data.url }).catch((err: unknown) => {
+          log.warn(
+            { to: data.user.email, err: errorMessage(err) },
+            "Password reset dispatch threw — request response stays 200 to preserve enumeration protection",
+          );
+        });
+      },
+    }),
     emailVerification: {
       sendVerificationEmail: async (data: { user: User; url: string; token: string }) => {
         const { user, url } = data;

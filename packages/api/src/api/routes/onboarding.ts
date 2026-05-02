@@ -20,6 +20,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
+import { isAuthEmailDeliveryConfigured } from "@atlas/api/lib/email/delivery";
 import { hasInternalDB, internalQuery, queryEffect, encryptUrl } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
@@ -175,6 +176,10 @@ const SocialProvidersResponseSchema = z.object({
   providers: z.array(z.string()),
 });
 
+const PasswordResetStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+});
+
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
@@ -190,6 +195,21 @@ const socialProvidersRoute = createRoute({
     200: {
       description: "List of enabled social providers",
       content: { "application/json": { schema: SocialProvidersResponseSchema } },
+    },
+  },
+});
+
+const passwordResetStatusRoute = createRoute({
+  method: "get",
+  path: "/password-reset-status",
+  tags: ["Onboarding"],
+  summary: "Whether password reset emails can be sent",
+  description:
+    "Returns whether the deployment has an email provider wired so the /login page can decide whether to render the 'Forgot password?' link. The Better Auth password-reset endpoints are always enabled (email send is fire-and-forget); this flag is purely a UI hint to avoid showing a recovery affordance that goes nowhere on a deployment with no SMTP configured. Public endpoint — no authentication required.",
+  responses: {
+    200: {
+      description: "Password reset configuration status",
+      content: { "application/json": { schema: PasswordResetStatusResponseSchema } },
     },
   },
 });
@@ -378,6 +398,17 @@ onboarding.openapi(socialProvidersRoute, (c) => {
   if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) providers.push("github");
   if (process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET) providers.push("microsoft");
   return c.json({ providers }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// GET /password-reset-status — UI hint for whether to render the
+// "Forgot password?" link on /login. The Better Auth password-reset
+// endpoints are always live; this just flags whether emails can be sent.
+// (public — no auth middleware)
+// ---------------------------------------------------------------------------
+
+onboarding.openapi(passwordResetStatusRoute, (c) => {
+  return c.json({ enabled: isAuthEmailDeliveryConfigured() }, 200);
 });
 
 // ---------------------------------------------------------------------------

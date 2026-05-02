@@ -99,6 +99,22 @@ When `ATLAS_ADMIN_EMAIL` is set and no users exist in the database, Atlas automa
 
 The account is flagged with `password_change_required` -- the user must change this password after first login. This is intended for initial setup only. If any users already exist, seeding is skipped (idempotent).
 
+#### Password reset
+
+Atlas ships a self-serve password reset flow for managed auth. Users click **Forgot password?** on `/login`, enter their email at `/forgot-password`, click the link in the recovery email, and choose a new password at `/reset-password`. The link expires in one hour and can be used only once. On a successful reset Atlas revokes every other active session for that user — recovery is the wrong moment to keep stale sessions live.
+
+The recovery email is sent through whichever delivery backend you have configured for Atlas — see the [Email integration setup](/guides/integrations#email) for the workspace-level provider, or wire up `ATLAS_EMAIL_PROVIDER` / `RESEND_API_KEY` at the platform level. Resolution order:
+
+1. Per-org override (a workspace admin configured Resend, SendGrid, Postmark, SMTP, or SES under Admin > Email Provider)
+2. Platform-level provider (`ATLAS_EMAIL_PROVIDER` + the matching key in your settings store)
+3. SMTP webhook bridge (`ATLAS_SMTP_URL`)
+4. `RESEND_API_KEY` env var
+5. Log-only fallback — the verification token is still issued, but no email leaves the box
+
+The **Forgot password?** affordance on `/login` is shown only when the deployment can deliver auth email (resolution levels 2 through 4). On a self-hosted instance with no provider configured, the link is hidden so users aren't sent to a recovery flow that goes nowhere. The Better Auth password-reset endpoints are always live regardless — `/api/auth/request-password-reset` and `/api/auth/reset-password` work unconditionally so an admin can drive the flow manually if needed.
+
+The endpoints are rate-limited at the Better Auth layer (5 attempts per minute per IP for both `/request-password-reset` and `/reset-password`); these limits are pinned and cannot be loosened by environment variables — relaxing them would re-open a flooding surface.
+
 ## User Authentication (All Deployments)
 
 The sections below apply to all Atlas users — both SaaS and self-hosted — covering how to authenticate API requests and understand roles.

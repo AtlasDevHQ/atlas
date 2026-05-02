@@ -24,6 +24,7 @@ import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { DEMO_CONNECTION_ID } from "@atlas/api/lib/semantic/entities";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic/sync";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
@@ -845,8 +846,18 @@ async function resolveConnectionUrl(
         }
       }
 
-      // Fallback: try ATLAS_DATASOURCE_URL for the "default" connection
-      if (connectionId === "default" && process.env.ATLAS_DATASOURCE_URL) {
+      // ATLAS_DATASOURCE_URL is the canonical URL for both seeded
+      // onboarding identities — `default` (config-managed) and `__demo__`
+      // (#1474). The internal-DB lookup can miss when the caller's
+      // session orgId doesn't match the row's org_id (e.g. platform_admin
+      // spanning workspaces) — without this fallback those callers
+      // dead-end on a registered identity. Other underscore-prefixed ids
+      // are intentionally excluded — the wizard frontend filters them
+      // out of its datasource list and the backend mirrors that filter.
+      if (
+        (connectionId === "default" || connectionId === DEMO_CONNECTION_ID) &&
+        process.env.ATLAS_DATASOURCE_URL
+      ) {
         const url = process.env.ATLAS_DATASOURCE_URL;
         const dbType = detectDBType(url);
         return { url, dbType, schema: "public" };

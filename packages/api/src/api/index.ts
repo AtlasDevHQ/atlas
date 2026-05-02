@@ -41,15 +41,33 @@ const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
 const app = new OpenAPIHono({ defaultHook: validationHook });
 
-// Security headers (issue #1984) — applied to every response, including
-// OPTIONS preflights and error responses. Must run BEFORE the CORS
-// middleware because CORS short-circuits OPTIONS via `c.body(null, 204)`
-// and we want preflight responses hardened too.
+// Security headers (issue #1984). Must run BEFORE the CORS middleware
+// because CORS short-circuits OPTIONS preflights via `c.body(null, 204)`
+// and we want those hardened too.
 //
-// Widget routes (`/widget*`) intentionally opt out of X-Frame-Options and
-// the strict CSP so they can be iframe-embedded from any origin. The
-// widget HTML route sets its own `Content-Security-Policy: frame-ancestors *`.
-// HSTS, nosniff, and Referrer-Policy are safe to apply everywhere.
+// Widget routes opt out of X-Frame-Options and the strict CSP so they can
+// be iframe-embedded from any origin — the widget HTML route sets its own
+// `frame-ancestors *`. The match is precise (covers /widget, /widget/...,
+// /widget.js, /widget.d.ts) — a bare `startsWith("/widget")` would also
+// match a future /widgetfoo route and silently make it framable.
+//
+// `style-src 'unsafe-inline'` is required by the email unsubscribe pages
+// in routes/onboarding-emails.ts, which use inline `style="..."` for
+// styling. The rest of the policy stays at `default-src 'none'` so JSON
+// endpoints can't be turned into resource loaders by an XSS in a rendered
+// field. The set of paths that emit this CSP is the union of every
+// `c.html(...)` call across the api package — keep that list small.
+function isWidgetPath(path: string): boolean {
+  return (
+    path === "/widget" ||
+    path.startsWith("/widget/") ||
+    path.startsWith("/widget.")
+  );
+}
+
+const API_SECURITY_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+
 app.use("*", async (c, next) => {
   c.header(
     "Strict-Transport-Security",
@@ -58,17 +76,9 @@ app.use("*", async (c, next) => {
   c.header("X-Content-Type-Options", "nosniff");
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
 
-  if (!c.req.path.startsWith("/widget")) {
+  if (!isWidgetPath(c.req.path)) {
     c.header("X-Frame-Options", "DENY");
-    // API serves JSON (and a few HTML pages like the OpenAPI viewer). A
-    // JSON-only API doesn't need to load any sub-resources, so the strict
-    // `default-src 'none'` is safe and blocks every exfiltration vector
-    // an XSS in a rendered field could open. Self-hosted operators who
-    // expose extra HTML can override `ATLAS_API_CSP` (see docs).
-    c.header(
-      "Content-Security-Policy",
-      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-    );
+    c.header("Content-Security-Policy", API_SECURITY_CSP);
   }
 
   await next();
@@ -441,25 +451,27 @@ if (process.env.DISCORD_CLIENT_ID) {
 app.onError((err, c) => {
   // Framework HTTP exceptions (e.g., malformed JSON from @hono/zod-openapi) carry
   // their own status code and response — forward them instead of converting to 500.
-  // CORS headers must be copied from the middleware context because the raw Response
-  // from HTTPException(200, { res }) bypasses Hono's header pipeline.
+  // CORS + security headers must be copied from the middleware context because the
+  // raw Response from HTTPException(200, { res }) bypasses Hono's header pipeline.
   if (err instanceof HTTPException) {
     const res = err.getResponse();
-    const corsOrigin = c.res.headers.get("Access-Control-Allow-Origin");
-    if (corsOrigin && !res.headers.has("Access-Control-Allow-Origin")) {
-      const patched = new Response(res.body, res);
-      for (const h of [
-        "Access-Control-Allow-Origin",
-        "Access-Control-Allow-Credentials",
-        "Access-Control-Allow-Headers",
-        "Access-Control-Expose-Headers",
-      ]) {
-        const v = c.res.headers.get(h);
-        if (v) patched.headers.set(h, v);
-      }
-      return patched;
+    const patched = new Response(res.body, res);
+    for (const h of [
+      "Access-Control-Allow-Origin",
+      "Access-Control-Allow-Credentials",
+      "Access-Control-Allow-Headers",
+      "Access-Control-Expose-Headers",
+      "Strict-Transport-Security",
+      "Content-Security-Policy",
+      "X-Frame-Options",
+      "X-Content-Type-Options",
+      "Referrer-Policy",
+    ]) {
+      if (patched.headers.has(h)) continue;
+      const v = c.res.headers.get(h);
+      if (v) patched.headers.set(h, v);
     }
-    return res;
+    return patched;
   }
   const requestId = crypto.randomUUID();
   log.error({ err, path: c.req.path, requestId }, "Unhandled error");

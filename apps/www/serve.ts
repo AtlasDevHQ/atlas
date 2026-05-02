@@ -3,12 +3,10 @@ import { join } from "path";
 const OUT_DIR = join(import.meta.dir, "out");
 const port = parseInt(process.env.PORT || "8080");
 
-// Marketing site is fully static — no inline event handlers, but Next.js
-// still emits inline `__NEXT_DATA__` and a runtime hydration script, so
-// `script-src` keeps `'unsafe-inline'`. Tailwind's preflight + utility
-// classes inline a few `<style>` tags during hydration, so `style-src`
-// keeps `'unsafe-inline'` too. Operators who add analytics or third-party
-// scripts will need to extend this in their own deploy.
+// `script-src 'unsafe-inline'` is required by Next.js's `__NEXT_DATA__` and
+// hydration runtime. `style-src 'unsafe-inline'` is required by Next.js's
+// inlined critical CSS. Operators who add analytics or third-party scripts
+// will need to extend this in their own deploy.
 const WWW_CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
@@ -23,8 +21,6 @@ const WWW_CSP = [
 ].join("; ");
 
 const SECURITY_HEADERS: Record<string, string> = {
-  // HSTS — pin HTTPS for a year. `preload` advertises eligibility for the
-  // browser preload list; submission is a separate operator decision.
   "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
   "Content-Security-Policy": WWW_CSP,
   "X-Frame-Options": "DENY",
@@ -159,7 +155,9 @@ Bun.serve({
     const { pathname } = url;
 
     if (pathname === "/health") {
-      return new Response("ok", { headers: { "Content-Type": "text/plain" } });
+      return new Response("ok", {
+        headers: { ...SECURITY_HEADERS, "Content-Type": "text/plain" },
+      });
     }
 
     if (pathname === "/api/health") {

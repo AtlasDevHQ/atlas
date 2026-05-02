@@ -91,15 +91,19 @@ describe("security-headers middleware", () => {
     const csp = res.headers.get("Content-Security-Policy") ?? "";
     expect(csp.length).toBeGreaterThan(0);
     expect(csp).toContain("frame-ancestors 'none'");
+    // style-src 'unsafe-inline' is required by routes/onboarding-emails.ts
+    // (inline `style="..."` on the unsubscribe page). Regression guard.
+    expect(csp).toContain("style-src 'unsafe-inline'");
 
     expect(res.headers.get("X-Frame-Options")).toBe("DENY");
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("Referrer-Policy")).toBeTruthy();
   });
 
-  it("OPTIONS preflight to /api/v1/chat carries security headers", async () => {
+  it("OPTIONS preflight short-circuits with 204 AND carries every security header", async () => {
     // CORS middleware short-circuits OPTIONS via c.body(null, 204). Security
     // headers must run BEFORE CORS so preflight responses are also hardened.
+    // Asserting status=204 proves CORS short-circuit fired (not a route handler).
     const res = await app.fetch(
       new Request("http://localhost/api/v1/chat", {
         method: "OPTIONS",
@@ -110,35 +114,83 @@ describe("security-headers middleware", () => {
       }),
     );
 
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
     expect(res.headers.get("Strict-Transport-Security")).toBeTruthy();
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("Content-Security-Policy")).toBeTruthy();
   });
 
-  it("/widget/atlas-widget.js retains permissive framing — no X-Frame-Options DENY, no global CSP", async () => {
-    // Widget routes set their own CSP (frame-ancestors *) for cross-origin
-    // iframe embedding. Global X-Frame-Options DENY would break embeds.
+  it("/api/v1/openapi.json carries the strict API CSP", async () => {
+    // Spec endpoint returns JSON. Confirms the comment claim that all JSON
+    // surfaces carry the strict CSP.
+    const res = await app.fetch(
+      new Request("http://localhost/api/v1/openapi.json", { method: "GET" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Security-Policy")).toContain(
+      "default-src 'none'",
+    );
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+  });
+
+  it("/widget/atlas-widget.js retains permissive framing — no X-Frame-Options, no strict CSP, but nosniff/HSTS still apply", async () => {
     const res = await app.fetch(
       new Request("http://localhost/widget/atlas-widget.js", { method: "GET" }),
     );
 
     expect(res.headers.get("X-Frame-Options")).toBeNull();
-
-    // Widget JS asset itself does not set CSP (only the HTML page does).
-    // The important invariant is X-Frame-Options absent so embeds work.
-    // HSTS + nosniff still apply — they're safe everywhere.
+    // Negative assertion: the strict global CSP must NOT leak onto widget
+    // assets or the iframe parent will block them.
+    expect(res.headers.get("Content-Security-Policy")).toBeNull();
+    // Header-poisoning defenses still apply on the asset.
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("Strict-Transport-Security")).toBeTruthy();
   });
 
-  it("/widget HTML keeps frame-ancestors * CSP (route-level override)", async () => {
-    // The widget HTML page sets Content-Security-Policy: frame-ancestors *
-    // explicitly. Global middleware MUST NOT replace it with the strict CSP.
+  it("/widget HTML route returns 200 and keeps frame-ancestors * CSP", async () => {
     const res = await app.fetch(
       new Request("http://localhost/widget", { method: "GET" }),
     );
 
+    // Status assertion proves the route actually matched (not a 404 fallthrough).
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("html");
     const csp = res.headers.get("Content-Security-Policy") ?? "";
     expect(csp).toContain("frame-ancestors *");
     expect(res.headers.get("X-Frame-Options")).toBeNull();
+  });
+
+  it("/widgetfoo (non-widget path that shares the prefix) DOES get X-Frame-Options + strict CSP", async () => {
+    // Regression guard against `startsWith("/widget")` over-matching. The
+    // precise matcher (path === "/widget" || "/widget/..." || "/widget....")
+    // must reject sibling prefixes — otherwise a future careless route name
+    // silently becomes framable.
+    const res = await app.fetch(
+      new Request("http://localhost/widgetfoo", { method: "GET" }),
+    );
+
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("Content-Security-Policy")).toContain(
+      "frame-ancestors 'none'",
+    );
+  });
+
+  it("HTTPException 404 response carries security headers", async () => {
+    // Hono returns a 404 HTTPException for unmatched routes. The onError
+    // handler builds a fresh Response from err.getResponse() which bypasses
+    // c.res — confirms the explicit header-copy in onError is wired.
+    const res = await app.fetch(
+      new Request("http://localhost/api/this-route-does-not-exist", {
+        method: "GET",
+      }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("Strict-Transport-Security")).toBeTruthy();
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });

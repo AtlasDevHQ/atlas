@@ -99,11 +99,27 @@ const nextConfig: NextConfig = {
         // Embed view must remain framable from any origin. CSP frame-ancestors
         // takes precedence over X-Frame-Options per the W3C CSP spec, so the
         // global X-Frame-Options DENY is harmlessly ignored on this path.
+        //
+        // The `csp.replace(...)` below is brittle: if the global directive
+        // `frame-ancestors 'self'` is reworded or reordered, this becomes a
+        // silent no-op and the embed regresses to the global frame-ancestors.
+        // The runtime check below fails the Next build if that happens.
         source: "/shared/:token/embed",
         headers: [
           {
             key: "Content-Security-Policy",
-            value: csp.replace("frame-ancestors 'self'", "frame-ancestors *"),
+            value: (() => {
+              const replaced = csp.replace(
+                "frame-ancestors 'self'",
+                "frame-ancestors *",
+              );
+              if (replaced === csp) {
+                throw new Error(
+                  "next.config.ts: embed CSP override no-op'd — `frame-ancestors 'self'` not found in global CSP. Update the replace() target.",
+                );
+              }
+              return replaced;
+            })(),
           },
         ],
       },

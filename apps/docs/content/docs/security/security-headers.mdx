@@ -13,17 +13,42 @@ Atlas serves the following security headers on every response:
 | `X-Frame-Options`            | `DENY` (skipped on `/widget*`)  | `DENY` (CSP `frame-ancestors *` overrides on `/shared/:token/embed`) | `DENY`                                  |
 | `X-Content-Type-Options`     | `nosniff`                       | `nosniff`                                      | `nosniff`                               |
 | `Referrer-Policy`            | `strict-origin-when-cross-origin` | same                                         | same                                    |
-| `Content-Security-Policy`    | `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` | broader policy that allows `'self'` plus inline scripts/styles for Next.js hydration | similar |
+| `Content-Security-Policy`    | `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` | broader policy that allows `'self'` plus inline scripts/styles for Next.js hydration | similar |
 
 The headers come from three places:
 
-- **`packages/api/src/api/index.ts`** — Hono middleware applied to every request. Skips `X-Frame-Options` and the strict CSP for `/widget*` so customers can iframe-embed the widget from any origin.
+- **`packages/api/src/api/index.ts`** — Hono middleware applied to every request. Skips `X-Frame-Options` and the strict CSP for `/widget`, `/widget/*`, `/widget.js`, and `/widget.d.ts` so customers can iframe-embed the widget from any origin.
 - **`packages/web/next.config.ts`** — `headers()` config for the app. The `/shared/:token/embed` route overrides `frame-ancestors` to `*`; everywhere else inherits `frame-ancestors 'self'`.
 - **`apps/www/serve.ts`** — Bun static-server that fronts the `next export` output. The marketing CSP is intentionally simpler since the site is fully static.
 
-## HSTS preload
+## Verifying the headers
 
-The header advertises eligibility for the [HSTS preload list](https://hstspreload.org). Submission is a separate operator action — adding the header alone does not enrol your domain. Self-hosted operators on a custom domain should drop the `preload` token until they are ready to commit, since preload is effectively irreversible.
+Confirm any deployed surface with `curl -I`:
+
+```bash
+curl -sI https://api.useatlas.dev/api/health \
+  | grep -iE 'strict-transport|content-security-policy|x-frame|x-content-type|referrer-policy'
+```
+
+If the headers are missing, the request is most likely terminating at a reverse proxy or CDN that strips them — check the proxy config before assuming Atlas is broken.
+
+## HSTS
+
+<Callout type="warn">
+  HSTS preload is **effectively irreversible**. Once your domain is in the [browser preload list](https://hstspreload.org), every Chrome/Firefox/Safari install pins HTTPS for that domain until it ships an updated list — typically 12+ weeks per browser, and removal requires submitting to the [removal form](https://hstspreload.org/removal/) and waiting out the same cycle.
+
+  **Self-hosted operators on a custom domain** should drop the `preload` token from `Strict-Transport-Security` until they are sure they will never need to serve HTTP from that domain again. Edit the constant in `packages/api/src/api/index.ts`, `packages/web/next.config.ts`, and `apps/www/serve.ts`. Submission to hstspreload.org is a separate manual step — adding the header alone does not enrol your domain.
+</Callout>
+
+HSTS is silently ignored on `http://` connections — browsers only honour the header when it arrives over a valid TLS connection. If you are testing locally over HTTP and "the header isn't doing anything," that is expected; deploy behind TLS to verify.
+
+### Rolling back HSTS
+
+If you set `max-age=31536000` and need to back out (e.g. an internal subdomain that needs to fall back to HTTP):
+
+1. Change `max-age` to `0` (and remove `includeSubDomains` if the issue is on a subdomain). This tells browsers to forget the pin on next visit.
+2. Wait out the cached TTL on every client. There is no way to push the reset; clients update only when they next hit the host.
+3. If the domain is in the preload list, also submit the [hstspreload.org removal form](https://hstspreload.org/removal/) and expect a months-long cycle before all browsers ship an updated list.
 
 ## Customising CSP for self-hosted deployments
 

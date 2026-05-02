@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Pre-create bind-mount source directories with host-user ownership.
+# docker-compose mounts ./semantic into the sandbox container; if the host
+# path doesn't exist, the docker daemon creates it as root, which then
+# breaks wizard save (EACCES on mkdir semantic/.orgs/) and `atlas init`.
+# See issue #1951.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if ! mkdir -p "$REPO_ROOT/semantic"; then
+  echo "Error: cannot create $REPO_ROOT/semantic (needed for sandbox bind-mount, see #1951)." >&2
+  exit 1
+fi
+# If the directory was created by a prior root-owned `docker compose up`,
+# `mkdir -p` is a no-op. Probe writability so we surface the real cause
+# now, instead of letting the wizard hit a confusing EACCES later.
+if [ ! -w "$REPO_ROOT/semantic" ] || ! ( probe="$REPO_ROOT/semantic/.atlas-write-probe-$$"; touch "$probe" 2>/dev/null && rm -f "$probe" ); then
+  echo "Error: $REPO_ROOT/semantic exists but is not writable by $(id -un)." >&2
+  echo "This usually means a prior 'docker compose up' created it as root (see #1951)." >&2
+  echo "Fix: sudo chown -R \"\$(id -u):\$(id -g)\" \"$REPO_ROOT/semantic\"" >&2
+  exit 1
+fi
+
 # Start all services: Postgres + sandbox sidecar
 if ! docker compose up -d; then
   echo "Error: Failed to start containers." >&2

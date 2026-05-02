@@ -99,6 +99,10 @@ Python execution is isolated at multiple layers:
 
 The sandbox itself is configured via the standard sandbox variables. See [Environment Variables](/reference/environment-variables) and [Sandbox Architecture](/architecture/sandbox).
 
+<Callout type="info" title="nsjail defaults differ per backend">
+When using nsjail for `executePython`, the default time and memory limits are **30 seconds** and **512 MB** — higher than the explore tool's defaults (10s / 256 MB). Setting `ATLAS_NSJAIL_TIME_LIMIT` or `ATLAS_NSJAIL_MEMORY_LIMIT` overrides both backends with the same value. See [`ATLAS_NSJAIL_TIME_LIMIT`](/reference/environment-variables#sandbox--isolation).
+</Callout>
+
 ---
 
 ## How It Works

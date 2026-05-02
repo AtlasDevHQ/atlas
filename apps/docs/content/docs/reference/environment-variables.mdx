@@ -181,7 +181,9 @@ Query safety and SQL validation settings. See [SQL Validation Pipeline](/securit
 | `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in milliseconds |
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in the semantic layer |
 | `ATLAS_SCHEMA` | — | PostgreSQL schema name. When set to a non-`public` value, the API sets `search_path` to `"<schema>", public` on each connection. When unset, no `search_path` is set and PostgreSQL uses its server default (typically `public`). Also used by `atlas doctor` to verify the schema exists |
-| `ATLAS_ENCRYPTION_KEY` | — | Dedicated encryption key for connection URLs stored at rest. Takes precedence over `BETTER_AUTH_SECRET`. Recommended for production when managing datasource connections via the admin UI |
+| `ATLAS_ENCRYPTION_KEYS` | — | F-47 versioned at-rest encryption keyset. Comma-separated `version:key` pairs (e.g. `v2:NEW-KEY,v1:OLD-KEY`). The first entry is the active write key; later entries are legacy read-only keys kept available during a rotation soak. **Preferred form for production** — see the [encryption key rotation guide](/platform-ops/encryption-key-rotation) |
+| `ATLAS_ENCRYPTION_KEY` | — | Legacy single-key form, treated as an implicit `v1` when `ATLAS_ENCRYPTION_KEYS` is unset. Takes precedence over `BETTER_AUTH_SECRET`. Kept for back-compat — new deployments should set `ATLAS_ENCRYPTION_KEYS` instead. Key derivation order: `ATLAS_ENCRYPTION_KEYS` → `ATLAS_ENCRYPTION_KEY` → `BETTER_AUTH_SECRET` (the last is deprecated under SaaS — startup warns) |
+| `ATLAS_STRICT_PLUGIN_SECRETS` | `false` | F-42 / #1835: when `true`, plugin admin write paths reject PUTs whose catalog schema is corrupt or carries per-key secret/passthrough drift. SaaS regions opt in; self-hosted defaults to off. Tolerant idempotent passthrough is the baseline |
 | `ATLAS_POOL_WARMUP` | `2` | Number of warmup probes per connection at startup. Set to `0` to disable warmup |
 | `ATLAS_POOL_DRAIN_THRESHOLD` | `5` | Consecutive query errors before the pool is automatically drained and recreated |
 | `ATLAS_CACHE_ENABLED` | `true` | Enable query result caching. Set to `false` to disable |
@@ -234,11 +236,15 @@ ATLAS_API_KEY_ROLE=analyst
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BETTER_AUTH_SECRET` | — | Session signing secret. Min 32 chars, cryptographically random. Requires `DATABASE_URL`. Also used to encrypt connection URLs at rest (unless `ATLAS_ENCRYPTION_KEY` is set) |
-| `ATLAS_ENCRYPTION_KEY` | — | Dedicated encryption key for connection URLs at rest. Takes precedence over `BETTER_AUTH_SECRET` |
+| `BETTER_AUTH_SECRET` | — | Session signing secret. Min 32 chars, cryptographically random. Requires `DATABASE_URL`. Also used to encrypt connection URLs at rest as a last-resort fallback (deprecated under SaaS — set `ATLAS_ENCRYPTION_KEYS` instead) |
+| `ATLAS_ENCRYPTION_KEYS` | — | F-47 versioned at-rest encryption keyset (preferred). See [Security](#security) for rotation details |
+| `ATLAS_ENCRYPTION_KEY` | — | Legacy single-key form; treated as implicit `v1` when `ATLAS_ENCRYPTION_KEYS` is unset. Takes precedence over `BETTER_AUTH_SECRET` |
 | `BETTER_AUTH_URL` | Auto-detected | Base URL for auth endpoints. Auto-detected on Vercel; set explicitly for Railway/Docker |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated CSRF-allowed origins |
-| `ATLAS_ADMIN_EMAIL` | — | User matching this email gets `admin` role on signup. If unset, first signup gets admin |
+| `ATLAS_ADMIN_EMAIL` | — | User matching this email gets `admin` role on signup. If unset, first signup gets admin only when `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN=true` |
+| `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN` | `false` | Opt-in fallback: when `ATLAS_ADMIN_EMAIL` is unset and no admin user exists, the first signup is promoted to `platform_admin`. Accepts `true`/`1`/`yes`/`on` (case-insensitive). **Do not enable in production** — any unauthenticated visitor could race the operator and claim admin with a single signup |
+| `ATLAS_REQUIRE_EMAIL_VERIFICATION` | `true` | Require email verification on signup. Setting `false` re-enables Better Auth's `USER_ALREADY_EXISTS` signup error (an email-enumeration oracle) and is only acceptable for self-hosted single-tenant deployments without an email provider |
+| `ATLAS_MFA_ISSUER` | `Atlas` | Issuer label shown in TOTP authenticator apps (Google Authenticator, 1Password, etc.) when users enroll an MFA device |
 
 <Callout type="warn">
 Never use the default dev secret in production. Generate a cryptographically random secret: `openssl rand -base64 32`
@@ -298,7 +304,12 @@ ATLAS_AUTH_ROLE_CLAIM=app_metadata.atlas_role
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. `0` or unset = unlimited |
+| `ATLAS_RATE_LIMIT_RPM_CHAT` | `max(5, ATLAS_RATE_LIMIT_RPM/4)` | F-74 separate-bucket ceiling for `/api/v1/chat`. Defaults to a quarter of `ATLAS_RATE_LIMIT_RPM` (minimum 5) so a 25-step LLM call cannot deplete the same allowance that serves cheap reads like audit-log scrolling. Disabled when `ATLAS_RATE_LIMIT_RPM` is `0` |
 | `ATLAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` headers. Set `true` behind a reverse proxy |
+| `ATLAS_AUTH_RATE_LIMIT_ENABLED` | `true` | Toggle rate limiting on `/api/auth/*` endpoints. Setting `false` is logged as a security warning at boot — only acceptable for self-hosted single-tenant deployments |
+| `ATLAS_AUTH_RATE_LIMIT_WINDOW` | `60` | Global `/api/auth/*` rate-limit window in seconds |
+| `ATLAS_AUTH_RATE_LIMIT_MAX` | `100` | Global `/api/auth/*` rate-limit ceiling per window. Per-endpoint rules are tighter (signin ≤10/min, signup/forget ≤5/min) and are not env-overridable by design |
+| `ATLAS_CONVERSATION_STEP_CAP` | `500` | F-77 atomic per-conversation step budget (default 500 = 20 follow-ups × 25 steps). Once `total_steps` crosses this value, `/api/v1/chat` returns `429 conversation_budget_exceeded` and the UI offers to start a new conversation. Set `0` to disable |
 
 ```bash
 # Production rate limiting behind a reverse proxy
@@ -356,6 +367,17 @@ Idle and absolute timeouts can also be configured via [`atlas.config.ts`](/refer
 
 ---
 
+## MCP Transport
+
+Actor binding for the [MCP server](/guides/mcp). The transport runs in one of two modes — bound (governed) or unbound (trusted).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_MCP_USER_ID` | — | MCP actor binding (#1858) — Atlas user ID the MCP transport should act as. Set **both** `ATLAS_MCP_USER_ID` and `ATLAS_MCP_ORG_ID` for governed transport (approval rules + audit apply to MCP queries). Leaving both unset selects trusted transport with a synthetic `system:mcp` actor — only safe when no approval rules exist |
+| `ATLAS_MCP_ORG_ID` | — | MCP actor binding — org ID the bound user acts under. The MCP server fails to boot when approval rules exist and the binding is missing, or when only one of the two vars is set |
+
+---
+
 ## Semantic Layer
 
 | Variable | Default | Description |
@@ -404,7 +426,7 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 
 ## Sandbox & Isolation
 
-Explore tool isolation backends. See [Sandbox Architecture](/architecture/sandbox#backend-selection-priority) for the full selection priority.
+Explore tool isolation backends (also used by `executePython` when nsjail is active — see the per-backend default split on `ATLAS_NSJAIL_TIME_LIMIT` / `ATLAS_NSJAIL_MEMORY_LIMIT` below). See [Sandbox Architecture](/architecture/sandbox#backend-selection-priority) for the full selection priority.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -414,8 +436,8 @@ Explore tool isolation backends. See [Sandbox Architecture](/architecture/sandbo
 | `SIDECAR_AUTH_TOKEN` | — | Shared secret for sidecar auth (set on both API and sidecar) |
 | `SEMANTIC_DIR` | `/semantic` | Sidecar only: directory where the sidecar serves semantic layer files. Defaults to `/semantic` via the sidecar Dockerfile, but can be overridden at container runtime. Not used by the main API |
 | `ATLAS_NSJAIL_PATH` | Auto-detected | Explicit path to nsjail binary |
-| `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
-| `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
+| `ATLAS_NSJAIL_TIME_LIMIT` | explore: `10`, python: `30` | nsjail per-command time limit in seconds. **Defaults differ per backend**: the explore tool (semantic FS sandbox) uses 10s, the Python tool (`executePython`) uses 30s. Setting this env var overrides both backends with the same value |
+| `ATLAS_NSJAIL_MEMORY_LIMIT` | explore: `256`, python: `512` | nsjail per-command memory limit in MB. **Defaults differ per backend**: explore uses 256 MB, Python uses 512 MB (data-science workloads need more headroom). Setting this env var overrides both backends with the same value |
 | `ATLAS_SANDBOX_PRIORITY` | — | Comma-separated backend priority order (e.g. `sidecar,nsjail,just-bash`). Valid values: `vercel-sandbox`, `nsjail`, `sidecar`, `just-bash`. Plugin backends always take highest priority. See [Configuration](/reference/config#sandbox) |
 | `ATLAS_SANDBOX_BACKEND` | — | SaaS admin-facing selector for the workspace's sandbox backend: `vercel-sandbox`, `sidecar`, `e2b-sandbox`, `daytona-sandbox`, or a plugin ID. Set via the Settings UI in the hosted product; self-hosted operators typically use `ATLAS_SANDBOX_PRIORITY` instead |
 
@@ -613,6 +635,8 @@ DISCORD_CLIENT_SECRET=your-discord-client-secret
 TEAMS_APP_ID=your-teams-app-id
 ```
 
+> The Teams app password (client secret) is **not** read from a platform env var. Per-org Teams credentials are stored encrypted in the internal database and configured via the admin integrations UI — see [Teams integration](/guides/integrations#microsoft-teams).
+
 ---
 
 ## JIRA Integration
@@ -669,6 +693,7 @@ stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
 | `ATLAS_ENTERPRISE_ENABLED` | `false` | Set `true` to enable enterprise features (SSO, SCIM, PII detection, custom roles). Requires a valid license key for production use |
 | `ATLAS_ENTERPRISE_LICENSE_KEY` | — | License key for enterprise features. Obtain from [useatlas.dev/enterprise](https://www.useatlas.dev/enterprise) |
 | `ATLAS_APPROVAL_EXPIRY_HOURS` | `24` | Hours before pending approval requests auto-expire. See [Approval Workflows](/guides/approval-workflows) |
+| `ATLAS_SCIM_OVERRIDE_POLICY` | `strict` | F-57 SCIM provenance gate. Controls admin mutations on SCIM-provisioned users: `strict` blocks the mutation with `409 SCIM_MANAGED` so the IdP stays canonical; `override` allows the mutation but stamps the audit row with `metadata.scim_override = true`. No-op for workspaces with no SCIM provider configured |
 
 These can also be configured via [`atlas.config.ts`](/reference/config#enterprise).
 

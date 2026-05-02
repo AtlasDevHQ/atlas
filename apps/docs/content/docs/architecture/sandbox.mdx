@@ -188,8 +188,8 @@ The health endpoint (`GET /api/health`) reports which backend is active in the `
 | `ATLAS_SANDBOX_URL` | -- | Sidecar service URL (enables sidecar backend) |
 | `SIDECAR_AUTH_TOKEN` | -- | Shared secret for sidecar auth |
 | `ATLAS_NSJAIL_PATH` | -- | Explicit path to nsjail binary |
-| `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
-| `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB (`rlimit_as`) |
+| `ATLAS_NSJAIL_TIME_LIMIT` | explore: `10`, python: `30` | nsjail per-command time limit in seconds. Defaults differ per backend (explore vs `executePython`); setting this env var overrides both |
+| `ATLAS_NSJAIL_MEMORY_LIMIT` | explore: `256`, python: `512` | nsjail per-command memory limit in MB (`rlimit_as`). Defaults differ per backend (`executePython` needs more headroom for data-science workloads); setting this env var overrides both |
 
 ### nsjail Resource Limits
 
@@ -197,7 +197,7 @@ In addition to the configurable time and memory limits above, nsjail enforces th
 
 | Limit | Value | Description |
 |-------|-------|-------------|
-| `rlimit_as` | `ATLAS_NSJAIL_MEMORY_LIMIT` (default 256 MB) | Virtual memory limit |
+| `rlimit_as` | `ATLAS_NSJAIL_MEMORY_LIMIT` (default 256 MB explore, 512 MB python) | Virtual memory limit |
 | `rlimit_fsize` | 10 MB | Max file size a process can create |
 | `rlimit_nproc` | 5 | Max number of processes |
 | `rlimit_nofile` | 64 | Max open file descriptors |

@@ -67,7 +67,7 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 | **Embeddable** | Script tag, React component, or headless API | Standalone app | Standalone app |
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
 | **Semantic layer** | YAML on disk, version-controlled, LLM-enriched | Proprietary metadata | None or limited |
-| **Plugin ecosystem** | 16 plugins across 5 types — extend anything | Closed | Limited |
+| **Plugin ecosystem** | 21 plugins across 5 types — extend anything | Closed | Limited |
 | **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
 | **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce | Usually one | Usually one |
 
@@ -118,10 +118,14 @@ atlas/
 │   ├── web/              # @atlas/web — Next.js frontend + chat UI components
 │   ├── cli/              # @atlas/cli — CLI (profiler, schema diff, enrichment)
 │   ├── mcp/              # @atlas/mcp — MCP server (Claude Desktop, Cursor, etc.)
+│   ├── sandbox-sidecar/  # @atlas/sandbox-sidecar — Isolated explore sidecar
 │   ├── sdk/              # @useatlas/sdk — TypeScript SDK
-│   ├── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
-│   └── sandbox-sidecar/  # @atlas/sandbox-sidecar — Isolated explore sidecar
-├── plugins/              # 16 plugins (datasource, context, interaction, action, sandbox)
+│   ├── react/            # @useatlas/react — Embeddable chat component + hooks
+│   ├── types/            # @useatlas/types — Shared wire-format types
+│   ├── schemas/          # @useatlas/schemas — Shared Zod schemas
+│   └── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
+├── plugins/              # 21 plugins (datasource, context, interaction, action, sandbox)
+├── ee/                   # @atlas/ee — Enterprise features (source-available, commercial license)
 ├── create-atlas/         # Scaffolding CLI (bun create @useatlas)
 ├── apps/
 │   ├── www/              # Landing page (useatlas.dev)
@@ -167,6 +171,7 @@ See [`.env.example`](.env.example) for all options.
 - [Bring Your Own Frontend](https://docs.useatlas.dev/frameworks/overview) — Nuxt, SvelteKit, React/Vite, TanStack Start
 - [Plugin Authoring](https://docs.useatlas.dev/plugins/authoring-guide) — Build custom plugins
 - [Security & Sandbox](https://docs.useatlas.dev/architecture/sandbox) — Threat model, isolation tiers
+- [Enterprise Boundary](https://docs.useatlas.dev/architecture/enterprise) — `/ee` features, AGPL vs commercial split, `requireEnterprise` API
 
 ## Contributing
 
@@ -189,3 +194,5 @@ Atlas was inspired by [Abhi Sivasailam](https://x.com/_abhisivasailam)'s work on
 The Atlas server and core packages (`@atlas/api`, `@atlas/cli`, `@atlas/web`, `@atlas/mcp`, `@atlas/sandbox-sidecar`) are licensed under [AGPL-3.0](LICENSE). If you modify the server and serve it to users, you must share those modifications.
 
 The client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`, `@useatlas/plugin-sdk`) and all plugins are licensed under [MIT](packages/sdk/LICENSE). Embed them in proprietary apps with no restrictions.
+
+The `ee/` directory (`@atlas/ee` — SSO, SCIM, custom roles, approval workflows, residency, branding, and the rest of the SaaS surfaces) is **source-available** under a [commercial license](ee/LICENSE). Self-hosted users get the full AGPL core for free; the commercial license adds enterprise governance and the polished hosted experience. See the [Enterprise Boundary](https://docs.useatlas.dev/architecture/enterprise) page for the full feature inventory.

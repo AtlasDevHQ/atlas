@@ -783,7 +783,16 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      const result = yield* Effect.promise(() => resetMigrationForRetry(id, orgId!));
+      // #1986 — `resetMigrationForRetry` throws `UnsafeRegionMigrationResetError`
+      // when the workspace already moved to the destination region. `tryPromise`
+      // (with a normalized catch — never `(err) => err`) preserves the tagged
+      // error in the failure channel so `runEffect` → `mapTaggedError` returns
+      // 409 Conflict. Returning a result variant for this case would let an
+      // operator paper over the data-integrity hazard with a 400 retry button.
+      const result = yield* Effect.tryPromise({
+        try: () => resetMigrationForRetry(id, orgId!),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
       if (!result.ok) {
         const status = result.reason === "not_found" ? 404 : 400;
         return c.json({ error: "retry_failed", message: result.error, requestId }, status as 400 | 404);

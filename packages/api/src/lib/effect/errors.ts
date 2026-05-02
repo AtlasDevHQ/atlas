@@ -186,6 +186,25 @@ export class ConversationBudgetExceededError extends Data.TaggedError("Conversat
   readonly cap: number;
 }> {}
 
+// ── Region Migration ───────────────────────────────────────────────
+
+/**
+ * Reset of a region migration was rejected because Phase 3 (cutover) had
+ * already flipped the workspace into the destination region. Re-running
+ * Phase 1 (export from source) on a workspace that already moved would
+ * re-export stale data and corrupt the destination — so the code path
+ * is closed entirely. Operators must follow the manual-intervention
+ * runbook in apps/docs/content/docs/platform-ops/data-residency.mdx.
+ *
+ * Maps to HTTP 409 Conflict.
+ */
+export class UnsafeRegionMigrationResetError extends Data.TaggedError("UnsafeRegionMigrationResetError")<{
+  readonly message: string;
+  readonly migrationId: string;
+  readonly workspaceId: string;
+  readonly targetRegion: string;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -233,6 +252,7 @@ export type AtlasError =
   | CustomValidatorError
   | ActionTimeoutError
   | ConversationBudgetExceededError
+  | UnsafeRegionMigrationResetError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -270,6 +290,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "CustomValidatorError",
   "ActionTimeoutError",
   "ConversationBudgetExceededError",
+  "UnsafeRegionMigrationResetError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

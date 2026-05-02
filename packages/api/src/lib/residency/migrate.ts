@@ -17,6 +17,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
+import { UnsafeRegionMigrationResetError } from "@atlas/api/lib/effect/errors";
 import { exportWorkspaceBundle } from "./export";
 import type { MigrationStatus, MigrationPhase, ExportBundle } from "@useatlas/types";
 
@@ -272,6 +273,17 @@ export async function executeRegionMigration(
     }
     regionUpdated = true;
 
+    // #1986 — Persist the cutover *immediately*, before flush/Phase 4 can
+    // throw, so a Phase 4 failure surfaces as `failed` + `region_updated=true`
+    // and resetMigrationForRetry() refuses to re-run Phase 1 (which would
+    // re-export a workspace that already moved). The only way to lose this
+    // signal is if the persist itself fails — in which case we throw and
+    // the catch block re-records the error with the region-updated warning.
+    await internalQuery(
+      `UPDATE region_migrations SET region_updated = TRUE WHERE id = $1`,
+      [migrationId],
+    );
+
     // Flush cached data
     try {
       const { flushCache } = await import("@atlas/api/lib/cache/index");
@@ -466,6 +478,12 @@ export async function getCleanupDueMigrations(): Promise<
  * Reset a failed migration to "pending" so it can be re-executed.
  * Only works for migrations in "failed" status.
  *
+ * #1986 — Throws `UnsafeRegionMigrationResetError` (mapped to HTTP 409) when
+ * the failed row has `region_updated = TRUE`. Phase 3 already flipped the
+ * workspace into the destination; re-running Phase 1 would re-export a
+ * workspace that already moved. Recovery requires the manual-intervention
+ * runbook, not retry.
+ *
  * @param workspaceId - The org ID that owns this migration (for authorization).
  */
 export async function resetMigrationForRetry(
@@ -476,24 +494,57 @@ export async function resetMigrationForRetry(
     return { ok: false, reason: "no_db", error: "Internal database not available" };
   }
 
+  let rows: Array<{ id: string; status: string; workspace_id: string; region_updated: boolean; target_region: string }>;
   try {
-    const rows = await internalQuery<{ id: string; status: string; workspace_id: string }>(
-      `SELECT id, status, workspace_id FROM region_migrations WHERE id = $1`,
+    rows = await internalQuery<{
+      id: string;
+      status: string;
+      workspace_id: string;
+      region_updated: boolean;
+      target_region: string;
+    }>(
+      `SELECT id, status, workspace_id, region_updated, target_region FROM region_migrations WHERE id = $1`,
       [migrationId],
     );
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), migrationId }, "Failed to load migration for retry");
+    return { ok: false, reason: "db_error", error: "Database error while resetting migration" };
+  }
 
-    if (rows.length === 0) {
-      return { ok: false, reason: "not_found", error: "Migration not found" };
-    }
+  if (rows.length === 0) {
+    return { ok: false, reason: "not_found", error: "Migration not found" };
+  }
 
-    if (rows[0].workspace_id !== workspaceId) {
-      return { ok: false, reason: "not_found", error: "Migration not found" };
-    }
+  const row = rows[0];
 
-    if (rows[0].status !== "failed") {
-      return { ok: false, reason: "invalid_status", error: `Cannot retry migration in "${rows[0].status}" status` };
-    }
+  if (row.workspace_id !== workspaceId) {
+    return { ok: false, reason: "not_found", error: "Migration not found" };
+  }
 
+  if (row.status !== "failed") {
+    return { ok: false, reason: "invalid_status", error: `Cannot retry migration in "${row.status}" status` };
+  }
+
+  // #1986 — Hard guard: never re-run Phase 1 on a row where Phase 3 already
+  // succeeded. Throw a typed error so the route handler maps it to 409 and
+  // the operator is forced through the manual-intervention runbook.
+  if (row.region_updated) {
+    log.warn(
+      { migrationId, workspaceId, targetRegion: row.target_region },
+      "Refused to reset migration — region was already updated to destination",
+    );
+    throw new UnsafeRegionMigrationResetError({
+      message:
+        `Migration "${migrationId}" cannot be reset: the workspace has already moved to ` +
+        `"${row.target_region}". Re-running export from the source would corrupt the ` +
+        `destination. Follow the manual-intervention runbook in the data-residency docs.`,
+      migrationId,
+      workspaceId,
+      targetRegion: row.target_region,
+    });
+  }
+
+  try {
     await internalQuery(
       `UPDATE region_migrations SET status = 'pending', error_message = NULL, completed_at = NULL
        WHERE id = $1`,

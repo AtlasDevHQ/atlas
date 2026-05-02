@@ -154,6 +154,15 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   makeAuthContextLayer: () => ({}),
 }));
 
+// #1986 — Mirror the production tagged-error → HTTP mapping so route tests
+// can assert the 409 surfaced by the unsafe-reset guard. Keeping this map
+// keyed off `_tag` (the Data.TaggedError discriminant) avoids importing the
+// real classes here — tests pass any object with the matching `_tag` and
+// `message` and get the realistic Response shape back.
+const TAGGED_ERROR_HTTP_MAP: Record<string, { status: number; code: string }> = {
+  UnsafeRegionMigrationResetError: { status: 409, code: "conflict" },
+};
+
 mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (_c: unknown, effect: { _tag: string; genFn: () => Generator }, opts?: { domainErrors?: [unknown, Record<string, number>][] }) => {
     try {
@@ -183,6 +192,18 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
             const status = statusMap[code] ?? 500;
             return new Response(JSON.stringify({ error: code, message: err.message, requestId: "test-req-1" }), { status });
           }
+        }
+      }
+      // Classify Atlas tagged errors (mirrors mapTaggedError dispatch)
+      if (err && typeof err === "object" && "_tag" in err && typeof (err as { _tag?: unknown })._tag === "string") {
+        const tag = (err as { _tag: string })._tag;
+        const mapping = TAGGED_ERROR_HTTP_MAP[tag];
+        if (mapping) {
+          const message = (err as { message?: unknown }).message;
+          return new Response(
+            JSON.stringify({ error: mapping.code, message: typeof message === "string" ? message : tag, requestId: "test-req-1" }),
+            { status: mapping.status },
+          );
         }
       }
       // Unknown / defect errors land as 500 in production. Return the same
@@ -398,11 +419,17 @@ mock.module("@atlas/api/lib/audit", () => ({
 
 let mockResetResult: { ok: true } | { ok: false; reason: string; error: string } = { ok: true };
 let mockCancelResult: { ok: true } | { ok: false; reason: string; error: string } = { ok: true };
+// #1986 — optional throw to exercise the 409 mapping for the unsafe-reset guard
+// without dragging in the real migrate module's DB plumbing.
+let mockResetThrow: Error | null = null;
 
 mock.module("@atlas/api/lib/residency/migrate", () => ({
   triggerMigrationExecution: () => {},
   failStaleMigrations: () => Promise.resolve(0),
-  resetMigrationForRetry: () => Promise.resolve(mockResetResult),
+  resetMigrationForRetry: () => {
+    if (mockResetThrow) return Promise.reject(mockResetThrow);
+    return Promise.resolve(mockResetResult);
+  },
   cancelMigration: () => Promise.resolve(mockCancelResult),
 }));
 
@@ -433,6 +460,7 @@ function resetMocks() {
   };
   mockInternalQueryResult = [];
   mockResetResult = { ok: true };
+  mockResetThrow = null;
   mockCancelResult = { ok: true };
   mockAssignCauseKind = "fail";
   mockEffectUser = {
@@ -821,6 +849,26 @@ describe("POST /migrate/:id/retry", () => {
     mockHasInternalDB = false;
     const res = await request("POST", "/migrate/mig-1/retry");
     expect(res.status).toBe(404);
+  });
+
+  // #1986 — End-to-end: when resetMigrationForRetry throws the typed
+  // UnsafeRegionMigrationResetError (Phase 3 already cut over), the bridge
+  // must classify it via mapTaggedError and respond 409, not 400/500.
+  it("returns 409 when reset is rejected as unsafe (region already updated)", async () => {
+    mockResetThrow = Object.assign(
+      new Error("Migration cannot be reset: workspace already moved to eu-west"),
+      {
+        _tag: "UnsafeRegionMigrationResetError" as const,
+        migrationId: "mig-1",
+        workspaceId: "org-1",
+        targetRegion: "eu-west",
+      },
+    );
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(409);
+    const json = (await res.json()) as { error: string; message: string };
+    expect(json.error).toBe("conflict");
+    expect(json.message).toContain("already moved");
   });
 });
 

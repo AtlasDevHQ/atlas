@@ -248,6 +248,38 @@ curl -X POST http://localhost:3001/api/v1/admin/residency/migrate/$MIGRATION_ID/
   -H "Authorization: Bearer $TOKEN"
 ```
 
+<Callout type="warn" title="Retry is unsafe after Phase 3 cutover">
+  Once Phase 3 sets `region_updated = TRUE`, the workspace lives in the destination region and the source data is stale. Re-running Phase 1 (export from source) on such a row would re-export a workspace that already moved and overwrite the live destination. The retry endpoint refuses these resets with **HTTP 409 Conflict** (`error: "conflict"`) — recovery requires the manual-intervention runbook below.
+</Callout>
+
+### Recovering from a Phase 4 failure (manual intervention)
+
+When `executeRegionMigration` fails after Phase 3 succeeded, the row will be `status = 'failed'`, `region_updated = TRUE`, and the `error_message` carries the warning `WARNING: region was already updated to "<targetRegion>" — do NOT retry without investigation`. The `/migrate/:id/retry` endpoint will return 409 in this state. The recovery path:
+
+1. **Confirm where the workspace lives now.** Read the `organization` row directly:
+   ```sql
+   SELECT id, region, region_assigned_at FROM organization WHERE id = '<workspaceId>';
+   ```
+   `region` should already match the migration's `target_region`. If it does not, the row is in an unexpected state — open an incident before doing anything else.
+
+2. **Confirm Phase 4 (cleanup scheduling) is what failed.** Inspect the `region_migration_failed` audit event and the `error_message` column on the migration row. If the failure was earlier (Phase 2 transfer or Phase 3 organization update), `region_updated` would not be `TRUE` — the guard would not have fired and the retry endpoint would have accepted the reset normally. A 409 specifically means the destination has taken ownership.
+
+3. **Pick a recovery direction.**
+   - **Forward (preferred):** the destination has the data, only post-cutover bookkeeping failed. Re-issue the cleanup scheduling and any other Phase 4 side effects manually, then mark the migration as completed:
+     ```sql
+     UPDATE region_migrations
+        SET status = 'completed',
+            completed_at = now(),
+            error_message = NULL
+      WHERE id = '<migrationId>';
+     ```
+     Verify the workspace is reachable in the destination region (`/api/v1/admin/residency` returns the new region) before declaring done.
+   - **Backward (rare):** unwind from the destination if the post-cutover work is not recoverable and the destination state is known-bad. Restore the source-region snapshot taken before the migration, then update `organization.region` back to the source region and the migration row to `status = 'cancelled'` with an explanatory `error_message`. Do not flip the migration back to `pending` — the row records the historical attempt; create a new migration request for any future retry.
+
+4. **Audit the recovery.** File an `admin_action` row referencing the migration ID, the chosen direction, and the operator who performed it. The forensic trail must show that the 409 guard fired and was resolved deliberately, not papered over.
+
+> The `region_updated` column is the single source of truth for "destination has taken ownership." It is set inside the same migration executor process that performs the cutover, immediately after `organization.region` is updated, before Phase 4 starts. If you ever need to manually flip `region_updated`, treat it as a destructive operation — the guard exists exactly because the wrong value here corrupts customer data.
+
 ## Limitations
 
 - Region health checks report all configured regions as healthy (no active probing)

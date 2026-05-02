@@ -1248,6 +1248,11 @@ export const regionMigrations = pgTable(
     errorMessage: text("error_message"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    // #1986 — Phase 3 cutover sets this to TRUE the moment the destination
+    // region takes ownership. Read by resetMigrationForRetry() to refuse
+    // re-running Phase 1 (export from source) on a workspace that already
+    // moved. See migration 0043 and lib/residency/migrate.ts.
+    regionUpdated: boolean("region_updated").notNull().default(false),
   },
   (t) => [
     index("idx_region_migrations_workspace").on(t.workspaceId),

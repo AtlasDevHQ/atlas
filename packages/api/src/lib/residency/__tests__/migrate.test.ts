@@ -401,7 +401,9 @@ describe("resetMigrationForRetry", () => {
   });
 
   it("resets a failed migration to pending", async () => {
-    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "failed", workspace_id: "org-1" }];
+    mockQueryResults["SELECT id, status"] = [
+      { id: "mig-1", status: "failed", workspace_id: "org-1", region_updated: false },
+    ];
     mockQueryResults["UPDATE region_migrations"] = [];
 
     const result = await resetMigrationForRetry("mig-1", "org-1");
@@ -411,6 +413,33 @@ describe("resetMigrationForRetry", () => {
       (q) => q.sql.includes("status = 'pending'"),
     );
     expect(resetQuery).toBeDefined();
+  });
+
+  // #1986 — once Phase 3 has flipped the workspace into the destination region,
+  // re-running Phase 1 (export from source) would re-export a workspace that
+  // already moved. The guard makes the unsafe reset impossible from code; the
+  // operator is forced to follow the manual-intervention runbook.
+  it("throws UnsafeRegionMigrationResetError when region_updated=true", async () => {
+    mockQueryResults["SELECT id, status"] = [
+      { id: "mig-1", status: "failed", workspace_id: "org-1", region_updated: true },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    let thrown: unknown;
+    try {
+      await resetMigrationForRetry("mig-1", "org-1");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeDefined();
+    expect((thrown as { _tag?: string })._tag).toBe("UnsafeRegionMigrationResetError");
+    expect((thrown as { migrationId?: string }).migrationId).toBe("mig-1");
+
+    // Critically: no UPDATE was issued. The row must remain in `failed` so
+    // operators see it in the audit trail and follow the runbook.
+    const resetQuery = capturedQueries.find((q) => q.sql.includes("status = 'pending'"));
+    expect(resetQuery).toBeUndefined();
   });
 });
 

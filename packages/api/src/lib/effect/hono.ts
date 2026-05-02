@@ -80,6 +80,7 @@ type HttpErrorCode =
   | "bad_request"
   | "forbidden"
   | "not_found"
+  | "conflict"
   | "unprocessable_entity"
   | "rate_limited"
   | "conversation_budget_exceeded"
@@ -150,6 +151,13 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // ── 404 Not Found ────────────────────────────────────────────
     case "ConnectionNotFoundError":
       return { status: 404, code: "not_found", message: error.message };
+
+    // ── 409 Conflict — operation rejected because of resource state ─
+    // #1986 — `resetMigrationForRetry` rejects when Phase 3 already
+    // flipped the workspace into the destination region. The caller
+    // can't progress without out-of-band runbook steps.
+    case "UnsafeRegionMigrationResetError":
+      return { status: 409, code: "conflict", message: error.message };
 
     // ── 422 Unprocessable Entity — plugin rejected ───────────────
     case "PluginRejectedError":

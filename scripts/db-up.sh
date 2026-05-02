@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Pre-create bind-mount source directories with host-user ownership.
+# Any host path bind-mounted into a container must exist before
+# `docker compose up`, otherwise the docker daemon creates it as root.
+# Today this only applies to ./semantic (sandbox sidecar) — when the host
+# path is missing, the resulting root-owned dir breaks wizard save (EACCES
+# on mkdir semantic/.orgs/) and `atlas init`. See issue #1951. Add new
+# bind-mount sources here as compose services are introduced.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if ! mkdir -p "$REPO_ROOT/semantic"; then
+  echo "Error: cannot create $REPO_ROOT/semantic (needed for sandbox bind-mount, see #1951)." >&2
+  exit 1
+fi
+# If the directory was created by a prior root-owned `docker compose up`,
+# `mkdir -p` is a no-op. Probe writability so we surface the real cause
+# now, instead of letting the wizard hit a confusing EACCES later. `[ -w ]`
+# alone can lie under unusual ACLs / overlayfs / WSL bind mounts, so we
+# also try a real touch and capture its stderr — that way ENOSPC, EROFS,
+# and quota errors get reported as themselves rather than misrouted to
+# the chown remediation below.
+probe="$REPO_ROOT/semantic/.atlas-write-probe-$$"
+touch_err=""
+if [ ! -w "$REPO_ROOT/semantic" ] || ! touch_err="$(touch "$probe" 2>&1)"; then
+  if [ -n "$touch_err" ]; then
+    echo "Error: cannot write to $REPO_ROOT/semantic: $touch_err" >&2
+    echo "This is a filesystem error (e.g. read-only fs, no space, quota), not a permission issue." >&2
+  else
+    echo "Error: $REPO_ROOT/semantic exists but is not writable by $(id -un)." >&2
+    echo "This usually means a prior 'docker compose up' created it as root (see #1951)." >&2
+    echo "Fix (run as your shell, not under sudo): sudo chown -R \"\$(id -u):\$(id -g)\" \"$REPO_ROOT/semantic\"" >&2
+  fi
+  exit 1
+fi
+rm -f "$probe"
+
 # Start all services: Postgres + sandbox sidecar
 if ! docker compose up -d; then
   echo "Error: Failed to start containers." >&2

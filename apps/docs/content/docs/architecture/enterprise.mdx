@@ -14,7 +14,7 @@ Atlas ships as two layers that share one repository:
 - **`@atlas/api`, `@atlas/web`, `@atlas/cli`, `@useatlas/*`** — the **AGPL** core. Self-hosted users get the entire product: agent loop, semantic layer, tools, admin console, plugins, multi-datasource support, the works.
 - **`@atlas/ee`** (the `ee/` directory) — **source-available, commercial license**. Adds the governance, compliance, scale, and polished SaaS surfaces that make Atlas viable as a hosted product.
 
-The boundary between them is enforced by two functions exported from `@atlas/ee/index`:
+The boundary between them is enforced by two functions exported from `@atlas/ee`:
 
 - [`isEnterpriseEnabled()`](#isenterpriseenabled) — boolean check, safe for conditional logic.
 - [`requireEnterprise(name?)`](#requireenterprise-and-requireenterpriseeffect) — guard that throws [`EnterpriseError`](#enterpriseerror).
@@ -64,7 +64,7 @@ Two exports — `isEnterpriseEnabled` and `requireEnterprise` — back every gat
 ### `isEnterpriseEnabled()`
 
 ```typescript
-import { isEnterpriseEnabled } from "@atlas/ee/index";
+import { isEnterpriseEnabled } from "@atlas/ee";
 
 export function isEnterpriseEnabled(): boolean;
 ```
@@ -77,7 +77,7 @@ Returns `true` when the gate is open. Resolution order:
 Use this for **conditional logic** — UI branching, optional feature wiring, defensive defaults — anywhere throwing would be wrong. For example, the SCIM provenance helper short-circuits when the gate is closed:
 
 ```typescript
-import { isEnterpriseEnabled } from "@atlas/ee/index";
+import { isEnterpriseEnabled } from "@atlas/ee";
 
 export function isScimManaged(user: User): boolean {
   if (!isEnterpriseEnabled()) return false;
@@ -95,7 +95,7 @@ const showCount =
 ### `requireEnterprise()` and `requireEnterpriseEffect()`
 
 ```typescript
-import { requireEnterprise, requireEnterpriseEffect } from "@atlas/ee/index";
+import { requireEnterprise, requireEnterpriseEffect } from "@atlas/ee";
 
 export function requireEnterprise(feature?: string): void;
 export const requireEnterpriseEffect: (
@@ -145,7 +145,7 @@ The license key check is **separate** from `requireEnterprise`. Self-hosted cust
 ### `EnterpriseError`
 
 ```typescript
-import { EnterpriseError } from "@atlas/ee/index";
+import { EnterpriseError } from "@atlas/ee";
 
 export class EnterpriseError extends Data.TaggedError("EnterpriseError")<{
   message: string;
@@ -183,10 +183,10 @@ Every feature in the table below calls `requireEnterprise(...)` or `requireEnter
 |---|---|---|---|
 | **Identity** | `sso` | SAML 2.0 / OIDC providers, domain verification, IdP test connection, auto-provisioning toggles | [Enterprise SSO](/guides/enterprise-sso) |
 | **Identity** | `scim` | SCIM 2.0 connections, group mapping, sync-status endpoints | [SCIM Directory Sync](/guides/scim) |
-| **Identity** | `roles` | Custom role definitions, permission flag CRUD, role assignment beyond the built-in admin/analyst/viewer triad | [Custom Roles](/guides/custom-roles) |
+| **Identity** | `roles` | Custom role definitions, permission flag CRUD, role assignment beyond the built-in admin/member/owner triad | [Custom Roles](/guides/custom-roles) |
 | **Network** | `ip-allowlist` | CIDR allowlist CRUD, request-time allowlist enforcement | [IP Allowlisting](/guides/ip-allowlisting) |
 | **Governance** | `approval-workflows` | Approval rules, request lifecycle, expiration sweeps, pending-count queries | [Approval Workflows](/guides/approval-workflows) |
-| **Compliance** | `pii-detection` | Column classification CRUD, masking config, PII scan triggers | [PII Masking](/guides/pii-masking) |
+| **Compliance** | `pii-detection` | Column classification CRUD, masking config, PII scan triggers (write paths via `requireEnterpriseEffect`); query-time row masking gated inline via `isEnterpriseEnabled()` in `masking.ts` so AGPL deployments simply skip masking instead of failing the query | [PII Masking](/guides/pii-masking) |
 | **Compliance** | `compliance` | SOC 2 / ISO / GDPR report generation, evidence aggregation | [Compliance Reporting](/guides/compliance-reporting) |
 | **Audit** | `audit-retention` | Long-tail retention policies, archive/export, retention policy CRUD | [Audit Retention](/guides/audit-retention) |
 | **Platform** | `backups` | Scheduled backups, restore, integrity verification | [Backups](/platform-ops/backups) |
@@ -270,7 +270,7 @@ Route handlers in `packages/api/src/api/routes/` either guard via `requireEnterp
 
 ```typescript
 // packages/api/src/api/routes/admin-domains.ts
-import { EnterpriseError } from "@atlas/ee/index";
+import { EnterpriseError } from "@atlas/ee";
 
 const program = Effect.gen(function* () {
   if (!isEnterpriseEnabled()) {

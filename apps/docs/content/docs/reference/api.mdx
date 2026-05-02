@@ -398,11 +398,15 @@ All error responses follow a consistent format:
 | `not_available` | 404 | Feature not available (e.g., no internal DB) |
 | `provider_model_not_found` | 400 | Configured AI model does not exist |
 | `provider_auth_error` | 503 | AI provider authentication failed |
-| `provider_rate_limit` | 503 | AI provider rate limited |
-| `provider_timeout` | 504 | AI provider timed out |
+| `provider_rate_limit` | 503 | AI provider rate limited. Forwards the upstream `Retry-After` (clamped to 300s) when present |
+| `provider_timeout` | 504 | AI provider timed out. Forwards the upstream `Retry-After` (clamped to 300s) when present |
 | `provider_unreachable` | 503 | Could not reach the AI provider |
-| `provider_error` | 502 | AI provider returned an error |
+| `provider_error` | 502 | AI provider returned an error. Forwards the upstream `Retry-After` (clamped to 300s) when present |
 | `internal_error` | 500 | Unexpected server error |
+
+### Mid-stream Errors
+
+When `/api/v1/chat` fails *after* the SSE connection is open, the failure travels as an `error` chunk whose `errorText` is a JSON-encoded `ChatErrorInfo` body — the same `{ error, message, retryable, retryAfterSeconds?, requestId }` shape the synchronous response uses. Clients can run a single `JSON.parse(errorText)` to recover the typed `code` and surface the same retry guidance regardless of when the failure occurred. The Atlas SDK and React package do this automatically.
 
 ---
 
@@ -413,6 +417,8 @@ When `ATLAS_RATE_LIMIT_RPM` is set, the API enforces per-user rate limits (slidi
 - HTTP status `429`
 - `Retry-After` header (seconds until the limit resets)
 - `retryAfterSeconds` in the response body
+
+Provider-driven rate limits (`provider_rate_limit`, `provider_timeout`, `provider_error`, `provider_auth_error`) also forward the upstream LLM's `Retry-After` header — clamped to a 300s ceiling — both as the response header and as `retryAfterSeconds` in the body.
 
 See [Environment Variables](/reference/environment-variables) for configuration.
 

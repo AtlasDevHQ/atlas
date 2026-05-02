@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/sdk",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "TypeScript SDK for the Atlas text-to-SQL agent API",
   "type": "module",
   "scripts": {

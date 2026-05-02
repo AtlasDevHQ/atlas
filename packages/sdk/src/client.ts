@@ -376,7 +376,24 @@ export type StreamEvent =
   | { type: "tool-call"; toolCallId: string; name: string; args: Record<string, unknown> }
   | { type: "tool-result"; toolCallId: string; name: string; result: Record<string, unknown> }
   | { type: "result"; columns: string[]; rows: Record<string, unknown>[] }
-  | { type: "error"; message: string }
+  /**
+   * Mid-stream error.
+   *
+   * Atlas serializes mid-stream errors as a `ChatErrorInfo`-shaped JSON
+   * body inside the SSE error frame's `errorText` so callers can branch
+   * on the typed `code` instead of regex-scraping the message. When
+   * `errorText` is not parseable as that body (a plain-text frame from a
+   * non-Atlas server, a malformed payload, or a non-JSON error) only
+   * `message` is set.
+   */
+  | {
+      type: "error";
+      message: string;
+      code?: string;
+      retryable?: boolean;
+      retryAfterSeconds?: number;
+      requestId?: string;
+    }
   /** Client-side: emitted when an SSE frame contains invalid JSON. */
   | { type: "parse-error"; raw: string; error: string }
   | { type: "finish"; reason: StreamFinishReason };
@@ -756,9 +773,38 @@ export function createAtlasClient(options: AtlasClientOptions) {
               break;
             }
             case "error": {
+              const raw = (event.errorText ?? event.message ?? "Unknown error") as string;
+              // If `errorText` parses as the `ChatErrorInfo` JSON Atlas
+              // serializes, lift the typed fields. Otherwise treat it as
+              // plain text — non-Atlas servers and malformed payloads
+              // both land here.
+              let message = raw;
+              let code: string | undefined;
+              let retryable: boolean | undefined;
+              let retryAfterSeconds: number | undefined;
+              let requestId: string | undefined;
+              try {
+                const parsed = JSON.parse(raw) as Record<string, unknown>;
+                if (parsed && typeof parsed === "object") {
+                  if (typeof parsed.error === "string") code = parsed.error;
+                  if (typeof parsed.message === "string") message = parsed.message;
+                  if (typeof parsed.retryable === "boolean") retryable = parsed.retryable;
+                  if (typeof parsed.retryAfterSeconds === "number") {
+                    retryAfterSeconds = parsed.retryAfterSeconds;
+                  }
+                  if (typeof parsed.requestId === "string") requestId = parsed.requestId;
+                }
+              } catch {
+                // intentionally ignored: `raw` is not JSON — fall through
+                // with `message = raw`, leaving the typed fields unset.
+              }
               yield {
                 type: "error",
-                message: (event.errorText ?? event.message ?? "Unknown error") as string,
+                message,
+                ...(code !== undefined && { code }),
+                ...(retryable !== undefined && { retryable }),
+                ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+                ...(requestId !== undefined && { requestId }),
               };
               break;
             }

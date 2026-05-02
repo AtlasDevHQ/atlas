@@ -124,7 +124,13 @@ for await (const event of atlas.streamQuery("How many users signed up last week?
       console.table(event.rows); // convenience: { columns, rows } from executeSQL
       break;
     case "error":
-      console.error(event.message);
+      // Mid-stream errors carry a typed `code` and a `retryAfterSeconds`
+      // delta when the server emits a structured `ChatErrorInfo` body
+      // (e.g. provider rate limiting). Older servers populate only `message`.
+      console.error(event.code ?? "error", event.message);
+      if (event.retryable && event.retryAfterSeconds !== undefined) {
+        console.warn(`Server suggests retrying in ${event.retryAfterSeconds}s`);
+      }
       break;
     case "parse-error":
       console.warn("Malformed SSE frame", event.raw);
@@ -193,7 +199,7 @@ try {
 | `tool-call` | `toolCallId`, `name`, `args` | Agent is calling a tool |
 | `tool-result` | `toolCallId`, `name`, `result` | Tool returned a result |
 | `result` | `columns`, `rows` | Convenience event extracted from `tool-result` when `executeSQL` returns data. Both `tool-result` and `result` are emitted. |
-| `error` | `message` | Error during streaming |
+| `error` | `message`, `code?`, `retryable?`, `retryAfterSeconds?`, `requestId?` | Mid-stream error. When the server sends a structured `ChatErrorInfo` body (`provider_rate_limit`, `provider_timeout`, etc.) the typed `code` and upstream `Retry-After` delta travel alongside the human-readable `message`. Older servers populate only `message`. |
 | `parse-error` | `raw`, `error` | Client-side: an SSE frame contained invalid JSON. The raw data is preserved for debugging. |
 | `finish` | `reason` | Stream completed |
 

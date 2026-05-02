@@ -299,6 +299,35 @@ describe("parseChatError requestId", () => {
     const info = parseChatError(err, authMode);
     expect(info.requestId).toBeUndefined();
   });
+
+  // #1980 — mid-stream errors arrive via the AI SDK error chunk, where
+  // `errorText` becomes `error.message`. The mid-stream JSON body shape
+  // matches the synchronous chat response, so this parser round-trips
+  // both transports identically. Pin: a provider rate-limit mid-stream
+  // surfaces a typed code, `retryable=true`, and `requestId`.
+  //
+  // Surfacing `retryAfterSeconds` from `provider_rate_limit` is
+  // intentionally out of scope for this parser — only the in-process
+  // `rate_limited` code (per-user request budget) carries a UI-facing
+  // delta. Provider-driven backoff is consumed by the chat route via
+  // the response body / `Retry-After` header rather than by client UI.
+  test("round-trips mid-stream provider_rate_limit frame with retryAfterSeconds", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: "provider_rate_limit",
+        message: "LLM provider rate limit reached. Wait a moment and try again.",
+        retryable: true,
+        retryAfterSeconds: 30,
+        requestId: "abcd-1234",
+      }),
+    );
+    const info = parseChatError(err, authMode);
+    expect(info.code).toBe("provider_rate_limit");
+    expect(info.retryable).toBe(true);
+    expect(info.requestId).toBe("abcd-1234");
+    // Pin the deliberate scope decision so a future widening fails loud.
+    expect(info.retryAfterSeconds).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -355,6 +384,7 @@ describe("isRetryableError", () => {
     "trial_expired",
     "workspace_suspended",
     "workspace_deleted",
+    "conversation_budget_exceeded",
   ];
 
   test("marks transient codes as retryable", () => {

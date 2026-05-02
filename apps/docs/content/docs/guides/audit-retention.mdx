@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas includes configurable audit log retention with automatic purging and compliance-ready export formats. Workspace admins can set retention periods, configure soft-delete with delayed hard-delete, and export audit data in CSV or JSON for SOC2 compliance.
 
 <Callout type="info" title="SaaS Feature">
-  Audit log retention policies are available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments manage retention directly via their own database.
+  Audit log retention policies are available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments manage retention directly via their own database. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("audit-retention")` call sites.
 </Callout>
 
 <Callout title="Prerequisites">

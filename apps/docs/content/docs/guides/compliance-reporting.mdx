@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas provides compliance reports built on top of audit log data, PII classifications, and user session history. Reports help answer audit questions like "who accessed what data, when, and how often" — a requirement for SOC2, HIPAA, and similar frameworks.
 
 <Callout type="info" title="SaaS Feature">
-  Compliance reporting is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features.
+  Compliance reporting is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("compliance")` call sites.
 </Callout>
 
 <Callout title="Prerequisites">

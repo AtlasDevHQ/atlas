@@ -4,6 +4,7 @@
   "icon": "Layers",
   "pages": [
     "sandbox",
-    "content-mode"
+    "content-mode",
+    "enterprise"
   ]
 }

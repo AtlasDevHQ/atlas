@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas supports per-workspace IP allowlisting. When configured, only requests originating from allowed CIDR ranges can access the workspace — all other requests are rejected with a `403` response. This applies to both API and UI access.
 
 <Callout type="info" title="SaaS Feature">
-  IP allowlisting is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features.
+  IP allowlisting is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("ip-allowlist")` call sites.
 </Callout>
 
 <Callout title="Prerequisites">

@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas supports SCIM 2.0 (RFC 7643/7644) for automated user provisioning from enterprise identity providers like Okta, Azure AD (Entra ID), and OneLogin. When users are added, updated, or deactivated in your corporate directory, changes are automatically synced to Atlas.
 
 <Callout type="info" title="SaaS Feature">
-  SCIM directory sync is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features.
+  SCIM directory sync is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("scim")` call sites.
 </Callout>
 
 <Callout title="Prerequisites">

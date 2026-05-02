@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins register identity providers through the admin API, verify domain ownership via DNS, test the connection, and enable the provider. Users with matching email domains are auto-provisioned on first login.
 
 <Callout type="info" title="SaaS Feature">
-  Enterprise SSO is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features.
+  Enterprise SSO is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("sso")` call sites.
 </Callout>
 
 <Callout title="Prerequisites">

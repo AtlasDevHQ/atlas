@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas can auto-detect personally identifiable information (PII) in your database columns and mask sensitive values in query results. Detection runs during profiling, and masking is applied at query time based on user role.
 
 <Callout type="info" title="SaaS Feature">
-  PII detection and masking is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features.
+  PII detection and masking is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("pii-detection")` call sites.
 </Callout>
 
 <Callout title="Prerequisites">

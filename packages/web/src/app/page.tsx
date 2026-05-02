@@ -15,6 +15,7 @@ import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { authClient } from "@/lib/auth/client";
 import { NavBar } from "@/ui/components/tour/nav-bar";
 import { IncidentBanner } from "@/ui/components/incident-banner";
+import { AssistantTurn } from "@/ui/components/chat/assistant-turn";
 import { ErrorBanner } from "@/ui/components/chat/error-banner";
 import { FollowUpChips } from "@/ui/components/chat/follow-up-chips";
 import { ToolPart } from "@/ui/components/chat/tool-part";
@@ -446,9 +447,8 @@ function ChatPage() {
                     const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(m.parts);
 
                     return (
-                      <div
+                      <AssistantTurn
                         key={m.id}
-                        className="border-l-2 border-primary/30 pl-4"
                         role="article"
                         aria-label="Message from Atlas"
                       >
@@ -500,7 +500,7 @@ function ChatPage() {
                             onSelect={handleSend}
                           />
                         )}
-                      </div>
+                      </AssistantTurn>
                     );
                   })}
 

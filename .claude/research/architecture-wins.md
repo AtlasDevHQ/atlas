@@ -1158,3 +1158,23 @@ Second, a hand-constructed `FetchError { message: "" }` would render blank `Erro
 - **Line count:** registry is 72 lines (50 tuple entries + JSDoc + type alias), helper is ~45 lines inclusive of JSDoc + prod-substitute path, call-site edits are one-line-each across ~4 pages (the rest were already canonical). Net positive line count, but every type-level guarantee is now load-bearing.
 
 **Category:** Branded-literal registry + system-boundary invariant helper. The registry deepens the 50+ admin page call surface by constraining what would otherwise be an open `string` slot to a canonical enumeration — future typos become compile errors instead of user-visible copy bugs. The helper codifies an invariant that was previously scattered across three fallback paths with matching-but-drifting `|| "Request failed"` suffixes. Closes the remaining type-design gap from the 1.2.2 arc.
+
+---
+
+## 44. Extract `<AssistantTurn>` primitive — gutter rail consolidated
+
+**Date:** 2026-05-02
+**Issue:** #1888
+**Branch:** 1888-assistant-turn-primitive
+
+**Problem:** The `border-l-2 border-primary/<N> pl-4` gutter rail — the visual anchor that ties an assistant response to its prompting question — was hand-inlined at two call sites with a small but real opacity drift between them: the chat surface (`packages/web/src/app/page.tsx:451`) used `border-primary/30`, while the notebook query cell output (`packages/web/src/ui/components/notebook/notebook-cell-output.tsx:50`) used `border-primary/40`. Same visual element, two slightly different styles, no shared source of truth. The rule of three was being relaxed because the drift between `/30` and `/40` was itself the bug worth fixing — extraction forced a single decision instead of letting a third adopter (the pending tool-call grouping fold-down from #1864) inherit the inconsistency.
+
+**Solution:** New `packages/web/src/ui/components/chat/assistant-turn.tsx` — a 14-line `AssistantTurn` component that wraps the gutter style behind `cn("border-l-2 border-primary/40 pl-4", className)`. Typed as `React.ComponentProps<"div">` per the local shadcn convention (`Card`, `CardHeader`, `Table`, etc.) so callers can spread native div props — needed at the chat call site to preserve `role="article"` and `aria-label="Message from Atlas"` on the same DOM node without wrapping in a second element. Both call sites migrated; the chat surface picks up the `/30` → `/40` opacity bump as part of consolidation.
+
+**Impact:**
+- **Net positive line count, but a single source of truth.** The component is 14 lines, each call site loses its inlined gutter classes but gains an import. Future adopters (tool-call grouping fold-down, any third surface) inherit the consolidated style automatically.
+- **Opacity drift resolved.** One `primary/40` across both surfaces. A future reviewer who tweaks gutter saturation only has to find one place.
+- **Accessibility preserved.** Spreading `React.ComponentProps<"div">` lets the chat surface keep `role="article"` and `aria-label="Message from Atlas"` on the gutter element where they belong semantically, instead of forcing a wrapper div.
+- **Pure refactor.** No behavior change, no new tests, no public API surface added.
+
+**Category:** Tightly-coupled style fragment consolidated into a deep module with a small interface. Same shape as #1 (`useAdminMutation`) but minimal in line count — the value isn't line reduction, it's that the visual primitive now has one definition instead of two slightly-drifting copies.

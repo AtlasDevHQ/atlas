@@ -150,13 +150,18 @@ describe("security-headers middleware", () => {
     expect(res.headers.get("Strict-Transport-Security")).toBeTruthy();
   });
 
-  it("/widget HTML route returns 200 and keeps frame-ancestors * CSP", async () => {
+  it("/widget HTML route is reached and keeps frame-ancestors * CSP", async () => {
     const res = await app.fetch(
       new Request("http://localhost/widget", { method: "GET" }),
     );
 
-    // Status assertion proves the route actually matched (not a 404 fallthrough).
-    expect(res.status).toBe(200);
+    // Status proves the route handler ran (not a 404 fallthrough). Two valid
+    // outcomes: 200 when packages/react/dist/widget.js is built, 503 when the
+    // bundle is missing (CI shards run before `bun run --filter @useatlas/react
+    // build`). Both paths set the route-level `frame-ancestors *` CSP, which
+    // is the load-bearing invariant for this test — the global strict CSP
+    // must NOT replace it on either branch.
+    expect([200, 503]).toContain(res.status);
     expect(res.headers.get("Content-Type")).toContain("html");
     const csp = res.headers.get("Content-Security-Policy") ?? "";
     expect(csp).toContain("frame-ancestors *");

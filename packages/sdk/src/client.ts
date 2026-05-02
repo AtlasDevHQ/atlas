@@ -376,7 +376,23 @@ export type StreamEvent =
   | { type: "tool-call"; toolCallId: string; name: string; args: Record<string, unknown> }
   | { type: "tool-result"; toolCallId: string; name: string; result: Record<string, unknown> }
   | { type: "result"; columns: string[]; rows: Record<string, unknown>[] }
-  | { type: "error"; message: string }
+  /**
+   * Mid-stream error.
+   *
+   * The server emits a `ChatErrorInfo`-shaped JSON body inside the SSE
+   * error frame's `errorText`. When that JSON parses cleanly we surface
+   * `code` / `retryable` / `retryAfterSeconds` / `requestId` so callers
+   * can branch on the typed code instead of regex-scraping the message.
+   * For older servers (or unparseable text) only `message` is set.
+   */
+  | {
+      type: "error";
+      message: string;
+      code?: string;
+      retryable?: boolean;
+      retryAfterSeconds?: number;
+      requestId?: string;
+    }
   /** Client-side: emitted when an SSE frame contains invalid JSON. */
   | { type: "parse-error"; raw: string; error: string }
   | { type: "finish"; reason: StreamFinishReason };
@@ -756,9 +772,37 @@ export function createAtlasClient(options: AtlasClientOptions) {
               break;
             }
             case "error": {
+              const raw = (event.errorText ?? event.message ?? "Unknown error") as string;
+              // Atlas serializes mid-stream errors as a `ChatErrorInfo`-
+              // shaped JSON body so the typed code travels alongside the
+              // human-readable message. Older servers send a plain string;
+              // surface it as `message` only.
+              let message = raw;
+              let code: string | undefined;
+              let retryable: boolean | undefined;
+              let retryAfterSeconds: number | undefined;
+              let requestId: string | undefined;
+              try {
+                const parsed = JSON.parse(raw) as Record<string, unknown>;
+                if (parsed && typeof parsed === "object") {
+                  if (typeof parsed.error === "string") code = parsed.error;
+                  if (typeof parsed.message === "string") message = parsed.message;
+                  if (typeof parsed.retryable === "boolean") retryable = parsed.retryable;
+                  if (typeof parsed.retryAfterSeconds === "number") {
+                    retryAfterSeconds = parsed.retryAfterSeconds;
+                  }
+                  if (typeof parsed.requestId === "string") requestId = parsed.requestId;
+                }
+              } catch {
+                // Plain-text errorText — leave `message` as the raw string.
+              }
               yield {
                 type: "error",
-                message: (event.errorText ?? event.message ?? "Unknown error") as string,
+                message,
+                ...(code !== undefined && { code }),
+                ...(retryable !== undefined && { retryable }),
+                ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+                ...(requestId !== undefined && { requestId }),
               };
               break;
             }

@@ -14,6 +14,7 @@ import {
   mock,
   type Mock,
 } from "bun:test";
+import { APICallError } from "ai";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 
 // --- Mocks ---
@@ -710,5 +711,287 @@ describe("POST /api/v1/chat", () => {
     } finally {
       delete process.env.ATLAS_PYTHON_ENABLED;
     }
+  });
+
+  // ---------------------------------------------------------------------
+  // #1980 — provider Retry-After surfacing
+  //
+  // The `APICallError.responseHeaders["retry-after"]` value MUST round-trip
+  // to both `retryAfterSeconds` in the JSON body and the `Retry-After` HTTP
+  // response header. Anthropic / OpenAI 503/429 responses carry this header
+  // and we previously dropped it, leaving clients to invent their own
+  // backoff. Clamp at 300s (RFC 7231 allows arbitrarily large deltas; we
+  // refuse to make users wait longer than 5 minutes).
+  // ---------------------------------------------------------------------
+
+  describe("#1980 — provider Retry-After header", () => {
+    it("forwards Retry-After from a 401 provider response (provider_auth_error)", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Unauthorized",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 401,
+          responseHeaders: { "retry-after": "45" },
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("45");
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_auth_error");
+      expect(body.retryAfterSeconds).toBe(45);
+    });
+
+    it("forwards Retry-After from a 429 provider response (provider_rate_limit)", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Rate limited",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 429,
+          responseHeaders: { "retry-after": "60" },
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("60");
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_rate_limit");
+      expect(body.retryAfterSeconds).toBe(60);
+    });
+
+    it("forwards Retry-After from a 408 provider response (provider_timeout)", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Request timeout",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 408,
+          responseHeaders: { "retry-after": "10" },
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(504);
+      expect(response.headers.get("Retry-After")).toBe("10");
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_timeout");
+      expect(body.retryAfterSeconds).toBe(10);
+    });
+
+    it("forwards Retry-After from a generic 5xx provider response (provider_error)", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Service Unavailable",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 503,
+          responseHeaders: { "retry-after": "20" },
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(502);
+      expect(response.headers.get("Retry-After")).toBe("20");
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_error");
+      expect(body.retryAfterSeconds).toBe(20);
+    });
+
+    it("clamps Retry-After to 300s ceiling", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Rate limited",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 429,
+          responseHeaders: { "retry-after": "9999" },
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.headers.get("Retry-After")).toBe("300");
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.retryAfterSeconds).toBe(300);
+    });
+
+    it("ignores HTTP-date Retry-After (delta-seconds only)", async () => {
+      // RFC 7231 also allows an HTTP-date form. We only support the delta
+      // form because the date form requires a clock-drift-aware parser
+      // and providers almost never emit it.
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Rate limited",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 429,
+          responseHeaders: { "retry-after": "Wed, 21 Oct 2026 07:28:00 GMT" },
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(503);
+      // No header set, no field in body.
+      expect(response.headers.get("Retry-After")).toBeNull();
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.retryAfterSeconds).toBeUndefined();
+    });
+
+    it("omits Retry-After when the provider does not send the header", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Rate limited",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 429,
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBeNull();
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_rate_limit");
+      expect(body.retryAfterSeconds).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // #1980 — mid-stream structured error frames
+  //
+  // Once the SSE connection is open, errors used to surface as opaque
+  // "ref XXXXXXXX" text. We now serialize a `ChatErrorInfo`-shaped JSON
+  // body into the AI SDK error chunk's `errorText` so the client can
+  // round-trip it through `parseChatError()` (which already does
+  // `JSON.parse(error.message)`). The shape MUST match the pre-stream
+  // synchronous body — code, message, retryable, requestId, plus
+  // optional retryAfterSeconds — so a client can't tell whether the
+  // failure happened before or after the first byte.
+  // ---------------------------------------------------------------------
+
+  describe("#1980 — mid-stream structured error frames", () => {
+    function midstreamRunAgent(error: unknown): {
+      toUIMessageStreamResponse: () => Response;
+      toUIMessageStream: () => ReadableStream<unknown>;
+      text: Promise<string>;
+      steps: Promise<unknown[]>;
+    } {
+      // Build a stream that errors out on first read so the merge
+      // promise inside createUIMessageStream rejects and our onError
+      // callback is invoked.
+      return {
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () =>
+          new ReadableStream({
+            start(c) {
+              c.error(error);
+            },
+          }),
+        text: Promise.resolve(""),
+        // steps rejection is fire-and-forget settlement; suppress noise.
+        steps: (() => {
+          const p = Promise.reject(error);
+          p.catch(() => undefined);
+          return p;
+        })(),
+      };
+    }
+
+    async function readErrorFrame(
+      response: Response,
+    ): Promise<Record<string, unknown> | null> {
+      const text = await response.text();
+      // SSE format: `data: {...json...}\n\n`. Find the chunk whose JSON has
+      // type:"error" and parse the errorText field.
+      for (const chunk of text.split("\n\n")) {
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            const obj = JSON.parse(payload) as Record<string, unknown>;
+            if (obj.type === "error" && typeof obj.errorText === "string") {
+              try {
+                return JSON.parse(obj.errorText) as Record<string, unknown>;
+              } catch {
+                return { errorText: obj.errorText };
+              }
+            }
+          } catch {
+            // ignore malformed lines
+          }
+        }
+      }
+      return null;
+    }
+
+    it("emits a structured ChatErrorInfo frame on mid-stream APICallError 429", async () => {
+      mockRunAgent.mockResolvedValueOnce(
+        midstreamRunAgent(
+          new APICallError({
+            message: "Rate limited mid-stream",
+            url: "https://api.example.com/v1/chat",
+            requestBodyValues: {},
+            statusCode: 429,
+            responseHeaders: { "retry-after": "30" },
+          }),
+        ) as unknown as Awaited<ReturnType<typeof mockRunAgent>>,
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200); // SSE is already open
+      const frame = await readErrorFrame(response);
+      expect(frame).not.toBeNull();
+      expect(frame!.error).toBe("provider_rate_limit");
+      expect(frame!.retryable).toBe(true);
+      expect(frame!.retryAfterSeconds).toBe(30);
+      expect(typeof frame!.requestId).toBe("string");
+      expect((frame!.requestId as string).length).toBeGreaterThan(0);
+      expect(typeof frame!.message).toBe("string");
+    });
+
+    it("emits a structured frame on mid-stream network drop (fetch failed)", async () => {
+      mockRunAgent.mockResolvedValueOnce(
+        midstreamRunAgent(new Error("fetch failed")) as unknown as Awaited<
+          ReturnType<typeof mockRunAgent>
+        >,
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      const frame = await readErrorFrame(response);
+      expect(frame).not.toBeNull();
+      expect(frame!.error).toBe("provider_unreachable");
+      expect(frame!.retryable).toBe(true);
+      expect(typeof frame!.requestId).toBe("string");
+    });
+
+    it("emits a structured frame on mid-stream provider timeout (APICallError 408)", async () => {
+      mockRunAgent.mockResolvedValueOnce(
+        midstreamRunAgent(
+          new APICallError({
+            message: "Provider stream timed out",
+            url: "https://api.example.com/v1/chat",
+            requestBodyValues: {},
+            statusCode: 408,
+          }),
+        ) as unknown as Awaited<ReturnType<typeof mockRunAgent>>,
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      const frame = await readErrorFrame(response);
+      expect(frame).not.toBeNull();
+      expect(frame!.error).toBe("provider_timeout");
+      expect(frame!.retryable).toBe(true);
+      expect(typeof frame!.requestId).toBe("string");
+    });
+
+    it("falls back to internal_error for unclassifiable mid-stream errors", async () => {
+      mockRunAgent.mockResolvedValueOnce(
+        midstreamRunAgent(new Error("something nobody recognizes")) as unknown as Awaited<
+          ReturnType<typeof mockRunAgent>
+        >,
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      const frame = await readErrorFrame(response);
+      expect(frame).not.toBeNull();
+      expect(frame!.error).toBe("internal_error");
+      expect(typeof frame!.requestId).toBe("string");
+    });
   });
 });

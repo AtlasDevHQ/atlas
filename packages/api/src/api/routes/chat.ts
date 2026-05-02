@@ -15,7 +15,7 @@ import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError, isRetryableError, isChatErrorCode } from "@useatlas/types";
+import { matchError, isRetryableError, isChatErrorCode, type ChatErrorCode } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
@@ -75,6 +75,192 @@ function getReservationStepBudget(): number {
 }
 
 const log = createLogger("chat");
+
+// ---------------------------------------------------------------------------
+// #1980 — error classification shared across pre-stream and mid-stream paths
+// ---------------------------------------------------------------------------
+
+/**
+ * Provider Retry-After response headers can be arbitrarily large in the RFC.
+ * We refuse to make a user wait more than 5 minutes — beyond that the
+ * UI should treat the call as failed and ask them to start over.
+ */
+const PROVIDER_RETRY_AFTER_MAX_SECONDS = 300;
+
+/**
+ * Parse a provider's `Retry-After` response header into seconds.
+ *
+ * Returns `undefined` when the header is missing, non-numeric, negative,
+ * or in the HTTP-date form (RFC 7231 also permits a date but providers
+ * almost never emit it; supporting it would require a clock-drift-aware
+ * parser). Otherwise returns a non-negative integer clamped to
+ * `PROVIDER_RETRY_AFTER_MAX_SECONDS`.
+ */
+function parseProviderRetryAfter(
+  responseHeaders: Record<string, string> | undefined,
+): number | undefined {
+  if (!responseHeaders) return undefined;
+  // Headers are typically lowercase but be defensive.
+  const raw = responseHeaders["retry-after"] ?? responseHeaders["Retry-After"];
+  if (raw === undefined) return undefined;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return Math.min(Math.floor(n), PROVIDER_RETRY_AFTER_MAX_SECONDS);
+}
+
+type ChatErrorClassification = {
+  code: ChatErrorCode;
+  message: string;
+  retryable: boolean;
+  retryAfterSeconds?: number;
+  httpStatus: 400 | 429 | 500 | 502 | 503 | 504;
+};
+
+/**
+ * Classify a thrown or streamed agent-loop error into a
+ * `ChatErrorInfo`-shaped result.
+ *
+ * Single source of truth for the chat surface — used by both the
+ * synchronous catch block (which converts the result into the JSON
+ * HTTP response) and the SSE `onError` path (which serializes the
+ * result into the AI SDK error chunk's `errorText`). Keeping one
+ * classifier guarantees pre-stream and mid-stream errors carry the
+ * same `code` / `retryable` / `retryAfterSeconds` shape, so a client
+ * can't tell — and shouldn't have to know — whether the failure
+ * happened before or after the first byte.
+ */
+function classifyChatError(err: unknown): ChatErrorClassification {
+  if (GatewayModelNotFoundError.isInstance(err)) {
+    return {
+      code: "provider_model_not_found",
+      message:
+        "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format (e.g., anthropic/claude-sonnet-4.6).",
+      retryable: isRetryableError("provider_model_not_found"),
+      httpStatus: 400,
+    };
+  }
+  if (NoSuchModelError.isInstance(err)) {
+    return {
+      code: "provider_model_not_found",
+      message:
+        "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.",
+      retryable: isRetryableError("provider_model_not_found"),
+      httpStatus: 400,
+    };
+  }
+  if (LoadAPIKeyError.isInstance(err)) {
+    return {
+      code: "provider_auth_error",
+      message:
+        "LLM provider API key could not be loaded. Check that the required API key environment variable is set.",
+      retryable: isRetryableError("provider_auth_error"),
+      httpStatus: 503,
+    };
+  }
+  if (APICallError.isInstance(err)) {
+    const status = err.statusCode;
+    const retryAfterSeconds = parseProviderRetryAfter(err.responseHeaders);
+    if (status === 401 || status === 403) {
+      return {
+        code: "provider_auth_error",
+        message:
+          "LLM provider authentication failed. Check that your API key is valid and has not expired.",
+        retryable: isRetryableError("provider_auth_error"),
+        httpStatus: 503,
+        ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+      };
+    }
+    if (status === 429) {
+      return {
+        code: "provider_rate_limit",
+        message: "LLM provider rate limit reached. Wait a moment and try again.",
+        retryable: isRetryableError("provider_rate_limit"),
+        httpStatus: 503,
+        ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+      };
+    }
+    if (status === 408 || /timeout/i.test(err.message)) {
+      return {
+        code: "provider_timeout",
+        message:
+          "The request timed out. The LLM provider took too long to respond. " +
+          "Try again, or if using a local model, ensure it has sufficient resources.",
+        retryable: isRetryableError("provider_timeout"),
+        httpStatus: 504,
+        ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+      };
+    }
+    return {
+      code: "provider_error",
+      message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`,
+      retryable: isRetryableError("provider_error"),
+      httpStatus: 502,
+      ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+    };
+  }
+  // Pattern-matched fallback for non-APICallError exceptions. Connection
+  // errors get re-routed to provider_unreachable because in this route we
+  // know the unreachable host is the LLM, not the analytics datasource.
+  const errMessage = err instanceof Error ? err.message : String(err);
+  const matched = matchError(err);
+  if (matched) {
+    const isConnectionError = /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(errMessage);
+    const code: ChatErrorCode =
+      matched.code === "internal_error" && isConnectionError
+        ? "provider_unreachable"
+        : matched.code;
+    const httpStatus: 429 | 500 | 502 | 503 | 504 =
+      code === "rate_limited"
+        ? 429
+        : code === "provider_unreachable"
+          ? 503
+          : code === "provider_timeout"
+            ? 504
+            : 500;
+    const userMessage =
+      code === "provider_unreachable"
+        ? "Could not reach the LLM provider. Check your network connection and provider status."
+        : code === "provider_timeout"
+          ? "The request timed out. The LLM provider took too long to respond. " +
+            "Try again, or if using a local model, ensure it has sufficient resources."
+          : matched.message;
+    return {
+      code,
+      message: userMessage,
+      // Pool exhaustion (rate_limited via matchError) is always retryable;
+      // its 5s backoff is what the chat catch block historically advertised.
+      retryable: code === "rate_limited" ? true : isRetryableError(code),
+      ...(code === "rate_limited" && { retryAfterSeconds: 5 }),
+      httpStatus,
+    };
+  }
+  return {
+    code: "internal_error",
+    message: "An unexpected error occurred.",
+    retryable: isRetryableError("internal_error"),
+    httpStatus: 500,
+  };
+}
+
+/**
+ * Serialize a `ChatErrorClassification` into the JSON body the SSE
+ * error frame carries as `errorText`. The shape mirrors the
+ * synchronous error response so the same `parseChatError()` works on
+ * both — the client can't tell whether a failure happened before or
+ * after the first byte.
+ */
+function buildMidStreamErrorFrame(err: unknown, requestId: string): string {
+  const cls = classifyChatError(err);
+  return JSON.stringify({
+    error: cls.code,
+    message: cls.message,
+    retryable: cls.retryable,
+    ...(cls.retryAfterSeconds !== undefined && {
+      retryAfterSeconds: cls.retryAfterSeconds,
+    }),
+    requestId,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Zod schemas — exported for OpenAPI spec generation
@@ -581,6 +767,14 @@ chat.openapi(chatRoute, async (c) => {
   
           // Register stream writer so Python tool can send progress events.
           // The writer is set before merge() triggers tool execution reads.
+          // #1980 — both `toUIMessageStream`'s onError (per-chunk error
+          // events from streamText) and `createUIMessageStream`'s onError
+          // (the merge promise rejecting) serialize a structured
+          // ChatErrorInfo-shaped JSON body so the client can route the
+          // failure through the same `parseChatError()` it uses for
+          // pre-stream errors. Both call sites delegate to the shared
+          // classifier so codes, retryability, and Retry-After deltas
+          // stay aligned.
           const stream = createUIMessageStream({
             execute: ({ writer }) => {
               // Surface plan warning as a data annotation so clients can display it
@@ -588,7 +782,17 @@ chat.openapi(chatRoute, async (c) => {
                 writer.write({ type: "data-plan-warning", data: planWarning });
               }
               setStreamWriter(requestId, writer);
-              writer.merge(agentResult.toUIMessageStream());
+              writer.merge(
+                agentResult.toUIMessageStream({
+                  onError: (error) => {
+                    log.error(
+                      { err: error instanceof Error ? error : new Error(String(error)), requestId },
+                      "Mid-stream error (toUIMessageStream)",
+                    );
+                    return buildMidStreamErrorFrame(error, requestId);
+                  },
+                }),
+              );
             },
             onFinish: () => {
               clearStreamWriter(requestId);
@@ -599,7 +803,7 @@ chat.openapi(chatRoute, async (c) => {
                 { err: error instanceof Error ? error : new Error(String(error)), requestId },
                 "Stream error",
               );
-              return `An error occurred while generating a response (ref: ${requestId.slice(0, 8)}). Try sending your message again.`;
+              return buildMidStreamErrorFrame(error, requestId);
             },
           });
   
@@ -666,188 +870,54 @@ chat.openapi(chatRoute, async (c) => {
         } catch (err) {
           // Re-throw HTTPException (stream response) — handled by global onError
           if (err instanceof HTTPException) throw err;
-  
+
           const errObj = err instanceof Error ? err : new Error(String(err));
-          const message = errObj.message;
-  
-          // --- Structured AI SDK error types (checked first) ---
-  
-          if (GatewayModelNotFoundError.isInstance(err)) {
+          const cls = classifyChatError(err);
+
+          // The pool-exhaustion (rate_limited via matchError) path was a
+          // warn historically — keep it. Everything else is an error.
+          if (cls.code === "rate_limited") {
+            log.warn(
+              { err: errObj, category: cls.code },
+              "Matched error: %s",
+              cls.code,
+            );
+          } else {
             log.error(
-              { err: errObj, category: "provider_model_not_found" },
-              "Gateway model not found",
-            );
-            return c.json(
               {
-                error: "provider_model_not_found",
-                message:
-                  "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format (e.g., anthropic/claude-sonnet-4.6).",
-                retryable: isRetryableError("provider_model_not_found"),
-                requestId,
+                err: errObj,
+                category: cls.code,
+                ...(APICallError.isInstance(err) && { statusCode: err.statusCode }),
               },
-              400,
+              "Chat error: %s",
+              cls.code,
             );
           }
-  
-          if (NoSuchModelError.isInstance(err)) {
-            log.error(
-              { err: errObj, category: "provider_model_not_found" },
-              "Model not found",
-            );
-            return c.json(
-              {
-                error: "provider_model_not_found",
-                message:
-                  "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.",
-                retryable: isRetryableError("provider_model_not_found"),
-                requestId,
-              },
-              400,
-            );
+
+          // The unclassified fallback gets a ref-id message so the operator
+          // can correlate the user's report with server logs.
+          const userMessage =
+            cls.code === "internal_error"
+              ? `An unexpected error occurred. Quote ref ${requestId.slice(0, 8)} when reporting this issue.`
+              : cls.message;
+
+          const body = {
+            error: cls.code,
+            message: userMessage,
+            retryable: cls.retryable,
+            ...(cls.retryAfterSeconds !== undefined && {
+              retryAfterSeconds: cls.retryAfterSeconds,
+            }),
+            requestId,
+          };
+
+          if (cls.retryAfterSeconds !== undefined) {
+            return c.json(body, {
+              status: cls.httpStatus,
+              headers: { "Retry-After": String(cls.retryAfterSeconds) },
+            });
           }
-  
-          if (LoadAPIKeyError.isInstance(err)) {
-            log.error(
-              { err: errObj, category: "provider_auth_error" },
-              "API key not loaded",
-            );
-            return c.json(
-              {
-                error: "provider_auth_error",
-                message:
-                  "LLM provider API key could not be loaded. Check that the required API key environment variable is set.",
-                retryable: isRetryableError("provider_auth_error"),
-                requestId,
-              },
-              503,
-            );
-          }
-  
-          // APICallError carries the HTTP status code from the provider response
-          if (APICallError.isInstance(err)) {
-            const status = err.statusCode;
-  
-            if (status === 401 || status === 403) {
-              log.error(
-                { err: errObj, category: "provider_auth_error", statusCode: status },
-                "Provider auth error",
-              );
-              return c.json(
-                {
-                  error: "provider_auth_error",
-                  message:
-                    "LLM provider authentication failed. Check that your API key is valid and has not expired.",
-                  retryable: isRetryableError("provider_auth_error"),
-                  requestId,
-                },
-                503,
-              );
-            }
-  
-            if (status === 429) {
-              log.error(
-                { err: errObj, category: "provider_rate_limit", statusCode: status },
-                "Provider rate limit",
-              );
-              return c.json(
-                {
-                  error: "provider_rate_limit",
-                  message:
-                    "LLM provider rate limit reached. Wait a moment and try again.",
-                  retryable: isRetryableError("provider_rate_limit"),
-                  requestId,
-                },
-                503,
-              );
-            }
-  
-            if (status === 408 || /timeout/i.test(message)) {
-              log.error(
-                { err: errObj, category: "provider_timeout", statusCode: status },
-                "Request timed out",
-              );
-              return c.json(
-                {
-                  error: "provider_timeout",
-                  message:
-                    "The request timed out. The LLM provider took too long to respond. " +
-                    "Try again, or if using a local model, ensure it has sufficient resources.",
-                  retryable: isRetryableError("provider_timeout"),
-                  requestId,
-                },
-                504,
-              );
-            }
-  
-            // Catch-all for any other APICallError status codes (5xx, etc.)
-            log.error(
-              { err: errObj, category: "provider_error", statusCode: status },
-              "Provider error",
-            );
-            return c.json(
-              {
-                error: "provider_error",
-                message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`,
-                retryable: isRetryableError("provider_error"),
-                requestId,
-              },
-              502,
-            );
-          }
-  
-          // --- Pattern-matched errors (non-APICallError exceptions) ---
-          // In the chat route, errors from runAgent are typically provider-related,
-          // so we override matchError's generic messages with provider-appropriate ones.
-  
-          const matched = matchError(err);
-          if (matched) {
-            const isConnectionError = /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(message);
-            const code = (matched.code === "internal_error" && isConnectionError)
-              ? "provider_unreachable" as const
-              : matched.code === "provider_unreachable" ? "provider_unreachable" as const
-              : matched.code;
-            const httpStatus = code === "rate_limited" ? 429
-              : code === "provider_unreachable" ? 503
-              : code === "provider_timeout" ? 504
-              : 500;
-            // Use provider-appropriate messages instead of database-oriented matchError defaults
-            const userMessage = code === "provider_unreachable"
-              ? "Could not reach the LLM provider. Check your network connection and provider status."
-              : code === "provider_timeout"
-                ? "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources."
-                : matched.message;
-            if (code === "rate_limited") {
-              // Pool exhaustion is transient — warn, don't error
-              log.warn({ err: errObj, category: code }, "Matched error: %s", code);
-              return c.json(
-                { error: code, message: userMessage, retryable: true, retryAfterSeconds: 5, requestId },
-                { status: 429, headers: { "Retry-After": "5" } },
-              );
-            }
-            log.error({ err: errObj, category: code }, "Matched error: %s", code);
-            return c.json(
-              { error: code, message: userMessage, retryable: isRetryableError(code), requestId },
-              httpStatus as 429 | 500 | 503 | 504,
-            );
-          }
-  
-          // Fallback — safe 500 with requestId for log correlation.
-          // Full error details (stack trace, original message) are serialized
-          // server-side via pino's err serializer; only a generic message +
-          // request ID reach the client.
-          log.error(
-            { err: errObj, category: "internal_error" },
-            "Unclassified error",
-          );
-          return c.json(
-            {
-              error: "internal_error",
-              message: `An unexpected error occurred. Quote ref ${requestId.slice(0, 8)} when reporting this issue.`,
-              retryable: isRetryableError("internal_error"),
-              requestId,
-            },
-            500,
-          );
+          return c.json(body, cls.httpStatus);
         }
       },
     );

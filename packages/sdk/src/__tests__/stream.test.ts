@@ -350,6 +350,47 @@ describe("streamQuery — error and finish events", () => {
     expect(events[0]).toEqual({ type: "error", message: "Unknown error" });
   });
 
+  // #1980 — mid-stream errors travel as a `ChatErrorInfo`-shaped JSON body
+  // inside `errorText`. The SDK exposes `code` / `retryable` /
+  // `retryAfterSeconds` / `requestId` so callers can branch without
+  // regex-scraping the message.
+  test("extracts structured ChatErrorInfo fields from JSON errorText", async () => {
+    installFetchMock(sseResponse([
+      {
+        type: "error",
+        errorText: JSON.stringify({
+          error: "provider_rate_limit",
+          message: "LLM provider rate limit reached. Wait a moment and try again.",
+          retryable: true,
+          retryAfterSeconds: 30,
+          requestId: "11111111-2222-3333-4444-555555555555",
+        }),
+      },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    const evt = events[0] as Extract<(typeof events)[number], { type: "error" }>;
+    expect(evt.type).toBe("error");
+    expect(evt.code).toBe("provider_rate_limit");
+    expect(evt.retryable).toBe(true);
+    expect(evt.retryAfterSeconds).toBe(30);
+    expect(evt.requestId).toBe("11111111-2222-3333-4444-555555555555");
+    expect(evt.message).toContain("rate limit");
+  });
+
+  test("plain-text errorText still surfaces as message only (back-compat)", async () => {
+    installFetchMock(sseResponse([
+      { type: "error", errorText: "An error occurred while generating a response (ref: 12345678). Try sending your message again." },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    const evt = events[0] as Extract<(typeof events)[number], { type: "error" }>;
+    expect(evt.type).toBe("error");
+    expect(evt.message).toContain("An error occurred");
+    expect(evt.code).toBeUndefined();
+    expect(evt.retryable).toBeUndefined();
+  });
+
   test("yields finish event with default reason", async () => {
     installFetchMock(sseResponse([
       { type: "finish" },

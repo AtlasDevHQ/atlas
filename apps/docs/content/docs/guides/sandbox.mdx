@@ -135,7 +135,7 @@ When no explicit override is set, Atlas auto-detects the best available backend 
 
 1. Plugin backends (always highest priority)
 2. Vercel Sandbox (when running on Vercel)
-3. nsjail explicit (when `ATLAS_SANDBOX=nsjail` is set)
+3. nsjail explicit (when `ATLAS_SANDBOX=nsjail` is set) — **hard fail**: if nsjail init fails the API does not boot. Remove `ATLAS_SANDBOX` to fall through to auto-detect.
 4. Sidecar (when `ATLAS_SANDBOX_URL` is set)
 5. nsjail auto-detect (when nsjail binary is found on PATH)
 6. just-bash (development fallback)

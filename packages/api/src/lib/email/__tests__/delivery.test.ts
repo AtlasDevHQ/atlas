@@ -23,7 +23,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { sendEmail } = await import("../delivery");
+const { sendEmail, isAuthEmailDeliveryConfigured } = await import("../delivery");
 
 // ---------------------------------------------------------------------------
 // Env snapshot + fetch mock
@@ -164,5 +164,39 @@ describe("sendEmail — platform email provider", () => {
     const result = await sendEmail({ to: "test@example.com", subject: "Test", html: "<p>Hello</p>" });
     expect(result.success).toBe(false);
     expect(result.provider).toBe("log");
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// isAuthEmailDeliveryConfigured — UI hint for /login forgot-password link
+// ---------------------------------------------------------------------------
+
+describe("isAuthEmailDeliveryConfigured", () => {
+  it("returns false when nothing is configured", () => {
+    expect(isAuthEmailDeliveryConfigured()).toBe(false);
+  });
+
+  it("returns true when RESEND_API_KEY is set", () => {
+    process.env.RESEND_API_KEY = "re_test_key";
+    expect(isAuthEmailDeliveryConfigured()).toBe(true);
+  });
+
+  it("returns true when ATLAS_SMTP_URL is set", () => {
+    process.env.ATLAS_SMTP_URL = "http://localhost:2525";
+    expect(isAuthEmailDeliveryConfigured()).toBe(true);
+  });
+
+  it("returns true when platform settings configure a provider with a key", () => {
+    settingsStore["ATLAS_EMAIL_PROVIDER"] = "resend";
+    settingsStore["RESEND_API_KEY"] = "re_platform_key";
+    expect(isAuthEmailDeliveryConfigured()).toBe(true);
+  });
+
+  it("returns false when ATLAS_EMAIL_PROVIDER is set but its API key is missing", () => {
+    // Misconfiguration must not surface a forgot-password link that
+    // sends email into a black hole.
+    settingsStore["ATLAS_EMAIL_PROVIDER"] = "resend";
+    expect(isAuthEmailDeliveryConfigured()).toBe(false);
   });
 });

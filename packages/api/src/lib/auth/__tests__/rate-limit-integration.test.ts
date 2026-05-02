@@ -202,11 +202,63 @@ describe("config wiring snapshot — buildAuthOptions", () => {
   it("wires `emailAndPassword` to buildEmailAndPasswordConfig (F-05 autoSignIn invariant)", () => {
     const options = buildAuthOptions(makeDeps());
     const requireEmailVerification = resolveRequireEmailVerification(makeDeps().env);
-    expect(options.emailAndPassword).toEqual(buildEmailAndPasswordConfig(requireEmailVerification));
+    // The wiring layer adds an inline `sendResetPassword` that depends on
+    // private module references (`_sendPasswordResetEmail`), so we can't
+    // call `buildEmailAndPasswordConfig` here and `toEqual` the whole
+    // shape — the function reference will differ. Pin every other field
+    // individually instead, plus assert the callback exists.
+    const expected = buildEmailAndPasswordConfig({
+      requireEmailVerification,
+      sendResetPassword: async () => {},
+    });
+    expect(options.emailAndPassword?.enabled).toBe(expected.enabled);
+    expect(options.emailAndPassword?.requireEmailVerification).toBe(expected.requireEmailVerification);
     // With requireEmailVerification=true, autoSignIn MUST be false.
     // `buildEmailAndPasswordConfig` pins this; the options wiring must
     // not override it with a hand-rolled object that flips autoSignIn on.
     expect(options.emailAndPassword?.autoSignIn).toBe(false);
+    expect(options.emailAndPassword?.revokeSessionsOnPasswordReset).toBe(true);
+    expect(options.emailAndPassword?.resetPasswordTokenExpiresIn).toBe(60 * 60);
+    expect(typeof options.emailAndPassword?.sendResetPassword).toBe("function");
+  });
+
+  it("wires the outer `.catch()` on sendResetPassword so rejections don't propagate", async () => {
+    // Symmetric with the sendVerificationEmail wiring test below — pins
+    // the same belt-and-suspenders contract for the password-reset
+    // dispatch. An unhandled rejection here would either spam stderr
+    // with no correlation or, with --unhandled-rejections=strict,
+    // crash the process mid-reset and turn the enumeration-safe 200
+    // response into a 500 side channel.
+    const sentinel = new Error("boom — simulated reset dispatcher crash");
+    const options = buildAuthOptions(
+      makeDeps({
+        testOverrides: {
+          sendPasswordResetEmail: async () => { throw sentinel; },
+        },
+      }),
+    );
+
+    const callback = options.emailAndPassword?.sendResetPassword;
+    expect(typeof callback).toBe("function");
+
+    let unhandled: unknown = null;
+    const handler = (reason: unknown) => {
+      if (reason === sentinel) unhandled = reason;
+    };
+    process.on("unhandledRejection", handler);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
+      await (callback as any)({
+        user: { email: "reset@example.com" },
+        url: "https://example.com/reset?token=x",
+        token: "x",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      process.off("unhandledRejection", handler);
+    }
+
+    expect(unhandled).toBeNull();
   });
 
   it("wires the outer `.catch()` on sendVerificationEmail so rejections don't propagate", async () => {

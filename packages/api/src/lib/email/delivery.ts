@@ -53,6 +53,28 @@ function isEmailProvider(s: string): s is EmailProvider {
 }
 
 /**
+ * Whether the deployment can deliver auth emails (password reset, etc.)
+ * without per-org config. Used by the public `/api/v1/onboarding/password-reset-status`
+ * endpoint as a UI hint — the auth endpoints are always live, but this
+ * decides whether the /login page renders a "Forgot password?" link.
+ *
+ * Returns true when ANY platform-level transport is configured:
+ *   - Platform settings (`ATLAS_EMAIL_PROVIDER` + the matching key)
+ *   - `ATLAS_SMTP_URL` webhook bridge
+ *   - `RESEND_API_KEY` env-var fallback
+ *
+ * Per-org `email_installations` overrides are not consulted here — the
+ * password-reset flow runs without a session and has no org scope to
+ * key on, so an org-only configuration cannot satisfy the request.
+ */
+export function isAuthEmailDeliveryConfigured(): boolean {
+  if (getPlatformEmailConfig() !== null) return true;
+  if (process.env.ATLAS_SMTP_URL) return true;
+  if (process.env.RESEND_API_KEY) return true;
+  return false;
+}
+
+/**
  * Get the email transport config for an org from the internal database.
  * Returns null if no DB config exists, if the internal DB is not available,
  * or on any error during lookup (errors are logged at warn level to allow

@@ -150,7 +150,11 @@ describe("resolveAuthRateLimitConfig", () => {
 
     expect(config.customRules["/sign-in/email"]).toEqual({ window: 60, max: 10 });
     expect(config.customRules["/sign-up/email"]).toEqual({ window: 60, max: 5 });
-    expect(config.customRules["/forget-password"]).toEqual({ window: 60, max: 5 });
+    // Better Auth 1.4+ renamed /forget-password → /request-password-reset.
+    // The rule key is the path the limiter sees; an outdated key would
+    // silently de-rate-limit the password-reset request endpoint and
+    // reopen a flooding surface.
+    expect(config.customRules["/request-password-reset"]).toEqual({ window: 60, max: 5 });
     expect(config.customRules["/reset-password"]).toEqual({ window: 60, max: 5 });
     expect(config.customRules["/send-verification-email"]).toEqual({ window: 60, max: 5 });
     expect(config.customRules["/verify-email"]).toEqual({ window: 60, max: 10 });
@@ -163,8 +167,13 @@ describe("resolveAuthRateLimitConfig", () => {
 });
 
 describe("buildEmailAndPasswordConfig", () => {
+  const noopSendReset = async () => {};
+
   it("pins autoSignIn OFF whenever requireEmailVerification is ON (F-05 invariant)", () => {
-    const config = buildEmailAndPasswordConfig(true);
+    const config = buildEmailAndPasswordConfig({
+      requireEmailVerification: true,
+      sendResetPassword: noopSendReset,
+    });
     expect(config.enabled).toBe(true);
     expect(config.requireEmailVerification).toBe(true);
     // If this flips to true the signup flow becomes a login oracle —
@@ -174,10 +183,53 @@ describe("buildEmailAndPasswordConfig", () => {
   });
 
   it("allows autoSignIn when verification is disabled (self-hosted opt-out)", () => {
-    const config = buildEmailAndPasswordConfig(false);
+    const config = buildEmailAndPasswordConfig({
+      requireEmailVerification: false,
+      sendResetPassword: noopSendReset,
+    });
     expect(config.enabled).toBe(true);
     expect(config.requireEmailVerification).toBe(false);
     expect(config.autoSignIn).toBe(true);
+  });
+
+  it("wires sendResetPassword through unchanged so Better Auth invokes our dispatcher", () => {
+    // Without this, Better Auth's request-password-reset endpoint 400s
+    // with `RESET_PASSWORD_DISABLED` and the /forgot-password UI has no
+    // recovery path. Asserting reference identity (not just truthiness)
+    // catches a future refactor that wraps the function in a pass-through
+    // that drops thrown errors silently.
+    const sendResetPassword = async () => {};
+    const config = buildEmailAndPasswordConfig({
+      requireEmailVerification: true,
+      sendResetPassword,
+    });
+    expect(config.sendResetPassword).toBe(sendResetPassword);
+  });
+
+  it("revokes other sessions on password reset (recovery is the wrong moment to keep stale sessions live)", () => {
+    const config = buildEmailAndPasswordConfig({
+      requireEmailVerification: true,
+      sendResetPassword: noopSendReset,
+    });
+    // Better Auth defaults this to false; our build pins true so a reset
+    // initiated because "I think someone has my password" actually kicks
+    // the attacker out of any other live session for that user.
+    expect(config.revokeSessionsOnPasswordReset).toBe(true);
+  });
+
+  it("pins resetPasswordTokenExpiresIn at one hour and lets callers tighten it", () => {
+    const config = buildEmailAndPasswordConfig({
+      requireEmailVerification: true,
+      sendResetPassword: noopSendReset,
+    });
+    expect(config.resetPasswordTokenExpiresIn).toBe(60 * 60);
+
+    const tighter = buildEmailAndPasswordConfig({
+      requireEmailVerification: true,
+      sendResetPassword: noopSendReset,
+      resetPasswordTokenExpiresIn: 60 * 15,
+    });
+    expect(tighter.resetPasswordTokenExpiresIn).toBe(60 * 15);
   });
 });
 

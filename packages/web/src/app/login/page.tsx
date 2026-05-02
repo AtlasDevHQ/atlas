@@ -56,6 +56,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [socialLoading, setSocialLoading] = useState<SocialProvider | null>(null);
   const [socialProviders, setSocialProviders] = useState<readonly SocialProvider[]>([]);
+  const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -78,6 +79,31 @@ export default function LoginPage() {
         if (err instanceof Error && err.name === "AbortError") return;
         console.warn(
           "Social providers unavailable:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    return () => controller.abort();
+  }, []);
+
+  // Whether the deployment has an email provider wired. Drives the
+  // "Forgot password?" link below — we don't surface a recovery
+  // affordance that would email into a black hole on a self-hosted
+  // instance with no SMTP. The endpoint is public; deferred fetch
+  // keeps the form usable if the API is briefly unreachable.
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${getApiBase()}/api/v1/onboarding/password-reset-status`, {
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`))))
+      .then((data: { enabled?: boolean }) => {
+        if (controller.signal.aborted) return;
+        setPasswordResetEnabled(Boolean(data.enabled));
+      })
+      .catch((err: unknown) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        console.debug(
+          "Password reset status unavailable:",
           err instanceof Error ? err.message : String(err),
         );
       });
@@ -207,7 +233,17 @@ export default function LoginPage() {
               </p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="login-password">Password</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="login-password">Password</Label>
+                {passwordResetEnabled && (
+                  <a
+                    href="/forgot-password"
+                    className="text-xs font-medium text-muted-foreground transition-colors hover:text-primary hover:underline underline-offset-4"
+                  >
+                    Forgot password?
+                  </a>
+                )}
+              </div>
               <Input
                 id="login-password"
                 type="password"

@@ -46,6 +46,7 @@ Retrying these will not help — the request or configuration must be changed.
 | `invalid_request` | 400 | Invalid request | Malformed JSON body or missing required fields | Check the request body format. See [API Reference](/reference/api) |
 | `validation_error` | 422 | Request validation failed | Request body doesn't match the expected schema (wrong types, missing fields) | Check the `details` field for specific field errors |
 | `not_found` | 404 | Resource not found | Conversation, entity, or other resource doesn't exist or isn't owned by the caller | Verify the resource ID. The resource may have been deleted |
+| `conversation_budget_exceeded` | 429 | Conversation has reached its step ceiling | Conversation hit the per-conversation step cap (`ATLAS_CONVERSATION_STEP_CAP`, default 500) — F-77 atomic budget | Start a new conversation. The current thread cannot be continued |
 | `plan_limit_exceeded` | 429 | Plan limit exceeded | Workspace has exceeded its plan's query or token limit (including the 10% grace buffer) | Upgrade your plan or wait until the next billing period |
 | `provider_model_not_found` | 400 | AI model not found | The model specified in `ATLAS_MODEL` doesn't exist at the configured provider | Check `ATLAS_MODEL` and `ATLAS_PROVIDER` values. See [Environment Variables](/reference/environment-variables) |
 | `provider_auth_error` | 503 | AI provider authentication failed | Invalid or expired LLM provider API key (e.g., `ANTHROPIC_API_KEY`) | Verify your provider API key. Regenerate it if expired |

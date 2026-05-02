@@ -746,6 +746,7 @@ try {
 | `validation_error` | 422 | No | Request validation failed (see `details` for field errors) |
 | `not_found` | 404 | No | Resource not found |
 | `not_available` | 404 | No | Feature not available (e.g., no internal DB) |
+| `conversation_budget_exceeded` | 429 | No | Conversation hit the per-thread step ceiling — start a new one |
 | `provider_model_not_found` | 400 | No | Configured AI model does not exist |
 | `provider_auth_error` | 503 | No | LLM provider auth failed |
 | `provider_rate_limit` | 503 | Yes | LLM provider rate limited |

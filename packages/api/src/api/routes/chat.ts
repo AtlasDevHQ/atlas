@@ -15,7 +15,7 @@ import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError, isRetryableError, isChatErrorCode, type ChatErrorCode } from "@useatlas/types";
+import { matchError, isRetryableError, isChatErrorCode } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
@@ -82,61 +82,119 @@ const log = createLogger("chat");
 
 /**
  * Provider Retry-After response headers can be arbitrarily large in the RFC.
- * We refuse to make a user wait more than 5 minutes — beyond that the
- * UI should treat the call as failed and ask them to start over.
+ * 5 minutes is the longest delta the chat surface honours — beyond that the
+ * UI should treat the call as failed and ask the user to start over.
  */
 const PROVIDER_RETRY_AFTER_MAX_SECONDS = 300;
+
+const retryAfterLog = createLogger("chat-retry-after");
 
 /**
  * Parse a provider's `Retry-After` response header into seconds.
  *
  * Returns `undefined` when the header is missing, non-numeric, negative,
- * or in the HTTP-date form (RFC 7231 also permits a date but providers
- * almost never emit it; supporting it would require a clock-drift-aware
- * parser). Otherwise returns a non-negative integer clamped to
- * `PROVIDER_RETRY_AFTER_MAX_SECONDS`.
+ * or in the HTTP-date form. RFC 7231 also permits an HTTP-date, but
+ * providers almost never emit it and supporting it would require a
+ * clock-drift-aware parser. Otherwise returns a non-negative integer
+ * clamped to `PROVIDER_RETRY_AFTER_MAX_SECONDS`.
  */
 function parseProviderRetryAfter(
   responseHeaders: Record<string, string> | undefined,
+  requestId?: string,
 ): number | undefined {
   if (!responseHeaders) return undefined;
-  // Headers are typically lowercase but be defensive.
+  // AI SDK normalizes header keys to lowercase, but providers/proxies
+  // sometimes preserve mixed case — probe both.
   const raw = responseHeaders["retry-after"] ?? responseHeaders["Retry-After"];
   if (raw === undefined) return undefined;
   const n = Number(raw.trim());
-  if (!Number.isFinite(n) || n < 0) return undefined;
+  if (!Number.isFinite(n) || n < 0) {
+    // Surface the parse miss so operators see new providers / proxies
+    // emitting unexpected formats (HTTP-date, comments, etc.). The
+    // underlying APICallError is still classified and logged at the
+    // call site — this is operator visibility, not user-facing.
+    retryAfterLog.debug(
+      { raw, ...(requestId !== undefined && { requestId }) },
+      "Provider Retry-After could not be parsed as delta-seconds",
+    );
+    return undefined;
+  }
   return Math.min(Math.floor(n), PROVIDER_RETRY_AFTER_MAX_SECONDS);
 }
 
+/**
+ * Codes the chat-route classifier emits.
+ *
+ * Narrower than the full `ChatErrorCode` union because middleware-produced
+ * codes (`auth_error`, `validation_error`, `not_found`, `forbidden`, plan /
+ * billing / workspace gates, etc.) are emitted *before* the classifier runs
+ * and never travel through it. Restricting the emit set lets
+ * `CLASSIFIER_STATUS_MAP` express a 1:1 code↔httpStatus invariant — adding a
+ * branch to `classifyChatError` that returns a code outside this union is a
+ * compile error.
+ */
+type ClassifierCode =
+  | "provider_model_not_found"
+  | "provider_auth_error"
+  | "provider_rate_limit"
+  | "provider_timeout"
+  | "provider_unreachable"
+  | "provider_error"
+  | "rate_limited"
+  | "internal_error";
+
+/**
+ * The 1:1 code↔httpStatus contract for codes emitted by the classifier.
+ *
+ * Other status codes (401, 403, 404, 422) appear in the chat route's
+ * OpenAPI declaration but are produced upstream of the classifier (auth
+ * middleware, validation hook, conversation-ownership check) — they are
+ * intentionally absent here.
+ */
+const CLASSIFIER_STATUS_MAP = {
+  provider_model_not_found: 400,
+  provider_auth_error: 503,
+  provider_rate_limit: 503,
+  provider_timeout: 504,
+  provider_unreachable: 503,
+  provider_error: 502,
+  rate_limited: 429,
+  internal_error: 500,
+} as const satisfies Record<ClassifierCode, 400 | 429 | 500 | 502 | 503 | 504>;
+
+type ClassifierHttpStatus = (typeof CLASSIFIER_STATUS_MAP)[ClassifierCode];
+
+/**
+ * Result of classifying an agent-loop error.
+ *
+ * Stores only `code`, `message`, and an optional `retryAfterSeconds`. The
+ * derived fields (`httpStatus`, `retryable`) are looked up at call sites
+ * via `CLASSIFIER_STATUS_MAP` and `isRetryableError` so there is exactly
+ * one source of truth for each invariant.
+ */
 type ChatErrorClassification = {
-  code: ChatErrorCode;
-  message: string;
-  retryable: boolean;
-  retryAfterSeconds?: number;
-  httpStatus: 400 | 429 | 500 | 502 | 503 | 504;
+  readonly code: ClassifierCode;
+  readonly message: string;
+  readonly retryAfterSeconds?: number;
 };
 
 /**
- * Classify a thrown or streamed agent-loop error into a
- * `ChatErrorInfo`-shaped result.
+ * Classify a thrown or streamed agent-loop error.
  *
- * Single source of truth for the chat surface — used by both the
- * synchronous catch block (which converts the result into the JSON
- * HTTP response) and the SSE `onError` path (which serializes the
- * result into the AI SDK error chunk's `errorText`). Keeping one
- * classifier guarantees pre-stream and mid-stream errors carry the
- * same `code` / `retryable` / `retryAfterSeconds` shape, so a client
- * can't tell — and shouldn't have to know — whether the failure
- * happened before or after the first byte.
+ * Single source of truth for the chat surface — invoked by both the
+ * synchronous catch block (which builds the JSON HTTP response) and the
+ * SSE `onError` path (which serializes the result into the AI SDK error
+ * chunk's `errorText`). One classifier guarantees pre-stream and
+ * mid-stream errors carry the same `code` / `retryAfterSeconds`, so a
+ * client can't tell whether a failure happened before or after the first
+ * byte and shouldn't have to.
  */
-function classifyChatError(err: unknown): ChatErrorClassification {
+function classifyChatError(err: unknown, requestId?: string): ChatErrorClassification {
   if (GatewayModelNotFoundError.isInstance(err)) {
     return {
       code: "provider_model_not_found",
       message:
         "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format (e.g., anthropic/claude-sonnet-4.6).",
-      retryable: isRetryableError("provider_model_not_found"),
-      httpStatus: 400,
     };
   }
   if (NoSuchModelError.isInstance(err)) {
@@ -144,8 +202,6 @@ function classifyChatError(err: unknown): ChatErrorClassification {
       code: "provider_model_not_found",
       message:
         "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.",
-      retryable: isRetryableError("provider_model_not_found"),
-      httpStatus: 400,
     };
   }
   if (LoadAPIKeyError.isInstance(err)) {
@@ -153,20 +209,16 @@ function classifyChatError(err: unknown): ChatErrorClassification {
       code: "provider_auth_error",
       message:
         "LLM provider API key could not be loaded. Check that the required API key environment variable is set.",
-      retryable: isRetryableError("provider_auth_error"),
-      httpStatus: 503,
     };
   }
   if (APICallError.isInstance(err)) {
     const status = err.statusCode;
-    const retryAfterSeconds = parseProviderRetryAfter(err.responseHeaders);
+    const retryAfterSeconds = parseProviderRetryAfter(err.responseHeaders, requestId);
     if (status === 401 || status === 403) {
       return {
         code: "provider_auth_error",
         message:
           "LLM provider authentication failed. Check that your API key is valid and has not expired.",
-        retryable: isRetryableError("provider_auth_error"),
-        httpStatus: 503,
         ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
       };
     }
@@ -174,8 +226,6 @@ function classifyChatError(err: unknown): ChatErrorClassification {
       return {
         code: "provider_rate_limit",
         message: "LLM provider rate limit reached. Wait a moment and try again.",
-        retryable: isRetryableError("provider_rate_limit"),
-        httpStatus: 503,
         ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
       };
     }
@@ -185,76 +235,83 @@ function classifyChatError(err: unknown): ChatErrorClassification {
         message:
           "The request timed out. The LLM provider took too long to respond. " +
           "Try again, or if using a local model, ensure it has sufficient resources.",
-        retryable: isRetryableError("provider_timeout"),
-        httpStatus: 504,
         ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
       };
     }
     return {
       code: "provider_error",
       message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`,
-      retryable: isRetryableError("provider_error"),
-      httpStatus: 502,
       ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
     };
   }
-  // Pattern-matched fallback for non-APICallError exceptions. Connection
-  // errors get re-routed to provider_unreachable because in this route we
-  // know the unreachable host is the LLM, not the analytics datasource.
+  // Pattern-matched fallback for non-APICallError exceptions. In this route
+  // we know an unreachable host is the LLM, not the analytics datasource —
+  // re-route the generic `internal_error` matchError default accordingly.
   const errMessage = err instanceof Error ? err.message : String(err);
   const matched = matchError(err);
   if (matched) {
     const isConnectionError = /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(errMessage);
-    const code: ChatErrorCode =
-      matched.code === "internal_error" && isConnectionError
-        ? "provider_unreachable"
-        : matched.code;
-    const httpStatus: 429 | 500 | 502 | 503 | 504 =
-      code === "rate_limited"
-        ? 429
-        : code === "provider_unreachable"
-          ? 503
-          : code === "provider_timeout"
-            ? 504
-            : 500;
-    const userMessage =
-      code === "provider_unreachable"
-        ? "Could not reach the LLM provider. Check your network connection and provider status."
-        : code === "provider_timeout"
-          ? "The request timed out. The LLM provider took too long to respond. " +
-            "Try again, or if using a local model, ensure it has sufficient resources."
-          : matched.message;
-    return {
-      code,
-      message: userMessage,
-      // Pool exhaustion (rate_limited via matchError) is always retryable;
-      // its 5s backoff is what the chat catch block historically advertised.
-      retryable: code === "rate_limited" ? true : isRetryableError(code),
-      ...(code === "rate_limited" && { retryAfterSeconds: 5 }),
-      httpStatus,
-    };
+    if (matched.code === "internal_error" && isConnectionError) {
+      return {
+        code: "provider_unreachable",
+        message:
+          "Could not reach the LLM provider. Check your network connection and provider status.",
+      };
+    }
+    if (matched.code === "provider_unreachable") {
+      return {
+        code: "provider_unreachable",
+        message:
+          "Could not reach the LLM provider. Check your network connection and provider status.",
+      };
+    }
+    if (matched.code === "provider_timeout") {
+      return {
+        code: "provider_timeout",
+        message:
+          "The request timed out. The LLM provider took too long to respond. " +
+          "Try again, or if using a local model, ensure it has sufficient resources.",
+      };
+    }
+    if (matched.code === "rate_limited") {
+      // Pool exhaustion is transient — the connection registry recovers
+      // within seconds. The 5s suggestion mirrors the underlying
+      // backoff in the pg pool code; surfacing it lets the UI show a
+      // concrete delta instead of a vague "try again later".
+      return {
+        code: "rate_limited",
+        message: matched.message,
+        retryAfterSeconds: 5,
+      };
+    }
+    // Any other matched code (provider_*, internal_error) falls through
+    // to the unclassified path with the generic matched message —
+    // currently no other matcher exists, but a future entry would.
   }
   return {
     code: "internal_error",
     message: "An unexpected error occurred.",
-    retryable: isRetryableError("internal_error"),
-    httpStatus: 500,
   };
+}
+
+/** Look up the HTTP status for a code emitted by `classifyChatError`. */
+function statusForClassifierCode(code: ClassifierCode): ClassifierHttpStatus {
+  return CLASSIFIER_STATUS_MAP[code];
 }
 
 /**
  * Serialize a `ChatErrorClassification` into the JSON body the SSE
- * error frame carries as `errorText`. The shape mirrors the
- * synchronous error response so the same `parseChatError()` works on
- * both — the client can't tell whether a failure happened before or
- * after the first byte.
+ * error frame carries as `errorText`. Same shape as the synchronous
+ * error response so a single `parseChatError()` works for both
+ * transports — clients can't tell whether a failure happened before
+ * or after the first byte.
  */
 function buildMidStreamErrorFrame(err: unknown, requestId: string): string {
-  const cls = classifyChatError(err);
+  const cls = classifyChatError(err, requestId);
   return JSON.stringify({
     error: cls.code,
     message: cls.message,
-    retryable: cls.retryable,
+    retryable: isRetryableError(cls.code),
     ...(cls.retryAfterSeconds !== undefined && {
       retryAfterSeconds: cls.retryAfterSeconds,
     }),
@@ -872,10 +929,13 @@ chat.openapi(chatRoute, async (c) => {
           if (err instanceof HTTPException) throw err;
 
           const errObj = err instanceof Error ? err : new Error(String(err));
-          const cls = classifyChatError(err);
+          const cls = classifyChatError(err, requestId);
+          const httpStatus = statusForClassifierCode(cls.code);
+          const retryable = isRetryableError(cls.code);
 
-          // The pool-exhaustion (rate_limited via matchError) path was a
-          // warn historically — keep it. Everything else is an error.
+          // Pool exhaustion is transient (the connection registry recycles
+          // within seconds), so log at warn — it's not operator-actionable.
+          // Everything else is a genuine error.
           if (cls.code === "rate_limited") {
             log.warn(
               { err: errObj, category: cls.code },
@@ -904,7 +964,7 @@ chat.openapi(chatRoute, async (c) => {
           const body = {
             error: cls.code,
             message: userMessage,
-            retryable: cls.retryable,
+            retryable,
             ...(cls.retryAfterSeconds !== undefined && {
               retryAfterSeconds: cls.retryAfterSeconds,
             }),
@@ -913,11 +973,11 @@ chat.openapi(chatRoute, async (c) => {
 
           if (cls.retryAfterSeconds !== undefined) {
             return c.json(body, {
-              status: cls.httpStatus,
+              status: httpStatus,
               headers: { "Retry-After": String(cls.retryAfterSeconds) },
             });
           }
-          return c.json(body, cls.httpStatus);
+          return c.json(body, httpStatus);
         }
       },
     );

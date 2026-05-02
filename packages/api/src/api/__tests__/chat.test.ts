@@ -14,7 +14,8 @@ import {
   mock,
   type Mock,
 } from "bun:test";
-import { APICallError } from "ai";
+import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
+import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 
 // --- Mocks ---
@@ -716,12 +717,12 @@ describe("POST /api/v1/chat", () => {
   // ---------------------------------------------------------------------
   // #1980 — provider Retry-After surfacing
   //
-  // The `APICallError.responseHeaders["retry-after"]` value MUST round-trip
-  // to both `retryAfterSeconds` in the JSON body and the `Retry-After` HTTP
-  // response header. Anthropic / OpenAI 503/429 responses carry this header
-  // and we previously dropped it, leaving clients to invent their own
-  // backoff. Clamp at 300s (RFC 7231 allows arbitrarily large deltas; we
-  // refuse to make users wait longer than 5 minutes).
+  // The chat route forwards `APICallError.responseHeaders["retry-after"]`
+  // to both `retryAfterSeconds` in the JSON body and the `Retry-After`
+  // HTTP response header so clients don't invent their own backoff.
+  // RFC 7231 permits arbitrarily large deltas; the route clamps at 300s
+  // because longer waits should be surfaced as a hard failure rather
+  // than a UI countdown.
   // ---------------------------------------------------------------------
 
   describe("#1980 — provider Retry-After header", () => {
@@ -855,14 +856,12 @@ describe("POST /api/v1/chat", () => {
   // ---------------------------------------------------------------------
   // #1980 — mid-stream structured error frames
   //
-  // Once the SSE connection is open, errors used to surface as opaque
-  // "ref XXXXXXXX" text. We now serialize a `ChatErrorInfo`-shaped JSON
-  // body into the AI SDK error chunk's `errorText` so the client can
-  // round-trip it through `parseChatError()` (which already does
-  // `JSON.parse(error.message)`). The shape MUST match the pre-stream
-  // synchronous body — code, message, retryable, requestId, plus
-  // optional retryAfterSeconds — so a client can't tell whether the
-  // failure happened before or after the first byte.
+  // Once the SSE connection is open, errors travel through the AI SDK
+  // error chunk's `errorText` as a `ChatErrorInfo`-shaped JSON body —
+  // the same `{ error, message, retryable, retryAfterSeconds?, requestId }`
+  // the synchronous response uses. The shape pins parity so a client
+  // can `JSON.parse(errorText)` and reuse `parseChatError()` regardless
+  // of when the failure happened.
   // ---------------------------------------------------------------------
 
   describe("#1980 — mid-stream structured error frames", () => {
@@ -992,6 +991,204 @@ describe("POST /api/v1/chat", () => {
       expect(frame).not.toBeNull();
       expect(frame!.error).toBe("internal_error");
       expect(typeof frame!.requestId).toBe("string");
+    });
+
+    // Two onError hooks feed the same classifier:
+    //   - `toUIMessageStream({ onError })` runs for per-chunk error events
+    //     emitted by `streamText` (the agent loop).
+    //   - `createUIMessageStream({ onError })` runs when the merge promise
+    //     rejects (the inner stream itself errors).
+    // The earlier mid-stream tests exercise the merge-rejection path. This
+    // one routes through the per-chunk hook by yielding a `type: "error"`
+    // chunk so a refactor that breaks one hook can't slip through behind
+    // the other still working.
+    it("routes per-chunk error chunks through the same classifier", async () => {
+      mockRunAgent.mockResolvedValueOnce({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: (
+          opts?: { onError?: (error: unknown) => string },
+        ) =>
+          new ReadableStream({
+            start(c) {
+              const errorText = opts?.onError
+                ? opts.onError(
+                    new APICallError({
+                      message: "rate limited per-chunk",
+                      url: "https://api.example.com/v1/chat",
+                      requestBodyValues: {},
+                      statusCode: 429,
+                      responseHeaders: { "retry-after": "12" },
+                    }),
+                  )
+                : "fallback";
+              c.enqueue({ type: "error", errorText });
+              c.close();
+            },
+          }),
+        text: Promise.resolve(""),
+        steps: Promise.resolve([]),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      const frame = await readErrorFrame(response);
+      expect(frame).not.toBeNull();
+      expect(frame!.error).toBe("provider_rate_limit");
+      expect(frame!.retryable).toBe(true);
+      expect(frame!.retryAfterSeconds).toBe(12);
+      expect(typeof frame!.requestId).toBe("string");
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // #1980 — synchronous classifier coverage (every emit branch)
+  //
+  // Pin every code `classifyChatError` can emit to its expected status
+  // and shape so a refactor of the cascade (or `CLASSIFIER_STATUS_MAP`)
+  // can't silently re-route a known error class.
+  // ---------------------------------------------------------------------
+
+  describe("#1980 — synchronous classifier coverage", () => {
+    it("classifies LoadAPIKeyError as provider_auth_error 503", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new LoadAPIKeyError({ message: "ANTHROPIC_API_KEY missing" }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_auth_error");
+      expect(body.retryable).toBe(false);
+      expect(body.retryAfterSeconds).toBeUndefined();
+      expect(response.headers.get("Retry-After")).toBeNull();
+    });
+
+    it("classifies NoSuchModelError as provider_model_not_found 400", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new NoSuchModelError({
+          modelId: "made-up-model",
+          modelType: "languageModel",
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_model_not_found");
+      expect(body.retryable).toBe(false);
+    });
+
+    it("classifies GatewayModelNotFoundError as provider_model_not_found 400", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new GatewayModelNotFoundError({
+          message: "model not found on gateway",
+          modelId: "anthropic/missing-model",
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_model_not_found");
+    });
+
+    it("classifies ECONNREFUSED as provider_unreachable 503 (synchronous)", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new Error("connect ECONNREFUSED 10.0.0.1:443"),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("provider_unreachable");
+      expect(body.retryable).toBe(true);
+      // No retry-after header for unreachable — the regex-matched fallback
+      // doesn't ship one and we don't want clients to invent a delta.
+      expect(response.headers.get("Retry-After")).toBeNull();
+      expect(body.retryAfterSeconds).toBeUndefined();
+    });
+
+    it("omits Retry-After header when provider_auth_error has no header", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Unauthorized",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 401,
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBeNull();
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.retryAfterSeconds).toBeUndefined();
+    });
+
+    it("omits Retry-After header on the internal_error fallback", async () => {
+      // An error matchError can't recognize and which isn't an APICallError.
+      mockRunAgent.mockRejectedValueOnce(new Error("totally unfamiliar"));
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(500);
+      expect(response.headers.get("Retry-After")).toBeNull();
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.retryAfterSeconds).toBeUndefined();
+      expect(typeof body.requestId).toBe("string");
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // #1980 — Retry-After parser edge cases
+  //
+  // Whitespace, fractional, zero, and negative deltas — each is an
+  // explicit branch in `parseProviderRetryAfter`, so pin the contract.
+  // ---------------------------------------------------------------------
+
+  describe("#1980 — parseProviderRetryAfter edge cases", () => {
+    async function runWith(retryAfter: string): Promise<Response> {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Rate limited",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 429,
+          responseHeaders: { "retry-after": retryAfter },
+        }),
+      );
+      return app.fetch(makeRequest());
+    }
+
+    it("trims whitespace around delta-seconds", async () => {
+      const response = await runWith(" 60 ");
+      expect(response.headers.get("Retry-After")).toBe("60");
+    });
+
+    it("floors fractional values", async () => {
+      const response = await runWith("5.7");
+      expect(response.headers.get("Retry-After")).toBe("5");
+    });
+
+    it("accepts zero as a valid delta", async () => {
+      const response = await runWith("0");
+      expect(response.headers.get("Retry-After")).toBe("0");
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.retryAfterSeconds).toBe(0);
+    });
+
+    it("rejects negative deltas as malformed", async () => {
+      const response = await runWith("-5");
+      expect(response.headers.get("Retry-After")).toBeNull();
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.retryAfterSeconds).toBeUndefined();
+    });
+
+    it("accepts mixed-case header key", async () => {
+      mockRunAgent.mockRejectedValueOnce(
+        new APICallError({
+          message: "Rate limited",
+          url: "https://api.example.com/v1/chat",
+          requestBodyValues: {},
+          statusCode: 429,
+          responseHeaders: { "Retry-After": "15" },
+        }),
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.headers.get("Retry-After")).toBe("15");
     });
   });
 });

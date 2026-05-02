@@ -379,11 +379,12 @@ export type StreamEvent =
   /**
    * Mid-stream error.
    *
-   * The server emits a `ChatErrorInfo`-shaped JSON body inside the SSE
-   * error frame's `errorText`. When that JSON parses cleanly we surface
-   * `code` / `retryable` / `retryAfterSeconds` / `requestId` so callers
-   * can branch on the typed code instead of regex-scraping the message.
-   * For older servers (or unparseable text) only `message` is set.
+   * Atlas serializes mid-stream errors as a `ChatErrorInfo`-shaped JSON
+   * body inside the SSE error frame's `errorText` so callers can branch
+   * on the typed `code` instead of regex-scraping the message. When
+   * `errorText` is not parseable as that body (a plain-text frame from a
+   * non-Atlas server, a malformed payload, or a non-JSON error) only
+   * `message` is set.
    */
   | {
       type: "error";
@@ -773,10 +774,10 @@ export function createAtlasClient(options: AtlasClientOptions) {
             }
             case "error": {
               const raw = (event.errorText ?? event.message ?? "Unknown error") as string;
-              // Atlas serializes mid-stream errors as a `ChatErrorInfo`-
-              // shaped JSON body so the typed code travels alongside the
-              // human-readable message. Older servers send a plain string;
-              // surface it as `message` only.
+              // If `errorText` parses as the `ChatErrorInfo` JSON Atlas
+              // serializes, lift the typed fields. Otherwise treat it as
+              // plain text — non-Atlas servers and malformed payloads
+              // both land here.
               let message = raw;
               let code: string | undefined;
               let retryable: boolean | undefined;
@@ -794,7 +795,8 @@ export function createAtlasClient(options: AtlasClientOptions) {
                   if (typeof parsed.requestId === "string") requestId = parsed.requestId;
                 }
               } catch {
-                // Plain-text errorText — leave `message` as the raw string.
+                // intentionally ignored: `raw` is not JSON — fall through
+                // with `message = raw`, leaving the typed fields unset.
               }
               yield {
                 type: "error",

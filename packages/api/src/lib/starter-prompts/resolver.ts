@@ -203,7 +203,12 @@ export async function resolveStarterPrompts(
   }
 
   // Tier 3 — library (demo-industry curated collections).
-  if (out.length < limit && ctx.orgId) {
+  //
+  // Runs whether or not we have a workspace context. With `ctx.orgId = null`
+  // (demo-bearer callers, see #1944) the SQL `pc.org_id IS NULL OR pc.org_id = $2`
+  // collapses to the IS NULL branch — only globally-scoped builtin demo
+  // prompts surface, which is exactly the `__demo__` cohort.
+  if (out.length < limit) {
     const industryResult = readDemoIndustry(ctx.orgId, ctx.requestId);
     if (!industryResult.ok) {
       // Propagate: callers map to 500. A transient settings read failure

@@ -142,13 +142,20 @@ describe("resolveStarterPrompts — cold-start", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("returns empty when orgId is null (single-tenant / unauth)", async () => {
+  it("runs the library tier with orgId=null and scopes to global builtin prompts (#1944)", async () => {
+    // With no workspace context (e.g. demo bearer, single-tenant unauth), the
+    // library tier still runs but the SQL `pc.org_id = $2` collapses to NULL,
+    // leaving only `pc.org_id IS NULL` rows visible — the global `__demo__`
+    // cohort prompts. The default mock returns no rows, so this test asserts
+    // empty output AND that the SQL ran with `params[1] = null`.
     demoIndustryFixture = "cybersecurity";
 
     const result = await resolveStarterPrompts(baseCtx({ orgId: null }));
 
     expect(result).toEqual([]);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+    const [, params] = mockInternalQuery.mock.calls[0]!;
+    expect(params![1]).toBeNull();
   });
 
   it("returns empty when library tier finds no matching collections", async () => {

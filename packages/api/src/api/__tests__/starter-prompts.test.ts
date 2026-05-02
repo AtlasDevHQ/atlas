@@ -10,6 +10,7 @@ import {
   describe,
   it,
   expect,
+  beforeAll,
   beforeEach,
   afterAll,
   mock,
@@ -23,6 +24,13 @@ import {
   type UpdatePositionResult,
   type FavoritePromptRow,
 } from "@atlas/api/lib/starter-prompts/favorite-store";
+
+const DEMO_TEST_SECRET = "test-secret-that-is-at-least-32-chars-long";
+const ORIGINAL_BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
+
+beforeAll(() => {
+  process.env.BETTER_AUTH_SECRET = DEMO_TEST_SECRET;
+});
 
 // ── Module mocks (must run before importing the app) ────────────────────
 
@@ -132,6 +140,11 @@ function jsonReq(
 
 afterAll(() => {
   mocks.cleanup();
+  if (ORIGINAL_BETTER_AUTH_SECRET !== undefined) {
+    process.env.BETTER_AUTH_SECRET = ORIGINAL_BETTER_AUTH_SECRET;
+  } else {
+    delete process.env.BETTER_AUTH_SECRET;
+  }
 });
 
 beforeEach(() => {
@@ -270,6 +283,90 @@ describe("GET /api/v1/starter-prompts", () => {
     expect(sqlCalls.length).toBeGreaterThan(0);
     const [, params] = sqlCalls[0]!;
     expect(params![2]).toBe("90");
+  });
+});
+
+// ── Demo bearer auth (#1944) ─────────────────────────────────────────────
+//
+// `/api/v1/starter-prompts` accepts the same demo bearer that `/api/v1/demo/*`
+// uses. With a valid demo bearer, the resolver runs with `orgId = null`, mode
+// `published`, and the SQL `pc.org_id IS NULL OR pc.org_id = $2` keeps reads
+// scoped to the global `__demo__` cohort prompts. Standard session / API-key
+// paths must be unaffected.
+describe("GET /api/v1/starter-prompts — demo bearer auth", () => {
+  // Loaded after BETTER_AUTH_SECRET is set so the HMAC key derives correctly.
+  let signDemoToken: typeof import("@atlas/api/lib/demo").signDemoToken;
+
+  beforeAll(async () => {
+    ({ signDemoToken } = await import("@atlas/api/lib/demo"));
+  });
+
+  function demoReq(token: string) {
+    return app.fetch(
+      new Request("http://localhost/api/v1/starter-prompts", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+  }
+
+  it("returns 200 with the __demo__ cohort's published prompts for a valid demo bearer", async () => {
+    // Standard auth path is broken in this test — only demo bearer should let us in.
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
+    );
+
+    demoIndustryFixture = "cybersecurity";
+    mocks.mockInternalQuery.mockImplementation(async () => [
+      { id: "demo-1", question: "Which alerts had the highest severity in the last 7 days?" },
+      { id: "demo-2", question: "Show me failed login events grouped by user this week." },
+    ]);
+
+    const signed = signDemoToken("demo@example.com");
+    expect(signed).not.toBeNull();
+    const res = await demoReq(signed!.token);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      prompts: Array<{ id: string; text: string; provenance: string }>;
+      total: number;
+    };
+    expect(body.total).toBe(2);
+    expect(body.prompts).toEqual([
+      { id: "library:demo-1", text: "Which alerts had the highest severity in the last 7 days?", provenance: "library" },
+      { id: "library:demo-2", text: "Show me failed login events grouped by user this week.", provenance: "library" },
+    ]);
+
+    // Demo bearer queries scope library to global builtin prompts —
+    // pc.org_id IS NULL OR pc.org_id = NULL collapses to the IS NULL branch.
+    const sqlCalls = mocks.mockInternalQuery.mock.calls;
+    expect(sqlCalls.length).toBeGreaterThan(0);
+    const [, params] = sqlCalls[0]!;
+    expect(params![1]).toBeNull();
+  });
+
+  it("returns 401 when the demo bearer is malformed and standard auth also fails", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
+    );
+
+    const res = await demoReq("not-a-real-token");
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when the demo bearer is signature-tampered and standard auth also fails", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
+    );
+
+    const signed = signDemoToken("demo@example.com");
+    expect(signed).not.toBeNull();
+    const tampered = signed!.token.slice(0, -4) + "AAAA";
+
+    const res = await demoReq(tampered);
+
+    expect(res.status).toBe(401);
   });
 });
 

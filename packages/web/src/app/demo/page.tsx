@@ -25,17 +25,15 @@ const DEMO_EMAIL_KEY = "atlas-demo-email";
 const DEMO_EXPIRES_KEY = "atlas-demo-expires";
 
 /**
- * Static curated starter prompts for the demo cohort. `/api/v1/starter-prompts`
- * runs under standardAuth; demo JWTs are only honored under `/api/v1/demo/*`.
- * Inline the list to avoid a 401 on the public demo.
+ * Marketing teaser shown on the pre-auth email gate — NOT the chat surface's
+ * starter prompts. The chat fetches the live adaptive list from
+ * `/api/v1/starter-prompts` once a demo bearer is signed; see #1944.
  */
-const DEMO_STARTER_PROMPTS = [
+const DEMO_TEASER_PROMPTS = [
   "Which alerts had the highest severity in the last 7 days?",
   "Show me failed login events grouped by user this week.",
   "What vulnerabilities are unpatched on critical assets?",
   "Top threat actors by alert count.",
-  "Which assets failed the most scans last month?",
-  "Recent indicators of compromise.",
 ] as const;
 
 type DatasetEntry = {
@@ -235,7 +233,7 @@ export default function DemoPage() {
                 Try asking
               </p>
               <ul className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                {DEMO_STARTER_PROMPTS.slice(0, 4).map((prompt) => (
+                {DEMO_TEASER_PROMPTS.map((prompt) => (
                   <li key={prompt}>
                     <span className="block rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs leading-snug text-muted-foreground">
                       {prompt}
@@ -334,7 +332,6 @@ export default function DemoPage() {
           apiKey={token}
           chatEndpoint="/api/v1/demo/chat"
           conversationsEndpoint="/api/v1/demo/conversations"
-          starterPrompts={DEMO_STARTER_PROMPTS}
           sidebar
         />
       </div>

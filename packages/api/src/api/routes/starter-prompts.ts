@@ -9,6 +9,7 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
+import { createMiddleware } from "hono/factory";
 import type {
   StarterPromptsResponse,
   CreateFavoriteResponse,
@@ -21,8 +22,10 @@ import {
   AuthContext,
 } from "@atlas/api/lib/effect/services";
 import { getConfig } from "@atlas/api/lib/config";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { resolveStarterPrompts } from "@atlas/api/lib/starter-prompts/resolver";
+import { verifyDemoToken, demoUserId } from "@atlas/api/lib/demo";
+import { createAtlasUser, type AuthResult } from "@atlas/api/lib/auth/types";
 import {
   createFavorite,
   deleteFavorite,
@@ -239,10 +242,61 @@ const patchFavoriteRoute = createRoute({
 
 const log = createLogger("starter-prompts-route");
 
+/**
+ * Auth middleware for the list endpoint that accepts EITHER a valid demo
+ * bearer token (signed via `signDemoToken` in `/api/v1/demo/start`) or a
+ * standard session / API-key auth. With a valid demo bearer the request
+ * runs against the global `__demo__` cohort: no orgId, mode `published`.
+ * Demo bearers are scoped to the read-only list endpoint — favorites
+ * (POST/DELETE/PATCH) keep the standard auth gate so demo callers can't
+ * pin into a non-existent workspace.
+ *
+ * #1944 — replaces a hard-coded `starterPrompts={...}` override on the
+ * /demo page with an end-to-end fetch through the adaptive resolver.
+ */
+const demoOrStandardAuth = createMiddleware<AuthEnv>(async (c, next) => {
+  const authHeader = c.req.raw.headers.get("authorization");
+  const match = authHeader?.match(/^Bearer\s+(.+)$/i);
+  const demoEmail = match ? verifyDemoToken(match[1]) : null;
+
+  if (demoEmail) {
+    const requestId = crypto.randomUUID();
+    const userId = demoUserId(demoEmail);
+    const demoUser = createAtlasUser(userId, "simple-key", `demo:${demoEmail}`, {
+      role: "member",
+    });
+    const authResult: AuthResult & { authenticated: true } = {
+      authenticated: true,
+      mode: "simple-key",
+      user: demoUser,
+    };
+    c.set("requestId", requestId);
+    c.set("authResult", authResult);
+    // Demo callers always run in published mode — no developer overlay.
+    c.set("atlasMode", "published");
+    return withRequestContext(
+      { requestId, user: demoUser, atlasMode: "published" },
+      () => next(),
+    );
+  }
+
+  // Not a demo bearer — fall through to the standard auth + requestContext
+  // pipeline. `requestContext` is run inline so the order matches the
+  // standardAuth + requestContext mount used by other routes. The inner
+  // closure is async-void to match Hono's `Next` (`() => Promise<void>`)
+  // signature even though both middlewares can short-circuit with a
+  // `Response`; standardAuth already handles that path itself.
+  return standardAuth(c, async () => {
+    await requestContext(c, next);
+  });
+});
+
 const starterPrompts = new OpenAPIHono<AuthEnv>();
 
-starterPrompts.use("/*", standardAuth);
-starterPrompts.use("/*", requestContext);
+// List endpoint accepts demo bearers; favorites stay on standardAuth.
+starterPrompts.use("/", demoOrStandardAuth);
+starterPrompts.use("/favorites/*", standardAuth);
+starterPrompts.use("/favorites/*", requestContext);
 
 function serializeFavorite(row: FavoritePromptRow): FavoriteStarterPrompt {
   return {

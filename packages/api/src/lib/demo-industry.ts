@@ -40,13 +40,17 @@ export type ReadDemoIndustryResult =
  * because `getSettingAuto` is a cache read. The try/catch is defensive —
  * if `getSettingAuto` ever starts throwing, callers get the failure
  * surfaced instead of a silent `null`.
+ *
+ * `orgId: null` is the demo-bearer path — there is no workspace context,
+ * so the read falls back through the platform-level cache and env var via
+ * the same tiered resolution `getSettingAuto` already implements.
  */
 export function readDemoIndustry(
-  orgId: string,
+  orgId: string | null,
   requestId: string,
 ): ReadDemoIndustryResult {
   try {
-    const value = getSettingAuto(DEMO_INDUSTRY_SETTING, orgId) ?? null;
+    const value = getSettingAuto(DEMO_INDUSTRY_SETTING, orgId ?? undefined) ?? null;
     return { ok: true, value };
   } catch (err) {
     const normalized = err instanceof Error ? err : new Error(String(err));

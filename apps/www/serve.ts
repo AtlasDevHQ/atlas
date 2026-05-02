@@ -3,7 +3,26 @@ import { join } from "path";
 const OUT_DIR = join(import.meta.dir, "out");
 const port = parseInt(process.env.PORT || "8080");
 
+// `script-src 'unsafe-inline'` is required by Next.js's `__NEXT_DATA__` and
+// hydration runtime. `style-src 'unsafe-inline'` is required by Next.js's
+// inlined critical CSS. Operators who add analytics or third-party scripts
+// will need to extend this in their own deploy.
+const WWW_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' https:",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join("; ");
+
 const SECURITY_HEADERS: Record<string, string> = {
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+  "Content-Security-Policy": WWW_CSP,
   "X-Frame-Options": "DENY",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -136,7 +155,9 @@ Bun.serve({
     const { pathname } = url;
 
     if (pathname === "/health") {
-      return new Response("ok", { headers: { "Content-Type": "text/plain" } });
+      return new Response("ok", {
+        headers: { ...SECURITY_HEADERS, "Content-Type": "text/plain" },
+      });
     }
 
     if (pathname === "/api/health") {

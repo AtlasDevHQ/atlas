@@ -5,6 +5,7 @@
   "pages": [
     "sql-validation",
     "row-level-security",
+    "security-headers",
     "two-factor-auth"
   ]
 }

@@ -1059,7 +1059,7 @@ describe("admin residency — F-32 audit emission", () => {
     const entry = mockLogAdminAction.mock.calls[0]![0];
     expect(entry.actionType).toBe("residency.migration_retry");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata.reason).toBe("invalid_status");
+    expect((entry.metadata as { reason?: string } | undefined)?.reason).toBe("invalid_status");
   });
 
   it("POST /migrate/:id/retry emits a failure audit when reset throws (409 path)", async () => {
@@ -1082,7 +1082,7 @@ describe("admin residency — F-32 audit emission", () => {
     const entry = mockLogAdminAction.mock.calls[0]![0];
     expect(entry.actionType).toBe("residency.migration_retry");
     expect(entry.status).toBe("failure");
-    expect(entry.metadata.error).toContain("already moved");
+    expect((entry.metadata as { error?: string } | undefined)?.error).toContain("already moved");
   });
 
   it("POST /migrate/:id/cancel emits residency.migration_cancel on success", async () => {

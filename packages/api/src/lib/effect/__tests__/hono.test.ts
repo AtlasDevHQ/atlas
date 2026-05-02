@@ -236,6 +236,7 @@ describe("mapTaggedError", () => {
         migrationId: "mig-1",
         workspaceId: "org-1",
         targetRegion: "eu-west",
+        sourceRegion: "us-east",
       }),
     );
     expect(result.status).toBe(409);

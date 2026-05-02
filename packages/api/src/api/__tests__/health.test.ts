@@ -146,6 +146,18 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: mock(() => null),
 }));
 
+// Internal DB mock — defaults to a successful SELECT 1, individual tests
+// can override by reassigning `internalDBQueryImpl` to reject. We spread the
+// real module so the dozens of route files that statically import other
+// helpers (internalQuery, hasInternalDB, encryptUrl, etc.) keep working.
+const realInternalDBModule = await import("@atlas/api/lib/db/internal");
+let internalDBQueryImpl: () => Promise<unknown> = () =>
+  Promise.resolve({ rows: [{ "?column?": 1 }] });
+mock.module("@atlas/api/lib/db/internal", () => ({
+  ...realInternalDBModule,
+  getInternalDB: () => ({ query: () => internalDBQueryImpl() }),
+}));
+
 // Import after all mocks are registered
 const { app } = await import("../index");
 
@@ -305,14 +317,17 @@ describe("GET /api/health — sources section", () => {
 describe("GET /api/health — internal DB / deploy mode contract", () => {
   const origDatasource = process.env.ATLAS_DATASOURCE_URL;
   const origDatabaseUrl = process.env.DATABASE_URL;
+  const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
 
   beforeEach(() => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     delete process.env.DATABASE_URL;
+    delete process.env.ATLAS_DEPLOY_MODE;
     connMetadata = [];
     mockValidateEnvironment.mockReset();
     mockGetStartupWarnings.mockReset();
     mockGetStartupWarnings.mockReturnValue([]);
+    internalDBQueryImpl = () => Promise.resolve({ rows: [{ "?column?": 1 }] });
   });
 
   afterEach(async () => {
@@ -320,17 +335,52 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
     else delete process.env.ATLAS_DATASOURCE_URL;
     if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
     else delete process.env.DATABASE_URL;
+    if (origDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+    else delete process.env.ATLAS_DEPLOY_MODE;
     const config = await import("@atlas/api/lib/config");
     config._setConfigForTest(null);
+    internalDBQueryImpl = () => Promise.resolve({ rows: [{ "?column?": 1 }] });
   });
 
-  it("returns 503 in SaaS when internal DB is unreachable", async () => {
+  it("returns 503 in SaaS when internal DB diagnostic flags it unreachable", async () => {
     mockValidateEnvironment.mockResolvedValue([
       { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
     ]);
     const config = await import("@atlas/api/lib/config");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
     config._setConfigForTest({ deployMode: "saas" } as any);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("error");
+  });
+
+  it("returns 503 in SaaS when the live internal DB probe rejects", async () => {
+    // Realistic mid-life failure: pod was connected, internal DB just died.
+    // Surfaces via internalProbeError (live SELECT 1), not the boot diagnostic.
+    process.env.DATABASE_URL = "postgresql://internal:internal@localhost:5432/atlas";
+    internalDBQueryImpl = () => Promise.reject(new Error("connection refused"));
+    mockValidateEnvironment.mockResolvedValue([]);
+    const config = await import("@atlas/api/lib/config");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    config._setConfigForTest({ deployMode: "saas" } as any);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("error");
+  });
+
+  it("returns 503 when ATLAS_DEPLOY_MODE=saas even if config is not yet loaded", async () => {
+    // Boot-window safety net: a probe hitting a SaaS pod before loadConfig()
+    // resolves must still fail closed. getConfig() returns null here.
+    mockValidateEnvironment.mockResolvedValue([
+      { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
+    ]);
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest(null);
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(503);

@@ -226,7 +226,11 @@ health.openapi(healthRoute, async (c) => {
     // SaaS treats the internal DB as critical infrastructure (auth, org,
     // billing, settings, audit, scheduler all live there). A pod that can't
     // reach it must fail the LB probe (#1981). Self-hosted leaves it optional.
-    const isSaas = getConfig()?.deployMode === "saas";
+    // Fall back to the env var so a probe hitting a SaaS pod before
+    // `loadConfig()` resolves still fails closed instead of returning 200.
+    const isSaas =
+      getConfig()?.deployMode === "saas" ||
+      process.env.ATLAS_DEPLOY_MODE === "saas";
     const internalDbBlocksProbe = hasInternalDbError && isSaas;
 
     let status: "ok" | "degraded" | "error";

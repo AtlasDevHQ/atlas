@@ -80,6 +80,7 @@ const {
   setSetting,
   _resetSettingsCache,
 } = await import("../settings");
+const { SaasImmutableSettingError } = await import("../settings-errors");
 
 // ---------------------------------------------------------------------------
 // Setup / teardown
@@ -163,6 +164,48 @@ describe("settings (SaaS mode)", () => {
 
       // No setLogLevel calls
       expect(logLevelCalls).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // SAAS_IMMUTABLE_KEYS rejection (#1978 sub-finding 6)
+  // -------------------------------------------------------------------------
+
+  describe("SAAS_IMMUTABLE_KEYS rejection", () => {
+    it("setSetting rejects ATLAS_EMAIL_PROVIDER in SaaS mode with SaasImmutableSettingError", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      let captured: unknown;
+      try {
+        await setSetting("ATLAS_EMAIL_PROVIDER", "sendgrid", "admin-1");
+      } catch (err) {
+        captured = err;
+      }
+
+      expect(captured).toBeInstanceOf(SaasImmutableSettingError);
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>).key).toBe("ATLAS_EMAIL_PROVIDER");
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>)._tag).toBe("SaasImmutableSettingError");
+      // No DB write should have happened — the rejection must come before persist.
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    it("setSetting rejects ATLAS_DEPLOY_MODE in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        setSetting("ATLAS_DEPLOY_MODE", "self-hosted", "admin-1"),
+      ).rejects.toThrow(SaasImmutableSettingError);
+    });
+
+    it("setSetting allows non-immutable keys in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        setSetting("ATLAS_ROW_LIMIT", "500", "admin-1"),
+      ).resolves.toBeUndefined();
     });
   });
 });

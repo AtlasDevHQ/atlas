@@ -342,6 +342,23 @@ describe("settings module", () => {
       );
     });
 
+    // #1978 — SAAS_IMMUTABLE_KEYS rejection only fires in SaaS mode. The
+    // SaaS path is covered in settings-saas.test.ts; here the self-hosted
+    // path verifies the same write succeeds, so a future regression that
+    // accidentally checks SAAS_IMMUTABLE_KEYS without isSaasMode()
+    // gating fails the test.
+    it("permits writes to SAAS_IMMUTABLE_KEYS in self-hosted mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        setSetting("ATLAS_EMAIL_PROVIDER", "sendgrid", "admin-1"),
+      ).resolves.toBeUndefined();
+
+      // Cache reflects the write.
+      expect(getSetting("ATLAS_EMAIL_PROVIDER")).toBe("sendgrid");
+    });
+
     it("upserts platform setting (no orgId) and updates cache", async () => {
       enableInternalDB();
       setResults({ rows: [] }); // for the upsert query

@@ -20,6 +20,12 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
+import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
+
+// Re-export for back-compat — new callers should prefer importing from
+// `@atlas/api/lib/settings-errors` so partial-mock sites of `settings.ts`
+// don't need stubbing this class.
+export { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
 
 const log = createLogger("settings");
 
@@ -378,6 +384,14 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     options: [...EMAIL_PROVIDERS],
     default: "resend",
     envVar: "ATLAS_EMAIL_PROVIDER",
+    // #1978 — DpaGuardLive runs once at boot; without `requiresRestart`,
+    // a hot-reload of this key via setSetting would silently bypass the
+    // guard. Self-hosted admins see the "restart required" banner;
+    // SaaS writes are additionally blocked by `SAAS_IMMUTABLE_KEYS`
+    // below because the SaaS-mode requiresRestart suppression at the
+    // metadata layer would otherwise leave SaaS admins thinking the
+    // change took effect.
+    requiresRestart: true,
     scope: "platform",
     saasVisible: false,
   },
@@ -682,6 +696,14 @@ export async function setSetting(key: string, value: string, userId?: string, or
     throw new Error(`Unknown setting key: "${key}"`);
   }
 
+  // #1978 — DpaGuardLive runs once at boot. Settings that participate in
+  // contract guards (DPA, deploy mode) must not be hot-reloaded in SaaS,
+  // or the guard would be silently bypassed until next restart. Reject
+  // the write rather than persist a value the running process won't honor.
+  if (SAAS_IMMUTABLE_KEYS.has(key) && isSaasMode()) {
+    throw new SaasImmutableSettingError(key);
+  }
+
   // Platform-scoped settings always store globally
   const effectiveOrgId = def.scope === "platform" ? undefined : orgId;
 
@@ -878,6 +900,22 @@ export async function refreshSettingsTick(): Promise<void> {
 
 /** Settings that produce immediate runtime side effects when changed. */
 const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
+
+/**
+ * Settings that boot-time guards depend on (`DpaGuardLive`,
+ * `EnterpriseGuardLive`, etc.). In SaaS mode these guards run once at
+ * process boot — hot-reloading the underlying setting would silently
+ * bypass the guard until next restart, which is exactly the failure
+ * mode #1978 closed. `setSetting` rejects writes for these keys in
+ * SaaS so the only path to changing them is a controlled restart.
+ *
+ * Self-hosted preserves the runtime-mutable behavior — the guards
+ * either don't run there (DPA) or are advisory (#1978 family).
+ */
+const SAAS_IMMUTABLE_KEYS = new Set([
+  "ATLAS_EMAIL_PROVIDER",
+  "ATLAS_DEPLOY_MODE",
+]);
 
 /**
  * Apply runtime side effects after a setting value changes.

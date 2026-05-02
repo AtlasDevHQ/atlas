@@ -1108,6 +1108,20 @@ async function applyDeployMode(
     resolved.deployMode = "self-hosted";
   }
   log.info({ deployMode: resolved.deployMode }, "Deploy mode resolved");
+
+  // #1978 — when deployMode "saas" was requested but resolveDeployMode
+  // silently downgraded to "self-hosted", the contract guards (DPA,
+  // encryption, internal DB) all skip. Env-set is handled by
+  // `EnterpriseGuardLive` (fail boot); the config-file path falls back
+  // to a CRITICAL warning here because the config file may legitimately
+  // be checked into a self-hosted distribution that lacks `@atlas/ee`.
+  const { warnIfDeployModeSilentlyDowngraded } = await import(
+    "@atlas/api/lib/effect/saas-guards"
+  );
+  warnIfDeployModeSilentlyDowngraded({
+    resolvedDeployMode: resolved.deployMode,
+    configFileValue,
+  });
 }
 
 export async function loadConfig(

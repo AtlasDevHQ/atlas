@@ -9,6 +9,7 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
+import { createMiddleware } from "hono/factory";
 import type {
   StarterPromptsResponse,
   CreateFavoriteResponse,
@@ -21,8 +22,10 @@ import {
   AuthContext,
 } from "@atlas/api/lib/effect/services";
 import { getConfig } from "@atlas/api/lib/config";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { resolveStarterPrompts } from "@atlas/api/lib/starter-prompts/resolver";
+import { verifyDemoToken, demoUserId, checkDemoRateLimit } from "@atlas/api/lib/demo";
+import { createAtlasUser, type AuthResult } from "@atlas/api/lib/auth/types";
 import {
   createFavorite,
   deleteFavorite,
@@ -239,10 +242,77 @@ const patchFavoriteRoute = createRoute({
 
 const log = createLogger("starter-prompts-route");
 
+/**
+ * Auth middleware for the list endpoint that accepts EITHER a valid demo
+ * bearer token (signed via `signDemoToken` in `/api/v1/demo/start`) or a
+ * standard session / API-key auth. With a valid demo bearer the request
+ * runs against the global `__demo__` cohort: no orgId, mode `published`,
+ * and gated by the same per-email demo rate limiter `/api/v1/demo/chat`
+ * uses so a leaked token can't pound the internal DB. Favorites
+ * (POST/DELETE/PATCH) keep the standard auth gate so demo callers can't
+ * pin into a non-existent workspace.
+ *
+ * #1944 — replaces a hard-coded `starterPrompts={...}` override on the
+ * /demo page with an end-to-end fetch through the adaptive resolver.
+ */
+const demoOrStandardAuth = createMiddleware<AuthEnv>(async (c, next) => {
+  const authHeader = c.req.raw.headers.get("authorization");
+  const match = authHeader?.match(/^Bearer\s+(.+)$/i);
+  const demoEmail = match ? verifyDemoToken(match[1]) : null;
+
+  if (demoEmail) {
+    const requestId = crypto.randomUUID();
+
+    // Same per-email throttle the rest of the demo surface uses. Returning
+    // 429 with Retry-After mirrors `/api/v1/demo/chat` so the widget can
+    // back off without bespoke handling.
+    const rateCheck = checkDemoRateLimit(demoEmail);
+    if (!rateCheck.allowed) {
+      const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60_000) / 1000);
+      return c.json(
+        {
+          error: "rate_limited",
+          message: "Demo rate limit reached. Please wait before trying again.",
+          retryAfterSeconds,
+          requestId,
+        },
+        429,
+        { "Retry-After": String(retryAfterSeconds) },
+      );
+    }
+
+    const userId = demoUserId(demoEmail);
+    const demoUser = createAtlasUser(userId, "simple-key", `demo:${demoEmail}`, {
+      role: "member",
+    });
+    const authResult: AuthResult & { authenticated: true } = {
+      authenticated: true,
+      mode: "simple-key",
+      user: demoUser,
+    };
+    c.set("requestId", requestId);
+    c.set("authResult", authResult);
+    c.set("atlasMode", "published");
+    log.info({ requestId, demoUserId: userId }, "Demo bearer accepted on starter-prompts");
+    return withRequestContext(
+      { requestId, user: demoUser, atlasMode: "published" },
+      () => next(),
+    );
+  }
+
+  // Not a demo bearer — fall through to the standard auth + requestContext
+  // pipeline. `requestContext` is run inline so the order matches the
+  // standardAuth + requestContext mount used by other routes.
+  return standardAuth(c, async () => {
+    await requestContext(c, next);
+  });
+});
+
 const starterPrompts = new OpenAPIHono<AuthEnv>();
 
-starterPrompts.use("/*", standardAuth);
-starterPrompts.use("/*", requestContext);
+starterPrompts.use("/", demoOrStandardAuth);
+starterPrompts.use("/favorites/*", standardAuth);
+starterPrompts.use("/favorites/*", requestContext);
 
 function serializeFavorite(row: FavoritePromptRow): FavoriteStarterPrompt {
   return {

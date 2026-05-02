@@ -121,7 +121,12 @@ export function verifyDemoToken(token: string): string | null {
   }
 
   const parts = token.split(".");
-  if (parts.length !== 2) return null;
+  if (parts.length !== 2) {
+    // Active-attack signal: a non-empty Bearer header that doesn't even
+    // match the demo-token shape. Probe traffic is worth seeing in logs.
+    log.warn({ partsCount: parts.length }, "Demo token rejected — malformed structure");
+    return null;
+  }
 
   const [payloadStr, signatureStr] = parts;
 
@@ -136,7 +141,13 @@ export function verifyDemoToken(token: string): string | null {
   }
 
   if (expectedSig.length !== actualSig.length) return null;
-  if (!crypto.timingSafeEqual(expectedSig, actualSig)) return null;
+  if (!crypto.timingSafeEqual(expectedSig, actualSig)) {
+    // Active-attack signal: token structure is valid but signature does
+    // not match the server's HMAC key. This is the bright-line "tampered"
+    // event security ops should be able to see.
+    log.warn("Demo token rejected — signature mismatch");
+    return null;
+  }
 
   // Parse payload
   let payload: DemoTokenPayload;

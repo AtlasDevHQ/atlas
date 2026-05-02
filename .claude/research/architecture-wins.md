@@ -1178,3 +1178,34 @@ Second, a hand-constructed `FetchError { message: "" }` would render blank `Erro
 - **Pure refactor.** No behavior change, no new tests, no public API surface added.
 
 **Category:** Tightly-coupled style fragment consolidated into a deep module with a small interface. Same shape as #1 (`useAdminMutation`) but minimal in line count — the value isn't line reduction, it's that the visual primitive now has one definition instead of two slightly-drifting copies.
+
+---
+
+## 45. SaaS DPA boot guard with structured DI
+
+**Date:** 2026-05-02
+**Issue:** #1969
+**Branch:** feat/1969-saas-platform-email-resend-guard
+
+**Problem:** The DPA sub-processor table on `apps/www/src/app/dpa/page.tsx` lists Resend as Atlas's email vendor. The actual platform email transport in `packages/api/src/lib/email/delivery.ts` resolves through a 5-tier priority chain: per-org `email_installations` (BYOC) → platform `ATLAS_EMAIL_PROVIDER` → `ATLAS_SMTP_URL` webhook bridge → `RESEND_API_KEY` env fallback → log. A future Atlas Cloud operator could flip `ATLAS_EMAIL_PROVIDER=sendgrid` (with or without pasting `SENDGRID_API_KEY`) and the platform would silently start routing customer-facing mail through a vendor not on the DPA — a contract-level inconsistency with no obvious surfacing path. The 5-tier fallback chain is correct for self-hosted operators (who retain full provider freedom) but exactly wrong for SaaS where a single named vendor is contractually committed.
+
+The `/www-audit` pass surfaced this as a "sub-processor underlist risk" but in scope-narrowing review the user pointed out the BYOC distinction: per-org `email_installations` are the *customer's* vendor relationship, not Atlas's, so they correctly don't appear on `/dpa` and must be excluded from any DPA-correctness check. The guard had to thread that needle — block platform-level non-Resend on SaaS while never reading per-org rows, even when both exist together.
+
+**Solution:** New `packages/api/src/lib/email/dpa-guard.ts` module exposing `assertSaasPlatformEmailIsResend(deps)` — a synchronous guard built on a `DpaGuardDeps` interface with four injectable ports (`isSaas`, `getPlatformProvider`, `hasSmtpUrl`, `hasResendKey`). The `isSaas` port has no production default; callers must pass it explicitly with the *resolved* config's `deployMode` (env var, config-file override, and `auto` resolution can diverge, and silently no-op'ing on that divergence is exactly the failure mode the guard exists to prevent). The other three ports default to production implementations that read from the settings registry and `process.env`.
+
+Two-check structure inside the guard:
+
+1. **Stated intent** (`getSetting("ATLAS_EMAIL_PROVIDER")` against the literal `"resend"`). Catches an operator who flips `ATLAS_EMAIL_PROVIDER=sendgrid` *before* pasting the corresponding API key — without this check, a later "key paste" would silently flip traffic to a vendor not on `/dpa` with no boot-time signal.
+2. **Resolved transport** (`hasResendKey()` short-circuits as DPA-safe; `hasSmtpUrl()` without a Resend key fails because the bridge could route anywhere; nothing configured at all fails because Atlas-originated mail like `/forgot-password` would silently drop).
+
+The guard is wired into `buildAppLayer` via a new `DpaGuardLive` Effect Layer (`Layer.effectDiscard`, depends on `Config + Settings`). Throwing here fails the boot Layer and exits the process before any HTTP listener starts. `DpaInconsistencyError` is a `Data.TaggedError` carrying a `resolvedProvider: ResolvedProvider` discriminator with three failure modes — non-Resend platform intent, bare SMTP bridge, no transport — and three distinct error messages each naming the DPA constraint and `#1969` so an operator hitting the failure can diagnose without reading source. The file header comment block (`dpa-guard.ts:1-43`) walks future maintainers through the BYOC distinction explicitly so the scope doesn't drift over time.
+
+**Impact:**
+- **Contract invariant lifted out of runtime branches into a boot-time assertion.** Before this guard, the DPA accuracy of platform email was an unenforced operational convention — "Atlas Cloud uses Resend because we say so." After, it's a typed guarantee at the SaaS process boundary. SaaS regions cannot boot with platform email pointed at a non-Resend vendor.
+- **BYOC distinction codified in tests.** The two load-bearing test cases — *SaaS + per-org config + platform Resend → ok* and *SaaS + per-org config + no platform → throws* — make the per-org-vs-platform boundary part of the test suite, not just prose. Any future refactor that accidentally extends the guard to read `getEmailTransport(orgId)` will fail those tests.
+- **Structured DI without test pollution.** The `DpaGuardDeps` interface lets the test file (`__tests__/dpa-guard.test.ts`) inject deterministic ports without `mock.module()` — 11 test cases run with synchronous fakes, no global state, no env-var fixturing. Production callers omit the optional ports and pick up the env-reading defaults.
+- **Three failure-mode messages.** Each of `DpaInconsistencyError`'s three throw paths names the specific misconfig — `ATLAS_EMAIL_PROVIDER="sendgrid"` says "revert to resend or amend the DPA"; `ATLAS_SMTP_URL` set without a Resend key says "set RESEND_API_KEY in addition or remove ATLAS_SMTP_URL"; nothing configured says "set RESEND_API_KEY (matches the /dpa sub-processor table)" with an explicit reminder that per-org BYOC doesn't satisfy the requirement.
+- **Self-hosted operators unaffected.** The early-return on `!isSaas()` is the first line of the function; AGPL-core users keep full provider freedom (the fallback chain in `sendEmail` is unchanged for them).
+- **Line count:** ~150 lines of new code (guard + tests + Layer wiring). Net positive, but the value isn't reduction — it's that a DPA contract term is now a compile-and-boot-time enforced invariant instead of an operational convention.
+
+**Category:** Module-deepening boot guard with structured dependency injection. Sibling shape to win #1 (`useAdminMutation`'s tagged result type) but at the system boundary rather than the call-site — a single small interface (`DpaGuardDeps` + `DpaInconsistencyError`) hiding a multi-tier vendor resolution and the BYOC carve-out, with the *interesting decisions* (intent vs transport, no default for `isSaas`, DI port shape) load-bearing in the type signature. Closes the only DPA contract-correctness gap surfaced by the `/www-audit` pass.

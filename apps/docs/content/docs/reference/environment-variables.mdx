@@ -629,13 +629,13 @@ DISCORD_CLIENT_SECRET=your-discord-client-secret
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEAMS_APP_ID` | — | Microsoft Teams app ID. Enables Teams integration routes. Required for Teams connect flow |
-| `TEAMS_APP_PASSWORD` | — | Microsoft Teams app password (client secret) for the platform OAuth flow. Required alongside `TEAMS_APP_ID` for token exchange |
 
 ```bash
 # Teams integration via Azure AD admin consent
 TEAMS_APP_ID=your-teams-app-id
-TEAMS_APP_PASSWORD=your-teams-app-password
 ```
+
+> The Teams app password (client secret) is **not** read from a platform env var. Per-org Teams credentials are stored encrypted in the internal database and configured via the admin integrations UI — see [Teams integration](/guides/integrations#microsoft-teams).
 
 ---
 

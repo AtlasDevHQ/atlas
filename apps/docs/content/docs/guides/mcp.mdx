@@ -245,6 +245,8 @@ const server = await createAtlasMcpServer();
 // Connect to any transport: server.connect(stdioTransport) or server.connect(sseTransport)
 ```
 
+> `@atlas/mcp` is an internal monorepo package — this snippet only resolves from inside the Atlas repo (or via the `@useatlas/mcp` plugin, which wraps it). Use the [stdio entry point](#quick-start) for external integrations.
+
 The server factory initializes configuration, registers tools, resources, and prompt templates, and returns a ready-to-use `McpServer` instance. Connect it to any transport (stdio, SSE, or custom).
 
 ---

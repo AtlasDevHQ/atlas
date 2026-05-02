@@ -105,8 +105,14 @@ export async function getEmailTransport(
 /**
  * Resolve the platform-level email provider from the settings registry.
  * Returns a transport-compatible object or null when no API key is available.
+ *
+ * #1969 — exported so the SaaS DPA guard (`lib/email/dpa-guard.ts`) can read
+ * the platform-level resolution. The guard skips per-org `email_installations`
+ * because BYOC is the customer's own vendor relationship, not Atlas's
+ * sub-processor — only platform-level transports (paths #2–#4 in `sendEmail`)
+ * count toward the DPA sub-processor table on /dpa.
  */
-function getPlatformEmailConfig(): EmailTransport | null {
+export function getPlatformEmailConfig(): EmailTransport | null {
   const raw = getSetting("ATLAS_EMAIL_PROVIDER");
   if (!raw) return null;
   if (!isEmailProvider(raw)) {

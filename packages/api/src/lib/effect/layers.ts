@@ -730,6 +730,58 @@ export function makeSchedulerLive(
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  DPA Guard Layer (#1969)
+// ══════════════════════════════════════════════════════════════════════
+
+export interface DpaGuardShape {
+  /** No-op marker — guard either passes or fails the boot Layer. */
+  readonly checked: true;
+}
+
+export class DpaGuard extends Context.Tag("DpaGuard")<
+  DpaGuard,
+  DpaGuardShape
+>() {}
+
+/**
+ * SaaS-region platform email DPA guard (#1969). Enforces that, in SaaS
+ * deploy mode, the platform email transport is Resend (the vendor listed
+ * on /dpa). Self-hosted is unaffected.
+ *
+ * Depends on `Config` (for deployMode) and `Settings` (so the in-process
+ * settings cache is warm before `getPlatformEmailConfig()` reads it). On
+ * violation the Layer fails with `DpaInconsistencyError`, which propagates
+ * out of `runtime.runtimeEffect` in server.ts and exits the process — the
+ * intended behavior for a DPA misconfig.
+ *
+ * The guard intentionally skips per-org `email_installations` (BYOC) — see
+ * the file comment in `lib/email/dpa-guard.ts` for the load-bearing reason.
+ */
+export const DpaGuardLive: Layer.Layer<DpaGuard, Error, Config | Settings> = Layer.effect(
+  DpaGuard,
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    yield* Settings; // sequence after settings cache is loaded
+
+    yield* Effect.try({
+      try: () => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { assertSaasPlatformEmailIsResend } = require("@atlas/api/lib/email/dpa-guard") as {
+          assertSaasPlatformEmailIsResend: (deps?: { isSaas?: () => boolean }) => void;
+        };
+        assertSaasPlatformEmailIsResend({
+          isSaas: () => config.deployMode === "saas",
+        });
+      },
+      catch: (err) =>
+        err instanceof Error ? err : new Error(String(err)),
+    });
+
+    return { checked: true } satisfies DpaGuardShape;
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  AppLayer — compose the full startup DAG
 // ══════════════════════════════════════════════════════════════════════
 
@@ -746,7 +798,8 @@ export function makeSchedulerLive(
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */
 export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
-  Telemetry | Config | InternalDB | Migration | SemanticSync | Settings | Scheduler
+  Telemetry | Config | InternalDB | Migration | SemanticSync | Settings | Scheduler | DpaGuard,
+  Error
 > {
   const configLayer = Layer.succeed(Config, { config });
   const internalDBLayer = makeInternalDBLive();
@@ -759,6 +812,12 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   const settingsLayer = SettingsLive;
   const schedulerLayer = makeSchedulerLive(config);
 
+  // DpaGuardLive depends on Config + Settings — provide them so the boot
+  // Layer fails on any SaaS DPA misconfig (#1969) before HTTP starts.
+  const dpaGuardLayer = DpaGuardLive.pipe(
+    Layer.provide(Layer.merge(configLayer, settingsLayer)),
+  );
+
   // Merge all layers. InternalDB is included both directly and as a
   // dependency of migrationLayer — Effect memoizes same-reference Layers.
   return Layer.mergeAll(
@@ -769,5 +828,6 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     semanticSyncLayer,
     settingsLayer,
     schedulerLayer,
+    dpaGuardLayer,
   );
 }

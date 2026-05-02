@@ -134,7 +134,6 @@ const TIERS: Tier[] = [
       "SSO, SCIM & custom roles",
       "IP allowlist & approval workflows",
       "PII masking & audit retention",
-      "Compliance reports (SOC2 / HIPAA)",
       "Automated backups",
       "White-label branding",
       "Custom domain",
@@ -184,7 +183,6 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
       { feature: "Approval workflows", selfHosted: false, starter: false, pro: false, business: true },
       { feature: "Audit log retention policies", selfHosted: false, starter: false, pro: false, business: true },
       { feature: "PII detection & masking", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "Compliance reports (SOC2/HIPAA)", selfHosted: false, starter: false, pro: false, business: true },
     ],
   },
   {

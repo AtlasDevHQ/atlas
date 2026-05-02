@@ -1,0 +1,128 @@
+---
+title: Create a Workspace
+description: Add a second (or third) workspace from the standalone /create-org route after signup.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `/create-org` route lets an existing user spin up another workspace without going through the signup wizard. Use it when one Atlas account needs to span more than one organization — for example, a consultant who serves multiple clients or an internal team standing up a new department.
+
+<Callout title="Looking for the initial signup flow?">
+The first workspace is created during [Signup](/guides/signup) (`/signup/workspace`). This page is for **adding** a workspace to an account that already has one.
+</Callout>
+
+---
+
+## When to Use It
+
+`/create-org` exists for accounts that need workspace separation but want to share a single login:
+
+- **Consultants / agencies** — one Atlas account, one workspace per client. Each workspace has its own connections, semantic layer, conversations, and audit logs (see [Organizations — Data Isolation](/guides/organizations#data-isolation)).
+- **Multi-team companies** — finance and product can each get a workspace tied to its own warehouse, so a query on the finance side never sees a product table.
+- **Sandbox / staging** — keep an experimental workspace separate from your production one while reusing the same login.
+
+If you only need user-level role separation inside one workspace, see [Team Management](/guides/team-management) — adding a member is almost always the right move before adding a workspace.
+
+---
+
+## How to Get There
+
+There are two entry points:
+
+- **Direct URL** — navigate to `/create-org` (e.g. `https://app.useatlas.dev/create-org` on SaaS, or `https://your-atlas.example.com/create-org` self-hosted). You must be signed in.
+- **Workspace switcher** — the [organization switcher](/guides/organizations#switching-organizations) in the navigation bar shows your existing workspaces. The standalone `/create-org` URL is the path to add a new one.
+
+---
+
+## What the Page Does
+
+The form takes two fields:
+
+| Field | Notes |
+|-------|-------|
+| **Workspace name** | 1–64 characters. Free-form display name (e.g. *Acme Corp*). |
+| **Workspace URL** | 2–48 characters, lowercase letters/digits/hyphens, must start and end with a letter or digit. Auto-derived from the name; editable. |
+
+On submit, the page calls Better Auth's `organization.create` API and then `organization.setActive` to switch you into the new workspace. On success it redirects to `/`.
+
+```typescript
+// What the page does under the hood
+await authClient.organization.create({
+  name: "Acme Corp",
+  slug: "acme-corp",
+});
+
+await authClient.organization.setActive({
+  organizationId: result.data.id,
+});
+```
+
+See [Better Auth — Organizations](https://www.better-auth.com/docs/plugins/organization) for the underlying API surface.
+
+---
+
+## Roles and Permissions
+
+The user who calls `/create-org` becomes the **owner** of the new workspace. Owners have full control: billing, deletion, settings, member management, and every admin capability. See [Organizations — Roles](/guides/organizations#roles) for the role hierarchy.
+
+<Callout type="info" title="User-level admin promotion">
+On managed-auth deployments, becoming an org owner also promotes your account-level role to <code>admin</code> (if it was <code>member</code>) so Better Auth's admin APIs work in the new workspace. <code>platform_admin</code> accounts are never downgraded.
+</Callout>
+
+Other workspaces you belong to are unaffected — your role in each is independent. You can be **owner** of one workspace, **admin** of another, and **member** of a third.
+
+---
+
+## Switching Between Workspaces
+
+After creating a second workspace, both appear in the org switcher dropdown. Click any workspace to switch — the page reloads and your active context (queries, dashboards, admin pages, audit logs) reflects the selected workspace. See [Organizations — Switching Organizations](/guides/organizations#switching-organizations) for details.
+
+To switch programmatically:
+
+```typescript
+// List your workspaces
+const orgs = await authClient.organization.list();
+
+// Switch active workspace
+await authClient.organization.setActive({ organizationId: "org-id" });
+```
+
+---
+
+## Error States
+
+The page surfaces a few specific failure modes inline so you know what to do next:
+
+| Error | What it means | What to do |
+|-------|---------------|-----------|
+| **That URL is already in use** | The slug you picked is taken (HTTP 409 / `SLUG_ALREADY_EXISTS`). Slugs are globally unique on a given Atlas instance. | Pick a different slug. |
+| **You don't have permission to create workspaces** | Your account isn't allowed to create new workspaces (HTTP 403). | Ask a workspace owner or platform admin for access. |
+| **Workspace limit reached on your plan** | Your plan doesn't include another workspace (HTTP 402 / `BILLING_REQUIRED`). | Upgrade in [Billing](/guides/billing-and-plans). |
+| **Workspace created — please reload** | The workspace was created but switching you into it failed. | Reload the page and pick the new workspace from the [switcher](/guides/organizations#switching-organizations). |
+| **Can't reach the server** | Network error (typically a `TypeError` from a failed `fetch`). | Check your connection and retry. |
+
+<Callout type="info" title="No workspace limit by default">
+Atlas does not enforce a per-account workspace limit out of the box — the <code>billing_required</code> branch is reserved for Better Auth deployments or future plan tiers that add one. On self-hosted Atlas you can create as many workspaces as you want.
+</Callout>
+
+---
+
+## What Happens Next
+
+After the redirect to `/`, the new workspace is active and empty:
+
+1. No connections — head to the [Admin Console](/guides/admin-console#connections) to add one, or run `atlas init` against the new workspace.
+2. No semantic layer — generate one with [`atlas init`](/getting-started/semantic-layer) or build it interactively with the [Semantic Layer Wizard](/guides/semantic-layer-wizard).
+3. Just you as a member — invite teammates from [Team Management](/guides/team-management).
+
+Each workspace is independent: connections, semantic layer, audit logs, and settings do not cross over. See [Organizations — Data Isolation](/guides/organizations#data-isolation) for the full list of org-scoped resources.
+
+---
+
+## See Also
+
+- [Signup](/guides/signup) — the initial-workspace flow at `/signup`
+- [Organizations](/guides/organizations) — switcher, roles, data isolation, admin management
+- [Team Management](/guides/team-management) — invite members and assign roles inside a workspace
+- [Multi-Tenancy](/guides/multi-tenancy) — programmatic org context for SDK / API consumers
+- [Billing and Plans](/guides/billing-and-plans) — plan tiers and limits

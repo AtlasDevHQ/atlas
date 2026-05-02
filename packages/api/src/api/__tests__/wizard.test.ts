@@ -45,12 +45,15 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 }));
 
 const mockConnectionHas: Mock<(id: string) => boolean> = mock(() => true);
+const mockConnectionDescribe: Mock<() => Array<{ id: string; dbType: string; status: string }>> = mock(
+  () => [{ id: "default", dbType: "postgres", status: "healthy" }],
+);
 
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       has: mockConnectionHas,
-      describe: () => [{ id: "default", dbType: "postgres", status: "healthy" }],
+      describe: mockConnectionDescribe,
     },
     detectDBType: (url?: string) => {
       const connStr = url ?? "";
@@ -315,6 +318,11 @@ beforeEach(() => {
 
   mockConnectionHas.mockReset();
   mockConnectionHas.mockImplementation(() => true);
+
+  mockConnectionDescribe.mockReset();
+  mockConnectionDescribe.mockImplementation(
+    () => [{ id: "default", dbType: "postgres", status: "healthy" }],
+  );
 
   mockHasInternalDB.mockReset();
   mockHasInternalDB.mockImplementation(() => true);
@@ -855,6 +863,119 @@ describe("resolveConnectionUrl", () => {
       } else {
         process.env.ATLAS_DATASOURCE_URL = originalUrl;
       }
+    }
+  });
+});
+
+// =====================================================================
+// __demo__ end-to-end (#1950) — the seeded onboarding identity must
+// resolve through profile → generate → save like any other connection.
+// The wizard datasource list deliberately surfaces __demo__ but not
+// other underscore-prefixed ids; the profile/generate endpoints used to
+// dead-end with "Connection not found" because resolveConnectionUrl
+// reserved the ATLAS_DATASOURCE_URL fallback for `default`. With a
+// platform_admin spanning orgs, the internal-DB lookup can return zero
+// rows for __demo__ even though loadSavedConnections() registered it
+// at startup — fall back to the env-var URL the same way `default`
+// does. Other `_`-prefixed ids stay inaccessible.
+// =====================================================================
+
+describe("wizard __demo__ end-to-end", () => {
+  /**
+   * Make the runtime registry mirror production: loadSavedConnections()
+   * has registered both `default` and `__demo__`, so describe() returns
+   * an entry for each. Tests can still override `mockInternalQuery` to
+   * simulate the user's session not finding a row for their orgId.
+   */
+  function registerDemoInRegistry() {
+    mockConnectionHas.mockImplementation((id: string) => id === "__demo__" || id === "default");
+    mockConnectionDescribe.mockImplementation(() => [
+      { id: "default", dbType: "postgres", status: "healthy" },
+      { id: "__demo__", dbType: "postgres", status: "healthy" },
+    ]);
+  }
+
+  it("profile → returns the demo schema's table list (no 404)", async () => {
+    registerDemoInRegistry();
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+    expect(Array.isArray(data.tables)).toBe(true);
+    expect((data.tables as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it("generate → profiles tables via the demo connection", async () => {
+    registerDemoInRegistry();
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "__demo__",
+      tables: ["users"],
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+    const entities = data.entities as { tableName: string }[];
+    expect(entities.length).toBe(1);
+    expect(entities[0].tableName).toBe("users");
+  });
+
+  it("save → persists the demo entities under the org-scoped output dir", async () => {
+    registerDemoInRegistry();
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "__demo__",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.saved).toBe(true);
+    expect(data.connectionId).toBe("__demo__");
+    expect(data.orgId).toBe("org-1");
+  });
+
+  it("profile → falls back to ATLAS_DATASOURCE_URL when DB lookup misses __demo__", async () => {
+    // Reproduces the production failure mode: __demo__ is in the runtime
+    // registry (loadSavedConnections hydrates it from any org), but the
+    // caller's session orgId resolves to a row miss (e.g. platform_admin
+    // visiting a workspace where __demo__ was seeded under a different
+    // org_id). Without the env-var fallback __demo__ dead-ends the
+    // wizard — `default` already gets this fallback and __demo__ should
+    // too, since both point at ATLAS_DATASOURCE_URL by construction.
+    registerDemoInRegistry();
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => []); // no row for any orgId
+
+    const originalUrl = process.env.ATLAS_DATASOURCE_URL;
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/atlas";
+    try {
+      const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
+      expect(res.status).toBe(200);
+      const data = await json(res);
+      expect(data.connectionId).toBe("__demo__");
+    } finally {
+      if (originalUrl === undefined) delete process.env.ATLAS_DATASOURCE_URL;
+      else process.env.ATLAS_DATASOURCE_URL = originalUrl;
+    }
+  });
+
+  it("profile → still 404s for other underscore-prefixed identities (e.g. draft_test)", async () => {
+    // Mirror the wizard frontend filter: only __demo__ is first-class.
+    // draft_test (and any other `_`-prefixed id) must stay invisible
+    // end-to-end so a stray fixture can't be profiled even when
+    // ATLAS_DATASOURCE_URL is configured.
+    mockConnectionHas.mockImplementation(() => false);
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => []);
+
+    const originalUrl = process.env.ATLAS_DATASOURCE_URL;
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/atlas";
+    try {
+      const res = await postJson("/api/v1/wizard/profile", { connectionId: "draft_test" });
+      expect(res.status).toBe(404);
+      const data = await json(res);
+      expect(data.error).toBe("not_found");
+    } finally {
+      if (originalUrl === undefined) delete process.env.ATLAS_DATASOURCE_URL;
+      else process.env.ATLAS_DATASOURCE_URL = originalUrl;
     }
   });
 });

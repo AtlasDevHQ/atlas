@@ -271,6 +271,8 @@ GET /api/health
 
 Returns `{"status":"ok"}`, `{"status":"degraded"}`, or `{"status":"error"}` with sub-checks for datasource, provider, semantic layer, internal DB, explore (sandbox backend), auth, and slack. Returns HTTP 200 for `ok`/`degraded`, HTTP 503 for `error`. Always public (no auth required).
 
+In SaaS deploys (`ATLAS_DEPLOY_MODE=saas`), an unreachable internal DB fails the probe with HTTP 503 — auth, org, billing, settings, audit, and the scheduler all live there, so any pod that loses it must be removed from the load balancer rotation. Self-hosted leaves the internal DB optional and continues to report `degraded` (HTTP 200) when it's down.
+
 ---
 
 ## See Also

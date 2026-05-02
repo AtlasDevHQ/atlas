@@ -22,6 +22,7 @@ import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
+import { getConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("health");
 
@@ -222,8 +223,14 @@ health.openapi(healthRoute, async (c) => {
     );
     const hasAuthError = !!authDiagnostic;
 
+    // SaaS treats the internal DB as critical infrastructure (auth, org,
+    // billing, settings, audit, scheduler all live there). A pod that can't
+    // reach it must fail the LB probe (#1981). Self-hosted leaves it optional.
+    const isSaas = getConfig()?.deployMode === "saas";
+    const internalDbBlocksProbe = hasInternalDbError && isSaas;
+
     let status: "ok" | "degraded" | "error";
-    if (hasDsError && !dsNotConfigured) status = "error";
+    if ((hasDsError && !dsNotConfigured) || internalDbBlocksProbe) status = "error";
     else if (
       dsNotConfigured ||
       hasKeyError ||

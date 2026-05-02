@@ -299,3 +299,56 @@ describe("GET /api/health — sources section", () => {
     expect(defaultSource.status).toBe("healthy");
   });
 });
+
+// #1981 — internal DB unreachable must fail the SaaS load-balancer probe.
+// Self-hosted treats the internal DB as optional, so degraded → 200 must hold.
+describe("GET /api/health — internal DB / deploy mode contract", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+  const origDatabaseUrl = process.env.DATABASE_URL;
+
+  beforeEach(() => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.DATABASE_URL;
+    connMetadata = [];
+    mockValidateEnvironment.mockReset();
+    mockGetStartupWarnings.mockReset();
+    mockGetStartupWarnings.mockReturnValue([]);
+  });
+
+  afterEach(async () => {
+    if (origDatasource !== undefined) process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest(null);
+  });
+
+  it("returns 503 in SaaS when internal DB is unreachable", async () => {
+    mockValidateEnvironment.mockResolvedValue([
+      { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
+    ]);
+    const config = await import("@atlas/api/lib/config");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    config._setConfigForTest({ deployMode: "saas" } as any);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("error");
+  });
+
+  it("returns 200 degraded in self-hosted when internal DB is unreachable", async () => {
+    mockValidateEnvironment.mockResolvedValue([
+      { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
+    ]);
+    const config = await import("@atlas/api/lib/config");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    config._setConfigForTest({ deployMode: "self-hosted" } as any);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+  });
+});

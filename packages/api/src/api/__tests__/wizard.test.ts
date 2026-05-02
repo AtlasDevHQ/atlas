@@ -868,16 +868,10 @@ describe("resolveConnectionUrl", () => {
 });
 
 // =====================================================================
-// __demo__ end-to-end (#1950) — the seeded onboarding identity must
-// resolve through profile → generate → save like any other connection.
-// The wizard datasource list deliberately surfaces __demo__ but not
-// other underscore-prefixed ids; the profile/generate endpoints used to
-// dead-end with "Connection not found" because resolveConnectionUrl
-// reserved the ATLAS_DATASOURCE_URL fallback for `default`. With a
-// platform_admin spanning orgs, the internal-DB lookup can return zero
-// rows for __demo__ even though loadSavedConnections() registered it
-// at startup — fall back to the env-var URL the same way `default`
-// does. Other `_`-prefixed ids stay inaccessible.
+// __demo__ end-to-end — see resolveConnectionUrl fallback in wizard.ts
+// for the WHY. The wizard datasource list surfaces __demo__ but not
+// other underscore-prefixed ids; these tests pin both halves of that
+// asymmetry end-to-end.
 // =====================================================================
 
 describe("wizard __demo__ end-to-end", () => {
@@ -919,7 +913,7 @@ describe("wizard __demo__ end-to-end", () => {
     expect(entities[0].tableName).toBe("users");
   });
 
-  it("save → persists the demo entities under the org-scoped output dir", async () => {
+  it("save → persists the demo entities under the __demo__ output dir (not default/)", async () => {
     registerDemoInRegistry();
     const res = await postJson("/api/v1/wizard/save", {
       connectionId: "__demo__",
@@ -930,6 +924,13 @@ describe("wizard __demo__ end-to-end", () => {
     expect(data.saved).toBe(true);
     expect(data.connectionId).toBe("__demo__");
     expect(data.orgId).toBe("org-1");
+
+    // Pin the sourceId branch in wizard.ts: __demo__ must NOT collapse
+    // into the `default` output dir (`semantic/.orgs/{orgId}/`) — it
+    // gets its own scope (`semantic/.orgs/{orgId}/__demo__/`) so a
+    // demo wipe doesn't blow away an org's real semantic layer.
+    const mkdirPaths = mockMkdirSync.mock.calls.map(([dir]) => String(dir));
+    expect(mkdirPaths.some((p) => p.includes("__demo__"))).toBe(true);
   });
 
   it("profile → falls back to ATLAS_DATASOURCE_URL when DB lookup misses __demo__", async () => {
@@ -951,6 +952,31 @@ describe("wizard __demo__ end-to-end", () => {
       expect(res.status).toBe(200);
       const data = await json(res);
       expect(data.connectionId).toBe("__demo__");
+    } finally {
+      if (originalUrl === undefined) delete process.env.ATLAS_DATASOURCE_URL;
+      else process.env.ATLAS_DATASOURCE_URL = originalUrl;
+    }
+  });
+
+  it("profile → still 404s for __demo__ when it isn't registered AND the DB has no row", async () => {
+    // Pins current behavior: the env-var fallback is gated by
+    // `connections.has(connectionId)`. If a caller hand-crafts
+    // `connectionId: "__demo__"` against a server where
+    // loadSavedConnections() never hydrated the registry AND no DB row
+    // exists for the user's org, we 404 rather than silently profile
+    // ATLAS_DATASOURCE_URL — admins must set up the demo first
+    // (the wizard frontend hides this case via its visibility filter).
+    mockConnectionHas.mockImplementation(() => false);
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => []);
+
+    const originalUrl = process.env.ATLAS_DATASOURCE_URL;
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/atlas";
+    try {
+      const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
+      expect(res.status).toBe(404);
+      const data = await json(res);
+      expect(data.error).toBe("not_found");
     } finally {
       if (originalUrl === undefined) delete process.env.ATLAS_DATASOURCE_URL;
       else process.env.ATLAS_DATASOURCE_URL = originalUrl;

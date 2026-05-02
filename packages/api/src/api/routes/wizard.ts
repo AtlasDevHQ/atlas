@@ -846,14 +846,14 @@ async function resolveConnectionUrl(
         }
       }
 
-      // Fallback: ATLAS_DATASOURCE_URL is the canonical URL for both
-      // seeded onboarding identities — `default` (config-managed) and
-      // `__demo__` (#1474). The internal-DB lookup can miss when the
-      // caller's session orgId doesn't match the row's org_id (e.g.
-      // platform_admin spanning workspaces); without this fallback
-      // __demo__ dead-ends the wizard (#1950). Other underscore-prefixed
-      // ids stay excluded — the wizard frontend filters them out of its
-      // datasource list and the backend mirrors that filter.
+      // ATLAS_DATASOURCE_URL is the canonical URL for both seeded
+      // onboarding identities — `default` (config-managed) and `__demo__`
+      // (#1474). The internal-DB lookup can miss when the caller's
+      // session orgId doesn't match the row's org_id (e.g. platform_admin
+      // spanning workspaces) — without this fallback those callers
+      // dead-end on a registered identity. Other underscore-prefixed ids
+      // are intentionally excluded — the wizard frontend filters them
+      // out of its datasource list and the backend mirrors that filter.
       if (
         (connectionId === "default" || connectionId === DEMO_CONNECTION_ID) &&
         process.env.ATLAS_DATASOURCE_URL

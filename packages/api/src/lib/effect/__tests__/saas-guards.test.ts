@@ -44,6 +44,7 @@ import type {
   EncryptionKeyMissingError as TEncryptionKeyMissingError,
   EncryptionKeyMalformedError as TEncryptionKeyMalformedError,
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
+  RateLimitRequiredError as TRateLimitRequiredError,
 } from "../saas-guards";
 
 const {
@@ -54,6 +55,8 @@ const {
   EncryptionKeyMalformedError,
   InternalDbGuardLive,
   InternalDatabaseRequiredError,
+  RateLimitGuardLive,
+  RateLimitRequiredError,
 } = await import("../saas-guards");
 const { Config } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
@@ -74,6 +77,7 @@ const GUARD_ENV_KEYS = [
   "ATLAS_ENCRYPTION_KEY",
   "BETTER_AUTH_SECRET",
   "DATABASE_URL",
+  "ATLAS_RATE_LIMIT_RPM",
 ] as const;
 
 function withCleanEnv<T>(run: () => Promise<T>): Promise<T> {
@@ -394,6 +398,123 @@ describe("InternalDbGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             InternalDbGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  RateLimitGuardLive (#1983)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("RateLimitGuardLive", () => {
+  test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM is unset", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RateLimitRequiredError);
+      expect((failure as TRateLimitRequiredError)._tag).toBe("RateLimitRequiredError");
+      expect((failure as TRateLimitRequiredError).message).toContain("#1983");
+      expect((failure as TRateLimitRequiredError).message).toContain("ATLAS_RATE_LIMIT_RPM");
+    });
+  });
+
+  test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM is empty string", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_RATE_LIMIT_RPM = "";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RateLimitRequiredError);
+    });
+  });
+
+  // "0" is the documented disabled-rate-limit sentinel in
+  // auth/middleware.ts:39 — but in SaaS that's the DDoS hole the issue
+  // describes. Boot must fail rather than accept the explicit-disable.
+  test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM=0 (disabled sentinel)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_RATE_LIMIT_RPM = "0";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RateLimitRequiredError);
+    });
+  });
+
+  // Negative numbers and NaN parse to <=0 in middleware.ts; the guard
+  // mirrors that invariant so a typo (`-300`, `abc`) doesn't pass boot
+  // by being non-empty.
+  test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM is non-numeric", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_RATE_LIMIT_RPM = "not-a-number";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RateLimitRequiredError);
+    });
+  });
+
+  test("succeeds in SaaS when ATLAS_RATE_LIMIT_RPM is a positive number", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_RATE_LIMIT_RPM = "300";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds on self-hosted with ATLAS_RATE_LIMIT_RPM unset (warning-only path)", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
               Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
             ),
           ),

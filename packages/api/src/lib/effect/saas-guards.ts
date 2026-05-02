@@ -1,5 +1,5 @@
 /**
- * SaaS boot-guard family (#1978).
+ * SaaS boot-guard family (#1978, extended in #1983).
  *
  * Extends the `DpaGuardLive` precedent (architecture-wins #45) — a
  * `Layer.effectDiscard` that throws a typed `Data.TaggedError` at boot
@@ -30,6 +30,13 @@
  *      the scheduler all depend on the internal DB; missing it is
  *      not a degraded-but-functional state in SaaS.
  *
+ *   4. {@link RateLimitGuardLive} (#1983) — `ATLAS_RATE_LIMIT_RPM`
+ *      unset, empty, or `<= 0` in SaaS. `auth/middleware.ts` treats
+ *      that as "rate limiting disabled" — a SaaS region without a
+ *      per-user RPM ceiling is a DDoS hole. Self-hosted preserves the
+ *      opt-in behavior because lightweight evaluations and trial dev
+ *      loops don't need a baseline cap.
+ *
  * Tagged errors are defined locally rather than added to
  * `ATLAS_ERROR_TAG_LIST`/`mapTaggedError()` — same precedent as
  * `DpaInconsistencyError`. These guards fail process boot before any
@@ -45,6 +52,7 @@ import { Data, Effect, Layer } from "effect";
 import { Config } from "./layers";
 
 const ISSUE_REF = "#1978";
+const RATE_LIMIT_ISSUE_REF = "#1983";
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Tagged errors
@@ -96,6 +104,18 @@ export class EncryptionKeyMalformedError extends Data.TaggedError("EncryptionKey
  * warning (audit log will not persist) — SaaS treats it as fatal.
  */
 export class InternalDatabaseRequiredError extends Data.TaggedError("InternalDatabaseRequiredError")<{
+  readonly message: string;
+}> {}
+
+/**
+ * SaaS region booted without a usable `ATLAS_RATE_LIMIT_RPM`. The
+ * runtime path in `auth/middleware.ts` treats unset / empty / `0` /
+ * non-numeric values as "rate limiting disabled" — fine for trial dev
+ * loops but a DDoS hole on a hosted region. The boot guard mirrors
+ * the runtime parser so a typo (`-300`, `abc`) fails boot rather than
+ * silently disabling the limiter.
+ */
+export class RateLimitRequiredError extends Data.TaggedError("RateLimitRequiredError")<{
   readonly message: string;
 }> {}
 
@@ -259,6 +279,59 @@ export const InternalDbGuardLive: Layer.Layer<never, InternalDatabaseRequiredErr
             `Better Auth (sessions), audit log persistence, the admin console, settings persistence, ` +
             `and scheduler cleanup fibers. Set DATABASE_URL to the internal Postgres connection string. ` +
             `See ${ISSUE_REF}.`,
+        }),
+      );
+    }
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  RateLimitGuardLive (#1983)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fail boot in SaaS when `ATLAS_RATE_LIMIT_RPM` is unset, empty,
+ * `0`, or non-numeric. Mirrors the parsing in `auth/middleware.ts:38`
+ * (`Number(raw)` → `Number.isFinite && >= 0`) so the same value the
+ * runtime would treat as "rate-limit disabled" is the value the boot
+ * guard rejects. Self-hosted skips entirely — operators running a
+ * trial / evaluation deploy can legitimately leave the limiter off.
+ *
+ * Reads `process.env.ATLAS_RATE_LIMIT_RPM` directly (not through the
+ * settings cache) for two reasons: it matches the boot-time pattern
+ * established by `InternalDbGuardLive`, and it makes the operator
+ * contract clear — env var must be set at deploy time. Per-workspace
+ * DB overrides via `setSetting` adjust the limit on top of the env
+ * baseline; they don't replace the boot requirement.
+ */
+export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+
+    const raw = process.env.ATLAS_RATE_LIMIT_RPM;
+    if (raw === undefined || raw === "") {
+      yield* Effect.fail(
+        new RateLimitRequiredError({
+          message:
+            `SaaS region booted without ATLAS_RATE_LIMIT_RPM set — auth/middleware.ts treats unset ` +
+            `as "rate limiting disabled", which leaves the region exposed to DDoS and per-user abuse. ` +
+            `Set ATLAS_RATE_LIMIT_RPM to a positive integer (e.g. 300 for ~5 RPS per caller). ` +
+            `See ${RATE_LIMIT_ISSUE_REF}.`,
+        }),
+      );
+      return;
+    }
+
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      yield* Effect.fail(
+        new RateLimitRequiredError({
+          message:
+            `SaaS region booted with ATLAS_RATE_LIMIT_RPM=${JSON.stringify(raw)} — value is ` +
+            `${Number.isFinite(n) ? "non-positive" : "non-numeric"} and would parse to "rate limiting disabled" ` +
+            `at runtime (auth/middleware.ts:38). Set ATLAS_RATE_LIMIT_RPM to a positive integer. ` +
+            `See ${RATE_LIMIT_ISSUE_REF}.`,
         }),
       );
     }

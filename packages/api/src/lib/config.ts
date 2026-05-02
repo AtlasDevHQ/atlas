@@ -203,9 +203,36 @@ const PythonConfigSchema = z.object({
 
 export type PythonConfig = z.infer<typeof PythonConfigSchema>;
 
+/**
+ * Per-org pool sizing defaults (#1983).
+ *
+ * The dev floor (`maxConnections: 10`) is sized for trial / evaluation
+ * workloads — single-user demo, ad-hoc dashboards, occasional chat. A
+ * production SaaS region serving Business-tier customers running
+ * concurrent dashboards + chat agent + scheduled tasks needs higher
+ * limits; the boot-time `_warnPoolDefaultsInSaaS()` helper below
+ * surfaces a CRITICAL log when a SaaS deploy boots at the dev floor
+ * (or with no per-org block at all).
+ *
+ * Tier sizing reference for operators (informational — not enforced
+ * here; SaaS regions configure these explicitly via atlas.config.ts):
+ *
+ *   | Tier        | maxConnections | maxOrgs | drainThreshold |
+ *   |-------------|----------------|---------|----------------|
+ *   | Dev / trial | 10 (default)   | 50      | 5              |
+ *   | Team        | 20             | 200     | 5              |
+ *   | Business    | 50             | 500     | 8              |
+ *   | Enterprise  | 100+           | 2000    | 10             |
+ *
+ * The dev floor was bumped from 5 → 10 in #1983 — the prior value left
+ * a single Business-tier org running concurrent dashboards + chat
+ * queueing on basic load even before per-org pooling helped at all.
+ * 10 is still safe for evaluation and removes the cliff between dev
+ * and the first real workload.
+ */
 const OrgPoolConfigSchema = z.object({
-  /** Max connections per pool per org. Default 5. */
-  maxConnections: z.number().int().positive().default(5),
+  /** Max connections per pool per org. Default 10 — #1983. */
+  maxConnections: z.number().int().positive().default(10),
   /** Idle timeout in ms for per-org pool connections. Default 30000. */
   idleTimeoutMs: z.number().int().positive().default(30000),
   /** Max org pool sets before LRU eviction. Default 50. */
@@ -215,6 +242,14 @@ const OrgPoolConfigSchema = z.object({
   /** Consecutive query errors before auto-drain of an org pool. Default 5. */
   drainThreshold: z.number().int().positive().default(5),
 });
+
+/**
+ * The dev-tier floor for `OrgPoolConfigSchema.maxConnections`. A SaaS
+ * deploy at or below this floor triggers the boot-time CRITICAL warning
+ * in `_warnPoolDefaultsInSaaS()`. Kept as a named constant so the warn
+ * helper and the schema default share a single source of truth.
+ */
+const POOL_DEV_FLOOR_MAX_CONNECTIONS = 10;
 
 export type OrgPoolConfigInput = z.input<typeof OrgPoolConfigSchema>;
 
@@ -1156,6 +1191,68 @@ async function applyDeployMode(
         `silently downgraded to "${resolved.deployMode}". DPA, encryption, and internal-DB ` +
         `guards will NOT run. Build with @atlas/ee installed and ATLAS_ENTERPRISE_ENABLED=true, ` +
         `or remove the deployMode override from atlas.config.ts. See #1978.`,
+    );
+  }
+
+  // #1983 — pool-default warning runs after deploy mode resolves so
+  // SaaS-only emission is honored. Self-hosted deploys (intentionally
+  // or via #1978 silent-downgrade) skip the warning.
+  _warnPoolDefaultsInSaaS(resolved);
+}
+
+/**
+ * Boot-time CRITICAL log when a SaaS deploy is running on dev-tier pool
+ * defaults. Two emission paths:
+ *
+ *   1. `pool.perOrg` is undefined — operator never opted into per-org
+ *      pooling; SaaS noisy-neighbor isolation is off.
+ *   2. `pool.perOrg.maxConnections <= POOL_DEV_FLOOR_MAX_CONNECTIONS`
+ *      — operator configured per-org pooling but at the dev floor;
+ *      a single Business-tier org will queue on concurrent dashboards
+ *      + chat + scheduled tasks.
+ *
+ * Self-hosted is silent (returns early) — every operator running an
+ * AGPL deploy is presumptively at trial / evaluation scale where the
+ * dev floor is intentional.
+ *
+ * Exported under `_warn...` for direct unit-test access (the e2e path
+ * via `loadConfig()` can't easily reach the SaaS-resolved branch
+ * because tests run without `@atlas/ee`).
+ *
+ * @internal
+ */
+export function _warnPoolDefaultsInSaaS(resolved: ResolvedConfig): void {
+  if (resolved.deployMode !== "saas") return;
+
+  const perOrg = resolved.pool?.perOrg;
+
+  if (!perOrg) {
+    log.error(
+      {
+        reason: "pool-defaults",
+        perOrgConfigured: false,
+        devFloor: POOL_DEV_FLOOR_MAX_CONNECTIONS,
+      },
+      `CRITICAL: SaaS deploy booted without pool.perOrg configured — per-org pool isolation is off, ` +
+        `so a single noisy tenant can starve every other org's connections. Add pool.perOrg in ` +
+        `atlas.config.ts with tier-appropriate sizing (Business-class: maxConnections >= 50, ` +
+        `maxOrgs >= 500). See #1983.`,
+    );
+    return;
+  }
+
+  if (perOrg.maxConnections <= POOL_DEV_FLOOR_MAX_CONNECTIONS) {
+    log.error(
+      {
+        reason: "pool-defaults",
+        perOrgConfigured: true,
+        maxConnections: perOrg.maxConnections,
+        devFloor: POOL_DEV_FLOOR_MAX_CONNECTIONS,
+      },
+      `CRITICAL: SaaS deploy booted with pool.perOrg.maxConnections=${perOrg.maxConnections} — at or below ` +
+        `the dev-tier floor of ${POOL_DEV_FLOOR_MAX_CONNECTIONS}. A Business-tier org running concurrent dashboards + chat + ` +
+        `scheduled tasks will queue. Bump maxConnections to a tier-appropriate value (Business-class: 50+). ` +
+        `See #1983.`,
     );
   }
 }

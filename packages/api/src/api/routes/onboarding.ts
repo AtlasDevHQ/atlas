@@ -688,7 +688,7 @@ onboarding.openapi(
         dbType = detectDBType(url);
       } catch (err) {
         log.error({ err: errorMessage(err), requestId }, "Demo datasource URL has unsupported scheme");
-        return c.json({ error: "invalid_datasource", message: "Demo datasource URL has an unsupported scheme." }, 500);
+        return c.json({ error: "invalid_datasource", message: "Demo datasource URL has an unsupported scheme.", requestId }, 500);
       }
 
       // Encrypt and persist with status='published'

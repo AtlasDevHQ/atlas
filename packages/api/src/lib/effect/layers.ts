@@ -36,6 +36,7 @@ import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { InternalDB, makeInternalDBLive, hasInternalDB } from "@atlas/api/lib/db/internal";
+import { assertSaasPlatformEmailIsResend } from "@atlas/api/lib/email/dpa-guard";
 
 const log = createLogger("effect:layers");
 
@@ -733,51 +734,33 @@ export function makeSchedulerLive(
 // ██  DPA Guard Layer (#1969)
 // ══════════════════════════════════════════════════════════════════════
 
-export interface DpaGuardShape {
-  /** No-op marker — guard either passes or fails the boot Layer. */
-  readonly checked: true;
-}
-
-export class DpaGuard extends Context.Tag("DpaGuard")<
-  DpaGuard,
-  DpaGuardShape
->() {}
-
 /**
  * SaaS-region platform email DPA guard (#1969). Enforces that, in SaaS
  * deploy mode, the platform email transport is Resend (the vendor listed
  * on /dpa). Self-hosted is unaffected.
  *
- * Depends on `Config` (for deployMode) and `Settings` (so the in-process
- * settings cache is warm before `getPlatformEmailConfig()` reads it). On
- * violation the Layer fails with `DpaInconsistencyError`, which propagates
- * out of `runtime.runtimeEffect` in server.ts and exits the process — the
- * intended behavior for a DPA misconfig.
+ * Depends on `Config` (for `deployMode`) and `Settings` (so the in-process
+ * settings cache is warm before `getSetting("ATLAS_EMAIL_PROVIDER")` is
+ * read). On violation the Layer fails with `DpaInconsistencyError`, which
+ * propagates out of `runtime.runtimeEffect` in server.ts and exits the
+ * process — the intended behavior for a DPA misconfig.
  *
- * The guard intentionally skips per-org `email_installations` (BYOC) — see
- * the file comment in `lib/email/dpa-guard.ts` for the load-bearing reason.
+ * `Layer.effectDiscard` is correct here over `Layer.effect`: the guard
+ * has no service to expose; it runs once at boot and either passes or
+ * fails the Layer. No phantom Tag, no shape, no consumers.
  */
-export const DpaGuardLive: Layer.Layer<DpaGuard, Error, Config | Settings> = Layer.effect(
-  DpaGuard,
+export const DpaGuardLive: Layer.Layer<never, Error, Config | Settings> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
     yield* Settings; // sequence after settings cache is loaded
 
     yield* Effect.try({
-      try: () => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { assertSaasPlatformEmailIsResend } = require("@atlas/api/lib/email/dpa-guard") as {
-          assertSaasPlatformEmailIsResend: (deps?: { isSaas?: () => boolean }) => void;
-        };
+      try: () =>
         assertSaasPlatformEmailIsResend({
           isSaas: () => config.deployMode === "saas",
-        });
-      },
-      catch: (err) =>
-        err instanceof Error ? err : new Error(String(err)),
+        }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
-
-    return { checked: true } satisfies DpaGuardShape;
   }),
 );
 
@@ -798,7 +781,7 @@ export const DpaGuardLive: Layer.Layer<DpaGuard, Error, Config | Settings> = Lay
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */
 export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
-  Telemetry | Config | InternalDB | Migration | SemanticSync | Settings | Scheduler | DpaGuard,
+  Telemetry | Config | InternalDB | Migration | SemanticSync | Settings | Scheduler,
   Error
 > {
   const configLayer = Layer.succeed(Config, { config });

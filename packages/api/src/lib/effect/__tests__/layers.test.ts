@@ -13,10 +13,13 @@ import {
   Scheduler,
   makeSchedulerLive,
   buildAppLayer,
+  DpaGuardLive,
   type ConfigShape,
   type MigrationShape,
+  type SettingsShape,
 } from "../layers";
 import { createInternalDBTestLayer } from "@atlas/api/lib/db/internal";
+import { DpaInconsistencyError } from "@atlas/api/lib/email/dpa-guard";
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -208,6 +211,105 @@ describe("makeSchedulerLive", () => {
 
     // Disposing should not throw
     await rt.dispose();
+  });
+});
+
+// ── DpaGuardLive (#1969) ───────────────────────────────────────────
+
+const DPA_ENV_KEYS = ["ATLAS_EMAIL_PROVIDER", "ATLAS_SMTP_URL", "RESEND_API_KEY"] as const;
+
+function withCleanDpaEnv<T>(run: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of DPA_ENV_KEYS) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+  return run().finally(() => {
+    for (const key of DPA_ENV_KEYS) {
+      if (saved[key] !== undefined) process.env[key] = saved[key];
+      else delete process.env[key];
+    }
+  });
+}
+
+function settingsTestLayer(): Layer.Layer<Settings> {
+  return Layer.succeed(Settings, { loaded: 0 } satisfies SettingsShape);
+}
+
+describe("DpaGuardLive", () => {
+  test("fails the Layer with DpaInconsistencyError when SaaS + nothing configured", async () => {
+    await withCleanDpaEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            DpaGuardLive.pipe(
+              Layer.provide(Layer.merge(makeTestConfigLayer({ deployMode: "saas" }), settingsTestLayer())),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const cause = Exit.isFailure(exit) ? exit.cause : null;
+      const text = String(cause);
+      expect(text).toContain("DpaInconsistencyError");
+      expect(text).toContain("#1969");
+    });
+  });
+
+  test("succeeds when SaaS + RESEND_API_KEY present", async () => {
+    await withCleanDpaEnv(async () => {
+      process.env.RESEND_API_KEY = "re_test";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            DpaGuardLive.pipe(
+              Layer.provide(Layer.merge(makeTestConfigLayer({ deployMode: "saas" }), settingsTestLayer())),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds on self-hosted regardless of transport", async () => {
+    await withCleanDpaEnv(async () => {
+      process.env.ATLAS_SMTP_URL = "http://example.com";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            DpaGuardLive.pipe(
+              Layer.provide(Layer.merge(makeTestConfigLayer({ deployMode: "self-hosted" }), settingsTestLayer())),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // Regression: DpaInconsistencyError must reach the boot Layer's error
+  // channel (not a tagged channel) so that server.ts's plain `.catch()`
+  // logs and exits — verifies the Effect.try `instanceof Error` mapping
+  // doesn't demote `_tag`.
+  test("preserves _tag through the error channel", async () => {
+    await withCleanDpaEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            DpaGuardLive.pipe(
+              Layer.provide(Layer.merge(makeTestConfigLayer({ deployMode: "saas" }), settingsTestLayer())),
+            ),
+          ),
+        ),
+      );
+      if (!Exit.isFailure(exit)) {
+        throw new Error("expected failure");
+      }
+      const failure = exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(DpaInconsistencyError);
+      expect((failure as DpaInconsistencyError)?._tag).toBe("DpaInconsistencyError");
+    });
   });
 });
 

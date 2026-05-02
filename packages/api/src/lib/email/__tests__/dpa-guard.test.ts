@@ -1,14 +1,18 @@
 /**
  * Tests for the SaaS-region platform email DPA guard (#1969).
  *
- * The guard locks SaaS regions to Resend at the **platform** level so the
- * /dpa sub-processor table stays accurate. Per-org `email_installations`
- * (BYOC) are deliberately NOT considered — those are the customer's own
- * vendor relationship, not Atlas's sub-processor. The two "per-org"
- * cases below are the load-bearing assertions of that distinction.
+ * Covers two checks performed by `assertSaasPlatformEmailIsResend`:
+ *   1. Stated intent (`ATLAS_EMAIL_PROVIDER` setting) must be "resend" or
+ *      the registry default. Explicit non-Resend → throw.
+ *   2. A Resend key must exist; otherwise an `ATLAS_SMTP_URL` bridge would
+ *      become the actual transport (DPA-violating) or no mail would send.
  *
- * Tests use dependency-injection rather than mock.module so the assertion
- * surface is the function's own contract (no module-graph coupling).
+ * Per-org `email_installations` (BYOC) are deliberately NOT considered —
+ * those are the customer's own vendor relationship, not Atlas's
+ * sub-processor. The two BYOC cases below codify that distinction.
+ *
+ * Tests use dependency injection rather than module mocking so the assertion
+ * surface is the function's own contract.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -18,11 +22,16 @@ import {
   type DpaGuardDeps,
 } from "../dpa-guard";
 
-/** Build a deps stub. Defaults to the safe SaaS+nothing-configured shape (which throws). */
+/**
+ * Build a deps stub. Defaults model a SaaS region whose registry default
+ * `ATLAS_EMAIL_PROVIDER=resend` is in effect but no Resend key has been
+ * pasted yet — i.e. the "fail at boot" baseline. Tests opt in to the
+ * passing shape by setting `hasResendKey: () => true`.
+ */
 function deps(overrides: Partial<DpaGuardDeps> = {}): DpaGuardDeps {
   return {
     isSaas: () => true,
-    getPlatformProvider: () => null,
+    getPlatformProvider: () => "resend",
     hasSmtpUrl: () => false,
     hasResendKey: () => false,
     ...overrides,
@@ -30,15 +39,15 @@ function deps(overrides: Partial<DpaGuardDeps> = {}): DpaGuardDeps {
 }
 
 describe("assertSaasPlatformEmailIsResend", () => {
-  // ── SaaS + platform Resend → ok ────────────────────────────────────
-  it("does not throw when SaaS + platform provider is resend", () => {
+  // ── SaaS + platform Resend with key → ok ───────────────────────────
+  it("does not throw when SaaS + platform=resend AND RESEND_API_KEY set", () => {
     expect(() =>
-      assertSaasPlatformEmailIsResend(deps({ getPlatformProvider: () => "resend" })),
+      assertSaasPlatformEmailIsResend(deps({ hasResendKey: () => true })),
     ).not.toThrow();
   });
 
-  // ── SaaS + platform SendGrid → throws ──────────────────────────────
-  it("throws DpaInconsistencyError when SaaS + platform provider is sendgrid", () => {
+  // ── SaaS + platform SendGrid → throws (intent check) ───────────────
+  it("throws DpaInconsistencyError when SaaS + ATLAS_EMAIL_PROVIDER=sendgrid", () => {
     let captured: unknown;
     try {
       assertSaasPlatformEmailIsResend(deps({ getPlatformProvider: () => "sendgrid" }));
@@ -52,14 +61,26 @@ describe("assertSaasPlatformEmailIsResend", () => {
     expect(err.message).toContain("#1969");
   });
 
-  it("throws when SaaS + platform provider is postmark", () => {
+  it("throws when SaaS + ATLAS_EMAIL_PROVIDER=postmark", () => {
     expect(() =>
       assertSaasPlatformEmailIsResend(deps({ getPlatformProvider: () => "postmark" })),
     ).toThrow(DpaInconsistencyError);
   });
 
-  // ── SaaS + ATLAS_SMTP_URL → throws ────────────────────────────────
-  it("throws when SaaS + no platform provider but ATLAS_SMTP_URL is set", () => {
+  // The silent-failure-hunter scenario: operator stamps non-Resend intent,
+  // forgets the key, but happens to have RESEND_API_KEY in env. The actual
+  // transport is currently Resend, but a future "key paste" flips traffic to
+  // an unlisted vendor. Guard catches the intent at boot.
+  it("throws on non-Resend intent even when RESEND_API_KEY is also set", () => {
+    expect(() =>
+      assertSaasPlatformEmailIsResend(
+        deps({ getPlatformProvider: () => "sendgrid", hasResendKey: () => true }),
+      ),
+    ).toThrow(DpaInconsistencyError);
+  });
+
+  // ── SaaS + ATLAS_SMTP_URL only → throws (transport check) ──────────
+  it("throws when SaaS + intent=resend but no key + ATLAS_SMTP_URL set", () => {
     let captured: unknown;
     try {
       assertSaasPlatformEmailIsResend(deps({ hasSmtpUrl: () => true }));
@@ -73,15 +94,17 @@ describe("assertSaasPlatformEmailIsResend", () => {
     expect(err.message).toContain("#1969");
   });
 
-  // ── SaaS + only RESEND_API_KEY → ok ────────────────────────────────
+  // ── SaaS + RESEND_API_KEY only → ok ────────────────────────────────
+  // This is the env-var fallback path #4 in `sendEmail`. Intent defaults
+  // to "resend" via the settings registry default.
   it("does not throw when SaaS + only RESEND_API_KEY env-var is set", () => {
     expect(() =>
       assertSaasPlatformEmailIsResend(deps({ hasResendKey: () => true })),
     ).not.toThrow();
   });
 
-  // ── SaaS + nothing → throws ────────────────────────────────────────
-  it("throws when SaaS + no platform config and no env transports", () => {
+  // ── SaaS + nothing (default intent, no transport) → throws ─────────
+  it("throws when SaaS + intent=resend but no key and no SMTP_URL", () => {
     let captured: unknown;
     try {
       assertSaasPlatformEmailIsResend(deps());
@@ -95,36 +118,34 @@ describe("assertSaasPlatformEmailIsResend", () => {
   });
 
   // ── BYOC distinction (load-bearing) ────────────────────────────────
-  // These two cases codify that per-org `email_installations` are NEVER
-  // considered by the guard. The function does not even take an orgId
-  // and never queries the email-installation store, so the only thing
-  // we can assert here is that platform-level resolution alone decides
-  // the outcome — which is exactly the point.
+  // Codifies that per-org `email_installations` are NEVER considered.
+  // Structurally enforced: the function takes no `orgId` and never imports
+  // the email-installation store.
 
-  it("does not throw when SaaS + per-org config exists AND platform is resend", () => {
-    // Per-org installation existence is irrelevant — the guard never queries it.
-    // Resolution stays at the platform layer (resend), so this passes.
+  it("does not throw when SaaS + per-org config exists AND platform Resend works", () => {
     expect(() =>
-      assertSaasPlatformEmailIsResend(deps({ getPlatformProvider: () => "resend" })),
+      assertSaasPlatformEmailIsResend(deps({ hasResendKey: () => true })),
     ).not.toThrow();
   });
 
   it("throws when SaaS + per-org config exists but no platform transport", () => {
-    // Even if a customer has BYOC sendgrid wired into their org, the SaaS
-    // platform itself has no sub-processor configured — that's a DPA bug
-    // because Atlas-originated mail (e.g. password reset for unauthenticated
-    // /forgot-password requests) has nowhere to go that's covered by the DPA.
-    let captured: unknown;
-    try {
-      assertSaasPlatformEmailIsResend(deps());
-    } catch (err) {
-      captured = err;
-    }
-    expect(captured).toBeInstanceOf(DpaInconsistencyError);
+    expect(() => assertSaasPlatformEmailIsResend(deps())).toThrow(DpaInconsistencyError);
+  });
+
+  // ── Precedence ─────────────────────────────────────────────────────
+  it("does not throw when SaaS + platform Resend + key + ATLAS_SMTP_URL also set", () => {
+    // Platform Resend wins over the SMTP bridge in `sendEmail`. A future
+    // refactor that reorders the checks (e.g. SMTP-first to "fail fast")
+    // would silently start failing this valid SaaS shape.
+    expect(() =>
+      assertSaasPlatformEmailIsResend(
+        deps({ hasResendKey: () => true, hasSmtpUrl: () => true }),
+      ),
+    ).not.toThrow();
   });
 
   // ── Self-hosted → never throws ─────────────────────────────────────
-  it("does not throw on self-hosted regardless of provider", () => {
+  it("does not throw on self-hosted regardless of provider or transport", () => {
     expect(() =>
       assertSaasPlatformEmailIsResend(
         deps({ isSaas: () => false, getPlatformProvider: () => "sendgrid" }),

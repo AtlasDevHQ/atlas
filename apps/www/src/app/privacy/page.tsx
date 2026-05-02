@@ -150,16 +150,10 @@ const SECTIONS: LegalSectionData[] = [
     title: "Security",
     legal: [
       "Atlas maintains a security program aligned with ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, encrypted internal-database storage of all integration credentials and connection strings, automated vulnerability scanning of container images and dependencies, and TOTP two-factor authentication required for every administrator account on managed-mode sessions. Per-customer KMS keys are on the public roadmap and negotiable on enterprise contracts.",
-      // PGP key reference: kept as "on request" until operator drops the actual
-      // key file at apps/www/public/.well-known/atlas-security.asc. Once that
-      // file is live, swap both lines below to:
-      //   legal: "... Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). Encrypted reports may use the PGP key at useatlas.dev/.well-known/atlas-security.asc."
-      //   plain: "... Report suspected issues to security@useatlas.dev (PGP key at useatlas.dev/.well-known/atlas-security.asc)."
-      // See docs/guides/pgp-key-procedure.md for generation + rotation steps.
-      "Suspected security incidents may be reported to security@useatlas.dev. Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). A PGP key is available on request.",
+      "Suspected security incidents may be reported to security@useatlas.dev. Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). Encrypted reports may use the PGP key at useatlas.dev/.well-known/atlas-security.asc (fingerprint: B00E 2A64 12E9 3CDF 9624 29CF 3970 0A61 1481 92C7).",
     ],
     plain:
-      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, TOTP two-factor required for admin accounts. Working toward formal SOC 2 Type II + ISO 27001 certifications. Report suspected issues to security@useatlas.dev (PGP key on request).",
+      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, TOTP two-factor required for admin accounts. Working toward formal SOC 2 Type II + ISO 27001 certifications. Report suspected issues to security@useatlas.dev (PGP key at useatlas.dev/.well-known/atlas-security.asc).",
   },
   {
     id: "cookies",

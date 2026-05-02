@@ -22,7 +22,7 @@ const authMode = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 const VALID_MODES = new Set<string>(ATLAS_MODES);
 
 /** Routes that only unauthenticated users should see (exact match). */
-const authRoutes = ["/signup", "/login"];
+const authRoutes = ["/signup", "/login", "/forgot-password", "/reset-password"];
 
 /** Routes that are always accessible regardless of auth state. */
 const publicPrefixes = ["/demo", "/shared", "/report", "/api", "/_next"];

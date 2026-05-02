@@ -1,11 +1,20 @@
 /**
  * Categorizes a Better Auth `organization.create` failure into a user-facing
- * alert state. Mirrors the shape of `parse-sign-in-error.ts` so the alert
- * renderer can stay tiny and predictable across `/login` and `/create-org`.
+ * alert state.
  *
- * Branch order is load-bearing: status/code checks run before fuzzy message
- * regex so a 403 that mentions "slug" still routes to `permission_denied`,
- * not `slug_taken`.
+ * Branch precedence is load-bearing — three tiers, in order:
+ *
+ *   1. `partialActivation` short-circuits everything (the org *was* created;
+ *      that's the user-actionable truth).
+ *   2. A thrown exception is bucketed (TypeError → network, anything else →
+ *      unknown carrying its message).
+ *   3. The structured response is matched in tiers: HTTP `status` first
+ *      (unambiguous server signal), then `code` (server-supplied string),
+ *      then a fuzzy regex against `message` (last resort, for older Better
+ *      Auth shapes and custom policy plugins). Each tier wins over the next
+ *      so a 402 with "forbidden" in the body still routes to billing_required,
+ *      and a 403 with `code: "SLUG_ALREADY_EXISTS"` still routes to
+ *      permission_denied.
  */
 
 export type CreateOrgErrorKind =
@@ -17,17 +26,33 @@ export type CreateOrgErrorKind =
   | "unknown";
 
 /**
- * Discriminated by `kind`. The `partial_activation` branch carries a different
- * meaning (the org was created but `setActive` failed) so the renderer can
- * suggest a reload rather than implying the create itself failed.
+ * Discriminated by `kind` — payload-bearing variants get their own arm so
+ * adding a kind-specific affordance (e.g. a `billing_required.upgradeUrl` or
+ * a future `slug_taken.suggested`) doesn't widen the shape for other kinds.
+ * The renderer narrows with `error.kind === "..."`; an exhaustive switch
+ * gives a compile-time error when a new kind is added without a render path.
  */
-export type CreateOrgErrorState = {
-  kind: CreateOrgErrorKind;
-  title: string;
-  body: string;
-};
+export type CreateOrgErrorState =
+  | {
+      kind: "billing_required";
+      title: string;
+      body: string;
+      /** Override for the upgrade CTA. Defaults to `/admin/billing`. */
+      upgradeUrl?: string;
+    }
+  | {
+      kind: "slug_taken";
+      title: string;
+      body: string;
+      /** Server-suggested alternative slug, when available. */
+      suggested?: string;
+    }
+  | {
+      kind: "partial_activation" | "permission_denied" | "network" | "unknown";
+      title: string;
+      body: string;
+    };
 
-/** Better Auth's standard error envelope, with optional status/code fields. */
 export interface CreateOrgResponseError {
   message?: string | null;
   code?: string | null;
@@ -35,11 +60,12 @@ export interface CreateOrgResponseError {
 }
 
 export interface CreateOrgErrorInput {
-  /** Server-returned error envelope from authClient.organization.create(). */
   error?: CreateOrgResponseError;
-  /** A thrown JS exception (e.g. fetch TypeError). */
   thrown?: unknown;
-  /** True when create succeeded but the follow-up setActive call failed. */
+  /**
+   * True when create succeeded but the follow-up setActive call failed.
+   * The boolean name doesn't carry that semantic, so it's worth spelling out.
+   */
   partialActivation?: boolean;
 }
 
@@ -95,23 +121,23 @@ export function parseCreateOrgError(input: CreateOrgErrorInput): CreateOrgErrorS
     body: "Pick a different slug — workspace URLs have to be unique across Atlas.",
   });
 
-  // Specific HTTP status codes are unambiguous — bucket on those first so a
-  // 402 doesn't get hijacked by a "forbidden plan" string in the message
-  // body and a 403 doesn't get hijacked by a slug-named field.
+  // Tier 1 — HTTP status codes are unambiguous.
   if (status === 402) return billing();
   if (status === 403) return permission();
   if (status === 409) return slug();
 
-  // Server-supplied codes are next — also unambiguous when present.
+  // Tier 2 — server-supplied codes.
   if (code === "BILLING_REQUIRED" || code === "PLAN_LIMIT_REACHED") return billing();
   if (code === "FORBIDDEN") return permission();
   if (code === "SLUG_ALREADY_EXISTS" || code === "ORGANIZATION_ALREADY_EXISTS") return slug();
 
-  // Fuzzy message regex is the last resort — used when neither status nor
-  // code is set (older Better Auth shapes, custom policy plugins).
+  // Tier 3 — fuzzy message regex (legacy shapes, custom policy plugins).
   if (/upgrade your plan|plan limit|workspace limit reached|billing required/i.test(message)) return billing();
   if (/not (allowed|permitted)|forbidden|insufficient (permissions|role)/i.test(message)) return permission();
-  if (/slug (already|is) (taken|in use|exists)|already exists/i.test(message)) return slug();
+  // "slug" within ~20 chars of taken/in use/exists catches "slug is already
+  // taken" and "slug already in use" without matching unrelated "already exists"
+  // strings on neighboring fields.
+  if (/slug[^.]{0,20}(taken|in use|exists)|already exists/i.test(message)) return slug();
 
   return {
     kind: "unknown",

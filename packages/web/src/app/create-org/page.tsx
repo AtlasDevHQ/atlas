@@ -98,23 +98,37 @@ export default function CreateOrgPage() {
       });
 
       if (result.error) {
+        // Surface the raw envelope to DevTools / Sentry so a screenshot of
+        // the unknown-fallback alert isn't a debugging dead-end. Logged
+        // unwrapped so any `code`/`status` fields the OrgClient type doesn't
+        // model (pre-existing typing weakness in lib/auth/client.ts) still
+        // appear in the console.
+        console.warn("Workspace create returned error:", result.error);
         setSubmitError(parseCreateOrgError({ error: result.error }));
         return;
       }
 
-      if (result.data?.id) {
-        try {
-          await authClient.organization.setActive({
-            organizationId: result.data.id,
-          });
-        } catch (err) {
-          console.warn(
-            "Workspace activated failed:",
-            err instanceof Error ? err.message : String(err),
-          );
-          setSubmitError(parseCreateOrgError({ partialActivation: true }));
-          return;
-        }
+      if (!result.data?.id) {
+        // Better Auth contract: a successful create returns an id. A null id
+        // here means the org may have been created but we can't activate it
+        // — same user-facing remediation as a thrown setActive (reload + pick
+        // from the switcher), so we route through the same branch.
+        console.warn("Workspace create returned no id:", result.data);
+        setSubmitError(parseCreateOrgError({ partialActivation: true }));
+        return;
+      }
+
+      try {
+        await authClient.organization.setActive({
+          organizationId: result.data.id,
+        });
+      } catch (err) {
+        console.warn(
+          "Workspace activation failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+        setSubmitError(parseCreateOrgError({ partialActivation: true }));
+        return;
       }
 
       router.push("/");
@@ -247,40 +261,57 @@ export default function CreateOrgPage() {
   );
 }
 
+type ErrorTone = "amber" | "red";
+
+function toneFor(kind: CreateOrgErrorState["kind"]): ErrorTone {
+  switch (kind) {
+    case "partial_activation":
+      return "amber";
+    case "billing_required":
+    case "slug_taken":
+    case "permission_denied":
+    case "network":
+    case "unknown":
+      return "red";
+    // Exhaustiveness check — adding a new kind without a render path is a
+    // compile error here, not a silent visual regression.
+    default: {
+      const _exhaustive: never = kind;
+      return "red";
+    }
+  }
+}
+
 function CreateOrgErrorAlert({ error }: { error: CreateOrgErrorState }) {
-  const isPartial = error.kind === "partial_activation";
-  const isBilling = error.kind === "billing_required";
+  const tone = toneFor(error.kind);
+  const Icon = error.kind === "partial_activation" ? RefreshCcw : AlertCircle;
   return (
     <div
       role="alert"
       aria-live="polite"
       className={cn(
         "flex items-start gap-3 rounded-md border p-3 text-sm",
-        isPartial
+        tone === "amber"
           ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
           : "border-red-200 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200",
       )}
     >
-      {isPartial ? (
-        <RefreshCcw className="mt-0.5 size-4 shrink-0" aria-hidden />
-      ) : (
-        <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
-      )}
+      <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
       <div className="flex-1 space-y-1">
         <p className="font-medium leading-tight">{error.title}</p>
         <p
           className={cn(
             "text-xs leading-relaxed",
-            isPartial
+            tone === "amber"
               ? "text-amber-800/90 dark:text-amber-200/90"
               : "text-red-800/90 dark:text-red-200/90",
           )}
         >
           {error.body}
         </p>
-        {isBilling && (
+        {error.kind === "billing_required" && (
           <Link
-            href="/admin/billing"
+            href={error.upgradeUrl ?? "/admin/billing"}
             className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
           >
             Open billing settings

@@ -92,6 +92,29 @@ describe("parseCreateOrgError — response branch", () => {
   });
 });
 
+describe("parseCreateOrgError — fuzzy regex fallback (legacy + custom-plugin shapes)", () => {
+  it("classifies a message-only 'upgrade your plan' as billing_required", () => {
+    const out = parseCreateOrgError({
+      error: { message: "Please upgrade your plan to add another workspace" },
+    });
+    expect(out.kind).toBe("billing_required");
+  });
+
+  it("classifies a message-only 'forbidden' as permission_denied", () => {
+    const out = parseCreateOrgError({
+      error: { message: "Action is forbidden for this role" },
+    });
+    expect(out.kind).toBe("permission_denied");
+  });
+
+  it("classifies a message-only 'slug already taken' as slug_taken", () => {
+    const out = parseCreateOrgError({
+      error: { message: "That slug is already taken" },
+    });
+    expect(out.kind).toBe("slug_taken");
+  });
+});
+
 describe("parseCreateOrgError — branch ordering invariants", () => {
   it("a 403 whose message mentions 'slug' still routes to permission_denied (status leads)", () => {
     const out = parseCreateOrgError({
@@ -110,6 +133,29 @@ describe("parseCreateOrgError — branch ordering invariants", () => {
   it("a SLUG_ALREADY_EXISTS code paired with a generic message still routes to slug_taken", () => {
     const out = parseCreateOrgError({
       error: { code: "SLUG_ALREADY_EXISTS", message: "Conflict" },
+    });
+    expect(out.kind).toBe("slug_taken");
+  });
+
+  it("a 403 paired with code SLUG_ALREADY_EXISTS still routes to permission_denied (status > code)", () => {
+    // Pins the tier-1-vs-tier-2 precedence: HTTP status is the strongest
+    // signal because the server already chose to refuse the action; a "slug"
+    // code from a misconfigured policy plugin shouldn't downgrade that to
+    // a recoverable conflict.
+    const out = parseCreateOrgError({
+      error: { status: 403, code: "SLUG_ALREADY_EXISTS" },
+    });
+    expect(out.kind).toBe("permission_denied");
+  });
+
+  it("does NOT misclassify a generic message that incidentally contains 'already exists' from another field", () => {
+    // The slug regex is intentionally narrow — `(slug ... exists)|already exists`
+    // matches 'already exists' on its own, so a future tightening should keep
+    // the test green by routing this kind of incidental hit to slug_taken on
+    // purpose. If we ever tighten the regex to require `slug` adjacency, flip
+    // this test's expectation alongside the parser change.
+    const out = parseCreateOrgError({
+      error: { message: "A workspace with that name already exists" },
     });
     expect(out.kind).toBe("slug_taken");
   });

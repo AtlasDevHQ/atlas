@@ -1172,7 +1172,7 @@ Second, a hand-constructed `FetchError { message: "" }` would render blank `Erro
 **Solution:** New `packages/web/src/ui/components/chat/assistant-turn.tsx` — a 14-line `AssistantTurn` component that wraps the gutter style behind `cn("border-l-2 border-primary/40 pl-4", className)`. Typed as `React.ComponentProps<"div">` per the local shadcn convention (`Card`, `CardHeader`, `Table`, etc.) so callers can spread native div props — needed at the chat call site to preserve `role="article"` and `aria-label="Message from Atlas"` on the same DOM node without wrapping in a second element. Both call sites migrated; the chat surface picks up the `/30` → `/40` opacity bump as part of consolidation.
 
 **Impact:**
-- **Net +6 lines, but a single source of truth.** The component is 14 lines (JSDoc + 7 line body), the two call sites each lose 1 line of inlined classes. Future adopters (tool-call grouping fold-down, any third surface) inherit the consolidated style automatically.
+- **Net positive line count, but a single source of truth.** The component is 14 lines, each call site loses its inlined gutter classes but gains an import. Future adopters (tool-call grouping fold-down, any third surface) inherit the consolidated style automatically.
 - **Opacity drift resolved.** One `primary/40` across both surfaces. A future reviewer who tweaks gutter saturation only has to find one place.
 - **Accessibility preserved.** Spreading `React.ComponentProps<"div">` lets the chat surface keep `role="article"` and `aria-label="Message from Atlas"` on the gutter element where they belong semantically, instead of forcing a wrapper div.
 - **Pure refactor.** No behavior change, no new tests, no public API surface added.

@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas supports workspace-level model routing. Each workspace can configure its own LLM provider and API key, overriding the platform default. This enables enterprise customers to use their own Anthropic, OpenAI, Azure OpenAI, or custom OpenAI-compatible endpoints.
 
 <Callout type="info" title="SaaS Feature">
-  Model routing is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments configure the model provider globally via environment variables.
+  Model routing is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments configure the model provider globally via environment variables. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("model-routing")` call sites.
 </Callout>
 
 <Callout title="Prerequisites">

@@ -1,0 +1,298 @@
+---
+title: Enterprise (/ee) Boundary
+description: The AGPL-vs-commercial split, the isEnterpriseEnabled / requireEnterprise API, and the inventory of features gated behind @atlas/ee.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+> Single source of truth on the Atlas enterprise gate. Plugin authors and self-hosted operators land here when they want to know what `/ee` is, what's inside it, and how to interact with it from code.
+
+## Why this page exists
+
+Atlas ships as two layers that share one repository:
+
+- **`@atlas/api`, `@atlas/web`, `@atlas/cli`, `@useatlas/*`** — the **AGPL** core. Self-hosted users get the entire product: agent loop, semantic layer, tools, admin console, plugins, multi-datasource support, the works.
+- **`@atlas/ee`** (the `ee/` directory) — **source-available, commercial license**. Adds the governance, compliance, scale, and polished SaaS surfaces that make Atlas viable as a hosted product.
+
+The boundary between them is enforced by two functions exported from `@atlas/ee/index`:
+
+- [`isEnterpriseEnabled()`](#isenterpriseenabled) — boolean check, safe for conditional logic.
+- [`requireEnterprise(name?)`](#requireenterprise-and-requireenterpriseeffect) — guard that throws [`EnterpriseError`](#enterpriseerror).
+
+Everything else flows from those two. If you've grepped for `requireEnterprise(` and built a mental model from the call sites, this page formalizes it.
+
+---
+
+## License split
+
+### AGPL core — what self-hosted gets for free
+
+The core product is **AGPL-3.0**. Run it standalone, embed it via the SDK, ship it on Docker, Railway, or Vercel — no license key, no feature flags. Self-hosted deployments get:
+
+- The agent loop, tools (`executeSQL`, `explore`, plugin actions), and Vercel AI SDK integration
+- The semantic layer, `atlas init` / `atlas diff` / `atlas learn` CLI
+- Multi-tenant primitives (Better Auth org plugin, tenant-scoped pools, query result cache)
+- The admin console, audit log, role assignment via the built-in `admin`/`member`/`owner` triad
+- The full plugin ecosystem and Chat SDK adapters
+- Notebooks, dashboards, sharing, embedding widget
+
+Atlas is fully usable for any internal-tool or single-team deployment **without ever enabling enterprise**.
+
+### Commercial `/ee` — what the gate adds
+
+Anything that exists specifically to make Atlas work as a **hosted SaaS product** lives under `ee/src/` and runs under the [`ee/LICENSE`](https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE). That covers:
+
+- Multi-tenant governance (custom roles, SSO, SCIM, IP allowlists, approval workflows, custom domains)
+- Compliance (PII detection, compliance reports, long-tail audit retention)
+- Platform operations (automated backups, SLA monitoring, abuse prevention, data residency, model routing, white-labeling)
+- The deploy-mode flag that branches admin UX between self-hosted and SaaS
+
+### The "no competing SaaS" clause
+
+The commercial license is the business model — self-hosted is free, the hosted SaaS and enterprise features are how Atlas funds development. From [`ee/LICENSE`](https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE):
+
+> RESTRICTIONS. You may not: (a) redistribute, sublicense, or transfer the Software to any third party; (b) modify the Software for the purpose of circumventing license verification or feature gating; **(c) use the Software in a competing product or service**; (d) remove or alter any license notices or proprietary markings.
+
+Source is published for transparency, security auditing, and to enable self-hosted deployments by licensed customers — not to be cloned into a competing offering. If you want to use enterprise features, contact `enterprise@useatlas.dev` for a license.
+
+---
+
+## The API
+
+Two exports — `isEnterpriseEnabled` and `requireEnterprise` — back every gated surface in the codebase. There's also an Effect-flavored variant for code in the Effect.ts service graph.
+
+### `isEnterpriseEnabled()`
+
+```typescript
+import { isEnterpriseEnabled } from "@atlas/ee/index";
+
+export function isEnterpriseEnabled(): boolean;
+```
+
+Returns `true` when the gate is open. Resolution order:
+
+1. `enterprise.enabled` in `atlas.config.ts` (if the `enterprise` section is configured)
+2. The `ATLAS_ENTERPRISE_ENABLED` env var (`"true"` → `true`, anything else → `false`)
+
+Use this for **conditional logic** — UI branching, optional feature wiring, defensive defaults — anywhere throwing would be wrong. For example, the SCIM provenance helper short-circuits when the gate is closed:
+
+```typescript
+import { isEnterpriseEnabled } from "@atlas/ee/index";
+
+export function isScimManaged(user: User): boolean {
+  if (!isEnterpriseEnabled()) return false;
+  return user.metadata?.scimProvenance === "scim";
+}
+```
+
+The IP-allowlist admin route uses it the same way to decide whether to render the live blocklist count:
+
+```typescript
+const showCount =
+  enterpriseGate.isEnterpriseEnabled() && hasInternalDB() && list.length > 0;
+```
+
+### `requireEnterprise()` and `requireEnterpriseEffect()`
+
+```typescript
+import { requireEnterprise, requireEnterpriseEffect } from "@atlas/ee/index";
+
+export function requireEnterprise(feature?: string): void;
+export const requireEnterpriseEffect: (
+  feature?: string,
+) => Effect.Effect<void, EnterpriseError>;
+```
+
+Use these as **guards** at the top of any function that should refuse to run when the gate is closed. The optional `feature` label lands in the error message — pass a stable identifier (`"sso"`, `"scim"`, `"approval-workflows"`) so audit logs and UI surfaces can route on it.
+
+Sync guard inside an `Effect.try`:
+
+```typescript
+// ee/src/backups/scheduler.ts
+import { requireEnterprise } from "../index";
+
+export const scheduleBackup = (orgId: string) =>
+  Effect.gen(function* () {
+    yield* Effect.try({
+      try: () => requireEnterprise("backups"),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+    // ...rest of the scheduling logic
+  });
+```
+
+Effect-native guard for handlers in the service graph:
+
+```typescript
+// ee/src/auth/sso.ts
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
+
+export const listProviders = (
+  orgId: string,
+): Effect.Effect<SSOProvider[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    // ...query the providers table
+  });
+```
+
+The Effect variant fails with `EnterpriseError` in the error channel — pipeline `catchTag("EnterpriseError", ...)` handlers compose cleanly.
+
+<Callout type="info" title="License key vs gate">
+The license key check is **separate** from `requireEnterprise`. Self-hosted customers validate their key at startup; the SaaS platform and local dev don't require one. The key check was deliberately removed from this guard so platform admins can use features they control. Set `ATLAS_ENTERPRISE_LICENSE_KEY` in production self-hosted deployments — see [`reference/config`](/reference/config#enterprise) for the full schema.
+</Callout>
+
+### `EnterpriseError`
+
+```typescript
+import { EnterpriseError } from "@atlas/ee/index";
+
+export class EnterpriseError extends Data.TaggedError("EnterpriseError")<{
+  message: string;
+  code: "enterprise_required";
+}> {}
+```
+
+Tagged error built on `Data.TaggedError` — supports `instanceof`, `Effect.catchTag("EnterpriseError", ...)`, and structural equality. **Always check via `instanceof`, never by string-matching the message.**
+
+```typescript
+// good
+if (err instanceof EnterpriseError) { /* ... */ }
+
+// bad — message is hand-authored at the throw site and varies
+if (err.message.includes("enterprise")) { /* ... */ }
+```
+
+Route handlers in the AGPL core never have to map this error themselves. The shared Effect-to-Hono bridge in `packages/api/src/lib/effect/hono.ts` recognizes it via duck-typed coupling (`error.name === "EnterpriseError"` + string `code`) and emits **HTTP 403** with a `requestId`. The duck type stays decoupled from the `@atlas/ee` import so the AGPL core can compile without the enterprise package.
+
+```text
+runHandler(c, "label", () => program)
+  ↓ classifyError(err)
+  ↓ err.name === "EnterpriseError" && typeof err.code === "string"
+  ↓
+HTTP 403 { code: "enterprise_required", message, requestId }
+```
+
+---
+
+## Gated feature inventory
+
+Every feature in the table below calls `requireEnterprise(...)` or `requireEnterpriseEffect(...)` somewhere in its write path. The `Feature label` column is the literal string passed to the guard — search the codebase for `requireEnterprise("<label>"` to find every call site.
+
+| Category | Feature label | What's gated | Guide |
+|---|---|---|---|
+| **Identity** | `sso` | SAML 2.0 / OIDC providers, domain verification, IdP test connection, auto-provisioning toggles | [Enterprise SSO](/guides/enterprise-sso) |
+| **Identity** | `scim` | SCIM 2.0 connections, group mapping, sync-status endpoints | [SCIM Directory Sync](/guides/scim) |
+| **Identity** | `roles` | Custom role definitions, permission flag CRUD, role assignment beyond the built-in admin/analyst/viewer triad | [Custom Roles](/guides/custom-roles) |
+| **Network** | `ip-allowlist` | CIDR allowlist CRUD, request-time allowlist enforcement | [IP Allowlisting](/guides/ip-allowlisting) |
+| **Governance** | `approval-workflows` | Approval rules, request lifecycle, expiration sweeps, pending-count queries | [Approval Workflows](/guides/approval-workflows) |
+| **Compliance** | `pii-detection` | Column classification CRUD, masking config, PII scan triggers | [PII Masking](/guides/pii-masking) |
+| **Compliance** | `compliance` | SOC 2 / ISO / GDPR report generation, evidence aggregation | [Compliance Reporting](/guides/compliance-reporting) |
+| **Audit** | `audit-retention` | Long-tail retention policies, archive/export, retention policy CRUD | [Audit Retention](/guides/audit-retention) |
+| **Platform** | `backups` | Scheduled backups, restore, integrity verification | [Backups](/platform-ops/backups) |
+| **Platform** | `model-routing` | Per-workspace model overrides, routing rules, BYOT model config beyond defaults | [Model Routing](/guides/model-routing) |
+| **Platform** | `branding` | White-label branding, custom logo / colors / favicon, hosted-product theming | [White Labeling](/guides/white-labeling) |
+| **Platform** | (admin-domains route) | Custom domains for SaaS workspaces — gated inline via `Effect.fail(new EnterpriseError(...))` in `admin-domains.ts` rather than a `requireEnterprise` label | [Custom Domains](/platform-ops/custom-domains) |
+| **Platform ops** | (resolveDeployMode) | Abuse prevention surfaces, data residency routing, SLA monitoring — gated indirectly via `isEnterpriseEnabled()` checks at the service-init layer rather than per-call `requireEnterprise` | [Abuse Prevention](/platform-ops/abuse-prevention), [Data Residency](/platform-ops/data-residency) |
+
+The labels are stable identifiers — once a feature ships with a label, audit log entries and admin UI surfaces lock onto it. Don't rename a label without a migration plan.
+
+<Callout title="Adding a new gated feature">
+1. Implement under `ee/src/<category>/<feature>.ts`.
+2. Call `requireEnterpriseEffect("<feature-label>")` (or `requireEnterprise(...)` inside `Effect.try`) at the top of every public Effect.
+3. Re-export the public surface — do **not** import `@atlas/ee` from the AGPL core; the core relies on the duck-typed `EnterpriseError` mapping.
+4. Add the feature label to the [feature inventory](#gated-feature-inventory) above.
+5. If the feature surfaces in the admin UI, add its canonical name to the `FeatureName` registry in `packages/web/src/ui/components/admin/feature-registry.ts` so `<EnterpriseUpsell>` / `<FeatureGate>` typecheck.
+</Callout>
+
+---
+
+## Deploy mode and the gate
+
+`ATLAS_DEPLOY_MODE` controls whether the admin UX renders the SaaS variant (billing, plugin marketplace, residency picker, custom domains) or the self-hosted variant. The setting is enterprise-gated:
+
+```typescript
+// ee/src/deploy-mode.ts
+export function resolveDeployMode(raw?: DeployModeSetting): DeployMode {
+  const setting = raw ?? process.env.ATLAS_DEPLOY_MODE ?? "auto";
+
+  if (setting === "self-hosted") return "self-hosted";
+
+  if (setting === "saas") {
+    return isEnterpriseEnabled() ? "saas" : "self-hosted";
+  }
+
+  // "auto" — both enterprise enabled AND an internal database configured
+  return isEnterpriseEnabled() && hasInternalDB() ? "saas" : "self-hosted";
+}
+```
+
+Three settings, one rule: **`saas` requires enterprise**. Without it, deploy mode always resolves to `self-hosted` regardless of what the env var says. The frontend reads `deployMode` from `GET /api/v1/mode` and branches accordingly — there's no way for an unlicensed deployment to render SaaS-only admin UX, even by accident.
+
+| Setting | With enterprise | Without enterprise |
+|---|---|---|
+| `self-hosted` (explicit) | `self-hosted` | `self-hosted` |
+| `saas` (explicit) | `saas` | `self-hosted` (silent fallback) |
+| `auto` (default) | `saas` if `DATABASE_URL` set, else `self-hosted` | `self-hosted` |
+
+See [Environment Variables](/reference/environment-variables#deploy-mode) for the full env-var schema.
+
+---
+
+## Patterns
+
+### From a plugin
+
+Plugins live in the AGPL core but can opt into enterprise gating for premium features. **Don't** import `@atlas/ee` directly — your plugin should be installable in unlicensed deployments. Instead, accept a config flag and let the host decide:
+
+```typescript
+// plugins/my-plugin/src/index.ts
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  name: "my-plugin",
+  // ... rest of plugin shape
+  initialize: async (ctx) => {
+    if (ctx.config.premiumFeatures) {
+      // Host has confirmed enterprise context — wire the premium path.
+    } else {
+      // Free path — works in every deployment.
+    }
+  },
+});
+```
+
+If your plugin **must** check the gate at runtime (e.g., to refuse a write for compliance reasons), the host can forward the resolved boolean through the plugin context. Avoid hard-coupling plugin code to `@atlas/ee` — it complicates packaging and breaks self-hosted users who don't have the package on disk.
+
+### From a route handler
+
+Route handlers in `packages/api/src/api/routes/` either guard via `requireEnterpriseEffect` inside an `Effect.gen` body or fail directly with `EnterpriseError` at conditional points (see `admin-domains.ts` for the pattern). The shared bridge maps it to 403 — you don't need to write your own try/catch.
+
+```typescript
+// packages/api/src/api/routes/admin-domains.ts
+import { EnterpriseError } from "@atlas/ee/index";
+
+const program = Effect.gen(function* () {
+  if (!isEnterpriseEnabled()) {
+    return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
+  }
+  // ... rest of the handler
+});
+```
+
+### From the frontend
+
+The web package never imports `@atlas/ee`. UI gating lives in two places:
+
+1. `GET /api/v1/mode` returns the resolved `deployMode` — branch SaaS vs self-hosted UX on that.
+2. The `FeatureName` registry at `packages/web/src/ui/components/admin/feature-registry.ts` is the source of truth for `<EnterpriseUpsell>`, `<FeatureGate>`, and `<MutationErrorSurface>` `feature` props. Add a feature there, then the UI components are typechecked against it.
+
+---
+
+## See also
+
+- [Reference: Config](/reference/config#enterprise) — `enterprise.enabled` / `enterprise.licenseKey` schema
+- [Reference: Environment Variables](/reference/environment-variables) — `ATLAS_ENTERPRISE_ENABLED`, `ATLAS_ENTERPRISE_LICENSE_KEY`, `ATLAS_DEPLOY_MODE`
+- [Architecture: Sandbox](/architecture/sandbox) — companion design doc on the runtime sandbox boundary
+- [Comparisons: Metabase](/comparisons/metabase#license) — split-license positioning vs other AGPL BI tools
+- [`ee/LICENSE`](https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE) — the commercial license verbatim

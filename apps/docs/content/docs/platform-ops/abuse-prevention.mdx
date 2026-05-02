@@ -7,6 +7,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas includes built-in abuse prevention that detects anomalous query patterns per workspace and applies a graduated response: **warn**, **throttle**, then **suspend**. This protects your analytics datasource from runaway queries, credential stuffing, and resource exhaustion.
 
+<Callout type="info" title="SaaS Feature">
+  Cross-workspace abuse prevention surfaces are part of the Atlas commercial offering. Self-hosted deployments get the per-workspace counters via the AGPL core. See the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate and license split.
+</Callout>
+
 <Callout title="Prerequisites">
 - Atlas server running with `DATABASE_URL` configured (internal DB required for persistence)
 - Admin access for the admin console abuse management page

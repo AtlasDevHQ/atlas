@@ -1967,3 +1967,22 @@ Full security audit with in-milestone remediation. Audit-and-fix shape: P0/P1/P2
 - [x] Phase 7 — Audit EE governance bypasses — SSO / SCIM / IP / approval (#1726, PR #1854). 0 P0 / 2 P1 / 3 P2 / 3 P3-noted; remediation queue #1849–#1853. F-54/F-55 → PR #1860. Remaining (F-53 custom-role permission enforcement multi-PR cluster, F-56 SSO `simple-key`/`byot` gating, F-57 SCIM provenance check, plus #1858 MCP actor binding) deferred to **1.2.4 — Security Cleanup Tail**.
 
 ---
+
+## 1.3.0 — End-User UI Design Pass — CLOSED
+
+Closed 2026-05-02. Tracking issue #1719, milestone #38 (1 + 28 issues). Revamped end-user facing surfaces using the treatment pattern from the 1.2.1/1.2.2 admin revamp (critique → distill → colorize → polish). No features, no backend — pure UI/UX. 13 page sub-issues #1864–#1876 + the post-bucket public-page audit + one structural refactor (#1888).
+
+- [x] Bucket 1 — Chat (`/`, #1864) — message density, starter-prompt grid, tool calls, result cards, conversation sidebar (PR #1885)
+- [x] Bucket 2 — Notebook (`/notebook`, #1865) — cell UX, fork-gutter verification, markdown cells, empty state — SQL-failure dedup wired in via existing `computeSqlFailureDedup`, cell head simplified, "What if?" promoted out of toolbar, mobile cell-toolbar collapsed to kebab
+- [x] Bucket 3 — Dashboards
+  - [x] 3b detail (`/dashboards/[id]`, #1867, PR #1889 + #1893) — freeform RGL tile grid + critique pass: chart-on-mount fix, mobile single-column read-only fallback, edit-mode dot tint + Esc banner, opaque fullscreen, tile-head a11y. Adjacent: #1891 / #1892
+  - [x] 3a list (`/dashboards`, #1866 → superseded by #1895, PR #1896) — **completed by deletion**. `/dashboards` server-side redirects to the most-recently-updated dashboard; switcher dropdown + View All modal replace the standalone list. Pre-fetched after-delete redirect, multi-agent review fixes inline.
+- [x] Bucket 4 — Public views — shared chat (#1868, PR #1902 + a11y #1903), embed (#1869, PR #1906), shared dashboard (#1870, PR #1904), report (#1871, PR #1905)
+- [x] Bucket 5 — Onboarding — login (#1872, PR #1941), signup (#1873, PR #1943), create-org (#1874, PR #1948), wizard (#1875, PR #1949). Wizard pass extracted shared `<OnboardingShell>` + `<StepTrack>` to `@/ui/components/onboarding/`; signup migrated to thin-wrap them.
+- [x] Bucket 6 — Demo (`/demo`, #1876, PR #1942) — two-column hero with dataset preview + curated cybersecurity starter prompts; bonus widget P0 fix so `propApiKey` bypasses `ManagedAuthCard` in managed-auth mode. Follow-up #1944 (PR #1947) wired demo bearer through `/api/v1/starter-prompts` so /demo flows through the adaptive resolver instead of the hard-coded teaser list.
+- [x] Bucket 7 — Landing page (`/`, #1907, PR #1908) — Schema Map direction
+- [x] Bucket 8 — apps/www legal + marketing — #1910 pricing (PR #1917), #1911 sla (PR #1918), #1912 terms (PR #1919), #1913 privacy (PR #1920), #1915 dpa + `LegalSection` extraction (PR #1921)
+- [x] Post-Bucket 8 — public-page audit (PR #1933) — caught license/region/retention/MFA/cert drift; follow-ups: #1925 TOTP MFA (PR #1939), #1927 365-day audit retention default (PR #1937), #1929 pricing wording (PR #1934), #1930 status URL regression (PR #1935). Parked: #1922 (pre-signed DPA PDF), #1923 (security@ PGP key), #1924 (sub-processor change feed), #1928 (SOC 2 / ISO / pen test program), #1936 (OpenStatus Starter upgrade)
+- [x] Refactor — `<AssistantTurn>` primitive extracted (#1888, PR #1952) — gutter rail consolidated across chat (`page.tsx`) + notebook (`notebook-cell-output.tsx`) at canonical `border-primary/40`; chat surface picked up the `/30` → `/40` opacity bump. Component takes `React.ComponentProps<"div">` so chat can keep `role="article"` + `aria-label` on the same DOM node. Architecture win **#44** recorded.
+
+---

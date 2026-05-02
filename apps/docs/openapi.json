@@ -53807,6 +53807,10 @@
                           "requiresRestart": {
                             "type": "boolean"
                           },
+                          "saasImmutable": {
+                            "type": "boolean",
+                            "description": "#1978 — true when the key is in SAAS_IMMUTABLE_KEYS and deploy mode is SaaS. Admin UI should disable the input."
+                          },
                           "scope": {
                             "type": "string",
                             "enum": [
@@ -54037,6 +54041,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Setting is SaaS-immutable — change via env var and restart (#1978)",
             "content": {
               "application/json": {
                 "schema": {

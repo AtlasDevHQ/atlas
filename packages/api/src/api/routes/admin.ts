@@ -28,6 +28,7 @@ import {
   setSetting,
   deleteSetting,
 } from "@atlas/api/lib/settings";
+import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { getConfig } from "@atlas/api/lib/config";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
@@ -1120,6 +1121,7 @@ const getSettingsRoute = createRoute({
           secret: z.boolean().optional(),
           envVar: z.string(),
           requiresRestart: z.boolean().optional(),
+          saasImmutable: z.boolean().optional().describe("#1978 — true when the key is in SAAS_IMMUTABLE_KEYS and deploy mode is SaaS. Admin UI should disable the input."),
           scope: z.enum(["platform", "workspace"]),
           currentValue: z.string().optional(),
           source: z.enum(["env", "override", "workspace-override", "default"]),
@@ -1156,6 +1158,7 @@ const updateSettingRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Setting is SaaS-immutable — change via env var and restart (#1978)", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -2519,7 +2522,22 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
 
   // Pass orgId for workspace-scoped settings
   const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
-  await setSetting(key, value, authResult.user?.id, effectiveOrgId);
+  try {
+    await setSetting(key, value, authResult.user?.id, effectiveOrgId);
+  } catch (err) {
+    // #1978 — DPA/contract guards run once at boot. SAAS_IMMUTABLE_KEYS
+    // (ATLAS_EMAIL_PROVIDER, ATLAS_DEPLOY_MODE) reject runtime mutation
+    // in SaaS so the admin doesn't end up with a value the running
+    // process won't honor until restart. Map to 409 with operator copy.
+    if (err instanceof SaasImmutableSettingError) {
+      log.warn({ requestId, key, actorId: authResult.user?.id }, "Rejected SaaS-immutable setting write");
+      return c.json(
+        { error: "saas_immutable", message: err.message, requestId },
+        409,
+      );
+    }
+    throw err;
+  }
   log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override saved via admin API");
 
   logAdminAction({

@@ -1100,14 +1100,64 @@ async function applyDeployMode(
     const { resolveDeployMode } = await import("@atlas/ee/deploy-mode");
     resolved.deployMode = resolveDeployMode(rawSetting);
   } catch (err) {
-    // ee/ module not available — default to self-hosted
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Deploy mode resolution unavailable — defaulting to self-hosted",
-    );
+    // The expected case is "AGPL-only build, ee/ legitimately absent" —
+    // log at debug, default to self-hosted. Anything else (syntax error
+    // in a transitive ee/ import, version skew between @atlas/api and
+    // @atlas/ee, bundler/runtime resolution failure) is a real bug that
+    // would otherwise hide as a silent self-hosted downgrade. Surface
+    // the unexpected case at error level so production telemetry catches
+    // it. #1978 finding 3.
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    const isModuleNotFound =
+      code === "ERR_MODULE_NOT_FOUND" ||
+      code === "MODULE_NOT_FOUND" ||
+      // bun's dynamic-import error before it sets a code
+      (err instanceof Error && /Cannot find (module|package)/i.test(err.message));
+    const detail = err instanceof Error ? err.message : String(err);
+    if (isModuleNotFound) {
+      log.debug({ err: detail }, "ee/ module not installed — defaulting to self-hosted");
+    } else {
+      log.error(
+        { err: detail, code },
+        "ee/ module load FAILED unexpectedly (not a missing-module error) — defaulting to self-hosted. Check the @atlas/ee install / version skew",
+      );
+    }
     resolved.deployMode = "self-hosted";
   }
   log.info({ deployMode: resolved.deployMode }, "Deploy mode resolved");
+
+  // #1978 — when deployMode "saas" was requested but resolveDeployMode
+  // silently downgraded to "self-hosted", the contract guards (DPA,
+  // encryption, internal DB) all skip. Env-set is handled by
+  // `EnterpriseGuardLive` (fail boot); the config-file path falls back
+  // to a CRITICAL warning here because the config file may legitimately
+  // be checked into a self-hosted distribution that lacks `@atlas/ee`.
+  //
+  // Inlined rather than imported from `lib/effect/saas-guards.ts`
+  // because that module's static import of `Config` from `./layers`
+  // makes `layers.ts` (and its dynamic `await import("@atlas/api/lib/telemetry")`
+  // chain) statically reachable from any consumer of `config.ts`.
+  // Next.js's App Router tracer follows dynamic imports too, so the
+  // create-atlas standalone scaffold would fail at build time trying to
+  // resolve `@opentelemetry/sdk-node`. Keeping the helper inline here
+  // walls the boot-only modules off from request-path consumers.
+  if (
+    resolved.deployMode !== "saas" &&
+    process.env.ATLAS_DEPLOY_MODE !== "saas" &&
+    configFileValue === "saas"
+  ) {
+    log.error(
+      {
+        requested: "saas",
+        resolved: resolved.deployMode,
+        source: "atlas.config.ts",
+      },
+      `CRITICAL: atlas.config.ts requested deployMode "saas" but enterprise is not enabled — ` +
+        `silently downgraded to "${resolved.deployMode}". DPA, encryption, and internal-DB ` +
+        `guards will NOT run. Build with @atlas/ee installed and ATLAS_ENTERPRISE_ENABLED=true, ` +
+        `or remove the deployMode override from atlas.config.ts. See #1978.`,
+    );
+  }
 }
 
 export async function loadConfig(

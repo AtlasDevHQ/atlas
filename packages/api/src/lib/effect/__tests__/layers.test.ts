@@ -378,4 +378,42 @@ describe("buildAppLayer", () => {
 
     expect(Exit.isFailure(exit)).toBe(true);
   });
+
+  // #1978 — wiring regression guard. The "composes all layers" test
+  // above provides `{}` as config, so every SaaS-only guard short-
+  // circuits via `deployMode !== "saas"`. Without this end-to-end
+  // assertion, a merge that accidentally drops a guard line from
+  // `Layer.mergeAll(...)` would still pass the wiring test. Here we
+  // build the full app layer with `deployMode: "saas"` and a
+  // misconfigured env (no DATABASE_URL), and assert that the
+  // `InternalDatabaseRequiredError` actually reaches the boot Layer's
+  // failure channel — proving the wiring is intact.
+  test("buildAppLayer wires InternalDbGuardLive — missing DATABASE_URL fails the layer in SaaS", async () => {
+    const savedDb = process.env.DATABASE_URL;
+    const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
+    delete process.env.DATABASE_URL;
+    // Provide a valid encryption key so EncryptionKeyGuardLive doesn't
+    // also fail and hide the InternalDbGuardLive failure.
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
+
+    try {
+      const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
+      const layer = buildAppLayer(config);
+
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(layer)),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      // Confirm the failure carries the specific tagged error, proving
+      // the guard layer was actually evaluated rather than silently
+      // dropped from the merge.
+      const text = String(Exit.isFailure(exit) ? exit.cause : "");
+      expect(text).toContain("InternalDatabaseRequiredError");
+    } finally {
+      if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
+      if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
+      else delete process.env.ATLAS_ENCRYPTION_KEYS;
+    }
+  });
 });

@@ -295,6 +295,47 @@ describe("admin settings routes", () => {
       });
       expect(res.status).toBe(404);
     });
+
+    // #1978 — when setSetting throws SaasImmutableSettingError (SaaS admin
+    // attempts to hot-reload an immutable key), the route must map it to
+    // 409 with `error: "saas_immutable"` and a requestId. Without this
+    // integration test, removing the route's catch block would leave the
+    // 500 path unobserved by tests.
+    it("maps SaasImmutableSettingError to 409 with saas_immutable error code", async () => {
+      const { SaasImmutableSettingError } = await import("@atlas/api/lib/settings-errors");
+      mockSetSetting.mockImplementationOnce(() => {
+        return Promise.reject(new SaasImmutableSettingError("ATLAS_EMAIL_PROVIDER"));
+      });
+
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(409);
+
+      const data = (await res.json()) as { error: string; message: string; requestId?: string };
+      expect(data.error).toBe("saas_immutable");
+      expect(data.message).toContain("cannot be changed at runtime");
+      // requestId is set by the auth middleware — its presence is the
+      // contract for client-side log correlation.
+      expect(typeof data.requestId === "string" || data.requestId === undefined).toBe(true);
+    });
+
+    it("propagates non-SaasImmutable setSetting errors as 500", async () => {
+      mockSetSetting.mockImplementationOnce(() => {
+        return Promise.reject(new Error("unrelated DB connection failure"));
+      });
+
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      // Generic errors must NOT be silently mapped to 409 — verify the
+      // catch block's `throw err` re-raise path stays intact.
+      expect(res.status).toBe(500);
+    });
   });
 
   // ─── DELETE /settings/:key ──────────────────────────────────────

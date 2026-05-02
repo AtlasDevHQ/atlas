@@ -37,6 +37,11 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { InternalDB, makeInternalDBLive, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { assertSaasPlatformEmailIsResend } from "@atlas/api/lib/email/dpa-guard";
+import {
+  EnterpriseGuardLive,
+  EncryptionKeyGuardLive,
+  InternalDbGuardLive,
+} from "./saas-guards";
 
 const log = createLogger("effect:layers");
 
@@ -801,6 +806,14 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     Layer.provide(Layer.merge(configLayer, settingsLayer)),
   );
 
+  // SaaS boot-guard family (#1978). Each guard fails boot when a SaaS
+  // contract is violated. Self-hosted is unaffected. They depend only
+  // on `Config` (the enterprise/encryption/DB checks read env directly)
+  // so they can run in parallel with the migration + sync layers.
+  const enterpriseGuardLayer = EnterpriseGuardLive.pipe(Layer.provide(configLayer));
+  const encryptionKeyGuardLayer = EncryptionKeyGuardLive.pipe(Layer.provide(configLayer));
+  const internalDbGuardLayer = InternalDbGuardLive.pipe(Layer.provide(configLayer));
+
   // Merge all layers. InternalDB is included both directly and as a
   // dependency of migrationLayer — Effect memoizes same-reference Layers.
   return Layer.mergeAll(
@@ -812,5 +825,8 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     settingsLayer,
     schedulerLayer,
     dpaGuardLayer,
+    enterpriseGuardLayer,
+    encryptionKeyGuardLayer,
+    internalDbGuardLayer,
   );
 }

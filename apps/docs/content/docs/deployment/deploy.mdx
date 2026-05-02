@@ -273,6 +273,35 @@ Returns `{"status":"ok"}`, `{"status":"degraded"}`, or `{"status":"error"}` with
 
 In SaaS deploys (`ATLAS_DEPLOY_MODE=saas`), an unreachable internal DB fails the probe with HTTP 503 — auth, org, billing, settings, audit, and the scheduler all live there, so any pod that loses it must be removed from the load balancer rotation. Self-hosted leaves the internal DB optional and continues to report `degraded` (HTTP 200) when it's down.
 
+## SaaS Boot Guards
+
+When `ATLAS_DEPLOY_MODE=saas`, Atlas refuses to boot unless the contracts the hosted product depends on are satisfied. Each guard is a `Layer.effectDiscard` that fails the boot Layer with a typed error, surfacing the misconfig in the process log before any HTTP listener starts. Self-hosted operators are unaffected — every guard early-returns when `deployMode !== "saas"`.
+
+| Misconfig | Behavior in SaaS | Behavior self-hosted |
+|-----------|------------------|----------------------|
+| `ATLAS_DEPLOY_MODE=saas` env set, but enterprise build is not enabled (`@atlas/ee` missing or `ATLAS_ENTERPRISE_ENABLED=false`) | Boot fails (`EnterpriseRequiredError`). The env var is operator intent — silently downgrading would skip every other guard. A config-file `deployMode: "saas"` request is logged at CRITICAL but does not fail boot, so a config checked into a self-hosted distribution still works. | n/a |
+| Platform email provider is not Resend or no Resend transport configured (`ATLAS_EMAIL_PROVIDER ≠ resend`, or no `RESEND_API_KEY`, or only `ATLAS_SMTP_URL` set) | Boot fails (`DpaInconsistencyError`). The DPA sub-processor table on `/dpa` lists Resend as the platform's email vendor — running on a different vendor would silently put Atlas out of contract with customers. | n/a |
+| No encryption key in any form (`ATLAS_ENCRYPTION_KEYS`, `ATLAS_ENCRYPTION_KEY`, `BETTER_AUTH_SECRET`) | Boot fails (`EncryptionKeyMissingError`). Without a key, integration credentials, plugin secrets, and email/sandbox JSON blobs would land plaintext in the internal DB via the `encryptSecret` passthrough. | Boot succeeds (dev-friendly passthrough). When `NODE_ENV=production`, `secret-encryption.ts` also logs an `error` line at module load — pure dev (`NODE_ENV=development`) is intentionally silent. |
+| `ATLAS_ENCRYPTION_KEYS` set but malformed (duplicate version, mixed prefix/bare, non-numeric label, e.g. `vlatest:abc`, `v1:a,v1:b`, `bare-key,v2:another`) | Boot fails (`EncryptionKeyMalformedError`). Without this guard, the parser throws lazily at first credential I/O — minutes or hours after the bad value lands in production. | Boot succeeds (operator-owned dev risk). The same lazy throw fires at first I/O, which is acceptable for AGPL-core users running their own deployment. |
+| `DATABASE_URL` unset | Boot fails (`InternalDatabaseRequiredError`). Better Auth, audit log, admin console, settings persistence, and scheduler cleanup fibers all need the internal DB; missing it would mean the pod 500s every authenticated request. | Boot succeeds with a startup warning (audit log will not persist). Lightweight or ephemeral self-hosted deployments may legitimately skip the internal DB. |
+| Platform admin tries to mutate `ATLAS_EMAIL_PROVIDER` or `ATLAS_DEPLOY_MODE` via `setSetting` at runtime | `setSetting` rejects with HTTP 409 (`saas_immutable`). These keys participate in boot-time guards — hot-reloading them would silently bypass the guard until the next restart. Operators must update the env var and restart. | Allowed at runtime. Self-hosted has no DPA contract and the admin UI surfaces a "restart required" banner. |
+
+If a guard fails, the error message names the violated contract and links back to issue **#1978** (or **#1969** for the DPA guard) so an operator hitting it can diagnose without reading source.
+
+### Required SaaS environment
+
+A SaaS region needs at minimum:
+
+```
+ATLAS_DEPLOY_MODE=saas
+ATLAS_ENTERPRISE_ENABLED=true        # plus the @atlas/ee module installed at build time
+DATABASE_URL=postgresql://...        # Atlas's internal Postgres
+ATLAS_ENCRYPTION_KEYS=v1:<base64>    # 32+ bytes, dedicated to at-rest encryption
+RESEND_API_KEY=re_...                # platform Resend transport (DPA-listed vendor)
+```
+
+Pasting these on a fresh region before first boot is the supported flow — see [Encryption Key Rotation](/platform-ops/encryption-key-rotation) for generating `ATLAS_ENCRYPTION_KEYS` and rotating to `v2` over time.
+
 ---
 
 ## See Also

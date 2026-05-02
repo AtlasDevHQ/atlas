@@ -1,0 +1,46 @@
+---
+title: Security Headers
+description: HSTS, CSP, and frame protection on the Atlas API and web surfaces.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas serves the following security headers on every response:
+
+| Header                       | API (`api.useatlas.dev`)        | App (`app.useatlas.dev`)                       | www (`www.useatlas.dev`)                |
+| ---------------------------- | ------------------------------- | ---------------------------------------------- | --------------------------------------- |
+| `Strict-Transport-Security`  | `max-age=31536000; includeSubDomains; preload` | same                                          | same                                    |
+| `X-Frame-Options`            | `DENY` (skipped on `/widget*`)  | `DENY` (CSP `frame-ancestors *` overrides on `/shared/:token/embed`) | `DENY`                                  |
+| `X-Content-Type-Options`     | `nosniff`                       | `nosniff`                                      | `nosniff`                               |
+| `Referrer-Policy`            | `strict-origin-when-cross-origin` | same                                         | same                                    |
+| `Content-Security-Policy`    | `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` | broader policy that allows `'self'` plus inline scripts/styles for Next.js hydration | similar |
+
+The headers come from three places:
+
+- **`packages/api/src/api/index.ts`** — Hono middleware applied to every request. Skips `X-Frame-Options` and the strict CSP for `/widget*` so customers can iframe-embed the widget from any origin.
+- **`packages/web/next.config.ts`** — `headers()` config for the app. The `/shared/:token/embed` route overrides `frame-ancestors` to `*`; everywhere else inherits `frame-ancestors 'self'`.
+- **`apps/www/serve.ts`** — Bun static-server that fronts the `next export` output. The marketing CSP is intentionally simpler since the site is fully static.
+
+## HSTS preload
+
+The header advertises eligibility for the [HSTS preload list](https://hstspreload.org). Submission is a separate operator action — adding the header alone does not enrol your domain. Self-hosted operators on a custom domain should drop the `preload` token until they are ready to commit, since preload is effectively irreversible.
+
+## Customising CSP for self-hosted deployments
+
+If you add a third-party script to the marketing site or the app (analytics, error reporting, customer chat), you must extend the CSP `script-src` and `connect-src` directives so the browser does not block it. Edit:
+
+- `packages/web/next.config.ts` — the `csp` constant inside `headers()`
+- `apps/www/serve.ts` — the `WWW_CSP` constant
+- `packages/api/src/api/index.ts` — only if you serve HTML from the API (rare)
+
+After changing CSP, hit your deployed surface and watch the browser devtools "Console" tab for `Refused to load … because it violates the following Content Security Policy directive` warnings — those are the hosts you need to allowlist.
+
+<Callout type="warn">
+  Two `Content-Security-Policy` headers on a single response are intersected by the browser (strictest wins). The Next.js `/shared/:token/embed` override emits a *single* combined CSP — do not add a second route entry that also sets CSP, or your override will collapse to the global value.
+</Callout>
+
+## Embedding the widget under CSP
+
+The widget host route (`/widget`) on the API explicitly emits `Content-Security-Policy: frame-ancestors *`. The global API middleware skips its X-Frame-Options + strict CSP for any path under `/widget`, so embedded iframes continue to load from any origin.
+
+If you self-host behind a reverse proxy that adds its own headers, make sure the proxy does **not** force `X-Frame-Options: DENY` on `/widget*` — that would silently break customer embeds. CSP `frame-ancestors *` takes precedence over `X-Frame-Options` per the [W3C CSP spec](https://www.w3.org/TR/CSP3/#frame-ancestors-and-frame-options), but only when the widget's CSP actually reaches the browser.

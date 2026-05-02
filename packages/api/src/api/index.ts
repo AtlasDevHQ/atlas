@@ -41,6 +41,39 @@ const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
 const app = new OpenAPIHono({ defaultHook: validationHook });
 
+// Security headers (issue #1984) — applied to every response, including
+// OPTIONS preflights and error responses. Must run BEFORE the CORS
+// middleware because CORS short-circuits OPTIONS via `c.body(null, 204)`
+// and we want preflight responses hardened too.
+//
+// Widget routes (`/widget*`) intentionally opt out of X-Frame-Options and
+// the strict CSP so they can be iframe-embedded from any origin. The
+// widget HTML route sets its own `Content-Security-Policy: frame-ancestors *`.
+// HSTS, nosniff, and Referrer-Policy are safe to apply everywhere.
+app.use("*", async (c, next) => {
+  c.header(
+    "Strict-Transport-Security",
+    "max-age=31536000; includeSubDomains; preload",
+  );
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+
+  if (!c.req.path.startsWith("/widget")) {
+    c.header("X-Frame-Options", "DENY");
+    // API serves JSON (and a few HTML pages like the OpenAPI viewer). A
+    // JSON-only API doesn't need to load any sub-resources, so the strict
+    // `default-src 'none'` is safe and blocks every exfiltration vector
+    // an XSS in a rendered field could open. Self-hosted operators who
+    // expose extra HTML can override `ATLAS_API_CSP` (see docs).
+    c.header(
+      "Content-Security-Policy",
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    );
+  }
+
+  await next();
+});
+
 // OTel tracing — root span per HTTP request. No-op when SDK is not initialized.
 // Must be the first middleware so all downstream operations are children.
 app.use("/api/*", async (c, next) => {

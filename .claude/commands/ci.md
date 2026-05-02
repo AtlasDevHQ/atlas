@@ -8,6 +8,7 @@ bun run type           # TypeScript strict mode (tsgo) — 0 errors
 bun run test           # FULL suite — @atlas/api + test:others (isolated per-file)
 bun x syncpack lint    # Workspace dependency versions consistent
 SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh  # Template drift
+bash scripts/check-security-headers-drift.sh  # Scaffold next.config.ts security-header parity
 bash scripts/check-railway-watch.sh  # Railway watchPatterns cover Dockerfile COPY sources
 ```
 

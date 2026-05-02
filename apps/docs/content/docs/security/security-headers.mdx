@@ -21,6 +21,8 @@ The headers come from three places:
 - **`packages/web/next.config.ts`** — `headers()` config for the app. The `/shared/:token/embed` route overrides `frame-ancestors` to `*`; everywhere else inherits `frame-ancestors 'self'`.
 - **`apps/www/serve.ts`** — Bun static-server that fronts the `next export` output. The marketing CSP is intentionally simpler since the site is fully static.
 
+Self-hosted scaffolds inherit the same `headers()` block out of the box: `bun create @useatlas` (both the Vercel and Docker templates) and the `examples/nextjs-standalone` Vercel example all ship the canonical HSTS / CSP / frame / nosniff / referrer defaults from a fresh install. The `/shared/:token/embed` override entry is preserved verbatim — it is inert in scaffolds (the embed page only ships in the hosted app), but a fork that adds its own `/shared/[token]/embed` page automatically inherits the right `frame-ancestors *` exception. To customise CSP in a scaffolded project, edit the `next.config.ts` at the project root; the same guidance below applies.
+
 ## Verifying the headers
 
 Confirm any deployed surface with `curl -I`:

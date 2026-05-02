@@ -52,6 +52,9 @@ jobs:
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
+      - name: Check security-headers drift
+        run: bash scripts/check-security-headers-drift.sh
+
       - name: Check Drizzle schema ↔ migration drift
         run: bash scripts/check-schema-drift.sh
 

@@ -3,6 +3,7 @@
 import type { UIMessage } from "@ai-sdk/react";
 import { isToolUIPart } from "ai";
 import type { CellStatus, PreviousExecution } from "./types";
+import { AssistantTurn } from "@/ui/components/chat/assistant-turn";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
@@ -47,7 +48,7 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed, previo
   const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(assistantMessage.parts);
 
   return (
-    <div className="space-y-2 border-l-2 border-primary/40 pl-4 text-sm">
+    <AssistantTurn className="space-y-2 text-sm">
       {assistantMessage.parts.map((part, i) => {
         if (skipFailureIndex.has(i)) return null;
         if (part.type === "text") {
@@ -66,6 +67,6 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed, previo
         }
         return null;
       })}
-    </div>
+    </AssistantTurn>
   );
 }

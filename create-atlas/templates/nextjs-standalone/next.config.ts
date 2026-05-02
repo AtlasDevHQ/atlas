@@ -23,6 +23,11 @@ const nextConfig: NextConfig = {
   // which it overrides to `*` so customers can embed shared conversations.
   // Browsers ignore X-Frame-Options when CSP `frame-ancestors` is present, so
   // setting both globally is safe — the embed override wins where it matches.
+  //
+  // The `headers()` function below is the canonical security-header policy.
+  // It is mirrored byte-for-byte into the scaffold next.config.ts files —
+  // see `scripts/check-security-headers-drift.sh`, which fails CI on drift.
+  // SECURITY-HEADERS-START
   async headers() {
     const csp = [
       "default-src 'self'",
@@ -83,6 +88,7 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // SECURITY-HEADERS-END
 };
 
 export default nextConfig;

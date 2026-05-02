@@ -65,6 +65,11 @@ const nextConfig: NextConfig = {
   // which it overrides to `*` so customers can embed shared conversations.
   // Browsers ignore X-Frame-Options when CSP `frame-ancestors` is present, so
   // setting both globally is safe — the embed override wins where it matches.
+  //
+  // The `headers()` function below is the canonical security-header policy.
+  // It is mirrored byte-for-byte into the scaffold next.config.ts files —
+  // see `scripts/check-security-headers-drift.sh`, which fails CI on drift.
+  // SECURITY-HEADERS-START
   async headers() {
     const csp = [
       "default-src 'self'",
@@ -125,6 +130,7 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // SECURITY-HEADERS-END
   // When NEXT_PUBLIC_ATLAS_API_URL is set, the frontend talks directly to the API
   // (cross-origin), so no server-side rewrite is needed. When unset, Next.js proxies
   // /api/* to the Hono API server (ATLAS_API_URL, default localhost:3001).

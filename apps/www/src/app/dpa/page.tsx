@@ -145,11 +145,11 @@ const SECTIONS: LegalSectionData[] = [
     id: "audit",
     title: "Audits",
     legal: [
-      "Atlas makes available to Customer all information reasonably necessary to demonstrate compliance with Art. 28 GDPR. Atlas operates a security program aligned with SOC 2 Type II and ISO 27001 controls; formal certification is on the roadmap and the certification status, including any third-party report or attestation, is available on request under appropriate confidentiality terms.",
+      "Atlas makes available to Customer all information reasonably necessary to demonstrate compliance with Art. 28 GDPR. Atlas operates a security program aligned with SOC 2 Type II and ISO 27001 controls; formal certification is on the roadmap. Atlas does not currently hold a SOC 2 Type II report or ISO 27001 certificate, and will share certification status updates on request under appropriate confidentiality terms.",
       "Once per twelve-month period, on at least 30 days’ notice and during normal business hours, Customer may conduct, or have a third party conduct under appropriate confidentiality, an audit of Atlas’s processing activities, limited to information reasonably necessary to verify compliance and conducted in a manner that does not unreasonably interfere with Atlas’s operations.",
     ],
     plain:
-      "We share our current security-program documentation and any completed third-party report on request. You may audit our processing once per year with 30 days’ notice and confidentiality protections.",
+      "We share our current security-program documentation on request. SOC 2 Type II and ISO 27001 are on the roadmap; we don’t hold either today and won’t produce a report we don’t have. You may audit our processing once per year with 30 days’ notice and confidentiality protections.",
   },
   {
     id: "deletion",

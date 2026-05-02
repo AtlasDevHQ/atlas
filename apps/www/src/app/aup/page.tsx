@@ -87,7 +87,7 @@ const SECTIONS: LegalSectionData[] = [
     title: "Security Research & Testing",
     legal: [
       "Unauthorized security testing, vulnerability scanning, fuzzing, and probing of the Service is prohibited. This includes automated tooling pointed at app.useatlas.dev, api.useatlas.dev, the regional API endpoints, and any sub-domain of useatlas.dev.",
-      "Atlas welcomes coordinated security research. Email security@useatlas.dev with the scope of testing you want to conduct, the source IP ranges you’ll test from, and a window. We respond within five business days. Our published disclosure policy is at useatlas.dev/.well-known/security.txt (RFC 9116).",
+      "Atlas welcomes coordinated security research. Email security@useatlas.dev with the scope of testing you want to conduct, the source IP ranges you’ll test from, and a window. We respond within five business days. Our published disclosure policy is at www.useatlas.dev/.well-known/security.txt (RFC 9116).",
       "Findings reported in good faith under this Section, and within an authorized scope, will not be the basis of any legal action by Atlas. Atlas does not currently operate a paid bug-bounty program.",
     ],
     plain:

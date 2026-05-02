@@ -59,7 +59,7 @@ const SECTIONS: LegalSectionData[] = [
     title: "Definitions",
     legal: [
       '"Service" means the Atlas Cloud product accessed via app.useatlas.dev, including the query API, semantic-layer service, and dashboard. The Service does not include the open-source distribution, customer-hosted deployments, or third-party data warehouses connected by Customer.',
-      '"Downtime" means any minute during which the Service returns a 5xx response or fails to respond within 30 seconds for >50% of requests originating from Customer’s account, as measured by Atlas’s external monitoring (OpenStatus probes plus internal regional health checks).',
+      '"Downtime" means any minute during which the Service returns a 5xx response or fails to respond within 30 seconds for >50% of requests originating from Customer’s account, as measured by Atlas’s external monitoring (OpenStatus probe of api.useatlas.dev plus internal regional health checks).',
       '"Monthly Uptime Percentage" is calculated as (Total Minutes − Downtime Minutes) / Total Minutes for a calendar month, rounded to two decimal places.',
       '"Service Credit" means the percentage of monthly subscription fees applied to Customer’s next invoice when an Uptime Target is missed.',
     ],

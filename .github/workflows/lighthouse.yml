@@ -1,0 +1,270 @@
+name: Lighthouse
+
+# Marketing-surface Lighthouse budget (#2009). Runs on PRs that touch
+# either of the two Next.js apps that produce visitor-facing surfaces
+# (`apps/www` for `/` + `/pricing`, `packages/web` for `/demo`) or the
+# config / workflow itself.
+#
+# First-month policy: every assertion in `lighthouserc.js` is `warn`-only,
+# and this workflow never fails a PR. The signal is the auto-posted PR
+# comment — we want a few weeks of "is this stable on shared runners?"
+# data before promoting any assertion to `error`.
+#
+# Workflow-injection notes (per the GitHub Actions hardening guide):
+#   - No untrusted PR/issue/commit fields are ever spliced into `run:`
+#     strings. Step `outcome`s are forwarded to the comment script via
+#     `env:`, and the comment body is built server-side in JS only from
+#     fields the workflow itself produced (manifest.json, JSON reports).
+#   - The bun + lhci versions templated into `run:` are pulled from the
+#     workflow's own `env:` block — repo-controlled, not attacker-controlled.
+
+on:
+  pull_request:
+    paths:
+      - "apps/www/**"
+      - "packages/web/**"
+      - "lighthouserc.js"
+      - ".github/workflows/lighthouse.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  BUN_VERSION: "1.3.11"
+  LHCI_VERSION: "0.15.1"
+
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # @atlas/web's build needs the published-shape SDK packages at import
+      # time — `@useatlas/types` resolves to its dist via package exports,
+      # so without these the Next build fails on `cannot find module`.
+      - name: Build SDK packages
+        run: |
+          bun run --filter '@useatlas/types' build
+          bun run --filter '@useatlas/plugin-sdk' build
+          bun run --filter '@useatlas/sdk' build
+          bun run --filter '@useatlas/react' build
+
+      - name: Build apps/www (static export)
+        run: bun run --filter '@atlas/www' build
+
+      - name: Build packages/web
+        run: bun run --filter '@atlas/web' build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+      - name: Start apps/www on :8080
+        run: |
+          PORT=8080 bun apps/www/serve.ts > /tmp/www.log 2>&1 &
+          echo "WWW_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Start packages/web on :3000
+        run: |
+          cd packages/web && PORT=3000 bun x next start > /tmp/web.log 2>&1 &
+          echo "WEB_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for servers
+        run: |
+          set -e
+          for url in http://localhost:8080/health http://localhost:3000/demo; do
+            echo "Waiting for $url ..."
+            for i in $(seq 1 60); do
+              if curl -fsS -o /dev/null "$url"; then
+                echo "  ready"
+                break
+              fi
+              if [ "$i" -eq 60 ]; then
+                echo "::error::$url never came up; last 50 log lines:"
+                tail -n 50 /tmp/www.log /tmp/web.log || true
+                exit 1
+              fi
+              sleep 1
+            done
+          done
+
+      # `lhci autorun` runs collect → assert → upload. The config decides
+      # the URLs and presets; LH_FORM_FACTOR switches desktop ↔ mobile.
+      # `continue-on-error: true` so a single flaky run on either form
+      # factor still lets the comment step build a partial table.
+      - name: Lighthouse (desktop)
+        id: lh-desktop
+        continue-on-error: true
+        env:
+          LH_FORM_FACTOR: desktop
+        run: bun x @lhci/cli@${{ env.LHCI_VERSION }} autorun --config=./lighthouserc.js
+
+      - name: Stash desktop reports
+        if: always()
+        run: |
+          if [ -d .lighthouseci ]; then
+            mv .lighthouseci .lighthouseci-desktop
+          fi
+
+      - name: Lighthouse (mobile)
+        id: lh-mobile
+        continue-on-error: true
+        env:
+          LH_FORM_FACTOR: mobile
+        run: bun x @lhci/cli@${{ env.LHCI_VERSION }} autorun --config=./lighthouserc.js
+
+      - name: Stash mobile reports
+        if: always()
+        run: |
+          if [ -d .lighthouseci ]; then
+            mv .lighthouseci .lighthouseci-mobile
+          fi
+
+      - name: Upload Lighthouse artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: |
+            .lighthouseci-desktop/
+            .lighthouseci-mobile/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop dev servers
+        if: always()
+        run: |
+          kill "$WWW_PID" 2>/dev/null || true
+          kill "$WEB_PID" 2>/dev/null || true
+
+      - name: Post PR comment
+        if: always() && github.event.pull_request != null
+        uses: actions/github-script@v7
+        env:
+          DESKTOP_OUTCOME: ${{ steps.lh-desktop.outcome }}
+          MOBILE_OUTCOME: ${{ steps.lh-mobile.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const COMMENT_MARKER = '<!-- atlas-lighthouse-budget #2009 -->';
+
+            // Parse the lhci `manifest.json` written into each form-factor
+            // dir. Each entry has { url, isRepresentativeRun, summary: {
+            // performance, accessibility, 'best-practices', seo } }.
+            function readManifest(dir) {
+              const manifestPath = path.join(dir, 'manifest.json');
+              if (!fs.existsSync(manifestPath)) return [];
+              try {
+                const raw = fs.readFileSync(manifestPath, 'utf8');
+                const parsed = JSON.parse(raw);
+                return parsed.filter((r) => r.isRepresentativeRun);
+              } catch (err) {
+                core.warning(
+                  `manifest read failed for ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+                return [];
+              }
+            }
+
+            // Pull lighthouse-typed numeric audit values (LCP, CLS) from
+            // the per-run JSON report alongside the manifest summary.
+            function readAuditNumber(jsonReportPath, auditId) {
+              try {
+                const raw = fs.readFileSync(jsonReportPath, 'utf8');
+                const parsed = JSON.parse(raw);
+                const audit = parsed.audits && parsed.audits[auditId];
+                if (!audit || typeof audit.numericValue !== 'number') return null;
+                return audit.numericValue;
+              } catch (err) {
+                core.warning(
+                  `audit read failed for ${jsonReportPath}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+                return null;
+              }
+            }
+
+            // Strip the `http://localhost:NNNN` prefix so the comment shows
+            // a path the reader recognizes (`/`, `/pricing`, `/demo`).
+            function pathOf(u) {
+              try {
+                return new URL(u).pathname || '/';
+              } catch {
+                return u;
+              }
+            }
+
+            function fmtScore(s) {
+              if (s == null) return '–';
+              return Math.round(s * 100).toString();
+            }
+
+            function fmtMs(ms) {
+              if (ms == null) return '–';
+              return `${Math.round(ms)} ms`;
+            }
+
+            function fmtCls(v) {
+              if (v == null) return '–';
+              return v.toFixed(2);
+            }
+
+            function tableForFormFactor(label, dir, outcome) {
+              const runs = readManifest(dir);
+              if (runs.length === 0) {
+                return `### ${label}\n\n_${outcome === 'failure' ? 'Run failed.' : 'No reports found.'}_ See workflow logs.\n`;
+              }
+              const header =
+                '| Surface | Perf | A11y | Best Practices | SEO | LCP | CLS |\n' +
+                '|---|---|---|---|---|---|---|';
+              const rows = runs.map((r) => {
+                const lcp = readAuditNumber(r.jsonPath, 'largest-contentful-paint');
+                const cls = readAuditNumber(r.jsonPath, 'cumulative-layout-shift');
+                const s = r.summary || {};
+                return `| \`${pathOf(r.url)}\` | ${fmtScore(s.performance)} | ${fmtScore(s.accessibility)} | ${fmtScore(s['best-practices'])} | ${fmtScore(s.seo)} | ${fmtMs(lcp)} | ${fmtCls(cls)} |`;
+              });
+              return `### ${label}\n\n${header}\n${rows.join('\n')}\n`;
+            }
+
+            const body = [
+              COMMENT_MARKER,
+              '## Lighthouse budget',
+              '',
+              '> Budget defined in `lighthouserc.js`. Baselines under `apps/www/.design/{landing,pricing,demo}/lighthouse-baseline.md`.',
+              '',
+              '> First-month policy: assertions are `warn`-only. The workflow never fails a PR; this comment is the signal.',
+              '',
+              tableForFormFactor('Desktop', '.lighthouseci-desktop', process.env.DESKTOP_OUTCOME),
+              tableForFormFactor('Mobile', '.lighthouseci-mobile', process.env.MOBILE_OUTCOME),
+              '',
+              '<sub>Full HTML reports are in the `lighthouse-reports` artifact on this run · workflow: `.github/workflows/lighthouse.yml`</sub>',
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            if (!issue_number) {
+              core.info('No PR number in context; skipping comment.');
+              return;
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(COMMENT_MARKER));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }

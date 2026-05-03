@@ -66,15 +66,19 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
 
+      # `setsid` puts each server in its own process group so the cleanup
+      # step's `kill -- -<PGID>` reaps the actual `next` / `serve.ts`
+      # process plus any children. Using a plain `&` + `$!` would only
+      # capture the wrapper PID; killing it leaves the real server alive.
       - name: Start apps/www on :8080
         run: |
-          PORT=8080 bun apps/www/serve.ts > /tmp/www.log 2>&1 &
-          echo "WWW_PID=$!" >> "$GITHUB_ENV"
+          PORT=8080 setsid bun apps/www/serve.ts > /tmp/www.log 2>&1 < /dev/null &
+          echo "WWW_PGID=$!" >> "$GITHUB_ENV"
 
       - name: Start packages/web on :3000
         run: |
-          cd packages/web && PORT=3000 bun x next start > /tmp/web.log 2>&1 &
-          echo "WEB_PID=$!" >> "$GITHUB_ENV"
+          cd packages/web && PORT=3000 setsid bun x next start > /tmp/web.log 2>&1 < /dev/null &
+          echo "WEB_PGID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for servers
         run: |
@@ -141,8 +145,11 @@ jobs:
       - name: Stop dev servers
         if: always()
         run: |
-          kill "$WWW_PID" 2>/dev/null || true
-          kill "$WEB_PID" 2>/dev/null || true
+          # Negative PID = process group; reaps the server + any children.
+          # `|| true` because the PIDs may legitimately be unset if a
+          # start step failed before reaching the env-export line.
+          kill -- "-$WWW_PGID" 2>/dev/null || true
+          kill -- "-$WEB_PGID" 2>/dev/null || true
 
       - name: Post PR comment
         if: always() && github.event.pull_request != null
@@ -198,6 +205,9 @@ jobs:
               try {
                 return new URL(u).pathname || '/';
               } catch {
+                // intentionally ignored: lhci can occasionally surface a
+                // synthetic non-URL string (e.g. an audit error label);
+                // rendering it as-is is better than failing the comment.
                 return u;
               }
             }

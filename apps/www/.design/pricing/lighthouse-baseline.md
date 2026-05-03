@@ -35,7 +35,7 @@ The repo-root `lighthouserc.js` enforces these warn-level assertions for `/prici
 | LCP | ≤ 4500 ms | mobile |
 | CLS | ≤ 0.1 | both |
 
-Identical to `/` — the surfaces are sibling static-export pages with comparable JS payloads, so they share thresholds. If the pages diverge (e.g. pricing adds an interactive plan toggle that ships extra JS), split the budget here.
+Identical to `/` — the surfaces are sibling static-export pages with comparable JS payloads, so they share thresholds. Score thresholds sit close to the seed numbers; LCP ceilings are generous to absorb CI-runner noise. If the pages diverge (e.g. pricing adds an interactive plan toggle that ships extra JS), split the budget here.
 
 ## How to refresh
 

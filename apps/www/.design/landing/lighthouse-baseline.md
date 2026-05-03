@@ -35,7 +35,7 @@ The repo-root `lighthouserc.js` enforces these warn-level assertions for `/`:
 | LCP | ≤ 4500 ms | mobile |
 | CLS | ≤ 0.1 | both |
 
-Thresholds are deliberately a hair below the seed numbers — CI runners are noisier than a local WSL2 box, and the first month is configured as warn-only (no PR fail) while we calibrate flake.
+Score thresholds sit close to the seed numbers; LCP ceilings are deliberately *generous* (≈2× the desktop seed, a hair above the mobile seed) because CI runners measure noisier than a local WSL2 box. The first month is configured as warn-only (no PR fail) while we calibrate flake.
 
 ## How to refresh
 

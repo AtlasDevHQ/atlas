@@ -22,7 +22,7 @@ description: GitHub Actions workflows that run on every Atlas pull request, plus
 - **Lint** — `bun run lint`.
 - **Test** — `@atlas/api` tests run in a parallel `api-tests` matrix sharded 4 ways. Other workspace test suites run serially in the main job.
 
-The local equivalent is the `/ci` slash-command — same six gates as the workflow, run in one shot.
+The local equivalent is the `/ci` slash-command — runs lint, type, test, syncpack, template-drift, and railway-watch in one shot. The workflow runs additional drift checks (Dockerfile pins, security headers, schema, OpenAPI) that local `/ci` doesn't cover but rarely flag.
 
 ### Fast local feedback
 
@@ -80,4 +80,4 @@ Update the `.md` file with the new numbers and adjust the thresholds in `lightho
 
 ### Promoting to a hard gate
 
-When an assertion has been stable on PR comments for ~4 weeks, change its level in `lighthouserc.js` from `"warn"` to `"error"`. lhci will then exit non-zero on a regression and the workflow's `continue-on-error: true` step setting will need to be reconsidered (right now it's there so a single flaky run doesn't bury the comment).
+When an assertion has been stable on PR comments for ~4 weeks, change its level in `lighthouserc.js` from `"warn"` to `"error"`. lhci will then exit non-zero on a regression — and the `continue-on-error: true` setting on both the desktop and mobile lhci steps will need to be reconsidered (it's there today so a single flaky run doesn't bury the comment, but once assertions can fail the gate, that hiding behavior needs an explicit policy decision).

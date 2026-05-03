@@ -9,9 +9,11 @@ Closes the Lighthouse half of #1945. The `/demo` Bucket 6 design pass (#1942) sh
 | Run | Performance | Accessibility | Best Practices | SEO |
 |---|---|---|---|---|
 | Desktop · cold | **100** | **100** | **100** | **100** |
-| Desktop · active | **100** | 96 | **100** | **100** |
+| Desktop · active | **100** | **100** | **100** | **100** |
 | Mobile · cold | 87 | **100** | **100** | **100** |
-| Mobile · active | 87 | 96 | **100** | **100** |
+| Mobile · active | 87 | **100** | **100** | **100** |
+
+Original 2026-05-02 capture had Accessibility = 96 on both active runs (single failing audit: `color-contrast` on the post-gate banner's "Sign up to connect your data" link). #2010 fixed that link's color token; the table reflects the post-fix re-measurement.
 
 ### Web vitals
 
@@ -30,7 +32,7 @@ Closes the Lighthouse half of #1945. The `/demo` Bucket 6 design pass (#1942) sh
 ## Findings worth tracking
 
 1. **Mobile LCP is the weakest link.** 4.07 s on Moto-G-Power-class hardware is well above the 2.5 s "good" threshold. The cold surface has no images and no third-party scripts, so this is JS execution: hydrating React + Tailwind + the page module on a 4× CPU-throttled, 1.6 Mbps-throttled profile. Worth keeping an eye on; not actionable as part of this baseline.
-2. **Active state regresses Accessibility from 100 → 96.** Single audit failing: `color-contrast` on the "Sign up to connect your data" link in the demo banner (`text-primary` against the `bg-muted/40` banner background, in `packages/web/src/app/demo/page.tsx`). Filed as #2010; not fixed inline per the bug-pass discipline.
+2. **Active state used to regress Accessibility from 100 → 96** — fixed by #2010. Single audit failing was `color-contrast` on the "Sign up to connect your data" link in the demo banner (`text-primary` against the `bg-muted/40` banner background). The fix swapped the link to `text-foreground` with an always-on `underline` so the visible-link affordance comes from the underline rather than the marginal-contrast brand color. `--primary` (`oklch(0.58 …)`) against `--muted` (`oklch(0.97 …)`) measures ~4.3:1 — just under AA's 4.5:1 floor — so solidifying the banner background alone wouldn't have fixed it; the lightness gap is in the foreground token. Active-state Accessibility is back to 100 across desktop and mobile.
 3. **CLS is 0 across all runs** — the `#1942` two-column hero holds layout cleanly, including the email form's mobile stack.
 4. **TBT is effectively zero on desktop and ~90 ms on mobile** — well within budget. The active state didn't regress TBT meaningfully because `<AtlasChat>` mounts with an empty conversation list (no message rendering work).
 

@@ -310,13 +310,13 @@ export default function DemoPage() {
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           <a
             href="/signup"
-            className="hidden font-medium text-primary hover:underline sm:inline"
+            className="hidden font-medium text-foreground underline underline-offset-2 sm:inline"
           >
             Sign up to connect your data
           </a>
           <a
             href="/signup"
-            className="font-medium text-primary hover:underline sm:hidden"
+            className="font-medium text-foreground underline underline-offset-2 sm:hidden"
           >
             Sign up
           </a>

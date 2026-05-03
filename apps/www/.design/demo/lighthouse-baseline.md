@@ -38,15 +38,9 @@ Closes the Lighthouse half of #1945. The `/demo` Bucket 6 design pass (#1942) sh
 
 ## CI Lighthouse budget — decision
 
-**No CI Lighthouse budget exists today.** Verified by:
+**Shipped in #2009.** The marketing-surface budget now lives at `lighthouserc.js` (repo root) and is enforced by `.github/workflows/lighthouse.yml`. The numbers in this doc seeded the day-1 thresholds for `/demo`. See `apps/docs/content/docs/contributing/ci.mdx` for the contributor-facing how-to (refreshing baselines, promoting `warn` to `error`).
 
-- `grep -l -i 'lighthouse\|lhci' .github/workflows/* apps/www/* packages/web/*` → no matches.
-- `grep -i 'lighthouse\|lhci' package.json apps/www/package.json packages/web/package.json` → no matches.
-- No `lighthouserc.{json,js,cjs}`, no `lhci.config.*`, no `lighthouse-budget.json` anywhere in the tree.
-
-The marketing surfaces (`/`, `/pricing`, `/demo`) currently have no automated Lighthouse regression check. **Setting one up is out of scope for #1945** — that issue is scoped as measurement + tracking; standing up `@lhci/cli` against Railway preview URLs is its own piece of work (workflow file, GitHub secrets for the LHCI server token or temporary public storage, baseline thresholds per surface, decisions about flake tolerance under shared CI runners).
-
-Filed as #2009.
+The `/demo` active-state assertion is intentionally not yet covered — it requires the API + DB + LLM provider stack at audit time, which would expand the workflow well beyond what #2009 set out to build.
 
 ## Methodology
 

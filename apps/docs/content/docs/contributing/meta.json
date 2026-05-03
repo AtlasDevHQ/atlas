@@ -1,0 +1,6 @@
+{
+  "title": "Contributing",
+  "description": "Working on Atlas itself — CI gates, build workflows, and process",
+  "icon": "GitPullRequest",
+  "pages": ["ci"]
+}

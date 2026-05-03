@@ -8,6 +8,7 @@
 
 import { Effect, Schedule, Duration } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { DeliveryError } from "@atlas/api/lib/effect/errors";
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
@@ -274,14 +275,24 @@ function deliverySingle(
   task: ScheduledTask,
   result: AgentQueryResult,
 ): Effect.Effect<void, DeliveryError> {
-  switch (recipient.type) {
-    case "email":
-      return deliverToEmail(recipient, task, result);
-    case "slack":
-      return deliverToSlack(recipient, task, result);
-    case "webhook":
-      return deliverToWebhook(recipient, task, result);
-  }
+  const inner = (() => {
+    switch (recipient.type) {
+      case "email":
+        return deliverToEmail(recipient, task, result);
+      case "slack":
+        return deliverToSlack(recipient, task, result);
+      case "webhook":
+        return deliverToWebhook(recipient, task, result);
+    }
+  })();
+  return withEffectSpan(
+    "atlas.scheduler.delivery",
+    {
+      "atlas.task_id": task.id,
+      "atlas.channel": recipient.type,
+    },
+    inner,
+  );
 }
 
 /**

@@ -74,6 +74,7 @@ mock.module("@atlas/api/lib/auth/audit", () => ({
 
 mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: (_name: string, fn: () => unknown) => fn(),
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 mock.module("@atlas/api/lib/config", () => ({

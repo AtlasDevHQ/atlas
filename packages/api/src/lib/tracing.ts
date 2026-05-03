@@ -10,6 +10,7 @@
  */
 
 import { trace, SpanStatusCode, type Attributes } from "@opentelemetry/api";
+import { Effect, Cause } from "effect";
 
 const tracer = trace.getTracer("atlas");
 
@@ -53,4 +54,57 @@ export async function withSpan<T>(
       span.end();
     }
   });
+}
+
+/**
+ * Effect-aware variant of `withSpan`. Wraps an Effect in an OTel span
+ * without crossing the Promise boundary, so `Data.TaggedError` types
+ * propagate through the chain unchanged — `withSpan` returns `Promise<T>`
+ * and forces the caller to widen typed errors back to `unknown` at the
+ * boundary, which breaks downstream `Effect.retry({ while: ... })` policies
+ * that discriminate on the error tag.
+ *
+ * Pure-interrupt causes (clean shutdown via `Fiber.interrupt`) are not
+ * recorded as exceptions — they leave `SpanStatusCode.UNSET` so a graceful
+ * stop doesn't surface as an error in the trace explorer.
+ */
+export function withEffectSpan<A, E, R>(
+  name: string,
+  attributes: Attributes,
+  effect: Effect.Effect<A, E, R>,
+  setResultAttributes?: (result: A) => Attributes,
+): Effect.Effect<A, E, R> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => tracer.startSpan(name, { attributes })),
+    (span) =>
+      effect.pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            if (setResultAttributes) {
+              try {
+                const attrs = setResultAttributes(result);
+                if (attrs) span.setAttributes(attrs);
+              } catch {
+                // Callback bug must not invalidate a successful operation.
+              }
+            }
+            span.setStatus({ code: SpanStatusCode.OK });
+          }),
+        ),
+        Effect.tapErrorCause((cause) =>
+          Effect.sync(() => {
+            // Clean interrupt (e.g. Fiber.interrupt on shutdown) is not a
+            // failure — leave the span status UNSET and skip recordException
+            // so a graceful stop doesn't surface as a spurious error.
+            if (Cause.isInterruptedOnly(cause)) return;
+            const message = Cause.pretty(cause);
+            span.setStatus({ code: SpanStatusCode.ERROR, message });
+            const failure = Cause.failureOption(cause);
+            const err = failure._tag === "Some" ? failure.value : new Error(message);
+            span.recordException(err instanceof Error ? err : new Error(String(err)));
+          }),
+        ),
+      ),
+    (span) => Effect.sync(() => span.end()),
+  );
 }

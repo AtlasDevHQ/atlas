@@ -16,6 +16,34 @@ mock.module("../format-webhook", () => ({
   formatWebhookPayload: mock(() => ({ taskId: "t", answer: "A" })),
 }));
 
+// Capture span calls to verify the atlas.scheduler.delivery wiring (#1979).
+// withEffectSpan composes natively into Effect chains so the stub mirrors
+// that — Effect.tap preserves the wrapped Effect's interrupt + retry
+// semantics that the production retry policy depends on.
+const deliverySpanCalls: { name: string; attributes: Record<string, unknown> }[] = [];
+const { Effect: EffectModule } = await import("effect");
+mock.module("@atlas/api/lib/tracing", () => ({
+  withSpan: async (
+    _name: string,
+    _attrs: Record<string, unknown>,
+    fn: () => Promise<unknown>,
+  ) => fn(),
+  withEffectSpan: (
+    name: string,
+    attributes: Record<string, unknown>,
+    effect: unknown,
+  ): unknown =>
+    // Push at *run* time, not construction time — retries re-run the
+    // Effect, so we want one push per attempt to mirror the real
+    // Effect.acquireUseRelease span-per-execution behavior.
+    EffectModule.zipRight(
+      EffectModule.sync(() => {
+        deliverySpanCalls.push({ name, attributes });
+      }),
+      effect as never,
+    ),
+}));
+
 // Mock fetch for delivery
 const originalFetch = globalThis.fetch;
 const mockFetch = mock(() => Promise.resolve(new Response("ok", { status: 200 })));
@@ -58,6 +86,7 @@ describe("delivery dispatcher", () => {
     mockFetch.mockReset();
     mockFetch.mockResolvedValue(new Response("ok", { status: 200 }));
     globalThis.fetch = mockFetch as unknown as typeof fetch;
+    deliverySpanCalls.length = 0;
   });
 
   afterEach(() => {
@@ -226,5 +255,55 @@ describe("delivery dispatcher", () => {
     expect(summary.attempted).toBe(3);
     expect(summary.succeeded).toBe(2);
     expect(summary.failed).toBe(1);
+  });
+
+  describe("OTel span coverage (#1979)", () => {
+    it("emits atlas.scheduler.delivery once per recipient on the success path", async () => {
+      const task = makeTask({
+        deliveryChannel: "webhook",
+        recipients: [
+          { type: "webhook", url: "https://hook1.example.com" },
+          { type: "webhook", url: "https://hook2.example.com" },
+        ],
+      });
+      await deliverResult(task, makeResult());
+
+      const spans = deliverySpanCalls.filter(
+        (s) => s.name === "atlas.scheduler.delivery",
+      );
+      expect(spans.length).toBe(2);
+      for (const span of spans) {
+        expect(span.attributes["atlas.task_id"]).toBe(task.id);
+        expect(span.attributes["atlas.channel"]).toBe("webhook");
+      }
+    });
+
+    it("emits a fresh span per attempt when Effect.retry re-runs the delivery", async () => {
+      // The production retry policy is exponential-backoff for non-permanent
+      // failures. A 500 retries up to 3 times. Each attempt re-executes the
+      // span-wrapped Effect — operators see one span per network attempt,
+      // not just one for the whole logical delivery.
+      mockFetch.mockResolvedValue(new Response("err", { status: 500 }));
+      const task = makeTask({
+        deliveryChannel: "webhook",
+        recipients: [{ type: "webhook", url: "https://hook.example.com" }],
+      });
+      await deliverResult(task, makeResult());
+
+      const spans = deliverySpanCalls.filter(
+        (s) => s.name === "atlas.scheduler.delivery",
+      );
+      // 1 initial attempt + 3 retries = 4 spans for one logical delivery.
+      expect(spans.length).toBeGreaterThanOrEqual(2);
+      expect(spans.every((s) => s.attributes["atlas.channel"] === "webhook")).toBe(true);
+    }, 30_000);
+
+    it("emits no delivery spans when there are no recipients", async () => {
+      const task = makeTask({ recipients: [] });
+      await deliverResult(task, makeResult());
+      expect(
+        deliverySpanCalls.filter((s) => s.name === "atlas.scheduler.delivery"),
+      ).toHaveLength(0);
+    });
   });
 });

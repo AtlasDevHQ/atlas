@@ -79,11 +79,54 @@ mock.module("@atlas/api/lib/config", () => ({
   }),
 }));
 
+// Capture span names + attributes so we can verify scheduler OTel coverage
+// without bringing up an in-memory span exporter.
+const spanCalls: { name: string; attributes: Record<string, unknown> }[] = [];
+
+const { Effect: EffectModule } = await import("effect");
+
+mock.module("@atlas/api/lib/tracing", () => ({
+  withSpan: async (
+    name: string,
+    attributes: Record<string, unknown>,
+    fn: () => Promise<unknown>,
+    setResultAttributes?: (result: unknown) => Record<string, unknown>,
+  ) => {
+    spanCalls.push({ name, attributes });
+    const result = await fn();
+    if (setResultAttributes) {
+      try {
+        setResultAttributes(result);
+      } catch {
+        // mirror real withSpan: callback errors don't fail the wrapped fn
+      }
+    }
+    return result;
+  },
+  // The real withEffectSpan composes natively into the Effect chain so
+  // interrupts propagate. The stub records the span at *run* time (not
+  // construction time) via Effect.zipRight so each Effect.repeat tick or
+  // Effect.retry attempt produces its own entry — matching the real
+  // Effect.acquireUseRelease span-per-execution behavior.
+  withEffectSpan: (
+    name: string,
+    attributes: Record<string, unknown>,
+    effect: unknown,
+  ): unknown =>
+    EffectModule.zipRight(
+      EffectModule.sync(() => {
+        spanCalls.push({ name, attributes });
+      }),
+      effect as never,
+    ),
+}));
+
 const { getScheduler, triggerTask, runTick, _resetScheduler } = await import("../engine");
 
 describe("scheduler engine", () => {
   beforeEach(() => {
     _resetScheduler();
+    spanCalls.length = 0;
     mockGetTasksDueForExecution.mockReset();
     mockGetTasksDueForExecution.mockResolvedValue([]);
     mockLockTaskForExecution.mockReset();
@@ -274,6 +317,34 @@ describe("scheduler engine", () => {
       const s2 = getScheduler();
       expect(s2).not.toBe(s1);
       expect(s2.isRunning()).toBe(false);
+    });
+  });
+
+  describe("OTel span coverage (#1979)", () => {
+    it("records atlas.scheduler.tick on every runTick", async () => {
+      mockGetTasksDueForExecution.mockResolvedValueOnce([]);
+      await runTick();
+      const tickSpans = spanCalls.filter((s) => s.name === "atlas.scheduler.tick");
+      expect(tickSpans.length).toBe(1);
+    });
+
+    it("records atlas.scheduler.task.run with taskId + runId attrs per dispatched task", async () => {
+      mockGetTasksDueForExecution.mockResolvedValueOnce([{ id: "t1" }, { id: "t2" }]);
+      await runTick();
+      const taskSpans = spanCalls.filter((s) => s.name === "atlas.scheduler.task.run");
+      expect(taskSpans.length).toBe(2);
+      for (const span of taskSpans) {
+        expect(span.attributes["atlas.run_id"]).toBe("run-123");
+        expect(span.attributes["atlas.task_id"]).toMatch(/^t[12]$/);
+      }
+    });
+
+    it("does not record task.run when lock fails (skipped task)", async () => {
+      mockGetTasksDueForExecution.mockResolvedValueOnce([{ id: "t1" }]);
+      mockLockTaskForExecution.mockResolvedValueOnce(false);
+      await runTick();
+      const taskSpans = spanCalls.filter((s) => s.name === "atlas.scheduler.task.run");
+      expect(taskSpans.length).toBe(0);
     });
   });
 });

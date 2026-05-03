@@ -13,6 +13,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { abuseEscalations } from "@atlas/api/lib/metrics";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
 import {
   ABUSE_LEVELS,
@@ -302,6 +303,7 @@ function escalate(
       state.level,
     );
 
+    abuseEscalations.add(1, { level: state.level, trigger });
     persistAbuseEvent(event);
   }
 }
@@ -449,6 +451,7 @@ export function reinstateWorkspace(
     prevLevel,
   );
 
+  abuseEscalations.add(1, { level: "none", trigger: "manual" });
   persistAbuseEvent(event);
   return prevLevel;
 }

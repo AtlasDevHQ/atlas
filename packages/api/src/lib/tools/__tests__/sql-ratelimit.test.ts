@@ -54,6 +54,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
     _attrs: Record<string, unknown>,
     fn: () => Promise<unknown>,
   ) => fn(),
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 // Mutable rate-limit mock — tests override slotAcquired/slotReason.

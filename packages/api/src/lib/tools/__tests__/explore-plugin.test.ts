@@ -49,6 +49,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 // Mock tracing (all exports from @atlas/api/lib/tracing)
 mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async <T>(_name: string, _attrs: unknown, fn: () => Promise<T>) => fn(),
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 // Mock hooks (all exports from @atlas/api/lib/plugins/hooks)

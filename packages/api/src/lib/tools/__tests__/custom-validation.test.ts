@@ -35,6 +35,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
     _attrs: Record<string, unknown>,
     fn: () => Promise<unknown>,
   ) => fn(),
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({

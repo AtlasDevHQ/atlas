@@ -7,6 +7,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { withSpan } from "@atlas/api/lib/tracing";
 
 const log = createLogger("plugins");
 
@@ -94,6 +95,11 @@ export class PluginRegistry {
   private idSet = new Set<string>();
   private initialized = false;
 
+  // `register` is intentionally not span-wrapped: synchronous, sub-millisecond
+  // array push. A span here would dwarf its own measurement and clutter every
+  // plugin boot trace. `init` / `teardown` / `healthCheckAll` are wrapped
+  // because they may run async work (DB pools, external services) where slow
+  // paths are worth observing.
   register(plugin: PluginLike): void {
     if (!plugin.id || !plugin.id.trim()) {
       throw new Error("Plugin id must not be empty");
@@ -135,7 +141,11 @@ export class PluginRegistry {
             ? (ctx.logger as { child(bindings: Record<string, unknown>): unknown }).child({ pluginId: entry.plugin.id })
             : ctx.logger,
         };
-        await entry.plugin.initialize(pluginCtx as PluginContextLike);
+        await withSpan(
+          "atlas.plugin.init",
+          { "atlas.plugin_id": entry.plugin.id },
+          () => entry.plugin.initialize!(pluginCtx as PluginContextLike),
+        );
         entry.status = "healthy";
         succeeded.push(entry.plugin.id);
         log.info({ pluginId: entry.plugin.id }, "Plugin initialized");
@@ -157,28 +167,34 @@ export class PluginRegistry {
    * to health result with current status. Catches exceptions from probes.
    */
   async healthCheckAll(): Promise<Map<string, PluginHealthResult & { status: PluginStatus }>> {
-    const results = new Map<string, PluginHealthResult & { status: PluginStatus }>();
+    return withSpan(
+      "atlas.plugin.healthCheckAll",
+      { "atlas.plugin_count": this.entries.length },
+      async () => {
+        const results = new Map<string, PluginHealthResult & { status: PluginStatus }>();
 
-    for (const entry of this.entries) {
-      if (!entry.plugin.healthCheck) {
-        results.set(entry.plugin.id, { healthy: entry.status === "healthy", status: entry.status });
-        continue;
-      }
-      try {
-        const result = await entry.plugin.healthCheck();
-        entry.status = result.healthy ? "healthy" : "unhealthy";
-        results.set(entry.plugin.id, { ...result, status: entry.status });
-      } catch (err) {
-        entry.status = "unhealthy";
-        results.set(entry.plugin.id, {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          status: entry.status,
-        });
-      }
-    }
+        for (const entry of this.entries) {
+          if (!entry.plugin.healthCheck) {
+            results.set(entry.plugin.id, { healthy: entry.status === "healthy", status: entry.status });
+            continue;
+          }
+          try {
+            const result = await entry.plugin.healthCheck();
+            entry.status = result.healthy ? "healthy" : "unhealthy";
+            results.set(entry.plugin.id, { ...result, status: entry.status });
+          } catch (err) {
+            entry.status = "unhealthy";
+            results.set(entry.plugin.id, {
+              healthy: false,
+              message: err instanceof Error ? err.message : String(err),
+              status: entry.status,
+            });
+          }
+        }
 
-    return results;
+        return results;
+      },
+    );
   }
 
   /**
@@ -191,7 +207,11 @@ export class PluginRegistry {
       entry.status = "teardown";
       if (!entry.plugin.teardown) continue;
       try {
-        await entry.plugin.teardown();
+        await withSpan(
+          "atlas.plugin.teardown",
+          { "atlas.plugin_id": entry.plugin.id },
+          () => entry.plugin.teardown!(),
+        );
         log.info({ pluginId: entry.plugin.id }, "Plugin torn down");
       } catch (err) {
         log.error(

@@ -1,5 +1,24 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test";
-import { PluginRegistry } from "../registry";
+
+// Capture spans recorded by the registry (#1979) without spinning up an
+// in-memory exporter. Must be registered before importing PluginRegistry
+// so the module picks up the mocked withSpan.
+const spanCalls: { name: string; attributes: Record<string, unknown> }[] = [];
+
+mock.module("@atlas/api/lib/tracing", () => ({
+  withSpan: async (
+    name: string,
+    attributes: Record<string, unknown>,
+    fn: () => Promise<unknown>,
+  ) => {
+    spanCalls.push({ name, attributes });
+    return fn();
+  },
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
+}));
+
+const { PluginRegistry } = await import("../registry");
+type PluginRegistryT = InstanceType<typeof PluginRegistry>;
 import type { PluginLike, PluginContextLike } from "../registry";
 
 const minimalCtx: PluginContextLike = {
@@ -20,10 +39,11 @@ function makePlugin(overrides: Partial<PluginLike> = {}): PluginLike {
 }
 
 describe("PluginRegistry", () => {
-  let registry: PluginRegistry;
+  let registry: PluginRegistryT;
 
   beforeEach(() => {
     registry = new PluginRegistry();
+    spanCalls.length = 0;
   });
 
   // --- register ---
@@ -368,6 +388,58 @@ describe("PluginRegistry", () => {
 
       expect(registry.size).toBe(0);
       expect(registry.get("a")).toBeUndefined();
+    });
+  });
+
+  // --- OTel span coverage (#1979) ---
+
+  describe("OTel span coverage", () => {
+    test("initializeAll wraps each initialize() in atlas.plugin.init", async () => {
+      registry.register(makePlugin({ id: "p1", initialize: async () => {} }));
+      registry.register(makePlugin({ id: "p2", initialize: async () => {} }));
+      // Plugin without initialize() should not produce a span.
+      registry.register(makePlugin({ id: "p3" }));
+
+      await registry.initializeAll(minimalCtx);
+
+      const initSpans = spanCalls.filter((s) => s.name === "atlas.plugin.init");
+      expect(initSpans).toHaveLength(2);
+      expect(initSpans.map((s) => s.attributes["atlas.plugin_id"])).toEqual(["p1", "p2"]);
+    });
+
+    test("teardownAll wraps each teardown() in atlas.plugin.teardown", async () => {
+      registry.register(makePlugin({ id: "p1", teardown: async () => {} }));
+      registry.register(makePlugin({ id: "p2", teardown: async () => {} }));
+      // Plugin without teardown() should not produce a span.
+      registry.register(makePlugin({ id: "p3" }));
+
+      await registry.teardownAll();
+
+      const teardownSpans = spanCalls.filter((s) => s.name === "atlas.plugin.teardown");
+      expect(teardownSpans).toHaveLength(2);
+      // LIFO order — p2 then p1.
+      expect(teardownSpans.map((s) => s.attributes["atlas.plugin_id"])).toEqual(["p2", "p1"]);
+    });
+
+    test("healthCheckAll emits a single atlas.plugin.healthCheckAll span covering all probes", async () => {
+      registry.register(makePlugin({ id: "p1", healthCheck: async () => ({ healthy: true }) }));
+      registry.register(makePlugin({ id: "p2", healthCheck: async () => ({ healthy: false }) }));
+
+      await registry.healthCheckAll();
+
+      const healthSpans = spanCalls.filter((s) => s.name === "atlas.plugin.healthCheckAll");
+      expect(healthSpans).toHaveLength(1);
+      expect(healthSpans[0].attributes["atlas.plugin_count"]).toBe(2);
+    });
+
+    test("register() is intentionally NOT span-wrapped (sub-ms array push)", () => {
+      // Pinning the registry comment: a drive-by adding a span around
+      // register() would dwarf its own measurement and clutter every plugin
+      // boot trace. This test fails fast if that asymmetry is broken.
+      registry.register(makePlugin({ id: "p1" }));
+      registry.register(makePlugin({ id: "p2" }));
+      registry.register(makePlugin({ id: "p3" }));
+      expect(spanCalls).toHaveLength(0);
     });
   });
 });

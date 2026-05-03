@@ -15,6 +15,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 mock.module("@atlas/api/lib/security", () => ({

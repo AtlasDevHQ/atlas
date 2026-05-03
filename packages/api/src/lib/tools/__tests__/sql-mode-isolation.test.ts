@@ -85,6 +85,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
 
 mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: Record<string, unknown>, fn: () => Promise<unknown>) => fn(),
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({

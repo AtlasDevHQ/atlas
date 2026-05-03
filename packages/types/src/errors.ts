@@ -161,24 +161,32 @@ export interface ChatErrorInfo {
 // ---------------------------------------------------------------------------
 
 /**
- * Codes for non-fatal preflight degradations that the agent ran past so the
- * user could still get an answer, at the cost of dropped context. Each code
- * names the specific context that was lost — the title/detail copy is built
- * server-side so the client never has to translate codes to copy.
+ * Codes for non-fatal degradations surfaced via `data-context-warning` so
+ * the user knows the answer was produced under reduced context or against
+ * a constrained budget. Each code names the specific signal — server-built
+ * copy ships in `title` / `detail` so the client never has to translate
+ * codes to copy.
  *
  * - `semantic_layer_unavailable` — the org-scoped whitelist + semantic index
  *   could not be loaded (typically internal-DB pool exhaustion). The agent
  *   falls back to the file-based default semantic layer.
  * - `learned_patterns_unavailable` — the learned-patterns lookup failed.
  *   The agent runs without question-similarity hints.
+ * - `plan_limit_warning` — the workspace is approaching, in grace against,
+ *   or unable to read its plan budget. The request was allowed; the
+ *   warning surfaces so the user can act before the next request hits
+ *   `plan_limit_exceeded` (which is a hard block, not a warning).
  *
- * When adding a new code: also add a server emit site (currently
- * `lib/agent.ts`'s preflight `Effect.catchAll` branches) AND a corresponding
- * UI banner branch so the structured frame round-trips end-to-end.
+ * When adding a new code: add the string here, add a server emit site
+ * (preflight loaders in `lib/agent.ts`'s `Effect.catchAll` arms for
+ * context loss; `api/routes/chat.ts` for the budget signal), and the
+ * runtime guard `parseContextWarning` will accept it automatically — the
+ * client banner is data-driven and renders any accepted code uniformly.
  */
 export const CHAT_CONTEXT_WARNING_CODES = [
   "semantic_layer_unavailable",
   "learned_patterns_unavailable",
+  "plan_limit_warning",
 ] as const;
 
 export type ChatContextWarningCode = (typeof CHAT_CONTEXT_WARNING_CODES)[number];
@@ -210,6 +218,51 @@ export interface ChatContextWarning {
   readonly title: string;
   readonly detail?: string;
   readonly requestId?: string;
+}
+
+/**
+ * Validate a runtime value against the {@link ChatContextWarning} wire shape.
+ *
+ * Returns the typed warning when the value matches; returns `null` when any
+ * required field is missing or has the wrong type. Optional `detail` /
+ * `requestId` that are present but not strings are dropped rather than
+ * rejecting the whole frame — a degraded answer should still surface even
+ * if the server attached a malformed extra field.
+ *
+ * Use this on every `data-context-warning` SSE frame the AI-SDK transport
+ * delivers to `onData` — the AI-SDK callback types `data` as `unknown`, so
+ * a runtime guard is required before trusting the shape.
+ *
+ * @example
+ * ```ts
+ * onData((part) => {
+ *   if (part.type !== "data-context-warning") return;
+ *   const warning = parseContextWarning(part.data);
+ *   if (warning) appendWarning(warning);
+ * });
+ * ```
+ */
+export function parseContextWarning(value: unknown): ChatContextWarning | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.severity !== "warning") return null;
+  if (typeof obj.code !== "string" || !isChatContextWarningCode(obj.code)) {
+    return null;
+  }
+  if (typeof obj.title !== "string") return null;
+
+  const detail = typeof obj.detail === "string" ? obj.detail : undefined;
+  const requestId = typeof obj.requestId === "string" ? obj.requestId : undefined;
+
+  return {
+    severity: "warning",
+    code: obj.code,
+    title: obj.title,
+    ...(detail !== undefined && { detail }),
+    ...(requestId !== undefined && { requestId }),
+  };
 }
 
 // ---------------------------------------------------------------------------

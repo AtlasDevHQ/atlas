@@ -169,6 +169,36 @@ mock.module("@atlas/api/lib/plugins/tools", () => ({
   setDialectHints: () => {},
 }));
 
+// Plan-limit enforcement is mocked at the module boundary so tests can
+// dial in a {allowed: true, warning: ...} result without standing up the
+// full billing pipeline. Default returns the no-warning happy path; the
+// `#2005 — plan-warning` test section inside the `#1988 B5` describe
+// block opts in to the warning shape per-test.
+type PlanCheckMockResult =
+  | { allowed: true; warning?: { code: "plan_limit_warning"; message: string; metrics: unknown[] } }
+  | {
+      allowed: false;
+      errorCode: string;
+      errorMessage: string;
+      httpStatus: number;
+      usage?: unknown;
+    };
+const mockCheckPlanLimits: Mock<() => Promise<PlanCheckMockResult>> = mock(
+  () => Promise.resolve({ allowed: true } as PlanCheckMockResult),
+);
+
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkPlanLimits: mockCheckPlanLimits,
+  // Mocking partial named exports causes a SyntaxError elsewhere in
+  // the suite (per CLAUDE.md "Mock all exports"). These are no-ops
+  // because the chat path only touches `checkPlanLimits`.
+  getCachedWorkspace: () => Promise.resolve(null),
+  invalidatePlanCache: () => {},
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
+}));
+
 // Import after mocks are registered
 const { app } = await import("../index");
 
@@ -212,6 +242,8 @@ describe("POST /api/v1/chat", () => {
     delete process.env.ATLAS_CONVERSATION_STEP_CAP;
     mockGetPluginTools.mockReset();
     mockGetPluginTools.mockReturnValue(undefined);
+    mockCheckPlanLimits.mockReset();
+    mockCheckPlanLimits.mockResolvedValue({ allowed: true });
   });
 
   afterEach(() => {
@@ -1148,6 +1180,177 @@ describe("POST /api/v1/chat", () => {
       expect(response.status).toBe(200);
       const frames = await readContextWarningFrames(response);
       expect(frames).toEqual([]);
+    });
+
+    // -------------------------------------------------------------------
+    // #2005 — plan-warning rides the unified context-warning channel
+    //
+    // Pre-#2005 the chat route emitted plan warnings on a separate
+    // `data-plan-warning` SSE frame plus an `x-plan-limit-warning`
+    // response header. Both were typed-mismatched dead code (server
+    // wrote an object, client guarded on string). The cleanup folds
+    // the signal onto the same `data-context-warning` channel under
+    // a new `plan_limit_warning` code. These tests pin:
+    //   - a `checkPlanLimits` warning becomes a structured
+    //     `data-context-warning` frame with `code: "plan_limit_warning"`
+    //   - the plan-warning frame is `unshift`ed so it leads any
+    //     preflight degradations (most-attention-warranting first)
+    //   - the route never emits `data-plan-warning` again
+    //   - the route never sets the `x-plan-limit-warning` header
+    // -------------------------------------------------------------------
+    async function readAllFrames(
+      response: Response,
+    ): Promise<Array<Record<string, unknown>>> {
+      const text = await response.text();
+      const frames: Array<Record<string, unknown>> = [];
+      for (const chunk of text.split("\n\n")) {
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            frames.push(JSON.parse(payload) as Record<string, unknown>);
+          } catch {
+            // ignore malformed lines
+          }
+        }
+      }
+      return frames;
+    }
+
+    it("folds checkPlanLimits warning into the data-context-warning channel", async () => {
+      mockCheckPlanLimits.mockResolvedValueOnce({
+        allowed: true,
+        warning: {
+          code: "plan_limit_warning",
+          message: "85% of monthly token budget used.",
+          metrics: [],
+        },
+      });
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+
+      const frames = await readContextWarningFrames(response);
+      expect(frames.length).toBe(1);
+      const data = frames[0].data as Record<string, unknown>;
+      expect(data.severity).toBe("warning");
+      expect(data.code).toBe("plan_limit_warning");
+      expect(data.title).toBe("Approaching plan limit");
+      expect(data.detail).toBe("85% of monthly token budget used.");
+      expect(typeof data.requestId).toBe("string");
+    });
+
+    it("plan_limit_warning frame is unshifted ahead of preflight degradations", async () => {
+      mockCheckPlanLimits.mockResolvedValueOnce({
+        allowed: true,
+        warning: {
+          code: "plan_limit_warning",
+          message: "approaching budget",
+          metrics: [],
+        },
+      });
+      mockRunAgent.mockImplementationOnce(
+        runAgentPushingWarnings([
+          {
+            severity: "warning",
+            code: "semantic_layer_unavailable",
+            title: "Semantic layer unavailable",
+          },
+        ]) as unknown as typeof mockRunAgent,
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+
+      const frames = await readContextWarningFrames(response);
+      expect(frames.length).toBe(2);
+      const codes = frames.map((f) => (f.data as Record<string, unknown>).code as string);
+      // Plan signal first (unshift), preflight degradation after.
+      expect(codes).toEqual(["plan_limit_warning", "semantic_layer_unavailable"]);
+    });
+
+    it("never emits a legacy data-plan-warning frame even when a plan warning is present", async () => {
+      mockCheckPlanLimits.mockResolvedValueOnce({
+        allowed: true,
+        warning: {
+          code: "plan_limit_warning",
+          message: "x",
+          metrics: [],
+        },
+      });
+      const response = await app.fetch(makeRequest());
+      const frames = await readAllFrames(response);
+      // Defensive scan over EVERY frame type — any `data-plan-warning`
+      // would be a regression of the legacy dead channel.
+      const legacy = frames.filter((f) => f.type === "data-plan-warning");
+      expect(legacy.length).toBe(0);
+    });
+
+    it("never sets the legacy x-plan-limit-warning response header", async () => {
+      mockCheckPlanLimits.mockResolvedValueOnce({
+        allowed: true,
+        warning: {
+          code: "plan_limit_warning",
+          message: "x",
+          metrics: [],
+        },
+      });
+      const response = await app.fetch(makeRequest());
+      expect(response.headers.get("x-plan-limit-warning")).toBeNull();
+    });
+
+    it("emits no plan_limit_warning frame when checkPlanLimits returns no warning", async () => {
+      // Default mock returns { allowed: true } with no warning field.
+      const response = await app.fetch(makeRequest());
+      const frames = await readContextWarningFrames(response);
+      const planFrames = frames.filter(
+        (f) => (f.data as Record<string, unknown>).code === "plan_limit_warning",
+      );
+      expect(planFrames.length).toBe(0);
+    });
+
+    it("preserves a warning's pre-existing requestId rather than spreading it away", async () => {
+      // The agent's preflight emit sites may stamp their own correlation
+      // id (e.g. for inner-Effect tracing). The route must not silently
+      // overwrite it via `{ ...warning, requestId }`.
+      mockRunAgent.mockImplementationOnce(
+        runAgentPushingWarnings([
+          {
+            severity: "warning",
+            code: "semantic_layer_unavailable",
+            title: "x",
+            requestId: "agent-stamped-id",
+          },
+        ]) as unknown as typeof mockRunAgent,
+      );
+      const response = await app.fetch(makeRequest());
+      const frames = await readContextWarningFrames(response);
+      expect(frames.length).toBe(1);
+      const data = frames[0].data as Record<string, unknown>;
+      expect(data.requestId).toBe("agent-stamped-id");
+    });
+
+    it("treats an empty-string requestId on a warning as missing (uses route id)", async () => {
+      // Empty string is a useless correlation id and should not pollute
+      // the wire. The route's `warning.requestId ? warning : ...`
+      // ternary intentionally treats empty-string as falsy — pin it so
+      // a future "tighter" refactor (e.g. `!== undefined`) can't quietly
+      // start propagating empty correlation ids into the SSE stream.
+      mockRunAgent.mockImplementationOnce(
+        runAgentPushingWarnings([
+          {
+            severity: "warning",
+            code: "semantic_layer_unavailable",
+            title: "x",
+            requestId: "",
+          },
+        ]) as unknown as typeof mockRunAgent,
+      );
+      const response = await app.fetch(makeRequest());
+      const frames = await readContextWarningFrames(response);
+      expect(frames.length).toBe(1);
+      const data = frames[0].data as Record<string, unknown>;
+      expect(typeof data.requestId).toBe("string");
+      expect((data.requestId as string).length).toBeGreaterThan(0);
     });
   });
 

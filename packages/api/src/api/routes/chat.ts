@@ -572,7 +572,8 @@ chat.openapi(chatRoute, async (c) => {
       );
     }
   
-    // Capture plan warning for response headers (set after stream is created)
+    // Captured here; folded into the unified `data-context-warning`
+    // stream at the writer below.
     const planWarning = planCheck.allowed ? planCheck.warning : undefined;
   
     // Resolve atlas mode for this request (published vs developer)
@@ -845,16 +846,28 @@ chat.openapi(chatRoute, async (c) => {
           // stay aligned.
           const stream = createUIMessageStream({
             execute: ({ writer }) => {
-              // Surface plan warning as a data annotation so clients can display it
+              // Fold the plan-budget signal into the same structured
+              // `data-context-warning` channel as the agent's preflight
+              // degradations so the client only has to handle one wire
+              // shape. unshift so the budget signal renders above any
+              // preflight ones — it usually warrants the most attention.
               if (planWarning) {
-                writer.write({ type: "data-plan-warning", data: planWarning });
+                contextWarnings.unshift({
+                  severity: "warning",
+                  code: "plan_limit_warning",
+                  title: "Approaching plan limit",
+                  detail: planWarning.message,
+                });
               }
-              // #1988 B5 — emit one frame per preflight degradation. Each
-              // frame carries `severity: "warning"` so a client routing
-              // these through the same parser as the `data-error` frame
-              // (#1980) does not misclassify a degraded answer as a
-              // failure. `requestId` is stamped so log correlation works
-              // end-to-end without the client having to plumb the header.
+              // Each frame carries `severity: "warning"` so a client
+              // routing these through the same parser as the `data-error`
+              // frame (#1980) does not misclassify a degraded answer as
+              // a failure. The route stamps `requestId` only when the
+              // warning didn't already carry one. Today no emit site
+              // attaches its own correlation id (the agent's Effect
+              // catchAll arms push only the wire-DTO fields); the
+              // ternary keeps the surface safe to extend without
+              // re-auditing this loop.
               //
               // Ordering is load-bearing: this loop runs BEFORE
               // `writer.merge(agentResult.toUIMessageStream(...))` below,
@@ -865,7 +878,7 @@ chat.openapi(chatRoute, async (c) => {
               for (const warning of contextWarnings) {
                 writer.write({
                   type: "data-context-warning",
-                  data: { ...warning, requestId },
+                  data: warning.requestId ? warning : { ...warning, requestId },
                 });
               }
               setStreamWriter(requestId, writer);
@@ -900,7 +913,6 @@ chat.openapi(chatRoute, async (c) => {
               "X-Accel-Buffering": "no",
               "Cache-Control": "no-cache, no-transform",
               ...(conversationId ? { "x-conversation-id": conversationId } : {}),
-              ...(planWarning ? { "x-plan-limit-warning": JSON.stringify(planWarning) } : {}),
             },
           });
   

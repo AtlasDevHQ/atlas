@@ -20,16 +20,13 @@ import {
   CheckCircle2,
   XCircle,
   Loader2,
-  Shield,
   ShoppingCart,
-  Users,
   Sparkles,
   RefreshCw,
 } from "lucide-react";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
 
 type ConnectionStatus = "idle" | "testing" | "success" | "error";
-type DemoType = "demo" | "cybersec" | "ecommerce";
 type DemoAvailability = "unknown" | "available" | "unavailable" | "error";
 
 interface TestResult {
@@ -41,19 +38,15 @@ interface TestResult {
   message?: string;
 }
 
-interface DemoDataset {
-  type: DemoType;
-  label: string;
-  description: string;
-  icon: typeof Database;
-  tables: number;
-}
-
-const DEMO_DATASETS: DemoDataset[] = [
-  { type: "demo",      label: "SaaS CRM",      description: "Companies, contacts, and subscription accounts",      icon: Users,        tables: 3 },
-  { type: "cybersec",  label: "Cybersecurity", description: "Vulnerabilities, incidents, compliance, and billing", icon: Shield,       tables: 62 },
-  { type: "ecommerce", label: "E-commerce",    description: "Orders, products, customers, shipping, and reviews",  icon: ShoppingCart, tables: 52 },
-];
+// Atlas ships a single canonical demo dataset since 1.4.0 (#2021): NovaMart,
+// an e-commerce DTC brand with 13 entities (products, orders, customers,
+// payments, returns, shipments, sellers, …) and ~480K rows. The previous
+// three-card picker (`SaaS CRM` / `Cybersecurity` / `E-commerce`) is gone.
+const DEMO = {
+  label: "NovaMart (E-commerce)",
+  description: "Products, orders, customers, payments, returns, shipments, and sellers.",
+  tables: 52,
+} as const;
 
 async function runHealthCheck(signal?: AbortSignal): Promise<DemoAvailability> {
   try {
@@ -82,7 +75,7 @@ export default function ConnectPage() {
   const [connectError, setConnectError] = useState<string | null>(null);
   const [demoError, setDemoError] = useState<string | null>(null);
   const [demoAvailability, setDemoAvailability] = useState<DemoAvailability>("unknown");
-  const [loadingDemo, setLoadingDemo] = useState<DemoType | null>(null);
+  const [loadingDemo, setLoadingDemo] = useState(false);
   // Aborts any in-flight health check (mount effect or retry click) so stale
   // resolutions can't overwrite a newer result or setState after unmount.
   const healthCheckAbortRef = useRef<AbortController | null>(null);
@@ -168,17 +161,17 @@ export default function ConnectPage() {
     router.push("/signup/success");
   }
 
-  async function handleUseDemo(demoType: DemoType) {
-    setLoadingDemo(demoType);
+  async function handleUseDemo() {
+    setLoadingDemo(true);
     setDemoError(null);
 
-    const result = await postJson("/api/v1/onboarding/use-demo", { demoType }, {
+    const result = await postJson("/api/v1/onboarding/use-demo", {}, {
       fallbackMessage: "Failed to set up demo data",
     });
 
     if (!result.ok) {
       setDemoError(result.error);
-      setLoadingDemo(null);
+      setLoadingDemo(false);
       return;
     }
 
@@ -200,7 +193,7 @@ export default function ConnectPage() {
   }
 
   const dbLabel = url ? detectDbLabel(url) : "Database";
-  const anyLoading = saving || loadingDemo !== null;
+  const anyLoading = saving || loadingDemo;
   const showDemoCard = demoAvailability === "available" || demoAvailability === "error";
 
   return (
@@ -286,7 +279,7 @@ export default function ConnectPage() {
               </Button>
               <Button
                 onClick={handleComplete}
-                disabled={connectionStatus !== "success" || saving || loadingDemo !== null}
+                disabled={connectionStatus !== "success" || saving || loadingDemo}
                 className="flex-1"
               >
                 {saving ? (
@@ -332,41 +325,33 @@ export default function ConnectPage() {
                   </Button>
                 </div>
               ) : (
-                <div className="grid gap-2">
-                  {DEMO_DATASETS.map((ds) => {
-                    const isLoading = loadingDemo === ds.type;
-                    return (
-                      <button
-                        key={ds.type}
-                        type="button"
-                        onClick={() => handleUseDemo(ds.type)}
-                        disabled={anyLoading}
-                        aria-label={`Use ${ds.label} demo dataset (${ds.tables} tables)`}
-                        className={cn(
-                          "group flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors",
-                          "hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                          "disabled:pointer-events-none disabled:opacity-50",
-                        )}
-                      >
-                        <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted group-hover:bg-primary/10">
-                          <ds.icon className="size-4 text-muted-foreground group-hover:text-primary" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="truncate text-sm font-medium">{ds.label}</span>
-                            <span className="shrink-0 text-[10px] text-muted-foreground">
-                              {ds.tables} {ds.tables === 1 ? "table" : "tables"}
-                            </span>
-                          </div>
-                          <p className="truncate text-xs text-muted-foreground">{ds.description}</p>
-                        </div>
-                        {isLoading && (
-                          <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                <button
+                  type="button"
+                  onClick={handleUseDemo}
+                  disabled={anyLoading}
+                  aria-label={`Use ${DEMO.label} demo dataset (${DEMO.tables} tables)`}
+                  className={cn(
+                    "group flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors",
+                    "hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "disabled:pointer-events-none disabled:opacity-50",
+                  )}
+                >
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted group-hover:bg-primary/10">
+                    <ShoppingCart className="size-4 text-muted-foreground group-hover:text-primary" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">{DEMO.label}</span>
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {DEMO.tables} tables
+                      </span>
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">{DEMO.description}</p>
+                  </div>
+                  {loadingDemo && (
+                    <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                  )}
+                </button>
               )}
 
               {demoError && (

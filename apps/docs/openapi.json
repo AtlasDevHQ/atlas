@@ -8801,24 +8801,14 @@
           "Onboarding"
         ],
         "summary": "Set up workspace with demo data",
-        "description": "Connects the workspace to the platform's default datasource (ATLAS_DATASOURCE_URL) and imports the semantic layer for the chosen demo dataset. Three datasets are available: 'demo' (SaaS CRM, 3 tables), 'cybersec' (Sentinel Security, 62 tables), 'ecommerce' (NovaMart, 52 tables). Defaults to 'demo' if not specified.",
+        "description": "Connects the workspace to the platform's default datasource (ATLAS_DATASOURCE_URL) and imports the canonical demo semantic layer (NovaMart e-commerce — 13 entities, 52 tables, ~480K rows). Atlas ships a single canonical demo seed since 1.4.0 (#2021); the previous `demoType` picker covering `demo`/`cybersec`/`ecommerce` was removed.",
         "requestBody": {
           "required": false,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "demoType": {
-                    "type": "string",
-                    "enum": [
-                      "demo",
-                      "cybersec",
-                      "ecommerce"
-                    ],
-                    "default": "demo"
-                  }
-                }
+                "properties": {}
               }
             }
           }

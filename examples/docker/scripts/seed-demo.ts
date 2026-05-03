@@ -1,13 +1,12 @@
 /**
  * Idempotent demo data seeder for Railway production deployment.
  *
- * Seeds all three demo datasets into the same database:
- *   1. demo.sql     — Simple SaaS CRM (companies, people, accounts) ~330 rows
- *   2. cybersec.sql — Sentinel Security cybersecurity SaaS ~500K rows
- *   3. ecommerce.sql — NovaMart DTC e-commerce ~480K rows
+ * Seeds the canonical NovaMart e-commerce demo dataset (#2021 collapsed
+ * the previous three-seed picker — `simple`/`cybersec`/`ecommerce` — to
+ * the single ecommerce seed). The image bundles the seed at
+ * `/app/data/demo.sql`.
  *
- * Each dataset uses unique table names so they coexist without conflicts.
- * Idempotent: checks a sentinel table + column per dataset before seeding.
+ * Idempotent: checks a sentinel table + column before seeding.
  *
  * When DATABASE_URL and ATLAS_DATASOURCE_URL point to the same database,
  * Atlas internal tables (auth, audit, settings) share the schema with
@@ -41,9 +40,7 @@ interface Dataset {
 }
 
 const datasets: Dataset[] = [
-  { name: "SaaS CRM (demo)",               file: "/app/data/demo.sql",      sentinelTable: "companies",     sentinelColumn: "industry" },
-  { name: "Sentinel Security (cybersec)",   file: "/app/data/cybersec.sql",  sentinelTable: "organizations", sentinelColumn: "industry" },
-  { name: "NovaMart (ecommerce)",           file: "/app/data/ecommerce.sql", sentinelTable: "customers",     sentinelColumn: "acquisition_source" },
+  { name: "NovaMart (ecommerce)", file: "/app/data/demo.sql", sentinelTable: "customers", sentinelColumn: "acquisition_source" },
 ];
 
 const client = new pg.Client({
@@ -57,10 +54,16 @@ try {
   await client.connect();
 
   for (const ds of datasets) {
-    // Check if this dataset's SQL file exists in the image
+    // The canonical seed file is bundled into the image at build time
+    // (Dockerfile:91). A missing file means the build is broken — fail
+    // loudly rather than booting the API against an empty DB.
     if (!existsSync(ds.file)) {
-      console.log(`seed-demo: ${ds.name} — ${ds.file} not found, skipping`);
-      continue;
+      console.error(
+        `seed-demo: ${ds.name} — ${ds.file} not found in the image. ` +
+          `This indicates a broken build (the Dockerfile COPY of the canonical ` +
+          `seed at packages/cli/data/seeds/ecommerce/seed.sql failed or drifted).`,
+      );
+      process.exit(1);
     }
 
     // Check if dataset already seeded.
@@ -100,8 +103,10 @@ try {
         `seed-demo: ${ds.name} — FAILED:`,
         err instanceof Error ? err.message : err,
       );
-      // Continue to next dataset instead of aborting entirely
-      continue;
+      // With a single canonical seed, a SQL failure means the API will boot
+      // against an empty database — fail loudly instead of exiting 0. (#2021)
+      try { await client.end(); } catch { /* connection close failed; exit anyway */ }
+      process.exit(1);
     }
 
     // Verify

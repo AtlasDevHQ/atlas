@@ -17,12 +17,11 @@
  *   bun run atlas -- init --csv data.csv          # Load CSV via DuckDB, auto-profile
  *   bun run atlas -- init --parquet file.parquet  # Load Parquet via DuckDB, auto-profile
  *   bun run atlas -- init --csv a.csv,b.csv      # Multiple CSV files
- *   bun run atlas -- init --demo                 # Load simple demo dataset then profile
- *   bun run atlas -- init --demo cybersec        # Load cybersec demo (62 tables) then profile
+ *   bun run atlas -- init --demo                 # Load the canonical NovaMart e-commerce demo then profile
  *   bun run atlas -- query "top 5 customers"      # Ask a question via the API
- *   bun run atlas -- query "active alerts" --json # Raw JSON output
- *   bun run atlas -- query "count of users" --csv # CSV output (pipe-friendly)
- *   bun run atlas -- query "alerts" --connection cybersec  # Query a specific datasource
+ *   bun run atlas -- query "monthly GMV trend" --json # Raw JSON output
+ *   bun run atlas -- query "count of orders" --csv # CSV output (pipe-friendly)
+ *   bun run atlas -- query "top categories" --connection warehouse  # Query a specific datasource
  *   bun run atlas -- query "count of users" --quiet        # Data only, no narrative
  *   bun run atlas -- diff                        # Compare DB against semantic layer
  *   bun run atlas -- diff --tables t1,t2         # Diff only specific tables/views
@@ -148,8 +147,7 @@ export {
 
 // Re-export init/demo commands
 export {
-  type DemoDataset,
-  DEMO_DATASETS,
+  DEMO_DATASET,
   parseDemoArg,
   seedDemoPostgres,
   handleIndex,

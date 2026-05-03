@@ -1,1 +1,0 @@
-seeds/simple/seed.sql

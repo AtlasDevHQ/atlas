@@ -147,7 +147,7 @@ Tracker: [milestone #40](https://github.com/AtlasDevHQ/atlas/milestones/40). Lea
 - [ ] List Atlas in MCP registries (mcp.so + others) before close (#2027)
 - [ ] Lead README, docs homepage, and landing with MCP + the YAML-first story (#2026)
 - [ ] Canonical-question eval harness for the demo dataset (#2025)
-- [ ] Consolidate canonical demo dataset across landing, docs, scaffolder (#2021)
+- [x] Consolidate canonical demo dataset across landing, docs, scaffolder (#2021) — three seeds (`simple` / `cybersec` / `ecommerce`) collapsed to one canonical seed (NovaMart e-commerce); repo-root `semantic/` now mirrors ecommerce; `--seed` flag and the `--demo cybersec|simple` picker removed; web onboarding wizard dropped its three-card picker; demo.useatlas.dev seed switched from cybersec to ecommerce; `eval/cases/` simplified to ecommerce-only; canonical question set locked for #2025 + #2026
 
 Backlog (not committed for 1.4.0): `/agent-mode` view (#2022), `runbooks-context` plugin (#2023).
 
@@ -160,7 +160,7 @@ _Untracked ideas. Create issues when committing to work._
 ### Expand Reach (build when demand signals appear)
 - ~~Python SDK~~ — **closed** (#1181). No demand signal. Reopen when a Python user asks
 - ~~MongoDB + GraphQL datasource plugins~~ — **closed** (#1182). Non-SQL needs major architecture work. No demand signal
-- ~~Multi-seed selection in `create-atlas`~~ — **shipped** (#1188). Interactive seed picker (simple/cybersec/ecommerce), `--seed` flag, seed data restructured into `seeds/<name>/`
+- ~~Multi-seed selection in `create-atlas`~~ — **shipped** (#1188), then **reverted** in 1.4.0 (#2021). Atlas now ships a single canonical demo seed (NovaMart e-commerce); the `--seed` flag was removed and `--demo cybersec` / `--demo simple` error with a migration message. The cybersec and simple seed files are gone — git history preserves them if demand resurfaces
 
 ### Competitive Positioning
 - ~~Benchmark participation~~ — **closed** (#1183). Lower priority post-launch. Revisit if needed for credibility

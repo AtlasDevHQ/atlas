@@ -110,9 +110,9 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
           "Continue even if more than 20% of tables fail to profile",
       },
       {
-        flag: "--demo [simple|cybersec|ecommerce]",
+        flag: "--demo",
         description:
-          "Load a demo dataset then profile (default: simple)",
+          "Load the canonical demo dataset (NovaMart e-commerce, 13 entities) then profile",
       },
       {
         flag: "--org <orgId>",
@@ -129,7 +129,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas init",
       "atlas init --tables users,orders,products",
       "atlas init --enrich",
-      "atlas init --demo cybersec",
+      "atlas init --demo",
       "atlas init --csv sales.csv,products.csv",
       "atlas init --org org-123",
     ],
@@ -500,7 +500,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       {
         flag: "--schema <name>",
         description:
-          "Filter by demo dataset (not a PostgreSQL schema; e.g. simple, cybersec, ecommerce)",
+          "Filter by demo dataset name (only `ecommerce` ships today; flag stays open for future seeds; not a PostgreSQL schema)",
       },
       {
         flag: "--category <name>",
@@ -537,7 +537,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     ],
     examples: [
       "atlas eval",
-      "atlas eval --schema cybersec --difficulty complex",
+      "atlas eval --schema ecommerce --difficulty complex",
       "atlas eval --baseline",
     ],
   },

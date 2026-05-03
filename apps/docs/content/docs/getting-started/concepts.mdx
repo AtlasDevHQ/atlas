@@ -227,23 +227,23 @@ An index file (`semantic/catalog.yml`) that gives the agent a high-level map of 
 
 ```yaml
 version: "1.0"
-name: Acme Analytics
-description: Sales and customer analytics
+name: NovaMart Analytics
+description: Direct-to-consumer e-commerce analytics
 entities:
-  - name: Accounts
-    file: entities/accounts.yml
-    grain: one row per subscription account
-    description: Subscription accounts with plan, status, and MRR
+  - name: Orders
+    file: entities/orders.yml
+    grain: one row per order
+    description: Customer orders with monetary totals, status, and promotions
     use_for:
-      - MRR and revenue analysis
-      - Churn and retention analysis
+      - GMV and revenue analysis
+      - Order status and fulfillment tracking
     common_questions:
-      - What is total MRR by plan type?
-      - How many accounts are churned vs active?
+      - What is our total GMV this quarter?
+      - What is the average order value?
 glossary: glossary.yml
 metrics:
-  - file: metrics/accounts.yml
-    description: Subscription and revenue metrics
+  - file: metrics/revenue.yml
+    description: Revenue metrics (GMV, AOV, revenue by category, refund rate)
 ```
 
 ---
@@ -290,93 +290,91 @@ Each layer of the semantic layer serves a distinct purpose:
 
 ## Annotated entity YAML
 
-Here's an annotated entity file based on the Atlas demo dataset (`semantic/entities/accounts.yml`), showing how the concepts above appear in practice. Some fields are simplified for clarity — see the [Semantic Layer reference](/getting-started/semantic-layer) for the full field reference.
+Here's an annotated entity file based on the Atlas demo dataset (`semantic/entities/orders.yml`), showing how the concepts above appear in practice. Some fields are simplified for clarity — see the [Semantic Layer reference](/getting-started/semantic-layer) for the full field reference.
 
 ```yaml
-name: Accounts                         # Display name
+name: Orders                           # Display name
 type: fact_table                        # dimension_table | fact_table | view | materialized_view
-table: accounts                         # Database table (can be schema-qualified: analytics.accounts)
-grain: one row per subscription account # What one row represents
+table: orders                           # Database table (can be schema-qualified: analytics.orders)
+grain: one row per order                # What one row represents
 description: |                          # Multi-line context for the agent
-  Subscription accounts with plan tier, billing status, and MRR contribution.
+  Customer orders — the primary fact table for revenue analysis. Monetary
+  totals are in cents (subtotal_cents, tax_cents, total_cents).
 
 dimensions:
   - name: id                           # Primary key
     sql: id
     type: number
-    description: Unique account identifier
+    description: Unique order identifier
     primary_key: true
 
-  - name: company_id                   # Foreign key (used by joins below)
-    sql: company_id
+  - name: customer_id                  # Foreign key (used by joins below)
+    sql: customer_id
     type: number
-    description: Which customer owns this account
+    description: Which customer placed this order
 
-  - name: plan                         # String with sample_values for correct WHERE clauses
-    sql: plan
-    type: string
-    description: Subscription tier (Free, Starter, Pro, Enterprise)
-    sample_values: [Enterprise, Pro, Starter, Free]
-
-  - name: status                       # Ambiguous term — glossary flags for clarification
+  - name: status                       # String with sample_values for correct WHERE clauses
     sql: status
     type: string
-    description: Billing status (Active, Inactive, Suspended, Churned)
-    sample_values: [Active, Churned, Inactive, Suspended]
+    description: Order fulfillment status
+    sample_values: [pending, processing, shipped, delivered, cancelled]
 
-  - name: monthly_value                # Numeric — no sample_values needed
-    sql: monthly_value
+  - name: total_cents                  # Numeric — no sample_values needed
+    sql: total_cents
     type: number
-    description: Monthly Recurring Revenue (MRR) in dollars
+    description: Order total in cents (primary revenue field)
 
-  - name: monthly_value_bucket         # Virtual dimension — CASE expression
+  - name: order_size_bucket            # Virtual dimension — CASE expression
     sql: |-
       CASE
-        WHEN monthly_value = 0 THEN 'Free'
-        WHEN monthly_value < 100 THEN 'Low'
-        WHEN monthly_value < 1000 THEN 'Mid'
-        ELSE 'High'
+        WHEN total_cents < 2500 THEN 'Small (<$25)'
+        WHEN total_cents < 7500 THEN 'Medium ($25-$75)'
+        WHEN total_cents < 15000 THEN 'Large ($75-$150)'
+        ELSE 'XL ($150+)'
       END
     type: string
-    description: MRR tier bucket
+    description: Order size bucket based on total value
     virtual: true
-    sample_values: [Free, Low, Mid, High]
+    sample_values: ["Small (<$25)", "Medium ($25-$75)", "Large ($75-$150)", "XL ($150+)"]
 
-  - name: contract_start_year          # Virtual dimension — date extraction
-    sql: EXTRACT(YEAR FROM contract_start)
-    type: number
-    description: Contract start year for cohort analysis
+  - name: order_month                  # Virtual dimension — date extraction
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the order was placed — useful for trend analysis
     virtual: true
 
 measures:
-  - name: total_mrr                    # SUM aggregation
-    sql: monthly_value
+  - name: total_gmv_cents              # SUM aggregation
+    sql: total_cents
     type: sum
-    description: Total Monthly Recurring Revenue
+    description: Total GMV in cents (sum of all order totals)
 
-  - name: account_count                # COUNT_DISTINCT aggregation
+  - name: order_count                  # COUNT_DISTINCT aggregation
     sql: id
     type: count_distinct
-    description: Number of unique accounts
+    description: Number of unique orders
 
 joins:
-  - target_entity: Companies           # many_to_one | one_to_many | one_to_one | many_to_many
+  - target_entity: Customers           # many_to_one | one_to_many | one_to_one | many_to_many
     relationship: many_to_one
     join_columns:
-      from: company_id                 # Local FK
+      from: customer_id                # Local FK
       to: id                           # Target PK
 
 use_cases:                             # Read by the catalog for routing
-  - MRR analysis by plan, status, and time period
-  - Churn and retention analysis
+  - GMV and revenue analysis — total, by month, by customer segment
+  - AOV tracking and order size distribution
 
 query_patterns:
-  - name: mrr_by_plan                  # Pre-written SQL for a common question
-    description: Total MRR by plan tier
+  - name: monthly_gmv                  # Pre-written SQL for a common question
+    description: Monthly GMV trend
     sql: |-
-      SELECT plan, SUM(monthly_value) AS total_mrr, COUNT(*) AS account_count
-      FROM accounts WHERE status = 'Active'
-      GROUP BY plan ORDER BY total_mrr DESC
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS order_month,
+             COUNT(*) AS order_count,
+             SUM(total_cents) / 100.0 AS gmv_dollars
+      FROM orders WHERE status != 'cancelled'
+      GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+      ORDER BY order_month
 ```
 
 ---

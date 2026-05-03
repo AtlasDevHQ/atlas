@@ -1,13 +1,12 @@
 /**
- * Atlas eval pipeline — run curated YAML eval cases against demo Postgres schemas,
- * compare agent output against gold SQL, and detect regressions.
+ * Atlas eval pipeline — run curated YAML eval cases against the demo Postgres
+ * schema, compare agent output against gold SQL, and detect regressions.
  *
  * Usage:
  *   bun run atlas -- eval                          # Run all cases
- *   bun run atlas -- eval --schema cybersec        # Filter by schema
  *   bun run atlas -- eval --category aggregation   # Filter by category
  *   bun run atlas -- eval --difficulty simple       # Filter by difficulty
- *   bun run atlas -- eval --id cs-001              # Single case
+ *   bun run atlas -- eval --id ec-001              # Single case
  *   bun run atlas -- eval --limit 5                # Max N cases
  *   bun run atlas -- eval --resume results.jsonl   # Resume from JSONL
  *   bun run atlas -- eval --baseline               # Save results as new baseline
@@ -19,7 +18,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
-import { getFlag, seedDemoPostgres, type DemoDataset } from "./atlas";
+import { getFlag, seedDemoPostgres } from "./atlas";
 import { explainMismatch } from "../lib/compare";
 import { connections } from "@atlas/api/lib/db/connection";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -27,10 +26,16 @@ import { invalidateExploreBackend } from "@atlas/api/lib/tools/explore";
 
 // --- Types ---
 
+// Schema is the demo seed an eval case targets. Atlas ships only `"ecommerce"`
+// today (#2021); to add a future seed, append it to `VALID_SCHEMAS` below
+// and the type narrows automatically. Runtime validation in `validateCase`
+// remains the source of truth.
+export type EvalSchema = (typeof VALID_SCHEMAS)[number];
+
 export interface EvalCase {
   id: string;
   question: string;
-  schema: DemoDataset;
+  schema: EvalSchema;
   difficulty: "simple" | "medium" | "complex";
   category: string;
   tags: string[];
@@ -87,7 +92,11 @@ const BACKUP_DIR = path.resolve(".semantic-backup-eval");
 
 const REQUIRED_CASE_FIELDS = ["id", "question", "schema", "difficulty", "category", "gold_sql"] as const;
 const VALID_DIFFICULTIES = ["simple", "medium", "complex"] as const;
-const VALID_SCHEMAS: DemoDataset[] = ["simple", "cybersec", "ecommerce"];
+const VALID_SCHEMAS = ["ecommerce"] as const;
+
+function isEvalSchema(value: unknown): value is EvalSchema {
+  return typeof value === "string" && (VALID_SCHEMAS as readonly string[]).includes(value);
+}
 
 export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
   if (!fs.existsSync(casesDir)) {
@@ -110,24 +119,28 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
       const doc = yaml.load(content) as Record<string, unknown>;
 
       validateCase(doc, filePath);
+      // validateCase is an assertion function — TS now narrows `doc` to a
+      // shape that lets the push skip every `as` escape.
 
-      const caseId = doc.id as string;
+      const caseId = doc.id;
       if (seenIds.has(caseId)) {
         throw new Error(`Duplicate eval case id "${caseId}" in ${filePath}`);
       }
       seenIds.add(caseId);
 
       cases.push({
-        id: doc.id as string,
-        question: doc.question as string,
-        schema: doc.schema as DemoDataset,
-        difficulty: doc.difficulty as EvalCase["difficulty"],
-        category: doc.category as string,
-        tags: (doc.tags as string[]) ?? [],
-        gold_sql: (doc.gold_sql as string).trim(),
-        skip: doc.skip as boolean | undefined,
-        expected_rows: doc.expected_rows as number | undefined,
-        notes: doc.notes as string | undefined,
+        id: doc.id,
+        question: doc.question,
+        schema: doc.schema,
+        difficulty: doc.difficulty,
+        category: doc.category,
+        tags: doc.tags ?? [],
+        gold_sql: doc.gold_sql.trim(),
+        skip: doc.skip,
+        // YAML `expected_rows: null` is the unscored sentinel — collapse to
+        // undefined so EvalCase.expected_rows stays `number | undefined`.
+        expected_rows: doc.expected_rows ?? undefined,
+        notes: doc.notes,
       });
     }
   }
@@ -135,14 +148,39 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
   return cases;
 }
 
-export function validateCase(doc: Record<string, unknown>, filePath: string): void {
+/**
+ * Shape of a YAML eval case after validation. Used as the `asserts` target
+ * of `validateCase` so the loader doesn't need `as` casts on every field.
+ *
+ * `expected_rows` accepts `null` because YAML fixtures (`eval/cases/...`)
+ * frequently use it as a "not yet pinned" sentinel; the consuming type
+ * `EvalCase.expected_rows` is `number | undefined`, and `null` collapses
+ * to `undefined` at the loader push site.
+ */
+type ValidatedCase = {
+  id: string;
+  question: string;
+  schema: EvalSchema;
+  difficulty: EvalCase["difficulty"];
+  category: string;
+  gold_sql: string;
+  tags?: string[];
+  skip?: boolean;
+  expected_rows?: number | null;
+  notes?: string;
+};
+
+export function validateCase(
+  doc: Record<string, unknown>,
+  filePath: string,
+): asserts doc is ValidatedCase {
   for (const field of REQUIRED_CASE_FIELDS) {
     if (!doc[field]) {
       throw new Error(`Missing required field "${field}" in ${filePath}`);
     }
   }
 
-  if (!VALID_SCHEMAS.includes(doc.schema as DemoDataset)) {
+  if (!isEvalSchema(doc.schema)) {
     throw new Error(`Invalid schema "${doc.schema}" in ${filePath}. Valid: ${VALID_SCHEMAS.join(", ")}`);
   }
 
@@ -160,6 +198,35 @@ export function validateCase(doc: Record<string, unknown>, filePath: string): vo
 
   if (typeof doc.gold_sql !== "string" || !doc.gold_sql.trim()) {
     throw new Error(`Invalid gold_sql in ${filePath}: must be a non-empty string`);
+  }
+
+  if (typeof doc.category !== "string" || !doc.category.trim()) {
+    throw new Error(`Invalid category in ${filePath}: must be a non-empty string`);
+  }
+
+  if (
+    doc.tags !== undefined &&
+    (!Array.isArray(doc.tags) || !doc.tags.every((t) => typeof t === "string"))
+  ) {
+    throw new Error(`Invalid tags in ${filePath}: must be an array of strings`);
+  }
+
+  if (doc.skip !== undefined && typeof doc.skip !== "boolean") {
+    throw new Error(`Invalid skip in ${filePath}: must be a boolean`);
+  }
+
+  if (
+    doc.expected_rows !== undefined &&
+    doc.expected_rows !== null &&
+    typeof doc.expected_rows !== "number"
+  ) {
+    // YAML fixtures use `expected_rows: null` as a "not yet pinned" sentinel;
+    // null is allowed and collapses to undefined at the loader push site.
+    throw new Error(`Invalid expected_rows in ${filePath}: must be a number or null`);
+  }
+
+  if (doc.notes !== undefined && typeof doc.notes !== "string") {
+    throw new Error(`Invalid notes in ${filePath}: must be a string`);
   }
 }
 
@@ -676,7 +743,7 @@ export async function handleEval(args: string[]): Promise<void> {
 
       // Setup phase — errors here affect all cases in this schema
       try {
-        await seedDemoPostgres(connStr, schema as DemoDataset);
+        await seedDemoPostgres(connStr);
         installSchemaSemanticLayer(schema);
         resetCaches();
         process.env.ATLAS_DATASOURCE_URL = connStr;

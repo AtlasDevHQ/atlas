@@ -21,7 +21,7 @@ This launches two containers via Docker Compose:
 - **Postgres** (`postgres:16-alpine`) with two databases: `atlas` (internals) and `atlas_demo` (demo analytics data)
 - **Sandbox sidecar** — isolated container for the explore tool (shell + Python execution), matching production isolation
 
-> For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` instead. This loads a 62-table cybersecurity SaaS database (~500K rows) with realistic tech debt patterns.
+> Atlas ships a single canonical demo dataset since 1.4.0 ([#2021](https://github.com/AtlasDevHQ/atlas/issues/2021)) — NovaMart, an e-commerce DTC brand with 13 entities (52 tables, ~480K rows) and realistic tech-debt patterns. Run `bun run atlas -- init --demo` to load it.
 
 Configure your environment:
 

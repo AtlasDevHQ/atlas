@@ -9,12 +9,12 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   ArrowRight,
-  ShieldAlert,
-  Activity,
+  ShoppingCart,
+  Package,
   Users,
-  Network,
-  ShieldOff,
-  Crosshair,
+  CreditCard,
+  Truck,
+  RotateCcw,
   Database,
   Lock,
   type LucideIcon,
@@ -28,12 +28,15 @@ const DEMO_EXPIRES_KEY = "atlas-demo-expires";
  * Marketing teaser shown on the pre-auth email gate — NOT the chat surface's
  * starter prompts. The chat fetches the live adaptive list from
  * `/api/v1/starter-prompts` once a demo bearer is signed; see #1944.
+ *
+ * Drawn from the canonical question set locked in #2021 — the same eight
+ * questions the eval harness (#2025) and the README rewrite (#2026) use.
  */
 const DEMO_TEASER_PROMPTS = [
-  "Which alerts had the highest severity in the last 7 days?",
-  "Show me failed login events grouped by user this week.",
-  "What vulnerabilities are unpatched on critical assets?",
-  "Top threat actors by alert count.",
+  "What's our GMV this quarter?",
+  "Average order value by category last 30 days",
+  "Top 10 products by revenue, with their seller",
+  "Which customers haven't ordered in 60 days?",
 ] as const;
 
 type DatasetEntry = {
@@ -43,12 +46,12 @@ type DatasetEntry = {
 };
 
 const DEMO_DATASET: readonly DatasetEntry[] = [
-  { icon: ShieldAlert, table: "alerts", description: "security events with severity, status, and assignee" },
-  { icon: Activity, table: "scan_results", description: "vulnerability scan output across assets" },
-  { icon: Users, table: "login_events", description: "auth attempts, failures, and session metadata" },
-  { icon: Network, table: "assets", description: "hosts, services, and asset groups" },
-  { icon: ShieldOff, table: "vulnerabilities", description: "CVEs with remediation status" },
-  { icon: Crosshair, table: "threat_actors", description: "known IOCs and threat intelligence" },
+  { icon: ShoppingCart, table: "orders", description: "customer orders with totals, status, and promotions" },
+  { icon: Package, table: "products", description: "catalog with categories, sellers, and pricing tiers" },
+  { icon: Users, table: "customers", description: "registered customers with acquisition channel" },
+  { icon: CreditCard, table: "payments", description: "payment transactions with method and status" },
+  { icon: Truck, table: "shipments", description: "carrier, warehouse, and delivery timestamps" },
+  { icon: RotateCcw, table: "returns", description: "return requests with reason and resolution time" },
 ];
 
 function getApiBase(): string {
@@ -188,7 +191,7 @@ export default function DemoPage() {
                 Try Atlas on a real schema.
               </h1>
               <p className="max-w-md text-base text-muted-foreground">
-                Ask a cybersecurity sample dataset in plain English. Atlas
+                Ask an e-commerce sample dataset in plain English. Atlas
                 writes the SQL, validates it against the semantic layer, and
                 shows the result — no signup, no setup.
               </p>
@@ -252,11 +255,11 @@ export default function DemoPage() {
                   Sample workspace
                 </p>
                 <h2 className="text-lg font-semibold tracking-tight">
-                  Sentinel Security
+                  NovaMart
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  62 tables, ~500K rows. Realistic SaaS schema with audit
-                  log, denormalized reporting tables, and a few legacy
+                  52 tables, ~480K rows. Realistic e-commerce schema with
+                  marketplace sellers, mixed-unit pricing, and a few legacy
                   artifacts to keep things honest.
                 </p>
               </div>

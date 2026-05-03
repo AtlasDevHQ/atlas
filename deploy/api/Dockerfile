@@ -55,9 +55,7 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
-COPY packages/cli/data/seeds/simple/semantic semantic
-COPY packages/cli/data/seeds/cybersec/semantic data/cybersec-semantic
-COPY packages/cli/data/seeds/ecommerce/semantic data/ecommerce-semantic
+COPY packages/cli/data/seeds/ecommerce/semantic semantic
 # Build workspace deps whose exports point to dist/ in dependency order:
 # types → sdk → react. packages/react imports fetchStarterPrompts from
 # @useatlas/sdk, so sdk must be built before react's bundler resolves it.
@@ -109,13 +107,16 @@ COPY --from=builder --chown=atlas:atlas /app/package.json ./package.json
 COPY --from=builder --chown=atlas:atlas /app/ee ./ee
 # Plugins (loaded at runtime by the plugin system)
 COPY --from=builder --chown=atlas:atlas /app/plugins ./plugins
-# Demo seeding (ATLAS_SEED_DEMO=true) — all three datasets coexist in the same DB
-COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/simple/seed.sql ./data/demo.sql
-COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/cybersec/seed.sql ./data/cybersec.sql
-COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/ecommerce.sql
+# Demo seeding (ATLAS_SEED_DEMO=true) — single canonical seed since 1.4.0 (#2021)
+COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts
 COPY --chown=atlas:atlas deploy/api/atlas.config.ts ./atlas.config.ts
 COPY --chown=atlas:atlas deploy/api/scripts/start.sh ./scripts/start.sh
+# Build-time assertion: canonical seed must be non-empty and the bundled
+# semantic layer must contain entities. Catches a regressed COPY at build
+# time rather than booting against an empty DB. (#2021 review-pass)
+RUN test -s ./data/demo.sql || (echo "ERROR: ./data/demo.sql is empty or missing" >&2 && exit 1)
+RUN test -d ./semantic/entities && [ "$(ls -A ./semantic/entities 2>/dev/null)" ] || (echo "ERROR: ./semantic/entities is missing or empty" >&2 && exit 1)
 # pg is installed in packages/api/node_modules (not hoisted to root).
 # seed-demo.ts runs from /app/scripts/ and needs pg — symlink it so
 # bun's module resolution finds it from the root node_modules.

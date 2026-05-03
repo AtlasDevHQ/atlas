@@ -114,9 +114,9 @@ export async function handleQuery(args: string[]): Promise<void> {
         "  ATLAS_API_KEY        API key for authentication\n\n" +
         "Examples:\n" +
         '  atlas query "top 5 customers by revenue"\n' +
-        '  atlas query "active alerts" --json\n' +
-        '  atlas query "count of users" --csv\n' +
-        '  atlas query "alerts" --connection cybersec',
+        '  atlas query "monthly GMV trend" --json\n' +
+        '  atlas query "count of orders" --csv\n' +
+        '  atlas query "top categories" --connection warehouse',
     );
     process.exit(1);
   }

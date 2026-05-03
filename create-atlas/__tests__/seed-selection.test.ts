@@ -1,316 +1,112 @@
 /**
- * Tests for multi-seed selection logic in create-atlas.
+ * Tests for the canonical demo dataset.
  *
- * Tests the flag parsing, dataset validation, and seed directory structure.
- * The actual scaffolding is tested via smoke-test.sh (integration).
+ * Atlas ships a single canonical demo seed (NovaMart e-commerce). The previous
+ * multi-seed picker (`simple` / `cybersec` / `ecommerce`) was reverted in
+ * 1.4.0 (#2021). These tests guard the new contract:
+ *
+ *   - The ecommerce seed structure on disk
+ *   - parseDemoArg returns a boolean and rejects legacy seed names
+ *   - The --seed flag is fully removed
  */
 
 import { describe, test, expect } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 
-// ── Seed directory structure ─────────────────────────────────────────
-
 const DATA_DIR = path.resolve(import.meta.dir, "../../packages/cli/data");
 const SEEDS_DIR = path.join(DATA_DIR, "seeds");
+const ECOMMERCE_DIR = path.join(SEEDS_DIR, "ecommerce");
 
-const EXPECTED_SEEDS = ["simple", "cybersec", "ecommerce"] as const;
+// ── Seed directory structure ─────────────────────────────────────────
 
-describe("seed directory structure", () => {
-  test("seeds/ directory exists", () => {
+describe("canonical ecommerce seed", () => {
+  test("seeds/ contains only ecommerce/", () => {
     expect(fs.existsSync(SEEDS_DIR)).toBe(true);
+    const entries = fs.readdirSync(SEEDS_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    expect(entries).toEqual(["ecommerce"]);
   });
 
-  for (const seed of EXPECTED_SEEDS) {
-    describe(`seeds/${seed}/`, () => {
-      const seedDir = path.join(SEEDS_DIR, seed);
-
-      test("directory exists", () => {
-        expect(fs.existsSync(seedDir)).toBe(true);
-      });
-
-      test("seed.sql exists and is non-empty", () => {
-        const sqlPath = path.join(seedDir, "seed.sql");
-        expect(fs.existsSync(sqlPath)).toBe(true);
-        const stat = fs.statSync(sqlPath);
-        expect(stat.size).toBeGreaterThan(100);
-      });
-
-      test("semantic/ directory exists with entities", () => {
-        const semanticDir = path.join(seedDir, "semantic");
-        expect(fs.existsSync(semanticDir)).toBe(true);
-        const entitiesDir = path.join(semanticDir, "entities");
-        expect(fs.existsSync(entitiesDir)).toBe(true);
-        const entities = fs.readdirSync(entitiesDir).filter((f) => f.endsWith(".yml"));
-        expect(entities.length).toBeGreaterThan(0);
-      });
-
-      test("semantic/ has catalog.yml", () => {
-        const catalogPath = path.join(seedDir, "semantic", "catalog.yml");
-        expect(fs.existsSync(catalogPath)).toBe(true);
-      });
-
-      test("semantic/ has glossary.yml", () => {
-        const glossaryPath = path.join(seedDir, "semantic", "glossary.yml");
-        expect(fs.existsSync(glossaryPath)).toBe(true);
-      });
-    });
-  }
-});
-
-// ── Backward-compat symlinks ─────────────────────────────────────────
-
-describe("backward-compatible symlinks", () => {
-  test("demo.sql symlink resolves to seeds/simple/seed.sql", () => {
-    const symlinkPath = path.join(DATA_DIR, "demo.sql");
-    expect(fs.existsSync(symlinkPath)).toBe(true);
-    const target = fs.readlinkSync(symlinkPath);
-    expect(target).toBe("seeds/simple/seed.sql");
+  test("seeds/ecommerce/seed.sql exists and is non-trivial", () => {
+    const sqlPath = path.join(ECOMMERCE_DIR, "seed.sql");
+    expect(fs.existsSync(sqlPath)).toBe(true);
+    expect(fs.statSync(sqlPath).size).toBeGreaterThan(1000);
   });
 
-  test("cybersec.sql symlink resolves to seeds/cybersec/seed.sql", () => {
-    const symlinkPath = path.join(DATA_DIR, "cybersec.sql");
-    expect(fs.existsSync(symlinkPath)).toBe(true);
-    const target = fs.readlinkSync(symlinkPath);
-    expect(target).toBe("seeds/cybersec/seed.sql");
+  test("seeds/ecommerce/seed.sql uses PostgreSQL syntax", () => {
+    const sql = fs.readFileSync(path.join(ECOMMERCE_DIR, "seed.sql"), "utf-8");
+    expect(sql).toContain("CREATE TABLE");
+    expect(sql).toContain("generate_series");
   });
 
-  test("ecommerce.sql symlink resolves to seeds/ecommerce/seed.sql", () => {
-    const symlinkPath = path.join(DATA_DIR, "ecommerce.sql");
-    expect(fs.existsSync(symlinkPath)).toBe(true);
-    const target = fs.readlinkSync(symlinkPath);
-    expect(target).toBe("seeds/ecommerce/seed.sql");
-  });
+  test("seeds/ecommerce/semantic/ has entities, catalog, glossary", () => {
+    const semantic = path.join(ECOMMERCE_DIR, "semantic");
+    expect(fs.existsSync(path.join(semantic, "entities"))).toBe(true);
+    expect(fs.existsSync(path.join(semantic, "catalog.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(semantic, "glossary.yml"))).toBe(true);
 
-  test("demo-semantic symlink resolves to seeds/simple/semantic", () => {
-    const symlinkPath = path.join(DATA_DIR, "demo-semantic");
-    expect(fs.existsSync(symlinkPath)).toBe(true);
-    const target = fs.readlinkSync(symlinkPath);
-    expect(target).toBe("seeds/simple/semantic");
-  });
-
-  test("cybersec-semantic symlink resolves to seeds/cybersec/semantic", () => {
-    const symlinkPath = path.join(DATA_DIR, "cybersec-semantic");
-    expect(fs.existsSync(symlinkPath)).toBe(true);
-    const target = fs.readlinkSync(symlinkPath);
-    expect(target).toBe("seeds/cybersec/semantic");
-  });
-
-  test("ecommerce-semantic symlink resolves to seeds/ecommerce/semantic", () => {
-    const symlinkPath = path.join(DATA_DIR, "ecommerce-semantic");
-    expect(fs.existsSync(symlinkPath)).toBe(true);
-    const target = fs.readlinkSync(symlinkPath);
-    expect(target).toBe("seeds/ecommerce/semantic");
+    const entities = fs.readdirSync(path.join(semantic, "entities"))
+      .filter((f) => f.endsWith(".yml"));
+    expect(entities.length).toBeGreaterThan(0);
   });
 });
 
-// ── CLI DEMO_DATASETS config ─────────────────────────────────────────
+// ── CLI DEMO_DATASET config ──────────────────────────────────────────
 
-describe("DEMO_DATASETS config", () => {
-  // Import the exported config from CLI
-  let DEMO_DATASETS: Record<string, { pg: string; semanticDir: string; label: string }>;
-  let parseDemoArg: (args: string[]) => string | null;
-
-  // Use dynamic import since init.ts has heavy deps
-  test("DEMO_DATASETS exports are correct", async () => {
+describe("CLI DEMO_DATASET", () => {
+  test("DEMO_DATASET points at the ecommerce seed", async () => {
     const mod = await import("../../packages/cli/src/commands/init");
-    DEMO_DATASETS = mod.DEMO_DATASETS;
-
-    expect(Object.keys(DEMO_DATASETS)).toEqual(["simple", "cybersec", "ecommerce"]);
-
-    // Each dataset should reference seeds/<name>/seed.sql
-    for (const [name, meta] of Object.entries(DEMO_DATASETS)) {
-      expect(meta.pg).toBe(`seeds/${name}/seed.sql`);
-      expect(meta.semanticDir).toBe(`seeds/${name}/semantic`);
-      expect(meta.label.length).toBeGreaterThan(0);
-    }
+    expect(mod.DEMO_DATASET.pg).toBe("seeds/ecommerce/seed.sql");
+    expect(mod.DEMO_DATASET.semanticDir).toBe("seeds/ecommerce/semantic");
+    expect(mod.DEMO_DATASET.label.length).toBeGreaterThan(0);
   });
 
-  test("parseDemoArg returns null when --demo not present", async () => {
-    const mod = await import("../../packages/cli/src/commands/init");
-    parseDemoArg = mod.parseDemoArg;
-
-    expect(parseDemoArg(["init"])).toBeNull();
-    expect(parseDemoArg(["init", "--enrich"])).toBeNull();
+  test("parseDemoArg returns false when --demo not present", async () => {
+    const { parseDemoArg } = await import("../../packages/cli/src/commands/init");
+    expect(parseDemoArg(["init"])).toBe(false);
+    expect(parseDemoArg(["init", "--enrich"])).toBe(false);
   });
 
-  test("parseDemoArg returns 'simple' for bare --demo", async () => {
-    const mod = await import("../../packages/cli/src/commands/init");
-    parseDemoArg = mod.parseDemoArg;
-
-    expect(parseDemoArg(["init", "--demo"])).toBe("simple");
+  test("parseDemoArg returns true for bare --demo", async () => {
+    const { parseDemoArg } = await import("../../packages/cli/src/commands/init");
+    expect(parseDemoArg(["init", "--demo"])).toBe(true);
   });
 
-  test("parseDemoArg returns specified dataset", async () => {
-    const mod = await import("../../packages/cli/src/commands/init");
-    parseDemoArg = mod.parseDemoArg;
-
-    expect(parseDemoArg(["init", "--demo", "cybersec"])).toBe("cybersec");
-    expect(parseDemoArg(["init", "--demo", "ecommerce"])).toBe("ecommerce");
-    expect(parseDemoArg(["init", "--demo", "simple"])).toBe("simple");
+  test("parseDemoArg accepts --demo ecommerce for backward compat", async () => {
+    const { parseDemoArg } = await import("../../packages/cli/src/commands/init");
+    expect(parseDemoArg(["init", "--demo", "ecommerce"])).toBe(true);
   });
 
-  test("parseDemoArg throws for unknown dataset", async () => {
-    const mod = await import("../../packages/cli/src/commands/init");
-    parseDemoArg = mod.parseDemoArg;
+  test("parseDemoArg rejects legacy --demo simple with migration message", async () => {
+    const { parseDemoArg } = await import("../../packages/cli/src/commands/init");
+    expect(() => parseDemoArg(["init", "--demo", "simple"])).toThrow(
+      /removed in 1\.4\.0/,
+    );
+  });
 
+  test("parseDemoArg rejects legacy --demo cybersec with migration message", async () => {
+    const { parseDemoArg } = await import("../../packages/cli/src/commands/init");
+    expect(() => parseDemoArg(["init", "--demo", "cybersec"])).toThrow(
+      /removed in 1\.4\.0/,
+    );
+  });
+
+  test("parseDemoArg rejects unknown dataset values", async () => {
+    const { parseDemoArg } = await import("../../packages/cli/src/commands/init");
     expect(() => parseDemoArg(["init", "--demo", "unknown"])).toThrow(
-      /Unknown demo dataset/,
+      /Unknown demo value/,
     );
   });
 
-  test("parseDemoArg recognizes --seed as alias for --demo", async () => {
-    const mod = await import("../../packages/cli/src/commands/init");
-    parseDemoArg = mod.parseDemoArg;
-
-    expect(parseDemoArg(["init", "--seed"])).toBe("simple");
-    expect(parseDemoArg(["init", "--seed", "cybersec"])).toBe("cybersec");
-    expect(parseDemoArg(["init", "--seed", "ecommerce"])).toBe("ecommerce");
-  });
-
-  test("parseDemoArg throws when both --demo and --seed are present", async () => {
-    const mod = await import("../../packages/cli/src/commands/init");
-    parseDemoArg = mod.parseDemoArg;
-
-    expect(() => parseDemoArg(["init", "--demo", "--seed"])).toThrow(
-      /Cannot use both/,
+  test("--seed flag is fully removed and throws a migration error", async () => {
+    const { parseDemoArg } = await import("../../packages/cli/src/commands/init");
+    expect(() => parseDemoArg(["init", "--seed"])).toThrow(
+      /--seed flag was removed in 1\.4\.0/,
     );
-  });
-});
-
-// ── Seed SQL file content checks ─────────────────────────────────────
-
-describe("seed SQL content", () => {
-  test("simple seed uses PostgreSQL syntax", () => {
-    const sql = fs.readFileSync(path.join(SEEDS_DIR, "simple/seed.sql"), "utf-8");
-    expect(sql).toContain("CREATE TABLE");
-    expect(sql).toContain("INSERT INTO");
-  });
-
-  test("cybersec seed uses generate_series for realistic data", () => {
-    const sql = fs.readFileSync(path.join(SEEDS_DIR, "cybersec/seed.sql"), "utf-8");
-    expect(sql).toContain("generate_series");
-    expect(sql).toContain("CREATE TABLE");
-  });
-
-  test("ecommerce seed uses generate_series for realistic data", () => {
-    const sql = fs.readFileSync(path.join(SEEDS_DIR, "ecommerce/seed.sql"), "utf-8");
-    expect(sql).toContain("generate_series");
-    expect(sql).toContain("CREATE TABLE");
-  });
-});
-
-// ── pruneSeedData ────────────────────────────────────────────────────
-
-import { pruneSeedData } from "../index";
-import * as os from "os";
-
-const ALL_SEEDS = ["simple", "cybersec", "ecommerce"] as const;
-
-function createFakeProject(selectedSeed?: string): string {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-test-"));
-  // Create data/seeds/<name>/ with seed.sql + semantic/entities/
-  for (const seed of ALL_SEEDS) {
-    const seedDir = path.join(tmpDir, "data", "seeds", seed);
-    fs.mkdirSync(path.join(seedDir, "semantic", "entities"), { recursive: true });
-    fs.writeFileSync(path.join(seedDir, "seed.sql"), `-- ${seed} seed SQL`);
-    fs.writeFileSync(path.join(seedDir, "semantic", "catalog.yml"), `name: ${seed}`);
-    fs.writeFileSync(path.join(seedDir, "semantic", "entities", "main.yml"), `table: ${seed}`);
-  }
-  // Create flat backward-compat SQL files
-  fs.writeFileSync(path.join(tmpDir, "data", "demo.sql"), "-- simple");
-  fs.writeFileSync(path.join(tmpDir, "data", "simple.sql"), "-- simple");
-  fs.writeFileSync(path.join(tmpDir, "data", "cybersec.sql"), "-- cybersec");
-  fs.writeFileSync(path.join(tmpDir, "data", "ecommerce.sql"), "-- ecommerce");
-  // Create default semantic/ dir (simulates template's simple semantic layer)
-  fs.mkdirSync(path.join(tmpDir, "semantic", "entities"), { recursive: true });
-  fs.writeFileSync(path.join(tmpDir, "semantic", "catalog.yml"), "name: default");
-  return tmpDir;
-}
-
-describe("pruneSeedData", () => {
-  test("selecting cybersec keeps only cybersec seed dir", () => {
-    const tmp = createFakeProject();
-    pruneSeedData(tmp, "cybersec", ALL_SEEDS);
-
-    expect(fs.existsSync(path.join(tmp, "data", "seeds", "cybersec"))).toBe(true);
-    expect(fs.existsSync(path.join(tmp, "data", "seeds", "simple"))).toBe(false);
-    expect(fs.existsSync(path.join(tmp, "data", "seeds", "ecommerce"))).toBe(false);
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test("selecting cybersec overwrites semantic/ with cybersec semantic", () => {
-    const tmp = createFakeProject();
-    pruneSeedData(tmp, "cybersec", ALL_SEEDS);
-
-    const catalog = fs.readFileSync(path.join(tmp, "semantic", "catalog.yml"), "utf-8");
-    expect(catalog).toContain("cybersec");
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test("selecting cybersec removes demo.sql flat file", () => {
-    const tmp = createFakeProject();
-    pruneSeedData(tmp, "cybersec", ALL_SEEDS);
-
-    expect(fs.existsSync(path.join(tmp, "data", "demo.sql"))).toBe(false);
-    expect(fs.existsSync(path.join(tmp, "data", "simple.sql"))).toBe(false);
-    expect(fs.existsSync(path.join(tmp, "data", "ecommerce.sql"))).toBe(false);
-    // cybersec.sql should remain
-    expect(fs.existsSync(path.join(tmp, "data", "cybersec.sql"))).toBe(true);
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test("selecting simple keeps demo.sql (it is a copy of simple/seed.sql)", () => {
-    const tmp = createFakeProject();
-    pruneSeedData(tmp, "simple", ALL_SEEDS);
-
-    expect(fs.existsSync(path.join(tmp, "data", "demo.sql"))).toBe(true);
-    expect(fs.existsSync(path.join(tmp, "data", "cybersec.sql"))).toBe(false);
-    expect(fs.existsSync(path.join(tmp, "data", "ecommerce.sql"))).toBe(false);
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test("handles missing data/seeds/ directory without crashing", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-empty-"));
-    fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
-    // No seeds dir, no semantic dir — should not throw
-    const warning = pruneSeedData(tmp, "cybersec", ALL_SEEDS);
-    // Should warn about missing semantic dir for non-simple seed
-    expect(warning).toContain("not found");
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test("returns null (no warning) when seed semantic exists", () => {
-    const tmp = createFakeProject();
-    const warning = pruneSeedData(tmp, "cybersec", ALL_SEEDS);
-    expect(warning).toBeNull();
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test("returns warning when non-simple seed semantic dir is missing", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-warn-"));
-    fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
-    // cybersec has no semantic dir
-    const warning = pruneSeedData(tmp, "cybersec", ALL_SEEDS);
-    expect(warning).toContain("Semantic layer");
-    expect(warning).toContain("cybersec");
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test("returns null for simple seed even when semantic dir is missing", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-simple-"));
-    fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
-    // simple's semantic layer is the template default, no warning needed
-    const warning = pruneSeedData(tmp, "simple", ALL_SEEDS);
-    expect(warning).toBeNull();
-
-    fs.rmSync(tmp, { recursive: true, force: true });
+    expect(() => parseDemoArg(["init", "--seed", "ecommerce"])).toThrow(
+      /--seed flag was removed in 1\.4\.0/,
+    );
   });
 });

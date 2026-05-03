@@ -1,279 +1,114 @@
 ---
-title: Demo Datasets
-description: Pre-built demo datasets for evaluation and development.
+title: Demo Dataset
+description: The pre-built demo dataset Atlas ships for evaluation and development.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
 <Callout type="info" title="Self-hosted only">
-  Demo datasets are for self-hosted local development and evaluation. On [app.useatlas.dev](https://app.useatlas.dev), the onboarding wizard offers a demo dataset option when you create your workspace — no CLI needed.
+  The demo dataset is for self-hosted local development and evaluation. On [app.useatlas.dev](https://app.useatlas.dev), the onboarding wizard offers a single "Use demo data" option when you create your workspace — no CLI needed.
 </Callout>
 
-Atlas ships with three demo datasets for evaluation and development. Each targets a different use case — pick the one that matches your goal.
+Atlas ships a single canonical demo dataset: **NovaMart**, a direct-to-consumer e-commerce brand. 13 entities (orders, products, customers, payments, returns, shipments, sellers, …), 52 tables total, ~480K rows spanning 2020-2025.
 
-## Quick Comparison
+NovaMart was founded during the pandemic, started with bedding, expanded to kitchen/bath/outdoor, and launched a small marketplace in 2022. The schema includes the same kinds of real-world tech-debt patterns you'd hit in a real codebase — missing FK constraints, abandoned tables, inconsistent enums, denormalized reporting tables, and schema-evolution artifacts where old and new columns coexist.
 
-| | Simple | Cybersec | E-commerce |
-|---|---|---|---|
-| Company | — | Sentinel Security | NovaMart |
-| Domain | CRM (companies, people, accounts) | B2B cybersecurity SaaS | DTC home goods brand + marketplace |
-| Tables | 3 | 62 | 52 |
-| Rows | ~330 | ~500K | ~480K |
-| Database | Postgres only | Postgres only | Postgres only |
-| Tech debt patterns | None | 4 patterns | 4 patterns |
-| Schema evolution | No | No | 5 instances (old + new columns coexist) |
-| Best for | Quick start, tutorials | Realistic evaluation, profiler testing | Universally understood domain, production-scale evaluation |
-| Load time | ~5 seconds | ~30 seconds | ~30 seconds |
-| CLI flag | `--demo` or `--demo simple` | `--demo cybersec` | `--demo ecommerce` |
+<Callout type="info" title="Single canonical seed since 1.4.0">
+  Earlier releases shipped three demo seeds (`simple`, `cybersec`, `ecommerce`). 1.4.0 (#2021) collapsed the picker to a single canonical seed — the e-commerce one. Legacy `--demo simple` and `--demo cybersec` invocations now error with a migration message; `--seed` was removed entirely.
+</Callout>
 
-### Which dataset should I choose?
+## Loading the demo
 
-**Use Simple** when you want a fast setup — three clean tables, no ambiguity, perfect for tutorials and first-run evaluation.
-
-**Use Cybersec** when you want to see how Atlas handles a real-world B2B SaaS database with messy data. Includes missing FK constraints, abandoned tables, inconsistent enums, and denormalized reporting tables. Good for testing the profiler and evaluating agent reasoning on complex schemas.
-
-**Use E-commerce** when you want a universally understood domain (orders, products, customers) at production scale. Includes the same four tech debt patterns as cybersec, plus five schema evolution artifacts where old and new columns coexist. Good for demos to non-technical stakeholders who already understand retail data.
-
----
-
-## Simple Demo (default)
-
-Three clean tables: companies (50), people (~200), accounts (80). No tech debt, no ambiguity.
-
-> **Note:** Bare `--demo` (with no argument) defaults to `simple`. If you already ran `bun run db:up`, the simple demo data is already seeded -- just run `bun run atlas -- init` (without `--demo`) to profile it. The `--demo` flag is for when you have not run `db:up` or want to explicitly re-seed.
+Requires PostgreSQL (the seed uses `GENERATE_SERIES` for data generation).
 
 ```bash
-# Option A: Using db:up (already seeds simple demo)
+# Start local Postgres + sandbox sidecar
 bun run db:up
-bun run atlas -- init
 
-# Option B: Explicit seed (without db:up, or to re-seed)
+# Load the demo seed and generate the semantic layer
+bun run atlas -- init --demo
+
+# Start Atlas (containers already running from db:up)
+bun run dev
+```
+
+To reset and reload from scratch:
+
+```bash
+bun run db:reset
 bun run atlas -- init --demo
 ```
 
-### Simple demo questions
+## Canonical questions
 
-Try these in the Atlas chat UI to exercise different patterns:
+These eight questions exercise the full surface of the semantic layer — simple metrics, segmentation, joins, time-series, virtual dimensions, glossary disambiguation, filtered patterns, and normalized enum aggregation. They're the same questions the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) runs against the demo and the public-surface rewrite ([#2026](https://github.com/AtlasDevHQ/atlas/issues/2026)) features in the README.
 
-**Aggregation:**
-- "How many companies are there by industry?"
-- "Which industries have the most accounts?"
+| Question | Exercises |
+|---|---|
+| What's our GMV this quarter? | Simple metric (`total_gmv`) |
+| What's our top-performing category by GMV this month? | Segmentation (`revenue_by_category` + date filter) |
+| Top 10 products by units sold last 30 days, with their category | Multi-join (orders → order_items → products → categories) |
+| Monthly GMV trend over the past 6 months | Time-series (`monthly_gmv_trend`) |
+| Repeat purchase rate by acquisition source | Virtual dimension (`acquisition_source_normalized`) |
+| Show me revenue last quarter | **Glossary disambiguation** — `revenue` is `status: ambiguous` (GMV vs. net revenue vs. seller revenue), so the agent should ask which definition you mean |
+| Which customers haven't ordered in 60 days? | Filtered pattern (customers + orders join with date filter) |
+| What are our most common return reasons? | Normalized enum aggregation (`returns_by_reason`) |
 
-**Joins:**
-- "Who are the top 5 people by account value?"
-- "Show me all people at companies in the Technology industry"
+## More example questions
 
-**Filtering:**
-- "List all companies with more than 3 accounts"
-- "Which people are associated with accounts created in the last year?"
+Beyond the canonical set, the demo answers a wide range of e-commerce questions:
 
----
-
-## Cybersec Demo: Sentinel Security
-
-A 62-table B2B cybersecurity SaaS company database. ~500K rows spanning 2019-2025. Covers vulnerability management, threat detection, compliance, billing, and reporting.
-
-### Loading the cybersec dataset
-
-Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` seeds the simple demo only -- the `--demo cybersec` flag seeds the cybersec dataset on top.
-
-```bash
-# Start local Postgres + sandbox sidecar (if not already running)
-bun run db:up
-
-# Load cybersec demo and generate semantic layer
-bun run atlas -- init --demo cybersec
-
-# Start Atlas (containers already running from db:up)
-bun run dev
-```
-
-To reset and reload from scratch:
-
-```bash
-bun run db:reset
-bun run atlas -- init --demo cybersec
-```
-
-### Cybersec demo questions
-
-Try these in the Atlas chat UI to exercise different patterns:
-
-**Basic aggregation:**
-- "How many vulnerabilities by severity?"
-- "What's the total invoice amount by organization?"
-- "How many scans ran in the last 30 days?"
-
-**Joins:**
-- "Which organizations have the most critical scan results?"
-- "Show me the top 10 users by number of alerts acknowledged"
-- "Which compliance frameworks have the most failing controls?"
-
-**Time series:**
-- "What's the trend in critical vulnerabilities over the past 6 months?"
-- "Show me monthly invoice totals"
-
-**Aggregation + filtering:**
-- "What's the average time to remediate by severity level?"
-- "Alert noise ratio: what percentage of alerts become incidents?"
-
-**Tech debt discovery (exercises profiler warnings):**
-- "Break down organizations by industry" (surfaces enum inconsistency via profiler note)
-- "Show me scan results for assets that no longer exist" (orphan rows)
-- "What tables exist that look abandoned?" (agent reads profiler_notes)
-- "Compare scan_results_denormalized with scan_results" (denormalized flag)
-
-### Cybersec tech debt patterns
-
-The cybersec dataset was designed to include four real-world tech debt patterns that the profiler detects automatically:
-
-#### 1. Missing FK Constraints
-
-Eight `*_id` columns reference other tables but lack `FOREIGN KEY` constraints. The profiler infers these from naming conventions and marks them with `inferred: true` in the generated YAML.
-
-| Column | Should reference |
-|--------|----------------|
-| `scan_results.asset_id` | `assets.id` |
-| `scan_results.vulnerability_id` | `vulnerabilities.id` |
-| `scan_results.scan_id` | `scans.id` |
-| `agent_heartbeats.agent_id` | `agents.id` |
-| `alerts.incident_id` | `incidents.id` |
-| `api_requests.user_id` | `users.id` |
-| `invoice_line_items.subscription_id` | `subscriptions.id` |
-| `vulnerability_instances.scan_result_id` | `scan_results.id` |
-
-#### 2. Abandoned Tables
-
-Six tables match legacy/temp naming patterns and have no inbound foreign keys:
-
-- `old_scan_results_v2` -- abandoned schema migration
-- `temp_asset_import_2024` -- one-time CSV import artifact
-- `feature_flags_legacy` -- replaced by LaunchDarkly
-- `notifications_backup` -- migration backup
-- `user_sessions_archive` -- old session system
-- `legacy_risk_scores` -- old risk scoring algorithm
-
-The profiler flags these with `possibly_abandoned` and prepends a warning in `use_cases`.
-
-#### 3. Inconsistent Enums
-
-Some text columns have case-inconsistent values:
-
-- `organizations.industry`: 'Technology', 'tech', 'Tech', 'TECHNOLOGY'
-- `compliance_findings.status`: 'pass', 'Pass', 'PASS'
-
-The profiler detects these and adds `LOWER()` guidance in the glossary.
-
-#### 4. Denormalized Tables
-
-Four reporting/cache tables duplicate data from other tables:
-
-- `scan_results_denormalized` -- pre-joined scan results
-- `daily_scan_stats` -- daily rollup
-- `monthly_vulnerability_summary` -- monthly aggregates
-- `executive_dashboard_cache` -- pre-computed dashboard data
-
-The profiler flags these with `possibly_denormalized`.
-
-### Cybersec schema overview
-
-**Table groups:**
-- Core Business (7 tables): organizations, users, teams, roles
-- Billing (6 tables): plans, subscriptions, invoices
-- Asset Management (6 tables): assets, agents, agent_heartbeats
-- Vulnerability Management (7 tables): vulnerabilities, scans, scan_results
-- Threat & Incident (6 tables): incidents, alerts
-- Threat Intelligence (3 tables): threat_feeds, IOCs, threat_actors
-- Compliance (4 tables): frameworks, controls, assessments, findings
-- Product Usage (5 tables): API keys, requests, feature usage, login events
-- Reporting (5 tables): denormalized/rollup tables
-- Reports & Dashboards (4 tables): saved reports, dashboards
-- Integration & Audit (3 tables): integrations, audit_log
-- Legacy (6 tables): abandoned tables
-
----
-
-## E-commerce Demo: NovaMart
-
-A 52-table DTC (direct-to-consumer) home goods brand database. ~480K rows spanning 2020-2025. NovaMart was founded during the pandemic, started with bedding, expanded to kitchen/bath/outdoor, and launched a small marketplace in 2022.
-
-### Loading the e-commerce dataset
-
-Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` seeds the simple demo only -- the `--demo ecommerce` flag seeds the ecommerce dataset on top.
-
-```bash
-# Start local Postgres + sandbox sidecar (if not already running)
-bun run db:up
-
-# Load e-commerce demo and generate semantic layer
-bun run atlas -- init --demo ecommerce
-
-# Start Atlas (containers already running from db:up)
-bun run dev
-```
-
-To reset and reload from scratch:
-
-```bash
-bun run db:reset
-bun run atlas -- init --demo ecommerce
-```
-
-### E-commerce demo questions
-
-Try these in the Atlas chat UI to exercise different patterns:
-
-**Sales & revenue:**
-- "What's the monthly revenue trend since launch?"
+**Sales & revenue**
 - "Top 10 products by total revenue"
 - "Average order value by customer segment"
-- "Revenue breakdown: own products vs marketplace"
+- "Revenue breakdown: DTC products vs marketplace"
 
-**Customer analytics:**
-- "How many customers are in each loyalty tier?"
+**Customer analytics**
 - "What's the customer retention rate by cohort?"
 - "Breakdown of new vs returning customers per month"
 - "Average customer lifetime value by acquisition source"
 
-**Operations:**
+**Operations**
 - "Average delivery time by carrier"
 - "Return rate by product category"
-- "Top reasons for returns"
 - "Shipping cost per order over time"
 
-**Marketing:**
+**Marketing**
 - "Which UTM sources drive the most revenue?"
 - "Email campaign conversion rates"
 - "Promo code usage rate by campaign"
 
-**Tech debt discovery (exercises profiler warnings):**
+**Tech debt discovery (exercises profiler warnings)**
 - "Why are there two price fields on products?" (schema evolution)
 - "Break down customers by acquisition source" (surfaces enum inconsistency)
-- "What tables look abandoned?" (agent reads profiler_notes)
+- "What tables look abandoned?" (agent reads `profiler_notes`)
 - "Compare orders_denormalized with orders" (denormalized flag)
 
-### E-commerce tech debt patterns
+## Tech debt patterns
 
-The e-commerce dataset includes the same four tech-debt patterns as the cybersec demo (missing FK constraints, abandoned tables, inconsistent enums, denormalized tables). E-commerce-specific examples:
+The demo deliberately includes patterns that mirror real codebases — they're what the profiler is built to detect.
 
-- **19 missing FK constraints** -- plus ~1.5% of payments reference nonexistent orders (orphaned from deleted test orders)
-- **4 abandoned tables** -- `old_orders_v1`, `temp_product_import_2023`, `legacy_analytics_events`, `payment_methods_backup`
-- **Inconsistent enums** -- e.g. `customers.acquisition_source`: 'Google'/'google'/'GOOGLE'; `loyalty_accounts.tier`: 'Gold'/'gold'/'GOLD'
-- **5 denormalized tables** -- `orders_denormalized`, `daily_sales_summary`, `monthly_revenue_summary`, `product_performance_cache`, `customer_ltv_cache`
+**19 missing FK constraints** — plus ~1.5% of payments reference nonexistent orders (orphaned from deleted test orders).
 
-### Schema Evolution Artifacts
+**4 abandoned tables** — `old_orders_v1`, `temp_product_import_2023`, `legacy_analytics_events`, `payment_methods_backup`. The profiler flags these with `possibly_abandoned` and prepends a warning in `use_cases`.
 
-The dataset includes five schema evolution instances where old and new columns coexist:
+**Inconsistent enums** — e.g. `customers.acquisition_source`: `Google`/`google`/`GOOGLE`; `loyalty_accounts.tier`: `Gold`/`gold`/`GOLD`. The profiler detects these and adds `LOWER()` guidance in the glossary.
+
+**5 denormalized tables** — `orders_denormalized`, `daily_sales_summary`, `monthly_revenue_summary`, `product_performance_cache`, `customer_ltv_cache`. The profiler flags these with `possibly_denormalized`.
+
+## Schema evolution artifacts
+
+Five places where old and new columns coexist — this is exactly the kind of state that confuses a naive text-to-SQL agent and that the semantic layer's data-quality notes are designed to handle.
 
 | Table | Old column | New column | Issue |
 |-------|-----------|------------|-------|
-| `products` | `price` (dollars) | `price_cents` (cents) | ~40% NULL price_cents |
-| `customers` | `phone` | `mobile_phone` | ~15% NULL mobile_phone (all post-2022 customers have it) |
-| `shipments` | `carrier` (text) | `carrier_id` (integer) | ~60% NULL carrier_id |
-| `orders` | `shipping_cost` | -- | dollars pre-2023-06, cents after |
-| `product_reviews` | `rating` (int) | `rating_decimal` (numeric) | ~70% NULL rating_decimal |
+| `products` | `price` (dollars) | `price_cents` (cents) | ~40% NULL `price_cents` |
+| `customers` | `phone` | `mobile_phone` | ~15% NULL `mobile_phone` (post-2022 customers only) |
+| `shipments` | `carrier` (text) | `carrier_id` (integer) | ~60% NULL `carrier_id` |
+| `orders` | `shipping_cost` | — | dollars pre-2023-06, cents after |
+| `product_reviews` | `rating` (int) | `rating_decimal` (numeric) | ~70% NULL `rating_decimal` |
 
-### E-commerce schema overview
+## Schema overview
 
 **Table groups:**
 - Core Commerce (6 tables): customers, addresses, segments, loyalty

@@ -18,7 +18,7 @@ import {
 
 function writeTempCases(
   cases: Record<string, string>[],
-  schemaDir: string = "simple",
+  schemaDir: string = "ecommerce",
 ): string {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-test-"));
   const schemaDirPath = path.join(tmpDir, schemaDir);
@@ -48,7 +48,7 @@ function writeTempCases(
 describe("validateCase", () => {
   test("rejects missing required field", () => {
     expect(() =>
-      validateCase({ question: "test", schema: "simple", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" }, "test.yml"),
+      validateCase({ question: "test", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" }, "test.yml"),
     ).toThrow('Missing required field "id"');
   });
 
@@ -64,7 +64,7 @@ describe("validateCase", () => {
   test("rejects invalid difficulty", () => {
     expect(() =>
       validateCase(
-        { id: "t-001", question: "test", schema: "simple", difficulty: "impossible", category: "filter", gold_sql: "SELECT 1" },
+        { id: "t-001", question: "test", schema: "ecommerce", difficulty: "impossible", category: "filter", gold_sql: "SELECT 1" },
         "test.yml",
       ),
     ).toThrow('Invalid difficulty "impossible"');
@@ -73,7 +73,7 @@ describe("validateCase", () => {
   test("rejects empty id", () => {
     expect(() =>
       validateCase(
-        { id: "  ", question: "test", schema: "simple", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
+        { id: "  ", question: "test", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
         "test.yml",
       ),
     ).toThrow("Invalid id");
@@ -82,7 +82,7 @@ describe("validateCase", () => {
   test("rejects empty question", () => {
     expect(() =>
       validateCase(
-        { id: "t-001", question: "", schema: "simple", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
+        { id: "t-001", question: "", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
         "test.yml",
       ),
     ).toThrow("question");
@@ -91,7 +91,7 @@ describe("validateCase", () => {
   test("rejects whitespace-only gold_sql", () => {
     expect(() =>
       validateCase(
-        { id: "t-001", question: "Q?", schema: "simple", difficulty: "simple", category: "filter", gold_sql: "   " },
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "   " },
         "test.yml",
       ),
     ).toThrow("gold_sql");
@@ -100,7 +100,7 @@ describe("validateCase", () => {
   test("rejects numeric id (YAML auto-casts numbers)", () => {
     expect(() =>
       validateCase(
-        { id: 42, question: "Q?", schema: "simple", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
+        { id: 42, question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
         "test.yml",
       ),
     ).toThrow("Invalid id");
@@ -109,10 +109,68 @@ describe("validateCase", () => {
   test("accepts valid case", () => {
     expect(() =>
       validateCase(
-        { id: "t-001", question: "How many?", schema: "simple", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
+        { id: "t-001", question: "How many?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1" },
         "test.yml",
       ),
     ).not.toThrow();
+  });
+
+  // The five typeof checks below back the `asserts doc is ValidatedCase`
+  // contract — without them the assertion lies and a downstream consumer
+  // could push a non-string `category` (etc.) into the `EvalCase` cache.
+
+  test("rejects non-string category (e.g. YAML numeric)", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: 42, gold_sql: "SELECT 1" } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid category");
+  });
+
+  test("rejects tags that are not a string array", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", tags: [1, 2, 3] } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid tags");
+  });
+
+  test("rejects non-boolean skip", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", skip: "yes" } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid skip");
+  });
+
+  test("rejects non-number, non-null expected_rows", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", expected_rows: "5" } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid expected_rows");
+  });
+
+  test("accepts expected_rows: null (YAML 'unscored' sentinel)", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", expected_rows: null } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).not.toThrow();
+  });
+
+  test("rejects non-string notes", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", notes: 42 } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid notes");
   });
 });
 
@@ -134,7 +192,7 @@ describe("loadEvalCases", () => {
       {
         id: "sp-001",
         question: "How many companies?",
-        schema: "simple",
+        schema: "ecommerce",
         difficulty: "simple",
         category: "aggregation",
         tags: "companies, count",
@@ -146,35 +204,30 @@ describe("loadEvalCases", () => {
     expect(cases).toHaveLength(1);
     expect(cases[0].id).toBe("sp-001");
     expect(cases[0].question).toBe("How many companies?");
-    expect(cases[0].schema).toBe("simple");
+    expect(cases[0].schema).toBe("ecommerce");
     expect(cases[0].difficulty).toBe("simple");
     expect(cases[0].category).toBe("aggregation");
     expect(cases[0].gold_sql).toBe("SELECT COUNT(*) FROM companies");
   });
 
-  test("loads from multiple schema directories", () => {
+  test("loads from multiple files within a schema directory", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-test-"));
 
-    // Simple case
-    const simpleDir = path.join(tmpDir, "simple");
-    fs.mkdirSync(simpleDir, { recursive: true });
+    const ecommerceDir = path.join(tmpDir, "ecommerce");
+    fs.mkdirSync(ecommerceDir, { recursive: true });
     fs.writeFileSync(
-      path.join(simpleDir, "sp-001.yml"),
-      'id: sp-001\nquestion: "Q1"\nschema: simple\ndifficulty: simple\ncategory: filter\ntags: []\ngold_sql: "SELECT 1"',
+      path.join(ecommerceDir, "ec-001.yml"),
+      'id: ec-001\nquestion: "Q1"\nschema: ecommerce\ndifficulty: simple\ncategory: filter\ntags: []\ngold_sql: "SELECT 1"',
     );
-
-    // Cybersec case
-    const cybersecDir = path.join(tmpDir, "cybersec");
-    fs.mkdirSync(cybersecDir, { recursive: true });
     fs.writeFileSync(
-      path.join(cybersecDir, "cs-001.yml"),
-      'id: cs-001\nquestion: "Q2"\nschema: cybersec\ndifficulty: medium\ncategory: join\ntags: []\ngold_sql: "SELECT 2"',
+      path.join(ecommerceDir, "ec-002.yml"),
+      'id: ec-002\nquestion: "Q2"\nschema: ecommerce\ndifficulty: medium\ncategory: join\ntags: []\ngold_sql: "SELECT 2"',
     );
 
     const cases = loadEvalCases(tmpDir);
     expect(cases).toHaveLength(2);
-    const schemas = cases.map(c => c.schema).sort();
-    expect(schemas).toEqual(["cybersec", "simple"]);
+    const ids = cases.map(c => c.id).sort();
+    expect(ids).toEqual(["ec-001", "ec-002"]);
   });
 
   test("throws on missing directory", () => {
@@ -183,29 +236,41 @@ describe("loadEvalCases", () => {
 
   test("returns empty for schema directory with no YAML files", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-test-"));
-    fs.mkdirSync(path.join(tmpDir, "simple"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "ecommerce"), { recursive: true });
     const cases = loadEvalCases(tmpDir);
     expect(cases).toHaveLength(0);
   });
 
   test("defaults tags to empty array when missing from YAML", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-test-"));
-    const dir = path.join(tmpDir, "simple");
+    const dir = path.join(tmpDir, "ecommerce");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
-      path.join(dir, "sp-001.yml"),
-      'id: sp-001\nquestion: "Q1"\nschema: simple\ndifficulty: simple\ncategory: filter\ngold_sql: "SELECT 1"',
+      path.join(dir, "ec-001.yml"),
+      'id: ec-001\nquestion: "Q1"\nschema: ecommerce\ndifficulty: simple\ncategory: filter\ngold_sql: "SELECT 1"',
     );
     const cases = loadEvalCases(tmpDir);
     expect(cases).toHaveLength(1);
     expect(cases[0].tags).toEqual([]);
   });
 
+  test("loads the real eval/cases/ecommerce/ fixture set without throwing", () => {
+    // Catches the class of regression that bit us in #2021 review-pass 5:
+    // synthetic test fixtures drifted from real `eval/cases/*.yml` shapes
+    // (the strict typeof check on `expected_rows` rejected the YAML null
+    // sentinel). Loading the production fixtures end-to-end pins the
+    // contract between validateCase and the on-disk YAML format.
+    const realCasesDir = path.resolve(__dirname, "../../../../eval/cases");
+    const cases = loadEvalCases(realCasesDir);
+    expect(cases.length).toBeGreaterThan(0);
+    expect(cases.every((c) => c.schema === "ecommerce")).toBe(true);
+  });
+
   test("rejects duplicate case IDs across files", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-test-"));
-    const dir = path.join(tmpDir, "simple");
+    const dir = path.join(tmpDir, "ecommerce");
     fs.mkdirSync(dir, { recursive: true });
-    const yaml = 'id: dup-001\nquestion: "Q"\nschema: simple\ndifficulty: simple\ncategory: filter\ntags: []\ngold_sql: "SELECT 1"';
+    const yaml = 'id: dup-001\nquestion: "Q"\nschema: ecommerce\ndifficulty: simple\ncategory: filter\ntags: []\ngold_sql: "SELECT 1"';
     fs.writeFileSync(path.join(dir, "a.yml"), yaml);
     fs.writeFileSync(path.join(dir, "b.yml"), yaml);
     expect(() => loadEvalCases(tmpDir)).toThrow('Duplicate eval case id "dup-001"');
@@ -232,18 +297,19 @@ describe("loadEvalCases", () => {
 
 describe("filterCases", () => {
   const cases: EvalCase[] = [
-    { id: "sp-001", question: "Q1", schema: "simple", difficulty: "simple", category: "aggregation", tags: [], gold_sql: "SELECT 1" },
-    { id: "sp-002", question: "Q2", schema: "simple", difficulty: "medium", category: "join", tags: [], gold_sql: "SELECT 2" },
-    { id: "cs-001", question: "Q3", schema: "cybersec", difficulty: "simple", category: "filter", tags: [], gold_sql: "SELECT 3" },
-    { id: "cs-002", question: "Q4", schema: "cybersec", difficulty: "complex", category: "aggregation", tags: [], gold_sql: "SELECT 4" },
+    { id: "sp-001", question: "Q1", schema: "ecommerce", difficulty: "simple", category: "aggregation", tags: [], gold_sql: "SELECT 1" },
+    { id: "sp-002", question: "Q2", schema: "ecommerce", difficulty: "medium", category: "join", tags: [], gold_sql: "SELECT 2" },
+    { id: "cs-001", question: "Q3", schema: "ecommerce", difficulty: "simple", category: "filter", tags: [], gold_sql: "SELECT 3" },
+    { id: "cs-002", question: "Q4", schema: "ecommerce", difficulty: "complex", category: "aggregation", tags: [], gold_sql: "SELECT 4" },
     { id: "ec-001", question: "Q5", schema: "ecommerce", difficulty: "medium", category: "timeseries", tags: [], gold_sql: "SELECT 5" },
-    { id: "sp-skip", question: "Q6", schema: "simple", difficulty: "simple", category: "filter", tags: [], gold_sql: "SELECT 6", skip: true },
+    { id: "sp-skip", question: "Q6", schema: "ecommerce", difficulty: "simple", category: "filter", tags: [], gold_sql: "SELECT 6", skip: true },
   ];
 
   test("filters by schema", () => {
-    const result = filterCases(cases, { schema: "cybersec" });
-    expect(result).toHaveLength(2);
-    expect(result.every(c => c.schema === "cybersec")).toBe(true);
+    const result = filterCases(cases, { schema: "ecommerce" });
+    // All non-skipped cases match the canonical ecommerce schema since 1.4.0 (#2021)
+    expect(result).toHaveLength(5);
+    expect(result.every(c => c.schema === "ecommerce")).toBe(true);
   });
 
   test("filters by category", () => {
@@ -276,9 +342,10 @@ describe("filterCases", () => {
   });
 
   test("combines filters", () => {
-    const result = filterCases(cases, { schema: "simple", difficulty: "simple" });
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("sp-001");
+    const result = filterCases(cases, { schema: "ecommerce", difficulty: "simple" });
+    // sp-001 (aggregation) and cs-001 (filter); sp-skip is excluded by the skip flag
+    expect(result).toHaveLength(2);
+    expect(result.map(c => c.id).sort()).toEqual(["cs-001", "sp-001"]);
   });
 
   test("limit of 0 returns all cases (no slicing)", () => {
@@ -298,10 +365,10 @@ describe("filterCases", () => {
 
 describe("computeSummary", () => {
   const results: EvalResult[] = [
-    { id: "sp-001", schema: "simple", question: "Q1", category: "aggregation", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: "SELECT 1", match: true, error: null, latency_ms: 1000, tokens: 500, steps: 3 },
-    { id: "sp-002", schema: "simple", question: "Q2", category: "join", difficulty: "medium", tags: [], gold_sql: "", predicted_sql: "SELECT 2", match: false, error: null, latency_ms: 2000, tokens: 800, steps: 5 },
-    { id: "cs-001", schema: "cybersec", question: "Q3", category: "filter", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: null, match: false, error: "timeout", latency_ms: 30000, tokens: 0, steps: 0 },
-    { id: "cs-002", schema: "cybersec", question: "Q4", category: "aggregation", difficulty: "complex", tags: [], gold_sql: "", predicted_sql: "SELECT 4", match: true, error: null, latency_ms: 3000, tokens: 1200, steps: 7 },
+    { id: "sp-001", schema: "ecommerce", question: "Q1", category: "aggregation", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: "SELECT 1", match: true, error: null, latency_ms: 1000, tokens: 500, steps: 3 },
+    { id: "sp-002", schema: "ecommerce", question: "Q2", category: "join", difficulty: "medium", tags: [], gold_sql: "", predicted_sql: "SELECT 2", match: false, error: null, latency_ms: 2000, tokens: 800, steps: 5 },
+    { id: "cs-001", schema: "ecommerce", question: "Q3", category: "filter", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: null, match: false, error: "timeout", latency_ms: 30000, tokens: 0, steps: 0 },
+    { id: "cs-002", schema: "ecommerce", question: "Q4", category: "aggregation", difficulty: "complex", tags: [], gold_sql: "", predicted_sql: "SELECT 4", match: true, error: null, latency_ms: 3000, tokens: 1200, steps: 7 },
   ];
 
   test("computes overall accuracy", () => {
@@ -314,8 +381,8 @@ describe("computeSummary", () => {
 
   test("computes per-schema breakdown", () => {
     const summary = computeSummary(results);
-    expect(summary.bySchema.get("simple")).toEqual({ total: 2, correct: 1 });
-    expect(summary.bySchema.get("cybersec")).toEqual({ total: 2, correct: 1 });
+    // All 4 results target the canonical ecommerce schema; 2 of the 4 match
+    expect(summary.bySchema.get("ecommerce")).toEqual({ total: 4, correct: 2 });
   });
 
   test("computes per-category breakdown", () => {
@@ -354,9 +421,9 @@ describe("computeSummary", () => {
 
 describe("detectRegressions", () => {
   const baseline: EvalResult[] = [
-    { id: "sp-001", schema: "simple", question: "Q1", category: "agg", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: "S1", match: true, error: null, latency_ms: 1000, tokens: 500, steps: 3 },
-    { id: "sp-002", schema: "simple", question: "Q2", category: "join", difficulty: "medium", tags: [], gold_sql: "", predicted_sql: "S2", match: false, error: null, latency_ms: 2000, tokens: 800, steps: 5 },
-    { id: "cs-001", schema: "cybersec", question: "Q3", category: "filter", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: "S3", match: true, error: null, latency_ms: 1500, tokens: 600, steps: 4 },
+    { id: "sp-001", schema: "ecommerce", question: "Q1", category: "agg", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: "S1", match: true, error: null, latency_ms: 1000, tokens: 500, steps: 3 },
+    { id: "sp-002", schema: "ecommerce", question: "Q2", category: "join", difficulty: "medium", tags: [], gold_sql: "", predicted_sql: "S2", match: false, error: null, latency_ms: 2000, tokens: 800, steps: 5 },
+    { id: "cs-001", schema: "ecommerce", question: "Q3", category: "filter", difficulty: "simple", tags: [], gold_sql: "", predicted_sql: "S3", match: true, error: null, latency_ms: 1500, tokens: 600, steps: 4 },
   ];
 
   test("detects regression (was pass, now fail)", () => {

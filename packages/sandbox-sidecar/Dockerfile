@@ -33,9 +33,10 @@ WORKDIR /app
 COPY packages/sandbox-sidecar/package.json ./
 COPY packages/sandbox-sidecar/src/ ./src/
 
-# Semantic layer — baked in from demo data (matches other Railway services).
-# For custom datasets, rebuild with a volume mount or replace semantic/ in CI.
-COPY packages/cli/data/seeds/simple/semantic/ /semantic/
+# Semantic layer — baked in from the canonical demo dataset (NovaMart
+# e-commerce since 1.4.0 #2021), matching the other Railway services. For
+# custom datasets, rebuild with a volume mount or replace semantic/ in CI.
+COPY packages/cli/data/seeds/ecommerce/semantic/ /semantic/
 RUN chmod -R a-w /semantic/
 
 # No secrets, no database drivers, no node_modules beyond bun runtime

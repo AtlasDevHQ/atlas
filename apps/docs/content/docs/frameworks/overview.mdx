@@ -163,15 +163,15 @@ A single assistant message might contain these parts, in order:
     "type": "tool-explore",
     "toolCallId": "call_abc123",
     "state": "output-available",
-    "input": { "command": "cat entities/companies.yml" },
-    "output": "table: companies\ndescription: ..."
+    "input": { "command": "cat entities/orders.yml" },
+    "output": "table: orders\ndescription: ..."
   },
   { "type": "text", "text": "Now I'll query the data." },
   {
     "type": "tool-executeSQL",
     "toolCallId": "call_def456",
     "state": "output-available",
-    "input": { "sql": "SELECT name, revenue FROM companies LIMIT 5", "explanation": "Top companies" },
+    "input": { "sql": "SELECT id, total_cents FROM orders LIMIT 5", "explanation": "Recent orders" },
     "output": {
       "success": true,
       "explanation": "Top companies",

@@ -118,9 +118,12 @@ mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => "/mock/semantic",
 }));
 
-// Mock fs.existsSync so getDemoSemanticDir can resolve paths without real filesystem
+// Mock fs.existsSync so getDemoSemanticDir can resolve paths without real
+// filesystem. Per-test overrides (e.g. to exercise the dev fallback branch)
+// can swap `existsSyncImpl` before invoking the route.
+let existsSyncImpl: (path: string) => boolean = () => true;
 mock.module("fs", () => ({
-  existsSync: () => true,
+  existsSync: (path: string) => existsSyncImpl(path),
   promises: {
     readFile: async () => "",
     readdir: async () => [],
@@ -134,12 +137,22 @@ mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (url: string) => url.replace(/\/\/.*@/, "//***@"),
 }));
 
+// Spyable logger so tests can assert deprecation/info paths fire correctly.
+// Pino accepts both `log.warn("string only")` (e.g. onboarding.ts handler-
+// level log calls) and `log.warn({ bindings }, "msg")`. Union-typed first
+// arg covers both shapes; tests narrow with `typeof call[0] === "object"`
+// before reading bindings fields.
+type LogFn = (arg: string | Record<string, unknown>, msg?: string) => void;
+const mockLogInfo = mock<LogFn>(() => {});
+const mockLogWarn = mock<LogFn>(() => {});
+const mockLogError = mock<LogFn>(() => {});
+const mockLogDebug = mock<LogFn>(() => {});
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
+    info: mockLogInfo,
+    warn: mockLogWarn,
+    error: mockLogError,
+    debug: mockLogDebug,
   }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
@@ -643,6 +656,12 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     mockImportFromDisk.mockClear();
     mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
     mockSetSetting.mockClear();
+    mockLogInfo.mockClear();
+    mockLogWarn.mockClear();
+    mockLogError.mockClear();
+    // Reset filesystem stub to "all paths exist" — individual tests may
+    // override `existsSyncImpl` to exercise the getDemoSemanticDir fallback.
+    existsSyncImpl = () => true;
     process.env.ATLAS_DATASOURCE_URL = "postgresql://demo:pass@localhost:5432/demo";
   });
 
@@ -699,26 +718,11 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     );
   });
 
-  it("writes demo_industry setting for the org", async () => {
+  it("writes demo_industry setting (always 'ecommerce' since 1.4.0 #2021)", async () => {
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoType: "cybersec" }),
-    });
-
-    expect(mockSetSetting).toHaveBeenCalledWith(
-      "ATLAS_DEMO_INDUSTRY",
-      "cybersecurity",
-      "user-1",
-      "org-1",
-    );
-  });
-
-  it("maps demo type 'ecommerce' to industry 'ecommerce'", async () => {
-    await request("/api/v1/onboarding/use-demo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoType: "ecommerce" }),
+      body: JSON.stringify({}),
     });
 
     expect(mockSetSetting).toHaveBeenCalledWith(
@@ -729,26 +733,190 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     );
   });
 
-  it("maps demo type 'demo' to industry 'saas'", async () => {
-    await request("/api/v1/onboarding/use-demo", {
+  it("ignores legacy demoType body fields, logs warn + Deprecation header", async () => {
+    // Legacy clients might still send `demoType: "cybersec"` or `demoType: "demo"`.
+    // Atlas ships a single canonical demo since 1.4.0 (#2021), so the field is
+    // accepted (Zod strips unknown keys) but ignored — every demo workspace
+    // gets ecommerce. The contract: 201 status, ecommerce industry, canonical
+    // connection id, AND a warn-level log + RFC 9745 Deprecation header so
+    // operators and client devs see the staleness.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("Deprecation")).toContain('field="demoType"');
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+    expect(data.dbType).toBe("postgres");
+    expect(data.entitiesImported).toBe(5);
+
+    expect(mockSetSetting).toHaveBeenCalledWith(
+      "ATLAS_DEMO_INDUSTRY",
+      "ecommerce",
+      "user-1",
+      "org-1",
+    );
+
+    // Deprecation log fires with the legacy value for telemetry.
+    const warnCall = mockLogWarn.mock.calls.find((call) =>
+      typeof call[1] === "string" && call[1].includes("Legacy demoType"),
+    );
+    expect(warnCall).toBeDefined();
+    expect(warnCall![0]).toMatchObject({ legacyDemoType: "cybersec" });
+  });
+
+  it("ignores legacy demoType: 'demo' (the old default)", async () => {
+    // Pre-1.4.0 default: `demoType: "demo"` mapped to the SaaS CRM seed.
+    // Now also ignored — every demo workspace gets ecommerce.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "demo" }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("Deprecation")).toContain('field="demoType"');
+
+    expect(mockSetSetting).toHaveBeenCalledWith(
+      "ATLAS_DEMO_INDUSTRY",
+      "ecommerce",
+      "user-1",
+      "org-1",
+    );
+    const warnCall = mockLogWarn.mock.calls.find((call) =>
+      typeof call[1] === "string" && call[1].includes("Legacy demoType"),
+    );
+    expect(warnCall![0]).toMatchObject({ legacyDemoType: "demo" });
+  });
+
+  it("accepts garbage body fields without erroring", async () => {
+    // The body schema strips unknown keys (`.strip()`); the route reads the
+    // legacy `demoType` field from the raw body for telemetry only. Locks in
+    // permissive intent: a future tightening to `.strict()` would 422 every
+    // legacy client and break this test, signalling the compat surface needs
+    // reconsidering.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "garbage", extra: { nested: 42 } }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("Deprecation")).toContain('field="demoType"');
+  });
+
+  it("rejects an array body with 422 and never fires deprecation telemetry", async () => {
+    // The validation hook (validation-hook.ts) deterministically returns 422
+    // for any Zod failure on this OpenAPI route. Pinning the status catches
+    // a regression where someone drops `defaultHook: validationHook` from
+    // the OpenAPIHono construction.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(["demoType", "cybersec"]),
+    });
+    expect(res.status).toBe(422);
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(
+      mockLogWarn.mock.calls.some((call) =>
+        typeof call[1] === "string" && call[1].includes("Legacy demoType"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not warn or send Deprecation header for a numeric demoType", async () => {
+    // The peek requires `typeof demoType === "string"`. Numeric/boolean
+    // values were never produced by historical Atlas clients, but the route
+    // must not crash if a malformed client sends one.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: 42 }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("Deprecation")).toBeNull();
+  });
+
+  it("returns 400 invalid_request when the body is malformed JSON", async () => {
+    // onboarding.onError normalizes JSON parse errors to a deterministic
+    // shape: 400 + { error: "invalid_request", message: "Invalid JSON body." }.
+    // Pinning the status + error code locks in that contract so a future
+    // refactor of the error normalizer can't silently change the response.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json-at-all",
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("invalid_request");
+    expect(res.headers.get("Deprecation")).toBeNull();
+  });
+
+  it("falls back to packages/cli/data/seeds/ecommerce/semantic when the configured root has no entities", async () => {
+    // Simulate a dev workspace where `semantic/` hasn't been initialized yet:
+    // getSemanticRoot() returns "/mock/semantic" but its entities/ subdir is
+    // missing. getDemoSemanticDir should fall through to the bundled seed
+    // path and the route should log info ("Demo semantic layer resolved via
+    // dev fallback") with the seeds path.
+    existsSyncImpl = (p: string) => {
+      // Root semantic path has no entities dir; bundled seeds path does.
+      if (p.startsWith("/mock/semantic")) return false;
+      return p.includes("seeds/ecommerce/semantic");
+    };
+
+    const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
+    expect(res.status).toBe(201);
 
-    expect(mockSetSetting).toHaveBeenCalledWith(
-      "ATLAS_DEMO_INDUSTRY",
-      "saas",
-      "user-1",
-      "org-1",
+    const fallbackLog = mockLogInfo.mock.calls.find((call) =>
+      typeof call[1] === "string" && call[1].includes("bundled-seed dev fallback"),
     );
+    expect(fallbackLog).toBeDefined();
+    expect(fallbackLog![0]).toMatchObject({
+      semanticDir: expect.stringContaining("seeds/ecommerce/semantic"),
+    });
   });
 
-  it("seeds demo prompt collections for matching industry", async () => {
+  it("does NOT warn or send Deprecation header for canonical body or empty body", async () => {
+    // No demoType field → no deprecation signal (no false-positive noise).
+    const resEmpty = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(resEmpty.status).toBe(201);
+    expect(resEmpty.headers.get("Deprecation")).toBeNull();
+    expect(
+      mockLogWarn.mock.calls.some((call) =>
+        typeof call[1] === "string" && call[1].includes("Legacy demoType"),
+      ),
+    ).toBe(false);
+
+    // demoType: "ecommerce" matches the canonical seed → no deprecation either.
+    mockLogWarn.mockClear();
+    const resCanonical = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "ecommerce" }),
+    });
+    expect(resCanonical.status).toBe(201);
+    expect(resCanonical.headers.get("Deprecation")).toBeNull();
+    expect(
+      mockLogWarn.mock.calls.some((call) =>
+        typeof call[1] === "string" && call[1].includes("Legacy demoType"),
+      ),
+    ).toBe(false);
+  });
+
+  it("seeds demo prompt collections for the ecommerce industry", async () => {
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoType: "cybersec" }),
+      body: JSON.stringify({}),
     });
 
     // The seedDemoPromptCollections function queries for builtin collections
@@ -757,7 +925,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     );
     expect(builtinQuery).toBeDefined();
     const params = builtinQuery![1] as unknown[];
-    expect(params[0]).toBe("cybersecurity");
+    expect(params[0]).toBe("ecommerce");
   });
 
   it("rejects when auth mode is not managed", async () => {

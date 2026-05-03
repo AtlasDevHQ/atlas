@@ -65,5 +65,5 @@ The `vercel.json` `buildCommand` runs three steps:
 ## Scaffold a standalone project
 
 ```bash
-bun create @useatlas my-app --platform vercel
+bun create atlas-agent my-app --platform vercel
 ```

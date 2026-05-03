@@ -135,7 +135,7 @@ Memory: PR #1933 cleaned this once. The risk is regression — a marketing itera
 
 **Pages:** Landing page (hero "Try in 60 seconds"), any embed CTA on pricing
 **Source of truth:**
-- `create-atlas/templates/` (the `bun create @useatlas` flow)
+- `create-atlas/templates/` (the `bun create atlas-agent` flow)
 - `packages/react/src/index.ts` (the React component name + props)
 - `packages/api/src/api/routes/widget.ts` (widget script URL + data attributes)
 - npm registry — current published versions (`@useatlas/sdk`, `@useatlas/react`, etc.)
@@ -143,7 +143,7 @@ Memory: PR #1933 cleaned this once. The risk is regression — a marketing itera
 ### Steps
 
 1. Every code snippet on www must be runnable. Specifically:
-   - `bun create @useatlas my-app` — flag still works (memory: feedback_useatlas_types_scaffold_gotcha covers value-export gotcha)
+   - `bun create atlas-agent my-app` — flag still works (memory: feedback_useatlas_types_scaffold_gotcha covers value-export gotcha)
    - Script tag widget — `data-api-url`, `data-theme`, etc. attributes match `widget.ts`
    - React component — `<AtlasChat apiUrl="..." />` matches `@useatlas/react` exports
 2. Spot-check the npm version refs in any "Installation" snippets — for `0.0.x` semver, `^0.0.N` pins exact (memory: feedback_version_bump_ordering).

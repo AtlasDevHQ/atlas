@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import pkg from "../../package.json" with { type: "json" };
 
 // Server tests inject the actor directly so they don't depend on
 // `resolveMcpActor` (whose env-var + rule-lookup behaviour is pinned in
@@ -45,7 +46,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 const { createAtlasMcpServer } = await import("../server.js");
 
 describe("MCP server integration", () => {
-  it("creates a server and lists 2 tools", async () => {
+  it("creates a server and lists explore + executeSQL + the four typed semantic tools", async () => {
     const server = await createAtlasMcpServer({ actor: TEST_ACTOR });
     const client = new Client({ name: "test-client", version: "0.0.1" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -54,9 +55,15 @@ describe("MCP server integration", () => {
     await client.connect(clientTransport);
 
     const result = await client.listTools();
-    expect(result.tools.length).toBe(2);
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["executeSQL", "explore"]);
+    expect(names).toEqual([
+      "describeEntity",
+      "executeSQL",
+      "explore",
+      "listEntities",
+      "runMetric",
+      "searchGlossary",
+    ]);
   });
 
   it("creates a server and lists resources", async () => {
@@ -107,6 +114,19 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBe(true);
+  });
+
+  it("serverInfo.version tracks @atlas/mcp/package.json", async () => {
+    const server = await createAtlasMcpServer({ actor: TEST_ACTOR });
+    const client = new Client({ name: "test-client", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const info = client.getServerVersion();
+    expect(info?.version).toBe(pkg.version);
+    expect(info?.name).toBe("atlas");
   });
 
   it("skipConfig option skips initialization", async () => {

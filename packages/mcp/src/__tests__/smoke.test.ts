@@ -102,11 +102,18 @@ async function createTestPair() {
 // ---------------------------------------------------------------------------
 
 describe("MCP smoke — tool listing", () => {
-  it("registers explore and executeSQL tools", async () => {
+  it("registers explore + executeSQL + the four typed semantic tools (#2020)", async () => {
     const { client, cleanup } = await createTestPair();
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["executeSQL", "explore"]);
+    expect(names).toEqual([
+      "describeEntity",
+      "executeSQL",
+      "explore",
+      "listEntities",
+      "runMetric",
+      "searchGlossary",
+    ]);
     await cleanup();
   });
 });
@@ -193,9 +200,10 @@ describe("MCP smoke — server lifecycle", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
 
-    // Verify the server is operational
+    // Verify the server is operational — explore + executeSQL + the four
+    // typed semantic tools (#2020).
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(2);
+    expect(tools.tools.length).toBe(6);
 
     // Clean shutdown — should not throw
     await client.close();

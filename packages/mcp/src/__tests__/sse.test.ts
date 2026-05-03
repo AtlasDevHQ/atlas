@@ -143,9 +143,15 @@ describe("SSE server — MCP client integration", () => {
     await client.connect(transport);
 
     const result = await client.listTools();
-    expect(result.tools.length).toBe(2);
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["executeSQL", "explore"]);
+    expect(names).toEqual([
+      "describeEntity",
+      "executeSQL",
+      "explore",
+      "listEntities",
+      "runMetric",
+      "searchGlossary",
+    ]);
 
     await client.close();
   });
@@ -236,11 +242,12 @@ describe("SSE server — MCP client integration", () => {
     );
     await client2.connect(transport2);
 
-    // Both clients can list tools independently
+    // Both clients can list tools independently — explore + executeSQL +
+    // the four typed semantic tools (#2020).
     const result1 = await client1.listTools();
     const result2 = await client2.listTools();
-    expect(result1.tools.length).toBe(2);
-    expect(result2.tools.length).toBe(2);
+    expect(result1.tools.length).toBe(6);
+    expect(result2.tools.length).toBe(6);
 
     // Health shows 2+ sessions
     const res = await fetch(`http://localhost:${handle.server.port}/health`);

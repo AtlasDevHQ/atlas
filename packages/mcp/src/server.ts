@@ -17,8 +17,12 @@ import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
 import { resolveMcpActor } from "./actor.js";
+// Tracks @atlas/mcp's package.json version. #2019 — clients (Claude Desktop,
+// Cursor) display this in the server picker; a hardcoded "0.1.0" misrepresented
+// the product, which is well past pre-alpha.
+import pkg from "../package.json" with { type: "json" };
 
-const VERSION = "0.1.0";
+const VERSION: string = pkg.version;
 
 interface CreateMcpServerOptions {
   /** Skip config initialization (useful when config is already loaded). */

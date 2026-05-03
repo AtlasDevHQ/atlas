@@ -156,7 +156,7 @@ Return the full parsed entity YAML — dimensions (with types and sample values)
 name: "orders"
 ```
 
-Returns `{ found: false, name }` when the entity does not exist. Always call this before writing SQL against an unfamiliar table.
+When the entity does not exist, returns an `unknown_entity` [error envelope](#error-contract) — the agent should call `listEntities` to discover what's available rather than guess. Always call `describeEntity` before writing SQL against an unfamiliar table.
 
 ### searchGlossary
 
@@ -184,7 +184,7 @@ term: "revenue"
 }
 ```
 
-When a returned term has `status: "ambiguous"`, do **not** silently pick a mapping — surface `possible_mappings` and ask the user which they mean. This is what the [glossary disambiguation](#) directive is for.
+When a returned term has `status: "ambiguous"`, `searchGlossary` returns an `ambiguous_term` [error envelope](#error-contract) instead of the matches array — the agent must surface `possible_mappings` to the user and ask which they mean, never silently pick. The disambiguation eval (#2025) asserts on this exact code.
 
 ### runMetric
 
@@ -212,9 +212,69 @@ connectionId: "warehouse"   // optional — overrides the default connection
 
 When the result has multiple columns or multiple rows, `value` falls back to the row array — useful for breakdown metrics.
 
-`runMetric` returns `isError: true` when the metric id is unknown, when the underlying SQL fails validation, or when an approval/RLS rule rejects the query.
+`runMetric` returns an `isError: true` envelope when the metric id is unknown (`unknown_metric`), when the underlying SQL fails validation (`validation_failed`), when an RLS rule rejects the query (`rls_denied`), when the statement timeout fires (`query_timeout`), when the request is rate-limited (`rate_limited`), or on any other failure (`internal_error`). See [Error contract](#error-contract) for the exact envelope shape.
 
 The `filters` parameter is reserved for future pre-aggregation filter pass-through. Passing a non-empty `filters` object is rejected today; use `executeSQL` with the metric's raw SQL if you need to filter results before aggregation.
+
+---
+
+## Error contract
+
+Every Atlas MCP tool returns failures as a structured JSON envelope inside an `isError: true` response — agents branch on the `code` field instead of pattern-matching prose. The envelope is defined in [`@useatlas/types`](https://www.npmjs.com/package/@useatlas/types) as `AtlasMcpToolError`:
+
+```ts
+{
+  code: AtlasMcpToolErrorCode;   // closed catalog — the only field to branch on
+  message: string;               // human + LLM readable, safe to surface to a user
+  hint?: string;                 // optional remediation suggestion
+  request_id?: string;           // set on internal_error so users can quote it in support
+  retry_after?: number;          // seconds, set on rate_limited
+}
+```
+
+The envelope is serialized as the `text` of the first content block. Use `parseAtlasMcpToolError(text)` from `@useatlas/types/mcp` for a runtime-checked parse.
+
+### Codes
+
+| Code | Triggered when… | Recommended agent recovery |
+|------|-----------------|---------------------------|
+| `validation_failed` | The SQL guard rejected (regex, AST, table whitelist), or `runMetric` was called with a non-empty `filters` object. | Rewrite the query; do **not** retry the same SQL. |
+| `rls_denied` | Row-level security rejected the query for the bound actor. | Surface the failure to the user — the agent cannot retry under another identity. |
+| `query_timeout` | `statement_timeout` fired. | Suggest a simpler query (tighter `WHERE`/`LIMIT`) or break the work up. |
+| `unknown_entity` | `describeEntity` was called with an entity that doesn't exist, or `executeSQL` referenced a table missing from the semantic whitelist. | Call `listEntities` to discover what exists, then retry with a real name. |
+| `unknown_metric` | `runMetric` was called with an id missing from `metrics/*.yml`. | Fall back to `executeSQL`, or pick a different metric id. |
+| `ambiguous_term` | `searchGlossary` matched a glossary entry with `status: ambiguous`. | **Do not silently pick a mapping.** Surface `possible_mappings` to the user and ask which they meant. |
+| `rate_limited` | The per-source rate limit or concurrency cap was hit. `retry_after` (seconds) is set when the upstream knows it. | Back off for `retry_after` seconds; surface to user only after sustained failure. |
+| `internal_error` | Anything else — sandbox crash, lookup failure, opaque pipeline error. `request_id` is always set. | Quote the `request_id` to the user; do not silently retry — there is likely an operator-side problem. |
+
+### Tool description carries the contract
+
+Each tool's MCP `description` ends with an explicit `Error contract:` line listing the codes it can return. LLMs that read tool descriptions before invoking will discover the recovery surface from the tool itself — no prior training on Atlas required.
+
+### Example — handling the envelope client-side
+
+```ts
+import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
+
+const result = await client.callTool({ name: "runMetric", arguments: { id: "mrr" } });
+if (result.isError) {
+  const text = (result.content[0] as { text: string }).text;
+  const envelope = parseAtlasMcpToolError(text);
+  if (!envelope) throw new Error(`Unparseable MCP error: ${text}`);
+
+  switch (envelope.code) {
+    case "ambiguous_term":
+      return askUserToDisambiguate(envelope.message, envelope.hint);
+    case "rate_limited":
+      await sleep((envelope.retry_after ?? 5) * 1000);
+      return retry();
+    case "unknown_metric":
+      return tryExecuteSqlFallback();
+    default:
+      return surfaceToUser(envelope.message, envelope.request_id);
+  }
+}
+```
 
 ---
 

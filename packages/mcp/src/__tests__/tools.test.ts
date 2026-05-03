@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { getRequestContext } from "@atlas/api/lib/logger";
+import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
 import { registerTools } from "../tools.js";
 
 const TEST_ACTOR = createAtlasUser("u_test", "managed", "test@example.com", {
@@ -81,6 +82,23 @@ describe("MCP tools", () => {
     ]);
   });
 
+  it("tool descriptions document the error contract (#2030)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.listTools();
+    const explore = result.tools.find((t) => t.name === "explore");
+    const sql = result.tools.find((t) => t.name === "executeSQL");
+
+    // The LLM-facing description must list the codes the agent can branch
+    // on — we don't assume the agent reads the SDK types.
+    expect(explore?.description).toContain("Error contract");
+    expect(explore?.description).toContain("`internal_error`");
+    expect(sql?.description).toContain("Error contract");
+    expect(sql?.description).toContain("`validation_failed`");
+    expect(sql?.description).toContain("`rls_denied`");
+    expect(sql?.description).toContain("`query_timeout`");
+    expect(sql?.description).toContain("`rate_limited`");
+  });
+
   it("explore returns text content", async () => {
     const { client } = await createTestClient();
     const result = await client.callTool({
@@ -95,7 +113,7 @@ describe("MCP tools", () => {
     expect(result.isError).toBeFalsy();
   });
 
-  it("explore sets isError on error output", async () => {
+  it("explore returns an internal_error envelope on exit-coded backend output", async () => {
     mockExploreExecute.mockResolvedValueOnce("Error (exit 1):\ncommand not found");
 
     const { client } = await createTestClient();
@@ -105,6 +123,28 @@ describe("MCP tools", () => {
     });
 
     expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope).not.toBeNull();
+    expect(envelope!.code).toBe("internal_error");
+    expect(envelope!.message).toContain("command not found");
+    expect(envelope!.request_id).toMatch(/^mcp-explore-/);
+  });
+
+  it("explore returns a rate_limited envelope when the backend says so", async () => {
+    mockExploreExecute.mockResolvedValueOnce("Error: too many requests, slow down");
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "explore",
+      arguments: { command: "ls" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("rate_limited");
+    // request_id is only set on internal_error — rate_limited is operator-side
+    // and the agent doesn't need a correlation id to back off.
+    expect(envelope!.request_id).toBeUndefined();
   });
 
   it("executeSQL returns JSON content on success", async () => {
@@ -125,7 +165,7 @@ describe("MCP tools", () => {
     expect(result.isError).toBeFalsy();
   });
 
-  it("executeSQL returns isError on validation failure", async () => {
+  it("executeSQL returns a validation_failed envelope on a SQL guard rejection", async () => {
     mockExecuteSQLExecute.mockResolvedValueOnce({
       success: false,
       error: "Forbidden SQL operation detected",
@@ -141,7 +181,99 @@ describe("MCP tools", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(getContentText(result.content)).toContain("Forbidden SQL operation");
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope).not.toBeNull();
+    expect(envelope!.code).toBe("validation_failed");
+    expect(envelope!.message).toContain("Forbidden SQL operation");
+  });
+
+  it("executeSQL maps an RLS rejection to rls_denied", async () => {
+    mockExecuteSQLExecute.mockResolvedValueOnce({
+      success: false,
+      error: "RLS check failed: user has no claim for orders.org_id",
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT * FROM orders", explanation: "All orders" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("rls_denied");
+  });
+
+  it("executeSQL maps a statement timeout to query_timeout", async () => {
+    mockExecuteSQLExecute.mockResolvedValueOnce({
+      success: false,
+      error: "canceling statement due to statement timeout",
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT * FROM huge", explanation: "Huge scan" },
+    });
+
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("query_timeout");
+  });
+
+  it("executeSQL maps an unknown table to unknown_entity", async () => {
+    mockExecuteSQLExecute.mockResolvedValueOnce({
+      success: false,
+      error: "Table 'ghosts' is not whitelisted in the semantic layer",
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT * FROM ghosts", explanation: "Ghost scan" },
+    });
+
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("unknown_entity");
+  });
+
+  it("executeSQL maps a rate-limit rejection to rate_limited and forwards retry_after", async () => {
+    mockExecuteSQLExecute.mockResolvedValueOnce({
+      success: false,
+      error: "Rate limit exceeded for source default",
+      retryAfterMs: 12_000,
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "ping" },
+    });
+
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("rate_limited");
+    // Wire field uses snake_case so SDK consumers see the same shape the
+    // typed envelope advertises. retryAfterMs (ms) → retry_after (s).
+    expect(envelope!.retry_after).toBe(12);
+  });
+
+  it("executeSQL falls back to internal_error with a request_id on opaque failures", async () => {
+    mockExecuteSQLExecute.mockResolvedValueOnce({
+      success: false,
+      error: "Approval system unavailable — query blocked. Contact your administrator.",
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "ping" },
+    });
+
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("internal_error");
+    // request_id is mandatory on internal_error so users can correlate with
+    // server logs — the contract called out in @useatlas/types/mcp.
+    expect(envelope!.request_id).toBeDefined();
+    expect(envelope!.request_id).toMatch(/^mcp-executeSQL-/);
   });
 
   it("executeSQL passes connectionId through", async () => {
@@ -161,7 +293,7 @@ describe("MCP tools", () => {
     expect((firstCallArgs[0] as Record<string, unknown>).connectionId).toBe("warehouse");
   });
 
-  it("explore catches thrown exception and returns isError", async () => {
+  it("explore catches thrown exception and returns an internal_error envelope", async () => {
     mockExploreExecute.mockRejectedValueOnce(new Error("sandbox crashed"));
 
     const { client } = await createTestClient();
@@ -171,7 +303,10 @@ describe("MCP tools", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(getContentText(result.content)).toContain("sandbox crashed");
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("internal_error");
+    expect(envelope!.message).toContain("sandbox crashed");
+    expect(envelope!.request_id).toBeDefined();
   });
 
   it("explore JSON-stringifies non-string return values", async () => {
@@ -188,7 +323,7 @@ describe("MCP tools", () => {
     expect(parsed.files).toEqual(["a.yml", "b.yml"]);
   });
 
-  it("executeSQL catches thrown exception and returns isError", async () => {
+  it("executeSQL catches thrown exception and returns an internal_error envelope", async () => {
     mockExecuteSQLExecute.mockRejectedValueOnce(new Error("connection lost"));
 
     const { client } = await createTestClient();
@@ -201,10 +336,13 @@ describe("MCP tools", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(getContentText(result.content)).toContain("connection lost");
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("internal_error");
+    expect(envelope!.message).toContain("connection lost");
+    expect(envelope!.request_id).toBeDefined();
   });
 
-  it("executeSQL returns fallback message when success is false with no error field", async () => {
+  it("executeSQL returns an internal_error envelope when success is false with no error field", async () => {
     mockExecuteSQLExecute.mockResolvedValueOnce({ success: false });
 
     const { client } = await createTestClient();
@@ -217,7 +355,9 @@ describe("MCP tools", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(getContentText(result.content)).toBe("Query failed");
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("internal_error");
+    expect(envelope!.message).toBe("Query failed");
   });
 
   // #1858 — actor binding regression. Inside executeSQL the approval gate

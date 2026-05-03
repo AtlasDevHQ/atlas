@@ -7,6 +7,12 @@
  * Actor binding mirrors `tools.ts`: every dispatch is wrapped in
  * `withRequestContext({ user: actor, requestId })` so any downstream
  * approval/RLS gate sees a bound caller (#1858 — see tools.ts header).
+ *
+ * Failure shape: every error path returns an `AtlasMcpToolError`
+ * envelope (#2030) so an LLM agent can branch on `code` instead of
+ * pattern-matching prose. `searchGlossary` upgrades the recommendation
+ * to a hard `ambiguous_term` envelope when any matched term has
+ * `status: ambiguous` — the disambiguation eval (#2025) asserts on it.
  */
 
 import { z } from "zod/v4";
@@ -28,6 +34,11 @@ import {
   RUN_METRIC_TOOL_DESCRIPTION,
   type SemanticToolName,
 } from "@atlas/api/lib/tools/descriptions";
+import {
+  classifyExecuteSqlError,
+  envelope,
+  toEnvelopeResult,
+} from "./error-envelope.js";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
 // SaaS) shouldn't be able to drive megabyte strings into the catalog
@@ -42,6 +53,21 @@ const MAX_FREE_TEXT_LEN = 1024;
 // constraint at the Zod boundary gives the MCP client an immediate
 // error instead of an indistinguishable `{ found: false }`.
 const ENTITY_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+
+// Per-tool error catalogs surfaced in tool descriptions — the LLM reads
+// these to learn which codes can come back, and the test suite asserts
+// each catalog is reachable.
+const LIST_ENTITIES_ERROR_CODES = ["internal_error"] as const;
+const DESCRIBE_ENTITY_ERROR_CODES = ["unknown_entity", "internal_error"] as const;
+const SEARCH_GLOSSARY_ERROR_CODES = ["ambiguous_term", "internal_error"] as const;
+const RUN_METRIC_ERROR_CODES = [
+  "unknown_metric",
+  "validation_failed",
+  "rls_denied",
+  "query_timeout",
+  "rate_limited",
+  "internal_error",
+] as const;
 
 export interface RegisterSemanticToolsOptions {
   /** Actor bound on every tool dispatch — see tools.ts. */
@@ -58,13 +84,6 @@ function toJsonContent(value: unknown): CallToolResult {
   };
 }
 
-function toErrorContent(message: string): CallToolResult {
-  return {
-    content: [{ type: "text" as const, text: message }],
-    isError: true,
-  };
-}
-
 function errorMessage(err: unknown, fallback: string): string {
   if (err instanceof Error) return err.message;
   // CLAUDE.md: `err instanceof Error ? err.message : String(err)`. The
@@ -73,6 +92,17 @@ function errorMessage(err: unknown, fallback: string): string {
   // give the caller no signal anyway.
   const s = String(err);
   return s && s !== "[object Object]" ? s : fallback;
+}
+
+/**
+ * Append the structured error contract to a tool's LLM-facing description
+ * so agents can read the recovery surface from the same place they read
+ * the tool's purpose.
+ */
+function withErrorContract(base: string, codes: readonly string[]): string {
+  return `${base}
+
+Error contract: failures return an \`{ code, message, hint?, request_id?, retry_after? }\` JSON envelope as the tool result text with \`isError: true\`. Possible codes: ${codes.map((c) => `\`${c}\``).join(", ")}. Branch on \`code\`; never pattern-match \`message\`.`;
 }
 
 export function registerSemanticTools(
@@ -86,7 +116,7 @@ export function registerSemanticTools(
     "listEntities" satisfies SemanticToolName,
     {
       title: "List Semantic Entities",
-      description: LIST_ENTITIES_TOOL_DESCRIPTION,
+      description: withErrorContract(LIST_ENTITIES_TOOL_DESCRIPTION, LIST_ENTITIES_ERROR_CODES),
       inputSchema: {
         filter: z
           .string()
@@ -97,9 +127,10 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ filter }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-listEntities"), user: actor },
+    async ({ filter }): Promise<CallToolResult> => {
+      const requestId = dispatchId("mcp-listEntities");
+      return withRequestContext(
+        { requestId, user: actor },
         async () => {
           try {
             const entities = listEntities({ filter });
@@ -107,10 +138,13 @@ export function registerSemanticTools(
           } catch (err) {
             const message = errorMessage(err, "listEntities tool failed");
             process.stderr.write(`[atlas-mcp] listEntities threw: ${err}\n`);
-            return toErrorContent(message);
+            return toEnvelopeResult(
+              envelope("internal_error", message, { request_id: requestId }),
+            );
           }
         },
-      ),
+      );
+    },
   );
 
   // --- describeEntity ---
@@ -118,7 +152,7 @@ export function registerSemanticTools(
     "describeEntity" satisfies SemanticToolName,
     {
       title: "Describe Semantic Entity",
-      description: DESCRIBE_ENTITY_TOOL_DESCRIPTION,
+      description: withErrorContract(DESCRIBE_ENTITY_TOOL_DESCRIPTION, DESCRIBE_ENTITY_ERROR_CODES),
       inputSchema: {
         name: z
           .string()
@@ -130,23 +164,38 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ name }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-describeEntity"), user: actor },
+    async ({ name }): Promise<CallToolResult> => {
+      const requestId = dispatchId("mcp-describeEntity");
+      return withRequestContext(
+        { requestId, user: actor },
         async () => {
           try {
             const entity = getEntityByName(name);
             if (!entity) {
-              return toJsonContent({ found: false, name });
+              // Unknown-entity isn't really a "tool failed" condition for
+              // the agent — the agent's recovery is "call listEntities and
+              // pick a known one." Emit it as a typed envelope so the
+              // recovery is machine-readable, with a hint pointing the
+              // agent at the right next call.
+              return toEnvelopeResult(
+                envelope(
+                  "unknown_entity",
+                  `Entity "${name}" not found in the semantic layer.`,
+                  { hint: "Call listEntities to discover available entities." },
+                ),
+              );
             }
             return toJsonContent({ found: true, entity });
           } catch (err) {
             const message = errorMessage(err, "describeEntity tool failed");
             process.stderr.write(`[atlas-mcp] describeEntity threw: ${err}\n`);
-            return toErrorContent(message);
+            return toEnvelopeResult(
+              envelope("internal_error", message, { request_id: requestId }),
+            );
           }
         },
-      ),
+      );
+    },
   );
 
   // --- searchGlossary ---
@@ -154,7 +203,7 @@ export function registerSemanticTools(
     "searchGlossary" satisfies SemanticToolName,
     {
       title: "Search Business Glossary",
-      description: SEARCH_GLOSSARY_TOOL_DESCRIPTION,
+      description: withErrorContract(SEARCH_GLOSSARY_TOOL_DESCRIPTION, SEARCH_GLOSSARY_ERROR_CODES),
       inputSchema: {
         term: z
           .string()
@@ -165,12 +214,36 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ term }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-searchGlossary"), user: actor },
+    async ({ term }): Promise<CallToolResult> => {
+      const requestId = dispatchId("mcp-searchGlossary");
+      return withRequestContext(
+        { requestId, user: actor },
         async () => {
           try {
             const matches = searchGlossary(term);
+
+            // The disambiguation contract (#2020 + #2025): when ANY matched
+            // glossary entry has `status: ambiguous`, surface it as a hard
+            // `ambiguous_term` envelope with the possible mappings in the
+            // hint. The agent's correct recovery is to ask the user which
+            // mapping they meant — never silently pick. The eval harness
+            // asserts on `code === "ambiguous_term"`.
+            const ambiguous = matches.find((m) => m.status === "ambiguous");
+            if (ambiguous) {
+              const mappings = ambiguous.possible_mappings.length > 0
+                ? ` Possible mappings: ${ambiguous.possible_mappings.join(", ")}.`
+                : "";
+              return toEnvelopeResult(
+                envelope(
+                  "ambiguous_term",
+                  `Glossary term "${ambiguous.term}" is ambiguous — ask the user which mapping they meant.${mappings}`,
+                  {
+                    hint: "Surface possible_mappings to the user and ask which they meant; do not silently pick a mapping.",
+                  },
+                ),
+              );
+            }
+
             return toJsonContent({
               query: term,
               count: matches.length,
@@ -179,10 +252,13 @@ export function registerSemanticTools(
           } catch (err) {
             const message = errorMessage(err, "searchGlossary tool failed");
             process.stderr.write(`[atlas-mcp] searchGlossary threw: ${err}\n`);
-            return toErrorContent(message);
+            return toEnvelopeResult(
+              envelope("internal_error", message, { request_id: requestId }),
+            );
           }
         },
-      ),
+      );
+    },
   );
 
   // --- runMetric ---
@@ -193,7 +269,7 @@ export function registerSemanticTools(
     "runMetric" satisfies SemanticToolName,
     {
       title: "Run Canonical Metric",
-      description: RUN_METRIC_TOOL_DESCRIPTION,
+      description: withErrorContract(RUN_METRIC_TOOL_DESCRIPTION, RUN_METRIC_ERROR_CODES),
       inputSchema: {
         id: z
           .string()
@@ -223,20 +299,31 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ id, filters, connectionId }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-runMetric"), user: actor },
+    async ({ id, filters, connectionId }): Promise<CallToolResult> => {
+      const requestId = dispatchId("mcp-runMetric");
+      return withRequestContext(
+        { requestId, user: actor },
         async () => {
           try {
             if (filters && Object.keys(filters).length > 0) {
-              return toErrorContent(
-                "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
+              return toEnvelopeResult(
+                envelope(
+                  "validation_failed",
+                  "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
+                  { hint: "Omit `filters` and re-run, or call executeSQL with a custom WHERE clause." },
+                ),
               );
             }
 
             const metric = findMetricById(id);
             if (!metric) {
-              return toErrorContent(`Metric "${id}" not found.`);
+              return toEnvelopeResult(
+                envelope(
+                  "unknown_metric",
+                  `Metric "${id}" not found.`,
+                  { hint: "Call listEntities or grep semantic/metrics/ to discover available metric ids." },
+                ),
+              );
             }
 
             const explanation = metric.description
@@ -249,8 +336,16 @@ export function registerSemanticTools(
             )) as Record<string, unknown>;
 
             if (result.success === false) {
-              return toErrorContent(
-                String(result.error ?? "Metric execution failed."),
+              const rawError = String(result.error ?? "Metric execution failed.");
+              const code = classifyExecuteSqlError(rawError);
+              const extras: { request_id?: string; retry_after?: number } = {};
+              if (code === "internal_error") extras.request_id = requestId;
+              const retryAfterMs = result.retryAfterMs;
+              if (code === "rate_limited" && typeof retryAfterMs === "number") {
+                extras.retry_after = Math.max(1, Math.round(retryAfterMs / 1000));
+              }
+              return toEnvelopeResult(
+                envelope(code, rawError, Object.keys(extras).length ? extras : undefined),
               );
             }
 
@@ -284,9 +379,12 @@ export function registerSemanticTools(
           } catch (err) {
             const message = errorMessage(err, "runMetric tool failed");
             process.stderr.write(`[atlas-mcp] runMetric threw: ${err}\n`);
-            return toErrorContent(message);
+            return toEnvelopeResult(
+              envelope("internal_error", message, { request_id: requestId }),
+            );
           }
         },
-      ),
+      );
+    },
   );
 }

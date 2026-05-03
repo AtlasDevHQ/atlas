@@ -207,20 +207,29 @@ export function AtlasChat() {
   // Python streaming progress — keyed by tool invocation ID
   const [pythonProgress, setPythonProgress] = useState<Map<string, PythonProgressData[]>>(new Map());
 
-  // #1988 B5 / #2005 — context-warning + plan-warning frames are buffered
-  // by the warnings hook until the AI SDK appends the assistant message id
-  // they belong to. The handler is reached via a ref because `useChat`
-  // captures `onData` once and the warnings hook is called AFTER `useChat`
-  // (it needs `messages` to know which id to attach to). The ref pattern
-  // keeps `onData` stable while still routing each frame to the latest
-  // hook closure.
+  // The warnings hook must be called after `useChat` so it can observe
+  // `messages` and drain pending frames onto the latest assistant id.
+  // We route `onData` (captured stably by `useChat`) through a ref so
+  // the hook's `handleData` reference can change between renders without
+  // forcing `useChat` to rebuild its transport. The first frame an SDK
+  // delivers should never arrive before commit (frames are emitted on a
+  // microtask after `sendMessage`), but we log if it does so the
+  // theoretical race becomes audible instead of silently dropping.
   const warningHandlerRef = useRef<((part: { type: string; data: unknown }) => boolean) | null>(
     null,
   );
 
   const onData = useCallback(
     (dataPart: { type: string; id?: string; data: unknown }) => {
-      if (warningHandlerRef.current?.(dataPart)) return;
+      if (warningHandlerRef.current) {
+        if (warningHandlerRef.current(dataPart)) return;
+      } else if (dataPart.type === "data-context-warning") {
+        console.warn(
+          "[atlas-chat] data-context-warning arrived before warnings hook initialized; dropping",
+          dataPart,
+        );
+        return;
+      }
       if (dataPart.type === "data-python-progress" && dataPart.id && dataPart.data) {
         const d = dataPart.data as Record<string, unknown>;
         // Minimal runtime validation — ensure the event has a known type
@@ -248,7 +257,12 @@ export function AtlasChat() {
 
   const warningCtl = useContextWarnings(messages);
   const contextWarningsByMessage = warningCtl.byMessage;
-  warningHandlerRef.current = warningCtl.handleData;
+  // Wire the hook's stable handler into the onData ref AFTER commit.
+  // Mutating a ref during render is a React anti-pattern (the render
+  // can be discarded under concurrent rendering, leaving the ref stale).
+  useEffect(() => {
+    warningHandlerRef.current = warningCtl.handleData;
+  }, [warningCtl.handleData]);
 
   const isLoading = status === "streaming" || status === "submitted";
 

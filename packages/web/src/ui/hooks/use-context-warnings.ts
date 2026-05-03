@@ -1,67 +1,135 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { parseContextWarning, type ChatContextWarning } from "@useatlas/types";
 
 export type WarningBucket = {
   warnings: ChatContextWarning[];
 };
 
+type Pending = {
+  warnings: ChatContextWarning[];
+  /**
+   * `messages.length` at the moment the first warning of this batch was
+   * buffered. The drain effect must wait for an assistant message at an
+   * index >= this value — otherwise a warning on turn N would be attached
+   * to turn N-1's assistant (which is still the latest assistant id when
+   * the frame arrives, because the chat route writes warnings before
+   * merging the agent stream).
+   */
+  anchorMessageCount: number;
+};
+
+const EMPTY: Pending = { warnings: [], anchorMessageCount: 0 };
+
 /**
- * Buffer + per-message attachment of `data-context-warning` SSE frames
- * (#1988 B5 + #2005). The chat route writes warning frames AHEAD of the
- * agent's text-delta merge (chat.ts:864 — load-bearing ordering comment).
+ * Buffer + per-message attachment of `data-context-warning` SSE frames.
+ *
+ * The chat route writes warning frames AHEAD of merging the agent's
+ * text-delta stream (see the "Ordering is load-bearing" block in
+ * `chat.ts` immediately before `writer.merge(agentResult.toUIMessageStream(...))`).
  * At the moment a frame fires through `onData`, the AI SDK has not yet
- * appended an assistant message to `messages`, so we cannot key the
- * bucket by id on arrival. The hook splits the work:
+ * appended the new assistant message id to `messages`, so we cannot key
+ * the bucket by id on arrival. The hook splits the work:
  *
  * 1. `handleData(part)` — onData entry point. Returns `true` if the part
  *    was a warning frame (so the caller can stop dispatching it). Parses
- *    via the canonical `parseContextWarning` guard; invalid frames are
- *    silently dropped because a degraded answer is not worth surfacing
- *    if the wire shape is broken.
- * 2. Internal `useEffect` — when `messages` next updates, drain the
- *    `pending` bucket onto the most recent assistant message id.
- *    Subsequent warnings for the same id append to the existing bucket.
- * 3. `resetPending()` — call before sending the next user message so a
+ *    via the canonical `parseContextWarning` guard. Invalid frames are
+ *    dropped to avoid spamming users with a banner over a wire bug, but
+ *    a `console.warn` fires so the regression is observable in dev.
+ *    The first warning of a batch snapshots the current message count
+ *    so the drain step can tell turn N's warnings from turn N-1's.
+ * 2. Internal drain `useEffect` — when `messages` next updates, look for
+ *    an assistant message at an index >= the snapshotted count and
+ *    transfer the buffer onto its id. Subsequent warnings for the same
+ *    turn append to the existing bucket.
+ * 3. Internal cleanup `useEffect` — drops bucket entries whose message
+ *    id is no longer in `messages` (e.g. after `setMessages` replaces a
+ *    message on regenerate / edit). Without this the map would leak.
+ * 4. `resetPending()` — call before sending the next user message so a
  *    stalled previous turn cannot leak warnings into the new answer.
- * 4. `reset()` — full clear, used on new chat / conversation switch.
+ * 5. `reset()` — full clear, used on new chat / conversation switch.
  */
 export function useContextWarnings(messages: ReadonlyArray<{ id: string; role: string }>) {
   const [byMessage, setByMessage] = useState<Map<string, WarningBucket>>(new Map());
-  const [pending, setPending] = useState<WarningBucket>({ warnings: [] });
+  const [pending, setPending] = useState<Pending>(EMPTY);
 
+  // Read-only snapshot of `messages.length` for `handleData` to capture
+  // when a new pending batch starts. A ref keeps `handleData` stable
+  // (no dep on the messages array) so `useChat`'s `onData` capture works.
+  const messagesLengthRef = useRef(messages.length);
+  useEffect(() => {
+    messagesLengthRef.current = messages.length;
+  }, [messages]);
+
+  // Drain: attach pending warnings to the assistant message that appeared
+  // for THIS turn (index >= the snapshotted message count).
   useEffect(() => {
     if (pending.warnings.length === 0) return;
-    // Walk from the tail rather than mutating with toReversed() — the
-    // input is typed ReadonlyArray, and react state references should not
-    // motivate cloning a potentially long messages array per pending tick.
-    let lastAssistantId: string | null = null;
-    for (let i = messages.length - 1; i >= 0; i--) {
+    let targetId: string | null = null;
+    // Walk backwards from the tail. Bound the search at
+    // anchorMessageCount so we never attach to a previous turn's
+    // assistant (the bug fix). `for` + index is preferred over
+    // `toReversed()` because the latter allocates a fresh array per
+    // pending tick — meaningful on long conversations.
+    for (let i = messages.length - 1; i >= pending.anchorMessageCount; i--) {
       if (messages[i].role === "assistant") {
-        lastAssistantId = messages[i].id;
+        targetId = messages[i].id;
         break;
       }
     }
-    if (lastAssistantId === null) return;
-    const targetId = lastAssistantId;
+    if (targetId === null) return;
+    const claimedId = targetId;
     setByMessage((prev) => {
       const next = new Map(prev);
-      const existing = next.get(targetId) ?? { warnings: [] };
-      next.set(targetId, {
+      const existing = next.get(claimedId) ?? { warnings: [] };
+      next.set(claimedId, {
         warnings: [...existing.warnings, ...pending.warnings],
       });
       return next;
     });
-    setPending({ warnings: [] });
+    setPending(EMPTY);
   }, [messages, pending]);
+
+  // Cleanup: drop buckets whose message id is no longer in `messages`.
+  // Runs separately from drain so a regenerate that replaces an id
+  // releases the orphaned bucket on the same render that introduces the
+  // new id.
+  useEffect(() => {
+    setByMessage((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(messages.map((m) => m.id));
+      let changed = false;
+      const next = new Map<string, WarningBucket>();
+      for (const [id, bucket] of prev) {
+        if (live.has(id)) next.set(id, bucket);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [messages]);
 
   const handleData = useCallback(
     (dataPart: { type: string; data: unknown }): boolean => {
       if (dataPart.type === "data-context-warning") {
         const parsed = parseContextWarning(dataPart.data);
         if (parsed) {
-          setPending((p) => ({ warnings: [...p.warnings, parsed] }));
+          const anchor = messagesLengthRef.current;
+          setPending((p) =>
+            p.warnings.length === 0
+              ? { warnings: [parsed], anchorMessageCount: anchor }
+              : { ...p, warnings: [...p.warnings, parsed] },
+          );
+        } else {
+          // The legacy `data-plan-warning` channel had a typed mismatch
+          // (server wrote an object, client guarded on string) and went
+          // undetected for two releases because nothing logged the
+          // drop. Logging here makes any future wire-shape regression
+          // observable without waiting for users to file bugs.
+          console.warn(
+            "[atlas-chat] dropped malformed data-context-warning frame",
+            dataPart.data,
+          );
         }
         return true;
       }
@@ -70,10 +138,10 @@ export function useContextWarnings(messages: ReadonlyArray<{ id: string; role: s
     [],
   );
 
-  const resetPending = useCallback(() => setPending({ warnings: [] }), []);
+  const resetPending = useCallback(() => setPending(EMPTY), []);
   const reset = useCallback(() => {
     setByMessage(new Map());
-    setPending({ warnings: [] });
+    setPending(EMPTY);
   }, []);
 
   return { byMessage, pending, handleData, reset, resetPending };

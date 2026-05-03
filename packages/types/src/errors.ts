@@ -161,25 +161,27 @@ export interface ChatErrorInfo {
 // ---------------------------------------------------------------------------
 
 /**
- * Codes for non-fatal preflight degradations that the agent ran past so the
- * user could still get an answer, at the cost of dropped context (or, in
- * the case of `plan_limit_warning`, at the cost of headroom against the
- * billing budget). Each code names the specific signal — the title/detail
- * copy is built server-side so the client never has to translate codes to
- * copy.
+ * Codes for non-fatal degradations surfaced via `data-context-warning` so
+ * the user knows the answer was produced under reduced context or against
+ * a constrained budget. Each code names the specific signal — server-built
+ * copy ships in `title` / `detail` so the client never has to translate
+ * codes to copy.
  *
  * - `semantic_layer_unavailable` — the org-scoped whitelist + semantic index
  *   could not be loaded (typically internal-DB pool exhaustion). The agent
  *   falls back to the file-based default semantic layer.
  * - `learned_patterns_unavailable` — the learned-patterns lookup failed.
  *   The agent runs without question-similarity hints.
- *   - `plan_limit_warning` — the workspace is approaching, in grace against,
- *     or unable to read its plan budget. The request was allowed; the
- *     warning surfaces so the user can act before the next request hits
- *     `plan_limit_exceeded` (which is a hard block, not a warning).
+ * - `plan_limit_warning` — the workspace is approaching, in grace against,
+ *   or unable to read its plan budget. The request was allowed; the
+ *   warning surfaces so the user can act before the next request hits
+ *   `plan_limit_exceeded` (which is a hard block, not a warning).
  *
- * When adding a new code: also add a server emit site AND a corresponding
- * UI banner branch so the structured frame round-trips end-to-end.
+ * When adding a new code: add the string here, add a server emit site
+ * (preflight loaders in `lib/agent.ts`'s `Effect.catchAll` arms for
+ * context loss; `api/routes/chat.ts` for the budget signal), and the
+ * runtime guard `parseContextWarning` will accept it automatically — the
+ * client banner is data-driven and renders any accepted code uniformly.
  */
 export const CHAT_CONTEXT_WARNING_CODES = [
   "semantic_layer_unavailable",

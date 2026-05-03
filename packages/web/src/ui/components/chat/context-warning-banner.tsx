@@ -6,11 +6,11 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 /**
  * Per-message banner for "answer is degraded" signals — one wire shape
- * (`data-context-warning`) covers preflight degradations (#1988 B5) and
- * plan-budget warnings (#2005). Distinct from the destructive
- * ErrorBanner: these are non-fatal signals that the model ran with
- * reduced context (or the workspace is approaching a billing limit), so
- * the treatment is amber/warning, not red/error.
+ * (`data-context-warning`) covers preflight degradations and plan-budget
+ * warnings. Distinct from the destructive ErrorBanner: these are
+ * non-fatal signals that the model ran with reduced context (or the
+ * workspace is approaching a billing limit), so the treatment is
+ * amber/warning, not red/error.
  *
  * Rendered above the assistant turn it belongs to (per-message, not
  * session-wide) so the user can correlate "this answer was degraded"
@@ -26,6 +26,7 @@ export function ContextWarningBanner({
   return (
     <Alert
       data-testid="context-warning-banner"
+      data-variant="warning"
       className="mb-2 border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-200"
     >
       <AlertTriangle className="text-amber-600 dark:text-amber-400" />

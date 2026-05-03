@@ -82,7 +82,7 @@ describe("ContextWarningBanner", () => {
     expect(codeEl?.textContent).toBe("semantic_layer_unavailable");
   });
 
-  test("does not use the destructive red color (degraded ≠ failure)", () => {
+  test("renders as the non-destructive 'warning' variant (degraded ≠ failure)", () => {
     const warnings: ChatContextWarning[] = [
       {
         severity: "warning",
@@ -93,9 +93,13 @@ describe("ContextWarningBanner", () => {
     const { container } = render(<ContextWarningBanner warnings={warnings} />);
     const alert = container.querySelector('[role="alert"]');
     expect(alert).not.toBeNull();
-    // The error-banner uses red-* classes; this banner must not — it
-    // signals "answer is degraded", not failure. We assert amber treatment.
-    expect(alert?.className ?? "").not.toContain("red-");
-    expect(alert?.className ?? "").toContain("amber");
+    // The error-banner is the destructive treatment; this banner must
+    // declare itself as the warning variant so future restyles cannot
+    // accidentally lift it to destructive (which would scare users away
+    // from a still-useful answer). data-variant is the stable behavioral
+    // marker — not the className, which is volatile.
+    expect(alert?.getAttribute("data-variant")).toBe("warning");
+    // SVG presence as a cheap pin against an icon swap.
+    expect(container.querySelector("svg")).not.toBeNull();
   });
 });

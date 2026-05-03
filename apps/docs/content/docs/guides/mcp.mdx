@@ -184,7 +184,7 @@ term: "revenue"
 }
 ```
 
-When a returned term has `status: "ambiguous"`, `searchGlossary` returns an `ambiguous_term` [error envelope](#error-contract) instead of the matches array — the agent must surface `possible_mappings` to the user and ask which they mean, never silently pick. The disambiguation eval (#2025) asserts on this exact code.
+When a returned term has `status: "ambiguous"`, `searchGlossary` returns an `ambiguous_term` [error envelope](#error-contract) instead of the matches array — the agent must surface `possible_mappings` to the user and ask which they mean, never silently pick. The forthcoming disambiguation eval ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) is expected to assert on this exact code.
 
 ### runMetric
 
@@ -241,10 +241,10 @@ The envelope is serialized as the `text` of the first content block. Use `parseA
 | `validation_failed` | The SQL guard rejected (regex, AST, table whitelist), or `runMetric` was called with a non-empty `filters` object. | Rewrite the query; do **not** retry the same SQL. |
 | `rls_denied` | Row-level security rejected the query for the bound actor. | Surface the failure to the user — the agent cannot retry under another identity. |
 | `query_timeout` | `statement_timeout` fired. | Suggest a simpler query (tighter `WHERE`/`LIMIT`) or break the work up. |
-| `unknown_entity` | `describeEntity` was called with an entity that doesn't exist, or `executeSQL` referenced a table missing from the semantic whitelist. | Call `listEntities` to discover what exists, then retry with a real name. |
+| `unknown_entity` | `describeEntity` was called with an entity that doesn't exist, `executeSQL` referenced a table missing from the semantic whitelist, or a `connectionId` was specified that isn't registered. | Call `listEntities` to discover what exists, then retry with a real name (or check the connection id). |
 | `unknown_metric` | `runMetric` was called with an id missing from `metrics/*.yml`. | Fall back to `executeSQL`, or pick a different metric id. |
 | `ambiguous_term` | `searchGlossary` matched a glossary entry with `status: ambiguous`. | **Do not silently pick a mapping.** Surface `possible_mappings` to the user and ask which they meant. |
-| `rate_limited` | The per-source rate limit or concurrency cap was hit. `retry_after` (seconds) is set when the upstream knows it. | Back off for `retry_after` seconds; surface to user only after sustained failure. |
+| `rate_limited` | The per-source QPM limit, concurrency cap, or pool capacity was hit. `retry_after` (seconds) is set when the upstream knows it. | Back off for `retry_after` seconds; surface to user only after sustained failure. |
 | `internal_error` | Anything else — sandbox crash, lookup failure, opaque pipeline error. `request_id` is always set. | Quote the `request_id` to the user; do not silently retry — there is likely an operator-side problem. |
 
 ### Tool description carries the contract

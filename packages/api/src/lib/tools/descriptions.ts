@@ -25,8 +25,10 @@ Output is the entity's YAML rendered as JSON: dimensions (with types and sample
 values), measures, joins, query patterns, grain, and connection. Look up by the
 entity's \`name\` field or by \`table\` name — both work.
 
-Always call this before writing SQL against an unfamiliar table. Returns
-{ found: false } when the entity does not exist.`;
+Always call this before writing SQL against an unfamiliar table. When the entity
+does not exist, returns an \`unknown_entity\` error envelope (see the per-tool
+error contract); the agent should call \`listEntities\` to discover what's
+available rather than guess.`;
 
 export const SEARCH_GLOSSARY_TOOL_DESCRIPTION = `Search the business glossary for a term.
 

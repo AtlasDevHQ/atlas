@@ -8,8 +8,15 @@
  * The envelope is serialized as the JSON body of an `isError: true` MCP
  * tool response so an LLM agent can branch on `code` instead of pattern-
  * matching prose. Keep this file in lockstep with `@useatlas/types`'s
- * `mcp.ts`: when a new code is added, the compiler will flag every
- * non-exhaustive switch in this module.
+ * `mcp.ts`: a new code requires (1) extending the union there, (2)
+ * appending to `ATLAS_MCP_TOOL_ERROR_CODES` (the symmetric drift guard
+ * in `mcp.ts` makes that compile-checked in both directions, and the
+ * pinned-length test in `__tests__/mcp.test.ts` catches a forgotten
+ * runtime-array update), and (3) adding a regex branch below — the
+ * classifier is an if-chain rather than a switch, so missing the third
+ * step is NOT compile-checked. Future work: replumb
+ * `pipelineErrorToResponse` in `packages/api/src/lib/tools/sql.ts` to
+ * carry the tagged-error `_tag` so this file can switch on tag.
  */
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -64,24 +71,40 @@ export function envelope(
  *
  * Why string matching? The two upstream surfaces are deliberately string-
  * shaped today — `executeSQL` returns `{ success: false, error: <string> }`
- * after collapsing 7+ tagged pipeline errors in `pipelineErrorToResponse`,
+ * after collapsing every `PipelineError` (8 tagged variants today: see
+ * `sql.ts:PipelineError`) into one shape in `pipelineErrorToResponse`,
  * and `explore` returns `Error: ...` / `Error (exit N):` prose from the
  * sandbox backend. Replumbing both to surface tagged errors at the MCP
- * boundary is in scope for a follow-up; for now we map the shapes we ship
- * today, with each pattern carrying a comment pointing at the source so
- * drift is detectable.
+ * boundary is in scope for a follow-up; for now we map the actual
+ * production strings.
  *
- * The catalog is closed: if `error` doesn't match a known shape we return
- * `internal_error` so the agent always gets a typed envelope.
+ * **Lossy by construction.** Every regex below is matched against a
+ * *literal* substring from the upstream constructor (the `// → <tag>:`
+ * comment names the source). Drift in the upstream message text will
+ * silently demote that failure to `internal_error` — the test suite
+ * pins the synthetic side by importing the same strings from the
+ * upstream sources where possible.
+ *
+ * The catalog is closed: if `error` doesn't match a known shape we
+ * return `internal_error` so the agent always gets a typed envelope.
  */
 export function classifyExecuteSqlError(rawError: string): AtlasMcpToolErrorCode {
-  // Empty / missing → treat as internal_error so the agent gets a code at
-  // all instead of a bare envelope.
+  // Empty / missing → treat as internal_error so the agent gets a code
+  // at all instead of a bare envelope.
   if (!rawError) return "internal_error";
 
-  // RLS — sql.ts:RLSError messages and pipeline rejections start with
-  // "RLS check failed" or "RLS rejected" depending on the path.
-  if (/RLS\s+(check\s+failed|rejected|denied)/i.test(rawError)) {
+  // RLS — every constructor in `lib/tools/sql.ts:644-717` and
+  // `lib/rls.ts:87-161` opens with one of: "Row-level security",
+  // "Query could not be analyzed for row-level security",
+  // "Query could not be processed for row-level security",
+  // "RLS is enabled", or "RLS policy". The single anchored alternation
+  // covers all six call sites.
+  if (
+    /\b(row-level\s+security|RLS\s+is\s+enabled|RLS\s+policy|RLS:\s|RLS\s+blocked)/i.test(
+      rawError,
+    ) ||
+    /\b(analyzed|processed)\s+for\s+row-level\s+security/i.test(rawError)
+  ) {
     return "rls_denied";
   }
 
@@ -95,32 +118,58 @@ export function classifyExecuteSqlError(rawError: string): AtlasMcpToolErrorCode
     return "query_timeout";
   }
 
-  // Rate limiting — RateLimitExceededError + ConcurrencyLimitError both
-  // surface as "rate limit" / "concurrency limit" in the message. Pool
-  // exhaustion gets the same code (transient back-off is the right call).
+  // Rate limiting:
+  //   - `RateLimitExceededError` (`db/source-rate-limit.ts:99`) →
+  //     `Source "X" QPM limit reached (60/min)`
+  //   - `ConcurrencyLimitError` (`db/source-rate-limit.ts:86`) →
+  //     `Source "X" concurrency limit reached (...)`
+  //   - `PoolExhaustedError` (`tools/sql.ts:555`) →
+  //     `Connection pool capacity reached — the system is handling many concurrent tenants. Try again shortly.`
+  //   - `RateLimitExceededError` audit prefix in sql.ts:1252 →
+  //     `Rate limited: <message>`
+  // Pool exhaustion is classified `rate_limited` rather than
+  // `internal_error` because the agent's correct recovery is the same
+  // (back off), not "file a bug."
   if (
-    /rate\s+limit|concurrency\s+limit|too\s+many\s+(clients|connections|requests)|pool\s+exhausted/i.test(
+    /\bQPM\s+limit\s+reached|\bconcurrency\s+limit\s+reached|\bconnection\s+pool\s+capacity\s+reached|\brate\s+limited:|\bremaining\s+connection\s+slots\s+are\s+reserved/i.test(
       rawError,
     )
   ) {
     return "rate_limited";
   }
 
-  // Unknown entity / table — semantic-layer whitelist rejections from
-  // sql.ts read "Table 'X' is not whitelisted in the semantic layer" and
-  // sibling "Unknown table".
+  // Unknown table / connection:
+  //   - Whitelist guard (`tools/sql.ts:393, 401`) →
+  //     `Table "X" is not in the allowed list. Check catalog.yml for available tables.`
+  //   - `ConnectionNotFoundError` (`tools/sql.ts:535-567`,
+  //     `db/connection.ts`) → `Connection "X" is not registered.` /
+  //     `Connection "X" failed to initialize: ...`
+  //   - `NoDatasourceError` (`db/connection.ts:977`) →
+  //     `No analytics datasource configured. ...`
+  // All three are "agent specified the wrong identifier" failures —
+  // recovery is "call listEntities or check the connection name", not
+  // "retry."
   if (
-    /not\s+whitelisted|not\s+in\s+the\s+semantic\s+layer|unknown\s+table|table\s+\S+\s+(does\s+not\s+exist|not\s+found)/i.test(
+    /\bis\s+not\s+in\s+the\s+allowed\s+list|\bis\s+not\s+registered|\bfailed\s+to\s+initialize|\bno\s+analytics\s+datasource\s+configured/i.test(
       rawError,
     )
   ) {
     return "unknown_entity";
   }
 
-  // SQL validation rejections — covers the regex/AST/whitelist guards in
-  // validateSQL and the "Plugin-rewritten SQL failed validation" arm.
+  // SQL validation rejections — the four canonical messages from
+  // `validateSQL` in `tools/sql.ts`:
+  //   - `Empty query` (line 268, 289)
+  //   - `Forbidden SQL operation detected: <pattern>` (line 304)
+  //   - `Multiple statements are not allowed` (line 322)
+  //   - `Query could not be parsed.... Rewrite using standard SQL syntax.` (line 361)
+  // Plus the plugin-rewrite arms:
+  //   - `Plugin-rewritten SQL failed validation: ...` (line 1221)
+  //   - `Query rejected by plugin: ...` (`PluginRejectedError`, line 1194)
+  // And the custom-validator path:
+  //   - `Query validation failed for connection "X": internal validator error`
   if (
-    /forbidden\s+sql|sql\s+(validation|guard|parse)|invalid\s+sql|only\s+SELECT|failed\s+validation|disallowed\s+statement/i.test(
+    /\bempty\s+query\b|\bforbidden\s+sql\s+operation|\bmultiple\s+statements\s+are\s+not\s+allowed|\bcould\s+not\s+be\s+parsed|\brejected\s+by\s+plugin|\bplugin-?rewritten\s+sql\s+failed\s+validation|\bquery\s+validation\s+failed\s+for\s+connection|\bonly\s+SELECT\b|\bdisallowed\s+statement/i.test(
       rawError,
     )
   ) {
@@ -134,13 +183,25 @@ export function classifyExecuteSqlError(rawError: string): AtlasMcpToolErrorCode
  * Map a raw explore-tool string (which today returns `Error:` / `Error
  * (exit N):` prose, never an envelope) onto a code. Same string-matching
  * caveat as {@link classifyExecuteSqlError}.
+ *
+ * Plugin command rejections (`Error: Command rejected by plugin: ...`,
+ * `explore.ts:544`) get `validation_failed` — the agent's recovery is
+ * "rewrite the command", not "retry." Backend init failures and
+ * exit-coded backend output stay `internal_error`.
  */
 export function classifyExploreError(rawError: string): AtlasMcpToolErrorCode {
   if (!rawError) return "internal_error";
 
-  // Plugin/backend rate-limit signals.
-  if (/rate\s+limit|too\s+many\s+requests|pool\s+exhausted/i.test(rawError)) {
+  // Plugin/backend rate-limit signals — explore-side rate limiting
+  // surfaces through plugin hook output today. Same QPM phrase covered
+  // for symmetry with executeSQL.
+  if (/\b(QPM\s+limit\s+reached|rate\s+limit|too\s+many\s+requests|pool\s+capacity\s+reached|pool\s+exhausted)/i.test(rawError)) {
     return "rate_limited";
+  }
+
+  // Plugin command rejections — the agent should rewrite the command.
+  if (/\brejected\s+by\s+plugin\b/i.test(rawError)) {
+    return "validation_failed";
   }
 
   // Backend / runtime initialization failures, sandbox errors, missing

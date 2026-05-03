@@ -9,8 +9,12 @@
  *
  * Wire shape (snake_case): the envelope crosses an LLM/agent boundary, so
  * field names match the surrounding MCP/JSON-RPC convention. Do NOT rename
- * `request_id` or `retry_after` to camelCase — `@useatlas/sdk` consumers and
- * the eval harness (#2025) assert on these exact keys.
+ * `request_id` or `retry_after` to camelCase — they are part of the wire
+ * contract that `@useatlas/sdk` consumers parse, and the forthcoming eval
+ * harness (#2025) is expected to assert on these exact keys. (The sibling
+ * `ChatContextWarning` shape in `errors.ts` uses camelCase intentionally —
+ * that one is consumed inside React, not over an LLM boundary, so the
+ * convention divergence is deliberate.)
  */
 
 /**
@@ -23,22 +27,34 @@
  *   actor. Retrying with the same identity will not help; surface to user.
  * - `query_timeout` — `statement_timeout` fired. Suggest a simpler query
  *   or a tighter `LIMIT`. Not retryable as-is.
- * - `unknown_entity` — the requested entity is not in the semantic layer.
- *   The agent should call `listEntities` to discover what exists.
+ * - `unknown_entity` — the requested entity is not in the semantic layer
+ *   (also covers unregistered connection ids and missing datasource
+ *   config — all "agent specified the wrong identifier" failures). The
+ *   agent should call `listEntities` to discover what exists.
  * - `unknown_metric` — the metric id is not in `metrics/*.yml`. The agent
  *   should fall back to `executeSQL` or pick a different metric.
  * - `ambiguous_term` — a glossary entry has `status: ambiguous`. The agent
  *   MUST surface the ambiguity to the user with `possible_mappings` and
- *   ask which they meant — never silently pick. The disambiguation eval in
- *   #2025 asserts on this exact code.
- * - `rate_limited` — request rate or concurrency cap hit. Include
- *   `retry_after` (seconds) so the agent can back off correctly.
- * - `internal_error` — unexpected failure. Include `request_id` so the
+ *   ask which they meant — never silently pick. The forthcoming
+ *   disambiguation eval (#2025) is expected to assert on this exact code.
+ * - `rate_limited` — request rate, concurrency cap, or pool capacity hit.
+ *   Includes `retry_after` (seconds) when the upstream knows it.
+ * - `internal_error` — unexpected failure. Includes `request_id` so the
  *   user can quote it when filing a support ticket.
  *
- * When adding a code: extend the union here AND extend the exhaustive
- * `mapXyzErrorToCode()` switches in `packages/mcp/src/error-envelope.ts` —
- * the compiler will flag the missing case.
+ * When adding a code:
+ *   1. Extend the union here.
+ *   2. Append to `ATLAS_MCP_TOOL_ERROR_CODES` (the `_CodesArrayCovers`
+ *      guard below makes that compile-checked in both directions; the
+ *      pinned-length test in `__tests__/mcp.test.ts` catches a forgotten
+ *      runtime-array update).
+ *   3. Add a regex branch in `classifyExecuteSqlError` /
+ *      `classifyExploreError` in `packages/mcp/src/error-envelope.ts` —
+ *      these are if-chains, NOT switches, so missing this step is silent
+ *      and the new failure mode will fall through to `internal_error`.
+ *   4. Add the code to the per-tool catalog (`EXECUTE_SQL_ERROR_CODES`,
+ *      `RUN_METRIC_ERROR_CODES`, etc.) so the LLM-facing description
+ *      advertises it.
  */
 export type AtlasMcpToolErrorCode =
   | "validation_failed"
@@ -79,6 +95,20 @@ export const ATLAS_MCP_TOOL_ERROR_CODES = [
   "rate_limited",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
+
+// Symmetric drift guard. The `satisfies` above ensures every entry in the
+// array is a valid union member; this checks the reverse — every union
+// member appears in the array. Without this, adding a code to the union
+// without appending to the array compiles silently and SDK consumers
+// iterating `ATLAS_MCP_TOOL_ERROR_CODES` will miss the new code at
+// runtime. Triggers TS2322 if the two drift apart.
+type _CodesArrayCoversUnion =
+  AtlasMcpToolErrorCode extends (typeof ATLAS_MCP_TOOL_ERROR_CODES)[number]
+    ? true
+    : never;
+const _atlasMcpCodesArrayCoversUnion: _CodesArrayCoversUnion = true;
+// Reference the symbol so TS doesn't strip it as unused under noUnusedLocals.
+void _atlasMcpCodesArrayCoversUnion;
 
 /** Type guard — checks whether a string is a known `AtlasMcpToolErrorCode`. */
 export function isAtlasMcpToolErrorCode(value: string): value is AtlasMcpToolErrorCode {

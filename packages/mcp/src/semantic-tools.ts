@@ -12,7 +12,8 @@
  * envelope (#2030) so an LLM agent can branch on `code` instead of
  * pattern-matching prose. `searchGlossary` upgrades the recommendation
  * to a hard `ambiguous_term` envelope when any matched term has
- * `status: ambiguous` — the disambiguation eval (#2025) asserts on it.
+ * `status: ambiguous` — the forthcoming disambiguation eval (#2025) is
+ * expected to assert on this code.
  */
 
 import { z } from "zod/v4";
@@ -222,21 +223,31 @@ export function registerSemanticTools(
           try {
             const matches = searchGlossary(term);
 
-            // The disambiguation contract (#2020 + #2025): when ANY matched
-            // glossary entry has `status: ambiguous`, surface it as a hard
-            // `ambiguous_term` envelope with the possible mappings in the
-            // hint. The agent's correct recovery is to ask the user which
-            // mapping they meant — never silently pick. The eval harness
-            // asserts on `code === "ambiguous_term"`.
+            // The disambiguation contract (#2020 + forthcoming #2025): when
+            // ANY matched glossary entry has `status: ambiguous`, surface
+            // it as a hard `ambiguous_term` envelope with the possible
+            // mappings in the hint. The agent's correct recovery is to ask
+            // the user which mapping they meant — never silently pick. The
+            // forthcoming eval harness is expected to assert on
+            // `code === "ambiguous_term"`.
             const ambiguous = matches.find((m) => m.status === "ambiguous");
             if (ambiguous) {
               const mappings = ambiguous.possible_mappings.length > 0
                 ? ` Possible mappings: ${ambiguous.possible_mappings.join(", ")}.`
                 : "";
+              // Note when other matches were dropped — the envelope contract
+              // is "one ambiguous term blocks the call" so callers don't see
+              // sibling defined terms that were in the same result set. Tell
+              // the agent it can re-query for a more specific term to
+              // recover the others.
+              const otherCount = matches.length - 1;
+              const otherSuffix = otherCount > 0
+                ? ` ${otherCount} additional match${otherCount === 1 ? "" : "es"} omitted — re-call searchGlossary with a more specific term to retrieve them.`
+                : "";
               return toEnvelopeResult(
                 envelope(
                   "ambiguous_term",
-                  `Glossary term "${ambiguous.term}" is ambiguous — ask the user which mapping they meant.${mappings}`,
+                  `Glossary term "${ambiguous.term}" is ambiguous — ask the user which mapping they meant.${mappings}${otherSuffix}`,
                   {
                     hint: "Surface possible_mappings to the user and ask which they meant; do not silently pick a mapping.",
                   },
@@ -336,7 +347,21 @@ export function registerSemanticTools(
             )) as Record<string, unknown>;
 
             if (result.success === false) {
-              const rawError = String(result.error ?? "Metric execution failed.");
+              // Approval-required is a governance outcome, not a failure —
+              // surface the approval_request_id + message intact so the
+              // agent doesn't retry and silently duplicate the request.
+              // Mirrors the same branch in tools.ts:executeSQL.
+              if (result.approval_required === true) {
+                return toJsonContent({
+                  id: metric.id,
+                  approval_required: true,
+                  approval_request_id: result.approval_request_id,
+                  matched_rules: result.matched_rules,
+                  message: result.message,
+                });
+              }
+
+              const rawError = String(result.error ?? result.message ?? "Metric execution failed.");
               const code = classifyExecuteSqlError(rawError);
               const extras: { request_id?: string; retry_after?: number } = {};
               if (code === "internal_error") extras.request_id = requestId;

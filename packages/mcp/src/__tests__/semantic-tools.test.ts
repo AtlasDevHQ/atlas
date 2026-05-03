@@ -160,9 +160,9 @@ describe("MCP semantic tools", () => {
 
     expect(map.get("listEntities")).toContain("Error contract");
     expect(map.get("describeEntity")).toContain("`unknown_entity`");
-    // The disambiguation contract — the eval harness in #2025 expects the
-    // description to advertise `ambiguous_term` so an LLM picks the right
-    // recovery without prior training.
+    // The disambiguation contract — the description must advertise
+    // `ambiguous_term` so an LLM picks the right recovery from the tool
+    // surface (the forthcoming #2025 eval harness will rely on this).
     expect(map.get("searchGlossary")).toContain("`ambiguous_term`");
     expect(map.get("runMetric")).toContain("`unknown_metric`");
     expect(map.get("runMetric")).toContain("`validation_failed`");
@@ -201,6 +201,7 @@ describe("MCP semantic tools", () => {
     const envelope = parseAtlasMcpToolError(getContentText(result.content));
     expect(envelope!.code).toBe("internal_error");
     expect(envelope!.message).toContain("yaml parse failed");
+    expect(envelope!.request_id).toMatch(/^mcp-describeEntity-/);
   });
 
   it("searchGlossary returns an internal_error envelope when the lookup throws", async () => {
@@ -218,6 +219,7 @@ describe("MCP semantic tools", () => {
     const envelope = parseAtlasMcpToolError(getContentText(result.content));
     expect(envelope!.code).toBe("internal_error");
     expect(envelope!.message).toContain("glossary index corrupt");
+    expect(envelope!.request_id).toMatch(/^mcp-searchGlossary-/);
   });
 
   // --- listEntities ---
@@ -283,9 +285,10 @@ describe("MCP semantic tools", () => {
       name: "searchGlossary",
       arguments: { term: "status" },
     });
-    // #2030 + #2025: the disambiguation contract — the eval harness
-    // asserts on `code === "ambiguous_term"`. The hint must point the
-    // agent at possible_mappings rather than letting it silently pick.
+    // #2030: the disambiguation contract — the envelope must use
+    // `code === "ambiguous_term"` so the forthcoming #2025 eval harness
+    // can branch on it. The hint must point the agent at
+    // possible_mappings rather than letting it silently pick.
     expect(result.isError).toBe(true);
     const envelope = parseAtlasMcpToolError(getContentText(result.content));
     expect(envelope).not.toBeNull();
@@ -293,6 +296,51 @@ describe("MCP semantic tools", () => {
     expect(envelope!.message).toContain("orders.status");
     expect(envelope!.message).toContain("users.status");
     expect(envelope!.hint).toContain("possible_mappings");
+  });
+
+  it("searchGlossary ambiguous envelope mentions sibling matches that were dropped", async () => {
+    // The ambiguous override replaces the whole match list with a single
+    // envelope — agents would otherwise lose the sibling defined terms
+    // silently. The message must tell the agent additional matches exist
+    // so it can re-call with a more specific term to recover them.
+    mockSearchGlossary.mockImplementationOnce(() => [
+      {
+        term: "status",
+        status: "ambiguous",
+        definition: null,
+        note: null,
+        possible_mappings: ["orders.status"],
+        source: "default",
+      },
+      {
+        term: "revenue",
+        status: "defined",
+        definition: "Sum of paid invoices.",
+        note: null,
+        possible_mappings: [],
+        source: "default",
+      },
+      {
+        term: "lifetime_value",
+        status: "defined",
+        definition: "Sum of paid invoices per customer.",
+        note: null,
+        possible_mappings: [],
+        source: "default",
+      },
+    ]);
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "searchGlossary",
+      arguments: { term: "anything" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("ambiguous_term");
+    expect(envelope!.message).toMatch(/2 additional matches omitted/);
+    expect(envelope!.message).toContain("re-call searchGlossary");
   });
 
   it("searchGlossary returns prose JSON (not an envelope) for a defined term", async () => {
@@ -447,10 +495,12 @@ describe("MCP semantic tools", () => {
     expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
   });
 
-  it("runMetric surfaces RLS rejections from executeSQL as rls_denied", async () => {
+  // The runMetric tests below feed REAL upstream messages (not synthetic
+  // stand-ins) so envelope-regex drift surfaces here, not in production.
+  it("runMetric surfaces real RLS rejections (`Row-level security ...`) as rls_denied", async () => {
     mockExecuteSQLExecute.mockImplementationOnce(async () => ({
       success: false,
-      error: "RLS check failed: user has no claim for orders.org_id",
+      error: "Row-level security is enabled but not fully configured. Contact your administrator.",
     }));
 
     const { client } = await createTestClient();
@@ -462,7 +512,7 @@ describe("MCP semantic tools", () => {
     expect(result.isError).toBe(true);
     const envelope = parseAtlasMcpToolError(getContentText(result.content));
     expect(envelope!.code).toBe("rls_denied");
-    expect(envelope!.message).toContain("RLS check failed");
+    expect(envelope!.message).toContain("Row-level security");
   });
 
   it("runMetric maps a statement timeout to query_timeout", async () => {
@@ -481,10 +531,10 @@ describe("MCP semantic tools", () => {
     expect(envelope!.code).toBe("query_timeout");
   });
 
-  it("runMetric maps a SQL guard rejection to validation_failed", async () => {
+  it("runMetric maps a real SQL guard rejection to validation_failed", async () => {
     mockExecuteSQLExecute.mockImplementationOnce(async () => ({
       success: false,
-      error: "Forbidden SQL operation detected",
+      error: "Forbidden SQL operation detected: drop\\s+table",
     }));
 
     const { client } = await createTestClient();
@@ -497,10 +547,10 @@ describe("MCP semantic tools", () => {
     expect(envelope!.code).toBe("validation_failed");
   });
 
-  it("runMetric maps a rate-limit rejection to rate_limited and forwards retry_after", async () => {
+  it("runMetric maps the real `QPM limit reached` message to rate_limited and forwards retry_after", async () => {
     mockExecuteSQLExecute.mockImplementationOnce(async () => ({
       success: false,
-      error: "Rate limit exceeded for source default",
+      error: 'Source "default" QPM limit reached (60/min)',
       retryAfterMs: 8_000,
     }));
 
@@ -515,10 +565,35 @@ describe("MCP semantic tools", () => {
     expect(envelope!.retry_after).toBe(8);
   });
 
+  it("runMetric approval-required: surfaces approval_request_id intact, NOT as an error envelope", async () => {
+    // Same governance contract as executeSQL — approval-required must not
+    // be demoted to internal_error or the agent will retry and silently
+    // duplicate the approval request.
+    mockExecuteSQLExecute.mockImplementationOnce(async () => ({
+      success: false,
+      approval_required: true,
+      approval_request_id: "appr_xyz",
+      matched_rules: ["pii-tables"],
+      message: 'This query requires approval before execution. Rule: "pii-tables". An approval request has been submitted (ID: appr_xyz).',
+    }));
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      arguments: { id: "orders_count" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.approval_required).toBe(true);
+    expect(parsed.approval_request_id).toBe("appr_xyz");
+    expect(parsed.message).toContain("appr_xyz");
+  });
+
   it("runMetric falls back to internal_error on opaque executeSQL failures", async () => {
     mockExecuteSQLExecute.mockImplementationOnce(async () => ({
       success: false,
-      error: "Approval system unavailable — query blocked.",
+      error: "Some completely unknown failure mode the regex catalog doesn't recognize",
     }));
 
     const { client } = await createTestClient();

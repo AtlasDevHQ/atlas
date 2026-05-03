@@ -151,13 +151,40 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
               { toolCallId: "mcp-executeSQL", messages: [] },
             );
 
-            // executeSQL collapses 7+ tagged pipeline errors into
-            // { success: false, error } in pipelineErrorToResponse. Lift the
-            // string back up into a typed envelope here (see #2030 follow-
-            // up note in error-envelope.ts about replumbing tagged errors).
+            // executeSQL collapses every PipelineError (8 tagged variants
+            // today: see sql.ts:PipelineError) into { success: false, error }
+            // in pipelineErrorToResponse. Lift the string back up into a
+            // typed envelope here.
             const obj = result as Record<string, unknown>;
             if (obj.success === false) {
-              const rawError = String(obj.error ?? "");
+              // Approval-required is NOT a tool failure — it's a governance
+              // outcome that already produced an approval_request_id the
+              // user must follow up on. Surfacing it as `internal_error`
+              // would (a) lose the request id and matched rule names, and
+              // (b) prompt the agent to retry, which silently re-creates
+              // duplicate approval requests. Pass it through as a non-error
+              // JSON body so the agent + user see the full payload.
+              if (obj.approval_required === true) {
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: JSON.stringify(
+                        {
+                          approval_required: true,
+                          approval_request_id: obj.approval_request_id,
+                          matched_rules: obj.matched_rules,
+                          message: obj.message,
+                        },
+                        null,
+                        2,
+                      ),
+                    },
+                  ],
+                };
+              }
+
+              const rawError = String(obj.error ?? obj.message ?? "");
               const code = classifyExecuteSqlError(rawError);
               const extras: { request_id?: string; retry_after?: number } = {};
               if (code === "internal_error") extras.request_id = requestId;

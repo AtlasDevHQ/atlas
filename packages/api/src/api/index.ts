@@ -123,48 +123,18 @@ app.use("/api/*", async (c, next) => {
 // Default "*" is fine for API key / BYOT auth (header-based).
 // Managed auth (cookies) needs explicit origin + credentials — see docs/hono-extraction-design.md.
 //
-// The origin is read per-request from the settings cache so admin changes
-// take effect without a server restart.
-const bootCorsOrigin = process.env.ATLAS_CORS_ORIGIN;
-let corsSettingsWarnLogged = false;
-
-function resolveCorsOrigin(): string {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency at module load
-    const { getSettingAuto } = require("@atlas/api/lib/settings") as {
-      getSettingAuto: (key: string) => string | undefined;
-    };
-    return getSettingAuto("ATLAS_CORS_ORIGIN") ?? bootCorsOrigin ?? "*";
-  } catch (err) {
-    if (!corsSettingsWarnLogged) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        "CORS: failed to read live setting — falling back to boot-time origin",
-      );
-      corsSettingsWarnLogged = true;
-    }
-    return bootCorsOrigin ?? "*";
-  }
-}
+// The origin is read per-request from the settings cache (via the
+// corsResponseHeaders helper) so admin changes take effect without a server
+// restart. The same helper is reused by streaming-response paths (demo chat,
+// main chat) that bypass this middleware via `throw HTTPException` — see
+// `packages/api/src/lib/cors.ts`.
+import { corsResponseHeaders } from "@atlas/api/lib/cors";
 
 app.use("/api/*", async (c, next) => {
   const requestOrigin = c.req.header("Origin") ?? "";
-  const configuredOrigin = resolveCorsOrigin();
-  const isWildcard = configuredOrigin === "*";
-  const isMatch = isWildcard || configuredOrigin === requestOrigin;
-
-  // Set CORS headers dynamically
-  if (isWildcard) {
-    c.header("Access-Control-Allow-Origin", "*");
-    // credentials must NOT be set with wildcard origin per CORS spec
-  } else if (isMatch) {
-    c.header("Access-Control-Allow-Origin", requestOrigin);
-    c.header("Access-Control-Allow-Credentials", "true");
+  for (const [name, value] of Object.entries(corsResponseHeaders(requestOrigin))) {
+    c.header(name, value);
   }
-  // Non-matching origin: no CORS headers set — browser will reject
-
-  c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  c.header("Access-Control-Expose-Headers", "Retry-After, x-conversation-id");
 
   // Handle preflight
   if (c.req.method === "OPTIONS") {

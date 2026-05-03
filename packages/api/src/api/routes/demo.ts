@@ -35,6 +35,7 @@ import {
   persistAssistantSteps,
 } from "@atlas/api/lib/conversations";
 import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
+import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import {
   signDemoToken,
   verifyDemoToken,
@@ -524,11 +525,16 @@ demo.openapi(demoChatRoute, async (c) => {
           },
         });
 
+        // Streaming responses bypass Hono's CORS middleware (we throw a raw
+        // Response via HTTPException so OpenAPIHono's onError returns it
+        // unchanged). Re-apply the CORS headers here so cross-origin
+        // browser fetches receive Access-Control-Allow-Origin. (#2037)
         const streamResponse = createUIMessageStreamResponse({
           stream,
           headers: {
             "X-Accel-Buffering": "no",
             "Cache-Control": "no-cache, no-transform",
+            ...corsResponseHeaders(c.req.header("Origin") ?? ""),
             ...(conversationId ? { "x-conversation-id": conversationId } : {}),
           },
         });

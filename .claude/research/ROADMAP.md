@@ -142,12 +142,14 @@ Tracker: [milestone #40](https://github.com/AtlasDevHQ/atlas/milestones/40). Lea
 - [x] Typed semantic-layer MCP tools + version sync — `listEntities` / `describeEntity` / `listMetrics` / `runMetric` exposed; server version tracks `package.json` (#2019 + #2020, PR #2031)
 - [x] Scaffolder rename — `bun create atlas-agent` / `bun create atlas-plugin` reads as English; old `@useatlas/create*` deprecated with redirect (PR #2033)
 - [ ] Hosted MCP endpoint at `mcp.useatlas.dev` with SaaS auth (#2024, #2028)
-- [ ] OTel coverage for MCP tool calls — activation + tool-call counters (#2029)
-- [ ] Structured error envelope for typed MCP tools so agents can recover gracefully (#2030)
+- [x] OTel coverage for MCP tool calls — activation + tool-call counters (#2029, PR #2035)
+- [x] Structured error envelope for typed MCP tools so agents can recover gracefully (#2030, PR #2034)
 - [ ] List Atlas in MCP registries (mcp.so + others) before close (#2027)
 - [ ] Lead README, docs homepage, and landing with MCP + the YAML-first story (#2026)
 - [ ] Canonical-question eval harness for the demo dataset (#2025)
-- [x] Consolidate canonical demo dataset across landing, docs, scaffolder (#2021) — three seeds (`simple` / `cybersec` / `ecommerce`) collapsed to one canonical seed (NovaMart e-commerce); repo-root `semantic/` now mirrors ecommerce; `--seed` flag and the `--demo cybersec|simple` picker removed; web onboarding wizard dropped its three-card picker; demo.useatlas.dev seed switched from cybersec to ecommerce; `eval/cases/` simplified to ecommerce-only; canonical question set locked for #2025 + #2026
+- [x] Consolidate canonical demo dataset across landing, docs, scaffolder (#2021, PR #2036) — three seeds collapsed to one canonical NovaMart ecommerce seed; multi-seed picker reverted; canonical question set locked for #2025/#2026.
+- [x] Streaming chat CORS fix (PR #2037) — surfaced by the post-#2021 demo smoke; same latent bug existed for cross-origin embedders of `@useatlas/react`.
+- [x] CI un-stuck — partial `mock.module(@atlas/api/lib/config)` in @atlas/mcp tests was breaking `bun test`'s in-process runner across files (PR #2038).
 
 Backlog (not committed for 1.4.0): `/agent-mode` view (#2022), `runbooks-context` plugin (#2023).
 

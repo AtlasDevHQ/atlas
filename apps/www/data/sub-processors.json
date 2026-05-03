@@ -1,0 +1,51 @@
+[
+  {
+    "name": "Railway",
+    "purpose": "Cloud infrastructure (compute, storage, Postgres)",
+    "region": "Customer’s selected region — United States (Virginia), Europe (Netherlands), or Asia Pacific (Singapore)",
+    "since": "2026-01",
+    "changed_at": "2026-01-15"
+  },
+  {
+    "name": "Stripe",
+    "purpose": "Payment processing",
+    "region": "United States",
+    "since": "2026-01",
+    "changed_at": "2026-01-15"
+  },
+  {
+    "name": "Vercel",
+    "purpose": "AI Gateway — routes hosted model requests to upstream providers",
+    "region": "United States",
+    "since": "2026-01",
+    "changed_at": "2026-01-15"
+  },
+  {
+    "name": "Anthropic",
+    "purpose": "Upstream hosted model inference (default; reached via Vercel AI Gateway)",
+    "region": "United States",
+    "since": "2026-01",
+    "changed_at": "2026-01-15"
+  },
+  {
+    "name": "OpenAI",
+    "purpose": "Upstream hosted model inference (opt-in; reached via Vercel AI Gateway)",
+    "region": "United States",
+    "since": "2026-01",
+    "changed_at": "2026-01-15"
+  },
+  {
+    "name": "Resend",
+    "purpose": "Transactional email (receipts, alerts, invitations)",
+    "region": "United States",
+    "since": "2026-01",
+    "changed_at": "2026-01-15"
+  },
+  {
+    "name": "OpenStatus",
+    "purpose": "External uptime monitoring + status page",
+    "region": "European Union",
+    "since": "2026-01",
+    "changed_at": "2026-01-15"
+  }
+]

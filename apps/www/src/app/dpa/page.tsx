@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import SUBPROCESSORS from "../../../data/sub-processors.json";
 import { Footer } from "../../components/footer";
 import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/legal";
 import { Nav } from "../../components/nav";
@@ -19,58 +20,6 @@ export const metadata: Metadata = {
     type: "website",
   },
 };
-
-interface SubProcessor {
-  name: string;
-  purpose: string;
-  region: string;
-  since: string;
-}
-
-const SUBPROCESSORS: SubProcessor[] = [
-  {
-    name: "Railway",
-    purpose: "Cloud infrastructure (compute, storage, Postgres)",
-    region: "Customer’s selected region — United States (Virginia), Europe (Netherlands), or Asia Pacific (Singapore)",
-    since: "2026-01",
-  },
-  {
-    name: "Stripe",
-    purpose: "Payment processing",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "Vercel",
-    purpose: "AI Gateway — routes hosted model requests to upstream providers",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "Anthropic",
-    purpose: "Upstream hosted model inference (default; reached via Vercel AI Gateway)",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "OpenAI",
-    purpose: "Upstream hosted model inference (opt-in; reached via Vercel AI Gateway)",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "Resend",
-    purpose: "Transactional email (receipts, alerts, invitations)",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "OpenStatus",
-    purpose: "External uptime monitoring + status page",
-    region: "European Union",
-    since: "2026-01",
-  },
-];
 
 const SECTIONS: LegalSectionData[] = [
   {

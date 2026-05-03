@@ -30,7 +30,7 @@ Closes the Lighthouse half of #1945. The `/demo` Bucket 6 design pass (#1942) sh
 ## Findings worth tracking
 
 1. **Mobile LCP is the weakest link.** 4.07 s on Moto-G-Power-class hardware is well above the 2.5 s "good" threshold. The cold surface has no images and no third-party scripts, so this is JS execution: hydrating React + Tailwind + the page module on a 4× CPU-throttled, 1.6 Mbps-throttled profile. Worth keeping an eye on; not actionable as part of this baseline.
-2. **Active state regresses Accessibility from 100 → 96.** Single audit failing: `color-contrast` on the demo banner's "Sign up to connect your data" link (`packages/web/src/app/demo/page.tsx:312` — `text-primary` against the `bg-muted/40` banner). Filed as #2010; not fixed inline per the bug-pass discipline.
+2. **Active state regresses Accessibility from 100 → 96.** Single audit failing: `color-contrast` on the "Sign up to connect your data" link in the demo banner (`text-primary` against the `bg-muted/40` banner background, in `packages/web/src/app/demo/page.tsx`). Filed as #2010; not fixed inline per the bug-pass discipline.
 3. **CLS is 0 across all runs** — the `#1942` two-column hero holds layout cleanly, including the email form's mobile stack.
 4. **TBT is effectively zero on desktop and ~90 ms on mobile** — well within budget. The active state didn't regress TBT meaningfully because `<AtlasChat>` mounts with an empty conversation list (no message rendering work).
 
@@ -50,8 +50,8 @@ Filed as #2009.
 
 - **Build target.** `bun run build` against `packages/web` (Next.js 15 production build, server-rendered `/demo` is `○ (Static)` per the build manifest), served via `next start` on `:3000`. The Hono API ran via `bun run --hot packages/api/src/api/server.ts` on `:3001` to back `POST /api/v1/demo/start` for the active runs.
 - **Lighthouse.** v13.2.0, run via the `startFlow` user-flow API so `evaluateOnNewDocument` could pre-seed `sessionStorage` on the same Puppeteer page Lighthouse audited. Standard Lighthouse `lighthouse(url, …)` opens its own tab, which doesn't share `sessionStorage` with a pre-seeded tab — that mistake hid the active state on the first run and is documented in the runner script comments.
-- **Browser.** Google Chrome 146.0.7680.164 (Linux x64), `--headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu`.
-- **Throttling presets.** Lighthouse defaults: desktop = 10 Mbps / 40 ms RTT / 1× CPU; mobile = 1.6 Mbps / 150 ms RTT / 4× CPU (Moto G Power-class profile).
+- **Browser.** Google Chrome 146.0.7680.164 (Linux x64), `--headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu`. The exact build is a snapshot of what was on the host on 2026-05-02 — don't update it piecemeal; re-run the full baseline if the host meaningfully changes.
+- **Throttling presets.** Lighthouse defaults at the time of measurement: desktop = 10 Mbps / 40 ms RTT / 1× CPU; mobile = 1.6 Mbps / 150 ms RTT / 4× CPU. Lighthouse documents the mobile profile as a Moto-G-class device and has renamed it before (Moto G4 → Moto G Power) — the throttling numbers are the durable facts here, not the device name.
 - **Active-state caveat.** With `ATLAS_PROVIDER` / `ANTHROPIC_API_KEY` unset locally, the chat surface mounts but no agent turn was produced. The active baseline therefore covers "post-gate, empty conversation surface" — the moment immediately after a user submits their email. A "post-first-turn" measurement would need either a configured LLM or a stubbed chat endpoint and is not part of this baseline.
 - **Host machine caveat.** Run on a WSL2 box, not a CI runner. Numbers shouldn't be compared 1:1 against the eventual CI budget — the relative shape (desktop ≫ mobile, active ≈ cold for this surface) is what's load-bearing here. Re-run when standing up the CI workflow to set the actual thresholds.
 

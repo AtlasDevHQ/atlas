@@ -1,7 +1,7 @@
 /**
  * E2E: Scaffold tests (Phase 6).
  *
- * Tests the full @useatlas/create scaffolding flow in isolated temp
+ * Tests the full create-atlas-agent scaffolding flow in isolated temp
  * directories. No Docker services or secrets needed.
  *
  * Issue: https://github.com/AtlasDevHQ/atlas/issues/225

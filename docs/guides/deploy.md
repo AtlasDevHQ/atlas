@@ -28,7 +28,7 @@ Go from zero to production with managed Postgres included.
 1. **Scaffold your project:**
 
 ```bash
-bun create @useatlas my-app
+bun create atlas-agent my-app
 cd my-app
 ```
 
@@ -268,7 +268,7 @@ Atlas provides a Next.js standalone example that embeds the Hono API via a catch
 ### Scaffold a new project
 
 ```bash
-bun create @useatlas my-app --platform vercel
+bun create atlas-agent my-app --platform vercel
 cd my-app
 ```
 

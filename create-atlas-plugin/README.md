@@ -1,11 +1,11 @@
-# @useatlas/create-plugin
+# create-atlas-plugin
 
 Scaffold a new Atlas plugin project.
 
 ## Usage
 
 ```bash
-bun create @useatlas/plugin my-plugin
+bun create atlas-plugin my-plugin
 ```
 
 ### Options
@@ -21,16 +21,16 @@ bun create @useatlas/plugin my-plugin
 
 ```bash
 # Interactive setup
-bun create @useatlas/plugin my-datasource
+bun create atlas-plugin my-datasource
 
 # Quick scaffold with defaults
-bun create @useatlas/plugin my-plugin --defaults
+bun create atlas-plugin my-plugin --defaults
 
 # Specific plugin type
-bun create @useatlas/plugin my-context --type context
+bun create atlas-plugin my-context --type context
 
 # Custom scope
-bun create @useatlas/plugin my-plugin --scope @myorg --type action
+bun create atlas-plugin my-plugin --scope @myorg --type action
 ```
 
 ## Generated Files

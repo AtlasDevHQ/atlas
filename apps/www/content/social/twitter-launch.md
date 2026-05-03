@@ -64,7 +64,7 @@ What ships in 1.0:
 
 Deploy anywhere:
 
-- `bun create @useatlas my-app` for local dev
+- `bun create atlas-agent my-app` for local dev
 - Docker, Railway, or Vercel for production
 - Atlas Cloud (app.useatlas.dev) if you don't want infrastructure
 

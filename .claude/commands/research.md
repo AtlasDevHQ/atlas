@@ -51,7 +51,7 @@ You are researching the Atlas codebase to answer a question or plan a change.
 | SDK client | `packages/sdk/src/client.ts` — createAtlasClient() |
 | Plugin SDK | `packages/plugin-sdk/src/types.ts` + `helpers.ts` — definePlugin, createPlugin |
 | Plugins | `plugins/` — 15 reference plugins (datasource, context, interaction, action, sandbox) |
-| Scaffolding | `create-atlas/index.ts` — bun create @useatlas my-app |
+| Scaffolding | `create-atlas/index.ts` — bun create atlas-agent my-app |
 | Landing page | `apps/www/src/app/page.tsx` — useatlas.dev |
 | Semantic layer | `semantic/` — catalog.yml, glossary.yml, entities/*.yml, metrics/*.yml |
 | Deploy configs | `deploy/` — api, web, www, sidecar Railway configs |

@@ -64,8 +64,8 @@
       },
     },
     "create-atlas-plugin": {
-      "name": "@useatlas/create-plugin",
-      "version": "0.0.4",
+      "name": "create-atlas-plugin",
+      "version": "0.1.1",
       "bin": {
         "create-atlas-plugin": "./index.ts",
       },
@@ -2035,8 +2035,6 @@
 
     "@useatlas/clickhouse": ["@useatlas/clickhouse@workspace:plugins/clickhouse"],
 
-    "@useatlas/create-plugin": ["@useatlas/create-plugin@workspace:create-atlas-plugin"],
-
     "@useatlas/daytona": ["@useatlas/daytona@workspace:plugins/daytona"],
 
     "@useatlas/duckdb": ["@useatlas/duckdb@workspace:plugins/duckdb"],
@@ -2356,6 +2354,8 @@
     "crc-32": ["crc-32@1.2.2", "", { "bin": { "crc32": "bin/crc32.njs" } }, "sha512-ROmzCKrTnOwybPcJApAA6WBWij23HVfGVNKqqrZpuyZOHqK2CwHSvpGuyt/UNNvaIjEd8X5IFGp4Mh+Ie1IHJQ=="],
 
     "crc32-stream": ["crc32-stream@4.0.3", "", { "dependencies": { "crc-32": "^1.2.0", "readable-stream": "^3.4.0" } }, "sha512-NT7w2JVU7DFroFdYkeq8cywxrgjPHWkdX1wjpRQXPX5Asews3tA+Ght6lddQO5Mkumffp3X7GEqku3epj2toIw=="],
+
+    "create-atlas-plugin": ["create-atlas-plugin@workspace:create-atlas-plugin"],
 
     "crelt": ["crelt@1.0.6", "", {}, "sha512-VQ2MBenTq1fWZUH9DJNGti7kKv6EeAuYr3cLwxUWhIu1baTaXh4Ib5W2CqHVqib4/MqbYGJqiL3Zb8GJZr3l4g=="],
 

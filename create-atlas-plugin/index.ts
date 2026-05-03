@@ -60,7 +60,7 @@ if (scopeArgIdx !== -1) {
 // Handle --help / -h
 if (args.includes("--help") || args.includes("-h")) {
   console.log(`
-  Usage: bun create @useatlas/plugin [plugin-name] [options]
+  Usage: bun create atlas-plugin [plugin-name] [options]
 
   Options:
     --type <type>       Plugin type (${PLUGIN_TYPES.join(", ")}) [default: datasource]
@@ -69,9 +69,9 @@ if (args.includes("--help") || args.includes("-h")) {
     --help, -h          Show this help message
 
   Examples:
-    bun create @useatlas/plugin my-plugin
-    bun create @useatlas/plugin my-plugin --type context
-    bun create @useatlas/plugin my-plugin --defaults
+    bun create atlas-plugin my-plugin
+    bun create atlas-plugin my-plugin --type context
+    bun create atlas-plugin my-plugin --defaults
 `);
   process.exit(0);
 }
@@ -721,7 +721,7 @@ function toPascalCase(str: string): string {
 async function main() {
   console.log("");
   p.intro(
-    `${pc.bgCyan(pc.black(" @useatlas/create-plugin "))} ${pc.dim(`v${VERSION}`)}`
+    `${pc.bgCyan(pc.black(" create-atlas-plugin "))} ${pc.dim(`v${VERSION}`)}`
   );
 
   // ── 1. Plugin name ─────────────────────────────────────────────────

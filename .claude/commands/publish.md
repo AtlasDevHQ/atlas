@@ -104,8 +104,8 @@ done
 | Package | Tag pattern | Example |
 |---------|------------|---------|
 | `@useatlas/types` | `types-v*` | `types-v0.0.2` |
-| `@useatlas/create` | `create-v*` | `create-v0.0.7` |
-| `@useatlas/create-plugin` | `create-plugin-v*` | `create-plugin-v0.0.5` |
+| `create-atlas-agent` | `atlas-agent-v*` | `atlas-agent-v0.3.3` |
+| `create-atlas-plugin` | `atlas-plugin-v*` | `atlas-plugin-v0.1.1` |
 | `@useatlas/sdk` | `sdk-v*` | `sdk-v0.0.7` |
 | `@useatlas/plugin-sdk` | `plugin-sdk-v*` | `plugin-sdk-v0.0.7` |
 | `@useatlas/react` | `react-v*` | `react-v0.0.2` |

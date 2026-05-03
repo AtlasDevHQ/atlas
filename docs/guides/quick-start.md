@@ -43,7 +43,7 @@ bun run atlas -- init                # Profile DB and generate YAMLs
 bun run dev                          # Start containers + dev servers → http://localhost:3000
 ```
 
-> **New project scaffolding:** `bun create @useatlas my-app` provides interactive setup with template selection, DB config, provider setup, and optional semantic layer generation.
+> **New project scaffolding:** `bun create atlas-agent my-app` provides interactive setup with template selection, DB config, provider setup, and optional semantic layer generation.
 
 ## Ask your first question
 

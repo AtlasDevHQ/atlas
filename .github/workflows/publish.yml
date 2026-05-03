@@ -1,11 +1,11 @@
-name: Publish @useatlas packages
+name: Publish Atlas npm packages
 
 on:
   push:
     tags:
       - 'types-v*'
-      - 'create-v*'
-      - 'create-plugin-v*'
+      - 'atlas-agent-v*'
+      - 'atlas-plugin-v*'
       - 'sdk-v*'
       - 'plugin-sdk-v*'
       - 'react-v*'
@@ -67,12 +67,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/types-v')
         run: cd packages/types && bun run build && npm publish --access public
 
-      - name: Publish @useatlas/create
-        if: startsWith(github.ref, 'refs/tags/create-v')
+      - name: Publish create-atlas-agent
+        if: startsWith(github.ref, 'refs/tags/atlas-agent-v')
         run: cd create-atlas && npm publish --access public
 
-      - name: Publish @useatlas/create-plugin
-        if: startsWith(github.ref, 'refs/tags/create-plugin-v')
+      - name: Publish create-atlas-plugin
+        if: startsWith(github.ref, 'refs/tags/atlas-plugin-v')
         run: cd create-atlas-plugin && npm publish --access public
 
       - name: Build, test, and publish @useatlas/sdk

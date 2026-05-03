@@ -31,7 +31,7 @@ All database connections are read-only. Credentials stay on your infrastructure.
 
 ## Deployment
 
-- **Self-hosted** (free, AGPL-3.0): Docker, Railway, or Vercel. `bun create @useatlas my-app`
+- **Self-hosted** (free, AGPL-3.0): Docker, Railway, or Vercel. `bun create atlas-agent my-app`
 - **Atlas Cloud** (managed): Starter ($29/seat/mo), Pro ($59/seat/mo), and Business ($99/seat/mo) plans at https://app.useatlas.dev — all with 14-day free trial
 
 ## Tech stack

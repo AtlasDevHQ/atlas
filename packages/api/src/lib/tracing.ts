@@ -10,6 +10,7 @@
  */
 
 import { trace, SpanStatusCode, type Attributes } from "@opentelemetry/api";
+import { Effect, Cause } from "effect";
 
 const tracer = trace.getTracer("atlas");
 
@@ -53,4 +54,49 @@ export async function withSpan<T>(
       span.end();
     }
   });
+}
+
+/**
+ * Effect-aware variant of `withSpan`. Wraps an Effect in an OTel span
+ * without crossing the Promise boundary, so typed errors stay typed.
+ *
+ * Use this from Effect chains (scheduler, plugin lifecycle) where the inner
+ * computation is `Effect.Effect<A, E, R>`. For Promise-based code, prefer
+ * `withSpan` above.
+ */
+export function withEffectSpan<A, E, R>(
+  name: string,
+  attributes: Attributes,
+  effect: Effect.Effect<A, E, R>,
+  setResultAttributes?: (result: A) => Attributes,
+): Effect.Effect<A, E, R> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => tracer.startSpan(name, { attributes })),
+    (span) =>
+      effect.pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            if (setResultAttributes) {
+              try {
+                const attrs = setResultAttributes(result);
+                if (attrs) span.setAttributes(attrs);
+              } catch {
+                // Callback bug must not invalidate a successful operation.
+              }
+            }
+            span.setStatus({ code: SpanStatusCode.OK });
+          }),
+        ),
+        Effect.tapErrorCause((cause) =>
+          Effect.sync(() => {
+            const message = Cause.pretty(cause);
+            span.setStatus({ code: SpanStatusCode.ERROR, message });
+            const failure = Cause.failureOption(cause);
+            const err = failure._tag === "Some" ? failure.value : new Error(message);
+            span.recordException(err instanceof Error ? err : new Error(String(err)));
+          }),
+        ),
+      ),
+    (span) => Effect.sync(() => span.end()),
+  );
 }

@@ -68,6 +68,18 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
+// Capture counter increments to verify the abuse Meter wiring without
+// standing up an in-memory MeterProvider.
+const counterAdds: { value: number; attributes: Record<string, unknown> }[] = [];
+
+mock.module("@atlas/api/lib/metrics", () => ({
+  abuseEscalations: {
+    add: (value: number, attributes: Record<string, unknown>) => {
+      counterAdds.push({ value, attributes });
+    },
+  },
+}));
+
 // --- Import after mocks ---
 
 const {
@@ -89,6 +101,7 @@ describe("Abuse Prevention Engine", () => {
     setInternalDB(false);
     setInternalQuery(async () => []);
     mockInternalExecute.mockClear();
+    counterAdds.length = 0;
   });
 
   describe("getAbuseConfig()", () => {
@@ -199,6 +212,50 @@ describe("Abuse Prevention Engine", () => {
       recordQueryEvent("ws-tables", { success: true, tablesAccessed: tables });
       const status = checkAbuseStatus("ws-tables");
       expect(status.level).toBe("warning");
+    });
+  });
+
+  describe("OTel counter wiring (#1979)", () => {
+    it("increments abuseEscalations counter on every level transition", () => {
+      const config = getAbuseConfig();
+      // Drive through warning → throttled → suspended.
+      for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+        recordQueryEvent("ws-counter", { success: true });
+      }
+      // One increment per transition, never one per query.
+      expect(counterAdds.length).toBe(3);
+      expect(counterAdds[0]).toEqual({
+        value: 1,
+        attributes: { level: "warning", trigger: "query_rate" },
+      });
+      expect(counterAdds[1]).toEqual({
+        value: 1,
+        attributes: { level: "throttled", trigger: "query_rate" },
+      });
+      expect(counterAdds[2]).toEqual({
+        value: 1,
+        attributes: { level: "suspended", trigger: "query_rate" },
+      });
+    });
+
+    it("increments counter on manual reinstate with level=none, trigger=manual", () => {
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-reinstate-counter", { success: true });
+      }
+      counterAdds.length = 0;
+      reinstateWorkspace("ws-reinstate-counter", "admin-1");
+      expect(counterAdds).toEqual([
+        { value: 1, attributes: { level: "none", trigger: "manual" } },
+      ]);
+    });
+
+    it("does not increment counter when threshold isn't crossed", () => {
+      // Small number of healthy queries — never crosses any threshold.
+      for (let i = 0; i < 20; i++) {
+        recordQueryEvent("ws-quiet", { success: true });
+      }
+      expect(counterAdds).toEqual([]);
     });
   });
 

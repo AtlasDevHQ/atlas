@@ -14,6 +14,7 @@
 
 import { Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withSpan } from "@atlas/api/lib/tracing";
 import {
   getTasksDueForExecution,
   lockTaskForExecution,
@@ -123,7 +124,13 @@ function executeAndDeliverEffect(
 
     // Execute + deliver, with an interrupt finalizer to avoid orphaned run records
     const execResult = yield* Effect.tryPromise({
-      try: () => executeScheduledTask(taskId, runId, timeoutMs),
+      try: () =>
+        withSpan(
+          "atlas.scheduler.task.run",
+          { "atlas.task_id": taskId, "atlas.run_id": runId },
+          () => executeScheduledTask(taskId, runId, timeoutMs),
+          (r) => ({ "atlas.tokens_used": r.tokensUsed, "atlas.delivery_attempted": r.deliveryAttempted }),
+        ),
       catch: (err) => (err instanceof Error ? err.message : String(err)),
     }).pipe(
       Effect.catchAll((errMsg) => {
@@ -296,8 +303,27 @@ function createScheduler(): Scheduler {
 
       const semaphore = Effect.unsafeMakeSemaphore(cfg.maxConcurrentTasks);
 
+      const tickWithSpan = Effect.tryPromise({
+        try: () =>
+          withSpan(
+            "atlas.scheduler.tick",
+            {},
+            () =>
+              Effect.runPromise(
+                tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
+              ),
+            (r) => ({
+              "atlas.tasks_found": r.tasksFound,
+              "atlas.tasks_dispatched": r.tasksDispatched,
+              "atlas.tasks_completed": r.tasksCompleted,
+              "atlas.tasks_failed": r.tasksFailed,
+            }),
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
       // Build the repeating tick program
-      const program = tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout).pipe(
+      const program = tickWithSpan.pipe(
         Effect.catchAllCause((cause) => {
           log.error({ err: String(cause) }, "Scheduler tick crashed");
           return Effect.void;
@@ -401,8 +427,19 @@ export interface TickResult {
 export async function runTick(): Promise<TickResult> {
   const cfg = getSchedulerConfig();
   const semaphore = Effect.unsafeMakeSemaphore(cfg.maxConcurrentTasks);
-  return Effect.runPromise(
-    tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
+  return withSpan(
+    "atlas.scheduler.tick",
+    {},
+    () =>
+      Effect.runPromise(
+        tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
+      ),
+    (r) => ({
+      "atlas.tasks_found": r.tasksFound,
+      "atlas.tasks_dispatched": r.tasksDispatched,
+      "atlas.tasks_completed": r.tasksCompleted,
+      "atlas.tasks_failed": r.tasksFailed,
+    }),
   );
 }
 

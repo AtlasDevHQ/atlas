@@ -49,8 +49,24 @@ HTTP Request (http.request)
 | `atlas.sql.execute` | `db.system`, `atlas.connection_id`, `atlas.row_count`, `atlas.column_count` | SQL query execution. SQL content is **not** included for security |
 | `atlas.explore` | `atlas.command` (truncated), `atlas.backend` | Semantic layer file exploration (ls, cat, grep, find) |
 | `atlas.python.execute` | `code.length` | Python code execution in sandbox |
+| `atlas.scheduler.tick` | `atlas.tasks_found`, `atlas.tasks_dispatched`, `atlas.tasks_completed`, `atlas.tasks_failed` | One per scheduler tick — root span when a scheduled task fires (no enclosing HTTP request) |
+| `atlas.scheduler.task.run` | `atlas.task_id`, `atlas.run_id`, `atlas.tokens_used`, `atlas.delivery_attempted` | Per-task execution under a tick |
+| `atlas.scheduler.delivery` | `atlas.task_id`, `atlas.channel` | Per-recipient delivery (email/slack/webhook). Retries reuse the same span name so each attempt is visible |
+| `atlas.plugin.init` | `atlas.plugin_id` | Plugin `initialize()` call — typically the slow path at boot |
+| `atlas.plugin.teardown` | `atlas.plugin_id` | Plugin `teardown()` call during graceful shutdown |
+| `atlas.plugin.healthCheckAll` | `atlas.plugin_count` | One span per `/health` plugins check (covers all probes) |
 
 Each span records success/failure status and captures exceptions on error, making it straightforward to trace agent step failures back to specific tool calls.
+
+### Metrics
+
+Atlas also publishes a small set of OTel metrics through the `@atlas/api` Meter for time-series the trace waterfall doesn't naturally cover:
+
+| Metric Name | Type | Attributes | Description |
+|-------------|------|------------|-------------|
+| `atlas.abuse.escalations` | Counter | `level` (`warning` / `throttled` / `suspended` / `none`), `trigger` (`query_rate` / `error_rate` / `unique_tables` / `manual`) | Incremented on every workspace abuse-level transition, including manual reinstate (`level=none`, `trigger=manual`) |
+
+Counters use `@opentelemetry/api` and are no-ops until a `MeterProvider` is registered — wire one through your OTel collector configuration to feed dashboards and alerting.
 
 ### Collector Setup
 

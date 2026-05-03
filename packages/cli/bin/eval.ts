@@ -137,7 +137,9 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
         tags: doc.tags ?? [],
         gold_sql: doc.gold_sql.trim(),
         skip: doc.skip,
-        expected_rows: doc.expected_rows,
+        // YAML `expected_rows: null` is the unscored sentinel — collapse to
+        // undefined so EvalCase.expected_rows stays `number | undefined`.
+        expected_rows: doc.expected_rows ?? undefined,
         notes: doc.notes,
       });
     }
@@ -149,6 +151,11 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
 /**
  * Shape of a YAML eval case after validation. Used as the `asserts` target
  * of `validateCase` so the loader doesn't need `as` casts on every field.
+ *
+ * `expected_rows` accepts `null` because YAML fixtures (`eval/cases/...`)
+ * frequently use it as a "not yet pinned" sentinel; the consuming type
+ * `EvalCase.expected_rows` is `number | undefined`, and `null` collapses
+ * to `undefined` at the loader push site.
  */
 type ValidatedCase = {
   id: string;
@@ -159,7 +166,7 @@ type ValidatedCase = {
   gold_sql: string;
   tags?: string[];
   skip?: boolean;
-  expected_rows?: number;
+  expected_rows?: number | null;
   notes?: string;
 };
 
@@ -208,8 +215,14 @@ export function validateCase(
     throw new Error(`Invalid skip in ${filePath}: must be a boolean`);
   }
 
-  if (doc.expected_rows !== undefined && typeof doc.expected_rows !== "number") {
-    throw new Error(`Invalid expected_rows in ${filePath}: must be a number`);
+  if (
+    doc.expected_rows !== undefined &&
+    doc.expected_rows !== null &&
+    typeof doc.expected_rows !== "number"
+  ) {
+    // YAML fixtures use `expected_rows: null` as a "not yet pinned" sentinel;
+    // null is allowed and collapses to undefined at the loader push site.
+    throw new Error(`Invalid expected_rows in ${filePath}: must be a number or null`);
   }
 
   if (doc.notes !== undefined && typeof doc.notes !== "string") {

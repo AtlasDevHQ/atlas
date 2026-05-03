@@ -114,6 +114,64 @@ describe("validateCase", () => {
       ),
     ).not.toThrow();
   });
+
+  // The five typeof checks below back the `asserts doc is ValidatedCase`
+  // contract — without them the assertion lies and a downstream consumer
+  // could push a non-string `category` (etc.) into the `EvalCase` cache.
+
+  test("rejects non-string category (e.g. YAML numeric)", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: 42, gold_sql: "SELECT 1" } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid category");
+  });
+
+  test("rejects tags that are not a string array", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", tags: [1, 2, 3] } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid tags");
+  });
+
+  test("rejects non-boolean skip", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", skip: "yes" } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid skip");
+  });
+
+  test("rejects non-number, non-null expected_rows", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", expected_rows: "5" } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid expected_rows");
+  });
+
+  test("accepts expected_rows: null (YAML 'unscored' sentinel)", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", expected_rows: null } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).not.toThrow();
+  });
+
+  test("rejects non-string notes", () => {
+    expect(() =>
+      validateCase(
+        { id: "t-001", question: "Q?", schema: "ecommerce", difficulty: "simple", category: "filter", gold_sql: "SELECT 1", notes: 42 } as unknown as Record<string, unknown>,
+        "test.yml",
+      ),
+    ).toThrow("Invalid notes");
+  });
 });
 
 // ---------------------------------------------------------------------------

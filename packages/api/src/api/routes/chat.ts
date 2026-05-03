@@ -17,6 +17,7 @@ import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } 
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
 import { matchError, isRetryableError, isChatErrorCode, type ChatContextWarning } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
+import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
@@ -907,11 +908,17 @@ chat.openapi(chatRoute, async (c) => {
             },
           });
   
+          // Streaming responses bypass Hono's CORS middleware (we throw a raw
+          // Response via HTTPException so OpenAPIHono's onError returns it
+          // unchanged). Re-apply CORS headers here so cross-origin embedders
+          // (e.g. @useatlas/react widget on a different domain) receive
+          // Access-Control-Allow-Origin. (#2037)
           const streamResponse = createUIMessageStreamResponse({
             stream,
             headers: {
               "X-Accel-Buffering": "no",
               "Cache-Control": "no-cache, no-transform",
+              ...corsResponseHeaders(c.req.header("Origin") ?? ""),
               ...(conversationId ? { "x-conversation-id": conversationId } : {}),
             },
           });

@@ -254,6 +254,18 @@ describe("loadEvalCases", () => {
     expect(cases[0].tags).toEqual([]);
   });
 
+  test("loads the real eval/cases/ecommerce/ fixture set without throwing", () => {
+    // Catches the class of regression that bit us in #2021 review-pass 5:
+    // synthetic test fixtures drifted from real `eval/cases/*.yml` shapes
+    // (the strict typeof check on `expected_rows` rejected the YAML null
+    // sentinel). Loading the production fixtures end-to-end pins the
+    // contract between validateCase and the on-disk YAML format.
+    const realCasesDir = path.resolve(__dirname, "../../../../eval/cases");
+    const cases = loadEvalCases(realCasesDir);
+    expect(cases.length).toBeGreaterThan(0);
+    expect(cases.every((c) => c.schema === "ecommerce")).toBe(true);
+  });
+
   test("rejects duplicate case IDs across files", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-test-"));
     const dir = path.join(tmpDir, "ecommerce");

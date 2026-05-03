@@ -644,7 +644,16 @@ const uninstallRoute = createRoute({
   responses: {
     200: {
       description: "Plugin uninstalled",
-      content: { "application/json": { schema: z.object({ deleted: z.boolean() }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            deleted: z.boolean(),
+            // #1987 — count of plugin-owned scheduled_tasks rows removed.
+            // 0 when the plugin had no tasks; absent only on legacy clients.
+            scheduledTasksDeleted: z.number().int().nonnegative().optional(),
+          }),
+        },
+      },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Installation not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -951,6 +960,12 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
          RETURNING id, catalog_id, (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug`,
         [id, orgId],
       ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        // The DELETE rejected before RETURNING resolved, so we don't have
+        // the catalog id here. The audit row carries `installationId` (which
+        // is also `targetId`) so a forensic query by installation still
+        // joins; cross-referencing to a catalog requires looking up
+        // workspace_plugins separately. Compare to the success-path audit
+        // below, which carries both `installationId` and `pluginId`.
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.uninstall,
           targetType: "plugin",
@@ -958,7 +973,7 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
           scope: "workspace",
           status: "failure",
           metadata: {
-            pluginId: id,
+            installationId: id,
             orgId,
             error: err instanceof Error ? err.message : String(err),
           },
@@ -970,22 +985,103 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       }
 
       const deleted = rows[0]!;
+
+      // #1987 — clean up plugin-owned scheduled tasks so the scheduler
+      // doesn't keep firing them after uninstall. Scoped by (plugin_id,
+      // org_id) so we never cross workspaces.
+      //
+      // Cleanup contract (uninstall — see
+      // apps/docs/content/docs/plugins/authoring-guide.mdx#uninstall-contract):
+      //   • scheduled_tasks tagged with this plugin's catalog_id are deleted
+      //     here. scheduled_task_runs cascade via FK on task_id.
+      //   • plugin_<table> rows from the schema-migrate path are RETAINED.
+      //     Reinstalling the plugin should pick up where it left off (cached
+      //     digest history, cursor state, etc.). Operators who need a
+      //     hard-reset use the workspace purge path, not uninstall.
+      //   • Plugin hook subscriptions (beforeQuery, onRequest, …) live in
+      //     the in-process registry only and are not workspace-scoped at
+      //     dispatch time — uninstall does NOT detach them. They become
+      //     inert for this workspace because workspace_plugins lookups now
+      //     return zero rows for the plugin. Process-level teardown runs
+      //     only at server shutdown (see PluginRegistry.teardownAll). No DB
+      //     rows to clean.
+      //   • Webhook subscriptions registered with external platforms (Slack,
+      //     GitHub, Stripe, …) are invisible to Atlas — the plugin author's
+      //     `teardown()` is the only place to unsubscribe, but that runs at
+      //     server shutdown, not on a per-workspace uninstall. Plugin
+      //     authors who need workspace-scoped external cleanup must wire it
+      //     into the route or hook that owns the resource.
+      //
+      // Failure mode: the two DELETEs are deliberately NOT atomic. If this
+      // cleanup rejects after workspace_plugins has already committed, the
+      // catch block below logs a failure audit with `cleanupFailed=true`,
+      // logs a structured log.error (so a stdout-scraping setup catches the
+      // orphan even if the audit-log row drops on internal-DB circuit-open),
+      // and returns 200 — the uninstall semantically succeeded from the
+      // user's perspective. The orphan tasks remain in `scheduled_tasks`
+      // and the scheduler will keep firing them until cleaned manually
+      // (`DELETE FROM scheduled_tasks WHERE plugin_id = $catalog AND org_id = $org`).
+      // We chose best-effort cleanup over a multi-statement transaction
+      // because making the cleanup load-bearing would block uninstall on
+      // internal-DB hiccups and surface partial-failure to admins as a 500.
+      // Audit + log is the operator surface; there is no /health dashboard
+      // signal for orphan-task accumulation today (potential follow-up).
+      let scheduledTasksDeleted: number;
+      try {
+        const taskRows = yield* queryEffect<{ id: string }>(
+          `DELETE FROM scheduled_tasks WHERE plugin_id = $1 AND org_id = $2 RETURNING id`,
+          [deleted.catalog_id, orgId],
+        );
+        scheduledTasksDeleted = taskRows.length;
+      } catch (err) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.uninstall,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            installationId: id,
+            pluginId: deleted.catalog_id,
+            ...(deleted.slug != null && { pluginSlug: deleted.slug }),
+            orgId,
+            cleanupFailed: true,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+        log.error(
+          {
+            orgId,
+            installationId: id,
+            pluginId: deleted.catalog_id,
+            err: err instanceof Error ? err : new Error(String(err)),
+          },
+          "Plugin uninstalled but scheduled-task cleanup failed — orphan tasks may continue firing until purged manually",
+        );
+        return c.json({ deleted: true, scheduledTasksDeleted: 0 }, 200);
+      }
+
       logAdminAction({
         actionType: ADMIN_ACTIONS.plugin.uninstall,
         targetType: "plugin",
         targetId: id,
         scope: "workspace",
         metadata: {
+          installationId: id,
           pluginId: deleted.catalog_id,
           // `!= null` covers both SQL NULL (from the subselect missing the
           // catalog row) and an absent column (defense in depth against
           // driver-shape drift). Aligned with the config_update guard below.
           ...(deleted.slug != null && { pluginSlug: deleted.slug }),
           orgId,
+          ...(scheduledTasksDeleted > 0 && { scheduledTasksDeleted }),
         },
       });
-      log.info({ orgId, installationId: id }, "Plugin uninstalled from workspace");
-      return c.json({ deleted: true }, 200);
+      log.info(
+        { orgId, installationId: id, scheduledTasksDeleted },
+        "Plugin uninstalled from workspace",
+      );
+      return c.json({ deleted: true, scheduledTasksDeleted }, 200);
     }),
     { label: "uninstall plugin" },
   );

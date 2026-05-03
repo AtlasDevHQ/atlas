@@ -569,6 +569,66 @@
                             "status",
                             "lastCheckedAt"
                           ]
+                        },
+                        "plugins": {
+                          "type": "object",
+                          "properties": {
+                            "latencyMs": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "lastCheckedAt": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "healthy",
+                                "degraded",
+                                "disabled"
+                              ]
+                            },
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "registered",
+                                      "initializing",
+                                      "healthy",
+                                      "unhealthy",
+                                      "teardown"
+                                    ]
+                                  },
+                                  "message": {
+                                    "type": "string"
+                                  },
+                                  "latencyMs": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "status"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "lastCheckedAt",
+                            "status"
+                          ]
                         }
                       },
                       "required": [
@@ -576,7 +636,8 @@
                         "internalDb",
                         "provider",
                         "scheduler",
-                        "sandbox"
+                        "sandbox",
+                        "plugins"
                       ]
                     },
                     "checks": {
@@ -1008,6 +1069,66 @@
                                 "status",
                                 "lastCheckedAt"
                               ]
+                            },
+                            "plugins": {
+                              "type": "object",
+                              "properties": {
+                                "latencyMs": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "lastCheckedAt": {
+                                  "type": "string"
+                                },
+                                "message": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "healthy",
+                                    "degraded",
+                                    "disabled"
+                                  ]
+                                },
+                                "items": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "registered",
+                                          "initializing",
+                                          "healthy",
+                                          "unhealthy",
+                                          "teardown"
+                                        ]
+                                      },
+                                      "message": {
+                                        "type": "string"
+                                      },
+                                      "latencyMs": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "status"
+                                    ]
+                                  }
+                                }
+                              },
+                              "required": [
+                                "lastCheckedAt",
+                                "status"
+                              ]
                             }
                           },
                           "required": [
@@ -1015,7 +1136,8 @@
                             "internalDb",
                             "provider",
                             "scheduler",
-                            "sandbox"
+                            "sandbox",
+                            "plugins"
                           ]
                         },
                         "checks": {
@@ -47651,6 +47773,10 @@
                   "properties": {
                     "deleted": {
                       "type": "boolean"
+                    },
+                    "scheduledTasksDeleted": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [

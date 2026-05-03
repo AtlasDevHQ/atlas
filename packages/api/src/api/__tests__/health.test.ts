@@ -146,6 +146,43 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: mock(() => null),
 }));
 
+// #1987 — plugin registry mock so tests can drive healthCheckAll() per scenario.
+type PluginHealthEntry = {
+  healthy: boolean;
+  message?: string;
+  latencyMs?: number;
+  status: "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";
+};
+let pluginDescribeImpl: () => Array<{
+  id: string;
+  types: readonly string[];
+  version: string;
+  name: string;
+  status: string;
+  enabled: boolean;
+}> = () => [];
+let pluginHealthCheckAllImpl: () => Promise<Map<string, PluginHealthEntry>> = () =>
+  Promise.resolve(new Map());
+
+// Spread the real module so non-controlled exports (PluginRegistry class,
+// any future additions) reach unrelated route files that import from this
+// module — partial mocks have caused SyntaxError in unrelated test files
+// in this project (CLAUDE.md "Mock all exports").
+const realPluginsRegistry = await import("@atlas/api/lib/plugins/registry");
+mock.module("@atlas/api/lib/plugins/registry", () => ({
+  ...realPluginsRegistry,
+  plugins: {
+    describe: () => pluginDescribeImpl(),
+    healthCheckAll: () => pluginHealthCheckAllImpl(),
+    getAll: () => [],
+    getAllHealthy: () => [],
+    getByType: () => [],
+    get size() {
+      return pluginDescribeImpl().length;
+    },
+  },
+}));
+
 // Internal DB mock — defaults to a successful SELECT 1, individual tests
 // can override by reassigning `internalDBQueryImpl` to reject. We spread the
 // real module so the dozens of route files that statically import other
@@ -400,5 +437,244 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("degraded");
+  });
+});
+
+// #1987 — plugin healthcheck must surface in /health.
+// Plugin failures should NOT escalate to 503 (only datasource + SaaS internal-DB
+// do that). A degraded plugin is observable but does not page oncall.
+describe("GET /api/health — plugin component", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+  const origDatabaseUrl = process.env.DATABASE_URL;
+  const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
+
+  beforeEach(() => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.DATABASE_URL;
+    delete process.env.ATLAS_DEPLOY_MODE;
+    connMetadata = [];
+    mockValidateEnvironment.mockReset();
+    mockValidateEnvironment.mockResolvedValue([]);
+    mockGetStartupWarnings.mockReset();
+    mockGetStartupWarnings.mockReturnValue([]);
+    pluginDescribeImpl = () => [];
+    pluginHealthCheckAllImpl = () => Promise.resolve(new Map());
+  });
+
+  afterEach(async () => {
+    if (origDatasource !== undefined) process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
+    if (origDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+    else delete process.env.ATLAS_DEPLOY_MODE;
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest(null);
+    pluginDescribeImpl = () => [];
+    pluginHealthCheckAllImpl = () => Promise.resolve(new Map());
+  });
+
+  it("reports plugins component as 'disabled' when no plugins are registered", async () => {
+    pluginDescribeImpl = () => [];
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, unknown>;
+
+    expect(components.plugins).toBeDefined();
+    const plugins = components.plugins as Record<string, unknown>;
+    expect(plugins.status).toBe("disabled");
+  });
+
+  it("reports plugins component as 'healthy' when every plugin probe succeeds", async () => {
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["datasource"], version: "1.0.0", name: "P1", status: "healthy", enabled: true },
+      { id: "p2", types: ["action"], version: "1.0.0", name: "P2", status: "healthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(
+        new Map([
+          ["p1", { healthy: true, latencyMs: 5, status: "healthy" as const }],
+          ["p2", { healthy: true, latencyMs: 10, status: "healthy" as const }],
+        ]),
+      );
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("ok");
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    expect(plugins.status).toBe("healthy");
+  });
+
+  it("reports plugins component as 'degraded' when at least one plugin probe fails", async () => {
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["datasource"], version: "1.0.0", name: "P1", status: "healthy", enabled: true },
+      { id: "p2", types: ["action"], version: "1.0.0", name: "P2", status: "unhealthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(
+        new Map([
+          ["p1", { healthy: true, latencyMs: 5, status: "healthy" as const }],
+          ["p2", { healthy: false, message: "stripe down", status: "unhealthy" as const }],
+        ]),
+      );
+
+    const response = await app.fetch(healthRequest());
+    // Plugin failure does NOT escalate to 503 — surfaces as degraded only.
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    expect(plugins.status).toBe("degraded");
+  });
+
+  it("does not escalate plugin failures to 503 even in SaaS mode", async () => {
+    // The SaaS-503 short-circuit (#1981) is reserved for the internal DB.
+    // Plugin failures are observable in the dashboard but never page oncall.
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    const config = await import("@atlas/api/lib/config");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    config._setConfigForTest({ deployMode: "saas" } as any);
+
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["action"], version: "1.0.0", name: "P1", status: "unhealthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(new Map([["p1", { healthy: false, message: "stripe down", status: "unhealthy" as const }]]));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+  });
+
+  it("includes per-plugin status detail for the dashboard", async () => {
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["datasource"], version: "1.0.0", name: "P1", status: "healthy", enabled: true },
+      { id: "p2", types: ["action"], version: "1.0.0", name: "P2", status: "unhealthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(
+        new Map([
+          ["p1", { healthy: true, latencyMs: 5, status: "healthy" as const }],
+          ["p2", { healthy: false, message: "stripe down", status: "unhealthy" as const }],
+        ]),
+      );
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    const items = plugins.items as Array<Record<string, unknown>>;
+
+    expect(items).toHaveLength(2);
+    const p1 = items.find((p) => p.id === "p1")!;
+    const p2 = items.find((p) => p.id === "p2")!;
+    expect(p1.status).toBe("healthy");
+    expect(p2.status).toBe("unhealthy");
+    expect(p2.message).toBe("stripe down");
+  });
+
+  it("survives a healthCheckAll() exception without crashing the endpoint", async () => {
+    // If the registry itself throws (e.g. registry initialization race),
+    // /health must still return — the operator needs the dashboard most when
+    // things are broken.
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["datasource"], version: "1.0.0", name: "P1", status: "healthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () => Promise.reject(new Error("registry exploded"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    // Probe failure → degraded, with a message so operators can see why.
+    expect(plugins.status).toBe("degraded");
+    expect(typeof plugins.message).toBe("string");
+  });
+
+  // PluginRegistry.healthCheckAll() returns `{ healthy, status }` (no
+  // `latencyMs`/`message`) when a plugin doesn't define `healthCheck()`.
+  // The /health item must NOT carry those fields — clients distinguishing
+  // "fast probe" from "no probe at all" rely on their absence.
+  it("omits latencyMs and message when a plugin has no healthCheck()", async () => {
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["context"], version: "1.0.0", name: "P1", status: "healthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(new Map([["p1", { healthy: true, status: "healthy" as const }]]));
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    const items = plugins.items as Array<Record<string, unknown>>;
+    expect(items).toHaveLength(1);
+    expect(items[0]).not.toHaveProperty("latencyMs");
+    expect(items[0]).not.toHaveProperty("message");
+    expect(items[0]!.status).toBe("healthy");
+  });
+
+  // The route comment promises plugin failures shift `ok → degraded` but
+  // never `degraded/error → error`. Verify the bottom half of that contract:
+  // when another component is already degraded, an unhealthy plugin must NOT
+  // promote the top-level status to error.
+  it("does not promote already-degraded status to error when a plugin fails", async () => {
+    // A boot diagnostic that triggers `degraded` (MISSING_API_KEY → degraded).
+    mockValidateEnvironment.mockResolvedValue([
+      { code: "MISSING_API_KEY", message: "API key missing" },
+    ]);
+
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["action"], version: "1.0.0", name: "P1", status: "unhealthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(new Map([["p1", { healthy: false, message: "stripe down", status: "unhealthy" as const }]]));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+  });
+
+  // CRITICAL: /health is public, no auth (file header). Plugin healthCheck()
+  // messages frequently embed connection strings, API tokens, or internal
+  // hostnames in error text. They MUST run through SENSITIVE_PATTERNS before
+  // being returned, the same way the source-section scrubber does.
+  it("scrubs plugin probe messages that match SENSITIVE_PATTERNS", async () => {
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["datasource"], version: "1.0.0", name: "P1", status: "unhealthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(
+        new Map([
+          [
+            "p1",
+            {
+              healthy: false,
+              message: "connection failed: postgres://user:secret@db.internal:5432/atlas",
+              status: "unhealthy" as const,
+            },
+          ],
+        ]),
+      );
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    const items = plugins.items as Array<Record<string, unknown>>;
+    const message = items[0]!.message as string | undefined;
+    // The original credential string must NOT appear in the response.
+    expect(message ?? "").not.toContain("user:secret");
+    expect(message ?? "").not.toContain("postgres://");
+    // A generic operator-facing string is the contract.
+    expect(message).toBeDefined();
   });
 });

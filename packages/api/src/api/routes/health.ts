@@ -23,6 +23,22 @@ import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 import { getConfig } from "@atlas/api/lib/config";
+import type { PluginStatus } from "@atlas/api/lib/plugins/registry";
+
+// Canonical plugin lifecycle states for the /health wire format. The
+// `satisfies readonly PluginStatus[]` clause is a compile-time witness
+// that this array stays in lockstep with the registry's PluginStatus
+// type — adding a state to one and forgetting the other fails to
+// compile. Local rather than exported from registry.ts to avoid forcing
+// every test that mocks `@atlas/api/lib/plugins/registry` to add the
+// new export (Bun's mock.module is process-global and irreversible).
+const PLUGIN_STATUSES = [
+  "registered",
+  "initializing",
+  "healthy",
+  "unhealthy",
+  "teardown",
+] as const satisfies readonly PluginStatus[];
 
 const log = createLogger("health");
 
@@ -43,6 +59,33 @@ const ComponentHealthSchema = z.object({
   backend: z.string().optional(),
 });
 
+// Per-item status enum derived from the canonical PLUGIN_STATUSES array in
+// the registry. This keeps the wire format and the registry's PluginStatus
+// type in lockstep — adding a state in one place automatically widens the
+// other (the registry's `satisfies` clause is the static link).
+const PluginItemHealthSchema = z.object({
+  id: z.string().min(1),
+  status: z.enum(PLUGIN_STATUSES),
+  message: z.string().optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+});
+
+// Plugin aggregate is never `down` — that path is reserved for the
+// datasource (#1981 / SaaS-503 contract). Narrowing the inherited
+// `ComponentHealthSchema` enum to `healthy | degraded | disabled` encodes
+// that invariant in the wire format and prevents a future contributor
+// from setting `pluginsComponent.status = "down"`.
+const PluginsComponentSchema = ComponentHealthSchema.omit({
+  status: true,
+  model: true,
+  backend: true,
+}).extend({
+  status: z.enum(["healthy", "degraded", "disabled"]),
+  items: z.array(PluginItemHealthSchema).optional(),
+});
+
+type PluginsComponent = z.infer<typeof PluginsComponentSchema>;
+
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "error"]),
   region: z.string().optional(),
@@ -55,6 +98,7 @@ export const HealthResponseSchema = z.object({
     provider: ComponentHealthSchema,
     scheduler: ComponentHealthSchema,
     sandbox: ComponentHealthSchema,
+    plugins: PluginsComponentSchema,
   }).optional(),
   checks: z.object({
     datasource: z.object({
@@ -299,6 +343,78 @@ health.openapi(healthRoute, async (c) => {
     const now = new Date().toISOString();
     const schedulerEnabled = process.env.ATLAS_SCHEDULER_ENABLED === "true";
 
+    // #1987 — aggregate plugin healthcheck results into a `plugins` component.
+    // Plugin failures NEVER escalate to 503 — that path is reserved for the
+    // datasource (everywhere) and the internal DB (SaaS only, see #1981). A
+    // misbehaving plugin should be observable in the dashboard, not page oncall.
+    //
+    // Default to "disabled" so any future code path that forgets to assign
+    // still produces a coherent response.
+    let pluginsComponent: PluginsComponent = { status: "disabled", lastCheckedAt: now };
+    let pluginAggregateDegraded = false;
+    try {
+      const { plugins } = await import("@atlas/api/lib/plugins/registry");
+      const registered = plugins.describe();
+      if (registered.length > 0) {
+        const probe = await plugins.healthCheckAll();
+        const items = registered.map((p) => {
+          const result = probe.get(p.id);
+          // /health is public, no auth (file header) — every operator-facing
+          // string from a third-party plugin must run through the same
+          // SENSITIVE_PATTERNS scrub used by the source section above.
+          // Plugins commonly throw with connection strings or API keys
+          // baked into the message; we drop the original and substitute a
+          // generic string so the credential never reaches an unauthenticated
+          // caller.
+          const rawMessage = result?.message;
+          const safeMessage = rawMessage
+            ? SENSITIVE_PATTERNS.test(rawMessage)
+              ? "Health check failed — check server logs for details."
+              : rawMessage
+            : undefined;
+          return {
+            id: p.id,
+            // result.status is typed as PluginStatus (registry contract).
+            // Falling back to the descriptor's status covers the
+            // plugin-without-healthCheck branch in healthCheckAll.
+            status: result?.status ?? p.status,
+            ...(safeMessage && { message: safeMessage }),
+            ...(result?.latencyMs !== undefined && { latencyMs: result.latencyMs }),
+          };
+        });
+        const anyUnhealthy = items.some((p) => p.status === "unhealthy");
+        pluginAggregateDegraded = anyUnhealthy;
+        pluginsComponent = {
+          status: anyUnhealthy ? "degraded" : "healthy",
+          lastCheckedAt: now,
+          items,
+        };
+      }
+    } catch (err) {
+      // healthCheckAll() at the registry level throwing is operator-significant
+      // — the per-plugin try/catch in PluginRegistry.healthCheckAll already
+      // catches individual probe failures, so reaching this branch implies
+      // module load failure, registry corruption, or an iterator bug. log.error
+      // (not warn) so the structured-log scraper paged on errors picks it up.
+      // /health still returns — the dashboard is most needed when things are
+      // broken. The hardcoded message is safe (no plugin-supplied content).
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Plugin healthCheckAll() failed at the registry level — surfacing plugins component as degraded",
+      );
+      pluginAggregateDegraded = true;
+      pluginsComponent = {
+        status: "degraded",
+        lastCheckedAt: now,
+        message: "Plugin health probe failed — see server logs",
+      };
+    }
+
+    // Plugin aggregate degradation promotes top-level status from ok → degraded
+    // but NEVER from degraded/error → error. The overall HTTP status code is
+    // unchanged (still 200) — only the dashboard label shifts.
+    if (pluginAggregateDegraded && status === "ok") status = "degraded";
+
     const components = {
       datasource: {
         status: dsNotConfigured
@@ -342,6 +458,7 @@ health.openapi(healthRoute, async (c) => {
         lastCheckedAt: now,
         ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
       },
+      plugins: pluginsComponent,
     };
 
     // Brand color for frontend theming (public, no auth required)

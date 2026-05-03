@@ -115,11 +115,12 @@ mock.module("@atlas/api/lib/semantic/lookups", () => ({
   loadMetricDefinitions: () => [],
 }));
 
-// Don't mock @atlas/api/lib/config — its 31 exports would require a full
-// pass-through to avoid partial-mock leakage (CLAUDE.md "Mock all exports").
-// The unmocked module's `getConfig()` returns null when `initializeConfig`
-// hasn't run; `tools.ts` null-coalesces to `"self-hosted"`, which is the
-// value we want in tests anyway.
+// Don't mock @atlas/api/lib/config: its many runtime exports would require
+// a full pass-through to avoid partial-mock leakage (CLAUDE.md "Mock all
+// exports — partial mocks cause SyntaxError in other files"). The unmocked
+// module's `getConfig()` returns null when `initializeConfig` hasn't run;
+// `tools.ts` null-coalesces to `"self-hosted"`, which is the value we want
+// in tests anyway.
 
 const { registerTools } = await import("../tools.js");
 const { _resetMcpTelemetryForTest } = await import("../telemetry.js");

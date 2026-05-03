@@ -573,15 +573,6 @@
                         "plugins": {
                           "type": "object",
                           "properties": {
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "healthy",
-                                "degraded",
-                                "down",
-                                "disabled"
-                              ]
-                            },
                             "latencyMs": {
                               "type": "integer",
                               "minimum": 0
@@ -592,11 +583,13 @@
                             "message": {
                               "type": "string"
                             },
-                            "model": {
-                              "type": "string"
-                            },
-                            "backend": {
-                              "type": "string"
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "healthy",
+                                "degraded",
+                                "disabled"
+                              ]
                             },
                             "items": {
                               "type": "array",
@@ -604,15 +597,16 @@
                                 "type": "object",
                                 "properties": {
                                   "id": {
-                                    "type": "string"
+                                    "type": "string",
+                                    "minLength": 1
                                   },
                                   "status": {
                                     "type": "string",
                                     "enum": [
-                                      "healthy",
-                                      "unhealthy",
                                       "registered",
                                       "initializing",
+                                      "healthy",
+                                      "unhealthy",
                                       "teardown"
                                     ]
                                   },
@@ -632,8 +626,8 @@
                             }
                           },
                           "required": [
-                            "status",
-                            "lastCheckedAt"
+                            "lastCheckedAt",
+                            "status"
                           ]
                         }
                       },
@@ -1079,15 +1073,6 @@
                             "plugins": {
                               "type": "object",
                               "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "healthy",
-                                    "degraded",
-                                    "down",
-                                    "disabled"
-                                  ]
-                                },
                                 "latencyMs": {
                                   "type": "integer",
                                   "minimum": 0
@@ -1098,11 +1083,13 @@
                                 "message": {
                                   "type": "string"
                                 },
-                                "model": {
-                                  "type": "string"
-                                },
-                                "backend": {
-                                  "type": "string"
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "healthy",
+                                    "degraded",
+                                    "disabled"
+                                  ]
                                 },
                                 "items": {
                                   "type": "array",
@@ -1110,15 +1097,16 @@
                                     "type": "object",
                                     "properties": {
                                       "id": {
-                                        "type": "string"
+                                        "type": "string",
+                                        "minLength": 1
                                       },
                                       "status": {
                                         "type": "string",
                                         "enum": [
-                                          "healthy",
-                                          "unhealthy",
                                           "registered",
                                           "initializing",
+                                          "healthy",
+                                          "unhealthy",
                                           "teardown"
                                         ]
                                       },
@@ -1138,8 +1126,8 @@
                                 }
                               },
                               "required": [
-                                "status",
-                                "lastCheckedAt"
+                                "lastCheckedAt",
+                                "status"
                               ]
                             }
                           },

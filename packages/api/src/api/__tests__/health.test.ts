@@ -164,7 +164,13 @@ let pluginDescribeImpl: () => Array<{
 let pluginHealthCheckAllImpl: () => Promise<Map<string, PluginHealthEntry>> = () =>
   Promise.resolve(new Map());
 
+// Spread the real module so non-controlled exports (PluginRegistry class,
+// any future additions) reach unrelated route files that import from this
+// module — partial mocks have caused SyntaxError in unrelated test files
+// in this project (CLAUDE.md "Mock all exports").
+const realPluginsRegistry = await import("@atlas/api/lib/plugins/registry");
 mock.module("@atlas/api/lib/plugins/registry", () => ({
+  ...realPluginsRegistry,
   plugins: {
     describe: () => pluginDescribeImpl(),
     healthCheckAll: () => pluginHealthCheckAllImpl(),
@@ -175,7 +181,6 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
       return pluginDescribeImpl().length;
     },
   },
-  PluginRegistry: class {},
 }));
 
 // Internal DB mock — defaults to a successful SELECT 1, individual tests
@@ -592,5 +597,84 @@ describe("GET /api/health — plugin component", () => {
     // Probe failure → degraded, with a message so operators can see why.
     expect(plugins.status).toBe("degraded");
     expect(typeof plugins.message).toBe("string");
+  });
+
+  // PluginRegistry.healthCheckAll() returns `{ healthy, status }` (no
+  // `latencyMs`/`message`) when a plugin doesn't define `healthCheck()`.
+  // The /health item must NOT carry those fields — clients distinguishing
+  // "fast probe" from "no probe at all" rely on their absence.
+  it("omits latencyMs and message when a plugin has no healthCheck()", async () => {
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["context"], version: "1.0.0", name: "P1", status: "healthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(new Map([["p1", { healthy: true, status: "healthy" as const }]]));
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    const items = plugins.items as Array<Record<string, unknown>>;
+    expect(items).toHaveLength(1);
+    expect(items[0]).not.toHaveProperty("latencyMs");
+    expect(items[0]).not.toHaveProperty("message");
+    expect(items[0]!.status).toBe("healthy");
+  });
+
+  // The route comment promises plugin failures shift `ok → degraded` but
+  // never `degraded/error → error`. Verify the bottom half of that contract:
+  // when another component is already degraded, an unhealthy plugin must NOT
+  // promote the top-level status to error.
+  it("does not promote already-degraded status to error when a plugin fails", async () => {
+    // A boot diagnostic that triggers `degraded` (MISSING_API_KEY → degraded).
+    mockValidateEnvironment.mockResolvedValue([
+      { code: "MISSING_API_KEY", message: "API key missing" },
+    ]);
+
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["action"], version: "1.0.0", name: "P1", status: "unhealthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(new Map([["p1", { healthy: false, message: "stripe down", status: "unhealthy" as const }]]));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+  });
+
+  // CRITICAL: /health is public, no auth (file header). Plugin healthCheck()
+  // messages frequently embed connection strings, API tokens, or internal
+  // hostnames in error text. They MUST run through SENSITIVE_PATTERNS before
+  // being returned, the same way the source-section scrubber does.
+  it("scrubs plugin probe messages that match SENSITIVE_PATTERNS", async () => {
+    pluginDescribeImpl = () => [
+      { id: "p1", types: ["datasource"], version: "1.0.0", name: "P1", status: "unhealthy", enabled: true },
+    ];
+    pluginHealthCheckAllImpl = () =>
+      Promise.resolve(
+        new Map([
+          [
+            "p1",
+            {
+              healthy: false,
+              message: "connection failed: postgres://user:secret@db.internal:5432/atlas",
+              status: "unhealthy" as const,
+            },
+          ],
+        ]),
+      );
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, unknown>;
+    const plugins = components.plugins as Record<string, unknown>;
+    const items = plugins.items as Array<Record<string, unknown>>;
+    const message = items[0]!.message as string | undefined;
+    // The original credential string must NOT appear in the response.
+    expect(message ?? "").not.toContain("user:secret");
+    expect(message ?? "").not.toContain("postgres://");
+    // A generic operator-facing string is the contract.
+    expect(message).toBeDefined();
   });
 });

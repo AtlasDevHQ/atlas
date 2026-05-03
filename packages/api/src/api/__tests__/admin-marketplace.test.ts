@@ -765,7 +765,9 @@ describe("Workspace Plugin Marketplace", () => {
 
   describe("DELETE /marketplace/:id", () => {
     it("uninstalls a plugin", async () => {
-      setQueryResult("DELETE FROM workspace_plugins WHERE id", [{ id: "inst-1" }]);
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
@@ -780,6 +782,131 @@ describe("Workspace Plugin Marketplace", () => {
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/nonexistent", { method: "DELETE" });
       expect(res.status).toBe(404);
+    });
+
+    // #1987 — uninstall must clean up scheduled tasks owned by the plugin.
+    // Prior behavior left rows in `scheduled_tasks` tagged with the plugin's
+    // catalog_id, so the scheduler would keep firing them after uninstall.
+    it("deletes scheduled tasks owned by the uninstalled plugin", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", [
+        { id: "task-1" },
+        { id: "task-2" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
+      expect(cleanup).toBeDefined();
+      // Must scope by plugin_id (catalog_id from workspace_plugins) AND org_id
+      // — narrowest possible match so we don't drop other workspaces' tasks.
+      expect(cleanup!.sql).toContain("plugin_id");
+      expect(cleanup!.sql).toContain("org_id");
+      expect(cleanup!.params).toEqual(["cat-1", "org-1"]);
+    });
+
+    it("reports scheduled-task cleanup count in the response", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", [
+        { id: "task-1" },
+        { id: "task-2" },
+        { id: "task-3" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.scheduledTasksDeleted).toBe(3);
+    });
+
+    it("succeeds with zero scheduled tasks (no orphans to clean)", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.deleted).toBe(true);
+      expect(body.scheduledTasksDeleted).toBe(0);
+    });
+
+    it("does not query scheduled_tasks when installation is missing (404)", async () => {
+      // 404 short-circuits before cleanup — there is no plugin to clean up after.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/missing-inst", { method: "DELETE" });
+      expect(res.status).toBe(404);
+
+      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
+      expect(cleanup).toBeUndefined();
+    });
+
+    it("returns 200 with scheduledTasksDeleted=0 when cleanup query rejects after the row is gone", async () => {
+      // The workspace_plugins DELETE has already committed by the time the
+      // cleanup runs — losing the cleanup mid-flight should not undo the
+      // uninstall. We surface the orphan via a failure audit instead.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", new Error("connection lost"));
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.deleted).toBe(true);
+      expect(body.scheduledTasksDeleted).toBe(0);
+
+      // The audit row is the only operator surface for this orphan — the HTTP
+      // response is byte-identical to "succeeded with no plugin-owned tasks".
+      // If this assertion ever drops, an operator following the documented
+      // runbook would silently miss orphan tasks that keep firing post-uninstall.
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.actionType).toBe("plugin.uninstall");
+      expect(entry.status).toBe("failure");
+      expect(entry.targetId).toBe("inst-1");
+      expect(entry.metadata).toMatchObject({
+        installationId: "inst-1",
+        pluginId: "cat-1",
+        pluginSlug: "bigquery",
+        orgId: "org-1",
+        cleanupFailed: true,
+      });
+      expect(entry.metadata!.error).toContain("connection lost");
+    });
+
+    // #1987 — locks in the workspace-isolation contract documented in the
+    // migration: cleanup must scope by (plugin_id AND org_id), never (... OR ...).
+    // A bug here would let a workspace admin uninstall a plugin and silently
+    // delete another tenant's scheduled tasks.
+    it("scopes cleanup with AND between plugin_id and org_id (not OR)", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
+      expect(cleanup).toBeDefined();
+      // Normalize whitespace so the assertion is shape-stable.
+      const sql = cleanup!.sql.replace(/\s+/g, " ");
+      expect(sql).toContain("WHERE plugin_id = $1 AND org_id = $2");
+      expect(sql).not.toMatch(/plugin_id\s*=\s*\$1\s+OR\s+org_id/i);
     });
   });
 
@@ -1605,10 +1732,46 @@ describe("audit emission — Workspace marketplace", () => {
       expect(entry.targetId).toBe("inst-1");
       expect(entry.scope).toBe("workspace");
       expect(entry.metadata).toMatchObject({
+        installationId: "inst-1",
         pluginId: "cat-1",
         pluginSlug: "bigquery",
         orgId: "org-1",
       });
+    });
+
+    // #1987 — when scheduled tasks were cleaned up, the success audit must
+    // carry the count so a forensic query can reconstruct the orphan-cleanup
+    // accounting. The conditional spread in the route means the field is
+    // present only when > 0 — verify both branches.
+    it("includes scheduledTasksDeleted in success audit metadata when > 0", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", [
+        { id: "task-1" },
+        { id: "task-2" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.metadata!.scheduledTasksDeleted).toBe(2);
+    });
+
+    it("omits scheduledTasksDeleted from success audit metadata when 0", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      const entry = mockLogAdminAction.mock.calls[0]![0];
+      expect(entry.metadata).not.toHaveProperty("scheduledTasksDeleted");
     });
 
     it("emits status=failure when DELETE throws", async () => {
@@ -1621,6 +1784,9 @@ describe("audit emission — Workspace marketplace", () => {
       const entry = mockLogAdminAction.mock.calls[0]![0];
       expect(entry.actionType).toBe("plugin.uninstall");
       expect(entry.status).toBe("failure");
+      // The pre-RETURNING failure can't carry catalog_id (DELETE never
+      // resolved), so the audit row carries `installationId` only.
+      expect(entry.metadata!.installationId).toBe("inst-1");
       expect(entry.metadata!.error).toContain("uninstall failed");
     });
 
@@ -1638,8 +1804,8 @@ describe("audit emission — Workspace marketplace", () => {
     it("emits audit without pluginSlug when catalog row raced away", async () => {
       // catalog_delete cascade could fire concurrently and wipe the
       // plugin_catalog row the subselect relies on. The audit still emits
-      // with pluginId + orgId so forensic reconstruction isn't completely
-      // blind even though the slug is gone.
+      // with installationId + pluginId + orgId so forensic reconstruction
+      // isn't completely blind even though the slug is gone.
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: null },
       ]);
@@ -1650,7 +1816,11 @@ describe("audit emission — Workspace marketplace", () => {
       expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
       const entry = mockLogAdminAction.mock.calls[0]![0];
       expect(entry.actionType).toBe("plugin.uninstall");
-      expect(entry.metadata).toMatchObject({ pluginId: "cat-1", orgId: "org-1" });
+      expect(entry.metadata).toMatchObject({
+        installationId: "inst-1",
+        pluginId: "cat-1",
+        orgId: "org-1",
+      });
       expect(entry.metadata).not.toHaveProperty("pluginSlug");
     });
   });

@@ -569,6 +569,62 @@ Plugins transition through a defined set of statuses during their lifetime:
 
 The host manages these transitions automatically. Plugin authors do not need to set status directly -- implement `initialize()`, `healthCheck()`, and `teardown()` and the host handles the rest.
 
+## Uninstall Contract
+
+When an admin removes a plugin from a workspace via `DELETE /api/v1/admin/marketplace/:id`, Atlas runs a best-effort cleanup. The contract below tells you what state survives an uninstall and what does not, so you can design your plugin around it.
+
+### What Atlas cleans up automatically
+
+| State | Action on uninstall |
+|-------|--------------------|
+| `workspace_plugins` row | **Deleted.** The installation record itself is the canonical "is this plugin installed?" signal — its absence is the uninstall. |
+| `scheduled_tasks` rows tagged with the plugin's `catalog_id` | **Deleted** in a separate statement after the install row is removed, scoped to the workspace's `org_id`. **Cleanup is best-effort, not atomic** — if the cleanup statement fails, the uninstall still succeeds (HTTP 200) and the failure is recorded as an audit event with `status: "failure"` and `metadata.cleanupFailed: true`. Orphans stay in `scheduled_tasks` until purged manually. |
+| `scheduled_task_runs` for the deleted tasks | **Deleted** automatically via the `task_id` foreign-key cascade. |
+| In-process hook registrations (`beforeQuery`, `afterToolCall`, `onRequest`, …) | **Not detached.** Hooks live in the process-global registry and uninstall does not invoke `teardown()` (which runs only at server shutdown). They become inert for the uninstalled workspace because hook dispatch checks `workspace_plugins` for the installation, which is now gone. No DB rows to clean. |
+
+### What survives an uninstall (and why)
+
+| State | Survives | Why |
+|-------|----------|-----|
+| `plugin_<pluginId>_*` tables declared via the `schema` property | **Yes** | Reinstalling the plugin should pick up where it left off — cached digest history, sync cursors, whatever your plugin persists. Operators who need a hard reset use the workspace purge path, not uninstall. |
+| Catalog row in `plugin_catalog` | **Yes** | The catalog is platform-scoped. Uninstall is a per-workspace operation; the catalog only goes away when an admin explicitly deletes it. |
+| Webhook subscriptions you registered with external platforms (Slack, GitHub, etc.) | **Yes — unless your `teardown()` removes them** | Atlas has no visibility into your plugin's external state. If your plugin subscribes a webhook with a third party, your `teardown()` is the only place to unsubscribe it. Otherwise the external service will keep delivering events to a workspace that no longer has the plugin installed. |
+| Encrypted credentials in `workspace_plugins.config` | **No — removed with the row** | The config blob lives on the `workspace_plugins` row and is deleted with it. There is no separate credential store to clean up. |
+
+### Tagging scheduled tasks for cleanup
+
+If your plugin creates rows in `scheduled_tasks` (via `ctx.db.execute()` during `initialize()`, or in response to a hook), set the `plugin_id` column to the plugin's catalog id and `org_id` to the active workspace. The uninstall route uses both as the cleanup predicate:
+
+```sql
+INSERT INTO scheduled_tasks (
+  owner_id, org_id, plugin_id, name, question, cron_expression, ...
+) VALUES (
+  $owner, $orgId, $catalogId, 'Daily digest', 'Summarize this week', '0 9 * * 1', ...
+);
+```
+
+Untagged tasks (`plugin_id IS NULL`) are user-created and survive uninstall — Atlas only cleans up tasks that explicitly opt in to plugin ownership.
+
+### Implementing `teardown()`
+
+Use `teardown()` to release any state Atlas can't see:
+
+```typescript
+export default definePlugin({
+  id: "stripe-action",
+  // ...
+  async teardown() {
+    // Unsubscribe any external webhooks registered during initialize()
+    if (this._webhookId) {
+      await stripe.webhookEndpoints.del(this._webhookId);
+    }
+    // Close long-lived connections, drain queues, flush caches, etc.
+  },
+});
+```
+
+`teardown()` runs at server shutdown (LIFO order across all plugins). It is **not** invoked on a per-workspace uninstall — uninstall is a DB-row removal, not a process-level event. If you need workspace-scoped cleanup of external state, do it inside the route or hook that owns the resource (e.g., revoke an OAuth token before the row goes away).
+
 ## Hooks
 
 Plugins can intercept agent lifecycle events and HTTP requests using hooks. Each hook entry has an optional `matcher` function (return `true` to run the handler; omit to always run) and a `handler` function.

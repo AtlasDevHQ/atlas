@@ -690,7 +690,11 @@ describe("pool.perOrg validation", () => {
       datasources: { default: { url: "postgresql://host/db" } },
       pool: { perOrg: {} },
     });
-    expect(resolved.pool!.perOrg!.maxConnections).toBe(5);
+    // #1983 — dev floor bumped 5 → 10 so a single Business-tier org's
+    // dashboards + chat + scheduled tasks don't immediately queue. The
+    // companion `_warnPoolDefaultsInSaaS()` boot warning fires when a
+    // SaaS deploy is at this floor.
+    expect(resolved.pool!.perOrg!.maxConnections).toBe(10);
     expect(resolved.pool!.perOrg!.idleTimeoutMs).toBe(30000);
     expect(resolved.pool!.perOrg!.maxOrgs).toBe(50);
     expect(resolved.pool!.perOrg!.warmupProbes).toBe(2);

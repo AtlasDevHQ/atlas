@@ -199,6 +199,25 @@ describe("settings (SaaS mode)", () => {
       ).rejects.toThrow(SaasImmutableSettingError);
     });
 
+    // #1983 — pairs with RateLimitGuardLive at boot. Hot-reloading
+    // would silently re-open the DDoS hole until next restart.
+    it("setSetting rejects ATLAS_RATE_LIMIT_RPM in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      let captured: unknown;
+      try {
+        await setSetting("ATLAS_RATE_LIMIT_RPM", "0", "admin-1");
+      } catch (err) {
+        captured = err;
+      }
+
+      expect(captured).toBeInstanceOf(SaasImmutableSettingError);
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>).key).toBe("ATLAS_RATE_LIMIT_RPM");
+      // No DB write — rejection precedes persist.
+      expect(queryCalls).toHaveLength(0);
+    });
+
     it("setSetting allows non-immutable keys in SaaS mode", async () => {
       enableInternalDB();
       setResults({ rows: [] });

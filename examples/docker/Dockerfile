@@ -90,6 +90,12 @@ COPY --chown=atlas:atlas examples/docker/scripts/start.sh ./scripts/start.sh
 # Demo seeding (Railway "Atlas Demo" template — ATLAS_SEED_DEMO=true)
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts
+# Build-time assertion: the canonical seed must be non-empty and the bundled
+# semantic layer must contain entities. Catches a regressed COPY or a truncated
+# seed file at build time rather than producing an image that boots against
+# an empty database. (#2021 review-pass)
+RUN test -s ./data/demo.sql || (echo "ERROR: ./data/demo.sql is empty or missing" >&2 && exit 1)
+RUN test -d ./semantic/entities && [ "$(ls -A ./semantic/entities 2>/dev/null)" ] || (echo "ERROR: ./semantic/entities is missing or empty" >&2 && exit 1)
 # pg is installed in packages/api/node_modules (not hoisted to root).
 # seed-demo.ts runs from /app/scripts/ and needs pg — symlink it so
 # bun's module resolution finds it from the root node_modules.

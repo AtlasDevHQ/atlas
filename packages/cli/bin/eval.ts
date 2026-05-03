@@ -94,6 +94,10 @@ const REQUIRED_CASE_FIELDS = ["id", "question", "schema", "difficulty", "categor
 const VALID_DIFFICULTIES = ["simple", "medium", "complex"] as const;
 const VALID_SCHEMAS = ["ecommerce"] as const;
 
+function isEvalSchema(value: unknown): value is EvalSchema {
+  return typeof value === "string" && (VALID_SCHEMAS as readonly string[]).includes(value);
+}
+
 export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
   if (!fs.existsSync(casesDir)) {
     throw new Error(`Eval cases directory not found: ${casesDir}`);
@@ -122,10 +126,15 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
       }
       seenIds.add(caseId);
 
+      // validateCase has already enforced the type predicate; narrow once
+      // here so the push doesn't need an `as` escape on the schema field.
+      if (!isEvalSchema(doc.schema)) {
+        throw new Error(`Invalid schema "${doc.schema}" in ${filePath}. Valid: ${VALID_SCHEMAS.join(", ")}`);
+      }
       cases.push({
         id: doc.id as string,
         question: doc.question as string,
-        schema: doc.schema as EvalSchema,
+        schema: doc.schema,
         difficulty: doc.difficulty as EvalCase["difficulty"],
         category: doc.category as string,
         tags: (doc.tags as string[]) ?? [],
@@ -147,7 +156,7 @@ export function validateCase(doc: Record<string, unknown>, filePath: string): vo
     }
   }
 
-  if (!VALID_SCHEMAS.includes(doc.schema as (typeof VALID_SCHEMAS)[number])) {
+  if (!isEvalSchema(doc.schema)) {
     throw new Error(`Invalid schema "${doc.schema}" in ${filePath}. Valid: ${VALID_SCHEMAS.join(", ")}`);
   }
 

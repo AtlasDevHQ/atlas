@@ -2,17 +2,18 @@
 set -euo pipefail
 
 # E2E smoke test orchestrator.
-# Starts local Postgres, seeds demo data, launches the API, runs smoke tests,
-# then cleans up. Uses port 3099 to avoid conflict with dev server on 3001.
+# Starts local Postgres, seeds the canonical demo data, launches the API, runs
+# smoke tests, then cleans up. Uses port 3099 to avoid conflict with dev on 3001.
+#
+# Atlas ships a single canonical demo dataset since 1.4.0 (#2021): NovaMart
+# e-commerce. The previous --demo simple|cybersec picker is gone.
 #
 # Usage:
-#   bash scripts/smoke.sh                    # default: simple demo
-#   bash scripts/smoke.sh --demo cybersec    # cybersec demo
-#   bash scripts/smoke.sh --keep             # leave DB running after test
+#   bash scripts/smoke.sh           # seeds the canonical NovaMart demo
+#   bash scripts/smoke.sh --keep    # leave DB running after test
 
 PORT=3099
 API_PID=""
-DEMO="simple"
 KEEP_DB=false
 SMOKE_API_KEY="smoke-test-key-$(date +%s)"
 
@@ -20,8 +21,6 @@ SMOKE_API_KEY="smoke-test-key-$(date +%s)"
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP_DB=true ;;
-    --demo) ;; # value handled below
-    cybersec|ecommerce) DEMO="$arg" ;;
   esac
 done
 
@@ -46,12 +45,8 @@ echo "==> Starting Postgres..."
 bun run db:up
 
 echo ""
-echo "==> Seeding demo data ($DEMO)..."
-if [ "$DEMO" = "simple" ]; then
-  bun run atlas -- init --demo --no-enrich
-else
-  bun run atlas -- init --demo "$DEMO" --no-enrich
-fi
+echo "==> Seeding canonical demo data (NovaMart ecommerce)..."
+bun run atlas -- init --demo --no-enrich
 
 echo ""
 echo "==> Starting API server on port $PORT..."

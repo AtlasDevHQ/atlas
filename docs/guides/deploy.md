@@ -298,7 +298,7 @@ DATABASE_URL=postgresql://user:pass@host:5432/atlas
 
 ### Semantic layer on Vercel
 
-The `vercel.json` build command copies the demo semantic layer from `packages/cli/data/demo-semantic` into the project at build time (same approach the Docker builds use). For your own data, replace this with your generated semantic layer files.
+The `vercel.json` build command copies the canonical demo semantic layer from `packages/cli/data/seeds/ecommerce/semantic` into the project at build time (same approach the Docker builds use). For your own data, replace this with your generated semantic layer files.
 
 ### Verify
 

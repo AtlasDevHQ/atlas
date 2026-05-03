@@ -54,10 +54,16 @@ try {
   await client.connect();
 
   for (const ds of datasets) {
-    // Check if this dataset's SQL file exists in the image
+    // The canonical seed file is bundled into the image at build time
+    // (Dockerfile:91). A missing file means the build is broken — fail
+    // loudly rather than booting the API against an empty DB.
     if (!existsSync(ds.file)) {
-      console.log(`seed-demo: ${ds.name} — ${ds.file} not found, skipping`);
-      continue;
+      console.error(
+        `seed-demo: ${ds.name} — ${ds.file} not found in the image. ` +
+          `This indicates a broken build (the Dockerfile COPY of the canonical ` +
+          `seed at packages/cli/data/seeds/ecommerce/seed.sql failed or drifted).`,
+      );
+      process.exit(1);
     }
 
     // Check if dataset already seeded.

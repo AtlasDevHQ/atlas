@@ -60,10 +60,10 @@ const DEMO_CONNECTION_ID = "__demo__";
  * `packages/cli/data/seeds/ecommerce/semantic` for dev workspaces that
  * haven't run `atlas init` yet.
  */
-function getDemoSemanticDir(): { dir: string; source: "root" | "fallback" } {
+function getDemoSemanticDir(): { dir: string; source: "semantic-root" | "bundled-seed" } {
   const root = getSemanticRoot();
   if (existsSync(path.join(root, "entities"))) {
-    return { dir: root, source: "root" };
+    return { dir: root, source: "semantic-root" };
   }
 
   // Dev fallback when the working directory hasn't been initialized yet
@@ -77,7 +77,7 @@ function getDemoSemanticDir(): { dir: string; source: "root" | "fallback" } {
     "semantic",
   );
   if (existsSync(path.join(seedsPath, "entities"))) {
-    return { dir: seedsPath, source: "fallback" };
+    return { dir: seedsPath, source: "bundled-seed" };
   }
 
   throw new Error(
@@ -322,7 +322,12 @@ const UseDemoResponseSchema = z.object({
   entitiesImported: z.number(),
 });
 
-const UseDemoBodySchema = z.object({}).passthrough();
+// Strict-but-empty: validation parses to {} and silently strips unknown keys
+// (Zod's default `.strip()` semantic). The legacy `demoType` field is read
+// directly from the raw body before validation — see the route handler.
+// `.passthrough()` would overstate intent ("we keep unknowns") since nothing
+// downstream consumes them. `.strict()` would 400 every legacy client.
+const UseDemoBodySchema = z.object({}).strip();
 
 const useDemoRoute = createRoute({
   method: "post",
@@ -673,16 +678,32 @@ onboarding.openapi(
         return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
       }
 
-      // The body schema accepts pass-through fields so legacy clients sending
-      // `demoType` continue to work; the value is ignored — this route always
-      // provisions the canonical ecommerce demo since 1.4.0 (#2021). Surface
-      // a warn-level log so operators can see when a legacy client is still
-      // calling the API with the removed picker payload.
-      const body = c.req.valid("json") as Record<string, unknown>;
-      if (typeof body?.demoType === "string" && body.demoType !== "ecommerce") {
+      // Legacy `demoType: simple|cybersec|ecommerce` clients (#1188) still
+      // call this endpoint after #2021 collapsed the picker. The body schema
+      // strips unknown keys, but we peek the raw body for telemetry so
+      // operators can see when a stale client is in the wild. The route
+      // always provisions ecommerce regardless. Sending a `Deprecation`
+      // header per RFC 9745 gives client developers a real signal.
+      const rawBody = (yield* Effect.tryPromise({
+        try: () => c.req.json() as Promise<unknown>,
+        catch: () => null,
+      }).pipe(Effect.catchAll(() => Effect.succeed(null)))) as unknown;
+      if (
+        rawBody &&
+        typeof rawBody === "object" &&
+        !Array.isArray(rawBody) &&
+        "demoType" in rawBody &&
+        typeof (rawBody as Record<string, unknown>).demoType === "string" &&
+        (rawBody as Record<string, string>).demoType !== "ecommerce"
+      ) {
+        const legacyDemoType = (rawBody as Record<string, string>).demoType;
         log.warn(
-          { requestId, legacyDemoType: body.demoType },
+          { requestId, legacyDemoType },
           "Legacy demoType body field ignored — every demo workspace gets ecommerce since 1.4.0 (#2021)",
+        );
+        c.header(
+          "Deprecation",
+          'true; field="demoType"; reason="Atlas ships a single canonical demo since 1.4.0 (#2021); body field ignored"',
         );
       }
 
@@ -747,10 +768,10 @@ onboarding.openapi(
       try {
         const resolved = getDemoSemanticDir();
         semanticDir = resolved.dir;
-        if (resolved.source === "fallback") {
+        if (resolved.source === "bundled-seed") {
           log.info(
             { requestId, semanticDir },
-            "Demo semantic layer resolved via dev fallback (semantic/ not initialized at the configured root)",
+            "Demo semantic layer resolved via bundled-seed dev fallback (semantic/ not initialized at the configured root)",
           );
         }
       } catch (err) {

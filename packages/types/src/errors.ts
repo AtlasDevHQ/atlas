@@ -157,6 +157,62 @@ export interface ChatErrorInfo {
 }
 
 // ---------------------------------------------------------------------------
+// ChatContextWarning — mid-stream "answer is degraded" frame (#1988 B5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Codes for non-fatal preflight degradations that the agent ran past so the
+ * user could still get an answer, at the cost of dropped context. Each code
+ * names the specific context that was lost — the title/detail copy is built
+ * server-side so the client never has to translate codes to copy.
+ *
+ * - `semantic_layer_unavailable` — the org-scoped whitelist + semantic index
+ *   could not be loaded (typically internal-DB pool exhaustion). The agent
+ *   falls back to the file-based default semantic layer.
+ * - `learned_patterns_unavailable` — the learned-patterns lookup failed.
+ *   The agent runs without question-similarity hints.
+ *
+ * When adding a new code: also add a server emit site (currently
+ * `lib/agent.ts`'s preflight `Effect.catchAll` branches) AND a corresponding
+ * UI banner branch so the structured frame round-trips end-to-end.
+ */
+export const CHAT_CONTEXT_WARNING_CODES = [
+  "semantic_layer_unavailable",
+  "learned_patterns_unavailable",
+] as const;
+
+export type ChatContextWarningCode = (typeof CHAT_CONTEXT_WARNING_CODES)[number];
+
+/** Type guard — checks whether a string is a known `ChatContextWarningCode`. */
+export function isChatContextWarningCode(value: string): value is ChatContextWarningCode {
+  return (CHAT_CONTEXT_WARNING_CODES as ReadonlyArray<string>).includes(value);
+}
+
+/**
+ * Mid-stream warning frame written to the AI-SDK UI message stream when the
+ * agent's preflight loaders failed but the run was allowed to proceed with
+ * degraded context. Sibling shape to {@link ChatErrorInfo} — same
+ * `title`/`detail`/`requestId` fields — but discriminated by the literal
+ * `severity: "warning"` so a client can route warnings and hard errors
+ * through one parser without misclassifying a degradation as a failure.
+ *
+ * The discriminator is load-bearing: the AI-SDK transport delivers errors
+ * and these warnings on the same `data-*` channel, and a UI that surfaces
+ * a warning as a fatal modal would scare users away from a good answer.
+ *
+ * Fields are `readonly` to signal the wire-DTO intent — once a frame is
+ * pushed onto the agent's `contextWarnings` out-array, the chat route
+ * only reads it. Mutating in place would be a write-after-publish bug.
+ */
+export interface ChatContextWarning {
+  readonly severity: "warning";
+  readonly code: ChatContextWarningCode;
+  readonly title: string;
+  readonly detail?: string;
+  readonly requestId?: string;
+}
+
+// ---------------------------------------------------------------------------
 // matchError — server-side pattern matching for common failures
 // ---------------------------------------------------------------------------
 

@@ -45,6 +45,7 @@ import type {
   EncryptionKeyMalformedError as TEncryptionKeyMalformedError,
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
   RateLimitRequiredError as TRateLimitRequiredError,
+  RegionMisconfiguredError as TRegionMisconfiguredError,
 } from "../saas-guards";
 
 const {
@@ -57,6 +58,8 @@ const {
   InternalDatabaseRequiredError,
   RateLimitGuardLive,
   RateLimitRequiredError,
+  RegionGuardLive,
+  RegionMisconfiguredError,
 } = await import("../saas-guards");
 const { Config } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
@@ -78,6 +81,8 @@ const GUARD_ENV_KEYS = [
   "BETTER_AUTH_SECRET",
   "DATABASE_URL",
   "ATLAS_RATE_LIMIT_RPM",
+  "ATLAS_API_REGION",
+  "ATLAS_STRICT_PLUGIN_SECRETS",
 ] as const;
 
 function withCleanEnv<T>(run: () => Promise<T>): Promise<T> {
@@ -592,3 +597,125 @@ describe("RateLimitGuardLive", () => {
 // The replacement coverage lives in
 // `lib/__tests__/config-deploy-mode-warning.test.ts`, which spies the
 // logger via `mock.module` to verify the inlined log emission.
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  RegionGuardLive (#1988 C7)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("RegionGuardLive", () => {
+  test("fails boot in SaaS when ATLAS_API_REGION is not in residency.regions", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_API_REGION = "eu-typo";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RegionGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                residency: {
+                  regions: { "eu-west": { databaseUrl: "postgres://u:p@h:5432/db" } },
+                  defaultRegion: "eu-west",
+                },
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RegionMisconfiguredError);
+      expect((failure as TRegionMisconfiguredError)._tag).toBe("RegionMisconfiguredError");
+      expect((failure as TRegionMisconfiguredError).claimedRegion).toBe("eu-typo");
+      expect((failure as TRegionMisconfiguredError).availableRegions).toEqual(["eu-west"]);
+      expect((failure as TRegionMisconfiguredError).cause).toBe("unknown_region");
+      expect((failure as TRegionMisconfiguredError).message).toContain("#1988");
+    });
+  });
+
+  test("fails boot in SaaS when claimed region's databaseUrl is malformed", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_API_REGION = "eu-west";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RegionGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                residency: {
+                  regions: { "eu-west": { databaseUrl: "not-a-url" } },
+                  defaultRegion: "eu-west",
+                },
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RegionMisconfiguredError);
+      // The cause discriminator is load-bearing — programmatic
+      // consumers branch on it without parsing `message`.
+      expect((failure as TRegionMisconfiguredError).cause).toBe("malformed_database_url");
+      expect((failure as TRegionMisconfiguredError).message).toContain("databaseUrl");
+    });
+  });
+
+  test("falls back to residency.defaultRegion when ATLAS_API_REGION is unset", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RegionGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                residency: {
+                  regions: { "eu-west": { databaseUrl: "postgres://u:p@h:5432/db" } },
+                  defaultRegion: "eu-west",
+                },
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds in SaaS with no region configured at all", async () => {
+    // Mirrors `getApiRegion()` returning null — misrouting middleware
+    // also no-ops in this case, so the guard intentionally does too.
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RegionGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds on self-hosted with bogus region (regression: must not affect self-hosted)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_API_REGION = "eu-typo";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RegionGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+});
+
+// `PluginConfigGuardLive` tests live in their own file
+// (`plugin-config-guard.test.ts`) — the validator is mocked via
+// `mock.module()` and bun's mock scope is per-file, so isolating
+// avoids leaking the mocks into the other guards' tests in this file.

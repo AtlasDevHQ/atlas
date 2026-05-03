@@ -14,10 +14,12 @@ import {
   makeSchedulerLive,
   buildAppLayer,
   DpaGuardLive,
+  MigrationGuardLive,
   type ConfigShape,
   type MigrationShape,
   type SettingsShape,
 } from "../layers";
+import { MigrationsRequiredError } from "../saas-guards";
 import { createInternalDBTestLayer } from "@atlas/api/lib/db/internal";
 import { DpaInconsistencyError } from "@atlas/api/lib/email/dpa-guard";
 
@@ -36,6 +38,7 @@ function makeTestMigrationLayer(
 ): Layer.Layer<Migration> {
   return Layer.succeed(Migration, {
     migrated: partial.migrated ?? true,
+    ...(partial.error !== undefined && { error: partial.error }),
   });
 }
 
@@ -313,6 +316,103 @@ describe("DpaGuardLive", () => {
   });
 });
 
+// ── MigrationGuardLive (#1988 C9) ──────────────────────────────────
+
+describe("MigrationGuardLive", () => {
+  // The guard depends on Config + Migration. We compose both via
+  // Layer.merge — Migration's Tag value is the same singleton across
+  // both `MigrationLive` and the test layer, so the guard reads the
+  // overridden `migrated` flag deterministically.
+  function runGuard(opts: {
+    deployMode: string;
+    migrated: boolean;
+    error?: string;
+    databaseUrl?: string | undefined;
+  }): Promise<Exit.Exit<void, MigrationsRequiredError>> {
+    const savedDb = process.env.DATABASE_URL;
+    if (opts.databaseUrl !== undefined) {
+      process.env.DATABASE_URL = opts.databaseUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+    const layer = MigrationGuardLive.pipe(
+      Layer.provide(
+        Layer.merge(
+          makeTestConfigLayer({ deployMode: opts.deployMode }),
+          makeTestMigrationLayer({
+            migrated: opts.migrated,
+            ...(opts.error !== undefined && { error: opts.error }),
+          }),
+        ),
+      ),
+    );
+    return Effect.runPromiseExit(Effect.void.pipe(Effect.provide(layer))).finally(() => {
+      if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
+      else delete process.env.DATABASE_URL;
+    });
+  }
+
+  test("fails boot in SaaS when migrated=false and DATABASE_URL is set", async () => {
+    const exit = await runGuard({
+      deployMode: "saas",
+      migrated: false,
+      databaseUrl: "postgres://u:p@h:5432/db",
+    });
+    expect(Exit.isFailure(exit)).toBe(true);
+    const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+    expect(failure).toBeInstanceOf(MigrationsRequiredError);
+    expect((failure as MigrationsRequiredError)._tag).toBe("MigrationsRequiredError");
+    expect((failure as MigrationsRequiredError).message).toContain("#1988");
+  });
+
+  test("threads underlying error from MigrationLive into cause + message", async () => {
+    // Pin the contract: `MigrationGuardLive` promotes the captured
+    // MigrationLive error into `cause` (so Sentry / log queries can
+    // group on it) and inlines it into the operator-actionable message
+    // so "see prior log" punting goes away.
+    const exit = await runGuard({
+      deployMode: "saas",
+      migrated: false,
+      error: "drizzle: relation 'sessions' does not exist",
+      databaseUrl: "postgres://u:p@h:5432/db",
+    });
+    expect(Exit.isFailure(exit)).toBe(true);
+    const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+    expect(failure).toBeInstanceOf(MigrationsRequiredError);
+    expect((failure as MigrationsRequiredError).cause).toBe(
+      "drizzle: relation 'sessions' does not exist",
+    );
+    expect((failure as MigrationsRequiredError).message).toContain("Underlying error:");
+    expect((failure as MigrationsRequiredError).message).toContain("drizzle:");
+  });
+
+  test("succeeds in SaaS when migrated=true", async () => {
+    const exit = await runGuard({
+      deployMode: "saas",
+      migrated: true,
+      databaseUrl: "postgres://u:p@h:5432/db",
+    });
+    expect(Exit.isSuccess(exit)).toBe(true);
+  });
+
+  test("succeeds in SaaS when DATABASE_URL is unset (defers to InternalDbGuardLive)", async () => {
+    // No DATABASE_URL → MigrationGuardLive intentionally no-ops because
+    // InternalDbGuardLive already fails boot for that case. A duplicate
+    // failure here would obscure the actual misconfig.
+    const exit = await runGuard({ deployMode: "saas", migrated: false });
+    expect(Exit.isSuccess(exit)).toBe(true);
+  });
+
+  test("succeeds on self-hosted regardless of migration state", async () => {
+    const exit = await runGuard({
+      deployMode: "self-hosted",
+      migrated: false,
+      databaseUrl: "postgres://u:p@h:5432/db",
+    });
+    expect(Exit.isSuccess(exit)).toBe(true);
+  });
+});
+
 // ── buildAppLayer ──────────────────────────────────────────────────
 
 describe("buildAppLayer", () => {
@@ -454,4 +554,12 @@ describe("buildAppLayer", () => {
       else delete process.env.ATLAS_RATE_LIMIT_RPM;
     }
   });
+
+  // Wiring regression for the #1988 C7/C8/C9 guards is intentionally
+  // not added end-to-end. The InternalDbGuard + RateLimitGuard wiring
+  // tests above are the family canary — their failure proves
+  // `Layer.mergeAll(...)` honors every Layer.effectDiscard guard added
+  // to it. Per-#1988-guard end-to-end tests would force the same
+  // real-DB-URL workaround for marginal additional coverage beyond the
+  // existing unit-level guard tests.
 });

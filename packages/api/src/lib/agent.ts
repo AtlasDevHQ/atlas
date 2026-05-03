@@ -24,6 +24,7 @@ import {
 } from "ai";
 import type { LanguageModel } from "ai";
 import { Effect, Duration } from "effect";
+import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, type ToolRegistry } from "./tools/registry";
@@ -485,6 +486,7 @@ export async function runAgent({
   tools: toolRegistry = defaultRegistry,
   conversationId,
   warnings,
+  contextWarnings,
   maxSteps: maxStepsOverride,
   /** Optional pre-resolved AI model. When provided, skips provider resolution. */
   aiModel: injectedAiModel,
@@ -493,6 +495,22 @@ export async function runAgent({
   tools?: ToolRegistry;
   conversationId?: string;
   warnings?: string[];
+  /**
+   * Out-parameter (#1988 B5). When supplied, the agent's preflight loaders
+   * push a structured {@link ChatContextWarning} entry per failure so the
+   * caller can write each one as an SSE `data-context-warning` frame
+   * before merging the model stream.
+   *
+   * Independent of {@link warnings}: both populate on the same failure
+   * branch. `warnings` feeds the system-prompt note that primes the model
+   * (caller-allocated; `runAgent` no-ops the push when the array is
+   * absent because the parameter binding is local to this function).
+   * `contextWarnings` feeds the SSE frame the UI renders. A caller that
+   * supplies one and not the other gets exactly that subset of the
+   * failure signal — the chat route supplies both; legacy embedded
+   * callers (SDK, tests) may only supply `warnings`.
+   */
+  contextWarnings?: ChatContextWarning[];
   /** Override the default agent step limit (e.g. for demo mode). */
   maxSteps?: number;
   /** Pre-resolved AI model from Effect Context (P10c). */
@@ -561,6 +579,16 @@ export async function runAgent({
               log.error({ orgId, err: err.message }, "Failed to load org semantic data — agent will use file-based fallback");
               if (!warnings) warnings = [];
               warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
+              // #1988 B5 — also surface as a structured frame so the UI can
+              // render a "degraded answer" banner instead of relying on the
+              // model to repeat the system-prompt warning verbatim.
+              contextWarnings?.push({
+                severity: "warning",
+                code: "semantic_layer_unavailable",
+                title: "Semantic layer unavailable",
+                detail:
+                  "Your organization's semantic layer could not be loaded — the answer below was generated against the default schema. Contact your admin if this persists.",
+              });
               return Effect.succeed(undefined);
             }),
           )
@@ -586,6 +614,16 @@ export async function runAgent({
             }),
             Effect.catchAll((err) => {
               log.warn({ orgId, err: err.message }, "Failed to load learned patterns — continuing without");
+              // #1988 B5 — surface to the UI. Lower severity than the
+              // semantic-layer failure: a missing patterns section just
+              // skips the few-shot priming, so the title is softer.
+              contextWarnings?.push({
+                severity: "warning",
+                code: "learned_patterns_unavailable",
+                title: "Query history hints unavailable",
+                detail:
+                  "Atlas couldn't load similar past queries to prime this answer. The answer is still generated normally — accuracy may be slightly lower for ambiguous questions.",
+              });
               return Effect.succeed(undefined);
             }),
           )

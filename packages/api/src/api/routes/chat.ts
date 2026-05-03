@@ -15,7 +15,7 @@ import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError, isRetryableError, isChatErrorCode } from "@useatlas/types";
+import { matchError, isRetryableError, isChatErrorCode, type ChatContextWarning } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
@@ -811,6 +811,16 @@ chat.openapi(chatRoute, async (c) => {
             );
           }
   
+          // #1988 B5 — out-array the agent's preflight loaders push into
+          // when the org semantic layer or learned-patterns lookup fail.
+          // We forward each as an SSE `data-context-warning` frame below
+          // so the UI can render a "degraded answer" banner. The legacy
+          // system-prompt `warnings` string is still populated; both paths
+          // run together because the model needs to know it's working with
+          // reduced context AND the user needs to know their answer was
+          // generated against fallback data.
+          const contextWarnings: ChatContextWarning[] = [];
+
           // Call runAgent first so errors (provider auth, config, etc.) are
           // caught by the outer try-catch and returned as proper JSON errors.
           // The agent stream is then merged into a UIMessageStream that supports
@@ -820,6 +830,7 @@ chat.openapi(chatRoute, async (c) => {
             ...(toolRegistry && { tools: toolRegistry }),
             conversationId,
             ...(warnings.length > 0 && { warnings }),
+            contextWarnings,
           });
   
           // Register stream writer so Python tool can send progress events.
@@ -837,6 +848,25 @@ chat.openapi(chatRoute, async (c) => {
               // Surface plan warning as a data annotation so clients can display it
               if (planWarning) {
                 writer.write({ type: "data-plan-warning", data: planWarning });
+              }
+              // #1988 B5 — emit one frame per preflight degradation. Each
+              // frame carries `severity: "warning"` so a client routing
+              // these through the same parser as the `data-error` frame
+              // (#1980) does not misclassify a degraded answer as a
+              // failure. `requestId` is stamped so log correlation works
+              // end-to-end without the client having to plumb the header.
+              //
+              // Ordering is load-bearing: this loop runs BEFORE
+              // `writer.merge(agentResult.toUIMessageStream(...))` below,
+              // so the UI receives the warning frame(s) ahead of any
+              // model text-delta. A "render banner before content"
+              // assumption in the UI depends on this — moving the loop
+              // after merge would race the first delta.
+              for (const warning of contextWarnings) {
+                writer.write({
+                  type: "data-context-warning",
+                  data: { ...warning, requestId },
+                });
               }
               setStreamWriter(requestId, writer);
               writer.merge(

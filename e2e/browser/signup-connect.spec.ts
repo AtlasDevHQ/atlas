@@ -1,11 +1,14 @@
 import { test, expect, type Page } from "@playwright/test";
 
 /**
- * Signup connect page — two-card redesign (#1432, followups #1450/#1452).
+ * Signup connect page — single-CTA demo card (#2021).
  *
- * Exercises the page in isolation by intercepting backend calls with
- * Playwright routing, so these tests don't depend on session state, seed
- * data, or LLM provider availability.
+ * Atlas ships a single canonical demo seed (NovaMart e-commerce) since
+ * 1.4.0; the previous three-card picker (`SaaS CRM` / `Cybersecurity` /
+ * `E-commerce`) was collapsed to one button. These tests exercise the
+ * page in isolation by intercepting backend calls with Playwright
+ * routing, so they don't depend on session state, seed data, or LLM
+ * provider availability.
  */
 
 // Uses the default authenticated storage state — the proxy in managed mode
@@ -14,6 +17,10 @@ import { test, expect, type Page } from "@playwright/test";
 // page actually makes are mocked below, so no test data is created.
 
 const PATH = "/signup/connect";
+
+// The single demo button's accessible label is built from the constant
+// `DEMO` in connect/page.tsx — keep this regex in lockstep with that.
+const DEMO_BUTTON = /Use NovaMart \(E-commerce\) demo dataset/;
 
 function mockHealth(page: Page, status: "ok" | "down" | "unavailable") {
   return page.route("**/api/health", async (route) => {
@@ -77,9 +84,7 @@ test.describe("Signup connect — demo availability", () => {
     await expect(page.getByRole("heading", { name: "Get started with your data" })).toBeVisible();
     await expect(page.getByText("Connect your database", { exact: true })).toBeVisible();
     await expect(page.getByText("Explore demo data", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Use SaaS CRM demo dataset/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Use Cybersecurity demo dataset/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Use E-commerce demo dataset/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: DEMO_BUTTON })).toBeVisible();
   });
 
   test("hides demo card when datasource reports down", async ({ page }) => {
@@ -97,7 +102,7 @@ test.describe("Signup connect — demo availability", () => {
     await expect(page.getByText("Explore demo data", { exact: true })).toBeVisible();
     await expect(page.getByText(/Couldn.t check demo availability/)).toBeVisible();
     await expect(page.getByRole("button", { name: /Retry/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Use SaaS CRM demo dataset/ })).toBeHidden();
+    await expect(page.getByRole("button", { name: DEMO_BUTTON })).toBeHidden();
   });
 });
 
@@ -117,7 +122,7 @@ test.describe("Signup connect — error isolation", () => {
     // Before: no alerts
     await expect(main.getByRole("alert")).toHaveCount(0);
 
-    await page.getByRole("button", { name: /Use SaaS CRM demo dataset/ }).click();
+    await page.getByRole("button", { name: DEMO_BUTTON }).click();
 
     // After: exactly one alert, carrying the demo error
     const alert = main.getByRole("alert");

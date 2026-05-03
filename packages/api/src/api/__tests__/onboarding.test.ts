@@ -718,11 +718,18 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     // Legacy clients might still send `demoType: "cybersec"` or `demoType: "demo"`.
     // Atlas ships a single canonical demo since 1.4.0 (#2021), so the field is
     // accepted (passthrough) but ignored — every demo workspace gets ecommerce.
-    await request("/api/v1/onboarding/use-demo", {
+    // The contract: 201 status, ecommerce industry, canonical connection id —
+    // all regardless of body payload.
+    const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ demoType: "cybersec" }),
     });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+    expect(data.dbType).toBe("postgres");
+    expect(data.entitiesImported).toBe(5);
 
     expect(mockSetSetting).toHaveBeenCalledWith(
       "ATLAS_DEMO_INDUSTRY",
@@ -730,6 +737,36 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       "user-1",
       "org-1",
     );
+  });
+
+  it("ignores legacy demoType: 'demo' (the old default)", async () => {
+    // Pre-1.4.0 default: `demoType: "demo"` mapped to the SaaS CRM seed.
+    // Now also ignored — every demo workspace gets ecommerce.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "demo" }),
+    });
+    expect(res.status).toBe(201);
+
+    expect(mockSetSetting).toHaveBeenCalledWith(
+      "ATLAS_DEMO_INDUSTRY",
+      "ecommerce",
+      "user-1",
+      "org-1",
+    );
+  });
+
+  it("accepts garbage body fields without erroring (passthrough is permissive)", async () => {
+    // Locks in the contract: a future tightening of `UseDemoBodySchema` from
+    // `.passthrough()` to `.strict()` would break this test, signalling that
+    // the legacy-client compatibility surface needs reconsidering.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "garbage", extra: { nested: 42 } }),
+    });
+    expect(res.status).toBe(201);
   });
 
   it("seeds demo prompt collections for the ecommerce industry", async () => {

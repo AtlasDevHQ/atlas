@@ -40,7 +40,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--parquet": "Load Parquet files via DuckDB",
       "--enrich": "Profile + LLM enrichment",
       "--no-enrich": "Skip LLM enrichment",
-      "--demo": "Load demo dataset (simple, cybersec, ecommerce)",
+      "--demo": "Load the canonical demo dataset (NovaMart e-commerce)",
       "--force": "Continue even if more than 20% of tables fail to profile",
     },
   },

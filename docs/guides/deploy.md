@@ -58,13 +58,10 @@ ATLAS_DATASOURCE_URL=postgresql://user:pass@your-analytics-host:5432/mydb
 7. **Seed your data.** Choose a demo dataset or generate a semantic layer from your own tables:
 
 ```bash
-# Option A: Simple demo (3 tables, ~330 rows)
+# Option A: Canonical demo dataset (NovaMart e-commerce — 13 entities, 52 tables, ~480K rows)
 psql "$ATLAS_DATASOURCE_URL" < data/demo.sql
 
-# Option B: Cybersec SaaS demo (62 tables, ~500K rows)
-psql "$ATLAS_DATASOURCE_URL" < data/cybersec.sql
-
-# Option C: Your own data
+# Option B: Your own data
 ATLAS_DATASOURCE_URL="$ATLAS_DATASOURCE_URL" bun run atlas -- init
 ```
 
@@ -235,13 +232,10 @@ ATLAS_DATASOURCE_URL=postgresql://user:pass@your-analytics-host:5432/mydb
 5. Seed the database (choose one):
 
 ```bash
-# Option A: Simple demo (3 tables, ~330 rows)
+# Option A: Canonical demo dataset (NovaMart e-commerce — 13 entities, 52 tables, ~480K rows)
 psql "$ATLAS_DATASOURCE_URL" < data/demo.sql
 
-# Option B: Cybersec SaaS demo (62 tables, ~500K rows)
-psql "$ATLAS_DATASOURCE_URL" < data/cybersec.sql
-
-# Option C: Your own data (skip seeding, just generate semantic layer)
+# Option B: Your own data (skip seeding, just generate semantic layer)
 ATLAS_DATASOURCE_URL="$ATLAS_DATASOURCE_URL" bun run atlas -- init
 ```
 

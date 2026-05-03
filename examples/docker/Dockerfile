@@ -44,7 +44,7 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
-COPY packages/cli/data/demo-semantic semantic
+COPY packages/cli/data/seeds/ecommerce/semantic semantic
 # Build the @useatlas/react widget bundle (served by the /widget route)
 RUN cd packages/react && bun run build
 
@@ -88,7 +88,7 @@ COPY --from=builder --chown=atlas:atlas /app/semantic ./semantic
 COPY --from=builder --chown=atlas:atlas /app/package.json ./package.json
 COPY --chown=atlas:atlas examples/docker/scripts/start.sh ./scripts/start.sh
 # Demo seeding (Railway "Atlas Demo" template — ATLAS_SEED_DEMO=true)
-COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/demo.sql ./data/demo.sql
+COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts
 # pg is installed in packages/api/node_modules (not hoisted to root).
 # seed-demo.ts runs from /app/scripts/ and needs pg — symlink it so

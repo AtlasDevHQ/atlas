@@ -27,10 +27,10 @@ import { invalidateExploreBackend } from "@atlas/api/lib/tools/explore";
 // --- Types ---
 
 // Schema is the demo seed an eval case targets. Atlas ships only `"ecommerce"`
-// today (#2021), but the type stays open-ended so additional seeds can be
-// introduced without retyping every fixture. Runtime validation against
-// `VALID_SCHEMAS` is the source of truth.
-export type EvalSchema = string;
+// today (#2021); to add a future seed, append it to `VALID_SCHEMAS` below
+// and the type narrows automatically. Runtime validation in `validateCase`
+// remains the source of truth.
+export type EvalSchema = (typeof VALID_SCHEMAS)[number];
 
 export interface EvalCase {
   id: string;

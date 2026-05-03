@@ -53,14 +53,18 @@ const DEMO_CONNECTION_ID = "__demo__";
 /**
  * Resolve the canonical demo semantic-layer directory.
  *
- * In Docker: /app/semantic (image bundles the ecommerce semantic layer at the
- *            standard semantic-root path).
- * In dev:    {cwd}/semantic (repo-root semantic/, which mirrors the ecommerce
- *            seed) → falls back to packages/cli/data/seeds/ecommerce/semantic.
+ * Prefers the configured semantic root from `getSemanticRoot()` (the path the
+ * runtime mounts as `semantic/` — Docker images bundle the ecommerce layer
+ * here at build time; dev workspaces have the repo-root `semantic/` dir).
+ * Falls back to the bundled ecommerce seed under
+ * `packages/cli/data/seeds/ecommerce/semantic` for dev workspaces that
+ * haven't run `atlas init` yet.
  */
-function getDemoSemanticDir(): string {
+function getDemoSemanticDir(): { dir: string; source: "root" | "fallback" } {
   const root = getSemanticRoot();
-  if (existsSync(path.join(root, "entities"))) return root;
+  if (existsSync(path.join(root, "entities"))) {
+    return { dir: root, source: "root" };
+  }
 
   // Dev fallback when the working directory hasn't been initialized yet
   const seedsPath = path.resolve(
@@ -72,7 +76,9 @@ function getDemoSemanticDir(): string {
     "ecommerce",
     "semantic",
   );
-  if (existsSync(path.join(seedsPath, "entities"))) return seedsPath;
+  if (existsSync(path.join(seedsPath, "entities"))) {
+    return { dir: seedsPath, source: "fallback" };
+  }
 
   throw new Error(
     `Canonical demo semantic layer not found. ` +
@@ -669,7 +675,17 @@ onboarding.openapi(
 
       // The body schema accepts pass-through fields so legacy clients sending
       // `demoType` continue to work; the value is ignored — this route always
-      // provisions the canonical ecommerce demo since 1.4.0 (#2021).
+      // provisions the canonical ecommerce demo since 1.4.0 (#2021). Surface
+      // a warn-level log so operators can see when a legacy client is still
+      // calling the API with the removed picker payload.
+      const body = c.req.valid("json") as Record<string, unknown>;
+      if (typeof body?.demoType === "string" && body.demoType !== "ecommerce") {
+        log.warn(
+          { requestId, legacyDemoType: body.demoType },
+          "Legacy demoType body field ignored — every demo workspace gets ecommerce since 1.4.0 (#2021)",
+        );
+      }
+
       const url = resolveDatasourceUrl();
       if (!url) {
         return c.json({ error: "no_demo_datasource", message: "No demo datasource configured. Set ATLAS_DATASOURCE_URL." }, 400);
@@ -729,7 +745,14 @@ onboarding.openapi(
       // Resolve and import the canonical demo semantic layer
       let semanticDir: string;
       try {
-        semanticDir = getDemoSemanticDir();
+        const resolved = getDemoSemanticDir();
+        semanticDir = resolved.dir;
+        if (resolved.source === "fallback") {
+          log.info(
+            { requestId, semanticDir },
+            "Demo semantic layer resolved via dev fallback (semantic/ not initialized at the configured root)",
+          );
+        }
       } catch (err) {
         log.error({ err: errorMessage(err), requestId }, "Canonical demo semantic layer not found");
         return c.json({

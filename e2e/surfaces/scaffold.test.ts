@@ -364,11 +364,11 @@ describe("E2E: Scaffold — --demo flag", () => {
     const entitiesDir = path.join(targetDir, "semantic", "entities");
     expect(fs.existsSync(entitiesDir)).toBe(true);
     const entityFiles = fs.readdirSync(entitiesDir).filter((f) => f.endsWith(".yml"));
-    expect(entityFiles.length).toBeGreaterThanOrEqual(3); // simple demo: accounts, companies, people
+    expect(entityFiles.length).toBeGreaterThanOrEqual(13); // canonical ecommerce demo: 13 entities (orders, products, customers, …)
   });
 });
 
-describe("E2E: Scaffold — --demo flag", () => {
+describe("E2E: Scaffold — --demo flag (legacy rejection + bare-flag invariant)", () => {
   it("accepts bare --demo (loads canonical ecommerce seed)", () => {
     const tmpDir = makeTempDir();
     const projectName = "e2e-demo-bare";

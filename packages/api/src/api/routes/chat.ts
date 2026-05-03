@@ -572,7 +572,12 @@ chat.openapi(chatRoute, async (c) => {
       );
     }
   
-    // Capture plan warning for response headers (set after stream is created)
+    // Capture plan warning so it can be folded into the unified
+    // `data-context-warning` stream alongside semantic / learned-pattern
+    // degradations. Pre-#2005 this used a separate `data-plan-warning`
+    // frame + `x-plan-limit-warning` header, but the frame channel was
+    // never wired up on the client (typed as a string while the server
+    // wrote an object) — unifying on one channel is the cleanup.
     const planWarning = planCheck.allowed ? planCheck.warning : undefined;
   
     // Resolve atlas mode for this request (published vs developer)
@@ -845,9 +850,19 @@ chat.openapi(chatRoute, async (c) => {
           // stay aligned.
           const stream = createUIMessageStream({
             execute: ({ writer }) => {
-              // Surface plan warning as a data annotation so clients can display it
+              // #2005 — fold the plan-budget warning into the same
+              // structured `data-context-warning` channel as the agent's
+              // preflight degradations so the client only has to handle
+              // one wire shape. The pre-#2005 `data-plan-warning` frame
+              // (with `data` typed as a string on the client but written
+              // as an object server-side) is gone.
               if (planWarning) {
-                writer.write({ type: "data-plan-warning", data: planWarning });
+                contextWarnings.unshift({
+                  severity: "warning",
+                  code: "plan_limit_warning",
+                  title: "Approaching plan limit",
+                  detail: planWarning.message,
+                });
               }
               // #1988 B5 — emit one frame per preflight degradation. Each
               // frame carries `severity: "warning"` so a client routing
@@ -900,7 +915,6 @@ chat.openapi(chatRoute, async (c) => {
               "X-Accel-Buffering": "no",
               "Cache-Control": "no-cache, no-transform",
               ...(conversationId ? { "x-conversation-id": conversationId } : {}),
-              ...(planWarning ? { "x-plan-limit-warning": JSON.stringify(planWarning) } : {}),
             },
           });
   

@@ -203,6 +203,37 @@ try {
 | `parse-error` | `raw`, `error` | Client-side: an SSE frame contained invalid JSON. The raw data is preserved for debugging. |
 | `finish` | `reason` | Stream completed |
 
+### Context Warnings (Degraded Answer Signal)
+
+The chat route emits `data-context-warning` frames whenever the agent ran
+past a non-fatal degradation — the org semantic layer or learned-patterns
+lookup failed, or the workspace is approaching its plan budget — and the
+run was allowed to proceed against reduced context. These are not stream
+events from `streamQuery()`; they arrive on the AI-SDK UI Message Stream
+channel that `chat()` returns. If you are routing a raw `Response` from
+`atlas.chat()` through your own SSE consumer, parse each
+`data-context-warning` frame body with `parseContextWarning` from
+`@useatlas/types`:
+
+```typescript
+import { parseContextWarning, type ChatContextWarning } from "@useatlas/types";
+
+// Inside your SSE frame handler:
+if (frame.type === "data-context-warning") {
+  const warning: ChatContextWarning | null = parseContextWarning(frame.data);
+  if (warning) {
+    console.warn(`[${warning.code}]`, warning.title, warning.detail ?? "");
+    // Surface a per-message warning banner — the answer is still usable
+    // but was generated against reduced context. Do NOT treat it as a
+    // hard error.
+  }
+}
+```
+
+The frame's `severity: "warning"` discriminator separates these from
+`data-error` frames, so a single SSE consumer can route both without
+misclassifying a degraded answer as a failure.
+
 ## Error Handling
 
 All methods throw `AtlasError` on failure. See the full [Error Codes Reference](https://docs.useatlas.dev/reference/error-codes) for every error code, HTTP status, retry guidance, and a complete retry-with-backoff example.

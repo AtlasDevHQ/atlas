@@ -11,6 +11,7 @@ import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
 import { ErrorBanner } from "./chat/error-banner";
+import { ContextWarningBanner } from "./chat/context-warning-banner";
 import { ApiKeyBar } from "./chat/api-key-bar";
 import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
@@ -29,6 +30,7 @@ import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
 import { StarterPromptList } from "./chat/starter-prompt-list";
 import type { StarterPrompt } from "@useatlas/types/starter-prompt";
+import { useContextWarnings } from "../hooks/use-context-warnings";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -205,20 +207,35 @@ export function AtlasChat() {
   // Python streaming progress — keyed by tool invocation ID
   const [pythonProgress, setPythonProgress] = useState<Map<string, PythonProgressData[]>>(new Map());
 
-  const onData = useCallback((dataPart: { type: string; id?: string; data: unknown }) => {
-    if (dataPart.type === "data-python-progress" && dataPart.id && dataPart.data) {
-      const d = dataPart.data as Record<string, unknown>;
-      // Minimal runtime validation — ensure the event has a known type
-      if (typeof d.type !== "string" || !["stdout", "chart", "recharts"].includes(d.type)) return;
-      const event = d as unknown as PythonProgressData;
-      setPythonProgress((prev) => {
-        const next = new Map(prev);
-        const events = next.get(dataPart.id!) ?? [];
-        next.set(dataPart.id!, [...events, event]);
-        return next;
-      });
-    }
-  }, []);
+  // #1988 B5 / #2005 — context-warning + plan-warning frames are buffered
+  // by the warnings hook until the AI SDK appends the assistant message id
+  // they belong to. The handler is reached via a ref because `useChat`
+  // captures `onData` once and the warnings hook is called AFTER `useChat`
+  // (it needs `messages` to know which id to attach to). The ref pattern
+  // keeps `onData` stable while still routing each frame to the latest
+  // hook closure.
+  const warningHandlerRef = useRef<((part: { type: string; data: unknown }) => boolean) | null>(
+    null,
+  );
+
+  const onData = useCallback(
+    (dataPart: { type: string; id?: string; data: unknown }) => {
+      if (warningHandlerRef.current?.(dataPart)) return;
+      if (dataPart.type === "data-python-progress" && dataPart.id && dataPart.data) {
+        const d = dataPart.data as Record<string, unknown>;
+        // Minimal runtime validation — ensure the event has a known type
+        if (typeof d.type !== "string" || !["stdout", "chart", "recharts"].includes(d.type)) return;
+        const event = d as unknown as PythonProgressData;
+        setPythonProgress((prev) => {
+          const next = new Map(prev);
+          const events = next.get(dataPart.id!) ?? [];
+          next.set(dataPart.id!, [...events, event]);
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   // The AI SDK's onData expects DataUIPart<UIDataTypes> which structurally accepts
   // { type: `data-${string}`; id?: string; data: unknown } — our callback matches.
@@ -228,6 +245,10 @@ export function AtlasChat() {
     transport,
     onData: onData as never,
   });
+
+  const warningCtl = useContextWarnings(messages);
+  const contextWarningsByMessage = warningCtl.byMessage;
+  warningHandlerRef.current = warningCtl.handleData;
 
   const isLoading = status === "streaming" || status === "submitted";
 
@@ -409,6 +430,9 @@ export function AtlasChat() {
     if (!text.trim()) return;
     const saved = text;
     setInput("");
+    // Drop any unattached warnings from a stalled earlier turn so they
+    // cannot end up keyed onto the upcoming assistant message.
+    warningCtl.resetPending();
     sendMessage({ text: saved }).catch((err: unknown) => {
       console.error("Failed to send message:", err instanceof Error ? err.message : String(err));
       setInput(saved);
@@ -437,6 +461,10 @@ export function AtlasChat() {
       setConversationId(id);
       convos.setSelectedId(id);
       setMobileMenuOpen(false);
+      // Loaded turns predate this session — no warning frames replay over
+      // the wire, so any prior in-memory bucket is stale relative to the
+      // freshly loaded message ids.
+      warningCtl.reset();
     } catch (err: unknown) {
       console.warn("Failed to load conversation:", err instanceof Error ? err.message : String(err));
       setTransientWarning("Failed to load conversation. Please try again.");
@@ -453,6 +481,7 @@ export function AtlasChat() {
     setInput("");
     setMobileMenuOpen(false);
     setPythonProgress(new Map());
+    warningCtl.reset();
   }
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI
@@ -648,11 +677,16 @@ export function AtlasChat() {
                       msgIndex === messages.length - 1;
 
                     // Skip rendering assistant messages with no visible content
-                    // (happens when stream errors before producing any text)
+                    // (happens when stream errors before producing any text).
+                    // A message with attached context warnings is still
+                    // worth rendering — the banner is the only signal the
+                    // user gets when a degraded stream produced nothing.
                     const hasVisibleParts = m.parts?.some(
                       (p) => (p.type === "text" && p.text.trim()) || isToolUIPart(p),
                     );
-                    if (!hasVisibleParts && !isLastAssistant) return null;
+                    const warningBucket = contextWarningsByMessage.get(m.id);
+                    const hasWarnings = !!warningBucket && warningBucket.warnings.length > 0;
+                    if (!hasVisibleParts && !isLastAssistant && !hasWarnings) return null;
 
                     // Extract suggestions from the last text part that contains them
                     const lastTextWithSuggestions = m.parts
@@ -664,6 +698,9 @@ export function AtlasChat() {
 
                     return (
                       <div key={m.id} className="space-y-2" role="article" aria-label="Message from Atlas">
+                        {hasWarnings && warningBucket && (
+                          <ContextWarningBanner warnings={warningBucket.warnings} />
+                        )}
                         {m.parts?.map((part, i) => {
                           if (part.type === "text" && part.text.trim()) {
                             const displayText = parseSuggestions(part.text).text;

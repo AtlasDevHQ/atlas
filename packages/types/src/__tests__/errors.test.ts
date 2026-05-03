@@ -657,3 +657,106 @@ describe("parseChatError client-side errors", () => {
     expect(info.title).toBe("Something went wrong. Please try again.");
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseContextWarning — wire-frame validator for #1988 B5 degraded-answer SSE
+// ---------------------------------------------------------------------------
+
+import { parseContextWarning, type ChatContextWarning } from "../errors";
+
+describe("parseContextWarning", () => {
+  test("returns null for non-object input", () => {
+    expect(parseContextWarning(null)).toBeNull();
+    expect(parseContextWarning(undefined)).toBeNull();
+    expect(parseContextWarning("string")).toBeNull();
+    expect(parseContextWarning(42)).toBeNull();
+    expect(parseContextWarning(true)).toBeNull();
+    expect(parseContextWarning([])).toBeNull();
+  });
+
+  test("returns null when severity is missing or wrong", () => {
+    expect(
+      parseContextWarning({
+        code: "semantic_layer_unavailable",
+        title: "x",
+      }),
+    ).toBeNull();
+    expect(
+      parseContextWarning({
+        severity: "error",
+        code: "semantic_layer_unavailable",
+        title: "x",
+      }),
+    ).toBeNull();
+  });
+
+  test("returns null when code is unknown", () => {
+    expect(
+      parseContextWarning({
+        severity: "warning",
+        code: "made_up_code",
+        title: "x",
+      }),
+    ).toBeNull();
+  });
+
+  test("returns null when title is missing or non-string", () => {
+    expect(
+      parseContextWarning({
+        severity: "warning",
+        code: "semantic_layer_unavailable",
+      }),
+    ).toBeNull();
+    expect(
+      parseContextWarning({
+        severity: "warning",
+        code: "semantic_layer_unavailable",
+        title: 123,
+      }),
+    ).toBeNull();
+  });
+
+  test("parses a minimal valid warning", () => {
+    const out = parseContextWarning({
+      severity: "warning",
+      code: "semantic_layer_unavailable",
+      title: "Semantic layer unavailable",
+    });
+    expect(out).not.toBeNull();
+    const valid = out as ChatContextWarning;
+    expect(valid.severity).toBe("warning");
+    expect(valid.code).toBe("semantic_layer_unavailable");
+    expect(valid.title).toBe("Semantic layer unavailable");
+    expect(valid.detail).toBeUndefined();
+    expect(valid.requestId).toBeUndefined();
+  });
+
+  test("parses a full warning with detail and requestId", () => {
+    const out = parseContextWarning({
+      severity: "warning",
+      code: "learned_patterns_unavailable",
+      title: "Learned patterns unavailable",
+      detail: "Question-similarity hints disabled.",
+      requestId: "req-xyz",
+    });
+    expect(out).not.toBeNull();
+    const valid = out as ChatContextWarning;
+    expect(valid.code).toBe("learned_patterns_unavailable");
+    expect(valid.detail).toBe("Question-similarity hints disabled.");
+    expect(valid.requestId).toBe("req-xyz");
+  });
+
+  test("drops non-string detail and requestId rather than rejecting", () => {
+    const out = parseContextWarning({
+      severity: "warning",
+      code: "semantic_layer_unavailable",
+      title: "x",
+      detail: 42,
+      requestId: { not: "a string" },
+    });
+    expect(out).not.toBeNull();
+    const valid = out as ChatContextWarning;
+    expect(valid.detail).toBeUndefined();
+    expect(valid.requestId).toBeUndefined();
+  });
+});

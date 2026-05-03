@@ -22,14 +22,28 @@ const SMOKE_ACTOR = createAtlasUser("u_smoke", "managed", "smoke@test", {
 // Module mocks — mock the named exports consumed by the server module
 // ---------------------------------------------------------------------------
 
+// Mock all named exports — partial mocks leak via the in-process Bun
+// runner and break unrelated tests (`Export named 'getConfig' not found`).
+const __mockedConfig = {
+  datasources: {},
+  tools: ["explore", "executeSQL"],
+  auth: "auto",
+  semanticLayer: "./semantic",
+  source: "env",
+};
 mock.module("@atlas/api/lib/config", () => ({
-  initializeConfig: mock(async () => ({
-    datasources: {},
-    tools: ["explore", "executeSQL"],
-    auth: "auto",
-    semanticLayer: "./semantic",
-    source: "env",
-  })),
+  initializeConfig: mock(async () => __mockedConfig),
+  getConfig: mock(() => __mockedConfig),
+  loadConfig: mock(async () => __mockedConfig),
+  configFromEnv: mock(() => __mockedConfig),
+  validateAndResolve: mock(() => __mockedConfig),
+  defineConfig: (c: unknown) => c,
+  applyDatasources: mock(async () => undefined),
+  validateToolConfig: mock(async () => undefined),
+  formatZodErrors: () => "",
+  _resetConfig: mock(() => undefined),
+  _setConfigForTest: mock(() => undefined),
+  _warnPoolDefaultsInSaaS: mock(() => undefined),
 }));
 
 mock.module("@atlas/api/lib/tools/explore", () => ({

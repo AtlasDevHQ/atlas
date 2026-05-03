@@ -103,8 +103,10 @@ try {
         `seed-demo: ${ds.name} — FAILED:`,
         err instanceof Error ? err.message : err,
       );
-      // Continue to next dataset instead of aborting entirely
-      continue;
+      // With a single canonical seed, a SQL failure means the API will boot
+      // against an empty database — fail loudly instead of exiting 0. (#2021)
+      try { await client.end(); } catch { /* connection close failed; exit anyway */ }
+      process.exit(1);
     }
 
     // Verify

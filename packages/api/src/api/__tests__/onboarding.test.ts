@@ -138,9 +138,9 @@ mock.module("@atlas/api/lib/security", () => ({
 }));
 
 // Spyable logger so tests can assert deprecation/info paths fire correctly.
-// Typed as `(...args: unknown[]) => void` so `mock.calls[i][0]`/`[1]` are
-// readable (pino-style: first arg is the binding object, second is the msg).
-type LogFn = (...args: unknown[]) => void;
+// Pino's API is `(bindings, msg?)` — typing the mock to match means
+// `call[0].legacyDemoType` and `call[1]` (string) typecheck without `as`.
+type LogFn = (bindings: Record<string, unknown>, msg?: string) => void;
 const mockLogInfo = mock<LogFn>(() => {});
 const mockLogWarn = mock<LogFn>(() => {});
 const mockLogError = mock<LogFn>(() => {});
@@ -762,7 +762,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       typeof call[1] === "string" && call[1].includes("Legacy demoType"),
     );
     expect(warnCall).toBeDefined();
-    expect((warnCall![0] as Record<string, unknown>).legacyDemoType).toBe("cybersec");
+    expect(warnCall![0].legacyDemoType).toBe("cybersec");
   });
 
   it("ignores legacy demoType: 'demo' (the old default)", async () => {
@@ -785,7 +785,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     const warnCall = mockLogWarn.mock.calls.find((call) =>
       typeof call[1] === "string" && call[1].includes("Legacy demoType"),
     );
-    expect((warnCall![0] as Record<string, unknown>).legacyDemoType).toBe("demo");
+    expect(warnCall![0].legacyDemoType).toBe("demo");
   });
 
   it("accepts garbage body fields without erroring", async () => {
@@ -801,6 +801,52 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     });
     expect(res.status).toBe(201);
     expect(res.headers.get("Deprecation")).toContain('field="demoType"');
+  });
+
+  it("rejects an array body and never fires deprecation telemetry", async () => {
+    // Hono's OpenAPI validator rejects non-object bodies against
+    // `UseDemoBodySchema` — what matters is that the deprecation peek
+    // never fires on a body shape that fails validation upstream.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(["demoType", "cybersec"]),
+    });
+    expect([400, 422]).toContain(res.status);
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(
+      mockLogWarn.mock.calls.some((call) =>
+        typeof call[1] === "string" && call[1].includes("Legacy demoType"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not warn or send Deprecation header for a numeric demoType", async () => {
+    // The peek requires `typeof demoType === "string"`. Numeric/boolean
+    // values were never produced by historical Atlas clients, but the route
+    // must not crash if a malformed client sends one.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: 42 }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("Deprecation")).toBeNull();
+  });
+
+  it("does not 500 when the body is malformed JSON", async () => {
+    // The Effect.tryPromise + catchAll wrapping c.req.json() inside the
+    // handler must absorb parse failures so the deprecation peek never
+    // blocks. The route's main body validator (Hono OpenAPI middleware)
+    // typically returns 400 for malformed JSON before we even reach the
+    // handler — what matters is no 5xx escapes.
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json-at-all",
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(res.headers.get("Deprecation")).toBeNull();
   });
 
   it("falls back to packages/cli/data/seeds/ecommerce/semantic when the configured root has no entities", async () => {
@@ -826,8 +872,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       typeof call[1] === "string" && call[1].includes("bundled-seed dev fallback"),
     );
     expect(fallbackLog).toBeDefined();
-    expect((fallbackLog![0] as Record<string, unknown>).semanticDir as string)
-      .toContain("seeds/ecommerce/semantic");
+    expect(fallbackLog![0].semanticDir).toContain("seeds/ecommerce/semantic");
   });
 
   it("does NOT warn or send Deprecation header for canonical body or empty body", async () => {

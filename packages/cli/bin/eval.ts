@@ -119,29 +119,26 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
       const doc = yaml.load(content) as Record<string, unknown>;
 
       validateCase(doc, filePath);
+      // validateCase is an assertion function — TS now narrows `doc` to a
+      // shape that lets the push skip every `as` escape.
 
-      const caseId = doc.id as string;
+      const caseId = doc.id;
       if (seenIds.has(caseId)) {
         throw new Error(`Duplicate eval case id "${caseId}" in ${filePath}`);
       }
       seenIds.add(caseId);
 
-      // validateCase has already enforced the type predicate; narrow once
-      // here so the push doesn't need an `as` escape on the schema field.
-      if (!isEvalSchema(doc.schema)) {
-        throw new Error(`Invalid schema "${doc.schema}" in ${filePath}. Valid: ${VALID_SCHEMAS.join(", ")}`);
-      }
       cases.push({
-        id: doc.id as string,
-        question: doc.question as string,
+        id: doc.id,
+        question: doc.question,
         schema: doc.schema,
-        difficulty: doc.difficulty as EvalCase["difficulty"],
-        category: doc.category as string,
-        tags: (doc.tags as string[]) ?? [],
-        gold_sql: (doc.gold_sql as string).trim(),
-        skip: doc.skip as boolean | undefined,
-        expected_rows: doc.expected_rows as number | undefined,
-        notes: doc.notes as string | undefined,
+        difficulty: doc.difficulty,
+        category: doc.category,
+        tags: doc.tags ?? [],
+        gold_sql: doc.gold_sql.trim(),
+        skip: doc.skip,
+        expected_rows: doc.expected_rows,
+        notes: doc.notes,
       });
     }
   }
@@ -149,7 +146,27 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
   return cases;
 }
 
-export function validateCase(doc: Record<string, unknown>, filePath: string): void {
+/**
+ * Shape of a YAML eval case after validation. Used as the `asserts` target
+ * of `validateCase` so the loader doesn't need `as` casts on every field.
+ */
+type ValidatedCase = {
+  id: string;
+  question: string;
+  schema: EvalSchema;
+  difficulty: EvalCase["difficulty"];
+  category: string;
+  gold_sql: string;
+  tags?: string[];
+  skip?: boolean;
+  expected_rows?: number;
+  notes?: string;
+};
+
+export function validateCase(
+  doc: Record<string, unknown>,
+  filePath: string,
+): asserts doc is ValidatedCase {
   for (const field of REQUIRED_CASE_FIELDS) {
     if (!doc[field]) {
       throw new Error(`Missing required field "${field}" in ${filePath}`);

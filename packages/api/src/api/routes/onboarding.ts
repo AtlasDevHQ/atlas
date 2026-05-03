@@ -680,10 +680,14 @@ onboarding.openapi(
 
       // Legacy `demoType: simple|cybersec|ecommerce` clients (#1188) still
       // call this endpoint after #2021 collapsed the picker. The body schema
-      // strips unknown keys, but we peek the raw body for telemetry so
-      // operators can see when a stale client is in the wild. The route
-      // always provisions ecommerce regardless. Sending a `Deprecation`
-      // header per RFC 9745 gives client developers a real signal.
+      // strips unknown keys; we peek the raw body for telemetry so operators
+      // can see when a stale client is in the wild. The route always
+      // provisions ecommerce regardless. We also surface a custom
+      // `Deprecation` header (a non-standard hint, not RFC 9745 — that RFC
+      // requires a Structured Field date value) so client developers see the
+      // ignored field in their browser DevTools / API explorer. Hono caches
+      // `req.json()` so this raw read doesn't conflict with the validated
+      // body consumed downstream.
       const rawBody = (yield* Effect.tryPromise({
         try: () => c.req.json() as Promise<unknown>,
         catch: () => null,

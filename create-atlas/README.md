@@ -1,4 +1,4 @@
-# @useatlas/create
+# create-atlas-agent
 
 Deploy a text-to-SQL data analyst agent on your database in minutes. Ask natural language questions, get validated SQL and interpreted results.
 
@@ -7,7 +7,7 @@ Deploy a text-to-SQL data analyst agent on your database in minutes. Ask natural
 ## Quick start
 
 ```bash
-bun create @useatlas my-app
+bun create atlas-agent my-app
 cd my-app
 bun run dev
 ```
@@ -22,7 +22,7 @@ Open [http://localhost:3000](http://localhost:3000) and start asking questions a
 
 ## Interactive setup
 
-Running `bun create @useatlas my-app` walks you through each option:
+Running `bun create atlas-agent my-app` walks you through each option:
 
 | Prompt | Options | Default |
 |--------|---------|---------|
@@ -42,18 +42,20 @@ Running `bun create @useatlas my-app` walks you through each option:
 Skip all prompts with sensible defaults (PostgreSQL + Anthropic + Docker):
 
 ```bash
-bun create @useatlas my-app --defaults
+bun create atlas-agent my-app --defaults
 # or
-bun create @useatlas my-app -y
+bun create atlas-agent my-app -y
 ```
+
+> **Note:** The published package name is `create-atlas-agent`. `bun create atlas-agent <name>` is the canonical invocation. The legacy `@useatlas/create` package on npm is deprecated and points here.
 
 ### Platform flag
 
 Skip the platform prompt:
 
 ```bash
-bun create @useatlas my-app --platform vercel
-bun create @useatlas my-app --platform railway
+bun create atlas-agent my-app --platform vercel
+bun create atlas-agent my-app --platform railway
 ```
 
 Available platforms: `vercel`, `railway`, `docker`, `other`
@@ -79,7 +81,7 @@ Each platform gets the right template and sandbox configuration automatically.
 nsjail process isolation is built into the Docker image.
 
 ```bash
-bun create @useatlas my-app --platform docker
+bun create atlas-agent my-app --platform docker
 cd my-app
 
 # Generate semantic layer from your database
@@ -97,7 +99,7 @@ Verify: `curl http://localhost:3001/api/health`
 Uses a sidecar container for sandbox isolation via Railway's internal networking.
 
 ```bash
-bun create @useatlas my-app --platform railway
+bun create atlas-agent my-app --platform railway
 cd my-app
 ```
 
@@ -114,7 +116,7 @@ cd my-app
 Deploys as a Next.js app with the API embedded via a catch-all route. Explore tool auto-detects Vercel Sandbox (Firecracker VM isolation).
 
 ```bash
-bun create @useatlas my-app --platform vercel
+bun create atlas-agent my-app --platform vercel
 cd my-app
 ```
 

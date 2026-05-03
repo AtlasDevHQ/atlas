@@ -144,7 +144,7 @@ export default function AnnouncingAtlas() {
           that describes what your tables and columns actually mean.
         </Paragraph>
 
-        <BlockCode title="terminal">{`$ bun create @useatlas my-app --demo
+        <BlockCode title="terminal">{`$ bun create atlas-agent my-app --demo
 $ cd my-app && bun run dev
 
 > Ready on http://localhost:3000
@@ -273,7 +273,7 @@ $ cd my-app && bun run dev
         <Paragraph>
           Atlas is AGPL-3.0 licensed. You can self-host the full product,
           every feature, no artificial limits, for free. Run{" "}
-          <InlineCode>bun create @useatlas</InlineCode>, connect your
+          <InlineCode>bun create atlas-agent</InlineCode>, connect your
           database, and you&apos;re done.
         </Paragraph>
         <Paragraph>
@@ -313,7 +313,7 @@ $ cd my-app && bun run dev
           </a>
         </div>
 
-        <BlockCode title="terminal">{`$ bun create @useatlas my-app
+        <BlockCode title="terminal">{`$ bun create atlas-agent my-app
 $ cd my-app
 $ cp .env.example .env   # add your ANTHROPIC_API_KEY + ATLAS_DATASOURCE_URL
 $ bun run dev`}</BlockCode>

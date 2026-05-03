@@ -1,6 +1,6 @@
 {
-  "name": "@useatlas/create-plugin",
-  "version": "0.0.4",
+  "name": "create-atlas-plugin",
+  "version": "0.1.1",
   "description": "Scaffold a new Atlas plugin project",
   "bin": {
     "create-atlas-plugin": "./index.ts"

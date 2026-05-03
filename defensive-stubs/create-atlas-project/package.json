@@ -1,0 +1,20 @@
+{
+  "name": "create-atlas-project",
+  "version": "0.0.1",
+  "description": "Placeholder for Atlas (https://www.useatlas.dev). Use create-atlas-agent instead.",
+  "bin": {
+    "create-atlas-project": "./index.js"
+  },
+  "keywords": ["atlas", "placeholder"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "defensive-stubs/create-atlas-project"
+  },
+  "homepage": "https://www.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "files": ["index.js", "README.md"],
+  "license": "MIT"
+}

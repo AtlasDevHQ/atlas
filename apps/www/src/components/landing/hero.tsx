@@ -272,7 +272,7 @@ export function Hero() {
             className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-zinc-50 transition-colors hover:border-white/20"
           >
             <code className="font-mono text-[12.5px]">
-              $ bun create @useatlas
+              $ bun create atlas-agent
             </code>
           </a>
         </div>

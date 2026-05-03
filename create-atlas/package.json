@@ -1,9 +1,9 @@
 {
-  "name": "@useatlas/create",
-  "version": "0.0.7",
+  "name": "create-atlas-agent",
+  "version": "0.3.2",
   "description": "Create a new Atlas text-to-SQL agent project",
   "bin": {
-    "create-useatlas": "./index.ts"
+    "create-atlas-agent": "./index.ts"
   },
   "scripts": {
     "prepublishOnly": "bash scripts/prepare-templates.sh"

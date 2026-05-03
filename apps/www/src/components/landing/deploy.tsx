@@ -54,7 +54,7 @@ function SelfHostCard() {
         <pre className="m-0 px-4 py-3.5 font-mono text-[12.5px] leading-[1.7]">
           <span className="text-zinc-200">
             <span className="mr-1.5 text-zinc-400">$</span>
-            bun create <span className="text-brand">@useatlas</span> my-atlas
+            bun create <span className="text-brand">atlas-agent</span> my-atlas
           </span>
           {"\n"}
           <span className="text-zinc-200">

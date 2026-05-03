@@ -29,7 +29,7 @@ Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ol
 ## Try it in 60 seconds
 
 ```bash
-bun create @useatlas my-app --demo
+bun create atlas-agent my-app --demo
 cd my-app && bun run dev
 # Open http://localhost:3000
 ```
@@ -137,7 +137,7 @@ atlas/
 │   └── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
 ├── plugins/              # 21 plugins (datasource, context, interaction, action, sandbox)
 ├── ee/                   # @atlas/ee — Enterprise features (source-available, commercial license)
-├── create-atlas/         # Scaffolding CLI (bun create @useatlas)
+├── create-atlas/         # Scaffolding CLI (bun create atlas-agent)
 ├── apps/
 │   ├── www/              # Landing page (useatlas.dev)
 │   └── docs/             # Documentation (docs.useatlas.dev)

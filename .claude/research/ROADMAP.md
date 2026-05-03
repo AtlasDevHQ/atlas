@@ -130,7 +130,26 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 - [x] **1.2.2 — Admin Console Polish & Schema Consolidation** (#36, 70+ issues) — admin final-pass buckets 1+2+4, `@useatlas/schemas` wire consolidation (`admin-schemas.ts` 542 → 241 lines), `@useatlas/types` 0.0.11 → 0.0.14 with `Percentage` / `Ratio` branded types + 4 discriminated-union migrations, `MutationErrorSurface` + branded `FeatureName` registry across ~40 admin pages.
 - [x] **1.2.3 — Security Sweep** (#37, 7 phases, 90+ findings, 23 PRs) — 7-phase audit-and-fix across auth/middleware (F-01..F-07), org-scoping + ContentMode (F-08..F-16), SQL validator fuzz (F-17..F-21), audit-log coverage on 201 write routes (F-22..F-36), secret/error surfaces + plugin credentials (F-41..F-52), rate limiting + timeouts + DoS (F-73..F-92), EE governance bypasses (F-53..F-72). Headline ships: plaintext-column drop on all 10 integration tables (#1832), `ATLAS_ENCRYPTION_KEYS` versioned keyset rotation (F-47), webhook replay + per-channel rate limit (F-75/F-76), atomic per-conversation step budget (F-77), residue audit script with `ATLAS_STRICT_PLUGIN_SECRETS` opt-in (#1835). Remediation tail closed in **1.2.4 — Security Cleanup Tail**: F-53 (custom-role route-layer enforcement, #1849), F-56 + F-59 (SSO bypass on `byot` + test debt, #1852), MCP actor binding (#1858), and F-57 (SCIM provenance gate on admin user mutations, #1853). Findings + step-by-step shipped notes in `.claude/research/security-audit-1-2-3.md`.
 - [x] **1.3.0 — End-User UI Design Pass** (#38, 28 issues + tracker #1719) — critique → distill → colorize → polish across 8 buckets covering chat, notebook, dashboards, public views (shared/embed/report), onboarding (login/signup/create-org/wizard), demo, landing page, and apps/www legal. Shared primitives extracted: `<OnboardingShell>` + `<StepTrack>` for onboarding chrome, `<AssistantTurn>` (#1888) for the chat-and-notebook gutter rail, `LegalSection` for legal pages. Post-bucket public-page audit caught license/region/retention/MFA drift and shipped TOTP MFA (#1925) + 365-day audit retention default (#1927).
-- [x] **1.3.1 — Post-Launch Production Audit** — `/prod-audit` + `/www-audit` + `/docs-audit` passes shipped ~30 fixes: SaaS boot-guard family covering 9 misconfigs (#1978/#1983/#1988), OTel coverage on scheduler+plugin+abuse (#1979), security headers across api/web/www (#1984), chat Retry-After + degradation warning frames (#1980 + #2005), legal/sitemap/docs refresh. Architecture wins #45–#47.
+- [x] **1.3.1 — Post-Launch Production Audit** — `/prod-audit` + `/www-audit` + `/docs-audit` passes shipped ~30 fixes: SaaS boot-guard family covering 9 misconfigs (#1978/#1983/#1988), OTel coverage on scheduler+plugin+abuse (#1979), security headers across api/web/www (#1984), chat Retry-After + degradation warning frames (#1980 + #2005), sub-processor change feed via Atom + signed webhooks (#1924), Lighthouse CI budget for marketing surfaces (#2009), legal/sitemap/docs refresh. Architecture wins #45–#47.
+
+---
+
+## Active: 1.4.0 — MCP & Agent-First DX
+
+Tracker: [milestone #40](https://github.com/AtlasDevHQ/atlas/milestones/40). Lead Atlas with the MCP story (`bunx` installer, hosted endpoint, typed tools) and the YAML-first semantic-layer narrative.
+
+- [x] One-command MCP installer — `bunx @useatlas/mcp init --local` writes a paste-ready config or merges into the detected client (#2018, PR #2032)
+- [x] Typed semantic-layer MCP tools + version sync — `listEntities` / `describeEntity` / `listMetrics` / `runMetric` exposed; server version tracks `package.json` (#2019 + #2020, PR #2031)
+- [x] Scaffolder rename — `bun create atlas-agent` / `bun create atlas-plugin` reads as English; old `@useatlas/create*` deprecated with redirect (PR #2033)
+- [ ] Hosted MCP endpoint at `mcp.useatlas.dev` with SaaS auth (#2024, #2028)
+- [ ] OTel coverage for MCP tool calls — activation + tool-call counters (#2029)
+- [ ] Structured error envelope for typed MCP tools so agents can recover gracefully (#2030)
+- [ ] List Atlas in MCP registries (mcp.so + others) before close (#2027)
+- [ ] Lead README, docs homepage, and landing with MCP + the YAML-first story (#2026)
+- [ ] Canonical-question eval harness for the demo dataset (#2025)
+- [ ] Consolidate canonical demo dataset across landing, docs, scaffolder (#2021)
+
+Backlog (not committed for 1.4.0): `/agent-mode` view (#2022), `runbooks-context` plugin (#2023).
 
 ---
 

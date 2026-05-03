@@ -7,14 +7,29 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that gives any MCP-compatible client access to your semantic layer and validated SQL execution.
 
+## Install in one command
+
+```bash
+bunx @useatlas/mcp init --local
+```
+
+This auto-detects Claude Desktop, Cursor, or Continue and prints a paste-ready config. Add `--write` to merge it directly into the detected client's config (a `.bak` is written first):
+
+```bash
+bunx @useatlas/mcp init --local --write
+```
+
+If `ATLAS_DATASOURCE_URL` is unset, the installer points at a bundled accounts/companies/people SQLite fixture so the install works zero-config. If a local Atlas is running at `http://localhost:3001` (override via `ATLAS_API_URL`), the installer leaves the datasource env blank so the MCP server inherits your shell env.
+
+> Hosted mode (`bunx @useatlas/mcp init --hosted` against `app.useatlas.dev`) is tracked in [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024) and prints a clear "coming soon" message today.
+
 <Callout title="Prerequisites">
-- Atlas project set up (`bun install`)
-- `ATLAS_DATASOURCE_URL` pointing to your analytics database
-- An MCP-compatible client (Claude Desktop, Cursor, or any stdio/SSE client)
+- An MCP-compatible client (Claude Desktop, Cursor, Continue, or any stdio/SSE client)
 - LLM provider API key configured in the **client** (the MCP server itself does not call an LLM)
+- For real datasources beyond the demo fixture: `ATLAS_DATASOURCE_URL` exported in your shell, or a running Atlas at `localhost:3001`
 </Callout>
 
-## Quick Start
+## Manual setup (monorepo / advanced)
 
 ```bash
 bun run mcp              # Start MCP server on stdio

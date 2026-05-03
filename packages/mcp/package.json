@@ -8,7 +8,8 @@
     "./sse": "./src/sse.ts"
   },
   "bin": {
-    "atlas-mcp": "./bin/serve.ts"
+    "atlas-mcp": "./bin/serve.ts",
+    "atlas-mcp-init": "./bin/init.ts"
   },
   "scripts": {
     "dev": "bun run --hot bin/serve.ts",

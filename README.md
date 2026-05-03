@@ -60,6 +60,17 @@ export default function App() {
 
 The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `Atlas.destroy()`), event callbacks, and theming. See the [widget docs](https://docs.useatlas.dev/guides/embedding-widget).
 
+## Use as an MCP server
+
+Add Atlas to Claude Desktop, Cursor, or Continue with a single command — auto-detects the client, falls back to a bundled demo fixture if no datasource is configured:
+
+```bash
+bunx @useatlas/mcp init --local            # print paste-ready config
+bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
+```
+
+See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow.
+
 ## Why Atlas?
 
 | | Atlas | Traditional BI | Other text-to-SQL |

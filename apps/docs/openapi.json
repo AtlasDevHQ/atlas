@@ -8194,6 +8194,171 @@
         "operationId": "patchStarterPromptsFavoritesById"
       }
     },
+    "/api/v1/sub-processor-subscriptions": {
+      "post": {
+        "tags": [
+          "Sub-processor Subscriptions"
+        ],
+        "summary": "Register a webhook for sub-processor change notifications",
+        "description": "Registers an HTTPS endpoint that Atlas POSTs to whenever the published sub-processor list changes (add / change / remove). The token is stored encrypted at rest and used as the HMAC-SHA256 signing key for every delivery; verify the `X-Webhook-Signature` header (formatted as `sha256=<hex_digest>`, Stripe/GitHub-style) against `${X-Webhook-Timestamp}:${body}`. The full payload schema and a runnable verify snippet live at https://docs.useatlas.dev/integrations/sub-processor-feed. Tokens cannot be retrieved after registration — save your copy locally.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "maxLength": 2048,
+                    "format": "uri"
+                  },
+                  "token": {
+                    "type": "string",
+                    "minLength": 16
+                  }
+                },
+                "required": [
+                  "url",
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "URL is already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postSubProcessorSubscriptions"
+      }
+    },
     "/api/v1/onboarding/social-providers": {
       "get": {
         "tags": [
@@ -62969,6 +63134,9 @@
     },
     {
       "name": "Starter Prompts"
+    },
+    {
+      "name": "Sub-processor Subscriptions"
     },
     {
       "name": "Suggestions"

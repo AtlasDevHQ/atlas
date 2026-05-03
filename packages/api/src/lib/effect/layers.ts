@@ -721,6 +721,43 @@ export function makeSchedulerLive(
       );
       yield* Effect.addFinalizer(() => Fiber.interrupt(shareCleanupFiber));
 
+      // ── Periodic fiber: sub-processor change-feed publisher (#1924) ──
+      // Cron sweep, not build-hook: the source JSON can be hot-edited
+      // via PR without a www deploy, and a sweep handles every path
+      // uniformly. Default 6h tick — compliance change notifications
+      // are not latency-sensitive, and a long interval keeps load on
+      // www.useatlas.dev negligible. `Effect.repeat(Schedule.spaced)`
+      // runs the tick once eagerly on boot, so the first sweep happens
+      // within seconds of API start, not after the first 6h window.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const subProcessorPublisher = require("@atlas/api/lib/sub-processor-publisher") as {
+        subProcessorPublisherTick: () => Promise<void>;
+        SUBPROCESSOR_PUBLISH_INTERVAL_MS: number;
+      };
+      const subProcessorTick = Effect.tryPromise({
+        try: () => subProcessorPublisher.subProcessorPublisherTick(),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: errorMessage(err) },
+              "Sub-processor publisher tick failed",
+            );
+          }),
+        ),
+      );
+      const subProcessorFiber = yield* Effect.fork(
+        subProcessorTick.pipe(
+          Effect.repeat(
+            Schedule.spaced(
+              Duration.millis(subProcessorPublisher.SUBPROCESSOR_PUBLISH_INTERVAL_MS),
+            ),
+          ),
+        ),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(subProcessorFiber));
+
       // --- Finalizer: stop main scheduler ---
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {

@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 
+import SUBPROCESSORS from "../../../data/sub-processors.json";
 import { Footer } from "../../components/footer";
 import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/legal";
 import { Nav } from "../../components/nav";
 import { ArrowIcon, TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
+import { SubProcessorWebhookButton } from "../../components/sub-processor-webhook-button";
 
 export const metadata: Metadata = {
   title: "Data Processing Addendum — Atlas",
@@ -18,59 +20,17 @@ export const metadata: Metadata = {
     siteName: "Atlas",
     type: "website",
   },
+  alternates: {
+    types: {
+      "application/atom+xml": [
+        {
+          url: "https://www.useatlas.dev/sub-processors/feed.xml",
+          title: "Atlas — Sub-processor changes",
+        },
+      ],
+    },
+  },
 };
-
-interface SubProcessor {
-  name: string;
-  purpose: string;
-  region: string;
-  since: string;
-}
-
-const SUBPROCESSORS: SubProcessor[] = [
-  {
-    name: "Railway",
-    purpose: "Cloud infrastructure (compute, storage, Postgres)",
-    region: "Customer’s selected region — United States (Virginia), Europe (Netherlands), or Asia Pacific (Singapore)",
-    since: "2026-01",
-  },
-  {
-    name: "Stripe",
-    purpose: "Payment processing",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "Vercel",
-    purpose: "AI Gateway — routes hosted model requests to upstream providers",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "Anthropic",
-    purpose: "Upstream hosted model inference (default; reached via Vercel AI Gateway)",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "OpenAI",
-    purpose: "Upstream hosted model inference (opt-in; reached via Vercel AI Gateway)",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "Resend",
-    purpose: "Transactional email (receipts, alerts, invitations)",
-    region: "United States",
-    since: "2026-01",
-  },
-  {
-    name: "OpenStatus",
-    purpose: "External uptime monitoring + status page",
-    region: "European Union",
-    since: "2026-01",
-  },
-];
 
 const SECTIONS: LegalSectionData[] = [
   {
@@ -285,15 +245,24 @@ export default function DPAPage() {
               </p>
               <p className="mb-3 text-[13px] leading-relaxed text-zinc-400">
                 We email account admins automatically. Procurement teams can
-                add a separate distribution list:
+                subscribe via:
               </p>
               <a
                 href="mailto:legal@useatlas.dev?subject=Subscribe%20to%20sub-processor%20notifications&body=Please%20add%20the%20following%20address%20to%20the%20sub-processor%20notification%20list%3A%0A"
                 className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
               >
-                Subscribe via email
+                Email
                 <ArrowIcon />
               </a>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <a
+                  href="/sub-processors/feed.xml"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+                >
+                  RSS
+                </a>
+                <SubProcessorWebhookButton />
+              </div>
             </div>
           </div>
 

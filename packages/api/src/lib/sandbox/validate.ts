@@ -23,9 +23,11 @@ const VALIDATION_TIMEOUT_MS = 10_000;
 
 /**
  * Validates that a user-supplied URL is safe for server-side requests.
- * Blocks non-HTTPS schemes and private/internal hostnames.
+ * Blocks non-HTTPS schemes and private/internal hostnames. Exported for
+ * reuse by other route handlers that store and later POST to user-
+ * supplied URLs (sub-processor webhook subscriptions, etc.).
  */
-function isSafeExternalUrl(url: string): boolean {
+export function isSafeExternalUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:") return false;

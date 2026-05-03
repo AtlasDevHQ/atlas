@@ -49,6 +49,7 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
   { table: "whatsapp_installations", pk: "phone_number_id", encrypted: "access_token_encrypted",     keyVersionColumn: "access_token_key_version" },
   { table: "email_installations",   pk: "config_id",       encrypted: "config_encrypted",            keyVersionColumn: "config_key_version" },
   { table: "sandbox_credentials",   pk: "id",              encrypted: "credentials_encrypted",       keyVersionColumn: "credentials_key_version" },
+  { table: "sub_processor_subscriptions", pk: "id",        encrypted: "token_encrypted",             keyVersionColumn: "token_key_version" },
 ] as const;
 
 /**

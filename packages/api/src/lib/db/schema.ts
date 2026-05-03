@@ -1460,3 +1460,39 @@ export const adminActionRetentionConfig = pgTable(
     index("idx_admin_action_retention_config_org").on(t.orgId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Sub-processor change-feed (#1924) — see migration 0045 for design notes.
+// ---------------------------------------------------------------------------
+
+export const subProcessorSubscriptions = pgTable(
+  "sub_processor_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    url: text("url").notNull(),
+    tokenEncrypted: text("token_encrypted").notNull(),
+    tokenKeyVersion: integer("token_key_version").notNull().default(1),
+    createdByUserId: text("created_by_user_id"),
+    // AtlasUser.label at registration time (not necessarily an email).
+    createdByLabel: text("created_by_label"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("idx_sub_processor_subscriptions_url").on(t.url),
+  ],
+);
+
+export const subProcessorSnapshots = pgTable(
+  "sub_processor_snapshots",
+  {
+    // BIGSERIAL on the SQL side — drizzle's `bigint` with mode `bigint`
+    // reads/writes BIGINT; the auto-increment is handled by Postgres.
+    id: bigint("id", { mode: "bigint" }).primaryKey().notNull(),
+    payload: jsonb("payload").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_sub_processor_snapshots_published_at").on(t.publishedAt.desc()),
+  ],
+);

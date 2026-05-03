@@ -863,10 +863,11 @@ chat.openapi(chatRoute, async (c) => {
               // routing these through the same parser as the `data-error`
               // frame (#1980) does not misclassify a degraded answer as
               // a failure. The route stamps `requestId` only when the
-              // warning didn't already carry one — preflight emit sites
-              // (`lib/agent.ts` Effect.catchAll arms) may attach their
-              // own correlation id, and bypassing them via spread would
-              // silently drop it.
+              // warning didn't already carry one. Today no emit site
+              // attaches its own correlation id (the agent's Effect
+              // catchAll arms push only the wire-DTO fields); the
+              // ternary keeps the surface safe to extend without
+              // re-auditing this loop.
               //
               // Ordering is load-bearing: this loop runs BEFORE
               // `writer.merge(agentResult.toUIMessageStream(...))` below,

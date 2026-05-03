@@ -96,10 +96,11 @@ describe("ContextWarningBanner", () => {
     // The error-banner is the destructive treatment; this banner must
     // declare itself as the warning variant so future restyles cannot
     // accidentally lift it to destructive (which would scare users away
-    // from a still-useful answer). data-variant is a hardcoded marker
-    // we pin so a future restyle that swaps to the destructive Alert
-    // CVA variant trips this test — the className is volatile, this is
-    // the stable behavioral pin.
+    // from a still-useful answer). `data-variant` is a hardcoded marker
+    // the banner stamps regardless of the underlying Alert styling —
+    // future restyles must keep this attribute set to "warning". The
+    // className stack is volatile; this attribute is the stable
+    // behavioral pin.
     expect(alert?.getAttribute("data-variant")).toBe("warning");
     // SVG presence as a cheap pin against an icon swap.
     expect(container.querySelector("svg")).not.toBeNull();

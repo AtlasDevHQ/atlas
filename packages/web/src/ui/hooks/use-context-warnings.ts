@@ -48,7 +48,11 @@ const EMPTY: Pending = { warnings: [], anchorMessageCount: 0 };
  *    message on regenerate / edit). Without this the map would leak.
  * 4. `resetPending()` — call before sending the next user message so a
  *    stalled previous turn cannot leak warnings into the new answer.
- * 5. `reset()` — full clear, used on new chat / conversation switch.
+ * 5. `reset()` — clears the per-message buckets and pending buffer,
+ *    used on new chat / conversation switch. The malformed-frame log
+ *    gate (`loggedMalformedRef`) is intentionally preserved across
+ *    resets so a misbehaving server doesn't get a fresh log allowance
+ *    every time the user switches conversations.
  */
 export function useContextWarnings(messages: ReadonlyArray<{ id: string; role: string }>) {
   const [byMessage, setByMessage] = useState<Map<string, WarningBucket>>(new Map());

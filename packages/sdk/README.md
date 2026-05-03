@@ -227,11 +227,12 @@ if (frame.type === "data-context-warning") {
     // but was generated against reduced context. Do NOT treat it as a
     // hard error.
   } else {
-    // Log on null so a future server wire-shape regression (e.g. an
-    // unknown `code`, missing `title`, or wrong `severity` literal) is
-    // observable in dev. The pre-2005 plan-warning channel went two
-    // releases undetected because nothing logged its typed mismatch —
-    // surface drops loudly so you don't repeat that mistake.
+    // Log on null so a future server-side wire-shape change (unknown
+    // code, missing title, wrong severity literal) is observable in dev
+    // rather than silently dropped. In production, gate this behind a
+    // one-shot ref so a runaway stream of malformed frames doesn't
+    // flood the console — see the in-tree `useContextWarnings` hook for
+    // an example dedup pattern.
     console.warn("[atlas-sdk] dropped malformed data-context-warning frame", frame.data);
   }
 }

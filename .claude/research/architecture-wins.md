@@ -1212,9 +1212,9 @@ The guard is wired into `buildAppLayer` via a new `DpaGuardLive` Effect Layer (`
 
 ## 46. SaaS boot-guard family — `DpaGuardLive` precedent extended to four more misconfigs
 
-**Date:** 2026-05-02
-**Issue:** #1978
-**Branch:** feat/1978-saas-boot-guard-hardening
+**Date:** 2026-05-02 (initial), extended 2026-05-02 (#1983)
+**Issue:** #1978 (initial); extended in #1983 (rate-limit guard + pool-defaults warning)
+**Branch:** feat/1978-saas-boot-guard-hardening; feat/1983-saas-pool-rpm-defaults
 
 **Problem:** The `/prod-audit` pass on 2026-05-02 surfaced four more SaaS misconfig classes that followed the same shape as the DPA guard from win #45 — silent runtime degradation that neither failed boot nor produced a structured signal until much later in the request lifecycle. Each was a class of "the pod boots and accepts traffic, but a contract is silently broken":
 
@@ -1245,3 +1245,15 @@ The four guards are defined locally to their domain rather than added to `ATLAS_
 - **Line count:** ~925 lines of net additions across the PR — roughly 410 lines of implementation (`saas-guards.ts` + `settings-errors.ts` + edits in `settings.ts` / `config.ts` / `layers.ts` / `admin.ts`), 450 lines of tests, and 65 lines of docs. Per-guard cost varies with failure-mode count; the simpler guards (`InternalDbGuardLive`, `EnterpriseGuardLive`) land in ~50 lines including a 4-test pair, while `EncryptionKeyGuardLive` is closer to 100 lines because it discriminates two failure shapes.
 
 **Category:** Pattern-extension win. Win #45 introduced the `Layer.effectDiscard` boot-guard shape; this PR validates it by reusing it four more times. The interesting decisions are factored into the first guard (no default for `isSaas`, structured DI for testability) and inherited by each sibling — the new guards are mostly mechanical applications of the precedent. The `EnterpriseGuardLive` env-vs-config-source split is the only novel call here, capturing operator intent strength as a load-bearing distinction in the type system. Sibling to win #37 (port helper retiring imperative branches) — both are about lifting a runtime-skipped invariant into a structurally-enforced one.
+
+### Extension (#1983) — `RateLimitGuardLive` + `_warnPoolDefaultsInSaaS`
+
+A second `/prod-audit` pass surfaced two more SaaS misconfig classes that fit the precedent without modification:
+
+  7. **Rate limiting silently disabled in SaaS.** `getRpmLimit()` in `auth/middleware.ts` parses `ATLAS_RATE_LIMIT_RPM` via `Number(raw)` then `Math.floor(n)`; `checkRateLimit()` short-circuits when the resulting limit is `0`. The combined disabled-set is `unset | empty | non-finite | n < 0 | n === 0 | 0 < n < 1` — a SaaS region without an explicit env var (or with a typo like `-300`, `0.5`, `abc`) ran without a per-user RPM ceiling, a DDoS hole discoverable only by traffic inspection. `RateLimitGuardLive` rejects the entire disabled-set with a single `n < 1` check, which is *stricter* than the runtime parser at the `0` and fractional boundaries — mirroring the runtime exactly would let `0` and `0.5` pass boot then disable at runtime, the silent-divergence failure mode the guard exists to close. Paired with a new entry in `SAAS_IMMUTABLE_KEYS` so a platform admin can't re-open the hole post-boot via `setSetting`. Identical Layer shape to `InternalDbGuardLive` (env-direct check, fail with a tagged error in SaaS, no-op self-hosted); ~40 lines including the parser-tightening logic that catches typos.
+
+  8. **Pool defaults too small for production SaaS.** `OrgPoolConfigSchema.maxConnections` defaulted to `5`, sized for trial workloads. A Business-tier org running concurrent dashboards + chat + scheduled tasks would queue immediately. Two coupled changes: bump the dev floor from `5 → 10` (still safe for evaluation; removes the cliff between dev and the first real workload), and add `_warnPoolDefaultsInSaaS()` as a CRITICAL-log helper in `lib/config.ts` (sibling to the existing `#1978` deploy-mode warning) that fires when a SaaS deploy boots without `pool.perOrg` configured *or* with `maxConnections <= 10`. Pool sizing depends on tier and traffic — boot-fail would over-fit; CRITICAL-log preserves operator agency while making the dev-tier-in-production state grep-able. Tier reference table (`Dev / Team / Business / Enterprise → maxConnections / maxOrgs / drainThreshold`) lives in the schema comment so operators don't have to read source to size a region.
+
+The `RateLimitGuardLive` extension is a mechanical reuse — identical to the InternalDbGuardLive precedent, ~35 lines including tests. The pool-defaults work mixes a one-line schema bump with a 50-line warn helper that lives in `config.ts` (not `saas-guards.ts`) because the helper inspects `ResolvedConfig.pool` rather than env vars and shares the inlined-warning precedent of `applyDeployMode()`'s #1978 deploy-mode CRITICAL log. Both fire after deploy mode is resolved so SaaS-only emission is honored. Test coverage adds 6 RPM guard tests + 6 pool warning tests via the same hermetic Layer.succeed(Config, ...) pattern (no mock.module needed for the guard), plus direct unit tests on `_warnPoolDefaultsInSaaS()` because the loadConfig() e2e path can't easily reach the SaaS-resolved branch in tests (no `@atlas/ee`).
+
+**Cumulative impact after extension:** Five typed boot-time assertions cover the full SaaS misconfig surface flagged by the two `/prod-audit` passes; one CRITICAL-log warning carries pool sizing where a hard fail would over-fit. The pattern continues to scale linearly per misconfig — each new guard is ~30–50 lines including tests, no architectural debate, and the deploy.mdx contract table grows by one row.

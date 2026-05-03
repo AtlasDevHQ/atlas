@@ -203,9 +203,25 @@ const PythonConfigSchema = z.object({
 
 export type PythonConfig = z.infer<typeof PythonConfigSchema>;
 
+/**
+ * The dev-tier floor for per-org pool `maxConnections`. The schema
+ * default below uses this value, and `_warnPoolDefaultsInSaaS()` warns
+ * when a SaaS deploy boots at or below it. Single source of truth so
+ * a future bump (e.g. 10 → 15) doesn't drift the floor and the default
+ * out of step. See `deploy.mdx` for the operator-facing tier sizing
+ * reference (Dev / Team / Business / Enterprise).
+ */
+const POOL_DEV_FLOOR_MAX_CONNECTIONS = 10;
+
+/**
+ * Per-org pool sizing defaults. The dev floor is sized for trial /
+ * evaluation workloads. Production SaaS regions should configure
+ * higher limits via `atlas.config.ts`; the boot warning surfaces
+ * deploys still on the floor.
+ */
 const OrgPoolConfigSchema = z.object({
-  /** Max connections per pool per org. Default 5. */
-  maxConnections: z.number().int().positive().default(5),
+  /** Max connections per pool per org. */
+  maxConnections: z.number().int().positive().default(POOL_DEV_FLOOR_MAX_CONNECTIONS),
   /** Idle timeout in ms for per-org pool connections. Default 30000. */
   idleTimeoutMs: z.number().int().positive().default(30000),
   /** Max org pool sets before LRU eviction. Default 50. */
@@ -1156,6 +1172,70 @@ async function applyDeployMode(
         `silently downgraded to "${resolved.deployMode}". DPA, encryption, and internal-DB ` +
         `guards will NOT run. Build with @atlas/ee installed and ATLAS_ENTERPRISE_ENABLED=true, ` +
         `or remove the deployMode override from atlas.config.ts. See #1978.`,
+    );
+  }
+
+  // Pool-default warning runs after deploy mode resolves so the
+  // SaaS-only emission is honored. Self-hosted deploys (whether
+  // intentional or silently downgraded when enterprise is missing)
+  // skip the warning — see the silent-downgrade log block above.
+  _warnPoolDefaultsInSaaS(resolved);
+}
+
+/**
+ * Boot-time CRITICAL log when a SaaS deploy is running on dev-tier pool
+ * defaults. Two emission paths:
+ *
+ *   1. `pool.perOrg` is undefined — operator never opted into per-org
+ *      pooling; SaaS noisy-neighbor isolation is off.
+ *   2. `pool.perOrg.maxConnections <= POOL_DEV_FLOOR_MAX_CONNECTIONS`
+ *      — at or below the dev floor; a single Business-tier org will
+ *      queue on concurrent dashboards + chat + scheduled tasks. The
+ *      `<=` (not `<`) is deliberate: the floor is the trial-tier
+ *      *default*, not a "safe" value — an operator who explicitly
+ *      sets the floor in a SaaS region is still misconfigured and
+ *      should see the warning.
+ *
+ * Self-hosted is silent (returns early) — every AGPL operator is
+ * presumptively at trial / evaluation scale where the dev floor is
+ * intentional.
+ *
+ * Exported because the `loadConfig()` e2e path can't easily reach the
+ * SaaS-resolved branch in tests (no `@atlas/ee` build).
+ *
+ * @internal
+ */
+export function _warnPoolDefaultsInSaaS(resolved: ResolvedConfig): void {
+  if (resolved.deployMode !== "saas") return;
+
+  const perOrg = resolved.pool?.perOrg;
+
+  if (!perOrg) {
+    log.error(
+      {
+        reason: "pool-defaults",
+        perOrgConfigured: false,
+        devFloor: POOL_DEV_FLOOR_MAX_CONNECTIONS,
+      },
+      `CRITICAL: SaaS deploy booted without pool.perOrg configured — per-org pool isolation is off, ` +
+        `so a single noisy tenant can starve every other org's connections. Add pool.perOrg in ` +
+        `atlas.config.ts with tier-appropriate sizing (see deploy.mdx#pool-default-warning). ` +
+        `See #1983.`,
+    );
+    return;
+  }
+
+  if (perOrg.maxConnections <= POOL_DEV_FLOOR_MAX_CONNECTIONS) {
+    log.error(
+      {
+        reason: "pool-defaults",
+        perOrgConfigured: true,
+        maxConnections: perOrg.maxConnections,
+        devFloor: POOL_DEV_FLOOR_MAX_CONNECTIONS,
+      },
+      `CRITICAL: SaaS deploy booted with pool.perOrg.maxConnections=${perOrg.maxConnections} — at or below ` +
+        `the dev-tier floor of ${POOL_DEV_FLOOR_MAX_CONNECTIONS}. A Business-tier org running concurrent dashboards + chat + ` +
+        `scheduled tasks will queue. See deploy.mdx#pool-default-warning for tier sizing. See #1983.`,
     );
   }
 }

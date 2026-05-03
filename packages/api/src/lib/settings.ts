@@ -97,9 +97,16 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: "ATLAS_RATE_LIMIT_RPM",
     section: "Rate Limiting",
     label: "Rate Limit (RPM)",
-    description: "Max requests per minute per user (0 or empty = disabled)",
+    description: "Max requests per minute per user (0 or empty = disabled in self-hosted; SaaS rejects at boot)",
     type: "number",
     envVar: "ATLAS_RATE_LIMIT_RPM",
+    // RateLimitGuardLive runs once at boot and refuses to start a SaaS
+    // region with the limiter disabled. Hot-reloading this key would
+    // silently re-open the DDoS hole until next restart — same class
+    // as ATLAS_EMAIL_PROVIDER (DPA guard) and ATLAS_DEPLOY_MODE.
+    // SAAS_IMMUTABLE_KEYS below blocks SaaS writes; self-hosted keeps
+    // hot-reload because the guard early-returns there anyway.
+    requiresRestart: true,
     scope: "workspace",
   },
   {
@@ -1011,6 +1018,7 @@ const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
 const SAAS_IMMUTABLE_KEYS_LITERAL = [
   "ATLAS_EMAIL_PROVIDER",
   "ATLAS_DEPLOY_MODE",
+  "ATLAS_RATE_LIMIT_RPM",
 ] as const;
 const SAAS_IMMUTABLE_KEYS: ReadonlySet<SaasImmutableKey> = new Set(SAAS_IMMUTABLE_KEYS_LITERAL);
 

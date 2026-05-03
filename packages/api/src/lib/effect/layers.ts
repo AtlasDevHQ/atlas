@@ -41,6 +41,7 @@ import {
   EnterpriseGuardLive,
   EncryptionKeyGuardLive,
   InternalDbGuardLive,
+  RateLimitGuardLive,
 } from "./saas-guards";
 
 const log = createLogger("effect:layers");
@@ -806,13 +807,15 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     Layer.provide(Layer.merge(configLayer, settingsLayer)),
   );
 
-  // SaaS boot-guard family (#1978). Each guard fails boot when a SaaS
-  // contract is violated. Self-hosted is unaffected. They depend only
-  // on `Config` (the enterprise/encryption/DB checks read env directly)
-  // so they can run in parallel with the migration + sync layers.
+  // SaaS boot-guard family (#1978, extended in #1983). Each guard fails
+  // boot when a SaaS contract is violated. Self-hosted is unaffected.
+  // They depend only on `Config` (the enterprise/encryption/DB/rate-limit
+  // checks read env directly) so they can run in parallel with the
+  // migration + sync layers.
   const enterpriseGuardLayer = EnterpriseGuardLive.pipe(Layer.provide(configLayer));
   const encryptionKeyGuardLayer = EncryptionKeyGuardLive.pipe(Layer.provide(configLayer));
   const internalDbGuardLayer = InternalDbGuardLive.pipe(Layer.provide(configLayer));
+  const rateLimitGuardLayer = RateLimitGuardLive.pipe(Layer.provide(configLayer));
 
   // Merge all layers. InternalDB is included both directly and as a
   // dependency of migrationLayer — Effect memoizes same-reference Layers.
@@ -828,5 +831,6 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     enterpriseGuardLayer,
     encryptionKeyGuardLayer,
     internalDbGuardLayer,
+    rateLimitGuardLayer,
   );
 }

@@ -284,9 +284,30 @@ When `ATLAS_DEPLOY_MODE=saas`, Atlas refuses to boot unless the contracts the ho
 | No encryption key in any form (`ATLAS_ENCRYPTION_KEYS`, `ATLAS_ENCRYPTION_KEY`, `BETTER_AUTH_SECRET`) | Boot fails (`EncryptionKeyMissingError`). Without a key, integration credentials, plugin secrets, and email/sandbox JSON blobs would land plaintext in the internal DB via the `encryptSecret` passthrough. | Boot succeeds (dev-friendly passthrough). When `NODE_ENV=production`, `secret-encryption.ts` also logs an `error` line at module load — pure dev (`NODE_ENV=development`) is intentionally silent. |
 | `ATLAS_ENCRYPTION_KEYS` set but malformed (duplicate version, mixed prefix/bare, non-numeric label, e.g. `vlatest:abc`, `v1:a,v1:b`, `bare-key,v2:another`) | Boot fails (`EncryptionKeyMalformedError`). Without this guard, the parser throws lazily at first credential I/O — minutes or hours after the bad value lands in production. | Boot succeeds (operator-owned dev risk). The same lazy throw fires at first I/O, which is acceptable for AGPL-core users running their own deployment. |
 | `DATABASE_URL` unset | Boot fails (`InternalDatabaseRequiredError`). Better Auth, audit log, admin console, settings persistence, and scheduler cleanup fibers all need the internal DB; missing it would mean the pod 500s every authenticated request. | Boot succeeds with a startup warning (audit log will not persist). Lightweight or ephemeral self-hosted deployments may legitimately skip the internal DB. |
-| Platform admin tries to mutate `ATLAS_EMAIL_PROVIDER` or `ATLAS_DEPLOY_MODE` via `setSetting` at runtime | `setSetting` rejects with HTTP 409 (`saas_immutable`). These keys participate in boot-time guards — hot-reloading them would silently bypass the guard until the next restart. Operators must update the env var and restart. | Allowed at runtime. Self-hosted has no DPA contract and the admin UI surfaces a "restart required" banner. |
+| `ATLAS_RATE_LIMIT_RPM` unset, empty, `0`, fractional `0 < n < 1`, or non-numeric | Boot fails (`RateLimitRequiredError`). The combined runtime path (`getRpmLimit()` parses to `Math.floor(n)`; `checkRateLimit()` short-circuits on `limit === 0`) treats any of those as "rate limiting disabled" — a SaaS region without a per-user RPM ceiling is a DDoS hole. Set to a positive integer ≥ 1 (e.g. `300` for ~5 RPS per caller). Hot-reload via `setSetting` is blocked in SaaS (see immutable-keys row below); operators update the env var and restart. | Boot succeeds (limiter stays opt-in). Trial / evaluation deploys legitimately leave the limiter off. |
+| Platform admin tries to mutate `ATLAS_EMAIL_PROVIDER`, `ATLAS_DEPLOY_MODE`, or `ATLAS_RATE_LIMIT_RPM` via `setSetting` at runtime | `setSetting` rejects with HTTP 409 (`saas_immutable`). These keys participate in boot-time guards — hot-reloading them would silently bypass the guard (or, for rate-limit, re-open the DDoS hole) until next restart. Operators must update the env var and restart. | Allowed at runtime. Self-hosted has no DPA / rate-limit boot contract and the admin UI surfaces a "restart required" banner. |
 
-If a guard fails, the error message names the violated contract and links back to issue **#1978** (or **#1969** for the DPA guard) so an operator hitting it can diagnose without reading source.
+If a guard fails, the error message names the violated contract and links back to issue **#1978** (the original SaaS boot-guard family), **#1983** (rate-limit guard + pool defaults), or **#1969** (DPA guard) so an operator hitting it can diagnose without reading source.
+
+### Pool-default warning (#1983)
+
+In addition to the boot-blocking guards, SaaS deploys log a CRITICAL warning at boot when the per-org connection pool is unconfigured or sized at the dev-tier floor:
+
+| Condition | Behavior |
+|-----------|----------|
+| `ATLAS_DEPLOY_MODE=saas` + no `pool.perOrg` block in `atlas.config.ts` | CRITICAL log — per-org pool isolation is off; a noisy tenant can starve the rest of the region's connections. |
+| `ATLAS_DEPLOY_MODE=saas` + `pool.perOrg.maxConnections <= 10` (the dev floor) | CRITICAL log — a Business-tier org running concurrent dashboards + chat + scheduled tasks will queue. |
+
+This is a warning, not a boot failure, because the right pool sizing depends on tier and traffic shape. Reference sizing operators can use as a starting point:
+
+| Tier        | maxConnections | maxOrgs | drainThreshold |
+|-------------|----------------|---------|----------------|
+| Dev / trial | 10 (default)   | 50      | 5              |
+| Team        | 20             | 200     | 5              |
+| Business    | 50             | 500     | 8              |
+| Enterprise  | 100+           | 2000    | 10             |
+
+Self-hosted deploys are silent — the dev floor is intentional for trial / evaluation workloads.
 
 ### Required SaaS environment
 
@@ -298,9 +319,26 @@ ATLAS_ENTERPRISE_ENABLED=true        # plus the @atlas/ee module installed at bu
 DATABASE_URL=postgresql://...        # Atlas's internal Postgres
 ATLAS_ENCRYPTION_KEYS=v1:<base64>    # 32+ bytes, dedicated to at-rest encryption
 RESEND_API_KEY=re_...                # platform Resend transport (DPA-listed vendor)
+ATLAS_RATE_LIMIT_RPM=300             # per-user requests/minute floor (#1983)
 ```
 
 Pasting these on a fresh region before first boot is the supported flow — see [Encryption Key Rotation](/platform-ops/encryption-key-rotation) for generating `ATLAS_ENCRYPTION_KEYS` and rotating to `v2` over time.
+
+Production SaaS deploys should additionally configure `pool.perOrg` in `atlas.config.ts` to clear the pool-defaults warning above:
+
+```typescript
+// atlas.config.ts
+export default defineConfig({
+  // ...
+  pool: {
+    perOrg: {
+      maxConnections: 50,    // Business-class default
+      maxOrgs: 500,
+      drainThreshold: 8,
+    },
+  },
+});
+```
 
 ---
 

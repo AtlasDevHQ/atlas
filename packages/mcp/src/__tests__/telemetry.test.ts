@@ -123,9 +123,12 @@ mock.module("@atlas/api/lib/config", () => ({
 const { registerTools } = await import("../tools.js");
 const { _resetMcpTelemetryForTest } = await import("../telemetry.js");
 
-async function createTestClient(transport: "stdio" | "sse" = "stdio") {
+async function createTestClient(
+  transport: "stdio" | "sse" = "stdio",
+  actor = TEST_ACTOR,
+) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
-  registerTools(server, { actor: TEST_ACTOR, transport });
+  registerTools(server, { actor, transport });
 
   const client = new Client({ name: "test-client", version: "0.0.1" });
   const [clientTransport, serverTransport] =
@@ -172,7 +175,7 @@ describe("MCP OTel coverage (#2029)", () => {
     expect(span!.attributes["deploy.mode"]).toBe("self-hosted");
   });
 
-  it("records tool.success=true on success result, =false on tool error", async () => {
+  it("records tool.success=true on success result, =false + tool.error_code on tool error", async () => {
     const { client } = await createTestClient();
     await client.callTool({ name: "explore", arguments: { command: "ls" } });
 
@@ -181,8 +184,36 @@ describe("MCP OTel coverage (#2029)", () => {
 
     const successSpan = spanCalls[0]!;
     expect(successSpan.resultAttrs?.["tool.success"]).toBe(true);
+    expect(successSpan.resultAttrs?.["tool.error_code"]).toBeUndefined();
     const errorSpan = spanCalls[1]!;
     expect(errorSpan.resultAttrs?.["tool.success"]).toBe(false);
+    expect(errorSpan.resultAttrs?.["tool.error_code"]).toBe("tool_error");
+  });
+
+  it("records executeSQL { success: false } as outcome=error with tool.error_code", async () => {
+    mockExecuteSQLExecute.mockResolvedValueOnce({
+      success: false,
+      error: "RLS denied",
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT * FROM forbidden", explanation: "probe" },
+    });
+
+    const span = spanCalls.find(
+      (s) => s.attributes["tool.name"] === "executeSQL",
+    );
+    expect(span?.resultAttrs?.["tool.success"]).toBe(false);
+    expect(span?.resultAttrs?.["tool.error_code"]).toBe("tool_error");
+
+    const counter = counterCalls.find(
+      (c) =>
+        c.metric === "atlas.mcp.tool.calls" &&
+        c.attributes["tool.name"] === "executeSQL",
+    );
+    expect(counter?.attributes.outcome).toBe("error");
   });
 
   it("increments atlas.mcp.tool.calls counter with tool.name + outcome", async () => {
@@ -220,9 +251,25 @@ describe("MCP OTel coverage (#2029)", () => {
       (h) => h.metric === "atlas.mcp.tool.latency",
     );
     expect(observations.length).toBe(2);
+
+    // Pin the cross-series joinability the metrics.ts comment promises:
+    // every histogram observation has a matching counter increment with
+    // the same tool.name + outcome. A regression that records latency
+    // but skips the counter (or vice versa) would split the dashboards.
+    const counterAdds = counterCalls.filter(
+      (c) => c.metric === "atlas.mcp.tool.calls",
+    );
+    expect(counterAdds.length).toBe(2);
     for (const obs of observations) {
-      expect(obs.value).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(obs.value)).toBe(true);
+      expect(obs.value).toBeGreaterThan(0);
       expect(obs.attributes["tool.name"]).toMatch(/explore|executeSQL/);
+      const matching = counterAdds.find(
+        (c) =>
+          c.attributes["tool.name"] === obs.attributes["tool.name"] &&
+          c.attributes.outcome === obs.attributes.outcome,
+      );
+      expect(matching).toBeDefined();
     }
   });
 
@@ -244,6 +291,34 @@ describe("MCP OTel coverage (#2029)", () => {
     expect(activations[0]!.attributes["transport"]).toBe("stdio");
   });
 
+  it("emits a separate activation for each distinct workspace", async () => {
+    // Pins the Set-keyed dedup contract: a regression that hard-codes a
+    // single boolean (`hasFiredActivation`) would pass the single-workspace
+    // test but fail this one.
+    const actorA = createAtlasUser("u_a", "managed", "a@test", {
+      role: "admin",
+      activeOrganizationId: "org_a",
+    });
+    const actorB = createAtlasUser("u_b", "managed", "b@test", {
+      role: "admin",
+      activeOrganizationId: "org_b",
+    });
+
+    const { client: clientA } = await createTestClient("stdio", actorA);
+    await clientA.callTool({ name: "explore", arguments: { command: "ls" } });
+
+    const { client: clientB } = await createTestClient("stdio", actorB);
+    await clientB.callTool({ name: "explore", arguments: { command: "ls" } });
+
+    const activations = counterCalls.filter(
+      (c) => c.metric === "atlas.mcp.activations",
+    );
+    const ids = activations
+      .map((a) => a.attributes["workspace.id"])
+      .sort();
+    expect(ids).toEqual(["org_a", "org_b"]);
+  });
+
   it("runMetric span carries metric.id attribute", async () => {
     const { client } = await createTestClient();
     await client.callTool({
@@ -254,6 +329,31 @@ describe("MCP OTel coverage (#2029)", () => {
     const span = spanCalls.find((s) => s.attributes["tool.name"] === "runMetric");
     expect(span).toBeDefined();
     expect(span!.attributes["metric.id"]).toBe("orders_count");
+  });
+
+  it("runMetric records outcome=error when the metric id is not found", async () => {
+    // The "metric not found" branch short-circuits before invoking
+    // executeSQL, so the entire instrumentation path runs through the
+    // runMetric-specific span attribute rather than the executeSQL one.
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "runMetric",
+      arguments: { id: "ghost" },
+    });
+
+    const span = spanCalls.find(
+      (s) => s.attributes["tool.name"] === "runMetric",
+    );
+    expect(span).toBeDefined();
+    expect(span!.attributes["metric.id"]).toBe("ghost");
+    expect(span!.resultAttrs?.["tool.success"]).toBe(false);
+
+    const counter = counterCalls.find(
+      (c) =>
+        c.metric === "atlas.mcp.tool.calls" &&
+        c.attributes["tool.name"] === "runMetric",
+    );
+    expect(counter?.attributes.outcome).toBe("error");
   });
 
   it("re-throws underlying tool error after recording outcome=error", async () => {

@@ -68,7 +68,7 @@ Atlas also publishes a small set of OTel metrics through the `@atlas/api` Meter 
 | `atlas.abuse.escalations` | Counter | `level` (`warning` / `throttled` / `suspended` / `none`), `trigger` (`query_rate` / `error_rate` / `unique_tables` / `manual`) | Incremented on every workspace abuse-level transition, including manual reinstate (`level=none`, `trigger=manual`) |
 | `atlas.mcp.tool.calls` | Counter | `tool.name`, `outcome` (`success` / `error`), `transport` (`stdio` / `sse`), `deploy.mode` (`self-hosted` / `saas`) | Incremented once per MCP tool dispatch. Splits success vs. tool-level failure so adoption and error-rate dashboards both join on the same series |
 | `atlas.mcp.tool.latency` | Histogram (`ms`) | Same as `atlas.mcp.tool.calls` | Raw per-dispatch latency observations — derive p50/p95/p99 in your collector. Bucket boundaries stay defaulted so dashboards aren't pinned to one set of cutoffs |
-| `atlas.mcp.activations` | Counter | `workspace.id`, `transport`, `deploy.mode` | Fires once per workspace per MCP process on the first observed tool call. Process-local dedup; collectors group by `workspace.id` × first-seen day for cross-replica accuracy |
+| `atlas.mcp.activations` | Counter | `workspace.id`, `transport`, `deploy.mode` | Fires once per workspace per MCP process on the first observed tool call. Process-local dedup only — restarts and SSE replicas re-fire for the same workspace. For a true "unique workspaces" view, configure your collector to group by `workspace.id` × first-seen day |
 
 Counters use `@opentelemetry/api` and are no-ops until a `MeterProvider` is registered — wire one through your OTel collector configuration to feed dashboards and alerting.
 

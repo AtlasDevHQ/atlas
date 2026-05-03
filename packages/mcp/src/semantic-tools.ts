@@ -28,7 +28,11 @@ import {
   RUN_METRIC_TOOL_DESCRIPTION,
   type SemanticToolName,
 } from "@atlas/api/lib/tools/descriptions";
-import { traceMcpToolCall, type McpTransport } from "./telemetry.js";
+import {
+  traceMcpToolCall,
+  type McpTransport,
+  type McpDeployMode,
+} from "./telemetry.js";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
 // SaaS) shouldn't be able to drive megabyte strings into the catalog
@@ -52,7 +56,7 @@ export interface RegisterSemanticToolsOptions {
   /** Resolved workspace id for OTel attribution (`actor.activeOrganizationId` or `actor.id`). */
   workspaceId: string;
   /** Resolved `deployMode` for OTel attribution (`self-hosted` / `saas`). */
-  deployMode: string;
+  deployMode: McpDeployMode;
 }
 
 function dispatchId(prefix: string): string {
@@ -207,8 +211,9 @@ export function registerSemanticTools(
   // --- runMetric ---
   // The metric SQL goes through executeSQL.execute, inheriting all four
   // validation layers, plugin hooks, RLS injection, auto-LIMIT,
-  // statement timeout, and audit logging. The downstream `atlas.sql.execute`
-  // span (#1979 coverage) nests under this dispatch's `atlas.mcp.tool.run`.
+  // statement timeout, and audit logging. The existing `atlas.sql.execute`
+  // span (see `lib/tools/sql.ts`) nests under this dispatch's
+  // `atlas.mcp.tool.run` via OTel context propagation through `withSpan`.
   server.registerTool(
     "runMetric" satisfies SemanticToolName,
     {

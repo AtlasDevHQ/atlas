@@ -27,7 +27,11 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { getConfig } from "@atlas/api/lib/config";
 import { registerSemanticTools } from "./semantic-tools.js";
-import { traceMcpToolCall, type McpTransport } from "./telemetry.js";
+import {
+  traceMcpToolCall,
+  type McpTransport,
+  type McpDeployMode,
+} from "./telemetry.js";
 
 export interface RegisterToolsOptions {
   /**
@@ -63,7 +67,7 @@ function workspaceIdOf(actor: AtlasUser): string {
   return actor.activeOrganizationId ?? actor.id;
 }
 
-function deployModeOf(): string {
+function deployModeOf(): McpDeployMode {
   return getConfig()?.deployMode ?? "self-hosted";
 }
 
@@ -152,7 +156,6 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                   { toolCallId: "mcp-executeSQL", messages: [] },
                 );
 
-                // executeSQL returns { success: boolean, error?, ... }
                 const obj = result as Record<string, unknown>;
                 if (obj.success === false) {
                   return {

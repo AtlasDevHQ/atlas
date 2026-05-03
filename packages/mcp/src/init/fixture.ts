@@ -1,19 +1,17 @@
 /**
- * Bundled demo fixture path resolution.
- *
- * `init --local` falls back to a tiny accounts/companies/people SQLite
- * fixture when `ATLAS_DATASOURCE_URL` is unset, so a fresh user gets a
- * working install with zero config. The `serve` side hydrates the SQLite
- * file from `seed.sql` on first run; here we just resolve the canonical
- * paths and the URL string written into the client config.
+ * Resolves the bundled accounts/companies/people SQLite fixture used as the
+ * fallback datasource when `ATLAS_DATASOURCE_URL` is unset.
  */
 
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 interface ResolveOpts {
   cacheDir?: string;
+  /** Override the existsSync check (test seam). */
+  existsSync?: (p: string) => boolean;
 }
 
 export interface FixturePaths {
@@ -33,11 +31,17 @@ function defaultCacheDir(): string {
 }
 
 export function resolveFixturePaths(opts: ResolveOpts = {}): FixturePaths {
-  // import.meta.url here resolves to the .ts source in dev, .js bundle if
-  // built. Either way, ../../fixtures/seed.sql is the right relative path
-  // because seed.sql sits alongside src/ inside the package root.
+  // resolves from src/init/fixture.{ts,js} → package root → fixtures/seed.sql
   const here = fileURLToPath(import.meta.url);
   const seedPath = resolve(here, "..", "..", "..", "fixtures", "seed.sql");
+  const exists = opts.existsSync ?? existsSync;
+  if (!exists(seedPath)) {
+    // Fail loudly at init time — otherwise the user only finds out when
+    // their MCP client tries to query an empty SQLite file later.
+    throw new Error(
+      `Bundled fixture seed.sql is missing at ${seedPath}. Reinstall @useatlas/mcp.`,
+    );
+  }
   const cacheDir = opts.cacheDir ?? defaultCacheDir();
   const sqlitePath = join(cacheDir, "demo.sqlite");
   const sqliteUrl = `sqlite://${sqlitePath}`;

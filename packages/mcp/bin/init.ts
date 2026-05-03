@@ -1,28 +1,17 @@
 #!/usr/bin/env bun
 /**
- * `bunx @useatlas/mcp init` entry point.
- *
- * Generates a paste-ready Claude Desktop / Cursor / Continue config for
- * Atlas's MCP server. Pass `--write` to merge into the detected client's
- * config file (with a `.bak` of any previous file).
- *
- * Usage:
- *   bunx @useatlas/mcp init --local
- *   bunx @useatlas/mcp init --local --write
- *   bunx @useatlas/mcp init --local --client cursor --write
- *   bunx @useatlas/mcp init --hosted   # stub — comes with #2024
- *
- * From this monorepo (until @useatlas/mcp ships to npm):
- *   bun packages/mcp/bin/init.ts --local
+ * `bunx @useatlas/mcp init` entry point. Generates a paste-ready Claude
+ * Desktop / Cursor / Continue config; with `--write`, merges into the
+ * detected client's config file (timestamped `.bak` backup).
  */
 
 import { runInit, type RunInitOptions } from "../src/init/index.js";
-import type { McpClientId } from "../src/init/clients.js";
+import { KNOWN_CLIENTS, type McpClientId } from "../src/init/clients.js";
 
-const KNOWN_CLIENTS: McpClientId[] = ["claude-desktop", "cursor", "continue", "generic"];
+const KNOWN_CLIENT_IDS: readonly string[] = KNOWN_CLIENTS.map((c) => c.id);
 
 interface CliFlags {
-  mode: "local" | "hosted" | null;
+  mode: "local" | "hosted";
   client: McpClientId | undefined;
   write: boolean;
   apiUrl: string | undefined;
@@ -31,7 +20,7 @@ interface CliFlags {
 
 function parseArgs(argv: string[]): CliFlags {
   const flags: CliFlags = {
-    mode: null,
+    mode: "local",
     client: undefined,
     write: false,
     apiUrl: undefined,
@@ -50,18 +39,15 @@ function parseArgs(argv: string[]): CliFlags {
       case "--write":
         flags.write = true;
         break;
-      case "--no-write":
-        flags.write = false;
-        break;
       case "-h":
       case "--help":
         flags.help = true;
         break;
       case "--client": {
         const next = argv[i + 1];
-        if (!next || !KNOWN_CLIENTS.includes(next as McpClientId)) {
+        if (!next || !KNOWN_CLIENT_IDS.includes(next)) {
           console.error(
-            `[atlas-mcp init] --client expects one of: ${KNOWN_CLIENTS.join(", ")}`,
+            `[atlas-mcp init] --client expects one of: ${KNOWN_CLIENT_IDS.join(", ")}`,
           );
           process.exit(1);
         }
@@ -69,10 +55,16 @@ function parseArgs(argv: string[]): CliFlags {
         i++;
         break;
       }
-      case "--api-url":
-        flags.apiUrl = argv[i + 1];
+      case "--api-url": {
+        const next = argv[i + 1];
+        if (!next || next.startsWith("--")) {
+          console.error(`[atlas-mcp init] --api-url expects a URL value (e.g. http://localhost:3001)`);
+          process.exit(1);
+        }
+        flags.apiUrl = next;
         i++;
         break;
+      }
       default:
         console.error(`[atlas-mcp init] Unknown flag: ${a}`);
         process.exit(1);
@@ -84,8 +76,8 @@ function parseArgs(argv: string[]): CliFlags {
 
 const HELP = `bunx @useatlas/mcp init [options]
 
-  --local            Configure for a local Atlas (default if --hosted not set)
-  --hosted           Configure for app.useatlas.dev (coming with #2024)
+  --local            Configure for a local Atlas (default)
+  --hosted           Configure for app.useatlas.dev (not yet available)
   --client <id>      Force a specific client: claude-desktop | cursor | continue | generic
   --write            Merge into the client's config file (with a .bak backup)
   --api-url <url>    Override local Atlas detection URL (default: http://localhost:3001)
@@ -104,19 +96,15 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  if (flags.mode === null) {
-    // Default to --local for now; the auto-detect prompt described in #2018
-    // can land alongside --hosted in a follow-up since it depends on the
-    // hosted flow.
-    flags.mode = "local";
-  }
-
-  const opts: RunInitOptions = {
-    mode: flags.mode,
-    client: flags.client,
-    write: flags.write,
-    apiUrl: flags.apiUrl,
-  };
+  const opts: RunInitOptions =
+    flags.mode === "hosted"
+      ? { mode: "hosted" }
+      : {
+          mode: "local",
+          client: flags.client,
+          write: flags.write,
+          apiUrl: flags.apiUrl,
+        };
   const { exitCode } = await runInit(opts);
   return exitCode;
 }

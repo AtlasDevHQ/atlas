@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -93,6 +93,25 @@ describe("mergeMcpServerConfig", () => {
       /mcpServers/i,
     );
   });
+
+  it("throws when the existing config root is a JSON array", () => {
+    expect(() => mergeMcpServerConfig("[]", SERVER_NAME, SERVER)).toThrow(
+      /JSON object/i,
+    );
+  });
+
+  it("throws when the existing config root is JSON null", () => {
+    expect(() => mergeMcpServerConfig("null", SERVER_NAME, SERVER)).toThrow(
+      /JSON object/i,
+    );
+  });
+
+  it("throws when mcpServers is an array (catches the Array.isArray guard)", () => {
+    const existing = JSON.stringify({ mcpServers: [] });
+    expect(() => mergeMcpServerConfig(existing, SERVER_NAME, SERVER)).toThrow(
+      /mcpServers/i,
+    );
+  });
 });
 
 describe("writeConfigWithBackup", () => {
@@ -125,6 +144,14 @@ describe("writeConfigWithBackup", () => {
     expect(bak).toContain("\"old\"");
     const after = readFileSync(target, "utf8");
     expect(after).toBe('{"mcpServers":{}}\n');
+  });
+
+  it("writes the config file with mode 0o600 on POSIX (creds-bearing dotfile)", async () => {
+    if (process.platform === "win32") return;
+    const target = join(dir, "config.json");
+    await writeConfigWithBackup(target, "{}");
+    const mode = statSync(target).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 
   it("does not clobber an existing .bak — uses a timestamped suffix", async () => {

@@ -1,9 +1,8 @@
 /**
- * MCP client config merging.
- *
  * Builds a `mcpServers["<name>"]` block, merges it into an existing JSON
  * config (preserving sibling servers + non-mcp top-level keys), and writes
- * the result with a `.bak` of any previous file.
+ * the result with a `.bak` of any previous file (timestamped if one already
+ * exists).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
@@ -61,7 +60,10 @@ export function mergeMcpServerConfig(
   }
 
   const existingServers = parsed.mcpServers;
-  let serversObj: Record<string, ServerConfig>;
+  // We never inspect sibling server values — only spread them through. So the
+  // value type is `unknown`, not `ServerConfig`. A future "list existing
+  // servers" feature would need to narrow per-entry before reading anything.
+  let serversObj: Record<string, unknown>;
   if (existingServers === undefined) {
     serversObj = {};
   } else if (
@@ -73,7 +75,7 @@ export function mergeMcpServerConfig(
       "Existing config has a non-object value at `mcpServers` — refusing to overwrite",
     );
   } else {
-    serversObj = { ...(existingServers as Record<string, ServerConfig>) };
+    serversObj = { ...(existingServers as Record<string, unknown>) };
   }
 
   serversObj[serverName] = serverConfig;

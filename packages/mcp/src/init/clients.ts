@@ -1,16 +1,20 @@
 /**
- * MCP client detection — finds the default config-file path for known clients
- * (Claude Desktop, Cursor, Continue) on macOS, Linux, and Windows.
- *
- * Pure functions over an injectable `home`, `platform`, and `existsSync`
- * so tests run cross-platform without touching the real filesystem.
+ * MCP client detection — default config-file paths for Claude Desktop,
+ * Cursor, and Continue on macOS, Linux, and Windows.
  */
 
 import { existsSync as fsExistsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type McpClientId = "claude-desktop" | "cursor" | "continue" | "generic";
+export const KNOWN_CLIENTS = [
+  { id: "claude-desktop", name: "Claude Desktop" },
+  { id: "cursor", name: "Cursor" },
+  { id: "continue", name: "Continue" },
+  { id: "generic", name: "Generic MCP client" },
+] as const satisfies ReadonlyArray<{ id: string; name: string }>;
+
+export type McpClientId = (typeof KNOWN_CLIENTS)[number]["id"];
 
 export interface ClientInfo {
   id: McpClientId;
@@ -29,13 +33,6 @@ interface PathOpts {
 interface DetectOpts extends PathOpts {
   existsSync?: (p: string) => boolean;
 }
-
-const KNOWN_CLIENTS: ReadonlyArray<{ id: McpClientId; name: string }> = [
-  { id: "claude-desktop", name: "Claude Desktop" },
-  { id: "cursor", name: "Cursor" },
-  { id: "continue", name: "Continue" },
-  { id: "generic", name: "Generic MCP client" },
-];
 
 function resolveHome(opts: PathOpts): string {
   return opts.home ?? homedir();

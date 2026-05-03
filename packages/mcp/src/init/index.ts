@@ -1,12 +1,10 @@
 /**
- * `bunx @useatlas/mcp init` flow.
- *
- * Detects the user's MCP client, builds an Atlas server config block, and
- * either prints it to stdout (default) or merges it into the client's
- * config file (with `--write`). `--hosted` is a stub until #2024 lands.
+ * Runs the `init` flow: detect the user's MCP client, build an Atlas server
+ * config block, and either print it to stdout (default) or merge it into
+ * the client's config file (`--write`).
  */
 
-import { detectClients, getDefaultConfigPath, type McpClientId } from "./clients.js";
+import { detectClients, getDefaultConfigPath, type ClientInfo, type McpClientId } from "./clients.js";
 import {
   buildServerConfig,
   mergeMcpServerConfig,
@@ -18,9 +16,10 @@ import { detectLocalAtlas, resolveApiUrl } from "./local-atlas.js";
 import { resolveFixturePaths, shouldUseFixture } from "./fixture.js";
 
 const SERVER_NAME = "atlas";
+const HOSTED_TRACKING_ISSUE = "https://github.com/AtlasDevHQ/atlas/issues/2024";
 
-export interface RunInitOptions {
-  mode: "local" | "hosted";
+export interface LocalInitOptions {
+  mode: "local";
   client?: McpClientId;
   write?: boolean;
   /** Override the resolved config file path (test seam). */
@@ -31,7 +30,15 @@ export interface RunInitOptions {
   env?: NodeJS.ProcessEnv;
   /** Test seam — defaults to global `fetch`. */
   fetchImpl?: typeof fetch;
+  /** Test seam — defaults to filesystem-backed `detectClients()`. */
+  detectClientsImpl?: () => ClientInfo[];
 }
+
+export interface HostedInitOptions {
+  mode: "hosted";
+}
+
+export type RunInitOptions = LocalInitOptions | HostedInitOptions;
 
 export interface RunInitResult {
   exitCode: number;
@@ -47,7 +54,7 @@ export async function runInit(options: RunInitOptions): Promise<RunInitResult> {
 function runHostedStub(): RunInitResult {
   console.log(
     [
-      "Hosted mode is coming with #2024 — see https://github.com/AtlasDevHQ/atlas/issues/2024",
+      `Hosted mode (against app.useatlas.dev) is not yet available — tracking at ${HOSTED_TRACKING_ISSUE}.`,
       "Run `bunx @useatlas/mcp init --local` for now to point an MCP client at a local Atlas",
       "instance or the bundled demo fixture.",
     ].join("\n"),
@@ -55,7 +62,7 @@ function runHostedStub(): RunInitResult {
   return { exitCode: 0 };
 }
 
-async function runLocal(opts: RunInitOptions): Promise<RunInitResult> {
+async function runLocal(opts: LocalInitOptions): Promise<RunInitResult> {
   const env = opts.env ?? process.env;
   const apiUrl = opts.apiUrl ?? resolveApiUrl(env);
   const localAtlas = await detectLocalAtlas({ url: apiUrl, fetchImpl: opts.fetchImpl });
@@ -66,7 +73,7 @@ async function runLocal(opts: RunInitOptions): Promise<RunInitResult> {
   });
   const serverCfg = buildServerConfig({ datasourceUrl });
 
-  const clientId = opts.client ?? pickDefaultClient();
+  const clientId = opts.client ?? pickDefaultClient(opts.detectClientsImpl);
   const configPath = opts.configPathOverride ?? getDefaultConfigPath(clientId);
 
   if (localAtlas) {
@@ -88,14 +95,29 @@ async function runLocal(opts: RunInitOptions): Promise<RunInitResult> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[atlas-mcp init] could not merge into existing config (${configPath}): ${msg}`);
-    console.error("Aborting — your config was not modified. Pass --no-write to print a snippet instead.");
+    console.error("Aborting — your config was not modified. Re-run without --write to print a snippet instead.");
     return { exitCode: 1 };
   }
 
-  const { backupPath } = await writeConfigWithBackup(configPath, merged);
+  let writeResult;
+  try {
+    writeResult = await writeConfigWithBackup(configPath, merged);
+  } catch (err) {
+    // The .bak (if any) was written *before* the failed write, so a partial
+    // failure may have moved the original out of place. Tell the user where
+    // to recover from instead of leaving them with a generic "Fatal".
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[atlas-mcp init] failed to write ${configPath}: ${msg}`);
+    if (existing !== null) {
+      console.error(`A backup of your previous config is at ${configPath}.bak (or a timestamped sibling).`);
+      console.error(`Restore with: cp '${configPath}.bak' '${configPath}'`);
+    }
+    return { exitCode: 1 };
+  }
+
   console.log(`Wrote ${configPath}`);
-  if (backupPath) {
-    console.log(`Backed up the previous config to ${backupPath}`);
+  if (writeResult.backupPath) {
+    console.log(`Backed up the previous config to ${writeResult.backupPath}`);
   }
   console.log("Restart your MCP client to pick up the new server.");
   return { exitCode: 0 };
@@ -105,22 +127,16 @@ function chooseDatasourceUrl(args: {
   env: NodeJS.ProcessEnv;
   localAtlas: boolean;
 }): string | undefined {
-  if (args.localAtlas) {
-    // Caller already has Atlas running with its own datasource — leave the
-    // env block empty so the MCP server inherits the shell env.
-    return undefined;
-  }
-  if (!shouldUseFixture(args.env)) {
-    // The caller has set ATLAS_DATASOURCE_URL in their env — same logic:
-    // inherit, don't bake the value into a JSON config that lands in a
-    // dotfile or repo.
-    return undefined;
-  }
+  // When the caller already has Atlas running OR has ATLAS_DATASOURCE_URL set
+  // in their shell, leave the env block empty so MCP inherits the shell —
+  // and so we never bake credentials into a JSON file that lives in a dotfile.
+  if (args.localAtlas) return undefined;
+  if (!shouldUseFixture(args.env)) return undefined;
   return resolveFixturePaths().sqliteUrl;
 }
 
-function pickDefaultClient(): McpClientId {
-  const clients = detectClients();
+function pickDefaultClient(impl?: () => ClientInfo[]): McpClientId {
+  const clients = (impl ?? detectClients)();
   const detected = clients.find((c) => c.detected && c.id !== "generic");
   return detected?.id ?? "claude-desktop";
 }

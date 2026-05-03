@@ -25,8 +25,9 @@ export async function detectLocalAtlas(opts: DetectOpts = {}): Promise<boolean> 
     const res = await fetchImpl(`${url}/api/v1/health`, { signal: controller.signal });
     return res.ok;
   } catch (err) {
-    // Expected when Atlas isn't running. Log to stderr so users running with
-    // ATLAS_DEBUG_INIT can see the underlying error, but never propagate.
+    // Expected on timeout or connection refused — Atlas isn't running. Log
+    // to stderr behind ATLAS_DEBUG_INIT for diagnosis but never propagate;
+    // a probe miss is not a fatal error for the init flow.
     if (process.env.ATLAS_DEBUG_INIT) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[atlas-mcp init] local-atlas probe failed: ${msg}`);

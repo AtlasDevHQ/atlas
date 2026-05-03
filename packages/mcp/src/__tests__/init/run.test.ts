@@ -31,13 +31,13 @@ function captureStdio(): { logs: string[]; errs: string[]; restore: () => void }
 }
 
 describe("runInit --hosted (stub)", () => {
-  it("prints a 'coming with #2024' message and exits non-fatally", async () => {
+  it("prints a tracking-issue link and exits non-fatally", async () => {
     const cap = captureStdio();
     try {
       const res = await runInit({ mode: "hosted" });
       expect(res.exitCode).toBe(0);
       const out = [...cap.logs, ...cap.errs].join("\n");
-      expect(out).toMatch(/#2024/);
+      expect(out).toMatch(/issues\/2024/);
       expect(out).toMatch(/hosted/i);
     } finally {
       cap.restore();
@@ -105,6 +105,74 @@ describe("runInit --local (print-only, no --write)", () => {
   });
 });
 
+describe("runInit --local default client", () => {
+  it("falls back to claude-desktop when nothing is detected", async () => {
+    const cap = captureStdio();
+    try {
+      await runInit({
+        mode: "local",
+        write: false,
+        env: { ATLAS_DATASOURCE_URL: "postgres://x" },
+        fetchImpl: UNREACHABLE,
+        detectClientsImpl: () => [
+          { id: "claude-desktop", name: "Claude Desktop", configPath: "/x", detected: false },
+          { id: "cursor", name: "Cursor", configPath: "/y", detected: false },
+          { id: "continue", name: "Continue", configPath: "/z", detected: false },
+          { id: "generic", name: "Generic MCP client", configPath: null, detected: false },
+        ],
+      });
+      const out = cap.logs.join("\n");
+      expect(out).toContain("# claude-desktop");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it("picks the first detected non-generic client", async () => {
+    const cap = captureStdio();
+    try {
+      await runInit({
+        mode: "local",
+        write: false,
+        env: { ATLAS_DATASOURCE_URL: "postgres://x" },
+        fetchImpl: UNREACHABLE,
+        detectClientsImpl: () => [
+          { id: "claude-desktop", name: "Claude Desktop", configPath: "/x", detected: false },
+          { id: "cursor", name: "Cursor", configPath: "/y", detected: true },
+          { id: "continue", name: "Continue", configPath: "/z", detected: true },
+          { id: "generic", name: "Generic MCP client", configPath: null, detected: false },
+        ],
+      });
+      const out = cap.logs.join("\n");
+      expect(out).toContain("# cursor");
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+describe("runInit --local datasource selection", () => {
+  it("never bakes ATLAS_DATASOURCE_URL into the snippet when the user has it set", async () => {
+    const cap = captureStdio();
+    try {
+      await runInit({
+        mode: "local",
+        client: "claude-desktop",
+        write: false,
+        env: { ATLAS_DATASOURCE_URL: "postgres://user:secret@host/db" },
+        fetchImpl: UNREACHABLE,
+      });
+      const out = cap.logs.join("\n");
+      expect(out).not.toContain("postgres://");
+      expect(out).not.toContain("secret");
+      expect(out).not.toMatch(/"env":\s*\{/);
+      expect(out).not.toContain("sqlite://");
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
 describe("runInit --local --write", () => {
   it("writes the merged config to the configPath", async () => {
     const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-init-"));
@@ -130,6 +198,30 @@ describe("runInit --local --write", () => {
       const written = JSON.parse(readFileSync(target, "utf8"));
       expect(written.mcpServers.atlas.command).toBe("bunx");
       expect(written.mcpServers.github.command).toBe("npx");
+    } finally {
+      cap.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts and leaves the file byte-identical when the existing mcpServers is a non-object", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-init-"));
+    const target = join(dir, "claude_desktop_config.json");
+    const original = JSON.stringify({ mcpServers: "not-an-object", other: 1 });
+    writeFileSync(target, original, "utf8");
+    const cap = captureStdio();
+    try {
+      const res = await runInit({
+        mode: "local",
+        client: "claude-desktop",
+        write: true,
+        configPathOverride: target,
+        env: {},
+        fetchImpl: UNREACHABLE,
+      });
+      expect(res.exitCode).toBe(1);
+      const after = readFileSync(target, "utf8");
+      expect(after).toBe(original);
     } finally {
       cap.restore();
       rmSync(dir, { recursive: true, force: true });

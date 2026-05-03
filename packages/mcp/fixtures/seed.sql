@@ -1,8 +1,8 @@
 -- Atlas MCP demo fixture — small accounts/companies/people dataset.
--- Hydrated by `bunx @useatlas/mcp serve` into a local SQLite file when no
--- ATLAS_DATASOURCE_URL is configured. Schema mirrors a tiny CRM so the
--- bundled semantic layer (companies, accounts, people) lights up the
--- explore + executeSQL tools out of the box.
+-- Loaded into a SQLite file by the demo-fixture hydrator (planned follow-up;
+-- the `init` flow already emits the target sqlite:// path). Schema mirrors
+-- a tiny CRM so the bundled semantic layer lights up the explore +
+-- executeSQL tools.
 
 CREATE TABLE IF NOT EXISTS companies (
   id INTEGER PRIMARY KEY,

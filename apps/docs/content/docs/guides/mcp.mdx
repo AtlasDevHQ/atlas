@@ -103,7 +103,7 @@ The SSE endpoint is available at `http://localhost:8080/mcp`.
 
 ## Available Tools
 
-The MCP server exposes two tools:
+The MCP server exposes six tools — two general-purpose and four typed accessors over the semantic layer. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
 
 ### explore
 
@@ -128,6 +128,93 @@ connectionId: "warehouse"  (optional)
 ```
 
 All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement timeout, and audit logging. See [SQL Validation Pipeline](/security/sql-validation).
+
+### listEntities
+
+Discover what entities (tables/views) the semantic layer declares. Each result is `{ name, table, description, source }`.
+
+```
+filter: "order"   // optional case-insensitive substring across name/table/description
+```
+
+```jsonc
+// Example output
+{
+  "count": 2,
+  "entities": [
+    { "name": "Orders", "table": "orders", "description": "...", "source": "default" },
+    { "name": "OrderItems", "table": "order_items", "description": "...", "source": "default" }
+  ]
+}
+```
+
+### describeEntity
+
+Return the full parsed entity YAML — dimensions (with types and sample values), measures, joins, query patterns, grain, and connection. Look up by `name` or by `table` name.
+
+```
+name: "orders"
+```
+
+Returns `{ found: false, name }` when the entity does not exist. Always call this before writing SQL against an unfamiliar table.
+
+### searchGlossary
+
+Search the business glossary for a term. Case-insensitive substring match across term, definition, note, and `possible_mappings` — searching by an underlying column name (e.g. `orders.status`) will hit the ambiguous parent term that lists it.
+
+```
+term: "revenue"
+```
+
+```jsonc
+// Example output
+{
+  "query": "revenue",
+  "count": 1,
+  "matches": [
+    {
+      "term": "revenue",
+      "status": "defined",
+      "definition": "Sum of paid invoice amounts.",
+      "note": null,
+      "possible_mappings": [],
+      "source": "default"
+    }
+  ]
+}
+```
+
+When a returned term has `status: "ambiguous"`, do **not** silently pick a mapping — surface `possible_mappings` and ask the user which they mean. This is what the [glossary disambiguation](#) directive is for.
+
+### runMetric
+
+Execute a canonical metric defined under `semantic/metrics/`. Looks the metric up by `id`, runs its authoritative SQL through the **same** pipeline as `executeSQL` (4-layer validation, RLS injection, auto-LIMIT, statement timeout, audit logging), and returns the result.
+
+```
+id: "orders_count"
+connectionId: "warehouse"   // optional — overrides the default connection
+```
+
+```jsonc
+// Example output (single column / single row → scalar `value`)
+{
+  "id": "orders_count",
+  "label": "Total orders",
+  "value": 42,
+  "columns": ["count"],
+  "rows": [{ "count": 42 }],
+  "row_count": 1,
+  "truncated": false,
+  "sql": "SELECT COUNT(DISTINCT id) AS count FROM orders",
+  "executed_at": "2026-05-03T12:34:56.789Z"
+}
+```
+
+When the result has multiple columns or multiple rows, `value` falls back to the row array — useful for breakdown metrics.
+
+`runMetric` returns `isError: true` when the metric id is unknown, when the underlying SQL fails validation, or when an approval/RLS rule rejects the query.
+
+The `filters` parameter is reserved for future pre-aggregation filter pass-through. Passing a non-empty `filters` object is rejected today; use `executeSQL` with the metric's raw SQL if you need to filter results before aggregation.
 
 ---
 

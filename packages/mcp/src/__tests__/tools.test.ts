@@ -67,11 +67,18 @@ describe("MCP tools", () => {
     mockExecuteSQLExecute.mockClear();
   });
 
-  it("lists all 2 tools", async () => {
+  it("lists explore + executeSQL + the four typed semantic tools (#2020)", async () => {
     const { client } = await createTestClient();
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["executeSQL", "explore"]);
+    expect(names).toEqual([
+      "describeEntity",
+      "executeSQL",
+      "explore",
+      "listEntities",
+      "runMetric",
+      "searchGlossary",
+    ]);
   });
 
   it("explore returns text content", async () => {

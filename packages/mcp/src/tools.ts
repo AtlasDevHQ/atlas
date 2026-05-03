@@ -19,6 +19,7 @@ import { explore } from "@atlas/api/lib/tools/explore";
 import { executeSQL } from "@atlas/api/lib/tools/sql";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { withRequestContext } from "@atlas/api/lib/logger";
+import { registerSemanticTools } from "./semantic-tools.js";
 
 export interface RegisterToolsOptions {
   /**
@@ -156,4 +157,6 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
       ),
   );
 
+  // --- typed semantic-layer tools ---
+  registerSemanticTools(server, opts);
 }

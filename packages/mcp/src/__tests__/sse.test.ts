@@ -9,15 +9,30 @@ const SSE_ACTOR = createAtlasUser("u_sse", "managed", "sse@test", {
   activeOrganizationId: "org_sse",
 });
 
-// Mock config initialization to avoid requiring a real database
+// Mock config initialization to avoid requiring a real database. Per
+// CLAUDE.md, mock.module() must cover every named export downstream
+// callers use — partial mocks leak via the in-process Bun runner and
+// break unrelated tests with `Export named 'X' not found`.
+const __mockedConfig = {
+  datasources: {},
+  tools: ["explore", "executeSQL"],
+  auth: "auto",
+  semanticLayer: "./semantic",
+  source: "env",
+};
 mock.module("@atlas/api/lib/config", () => ({
-  initializeConfig: mock(async () => ({
-    datasources: {},
-    tools: ["explore", "executeSQL"],
-    auth: "auto",
-    semanticLayer: "./semantic",
-    source: "env",
-  })),
+  initializeConfig: mock(async () => __mockedConfig),
+  getConfig: mock(() => __mockedConfig),
+  loadConfig: mock(async () => __mockedConfig),
+  configFromEnv: mock(() => __mockedConfig),
+  validateAndResolve: mock(() => __mockedConfig),
+  defineConfig: (c: unknown) => c,
+  applyDatasources: mock(async () => undefined),
+  validateToolConfig: mock(async () => undefined),
+  formatZodErrors: () => "",
+  _resetConfig: mock(() => undefined),
+  _setConfigForTest: mock(() => undefined),
+  _warnPoolDefaultsInSaaS: mock(() => undefined),
 }));
 
 // Mock tool execute functions

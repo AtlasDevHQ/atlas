@@ -28,6 +28,7 @@ import {
   RUN_METRIC_TOOL_DESCRIPTION,
   type SemanticToolName,
 } from "@atlas/api/lib/tools/descriptions";
+import { traceMcpToolCall, type McpTransport } from "./telemetry.js";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
 // SaaS) shouldn't be able to drive megabyte strings into the catalog
@@ -46,6 +47,12 @@ const ENTITY_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
 export interface RegisterSemanticToolsOptions {
   /** Actor bound on every tool dispatch — see tools.ts. */
   actor: AtlasUser;
+  /** OTel transport tag (#2029) — threaded from `bin/serve.ts` via `tools.ts`. */
+  transport: McpTransport;
+  /** Resolved workspace id for OTel attribution (`actor.activeOrganizationId` or `actor.id`). */
+  workspaceId: string;
+  /** Resolved `deployMode` for OTel attribution (`self-hosted` / `saas`). */
+  deployMode: string;
 }
 
 function dispatchId(prefix: string): string {
@@ -79,7 +86,7 @@ export function registerSemanticTools(
   server: McpServer,
   opts: RegisterSemanticToolsOptions,
 ): void {
-  const { actor } = opts;
+  const { actor, transport, workspaceId, deployMode } = opts;
 
   // --- listEntities ---
   server.registerTool(
@@ -98,18 +105,22 @@ export function registerSemanticTools(
       },
     },
     async ({ filter }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-listEntities"), user: actor },
-        async () => {
-          try {
-            const entities = listEntities({ filter });
-            return toJsonContent({ count: entities.length, entities });
-          } catch (err) {
-            const message = errorMessage(err, "listEntities tool failed");
-            process.stderr.write(`[atlas-mcp] listEntities threw: ${err}\n`);
-            return toErrorContent(message);
-          }
-        },
+      traceMcpToolCall(
+        { toolName: "listEntities", workspaceId, transport, deployMode },
+        () =>
+          withRequestContext(
+            { requestId: dispatchId("mcp-listEntities"), user: actor },
+            async () => {
+              try {
+                const entities = listEntities({ filter });
+                return toJsonContent({ count: entities.length, entities });
+              } catch (err) {
+                const message = errorMessage(err, "listEntities tool failed");
+                process.stderr.write(`[atlas-mcp] listEntities threw: ${err}\n`);
+                return toErrorContent(message);
+              }
+            },
+          ),
       ),
   );
 
@@ -131,21 +142,25 @@ export function registerSemanticTools(
       },
     },
     async ({ name }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-describeEntity"), user: actor },
-        async () => {
-          try {
-            const entity = getEntityByName(name);
-            if (!entity) {
-              return toJsonContent({ found: false, name });
-            }
-            return toJsonContent({ found: true, entity });
-          } catch (err) {
-            const message = errorMessage(err, "describeEntity tool failed");
-            process.stderr.write(`[atlas-mcp] describeEntity threw: ${err}\n`);
-            return toErrorContent(message);
-          }
-        },
+      traceMcpToolCall(
+        { toolName: "describeEntity", workspaceId, transport, deployMode },
+        () =>
+          withRequestContext(
+            { requestId: dispatchId("mcp-describeEntity"), user: actor },
+            async () => {
+              try {
+                const entity = getEntityByName(name);
+                if (!entity) {
+                  return toJsonContent({ found: false, name });
+                }
+                return toJsonContent({ found: true, entity });
+              } catch (err) {
+                const message = errorMessage(err, "describeEntity tool failed");
+                process.stderr.write(`[atlas-mcp] describeEntity threw: ${err}\n`);
+                return toErrorContent(message);
+              }
+            },
+          ),
       ),
   );
 
@@ -166,29 +181,34 @@ export function registerSemanticTools(
       },
     },
     async ({ term }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-searchGlossary"), user: actor },
-        async () => {
-          try {
-            const matches = searchGlossary(term);
-            return toJsonContent({
-              query: term,
-              count: matches.length,
-              matches,
-            });
-          } catch (err) {
-            const message = errorMessage(err, "searchGlossary tool failed");
-            process.stderr.write(`[atlas-mcp] searchGlossary threw: ${err}\n`);
-            return toErrorContent(message);
-          }
-        },
+      traceMcpToolCall(
+        { toolName: "searchGlossary", workspaceId, transport, deployMode },
+        () =>
+          withRequestContext(
+            { requestId: dispatchId("mcp-searchGlossary"), user: actor },
+            async () => {
+              try {
+                const matches = searchGlossary(term);
+                return toJsonContent({
+                  query: term,
+                  count: matches.length,
+                  matches,
+                });
+              } catch (err) {
+                const message = errorMessage(err, "searchGlossary tool failed");
+                process.stderr.write(`[atlas-mcp] searchGlossary threw: ${err}\n`);
+                return toErrorContent(message);
+              }
+            },
+          ),
       ),
   );
 
   // --- runMetric ---
   // The metric SQL goes through executeSQL.execute, inheriting all four
   // validation layers, plugin hooks, RLS injection, auto-LIMIT,
-  // statement timeout, and audit logging.
+  // statement timeout, and audit logging. The downstream `atlas.sql.execute`
+  // span (#1979 coverage) nests under this dispatch's `atlas.mcp.tool.run`.
   server.registerTool(
     "runMetric" satisfies SemanticToolName,
     {
@@ -224,69 +244,79 @@ export function registerSemanticTools(
       },
     },
     async ({ id, filters, connectionId }): Promise<CallToolResult> =>
-      withRequestContext(
-        { requestId: dispatchId("mcp-runMetric"), user: actor },
-        async () => {
-          try {
-            if (filters && Object.keys(filters).length > 0) {
-              return toErrorContent(
-                "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
-              );
-            }
-
-            const metric = findMetricById(id);
-            if (!metric) {
-              return toErrorContent(`Metric "${id}" not found.`);
-            }
-
-            const explanation = metric.description
-              ? `MCP runMetric ${metric.id}: ${metric.description}`
-              : `MCP runMetric ${metric.id}`;
-
-            const result = (await executeSQL.execute!(
-              { sql: metric.sql, explanation, connectionId },
-              { toolCallId: "mcp-runMetric", messages: [] },
-            )) as Record<string, unknown>;
-
-            if (result.success === false) {
-              return toErrorContent(
-                String(result.error ?? "Metric execution failed."),
-              );
-            }
-
-            const columns = Array.isArray(result.columns)
-              ? (result.columns as string[])
-              : [];
-            const rows = Array.isArray(result.rows)
-              ? (result.rows as Array<Record<string, unknown>>)
-              : [];
-
-            // Single column / single row → scalar value. Otherwise hand back
-            // the rows so the caller can inspect — keeps the typed shape
-            // honest for breakdown metrics without forcing a shape they don't
-            // have.
-            const value =
-              columns.length === 1 && rows.length === 1
-                ? rows[0][columns[0]]
-                : rows;
-
-            return toJsonContent({
-              id: metric.id,
-              label: metric.label,
-              value,
-              columns,
-              rows,
-              row_count: result.row_count ?? rows.length,
-              truncated: Boolean(result.truncated),
-              sql: metric.sql,
-              executed_at: new Date().toISOString(),
-            });
-          } catch (err) {
-            const message = errorMessage(err, "runMetric tool failed");
-            process.stderr.write(`[atlas-mcp] runMetric threw: ${err}\n`);
-            return toErrorContent(message);
-          }
+      traceMcpToolCall(
+        {
+          toolName: "runMetric",
+          workspaceId,
+          transport,
+          deployMode,
+          attributes: { "metric.id": id },
         },
+        () =>
+          withRequestContext(
+            { requestId: dispatchId("mcp-runMetric"), user: actor },
+            async () => {
+              try {
+                if (filters && Object.keys(filters).length > 0) {
+                  return toErrorContent(
+                    "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
+                  );
+                }
+
+                const metric = findMetricById(id);
+                if (!metric) {
+                  return toErrorContent(`Metric "${id}" not found.`);
+                }
+
+                const explanation = metric.description
+                  ? `MCP runMetric ${metric.id}: ${metric.description}`
+                  : `MCP runMetric ${metric.id}`;
+
+                const result = (await executeSQL.execute!(
+                  { sql: metric.sql, explanation, connectionId },
+                  { toolCallId: "mcp-runMetric", messages: [] },
+                )) as Record<string, unknown>;
+
+                if (result.success === false) {
+                  return toErrorContent(
+                    String(result.error ?? "Metric execution failed."),
+                  );
+                }
+
+                const columns = Array.isArray(result.columns)
+                  ? (result.columns as string[])
+                  : [];
+                const rows = Array.isArray(result.rows)
+                  ? (result.rows as Array<Record<string, unknown>>)
+                  : [];
+
+                // Single column / single row → scalar value. Otherwise hand back
+                // the rows so the caller can inspect — keeps the typed shape
+                // honest for breakdown metrics without forcing a shape they don't
+                // have.
+                const value =
+                  columns.length === 1 && rows.length === 1
+                    ? rows[0][columns[0]]
+                    : rows;
+
+                return toJsonContent({
+                  id: metric.id,
+                  label: metric.label,
+                  value,
+                  columns,
+                  rows,
+                  row_count: result.row_count ?? rows.length,
+                  truncated: Boolean(result.truncated),
+                  sql: metric.sql,
+                  executed_at: new Date().toISOString(),
+                });
+              } catch (err) {
+                const message = errorMessage(err, "runMetric tool failed");
+                process.stderr.write(`[atlas-mcp] runMetric threw: ${err}\n`);
+                return toErrorContent(message);
+              }
+            },
+          ),
       ),
   );
 }

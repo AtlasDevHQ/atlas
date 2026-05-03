@@ -17,6 +17,7 @@ import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
 import { resolveMcpActor } from "./actor.js";
+import type { McpTransport } from "./telemetry.js";
 // `serverInfo.version` is what MCP clients (Claude Desktop, Cursor) show
 // in their server picker. Reading from package.json keeps the value in
 // sync without a hand-edit on every bump.
@@ -32,6 +33,13 @@ interface CreateMcpServerOptions {
    * leave this unset and let `resolveMcpActor()` read env vars at boot).
    */
   actor?: AtlasUser;
+  /**
+   * Carrier transport for OTel attribution (#2029). `bin/serve.ts` sets
+   * this once at boot and threads it through every server instance so
+   * span / counter attributes don't have to re-detect transport per
+   * dispatch. Defaults to `stdio`.
+   */
+  transport?: McpTransport;
 }
 
 /**
@@ -62,13 +70,14 @@ export async function createAtlasMcpServer(
   }
 
   const actor = opts?.actor ?? (await resolveMcpActor());
+  const transport: McpTransport = opts?.transport ?? "stdio";
 
   const server = new McpServer({
     name: "atlas",
     version: VERSION,
   });
 
-  registerTools(server, { actor });
+  registerTools(server, { actor, transport });
   registerResources(server);
   await registerPrompts(server);
 

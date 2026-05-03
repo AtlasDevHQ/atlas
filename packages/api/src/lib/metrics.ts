@@ -16,7 +16,7 @@
  * Grafana board need to extend telemetry.ts with an OTLP metrics exporter.
  */
 
-import { metrics, type Counter } from "@opentelemetry/api";
+import { metrics, type Counter, type Histogram } from "@opentelemetry/api";
 
 const meter = metrics.getMeter("@atlas/api");
 
@@ -33,5 +33,59 @@ export const abuseEscalations: Counter = meter.createCounter(
   {
     description:
       "Workspace abuse level transitions (warn / throttle / suspend / reinstate)",
+  },
+);
+
+/**
+ * `atlas.mcp.tool.calls` — count of MCP tool dispatches by tool name +
+ * outcome. Mirrors the abuse counter pattern; the same `@atlas/api` Meter
+ * is used so a single OTel exporter configuration handles MCP signals.
+ *
+ * Attributes:
+ *   - `tool.name`  — `explore` / `executeSQL` / `listEntities` /
+ *                    `describeEntity` / `searchGlossary` / `runMetric`.
+ *   - `outcome`    — `success` / `error`.
+ *   - `transport`  — `stdio` / `sse`.
+ *   - `deploy.mode`— `self-hosted` / `saas`.
+ */
+export const mcpToolCalls: Counter = meter.createCounter(
+  "atlas.mcp.tool.calls",
+  {
+    description:
+      "MCP tool dispatch count by tool name + outcome (success / error)",
+  },
+);
+
+/**
+ * `atlas.mcp.tool.latency` — raw per-dispatch latency in milliseconds.
+ * Downstream collectors derive p50 / p95 / p99 — the histogram buckets
+ * stay defaulted so dashboards aren't pinned to one set of cutoffs.
+ *
+ * Attributes match `atlas.mcp.tool.calls` so the two series can be joined.
+ */
+export const mcpToolLatency: Histogram = meter.createHistogram(
+  "atlas.mcp.tool.latency",
+  {
+    description: "MCP tool dispatch latency in milliseconds (raw observations)",
+    unit: "ms",
+  },
+);
+
+/**
+ * `atlas.mcp.activations` — incremented exactly once per workspace per
+ * MCP process on the first observed tool call. Lets us measure 1.4.0 MCP
+ * adoption without a parallel telemetry path.
+ *
+ * Attributes:
+ *   - `workspace.id` — the bound `activeOrganizationId` (or
+ *                      `system:mcp` in trusted-transport mode).
+ *   - `transport`    — `stdio` / `sse`.
+ *   - `deploy.mode`  — `self-hosted` / `saas`.
+ */
+export const mcpActivations: Counter = meter.createCounter(
+  "atlas.mcp.activations",
+  {
+    description:
+      "Workspace first-MCP-tool-call observed in this process (process-local dedup)",
   },
 );

@@ -77,7 +77,7 @@ async function main() {
 
     const { startSseServer } = await import("../src/sse.js");
     const handle = await startSseServer(
-      () => createAtlasMcpServer({ skipConfig: true, actor }),
+      () => createAtlasMcpServer({ skipConfig: true, actor, transport: "sse" }),
       { port, corsOrigin },
     );
 
@@ -101,7 +101,7 @@ async function main() {
   }
 
   // stdio transport (default)
-  const server = await createAtlasMcpServer();
+  const server = await createAtlasMcpServer({ transport: "stdio" });
   const { StdioServerTransport } = await import(
     "@modelcontextprotocol/sdk/server/stdio.js"
   );

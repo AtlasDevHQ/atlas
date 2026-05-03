@@ -416,4 +416,42 @@ describe("buildAppLayer", () => {
       else delete process.env.ATLAS_ENCRYPTION_KEYS;
     }
   });
+
+  // Same shape as the InternalDbGuardLive wiring test above. Without
+  // this end-to-end assertion, a future merge that drops the
+  // `rateLimitGuardLayer` line from `Layer.mergeAll(...)` would still
+  // pass the per-guard unit tests in `saas-guards.test.ts` because
+  // those tests provide the guard Layer directly. The boot path going
+  // through `buildAppLayer` is the only place the wiring is observed.
+  test("buildAppLayer wires RateLimitGuardLive — missing ATLAS_RATE_LIMIT_RPM fails the layer in SaaS", async () => {
+    const savedDb = process.env.DATABASE_URL;
+    const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
+    const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+    // Satisfy the other SaaS guards so the failure cause carries
+    // exclusively the rate-limit error — not the encryption-key or
+    // internal-DB error from a sibling guard firing first.
+    process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
+    delete process.env.ATLAS_RATE_LIMIT_RPM;
+
+    try {
+      const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
+      const layer = buildAppLayer(config);
+
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(layer)),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      const text = String(Exit.isFailure(exit) ? exit.cause : "");
+      expect(text).toContain("RateLimitRequiredError");
+    } finally {
+      if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
+      else delete process.env.DATABASE_URL;
+      if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
+      else delete process.env.ATLAS_ENCRYPTION_KEYS;
+      if (savedRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = savedRpm;
+      else delete process.env.ATLAS_RATE_LIMIT_RPM;
+    }
+  });
 });

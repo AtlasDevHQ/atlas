@@ -451,8 +451,9 @@ describe("RateLimitGuardLive", () => {
     });
   });
 
-  // "0" is the documented disabled-rate-limit sentinel in
-  // auth/middleware.ts:39 — but in SaaS that's the DDoS hole the issue
+  // "0" is the documented disabled-rate-limit sentinel in the runtime
+  // path (`getRpmLimit()` returns 0 → `checkRateLimit` short-circuits
+  // to "always allowed") — but in SaaS that's the DDoS hole the issue
   // describes. Boot must fail rather than accept the explicit-disable.
   test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM=0 (disabled sentinel)", async () => {
     await withCleanEnv(async () => {
@@ -472,9 +473,10 @@ describe("RateLimitGuardLive", () => {
     });
   });
 
-  // Negative numbers and NaN parse to <=0 in middleware.ts; the guard
-  // mirrors that invariant so a typo (`-300`, `abc`) doesn't pass boot
-  // by being non-empty.
+  // The guard tightens the runtime parser at the `0` boundary AND
+  // rejects fractional `0 < n < 1` (where `Math.floor(n) === 0` would
+  // disable the limiter at runtime). A typo (`-300`, `abc`) rejects via
+  // the non-finite branch.
   test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM is non-numeric", async () => {
     await withCleanEnv(async () => {
       process.env.ATLAS_RATE_LIMIT_RPM = "not-a-number";
@@ -490,6 +492,63 @@ describe("RateLimitGuardLive", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
       expect(failure).toBeInstanceOf(RateLimitRequiredError);
+    });
+  });
+
+  // Parser-divergence regression guard. Runtime path:
+  // `getRpmLimit()` returns `Math.floor(0.5) === 0`, then
+  // `checkRateLimit` short-circuits on `limit === 0` → disabled.
+  // The boot guard rejects via `n < 1` so the silent runtime-disabled
+  // state can't pass boot. Loosening this branch back to `n <= 0`
+  // would re-open the hole.
+  test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM is fractional (Math.floor disables at runtime)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_RATE_LIMIT_RPM = "0.5";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RateLimitRequiredError);
+    });
+  });
+
+  test("fails boot in SaaS when ATLAS_RATE_LIMIT_RPM=0.99 (floor still 0)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_RATE_LIMIT_RPM = "0.99";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+    });
+  });
+
+  // `n < 1` boundary — `1` itself must pass.
+  test("succeeds in SaaS when ATLAS_RATE_LIMIT_RPM=1 (boundary)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_RATE_LIMIT_RPM = "1";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
     });
   });
 

@@ -642,7 +642,7 @@ describe("settings module", () => {
   describe("requiresRestart metadata", () => {
     it("hot-reloadable settings do not have requiresRestart", () => {
       const registry = getSettingsRegistry();
-      const hotReloadable = ["ATLAS_ROW_LIMIT", "ATLAS_QUERY_TIMEOUT", "ATLAS_RATE_LIMIT_RPM", "ATLAS_AGENT_MAX_STEPS"];
+      const hotReloadable = ["ATLAS_ROW_LIMIT", "ATLAS_QUERY_TIMEOUT", "ATLAS_AGENT_MAX_STEPS"];
       for (const key of hotReloadable) {
         const def = registry.find((s) => s.key === key);
         expect(def).toBeDefined();
@@ -656,6 +656,10 @@ describe("settings module", () => {
         "ATLAS_PROVIDER", "ATLAS_MODEL", "ATLAS_LOG_LEVEL",
         "ATLAS_CORS_ORIGIN", "ATLAS_TABLE_WHITELIST",
         "ATLAS_RLS_ENABLED", "ATLAS_RLS_COLUMN", "ATLAS_RLS_CLAIM",
+        // ATLAS_RATE_LIMIT_RPM moved here in #1983 — pairs with
+        // RateLimitGuardLive at boot. Hot-reloading would re-open
+        // the DDoS hole until next restart.
+        "ATLAS_RATE_LIMIT_RPM",
       ];
       for (const key of restartRequired) {
         const def = registry.find((s) => s.key === key);

@@ -157,6 +157,49 @@ export interface ChatErrorInfo {
 }
 
 // ---------------------------------------------------------------------------
+// ChatContextWarning — mid-stream "answer is degraded" frame (#1988 B5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Codes for non-fatal preflight degradations that the agent ran past so the
+ * user could still get an answer, at the cost of dropped context. Each code
+ * names the specific context that was lost — the title/detail copy is built
+ * server-side so the client never has to translate codes to copy.
+ *
+ * - `semantic_layer_unavailable` — the org-scoped whitelist + semantic index
+ *   could not be loaded (typically internal-DB pool exhaustion). The agent
+ *   falls back to the file-based default semantic layer.
+ * - `learned_patterns_unavailable` — the learned-patterns lookup failed.
+ *   The agent runs without question-similarity hints.
+ */
+export const CHAT_CONTEXT_WARNING_CODES = [
+  "semantic_layer_unavailable",
+  "learned_patterns_unavailable",
+] as const;
+
+export type ChatContextWarningCode = (typeof CHAT_CONTEXT_WARNING_CODES)[number];
+
+/**
+ * Mid-stream warning frame written to the AI-SDK UI message stream when the
+ * agent's preflight loaders failed but the run was allowed to proceed with
+ * degraded context. Sibling shape to {@link ChatErrorInfo} — same
+ * `title`/`detail`/`requestId` fields — but discriminated by the literal
+ * `severity: "warning"` so a client can route warnings and hard errors
+ * through one parser without misclassifying a degradation as a failure.
+ *
+ * The discriminator is load-bearing: the AI-SDK transport delivers errors
+ * and these warnings on the same `data-*` channel, and a UI that surfaces
+ * a warning as a fatal modal would scare users away from a good answer.
+ */
+export interface ChatContextWarning {
+  severity: "warning";
+  code: ChatContextWarningCode;
+  title: string;
+  detail?: string;
+  requestId?: string;
+}
+
+// ---------------------------------------------------------------------------
 // matchError — server-side pattern matching for common failures
 // ---------------------------------------------------------------------------
 

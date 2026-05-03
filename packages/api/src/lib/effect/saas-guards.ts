@@ -1,5 +1,5 @@
 /**
- * SaaS boot-guard family (#1978).
+ * SaaS boot-guard family (#1978 + #1988).
  *
  * Extends the `DpaGuardLive` precedent (architecture-wins #45) — a
  * `Layer.effectDiscard` that throws a typed `Data.TaggedError` at boot
@@ -30,6 +30,27 @@
  *      the scheduler all depend on the internal DB; missing it is
  *      not a degraded-but-functional state in SaaS.
  *
+ *   4. {@link RegionGuardLive} (#1988 C7) — claimed `ATLAS_API_REGION`
+ *      missing from `config.residency.regions` or pointing at a
+ *      malformed `databaseUrl`. Without this guard, a region-routing
+ *      misconfiguration silently treats every workspace request as
+ *      misrouted (and in strict mode 421s legitimate traffic).
+ *
+ *   5. {@link PluginConfigGuardLive} (#1988 C8) — stored
+ *      `workspace_plugins.config` rows are validated against each
+ *      plugin's current `getConfigSchema()`. Stale configs (renamed
+ *      keys, removed required fields) log warnings; with
+ *      `ATLAS_STRICT_PLUGIN_SECRETS=true` they fail boot — same knob
+ *      as `secrets.ts:checkStrictPluginSecrets`.
+ *
+ *   6. {@link MigrationGuardLive} (#1988 C9) — Drizzle migrations
+ *      MUST succeed in SaaS. The legacy `MigrationLive` is non-fatal
+ *      so self-hosted operators can boot a stateless instance even
+ *      when the internal DB schema is partially set up. In SaaS the
+ *      same condition would silently downgrade `loadSettings()` to
+ *      env-var-only (the `42P01` fallback) and bypass admin overrides
+ *      that boot-time guards rely on (e.g. DPA-flagged provider).
+ *
  * Tagged errors are defined locally rather than added to
  * `ATLAS_ERROR_TAG_LIST`/`mapTaggedError()` — same precedent as
  * `DpaInconsistencyError`. These guards fail process boot before any
@@ -38,7 +59,8 @@
  * Naming note: section dividers below use `(#1)`, `(#2 + #3)`, `(#5)` —
  * those are the issue's sub-finding numbers (#1978 enumerated findings
  * 1-6 with no #4 by the auditor's convention). They're kept verbatim
- * so cross-references back to the issue stay grep-able.
+ * so cross-references back to the issue stay grep-able. Sections marked
+ * `(#1988 ...)` extend the family for the prod-audit medium-severity tail.
  */
 
 import { Data, Effect, Layer } from "effect";
@@ -96,6 +118,64 @@ export class EncryptionKeyMalformedError extends Data.TaggedError("EncryptionKey
  * warning (audit log will not persist) — SaaS treats it as fatal.
  */
 export class InternalDatabaseRequiredError extends Data.TaggedError("InternalDatabaseRequiredError")<{
+  readonly message: string;
+}> {}
+
+/**
+ * SaaS region claims a residency region (`ATLAS_API_REGION` env var or
+ * `residency.defaultRegion` in `atlas.config.ts`) that does not have a
+ * matching entry in `config.residency.regions`, or whose entry has a
+ * malformed Postgres URL. Without this guard,
+ * `lib/residency/misrouting.ts:detectMisrouting` would treat every
+ * request as misrouted (and in strict mode 421 legitimate traffic).
+ *
+ * `availableRegions` is exposed on the error so the operator-actionable
+ * log line can list the valid keys without re-reading config — important
+ * because the typo class for region keys (`eu` vs `eu-west`) is exactly
+ * what produces this misconfig.
+ */
+export class RegionMisconfiguredError extends Data.TaggedError("RegionMisconfiguredError")<{
+  readonly message: string;
+  readonly claimedRegion: string;
+  readonly availableRegions: readonly string[];
+}> {}
+
+/**
+ * Stored `workspace_plugins.config` row(s) failed validation against
+ * the current plugin's `getConfigSchema()`. The error carries the
+ * per-row issues so an operator hitting this in strict mode can fix
+ * the offending workspace configs before the next boot rather than
+ * grepping the log for individual warnings.
+ *
+ * Strict mode is opt-in via `ATLAS_STRICT_PLUGIN_SECRETS=true` — the
+ * same knob `secrets.ts:checkStrictPluginSecrets` already uses for
+ * F-42 secret-residue checks. Reusing the knob keeps the strict-mode
+ * surface small (one env var, two related contracts).
+ */
+export interface PluginConfigIssue {
+  readonly catalogId: string;
+  readonly installationId: string;
+  readonly workspaceId: string;
+  readonly reason: string;
+}
+
+export class PluginConfigStaleError extends Data.TaggedError("PluginConfigStaleError")<{
+  readonly message: string;
+  readonly issues: readonly PluginConfigIssue[];
+}> {}
+
+/**
+ * SaaS region booted but Drizzle migrations did not complete. The
+ * legacy `MigrationLive` is non-fatal (`Effect.catchAll → Effect.succeed(false)`)
+ * because self-hosted operators may legitimately run a stateless
+ * instance with no internal DB. In SaaS that fallback would silently
+ * downgrade `loadSettings()` to env-var-only (the `42P01 / does not
+ * exist` branch in `lib/settings.ts`) and bypass admin overrides that
+ * other boot guards rely on (e.g. `ATLAS_EMAIL_PROVIDER` for the DPA
+ * check). Promote the failure to fatal so a missing schema can never
+ * masquerade as "first boot, nothing configured yet".
+ */
+export class MigrationsRequiredError extends Data.TaggedError("MigrationsRequiredError")<{
   readonly message: string;
 }> {}
 
@@ -264,6 +344,178 @@ export const InternalDbGuardLive: Layer.Layer<never, InternalDatabaseRequiredErr
     }
   }),
 );
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  RegionGuardLive (#1988 C7)
+// ══════════════════════════════════════════════════════════════════════
+
+const ISSUE_REF_1988 = "#1988";
+
+/**
+ * Liberal Postgres URL well-formedness check for boot guards. We only
+ * reject obvious typos (missing scheme, mistyped vendor) — full
+ * connectivity verification belongs in the connection-pool warmup,
+ * not the boot guard. The guard runs in parallel with the migration
+ * Layer; opening a real socket here would race against InternalDB's
+ * pool initialization for the same URL.
+ */
+function isPlausiblePostgresUrl(raw: unknown): boolean {
+  if (typeof raw !== "string" || raw.length === 0) return false;
+  return raw.startsWith("postgres://") || raw.startsWith("postgresql://");
+}
+
+/**
+ * Resolve the region this API instance claims to serve. Mirrors
+ * `lib/residency/misrouting.ts:getApiRegion()` so the boot-time check
+ * uses the same precedence the request-path uses — env var first,
+ * then `residency.defaultRegion`. Duplicated rather than imported to
+ * keep `saas-guards.ts` free of the static request-path reachability
+ * graph (same wall-off rationale as the inlined `config.ts` warning).
+ */
+function resolveClaimedRegion(
+  config: { residency?: { defaultRegion?: string } | undefined },
+): string | null {
+  const envRegion = process.env.ATLAS_API_REGION;
+  if (envRegion && envRegion.length > 0) return envRegion;
+  return config.residency?.defaultRegion ?? null;
+}
+
+/**
+ * Fail boot in SaaS when the API instance claims a region that is not
+ * declared in `config.residency.regions`, or whose declaration has a
+ * malformed `databaseUrl`. Self-hosted is unaffected — residency is a
+ * SaaS concept (multi-region routing) and self-hosted operators that
+ * don't configure `residency` legitimately leave `ATLAS_API_REGION`
+ * unset.
+ *
+ * The misrouting middleware in `lib/residency/misrouting.ts` already
+ * tolerates `null` (no region configured at all → check skipped). The
+ * dangerous case is "claimed region exists but doesn't match anything
+ * in config" — the middleware then treats every workspace request as
+ * misrouted because the workspace's assigned region != this instance's
+ * claimed region, and in strict mode it 421s the request. That class
+ * of misconfig is what this guard catches at boot.
+ */
+export const RegionGuardLive: Layer.Layer<never, RegionMisconfiguredError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+
+    const claimedRegion = resolveClaimedRegion(config);
+    // No region claimed at all. The misrouting middleware also no-ops
+    // in this case, so the contract is consistent.
+    if (claimedRegion === null) return;
+
+    const regions = config.residency?.regions ?? {};
+    const availableRegions = Object.keys(regions);
+
+    if (!(claimedRegion in regions)) {
+      yield* Effect.fail(
+        new RegionMisconfiguredError({
+          claimedRegion,
+          availableRegions,
+          message:
+            `SaaS region booted with ATLAS_API_REGION="${claimedRegion}" (or residency.defaultRegion) ` +
+            `but config.residency.regions does not declare that key. Available regions: ` +
+            `[${availableRegions.join(", ") || "(none configured)"}]. Without this guard, the ` +
+            `misrouting middleware would treat every workspace request as misrouted (and in strict ` +
+            `mode 421 legitimate traffic). Add the region to atlas.config.ts or correct ` +
+            `ATLAS_API_REGION. See ${ISSUE_REF_1988}.`,
+        }),
+      );
+    }
+
+    const regionEntry = regions[claimedRegion] as { databaseUrl?: unknown } | undefined;
+    if (!isPlausiblePostgresUrl(regionEntry?.databaseUrl)) {
+      yield* Effect.fail(
+        new RegionMisconfiguredError({
+          claimedRegion,
+          availableRegions,
+          message:
+            `SaaS region "${claimedRegion}" is declared in config.residency.regions but its ` +
+            `databaseUrl is missing or malformed (must start with postgres:// or postgresql://). ` +
+            `Region-scoped writes would fail at first I/O. See ${ISSUE_REF_1988}.`,
+        }),
+      );
+    }
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  PluginConfigGuardLive (#1988 C8)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * `ATLAS_STRICT_PLUGIN_SECRETS=true` is the existing F-42 strict-mode
+ * flag (see `lib/plugins/secrets.ts:checkStrictPluginSecrets`). We
+ * reuse it here so a SaaS region operator opting in to strict secret
+ * residue checks also gets strict stale-config rejection — both are
+ * "fail boot rather than run with stale plugin state" contracts and
+ * splitting the knob would force operators to remember two flags.
+ */
+function isStrictPluginMode(): boolean {
+  return process.env.ATLAS_STRICT_PLUGIN_SECRETS === "true";
+}
+
+/**
+ * Validate every stored `workspace_plugins.config` row against its
+ * plugin's current `getConfigSchema()`. Stale configs (renamed keys,
+ * removed required fields) are always logged as warnings; in strict
+ * mode (`ATLAS_STRICT_PLUGIN_SECRETS=true`) they fail boot.
+ *
+ * The validation function lives in `lib/plugins/validation.ts` so it
+ * can be unit-tested in isolation (no Layer DAG, no Config Tag
+ * dependency). The Layer here is a thin wrapper that:
+ *   - dynamic-imports the plugin registry + InternalDB at boot time
+ *     (same lazy-import pattern as `EncryptionKeyGuardLive`, keeps
+ *     `saas-guards.ts` free of the plugin reachability graph)
+ *   - delegates to `validateStoredPluginConfigs()` for per-row checks
+ *   - decides warn-only vs fail-fast based on `isStrictPluginMode()`
+ *
+ * Self-hosted is unaffected when strict mode is off — a missing
+ * stored config is not fatal in any deployment.
+ *
+ * The guard skips silently when no internal DB is configured
+ * (`hasInternalDB() === false`) — that case is already covered by
+ * `InternalDbGuardLive` in SaaS, and self-hosted may legitimately run
+ * without persisted plugin configs.
+ */
+export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    yield* Config;
+
+    const result = yield* Effect.promise(async () => {
+      const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
+      if (!hasInternalDB()) return { issues: [] as PluginConfigIssue[] };
+      const { plugins } = await import("@atlas/api/lib/plugins/registry");
+      const { validateStoredPluginConfigs } = await import(
+        "@atlas/api/lib/plugins/validation"
+      );
+      return validateStoredPluginConfigs({ pluginRegistry: plugins });
+    });
+
+    if (result.issues.length === 0) return;
+
+    if (isStrictPluginMode()) {
+      yield* Effect.fail(
+        new PluginConfigStaleError({
+          issues: result.issues,
+          message:
+            `ATLAS_STRICT_PLUGIN_SECRETS=true and ${result.issues.length} stored plugin config row(s) ` +
+            `failed validation against the current plugin schema. Either fix the workspace configs in ` +
+            `the admin UI or unset ATLAS_STRICT_PLUGIN_SECRETS to fall back to warn-only mode. ` +
+            `See ${ISSUE_REF_1988}.`,
+        }),
+      );
+    }
+  }),
+);
+
+// `MigrationGuardLive` (#1988 C9) lives in `lib/effect/layers.ts` next
+// to `DpaGuardLive` because it directly yields the `Migration` Tag
+// defined in that module — sibling pattern, same wall-off rationale.
+// Its tagged error (`MigrationsRequiredError`) stays here so the
+// family's failure shapes remain co-located for grep / docs.
 
 // Note: `warnIfDeployModeSilentlyDowngraded()` previously lived here.
 // It was inlined into `lib/config.ts` because importing the helper

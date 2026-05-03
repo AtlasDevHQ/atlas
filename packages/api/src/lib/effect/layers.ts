@@ -41,6 +41,9 @@ import {
   EnterpriseGuardLive,
   EncryptionKeyGuardLive,
   InternalDbGuardLive,
+  RegionGuardLive,
+  PluginConfigGuardLive,
+  MigrationsRequiredError,
 } from "./saas-guards";
 
 const log = createLogger("effect:layers");
@@ -770,6 +773,57 @@ export const DpaGuardLive: Layer.Layer<never, Error, Config | Settings> = Layer.
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  MigrationGuardLive (#1988 C9) — sibling of DpaGuardLive
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fail boot in SaaS when Drizzle migrations did not complete. Depends
+ * on {@link Migration} so it sequences after `MigrationLive` runs and
+ * observes its `migrated` flag. The error class
+ * (`MigrationsRequiredError`) lives in `saas-guards.ts` next to its
+ * siblings; this Layer lives here because it directly yields the
+ * `Migration` Tag defined above and importing the Tag from
+ * `saas-guards.ts` would create a static cycle.
+ *
+ * Why promote `MigrationLive`'s soft failure to fatal in SaaS:
+ *
+ * `MigrationLive` is intentionally non-fatal so a self-hosted operator
+ * running a stateless instance (no `DATABASE_URL`) can still boot.
+ * Without this guard the same fallback fires in SaaS — `loadSettings()`
+ * hits the `42P01 / does not exist` branch in `lib/settings.ts`, the
+ * cache stays empty, and every subsequent `getSetting()` resolves
+ * through env-vars only. That bypasses every admin override the boot
+ * guards depend on (e.g. the DPA guard's `ATLAS_EMAIL_PROVIDER`
+ * lookup), so a partial-schema region would silently boot with the
+ * wrong contract surface. Promote the failure here so the silent
+ * downgrade chain can never start.
+ */
+export const MigrationGuardLive: Layer.Layer<never, MigrationsRequiredError, Config | Migration> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+    // Skip when there's no internal DB at all — `InternalDbGuardLive`
+    // already fails boot for that case in SaaS, and a duplicate
+    // failure here would just obscure the actual misconfig.
+    if (!process.env.DATABASE_URL) return;
+
+    const migration = yield* Migration;
+    if (migration.migrated) return;
+
+    yield* Effect.fail(
+      new MigrationsRequiredError({
+        message:
+          `SaaS region booted but Drizzle migrations did not complete. The internal DB schema is ` +
+          `incomplete; settings reads would fall back to env-vars only and bypass admin overrides ` +
+          `that other boot guards (DPA, plan limits) rely on. Inspect the prior 'Boot migration ` +
+          `failed' log line for the underlying cause and re-run after the schema is repaired. ` +
+          `See #1988.`,
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  AppLayer — compose the full startup DAG
 // ══════════════════════════════════════════════════════════════════════
 
@@ -806,13 +860,23 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     Layer.provide(Layer.merge(configLayer, settingsLayer)),
   );
 
-  // SaaS boot-guard family (#1978). Each guard fails boot when a SaaS
-  // contract is violated. Self-hosted is unaffected. They depend only
-  // on `Config` (the enterprise/encryption/DB checks read env directly)
-  // so they can run in parallel with the migration + sync layers.
+  // SaaS boot-guard family (#1978 + #1988). Each guard fails boot when a
+  // SaaS contract is violated. Self-hosted is unaffected. The first three
+  // depend only on `Config` (the enterprise/encryption/DB checks read env
+  // directly) so they run in parallel with the migration + sync layers.
   const enterpriseGuardLayer = EnterpriseGuardLive.pipe(Layer.provide(configLayer));
   const encryptionKeyGuardLayer = EncryptionKeyGuardLive.pipe(Layer.provide(configLayer));
   const internalDbGuardLayer = InternalDbGuardLive.pipe(Layer.provide(configLayer));
+  // #1988 C7 + C8 — region routing claim and stale plugin config checks.
+  // Both depend only on `Config`. PluginConfigGuardLive lazy-imports the
+  // plugin registry + InternalDB inside its Effect body so it can run as
+  // a peer of migrationLayer without a static cycle.
+  const regionGuardLayer = RegionGuardLive.pipe(Layer.provide(configLayer));
+  const pluginConfigGuardLayer = PluginConfigGuardLive.pipe(Layer.provide(configLayer));
+  // #1988 C9 — depends on Migration so it can read its `migrated` flag.
+  const migrationGuardLayer = MigrationGuardLive.pipe(
+    Layer.provide(Layer.merge(configLayer, migrationLayer)),
+  );
 
   // Merge all layers. InternalDB is included both directly and as a
   // dependency of migrationLayer — Effect memoizes same-reference Layers.
@@ -828,5 +892,8 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     enterpriseGuardLayer,
     encryptionKeyGuardLayer,
     internalDbGuardLayer,
+    regionGuardLayer,
+    pluginConfigGuardLayer,
+    migrationGuardLayer,
   );
 }

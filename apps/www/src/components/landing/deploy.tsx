@@ -1,7 +1,5 @@
 import { type CSSProperties } from "react";
 
-const STATUS_PAGE_URL = "https://atlas.openstatus.dev";
-
 function SelfHostCard() {
   return (
     <div
@@ -136,9 +134,9 @@ function CloudCard() {
       </p>
 
       <a
-        href={STATUS_PAGE_URL}
+        href="https://atlas.openstatus.dev"
         target="_blank"
-        rel="noopener noreferrer"
+        rel="noreferrer"
         className="mb-5 flex items-center justify-between rounded-lg border border-white/10 px-[18px] py-4 transition-colors hover:border-white/20"
         style={{ background: "oklch(0.16 0 0)" }}
       >

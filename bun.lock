@@ -197,6 +197,7 @@
       "version": "0.1.0",
       "bin": {
         "atlas-mcp": "./bin/serve.ts",
+        "atlas-mcp-init": "./bin/init.ts",
       },
       "dependencies": {
         "@atlas/api": "workspace:*",

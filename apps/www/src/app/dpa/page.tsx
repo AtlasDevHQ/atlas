@@ -6,6 +6,7 @@ import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/
 import { Nav } from "../../components/nav";
 import { ArrowIcon, TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
+import { SubProcessorWebhookButton } from "../../components/sub-processor-webhook-button";
 
 export const metadata: Metadata = {
   title: "Data Processing Addendum — Atlas",
@@ -18,6 +19,16 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/dpa",
     siteName: "Atlas",
     type: "website",
+  },
+  alternates: {
+    types: {
+      "application/atom+xml": [
+        {
+          url: "https://www.useatlas.dev/sub-processors/feed.xml",
+          title: "Atlas — Sub-processor changes",
+        },
+      ],
+    },
   },
 };
 
@@ -234,15 +245,24 @@ export default function DPAPage() {
               </p>
               <p className="mb-3 text-[13px] leading-relaxed text-zinc-400">
                 We email account admins automatically. Procurement teams can
-                add a separate distribution list:
+                subscribe via:
               </p>
               <a
                 href="mailto:legal@useatlas.dev?subject=Subscribe%20to%20sub-processor%20notifications&body=Please%20add%20the%20following%20address%20to%20the%20sub-processor%20notification%20list%3A%0A"
                 className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
               >
-                Subscribe via email
+                Email
                 <ArrowIcon />
               </a>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <a
+                  href="/sub-processors/feed.xml"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+                >
+                  RSS
+                </a>
+                <SubProcessorWebhookButton />
+              </div>
             </div>
           </div>
 

@@ -721,6 +721,45 @@ export function makeSchedulerLive(
       );
       yield* Effect.addFinalizer(() => Fiber.interrupt(shareCleanupFiber));
 
+      // ── Periodic fiber: sub-processor change-feed publisher (#1924) ──
+      // Cron-sweep approach (vs build-hook): the SaaS sub-processor list
+      // is published as a static JSON asset by apps/www. A build hook
+      // would only fire on www deploys, so the api would miss any
+      // out-of-band edit (e.g. a hotfix landing via PR with no www
+      // deploy yet). The sweep handles every path uniformly. Default
+      // 6h tick — compliance change notifications are not latency-
+      // sensitive, and a long interval keeps load on www.useatlas.dev
+      // negligible.
+      const subProcessorTick = Effect.tryPromise({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { subProcessorPublisherTick } = require("@atlas/api/lib/sub-processor-publisher") as {
+            subProcessorPublisherTick: () => Promise<void>;
+          };
+          return subProcessorPublisherTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: errorMessage(err) },
+              "Sub-processor publisher tick failed",
+            );
+          }),
+        ),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SUBPROCESSOR_PUBLISH_INTERVAL_MS } = require("@atlas/api/lib/sub-processor-publisher") as {
+        SUBPROCESSOR_PUBLISH_INTERVAL_MS: number;
+      };
+      const subProcessorFiber = yield* Effect.fork(
+        subProcessorTick.pipe(
+          Effect.repeat(Schedule.spaced(Duration.millis(SUBPROCESSOR_PUBLISH_INTERVAL_MS))),
+        ),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(subProcessorFiber));
+
       // --- Finalizer: stop main scheduler ---
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {

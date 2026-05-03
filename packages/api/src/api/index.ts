@@ -36,6 +36,7 @@ import { publicBranding } from "./routes/public-branding";
 import { onboardingEmails } from "./routes/onboarding-emails";
 import { mode } from "./routes/mode";
 import { starterPrompts } from "./routes/starter-prompts";
+import { subProcessorSubscriptions } from "./routes/sub-processor-subscriptions";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -211,6 +212,7 @@ app.route("/api/v1/branding", publicBranding);
 app.route("/api/v1/onboarding-emails", onboardingEmails);
 app.route("/api/v1/mode", mode);
 app.route("/api/v1/starter-prompts", starterPrompts);
+app.route("/api/v1/sub-processor-subscriptions", subProcessorSubscriptions);
 
 // Onboarding routes — self-serve signup flow (test-connection, complete setup).
 try {

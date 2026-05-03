@@ -1,0 +1,8 @@
+{
+  "title": "Integrations",
+  "description": "Outbound integration surfaces — feeds, webhooks, and pull-based notifications",
+  "icon": "Plug",
+  "pages": [
+    "sub-processor-feed"
+  ]
+}

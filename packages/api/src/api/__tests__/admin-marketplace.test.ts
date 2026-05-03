@@ -765,7 +765,9 @@ describe("Workspace Plugin Marketplace", () => {
 
   describe("DELETE /marketplace/:id", () => {
     it("uninstalls a plugin", async () => {
-      setQueryResult("DELETE FROM workspace_plugins WHERE id", [{ id: "inst-1" }]);
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
@@ -780,6 +782,91 @@ describe("Workspace Plugin Marketplace", () => {
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/nonexistent", { method: "DELETE" });
       expect(res.status).toBe(404);
+    });
+
+    // #1987 — uninstall must clean up scheduled tasks owned by the plugin.
+    // Prior behavior left rows in `scheduled_tasks` tagged with the plugin's
+    // catalog_id, so the scheduler would keep firing them after uninstall.
+    it("deletes scheduled tasks owned by the uninstalled plugin", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", [
+        { id: "task-1" },
+        { id: "task-2" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
+      expect(cleanup).toBeDefined();
+      // Must scope by plugin_id (catalog_id from workspace_plugins) AND org_id
+      // — narrowest possible match so we don't drop other workspaces' tasks.
+      expect(cleanup!.sql).toContain("plugin_id");
+      expect(cleanup!.sql).toContain("org_id");
+      expect(cleanup!.params).toEqual(["cat-1", "org-1"]);
+    });
+
+    it("reports scheduled-task cleanup count in the response", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", [
+        { id: "task-1" },
+        { id: "task-2" },
+        { id: "task-3" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.scheduledTasksDeleted).toBe(3);
+    });
+
+    it("succeeds with zero scheduled tasks (no orphans to clean)", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.deleted).toBe(true);
+      expect(body.scheduledTasksDeleted).toBe(0);
+    });
+
+    it("does not query scheduled_tasks when installation is missing (404)", async () => {
+      // 404 short-circuits before cleanup — there is no plugin to clean up after.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/missing-inst", { method: "DELETE" });
+      expect(res.status).toBe(404);
+
+      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
+      expect(cleanup).toBeUndefined();
+    });
+
+    it("returns 200 with scheduledTasksDeleted=0 when cleanup query rejects after the row is gone", async () => {
+      // The workspace_plugins DELETE has already committed by the time the
+      // cleanup runs — losing the cleanup mid-flight should not undo the
+      // uninstall. We surface the orphan via a failure audit instead.
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", new Error("connection lost"));
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.deleted).toBe(true);
+      expect(body.scheduledTasksDeleted).toBe(0);
     });
   });
 

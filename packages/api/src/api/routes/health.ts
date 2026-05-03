@@ -43,6 +43,17 @@ const ComponentHealthSchema = z.object({
   backend: z.string().optional(),
 });
 
+const PluginItemHealthSchema = z.object({
+  id: z.string(),
+  status: z.enum(["healthy", "unhealthy", "registered", "initializing", "teardown"]),
+  message: z.string().optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+});
+
+const PluginsComponentSchema = ComponentHealthSchema.extend({
+  items: z.array(PluginItemHealthSchema).optional(),
+});
+
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "error"]),
   region: z.string().optional(),
@@ -55,6 +66,7 @@ export const HealthResponseSchema = z.object({
     provider: ComponentHealthSchema,
     scheduler: ComponentHealthSchema,
     sandbox: ComponentHealthSchema,
+    plugins: PluginsComponentSchema,
   }).optional(),
   checks: z.object({
     datasource: z.object({
@@ -299,6 +311,79 @@ health.openapi(healthRoute, async (c) => {
     const now = new Date().toISOString();
     const schedulerEnabled = process.env.ATLAS_SCHEDULER_ENABLED === "true";
 
+    // #1987 — aggregate plugin healthcheck results into a `plugins` component.
+    // Plugin failures NEVER escalate to 503 — that path is reserved for the
+    // datasource (everywhere) and the internal DB (SaaS only, see #1981). A
+    // misbehaving plugin should be observable in the dashboard, not page oncall.
+    let pluginsComponent: {
+      status: "healthy" | "degraded" | "down" | "disabled";
+      lastCheckedAt: string;
+      message?: string;
+      items?: Array<{
+        id: string;
+        status: "healthy" | "unhealthy" | "registered" | "initializing" | "teardown";
+        message?: string;
+        latencyMs?: number;
+      }>;
+    };
+    let pluginAggregateDegraded = false;
+    try {
+      const { plugins } = await import("@atlas/api/lib/plugins/registry");
+      const registered = plugins.describe();
+      if (registered.length === 0) {
+        pluginsComponent = { status: "disabled", lastCheckedAt: now };
+      } else {
+        const probe = await plugins.healthCheckAll();
+        const items = registered.map((p) => {
+          const result = probe.get(p.id);
+          // Trust the probe's reported status — it's already merged the
+          // entry's lifecycle state with the result. Fall back to the
+          // descriptor's status if no probe result (shouldn't happen but
+          // matches healthCheckAll's plugin-without-healthCheck branch).
+          const status = (result?.status ?? p.status) as
+            | "healthy"
+            | "unhealthy"
+            | "registered"
+            | "initializing"
+            | "teardown";
+          return {
+            id: p.id,
+            status,
+            ...(result?.message && { message: result.message }),
+            ...(result?.latencyMs !== undefined && { latencyMs: result.latencyMs }),
+          };
+        });
+        const anyUnhealthy = items.some((p) => p.status === "unhealthy");
+        pluginAggregateDegraded = anyUnhealthy;
+        pluginsComponent = {
+          status: anyUnhealthy ? "degraded" : "healthy",
+          lastCheckedAt: now,
+          items,
+        };
+      }
+    } catch (err) {
+      // healthCheckAll() throwing is unusual (the implementation already
+      // catches per-plugin probe exceptions). If it does, treat the whole
+      // surface as degraded so the operator sees something is wrong, but
+      // don't crash /health — the dashboard is most needed when things are
+      // broken.
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Plugin healthCheckAll() failed — surfacing plugins component as degraded",
+      );
+      pluginAggregateDegraded = true;
+      pluginsComponent = {
+        status: "degraded",
+        lastCheckedAt: now,
+        message: "Plugin health probe failed — see server logs",
+      };
+    }
+
+    // Plugin aggregate degradation promotes top-level status from ok → degraded
+    // but NEVER from degraded/error → error. The overall HTTP status code is
+    // unchanged (still 200) — only the dashboard label shifts.
+    if (pluginAggregateDegraded && status === "ok") status = "degraded";
+
     const components = {
       datasource: {
         status: dsNotConfigured
@@ -342,6 +427,7 @@ health.openapi(healthRoute, async (c) => {
         lastCheckedAt: now,
         ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
       },
+      plugins: pluginsComponent,
     };
 
     // Brand color for frontend theming (public, no auth required)

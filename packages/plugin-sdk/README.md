@@ -130,10 +130,24 @@ register → initialize(ctx) → healthCheck() → ... → teardown()
    - `ctx.tools` — Tool registry for adding agent tools.
    - `ctx.logger` — Pino-compatible child logger scoped to the plugin.
    - `ctx.config` — Resolved Atlas configuration.
-3. **Health check** — Periodic probe. Return `{ healthy: false, message }` to signal degradation. Never throw.
-4. **Teardown** — Graceful shutdown in reverse registration order (LIFO).
+3. **Health check** — Periodic probe. Return `{ healthy: false, message }` to signal degradation. Never throw. Results surface in the `plugins` component of `GET /api/v1/health` — a failing probe shifts the top-level status to `degraded` (HTTP 200, never 503).
+4. **Teardown** — Graceful shutdown in reverse registration order (LIFO). Use `teardown()` to release state Atlas can't see — external webhook subscriptions, third-party connections, drained queues. **Note:** `teardown()` runs on server shutdown, *not* on a per-workspace uninstall (uninstall is a DB-row removal, not a process event).
 
 > **v1.1 note:** `AtlasPluginContext` will gain `executeQuery`, `conversations`, and `actions` fields for full host-level decoupling. Currently, interaction plugins that need these inject them via config callbacks.
+
+## Uninstall Contract
+
+`DELETE /api/v1/admin/marketplace/:id` removes a plugin from a workspace. The cleanup contract:
+
+| State | Survives uninstall? | Notes |
+|-------|---------------------|-------|
+| `workspace_plugins` row | No (deleted) | Canonical "is this plugin installed?" record. |
+| `scheduled_tasks` rows tagged with the plugin's `catalog_id` | No (deleted) | Scoped by `(plugin_id, org_id)` so cleanup never crosses workspaces. `scheduled_task_runs` cascade via FK. |
+| `plugin_<pluginId>_*` tables (declared via `schema`) | **Yes** (retained) | Reinstall picks up where it left off — cached digest history, sync cursors, etc. Hard-reset only via workspace purge. |
+| In-process hook registrations | Dropped at server shutdown via `teardown()` | Not persisted. |
+| Webhook subscriptions registered with external platforms | **Yes** (unless your `teardown()` removes them) | Atlas has no visibility into external state. |
+
+If your plugin creates `scheduled_tasks` rows, set `plugin_id = $catalogId` and `org_id = $orgId` on insert so the uninstall cleanup picks them up. Untagged tasks (`plugin_id IS NULL`) are treated as user-created and survive uninstall. See the [authoring guide](https://docs.useatlas.dev/plugins/authoring-guide#uninstall-contract) for the full lifecycle.
 
 ## Config Validation
 

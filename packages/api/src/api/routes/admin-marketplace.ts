@@ -644,7 +644,16 @@ const uninstallRoute = createRoute({
   responses: {
     200: {
       description: "Plugin uninstalled",
-      content: { "application/json": { schema: z.object({ deleted: z.boolean() }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            deleted: z.boolean(),
+            // #1987 — count of plugin-owned scheduled_tasks rows removed.
+            // 0 when the plugin had no tasks; absent only on legacy clients.
+            scheduledTasksDeleted: z.number().int().nonnegative().optional(),
+          }),
+        },
+      },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Installation not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -970,6 +979,67 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       }
 
       const deleted = rows[0]!;
+
+      // #1987 — clean up plugin-owned scheduled tasks so the scheduler
+      // doesn't keep firing them after uninstall. Scoped by (plugin_id,
+      // org_id) so we never cross workspaces.
+      //
+      // Cleanup contract (uninstall — see apps/docs/content/docs/plugins/lifecycle.mdx):
+      //   • scheduled_tasks tagged with this plugin's catalog_id are deleted
+      //     here. scheduled_task_runs cascade via FK on task_id.
+      //   • plugin_<table> rows from the schema-migrate path are RETAINED.
+      //     Reinstalling the plugin should pick up where it left off (cached
+      //     digest history, cursor state, etc.). Operators who need a
+      //     hard-reset use the workspace purge path, not uninstall.
+      //   • Plugin hook subscriptions (beforeQuery, onRequest, …) live in the
+      //     in-process registry only — teardown drops them, no DB rows to
+      //     clean. Webhook subscriptions registered with external platforms
+      //     are the plugin author's responsibility (declare in `teardown()`).
+      //
+      // Failure mode: if this DELETE rejects after the workspace_plugins row
+      // is already gone, the catch-and-rethrow below logs a failure audit
+      // with `cleanupFailed=true`. Operators see the orphan count via the
+      // /health plugins component and can issue a follow-up cleanup via
+      // SQL. We accept this gap rather than wrapping in a transaction —
+      // a single CTE would force callers into a single statement and lose
+      // the auditable separation between uninstall and cleanup.
+      let scheduledTasksDeleted: number;
+      try {
+        const taskRows = yield* queryEffect<{ id: string }>(
+          `DELETE FROM scheduled_tasks WHERE plugin_id = $1 AND org_id = $2 RETURNING id`,
+          [deleted.catalog_id, orgId],
+        );
+        scheduledTasksDeleted = taskRows.length;
+      } catch (err) {
+        // The workspace_plugins row is already gone — surface the orphan as
+        // a failure audit so operators see it. The user still gets a 200
+        // (the uninstall semantically succeeded; cleanup is best-effort).
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.uninstall,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: deleted.catalog_id,
+            ...(deleted.slug != null && { pluginSlug: deleted.slug }),
+            orgId,
+            cleanupFailed: true,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+        log.error(
+          {
+            orgId,
+            installationId: id,
+            pluginId: deleted.catalog_id,
+            err: err instanceof Error ? err : new Error(String(err)),
+          },
+          "Plugin uninstalled but scheduled-task cleanup failed — orphan tasks may continue firing until purged manually",
+        );
+        return c.json({ deleted: true, scheduledTasksDeleted: 0 }, 200);
+      }
+
       logAdminAction({
         actionType: ADMIN_ACTIONS.plugin.uninstall,
         targetType: "plugin",
@@ -982,10 +1052,14 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
           // driver-shape drift). Aligned with the config_update guard below.
           ...(deleted.slug != null && { pluginSlug: deleted.slug }),
           orgId,
+          ...(scheduledTasksDeleted > 0 && { scheduledTasksDeleted }),
         },
       });
-      log.info({ orgId, installationId: id }, "Plugin uninstalled from workspace");
-      return c.json({ deleted: true }, 200);
+      log.info(
+        { orgId, installationId: id, scheduledTasksDeleted },
+        "Plugin uninstalled from workspace",
+      );
+      return c.json({ deleted: true, scheduledTasksDeleted }, 200);
     }),
     { label: "uninstall plugin" },
   );

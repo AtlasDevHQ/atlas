@@ -569,6 +569,72 @@
                             "status",
                             "lastCheckedAt"
                           ]
+                        },
+                        "plugins": {
+                          "type": "object",
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "healthy",
+                                "degraded",
+                                "down",
+                                "disabled"
+                              ]
+                            },
+                            "latencyMs": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "lastCheckedAt": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "model": {
+                              "type": "string"
+                            },
+                            "backend": {
+                              "type": "string"
+                            },
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "healthy",
+                                      "unhealthy",
+                                      "registered",
+                                      "initializing",
+                                      "teardown"
+                                    ]
+                                  },
+                                  "message": {
+                                    "type": "string"
+                                  },
+                                  "latencyMs": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "status"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "lastCheckedAt"
+                          ]
                         }
                       },
                       "required": [
@@ -576,7 +642,8 @@
                         "internalDb",
                         "provider",
                         "scheduler",
-                        "sandbox"
+                        "sandbox",
+                        "plugins"
                       ]
                     },
                     "checks": {
@@ -1008,6 +1075,72 @@
                                 "status",
                                 "lastCheckedAt"
                               ]
+                            },
+                            "plugins": {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "healthy",
+                                    "degraded",
+                                    "down",
+                                    "disabled"
+                                  ]
+                                },
+                                "latencyMs": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "lastCheckedAt": {
+                                  "type": "string"
+                                },
+                                "message": {
+                                  "type": "string"
+                                },
+                                "model": {
+                                  "type": "string"
+                                },
+                                "backend": {
+                                  "type": "string"
+                                },
+                                "items": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string"
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "healthy",
+                                          "unhealthy",
+                                          "registered",
+                                          "initializing",
+                                          "teardown"
+                                        ]
+                                      },
+                                      "message": {
+                                        "type": "string"
+                                      },
+                                      "latencyMs": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "status"
+                                    ]
+                                  }
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "lastCheckedAt"
+                              ]
                             }
                           },
                           "required": [
@@ -1015,7 +1148,8 @@
                             "internalDb",
                             "provider",
                             "scheduler",
-                            "sandbox"
+                            "sandbox",
+                            "plugins"
                           ]
                         },
                         "checks": {
@@ -47651,6 +47785,10 @@
                   "properties": {
                     "deleted": {
                       "type": "boolean"
+                    },
+                    "scheduledTasksDeleted": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [

@@ -214,12 +214,16 @@ export const scheduledTasks = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     // Org scoping
     orgId: text("org_id"),
+    // Plugin ownership (#1987). NULL → user-created task. Non-NULL → matches
+    // workspace_plugins.catalog_id; uninstall scopes cleanup by (plugin_id, org_id).
+    pluginId: text("plugin_id"),
   },
   (t) => [
     index("idx_scheduled_tasks_owner").on(t.ownerId),
     index("idx_scheduled_tasks_enabled").on(t.enabled).where(sql`enabled = true`),
     index("idx_scheduled_tasks_next_run").on(t.nextRunAt).where(sql`enabled = true`),
     index("idx_scheduled_tasks_org").on(t.orgId),
+    index("idx_scheduled_tasks_plugin_org").on(t.pluginId, t.orgId).where(sql`plugin_id IS NOT NULL`),
   ],
 );
 

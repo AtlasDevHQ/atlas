@@ -8,6 +8,13 @@
  * `withRequestContext({ user: actor, requestId })` so any downstream
  * approval/RLS gate sees a bound caller (#1858 — see tools.ts header).
  *
+ * OTel coverage (#2029): every dispatch is also wrapped in
+ * `traceMcpToolCall`, which emits the span / counter / latency histogram
+ * and fires the per-workspace activation event. `runMetric` adds the
+ * `metric.id` span attribute; the existing `atlas.sql.execute` span (see
+ * `lib/tools/sql.ts`) nests under this dispatch's `atlas.mcp.tool.run`
+ * via OTel context propagation through `withSpan`.
+ *
  * Failure shape: every error path returns an `AtlasMcpToolError`
  * envelope (#2030) so an LLM agent can branch on `code` instead of
  * pattern-matching prose. `searchGlossary` upgrades the recommendation
@@ -35,6 +42,11 @@ import {
   RUN_METRIC_TOOL_DESCRIPTION,
   type SemanticToolName,
 } from "@atlas/api/lib/tools/descriptions";
+import {
+  traceMcpToolCall,
+  type McpTransport,
+  type McpDeployMode,
+} from "./telemetry.js";
 import {
   classifyExecuteSqlError,
   envelope,
@@ -73,6 +85,12 @@ const RUN_METRIC_ERROR_CODES = [
 export interface RegisterSemanticToolsOptions {
   /** Actor bound on every tool dispatch — see tools.ts. */
   actor: AtlasUser;
+  /** OTel transport tag (#2029) — threaded from `bin/serve.ts` via `tools.ts`. */
+  transport: McpTransport;
+  /** Resolved workspace id for OTel attribution (`actor.activeOrganizationId` or `actor.id`). */
+  workspaceId: string;
+  /** Resolved `deployMode` for OTel attribution (`self-hosted` / `saas`). */
+  deployMode: McpDeployMode;
 }
 
 function dispatchId(prefix: string): string {
@@ -110,7 +128,7 @@ export function registerSemanticTools(
   server: McpServer,
   opts: RegisterSemanticToolsOptions,
 ): void {
-  const { actor } = opts;
+  const { actor, transport, workspaceId, deployMode } = opts;
 
   // --- listEntities ---
   server.registerTool(
@@ -128,24 +146,25 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ filter }): Promise<CallToolResult> => {
-      const requestId = dispatchId("mcp-listEntities");
-      return withRequestContext(
-        { requestId, user: actor },
-        async () => {
-          try {
-            const entities = listEntities({ filter });
-            return toJsonContent({ count: entities.length, entities });
-          } catch (err) {
-            const message = errorMessage(err, "listEntities tool failed");
-            process.stderr.write(`[atlas-mcp] listEntities threw: ${err}\n`);
-            return toEnvelopeResult(
-              envelope("internal_error", message, { request_id: requestId }),
-            );
-          }
+    async ({ filter }): Promise<CallToolResult> =>
+      traceMcpToolCall(
+        { toolName: "listEntities", workspaceId, transport, deployMode },
+        () => {
+          const requestId = dispatchId("mcp-listEntities");
+          return withRequestContext({ requestId, user: actor }, async () => {
+            try {
+              const entities = listEntities({ filter });
+              return toJsonContent({ count: entities.length, entities });
+            } catch (err) {
+              const message = errorMessage(err, "listEntities tool failed");
+              process.stderr.write(`[atlas-mcp] listEntities threw: ${err}\n`);
+              return toEnvelopeResult(
+                envelope("internal_error", message, { request_id: requestId }),
+              );
+            }
+          });
         },
-      );
-    },
+      ),
   );
 
   // --- describeEntity ---
@@ -165,38 +184,39 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ name }): Promise<CallToolResult> => {
-      const requestId = dispatchId("mcp-describeEntity");
-      return withRequestContext(
-        { requestId, user: actor },
-        async () => {
-          try {
-            const entity = getEntityByName(name);
-            if (!entity) {
-              // Unknown-entity isn't really a "tool failed" condition for
-              // the agent — the agent's recovery is "call listEntities and
-              // pick a known one." Emit it as a typed envelope so the
-              // recovery is machine-readable, with a hint pointing the
-              // agent at the right next call.
+    async ({ name }): Promise<CallToolResult> =>
+      traceMcpToolCall(
+        { toolName: "describeEntity", workspaceId, transport, deployMode },
+        () => {
+          const requestId = dispatchId("mcp-describeEntity");
+          return withRequestContext({ requestId, user: actor }, async () => {
+            try {
+              const entity = getEntityByName(name);
+              if (!entity) {
+                // Unknown-entity isn't really a "tool failed" condition for
+                // the agent — the agent's recovery is "call listEntities and
+                // pick a known one." Emit it as a typed envelope so the
+                // recovery is machine-readable, with a hint pointing the
+                // agent at the right next call.
+                return toEnvelopeResult(
+                  envelope(
+                    "unknown_entity",
+                    `Entity "${name}" not found in the semantic layer.`,
+                    { hint: "Call listEntities to discover available entities." },
+                  ),
+                );
+              }
+              return toJsonContent({ found: true, entity });
+            } catch (err) {
+              const message = errorMessage(err, "describeEntity tool failed");
+              process.stderr.write(`[atlas-mcp] describeEntity threw: ${err}\n`);
               return toEnvelopeResult(
-                envelope(
-                  "unknown_entity",
-                  `Entity "${name}" not found in the semantic layer.`,
-                  { hint: "Call listEntities to discover available entities." },
-                ),
+                envelope("internal_error", message, { request_id: requestId }),
               );
             }
-            return toJsonContent({ found: true, entity });
-          } catch (err) {
-            const message = errorMessage(err, "describeEntity tool failed");
-            process.stderr.write(`[atlas-mcp] describeEntity threw: ${err}\n`);
-            return toEnvelopeResult(
-              envelope("internal_error", message, { request_id: requestId }),
-            );
-          }
+          });
         },
-      );
-    },
+      ),
   );
 
   // --- searchGlossary ---
@@ -215,67 +235,72 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ term }): Promise<CallToolResult> => {
-      const requestId = dispatchId("mcp-searchGlossary");
-      return withRequestContext(
-        { requestId, user: actor },
-        async () => {
-          try {
-            const matches = searchGlossary(term);
+    async ({ term }): Promise<CallToolResult> =>
+      traceMcpToolCall(
+        { toolName: "searchGlossary", workspaceId, transport, deployMode },
+        () => {
+          const requestId = dispatchId("mcp-searchGlossary");
+          return withRequestContext({ requestId, user: actor }, async () => {
+            try {
+              const matches = searchGlossary(term);
 
-            // The disambiguation contract (#2020 + forthcoming #2025): when
-            // ANY matched glossary entry has `status: ambiguous`, surface
-            // it as a hard `ambiguous_term` envelope with the possible
-            // mappings in the hint. The agent's correct recovery is to ask
-            // the user which mapping they meant — never silently pick. The
-            // forthcoming eval harness is expected to assert on
-            // `code === "ambiguous_term"`.
-            const ambiguous = matches.find((m) => m.status === "ambiguous");
-            if (ambiguous) {
-              const mappings = ambiguous.possible_mappings.length > 0
-                ? ` Possible mappings: ${ambiguous.possible_mappings.join(", ")}.`
-                : "";
-              // Note when other matches were dropped — the envelope contract
-              // is "one ambiguous term blocks the call" so callers don't see
-              // sibling defined terms that were in the same result set. Tell
-              // the agent it can re-query for a more specific term to
-              // recover the others.
-              const otherCount = matches.length - 1;
-              const otherSuffix = otherCount > 0
-                ? ` ${otherCount} additional match${otherCount === 1 ? "" : "es"} omitted — re-call searchGlossary with a more specific term to retrieve them.`
-                : "";
+              // The disambiguation contract (#2020 + forthcoming #2025): when
+              // ANY matched glossary entry has `status: ambiguous`, surface
+              // it as a hard `ambiguous_term` envelope with the possible
+              // mappings in the hint. The agent's correct recovery is to ask
+              // the user which mapping they meant — never silently pick. The
+              // forthcoming eval harness is expected to assert on
+              // `code === "ambiguous_term"`.
+              const ambiguous = matches.find((m) => m.status === "ambiguous");
+              if (ambiguous) {
+                const mappings =
+                  ambiguous.possible_mappings.length > 0
+                    ? ` Possible mappings: ${ambiguous.possible_mappings.join(", ")}.`
+                    : "";
+                // Note when other matches were dropped — the envelope contract
+                // is "one ambiguous term blocks the call" so callers don't see
+                // sibling defined terms that were in the same result set. Tell
+                // the agent it can re-query for a more specific term to
+                // recover the others.
+                const otherCount = matches.length - 1;
+                const otherSuffix =
+                  otherCount > 0
+                    ? ` ${otherCount} additional match${otherCount === 1 ? "" : "es"} omitted — re-call searchGlossary with a more specific term to retrieve them.`
+                    : "";
+                return toEnvelopeResult(
+                  envelope(
+                    "ambiguous_term",
+                    `Glossary term "${ambiguous.term}" is ambiguous — ask the user which mapping they meant.${mappings}${otherSuffix}`,
+                    {
+                      hint: "Surface possible_mappings to the user and ask which they meant; do not silently pick a mapping.",
+                    },
+                  ),
+                );
+              }
+
+              return toJsonContent({
+                query: term,
+                count: matches.length,
+                matches,
+              });
+            } catch (err) {
+              const message = errorMessage(err, "searchGlossary tool failed");
+              process.stderr.write(`[atlas-mcp] searchGlossary threw: ${err}\n`);
               return toEnvelopeResult(
-                envelope(
-                  "ambiguous_term",
-                  `Glossary term "${ambiguous.term}" is ambiguous — ask the user which mapping they meant.${mappings}${otherSuffix}`,
-                  {
-                    hint: "Surface possible_mappings to the user and ask which they meant; do not silently pick a mapping.",
-                  },
-                ),
+                envelope("internal_error", message, { request_id: requestId }),
               );
             }
-
-            return toJsonContent({
-              query: term,
-              count: matches.length,
-              matches,
-            });
-          } catch (err) {
-            const message = errorMessage(err, "searchGlossary tool failed");
-            process.stderr.write(`[atlas-mcp] searchGlossary threw: ${err}\n`);
-            return toEnvelopeResult(
-              envelope("internal_error", message, { request_id: requestId }),
-            );
-          }
+          });
         },
-      );
-    },
+      ),
   );
 
   // --- runMetric ---
   // The metric SQL goes through executeSQL.execute, inheriting all four
   // validation layers, plugin hooks, RLS injection, auto-LIMIT,
-  // statement timeout, and audit logging.
+  // statement timeout, and audit logging. The existing `atlas.sql.execute`
+  // span (see `lib/tools/sql.ts`) nests under this dispatch's
+  // `atlas.mcp.tool.run` via OTel context propagation through `withSpan`.
   server.registerTool(
     "runMetric" satisfies SemanticToolName,
     {
@@ -310,106 +335,119 @@ export function registerSemanticTools(
           ),
       },
     },
-    async ({ id, filters, connectionId }): Promise<CallToolResult> => {
-      const requestId = dispatchId("mcp-runMetric");
-      return withRequestContext(
-        { requestId, user: actor },
-        async () => {
-          try {
-            if (filters && Object.keys(filters).length > 0) {
-              return toEnvelopeResult(
-                envelope(
-                  "validation_failed",
-                  "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
-                  { hint: "Omit `filters` and re-run, or call executeSQL with a custom WHERE clause." },
-                ),
-              );
-            }
-
-            const metric = findMetricById(id);
-            if (!metric) {
-              return toEnvelopeResult(
-                envelope(
-                  "unknown_metric",
-                  `Metric "${id}" not found.`,
-                  { hint: "Call listEntities or grep semantic/metrics/ to discover available metric ids." },
-                ),
-              );
-            }
-
-            const explanation = metric.description
-              ? `MCP runMetric ${metric.id}: ${metric.description}`
-              : `MCP runMetric ${metric.id}`;
-
-            const result = (await executeSQL.execute!(
-              { sql: metric.sql, explanation, connectionId },
-              { toolCallId: "mcp-runMetric", messages: [] },
-            )) as Record<string, unknown>;
-
-            if (result.success === false) {
-              // Approval-required is a governance outcome, not a failure —
-              // surface the approval_request_id + message intact so the
-              // agent doesn't retry and silently duplicate the request.
-              // Mirrors the same branch in tools.ts:executeSQL.
-              if (result.approval_required === true) {
-                return toJsonContent({
-                  id: metric.id,
-                  approval_required: true,
-                  approval_request_id: result.approval_request_id,
-                  matched_rules: result.matched_rules,
-                  message: result.message,
-                });
-              }
-
-              const rawError = String(result.error ?? result.message ?? "Metric execution failed.");
-              const code = classifyExecuteSqlError(rawError);
-              const extras: { request_id?: string; retry_after?: number } = {};
-              if (code === "internal_error") extras.request_id = requestId;
-              const retryAfterMs = result.retryAfterMs;
-              if (code === "rate_limited" && typeof retryAfterMs === "number") {
-                extras.retry_after = Math.max(1, Math.round(retryAfterMs / 1000));
-              }
-              return toEnvelopeResult(
-                envelope(code, rawError, Object.keys(extras).length ? extras : undefined),
-              );
-            }
-
-            const columns = Array.isArray(result.columns)
-              ? (result.columns as string[])
-              : [];
-            const rows = Array.isArray(result.rows)
-              ? (result.rows as Array<Record<string, unknown>>)
-              : [];
-
-            // Single column / single row → scalar value. Otherwise hand back
-            // the rows so the caller can inspect — keeps the typed shape
-            // honest for breakdown metrics without forcing a shape they don't
-            // have.
-            const value =
-              columns.length === 1 && rows.length === 1
-                ? rows[0][columns[0]]
-                : rows;
-
-            return toJsonContent({
-              id: metric.id,
-              label: metric.label,
-              value,
-              columns,
-              rows,
-              row_count: result.row_count ?? rows.length,
-              truncated: Boolean(result.truncated),
-              sql: metric.sql,
-              executed_at: new Date().toISOString(),
-            });
-          } catch (err) {
-            const message = errorMessage(err, "runMetric tool failed");
-            process.stderr.write(`[atlas-mcp] runMetric threw: ${err}\n`);
-            return toEnvelopeResult(
-              envelope("internal_error", message, { request_id: requestId }),
-            );
-          }
+    async ({ id, filters, connectionId }): Promise<CallToolResult> =>
+      traceMcpToolCall(
+        {
+          toolName: "runMetric",
+          workspaceId,
+          transport,
+          deployMode,
+          attributes: { "metric.id": id },
         },
-      );
-    },
+        () => {
+          const requestId = dispatchId("mcp-runMetric");
+          return withRequestContext({ requestId, user: actor }, async () => {
+            try {
+              if (filters && Object.keys(filters).length > 0) {
+                return toEnvelopeResult(
+                  envelope(
+                    "validation_failed",
+                    "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
+                    {
+                      hint: "Omit `filters` and re-run, or call executeSQL with a custom WHERE clause.",
+                    },
+                  ),
+                );
+              }
+
+              const metric = findMetricById(id);
+              if (!metric) {
+                return toEnvelopeResult(
+                  envelope("unknown_metric", `Metric "${id}" not found.`, {
+                    hint: "Call listEntities or grep semantic/metrics/ to discover available metric ids.",
+                  }),
+                );
+              }
+
+              const explanation = metric.description
+                ? `MCP runMetric ${metric.id}: ${metric.description}`
+                : `MCP runMetric ${metric.id}`;
+
+              const result = (await executeSQL.execute!(
+                { sql: metric.sql, explanation, connectionId },
+                { toolCallId: "mcp-runMetric", messages: [] },
+              )) as Record<string, unknown>;
+
+              if (result.success === false) {
+                // Approval-required is a governance outcome, not a failure —
+                // surface the approval_request_id + message intact so the
+                // agent doesn't retry and silently duplicate the request.
+                // Mirrors the same branch in tools.ts:executeSQL.
+                if (result.approval_required === true) {
+                  return toJsonContent({
+                    id: metric.id,
+                    approval_required: true,
+                    approval_request_id: result.approval_request_id,
+                    matched_rules: result.matched_rules,
+                    message: result.message,
+                  });
+                }
+
+                const rawError = String(
+                  result.error ?? result.message ?? "Metric execution failed.",
+                );
+                const code = classifyExecuteSqlError(rawError);
+                const extras: { request_id?: string; retry_after?: number } = {};
+                if (code === "internal_error") extras.request_id = requestId;
+                const retryAfterMs = result.retryAfterMs;
+                if (code === "rate_limited" && typeof retryAfterMs === "number") {
+                  extras.retry_after = Math.max(1, Math.round(retryAfterMs / 1000));
+                }
+                return toEnvelopeResult(
+                  envelope(
+                    code,
+                    rawError,
+                    Object.keys(extras).length ? extras : undefined,
+                  ),
+                );
+              }
+
+              const columns = Array.isArray(result.columns)
+                ? (result.columns as string[])
+                : [];
+              const rows = Array.isArray(result.rows)
+                ? (result.rows as Array<Record<string, unknown>>)
+                : [];
+
+              // Single column / single row → scalar value. Otherwise hand back
+              // the rows so the caller can inspect — keeps the typed shape
+              // honest for breakdown metrics without forcing a shape they don't
+              // have.
+              const value =
+                columns.length === 1 && rows.length === 1
+                  ? rows[0][columns[0]]
+                  : rows;
+
+              return toJsonContent({
+                id: metric.id,
+                label: metric.label,
+                value,
+                columns,
+                rows,
+                row_count: result.row_count ?? rows.length,
+                truncated: Boolean(result.truncated),
+                sql: metric.sql,
+                executed_at: new Date().toISOString(),
+              });
+            } catch (err) {
+              const message = errorMessage(err, "runMetric tool failed");
+              process.stderr.write(`[atlas-mcp] runMetric threw: ${err}\n`);
+              return toEnvelopeResult(
+                envelope("internal_error", message, { request_id: requestId }),
+              );
+            }
+          });
+        },
+      ),
   );
 }

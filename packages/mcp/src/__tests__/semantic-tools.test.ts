@@ -105,7 +105,12 @@ function getContentText(content: unknown): string {
 
 async function createTestClient(actor = TEST_ACTOR) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
-  registerSemanticTools(server, { actor });
+  registerSemanticTools(server, {
+    actor,
+    transport: "stdio",
+    workspaceId: actor.activeOrganizationId ?? actor.id,
+    deployMode: "self-hosted",
+  });
 
   const client = new Client({ name: "test-client", version: "0.0.1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

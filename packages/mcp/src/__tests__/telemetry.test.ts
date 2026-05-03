@@ -115,10 +115,11 @@ mock.module("@atlas/api/lib/semantic/lookups", () => ({
   loadMetricDefinitions: () => [],
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
-  initializeConfig: async () => ({ deployMode: "self-hosted" }),
-  getConfig: () => ({ deployMode: "self-hosted" }),
-}));
+// Don't mock @atlas/api/lib/config — its 31 exports would require a full
+// pass-through to avoid partial-mock leakage (CLAUDE.md "Mock all exports").
+// The unmocked module's `getConfig()` returns null when `initializeConfig`
+// hasn't run; `tools.ts` null-coalesces to `"self-hosted"`, which is the
+// value we want in tests anyway.
 
 const { registerTools } = await import("../tools.js");
 const { _resetMcpTelemetryForTest } = await import("../telemetry.js");

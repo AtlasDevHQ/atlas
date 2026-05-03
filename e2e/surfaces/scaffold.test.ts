@@ -368,25 +368,40 @@ describe("E2E: Scaffold — --demo flag", () => {
   });
 });
 
-describe("E2E: Scaffold — --demo with dataset name", () => {
-  it("accepts valid dataset name (cybersec)", () => {
+describe("E2E: Scaffold — --demo flag", () => {
+  it("accepts bare --demo (loads canonical ecommerce seed)", () => {
     const tmpDir = makeTempDir();
-    const projectName = "e2e-demo-cybersec";
+    const projectName = "e2e-demo-bare";
     try {
-      scaffold(tmpDir, projectName, "docker", "--demo cybersec");
+      scaffold(tmpDir, projectName, "docker", "--demo");
       const targetDir = path.join(tmpDir, projectName);
-      // Verify the project was created (not a project named "cybersec")
       expect(fs.existsSync(targetDir)).toBe(true);
       const pkg = readJson(path.join(targetDir, "package.json"));
       expect(pkg.name).toBe(projectName);
-      // Verify demo data files exist
-      expect(fs.existsSync(path.join(targetDir, "data", "cybersec.sql"))).toBe(true);
+      // Verify the canonical demo data file exists
+      expect(fs.existsSync(path.join(targetDir, "data", "demo.sql"))).toBe(true);
+      // Verify the ecommerce seed dir was copied
+      expect(fs.existsSync(path.join(targetDir, "data", "seeds", "ecommerce"))).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, SCAFFOLD_TIMEOUT);
 
-  it("rejects unknown dataset names", () => {
+  it("rejects legacy --demo cybersec with migration message", () => {
+    const tmpDir = makeTempDir();
+    try {
+      expect(() => {
+        run(
+          `bun ${SCAFFOLDER} test-legacy-demo --defaults --demo cybersec`,
+          { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
+        );
+      }).toThrow(/removed in 1\.4\.0/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown --demo values", () => {
     const tmpDir = makeTempDir();
     try {
       expect(() => {
@@ -394,7 +409,7 @@ describe("E2E: Scaffold — --demo with dataset name", () => {
           `bun ${SCAFFOLDER} test-bad-demo --defaults --demo badname`,
           { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
         );
-      }).toThrow(/Unknown demo dataset/);
+      }).toThrow(/Unknown --demo value/);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

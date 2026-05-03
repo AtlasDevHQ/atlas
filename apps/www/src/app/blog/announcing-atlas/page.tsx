@@ -292,8 +292,8 @@ $ cd my-app && bun run dev
         <SectionHeading>Try it</SectionHeading>
         <Paragraph>
           The fastest way to see Atlas is the live demo. No signup, no
-          installation. It&apos;s connected to a cybersecurity SaaS dataset with
-          60 tables and 200K rows of realistic, messy data.
+          installation. It&apos;s connected to NovaMart — an e-commerce DTC brand
+          with 52 tables and ~480K rows of realistic, messy data.
         </Paragraph>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">

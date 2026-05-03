@@ -57,10 +57,10 @@ bun run db:up
 ```
 
 This launches two Docker containers:
-- **Postgres** with the simple demo dataset pre-seeded (3 tables, ~330 rows)
+- **Postgres** with the canonical NovaMart e-commerce demo dataset pre-seeded (52 tables, ~480K rows)
 - **Sandbox sidecar** for isolated code execution
 
-For a larger, production-like dataset, see [Demo Datasets](/getting-started/demo-datasets) (`--demo cybersec` or `--demo ecommerce`).
+See [Demo Dataset](/getting-started/demo-datasets) for the schema overview and canonical questions.
 
 <Callout type="info" title="You should see">
 ```
@@ -140,14 +140,15 @@ bun run atlas -- init
 ```
 Profiling postgres database...
 
-  [1/3] Profiling companies...
-  [2/3] Profiling people...
-  [3/3] Profiling accounts...
+  [1/13] Profiling customers...
+  [2/13] Profiling products...
+  [3/13] Profiling orders...
+  ...
 
 Done! Semantic layer for "default" is at ./semantic/
 ```
 
-Check the files: `ls semantic/entities/` should list `companies.yml`, `people.yml`, and `accounts.yml`.
+Check the files: `ls semantic/entities/` should list 13 entities including `orders.yml`, `products.yml`, `customers.yml`, `payments.yml`, `shipments.yml`, and `returns.yml`.
 </Callout>
 
 <Accordions>

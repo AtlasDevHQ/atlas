@@ -38,7 +38,7 @@ bun run atlas -- init [options]
 | `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
 | `--no-enrich` | Explicitly skip LLM enrichment |
 | `--force` | Continue even if more than 20% of tables fail to profile |
-| `--demo [simple\|cybersec\|ecommerce]` | Load a demo dataset then profile (default: `simple`). Alias: `--seed` |
+| `--demo` | Load the canonical demo dataset (NovaMart e-commerce, 13 entities, 52 tables, ~480K rows) then profile. Boolean — Atlas ships a single canonical seed since 1.4.0 (#2021) |
 | `--org <orgId>` | Write to `semantic/.orgs/{orgId}/` and auto-import to DB (org-scoped mode). Requires managed auth (`DATABASE_URL` + `BETTER_AUTH_SECRET`) |
 | `--no-import` | Skip auto-import to DB in org-scoped mode (write disk only). Only meaningful with `--org` |
 
@@ -57,8 +57,8 @@ bun run atlas -- init --schema analytics
 # Profile with LLM enrichment
 bun run atlas -- init --enrich
 
-# Load the cybersec demo dataset (62 tables, ~500K rows)
-bun run atlas -- init --demo cybersec
+# Load the canonical demo dataset (NovaMart e-commerce, 52 tables, ~480K rows)
+bun run atlas -- init --demo
 
 # Profile a named connection from atlas.config.ts
 bun run atlas -- init --connection warehouse
@@ -76,7 +76,7 @@ bun run atlas -- init --org org-123
 bun run atlas -- init --org org-123 --no-import
 ```
 
-`--demo` without an argument loads the simple dataset (3 tables, ~330 rows). `--demo cybersec` loads the cybersec dataset (62 tables, ~500K rows). `--demo ecommerce` loads the e-commerce dataset (52 tables, ~480K rows).
+`--demo` loads the canonical NovaMart e-commerce dataset (13 entities, 52 tables, ~480K rows). The previous multi-seed picker (`--demo simple` / `cybersec` / `ecommerce`) was reverted in 1.4.0 ([#2021](https://github.com/AtlasDevHQ/atlas/issues/2021)); legacy invocations now error with a migration message and the `--seed` alias was removed.
 
 `--connection` and `--source` cannot be used together. Here's how they differ:
 
@@ -267,7 +267,7 @@ bun run atlas -- mcp --transport sse --port 9090
 
 Run the evaluation pipeline against demo schemas. Used to measure text-to-SQL accuracy.
 
-Test cases are YAML files in `eval/cases/`, organized by dataset (`simple/`, `cybersec/`, `ecommerce/`). Each case specifies `id`, `question`, `schema`, `difficulty`, `category`, `gold_sql`, and optionally `expected_rows` and `tags`. Results are written to JSONL files and can be compared against baselines for regression detection.
+Test cases are YAML files in `eval/cases/ecommerce/`. Each case specifies `id`, `question`, `schema`, `difficulty`, `category`, `gold_sql`, and optionally `expected_rows` and `tags`. Results are written to JSONL files and can be compared against baselines for regression detection. The `eval/cases/` layout is keyed by dataset name to allow new seeds to be added later, but Atlas currently ships only the canonical `ecommerce` seed.
 
 ```bash
 bun run atlas -- eval [options]
@@ -275,7 +275,7 @@ bun run atlas -- eval [options]
 
 | Flag | Description |
 |------|-------------|
-| `--schema <name>` | Filter by demo dataset name (e.g. `simple`, `cybersec`, `ecommerce`). This is the eval dataset name, not a PostgreSQL schema |
+| `--schema <name>` | Filter by demo dataset name. Only `ecommerce` ships today; the flag stays open-ended for future seeds. This is the eval dataset name, not a PostgreSQL schema |
 | `--category <name>` | Filter by category |
 | `--difficulty <simple\|medium\|complex>` | Filter by difficulty |
 | `--id <case-id>` | Run a single case |

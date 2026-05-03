@@ -419,7 +419,7 @@ If `datasource.status` is `"error"`, check your `ATLAS_DATASOURCE_URL`, network 
 
 **Health check shows `MISSING_SEMANTIC_LAYER`**
 - Run `bun run atlas -- init` to generate the `semantic/` directory
-- For quick demos: `bun run atlas -- init --demo` (simple) or `bun run atlas -- init --demo cybersec` (62-table SaaS)
+- For a quick demo: `bun run atlas -- init --demo` loads the canonical NovaMart e-commerce dataset (13 entities, 52 tables, ~480K rows)
 - If deploying via Docker, generate the semantic layer locally first -- it gets baked into the image at build time
 
 **Queries timing out**

@@ -1,13 +1,12 @@
 /**
- * Atlas eval pipeline — run curated YAML eval cases against demo Postgres schemas,
- * compare agent output against gold SQL, and detect regressions.
+ * Atlas eval pipeline — run curated YAML eval cases against the demo Postgres
+ * schema, compare agent output against gold SQL, and detect regressions.
  *
  * Usage:
  *   bun run atlas -- eval                          # Run all cases
- *   bun run atlas -- eval --schema cybersec        # Filter by schema
  *   bun run atlas -- eval --category aggregation   # Filter by category
  *   bun run atlas -- eval --difficulty simple       # Filter by difficulty
- *   bun run atlas -- eval --id cs-001              # Single case
+ *   bun run atlas -- eval --id ec-001              # Single case
  *   bun run atlas -- eval --limit 5                # Max N cases
  *   bun run atlas -- eval --resume results.jsonl   # Resume from JSONL
  *   bun run atlas -- eval --baseline               # Save results as new baseline
@@ -19,7 +18,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
-import { getFlag, seedDemoPostgres, type DemoDataset } from "./atlas";
+import { getFlag, seedDemoPostgres } from "./atlas";
 import { explainMismatch } from "../lib/compare";
 import { connections } from "@atlas/api/lib/db/connection";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -27,10 +26,16 @@ import { invalidateExploreBackend } from "@atlas/api/lib/tools/explore";
 
 // --- Types ---
 
+// Schema is the demo seed an eval case targets. Atlas ships only `"ecommerce"`
+// today (#2021), but the type stays open-ended so additional seeds can be
+// introduced without retyping every fixture. Runtime validation against
+// `VALID_SCHEMAS` is the source of truth.
+export type EvalSchema = string;
+
 export interface EvalCase {
   id: string;
   question: string;
-  schema: DemoDataset;
+  schema: EvalSchema;
   difficulty: "simple" | "medium" | "complex";
   category: string;
   tags: string[];
@@ -87,7 +92,7 @@ const BACKUP_DIR = path.resolve(".semantic-backup-eval");
 
 const REQUIRED_CASE_FIELDS = ["id", "question", "schema", "difficulty", "category", "gold_sql"] as const;
 const VALID_DIFFICULTIES = ["simple", "medium", "complex"] as const;
-const VALID_SCHEMAS: DemoDataset[] = ["simple", "cybersec", "ecommerce"];
+const VALID_SCHEMAS = ["ecommerce"] as const;
 
 export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
   if (!fs.existsSync(casesDir)) {
@@ -120,7 +125,7 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
       cases.push({
         id: doc.id as string,
         question: doc.question as string,
-        schema: doc.schema as DemoDataset,
+        schema: doc.schema as EvalSchema,
         difficulty: doc.difficulty as EvalCase["difficulty"],
         category: doc.category as string,
         tags: (doc.tags as string[]) ?? [],
@@ -142,7 +147,7 @@ export function validateCase(doc: Record<string, unknown>, filePath: string): vo
     }
   }
 
-  if (!VALID_SCHEMAS.includes(doc.schema as DemoDataset)) {
+  if (!VALID_SCHEMAS.includes(doc.schema as (typeof VALID_SCHEMAS)[number])) {
     throw new Error(`Invalid schema "${doc.schema}" in ${filePath}. Valid: ${VALID_SCHEMAS.join(", ")}`);
   }
 
@@ -676,7 +681,7 @@ export async function handleEval(args: string[]): Promise<void> {
 
       // Setup phase — errors here affect all cases in this schema
       try {
-        await seedDemoPostgres(connStr, schema as DemoDataset);
+        await seedDemoPostgres(connStr);
         installSchemaSemanticLayer(schema);
         resetCaches();
         process.env.ATLAS_DATASOURCE_URL = connStr;

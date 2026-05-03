@@ -699,26 +699,11 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     );
   });
 
-  it("writes demo_industry setting for the org", async () => {
+  it("writes demo_industry setting (always 'ecommerce' since 1.4.0 #2021)", async () => {
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoType: "cybersec" }),
-    });
-
-    expect(mockSetSetting).toHaveBeenCalledWith(
-      "ATLAS_DEMO_INDUSTRY",
-      "cybersecurity",
-      "user-1",
-      "org-1",
-    );
-  });
-
-  it("maps demo type 'ecommerce' to industry 'ecommerce'", async () => {
-    await request("/api/v1/onboarding/use-demo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoType: "ecommerce" }),
+      body: JSON.stringify({}),
     });
 
     expect(mockSetSetting).toHaveBeenCalledWith(
@@ -729,26 +714,29 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     );
   });
 
-  it("maps demo type 'demo' to industry 'saas'", async () => {
+  it("ignores legacy demoType body fields (passthrough, always provisions ecommerce)", async () => {
+    // Legacy clients might still send `demoType: "cybersec"` or `demoType: "demo"`.
+    // Atlas ships a single canonical demo since 1.4.0 (#2021), so the field is
+    // accepted (passthrough) but ignored — every demo workspace gets ecommerce.
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ demoType: "cybersec" }),
     });
 
     expect(mockSetSetting).toHaveBeenCalledWith(
       "ATLAS_DEMO_INDUSTRY",
-      "saas",
+      "ecommerce",
       "user-1",
       "org-1",
     );
   });
 
-  it("seeds demo prompt collections for matching industry", async () => {
+  it("seeds demo prompt collections for the ecommerce industry", async () => {
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoType: "cybersec" }),
+      body: JSON.stringify({}),
     });
 
     // The seedDemoPromptCollections function queries for builtin collections
@@ -757,7 +745,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     );
     expect(builtinQuery).toBeDefined();
     const params = builtinQuery![1] as unknown[];
-    expect(params[0]).toBe("cybersecurity");
+    expect(params[0]).toBe("ecommerce");
   });
 
   it("rejects when auth mode is not managed", async () => {

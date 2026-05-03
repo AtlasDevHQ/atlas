@@ -179,7 +179,7 @@ describe("loadYamlQueryPatterns", () => {
     // Use import.meta.dir for reliable resolution regardless of CWD
     const demoRoot = path.resolve(
       import.meta.dir,
-      "../../../../cli/data/seeds/simple/semantic",
+      "../../../../cli/data/seeds/ecommerce/semantic",
     );
     const patterns = loadYamlQueryPatterns(demoRoot);
     // The demo entities have query_patterns — should find at least some
@@ -194,7 +194,7 @@ describe("loadYamlQueryPatterns", () => {
   test("normalized patterns are deduplicated", () => {
     const demoRoot = path.resolve(
       import.meta.dir,
-      "../../../../cli/data/seeds/simple/semantic",
+      "../../../../cli/data/seeds/ecommerce/semantic",
     );
     const patterns = loadYamlQueryPatterns(demoRoot);
     // All entries should be lowercase (normalized)

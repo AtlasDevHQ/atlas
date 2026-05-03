@@ -47,63 +47,6 @@ function copyDirRecursive(src: string, dest: string): void {
   }
 }
 
-/**
- * After scaffolding with a selected seed, install its semantic layer and
- * remove data for unselected seeds to keep the project lean.
- *
- * Returns a warning message if the selected seed's semantic layer was not found,
- * or null on success.
- */
-export function pruneSeedData(
-  targetDir: string,
-  selectedSeed: string,
-  allSeeds: readonly string[],
-): string | null {
-  let warning: string | null = null;
-
-  // Install selected seed's semantic layer
-  const seedSemanticDir = path.join(targetDir, "data", "seeds", selectedSeed, "semantic");
-  if (fs.existsSync(seedSemanticDir)) {
-    const targetSemantic = path.join(targetDir, "semantic");
-    if (fs.existsSync(targetSemantic)) {
-      fs.rmSync(targetSemantic, { recursive: true });
-    }
-    copyDirRecursive(seedSemanticDir, targetSemantic);
-  } else if (selectedSeed !== "simple") {
-    // simple's semantic layer is already the template default — only warn for others
-    warning =
-      `Semantic layer for "${selectedSeed}" not found at ${seedSemanticDir}. ` +
-      `The project will use the default semantic layer, which may not match your data. ` +
-      `Run \`bun run atlas -- init --demo ${selectedSeed}\` after resolving the issue.`;
-  }
-
-  // Prune unselected seeds — non-critical, so catch and warn on failure
-  try {
-    const seedsDir = path.join(targetDir, "data", "seeds");
-    if (fs.existsSync(seedsDir)) {
-      for (const entry of fs.readdirSync(seedsDir)) {
-        if (entry !== selectedSeed) {
-          fs.rmSync(path.join(seedsDir, entry), { recursive: true, force: true });
-        }
-      }
-    }
-
-    for (const name of allSeeds) {
-      if (name === selectedSeed) continue;
-      fs.rmSync(path.join(targetDir, "data", `${name}.sql`), { force: true });
-    }
-    if (selectedSeed !== "simple") {
-      fs.rmSync(path.join(targetDir, "data", "demo.sql"), { force: true });
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Log but don't fail — extra seed files don't affect functionality
-    console.warn(`Could not prune unused seed files: ${msg}`);
-  }
-
-  return warning;
-}
-
 function bail(message?: string): never {
   p.cancel(message ?? "Setup cancelled.");
   process.exit(1);
@@ -132,35 +75,44 @@ const useDefaults = args.includes("--defaults") || args.includes("-y");
 
 const skipDoctor = args.includes("--skip-doctor");
 
-// Parse --demo / --seed flag (optionally with dataset name)
-// --seed is the canonical flag; --demo is a backward-compatible alias
-const VALID_DEMO_DATASETS = ["simple", "cybersec", "ecommerce"] as const;
-type DemoDataset = (typeof VALID_DEMO_DATASETS)[number];
+// Parse --demo flag — boolean (load the canonical demo dataset).
+// Atlas ships a single canonical demo (ecommerce / NovaMart). Prior versions
+// supported `--demo simple|cybersec|ecommerce` and a `--seed` alias; both were
+// removed in 1.4.0 (#2021). Legacy `--demo <name>` invocations error with a
+// migration message.
 let demoFlag = false;
-let demoDatasetFlag: DemoDataset = "simple";
 const demoIdx = args.indexOf("--demo");
-const seedIdx = args.indexOf("--seed");
-if (demoIdx !== -1 && seedIdx !== -1) {
-  console.error("Cannot use both --demo and --seed. They are aliases — pick one.");
-  process.exit(1);
-}
-const demoOrSeedIdx = Math.max(demoIdx, seedIdx);
-if (demoOrSeedIdx !== -1) {
+if (demoIdx !== -1) {
   demoFlag = true;
-  const next = args[demoOrSeedIdx + 1];
+  const next = args[demoIdx + 1];
   if (next && !next.startsWith("-")) {
-    if (!VALID_DEMO_DATASETS.includes(next as DemoDataset)) {
-      console.error(`Unknown seed "${next}". Available: ${VALID_DEMO_DATASETS.join(", ")}`);
+    if (next === "simple" || next === "cybersec") {
+      console.error(
+        `The "${next}" demo dataset was removed in 1.4.0 (#2021). ` +
+          `Atlas now ships a single canonical demo (ecommerce). ` +
+          `Use \`--demo\` without a value.`,
+      );
       process.exit(1);
     }
-    demoDatasetFlag = next as DemoDataset;
+    if (next !== "ecommerce") {
+      console.error(
+        `Unknown --demo value "${next}". Atlas ships a single canonical demo — use \`--demo\` without a value.`,
+      );
+      process.exit(1);
+    }
   }
+}
+if (args.includes("--seed")) {
+  console.error(
+    `The --seed flag was removed in 1.4.0 (#2021). Use \`--demo\` (no value) to load the canonical demo dataset.`,
+  );
+  process.exit(1);
 }
 
 const positionalArgs = args.filter((a, i) => {
   if (a.startsWith("-")) return false;
-  // Skip the dataset value after --demo / --seed
-  if (i > 0 && (args[i - 1] === "--demo" || args[i - 1] === "--seed")) return false;
+  // Skip the optional value after --demo (e.g. legacy `--demo ecommerce`)
+  if (i > 0 && args[i - 1] === "--demo") return false;
   return true;
 });
 
@@ -316,9 +268,7 @@ ${projectName}/
 | \`bun run build\` | Production build |
 | \`bun run start\` | Start production server |
 | \`bun run atlas -- init\` | Generate semantic layer from database |
-| \`bun run atlas -- init --demo\` | Load simple demo dataset |
-| \`bun run atlas -- init --demo cybersec\` | Load cybersec demo (62 tables) |
-| \`bun run atlas -- init --demo ecommerce\` | Load ecommerce demo (52 tables) |
+| \`bun run atlas -- init --demo\` | Load the canonical demo dataset (NovaMart ecommerce, 13 entities) |
 | \`bun run atlas -- diff\` | Compare DB schema vs semantic layer |
 | \`bun run atlas -- query "question"\` | Headless query (table output) |
 | \`bun run test\` | Run tests |
@@ -371,18 +321,17 @@ if (args.includes("--help") || args.includes("-h")) {
   Usage: bun create atlas-agent [project-name] [options]
 
   Options:
-    --seed [dataset]   Load demo data (simple, cybersec, ecommerce) [default: simple]
-    --demo [dataset]   Alias for --seed
+    --demo             Load the canonical demo dataset (NovaMart ecommerce, 13 entities)
     --platform <name>  Deploy target (${VALID_PLATFORMS.join(", ")}) [default: docker]
     --preset <name>    Alias for --platform
     --defaults, -y     Use all default values (non-interactive)
     --skip-doctor      Skip health check after scaffolding
     --help, -h         Show this help message
 
-  Seeds:
-    simple       3 tables, ~330 rows — quick evaluation, tutorials
-    cybersec     62 tables, ~500K rows — B2B SaaS with tech debt patterns
-    ecommerce    52 tables, ~480K rows — DTC brand + marketplace
+  Demo dataset:
+    Atlas ships a single canonical demo — NovaMart, an e-commerce DTC brand
+    with 13 entities (products, orders, customers, payments, returns,
+    shipments, sellers, …). 52 tables, ~480K rows.
 
   Platforms:
     vercel     Next.js + embedded API — auto-detects Vercel sandbox
@@ -392,22 +341,20 @@ if (args.includes("--help") || args.includes("-h")) {
 
   Examples:
     bun create atlas-agent my-app
-    bun create atlas-agent my-app --seed cybersec
-    bun create atlas-agent my-app --seed ecommerce --defaults
+    bun create atlas-agent my-app --demo
+    bun create atlas-agent my-app --demo --defaults
     bun create atlas-agent my-app --platform vercel
-    bun create atlas-agent my-app --defaults
-    bun create atlas-agent my-app --demo cybersec
 `);
   process.exit(0);
 }
 
 // Reject unknown flags
-const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform", "--preset", "--demo", "--seed", "--skip-doctor"]);
+const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform", "--preset", "--demo", "--skip-doctor"]);
 const unknownFlags = args.filter((a, i) => {
   if (!a.startsWith("-")) return false;
   if (knownFlags.has(a)) return false;
   // Value arguments for flags that take a parameter
-  if (i > 0 && (args[i - 1] === "--platform" || args[i - 1] === "--preset" || args[i - 1] === "--demo" || args[i - 1] === "--seed")) return false;
+  if (i > 0 && (args[i - 1] === "--platform" || args[i - 1] === "--preset" || args[i - 1] === "--demo")) return false;
   return true;
 });
 if (unknownFlags.length > 0) {
@@ -696,15 +643,15 @@ async function main() {
   }
 
   // ── 7. Semantic layer / demo data ─────────────────────────────────
+  // Atlas ships a single canonical demo — NovaMart e-commerce, 13 entities.
+  // No picker; the only choice is whether to load it.
   let loadDemo = demoFlag;
-  let demoDataset: "simple" | "cybersec" | "ecommerce" = demoDatasetFlag;
   let generateSemantic = false;
 
   // Demo data is not available for MySQL (SQL files use PostgreSQL-specific syntax)
   if (dbChoice === "mysql") {
     if (demoFlag) {
-      const flagName = seedIdx !== -1 ? "--seed" : "--demo";
-      p.log.warn(`Demo data is not available for MySQL. The ${flagName} flag will be ignored.`);
+      p.log.warn(`Demo data is not available for MySQL. The --demo flag will be ignored.`);
       loadDemo = false;
     }
     p.log.info(`Demo data: ${pc.dim("not available for MySQL — use your own database")}`);
@@ -715,38 +662,17 @@ async function main() {
       defaultDisplay: "no",
     });
   } else if (demoFlag) {
-    // --demo or --seed flag was provided — skip the prompt
-    const flagName = seedIdx !== -1 ? "--seed" : "--demo";
-    p.log.info(`Demo data: ${pc.cyan(demoDataset)} ${pc.dim(`(${flagName})`)}`);
+    // --demo flag was provided — skip the prompt
+    p.log.info(`Demo data: ${pc.cyan("NovaMart ecommerce")} ${pc.dim("(--demo)")}`);
   } else {
     loadDemo = await confirmOrDefault({
       label: "Demo data",
-      message: "Load a demo dataset?",
+      message: "Load the demo dataset (NovaMart ecommerce, 13 entities)?",
       initialValue: false,
       defaultDisplay: "no",
     });
 
-    if (loadDemo) {
-      p.note(
-        [
-          `${pc.bold("Simple")}       3 tables, ~330 rows     Quick evaluation, tutorials`,
-          `${pc.bold("Cybersec")}     62 tables, ~500K rows   B2B SaaS with tech debt patterns`,
-          `${pc.bold("E-commerce")}   52 tables, ~480K rows   DTC brand + marketplace`,
-        ].join("\n"),
-        "Available demo datasets"
-      );
-      demoDataset = await selectOrDefault({
-        label: "Demo dataset",
-        message: "Which demo dataset?",
-        options: [
-          { value: "simple", label: "Simple", hint: "3 tables, ~330 rows — quick start" },
-          { value: "cybersec", label: "Cybersecurity SaaS", hint: "62 tables, ~500K rows — realistic evaluation" },
-          { value: "ecommerce", label: "E-commerce (NovaMart)", hint: "52 tables, ~480K rows — DTC brand + marketplace" },
-        ],
-        initialValue: "simple" as const,
-        defaultDisplay: "Simple",
-      });
-    } else {
+    if (!loadDemo) {
       generateSemantic = await confirmOrDefault({
         label: "Generate semantic layer",
         message: "Generate semantic layer now? (requires database access)",
@@ -855,13 +781,9 @@ async function main() {
     fs.rmSync(path.join(targetDir, "vercel.json"), { force: true });
   }
 
-  // If a demo seed is selected, install its semantic layer and prune other seeds
-  if (loadDemo) {
-    const pruneWarning = pruneSeedData(targetDir, demoDataset, VALID_DEMO_DATASETS);
-    if (pruneWarning) {
-      p.log.warn(pruneWarning);
-    }
-  }
+  // The template's `semantic/` directory is already the canonical ecommerce
+  // semantic layer (regenerated by prepare-templates.sh from the repo root).
+  // No per-seed install or prune step is needed.
 
   // Replace %PROJECT_NAME% in templated files (only files that exist in the template)
   const filesToReplace = ["package.json"];
@@ -1027,8 +949,8 @@ export default defineConfig({
 
   // Step 4: Load demo data + generate semantic layer
   if (loadDemo) {
-    const demoInitFlag = `--demo ${demoDataset}`;
-    const timeoutMs = demoDataset === "cybersec" || demoDataset === "ecommerce" ? 120_000 : 60_000;
+    const demoInitFlag = "--demo";
+    const timeoutMs = 120_000;
 
     // Check if Postgres is reachable before attempting to seed
     s.start("Checking database connectivity...");
@@ -1121,7 +1043,7 @@ export default defineConfig({
     }
 
     if (dbReachable) {
-      s.start(`Loading ${demoDataset} demo data and generating semantic layer...`);
+      s.start("Loading demo data and generating semantic layer...");
       try {
         execSync(`bun run atlas -- init ${demoInitFlag}`, {
           cwd: targetDir,
@@ -1135,7 +1057,7 @@ export default defineConfig({
         setupFailed = true;
         const signal = err && typeof err === "object" && "signal" in err ? (err as { signal: unknown }).signal : null;
         const detail = signal === "SIGTERM"
-          ? `Timed out after ${timeoutMs / 1000}s. The ${demoDataset} dataset may need more time on slow connections.`
+          ? `Timed out after ${timeoutMs / 1000}s. The demo dataset may need more time on slow connections.`
           : extractExecOutput(err);
         p.log.error(`Demo seeding failed: ${detail}`);
         p.log.error(

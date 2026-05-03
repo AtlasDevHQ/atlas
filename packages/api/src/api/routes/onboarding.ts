@@ -36,52 +36,47 @@ import { existsSync } from "fs";
 const log = createLogger("onboarding");
 
 // ---------------------------------------------------------------------------
-// Demo dataset types — each maps to a semantic layer directory on disk
+// Canonical demo dataset (NovaMart e-commerce)
+//
+// Atlas ships a single canonical demo seed since 1.4.0 (#2021). Earlier
+// releases supported a `demoType` picker covering `demo` (SaaS CRM, 3 tables),
+// `cybersec` (Sentinel Security, 62 tables), and `ecommerce` (NovaMart, 52
+// tables). The body field is gone; the route always provisions ecommerce.
 // ---------------------------------------------------------------------------
 
-type DemoType = "demo" | "cybersec" | "ecommerce";
-
-const DEMO_LABELS: Record<DemoType, string> = {
-  demo: "SaaS CRM",
-  cybersec: "Sentinel Security (Cybersecurity SaaS)",
-  ecommerce: "NovaMart (E-commerce)",
-};
-
-/** Maps demo type to the canonical industry string used in prompt_collections and settings. */
-const DEMO_INDUSTRIES: Record<DemoType, string> = {
-  demo: "saas",
-  cybersec: "cybersecurity",
-  ecommerce: "ecommerce",
-};
+const DEMO_LABEL = "NovaMart (E-commerce)";
+const DEMO_INDUSTRY = "ecommerce";
 
 /** Reserved connection ID for demo workspaces. */
 const DEMO_CONNECTION_ID = "__demo__";
 
 /**
- * Resolve the semantic layer source directory for a demo type.
+ * Resolve the canonical demo semantic-layer directory.
  *
- * In Docker: demo → /app/semantic, cybersec → /app/data/cybersec-semantic, ecommerce → /app/data/ecommerce-semantic
- * In dev:    demo → {cwd}/semantic, cybersec → {cwd}/packages/cli/data/seeds/cybersec/semantic, etc.
+ * In Docker: /app/semantic (image bundles the ecommerce semantic layer at the
+ *            standard semantic-root path).
+ * In dev:    {cwd}/semantic (repo-root semantic/, which mirrors the ecommerce
+ *            seed) → falls back to packages/cli/data/seeds/ecommerce/semantic.
  */
-function getDemoSemanticDir(demoType: DemoType): string {
-  if (demoType === "demo") return getSemanticRoot();
+function getDemoSemanticDir(): string {
+  const root = getSemanticRoot();
+  if (existsSync(path.join(root, "entities"))) return root;
 
-  // Docker image has these at /app/data/{type}-semantic (backward-compat symlinks)
-  const dockerPath = path.resolve(process.cwd(), "data", `${demoType}-semantic`);
-  // New canonical path: packages/cli/data/seeds/{type}/semantic
-  const seedsPath = path.resolve(process.cwd(), "packages", "cli", "data", "seeds", demoType, "semantic");
-  // Legacy dev fallback: packages/cli/data/{type}-semantic (symlink)
-  const devPath = path.resolve(process.cwd(), "packages", "cli", "data", `${demoType}-semantic`);
-
-  // Check Docker path first (production), then seeds path, then legacy dev path
-  if (existsSync(path.join(dockerPath, "entities"))) return dockerPath;
+  // Dev fallback when the working directory hasn't been initialized yet
+  const seedsPath = path.resolve(
+    process.cwd(),
+    "packages",
+    "cli",
+    "data",
+    "seeds",
+    "ecommerce",
+    "semantic",
+  );
   if (existsSync(path.join(seedsPath, "entities"))) return seedsPath;
-  if (existsSync(path.join(devPath, "entities"))) return devPath;
 
   throw new Error(
-    `Semantic layer not found for demo type "${demoType}". ` +
-    `Each semantic directory must contain an entities/ subdirectory. ` +
-    `Checked: ${dockerPath}/entities, ${seedsPath}/entities, ${devPath}/entities`,
+    `Canonical demo semantic layer not found. ` +
+      `Expected entities/ in ${root} or ${seedsPath}.`,
   );
 }
 
@@ -321,9 +316,7 @@ const UseDemoResponseSchema = z.object({
   entitiesImported: z.number(),
 });
 
-const UseDemoBodySchema = z.object({
-  demoType: z.enum(["demo", "cybersec", "ecommerce"]).optional().default("demo"),
-});
+const UseDemoBodySchema = z.object({}).passthrough();
 
 const useDemoRoute = createRoute({
   method: "post",
@@ -332,9 +325,9 @@ const useDemoRoute = createRoute({
   summary: "Set up workspace with demo data",
   description:
     "Connects the workspace to the platform's default datasource (ATLAS_DATASOURCE_URL) and imports " +
-    "the semantic layer for the chosen demo dataset. Three datasets are available: " +
-    "'demo' (SaaS CRM, 3 tables), 'cybersec' (Sentinel Security, 62 tables), " +
-    "'ecommerce' (NovaMart, 52 tables). Defaults to 'demo' if not specified.",
+    "the canonical demo semantic layer (NovaMart e-commerce — 13 entities, 52 tables, ~480K rows). " +
+    "Atlas ships a single canonical demo seed since 1.4.0 (#2021); the previous " +
+    "`demoType` picker covering `demo`/`cybersec`/`ecommerce` was removed.",
   request: {
     body: {
       required: false,
@@ -674,15 +667,16 @@ onboarding.openapi(
         return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
       }
 
-      const { demoType } = c.req.valid("json");
-
+      // The body schema accepts pass-through fields so legacy clients sending
+      // `demoType` continue to work; the value is ignored — this route always
+      // provisions the canonical ecommerce demo since 1.4.0 (#2021).
       const url = resolveDatasourceUrl();
       if (!url) {
         return c.json({ error: "no_demo_datasource", message: "No demo datasource configured. Set ATLAS_DATASOURCE_URL." }, 400);
       }
 
       const id = DEMO_CONNECTION_ID;
-      const industry = DEMO_INDUSTRIES[demoType];
+      const industry = DEMO_INDUSTRY;
       let dbType: string;
       try {
         dbType = detectDBType(url);
@@ -700,7 +694,7 @@ onboarding.openapi(
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
-      const demoLabel = DEMO_LABELS[demoType];
+      const demoLabel = DEMO_LABEL;
       const urlKeyVersion = activeKeyVersion();
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
@@ -732,15 +726,15 @@ onboarding.openapi(
         log.warn({ err: errorMessage(err), requestId }, "Demo connection saved but runtime registration failed");
       }
 
-      // Resolve and import the semantic layer for the chosen demo dataset
+      // Resolve and import the canonical demo semantic layer
       let semanticDir: string;
       try {
-        semanticDir = getDemoSemanticDir(demoType);
+        semanticDir = getDemoSemanticDir();
       } catch (err) {
-        log.error({ err: errorMessage(err), requestId, demoType }, "Semantic layer not found for demo type");
+        log.error({ err: errorMessage(err), requestId }, "Canonical demo semantic layer not found");
         return c.json({
           error: "demo_not_available",
-          message: `Demo dataset "${demoType}" is not installed on this server. Contact the platform administrator.`,
+          message: "The canonical demo semantic layer is not installed on this server. Contact the platform administrator.",
           requestId,
         }, 500);
       }
@@ -749,21 +743,21 @@ onboarding.openapi(
         try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.error({ err: err.message, requestId, demoType, semanticDir }, "Semantic layer import failed");
+        log.error({ err: err.message, requestId, semanticDir }, "Demo semantic layer import failed");
         return Effect.succeed(null);
       }));
 
       if (importResult === null) {
         return c.json({
           error: "import_failed",
-          message: `Failed to import semantic layer for "${demoType}" dataset. The connection was saved but the workspace needs manual setup.`,
+          message: "Failed to import the demo semantic layer. The connection was saved but the workspace needs manual setup.",
           requestId,
         }, 500);
       }
 
       const entitiesImported = importResult.imported;
       if (entitiesImported > 0) {
-        log.info({ orgId, demoType, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported semantic layer for demo workspace");
+        log.info({ orgId, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported demo semantic layer");
       }
 
       // Write demo_industry setting + seed prompt collections concurrently (independent, non-fatal)
@@ -786,7 +780,7 @@ onboarding.openapi(
 
       _resetWhitelists();
 
-      log.info({ requestId, orgId, demoType, dbType, userId: user?.id, entitiesImported, industry }, "Demo onboarding complete");
+      log.info({ requestId, orgId, dbType, userId: user?.id, entitiesImported, industry }, "Demo onboarding complete");
 
       return c.json({
         connectionId: id,

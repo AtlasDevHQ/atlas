@@ -34,7 +34,7 @@ cd my-app && bun run dev
 # Open http://localhost:3000
 ```
 
-The `--demo` flag seeds a cybersecurity SaaS database with ~200K rows so you can start asking questions immediately.
+The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) so you can start asking questions immediately.
 
 ## Embed in your app
 

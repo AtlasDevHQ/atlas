@@ -57,46 +57,40 @@ import {
 } from "../../lib/profilers";
 import { profileMySQL, profilePostgres } from "@atlas/api/lib/profiler";
 
-// --- Demo datasets ---
+// --- Demo dataset ---
+//
+// Atlas ships a single canonical demo dataset: NovaMart, an e-commerce DTC brand
+// with 13 entities (products, orders, customers, payments, returns, shipments,
+// sellers, categories, …). Earlier releases shipped `simple` and `cybersec`
+// alternates; both were removed in 1.4.0 — see #2021. The `--demo` flag is now
+// boolean. Legacy invocations (`--demo simple`, `--demo cybersec`) error with a
+// migration message.
 
-export type DemoDataset = "simple" | "cybersec" | "ecommerce";
+export const DEMO_DATASET = {
+  pg: "seeds/ecommerce/seed.sql",
+  semanticDir: "seeds/ecommerce/semantic",
+  label: "E-commerce demo loaded: 52 tables, ~480K rows (NovaMart DTC brand)",
+} as const;
 
-export const DEMO_DATASETS: Record<
-  DemoDataset,
-  { pg: string; semanticDir: string; label: string }
-> = {
-  simple: {
-    pg: "seeds/simple/seed.sql",
-    semanticDir: "seeds/simple/semantic",
-    label: "Demo data loaded: 50 companies, ~200 people, 80 accounts",
-  },
-  cybersec: {
-    pg: "seeds/cybersec/seed.sql",
-    semanticDir: "seeds/cybersec/semantic",
-    label:
-      "Cybersec demo loaded: 62 tables, ~500K rows (Sentinel Security SaaS)",
-  },
-  ecommerce: {
-    pg: "seeds/ecommerce/seed.sql",
-    semanticDir: "seeds/ecommerce/semantic",
-    label:
-      "E-commerce demo loaded: 52 tables, ~480K rows (NovaMart DTC brand)",
-  },
-};
-
-export function parseDemoArg(args: string[]): DemoDataset | null {
-  const hasDemo = args.includes("--demo");
-  const hasSeed = args.includes("--seed");
-  if (!hasDemo && !hasSeed) return null;
-  if (hasDemo && hasSeed) {
-    throw new Error("Cannot use both --demo and --seed. They are aliases — pick one.");
+export function parseDemoArg(args: string[]): boolean {
+  if (args.includes("--seed")) {
+    throw new Error(
+      `The --seed flag was removed in 1.4.0 (#2021). Use \`--demo\` (no value) to load the canonical demo dataset.`,
+    );
   }
-  const flag = hasDemo ? "--demo" : "--seed";
-  const next = getFlag(args, flag);
-  if (!next || next.startsWith("--")) return "simple"; // bare flag → backward compatible default
-  if (next in DEMO_DATASETS) return next as DemoDataset;
+  if (!args.includes("--demo")) return false;
+  const next = getFlag(args, "--demo");
+  if (!next || next.startsWith("--")) return true;
+  if (next === "ecommerce") return true;
+  if (next === "simple" || next === "cybersec") {
+    throw new Error(
+      `The "${next}" demo dataset was removed in 1.4.0 (#2021). ` +
+        `Atlas now ships a single canonical demo (ecommerce). ` +
+        `Use \`--demo\` without a value.`,
+    );
+  }
   throw new Error(
-    `Unknown demo dataset "${next}". Available: ${Object.keys(DEMO_DATASETS).join(", ")}`,
+    `Unknown demo value "${next}". Atlas ships a single canonical demo — use \`--demo\` without a value.`,
   );
 }
 
@@ -119,10 +113,8 @@ function copyDirRecursive(src: string, dest: string): void {
 
 export async function seedDemoPostgres(
   connectionString: string,
-  dataset: DemoDataset,
 ): Promise<void> {
-  const meta = DEMO_DATASETS[dataset];
-  const sqlFile = path.resolve(import.meta.dir, "../../data", meta.pg);
+  const sqlFile = path.resolve(import.meta.dir, "../../data", DEMO_DATASET.pg);
   if (!fs.existsSync(sqlFile)) {
     throw new Error(`Demo SQL file not found: ${sqlFile}`);
   }
@@ -130,11 +122,11 @@ export async function seedDemoPostgres(
   const pool = new Pool({ connectionString, max: 1 });
   try {
     await pool.query(sql);
-    console.log(meta.label);
+    console.log(DEMO_DATASET.label);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `Failed to seed ${dataset} demo data into Postgres: ${msg}`,
+      `Failed to seed demo data into Postgres: ${msg}`,
       { cause: err },
     );
   } finally {
@@ -211,7 +203,7 @@ interface ProfileDatasourceOpts {
   filterTables?: string[];
   shouldEnrich: boolean;
   explicitEnrich: boolean;
-  demoDataset: DemoDataset | null; // null for multi-source runs (--demo is single-datasource only)
+  demoDataset: boolean; // false for multi-source runs (--demo is single-datasource only)
   force: boolean; // skip failure threshold check
   orgId?: string; // org-scoped mode: write to semantic/.orgs/{orgId}/
 }
@@ -262,8 +254,8 @@ async function profileDatasource(
       );
       throw new Error(`--demo is not supported for ${dbType}.`);
     }
-    console.log(`Seeding ${demoDataset} demo data (${dbType})...`);
-    await seedDemoPostgres(connStr, demoDataset);
+    console.log(`Seeding ecommerce demo data (${dbType})...`);
+    await seedDemoPostgres(connStr);
     console.log("");
   }
 
@@ -622,20 +614,19 @@ async function profileDatasource(
     }
   }
 
-  // Overlay hand-crafted semantic files with richer descriptions for demo datasets
+  // Overlay hand-crafted semantic files with richer descriptions for the demo dataset
   if (demoDataset) {
-    const meta = DEMO_DATASETS[demoDataset];
     const curatedSemanticDir = path.resolve(
       import.meta.dir,
       "../../data",
-      meta.semanticDir,
+      DEMO_DATASET.semanticDir,
     );
     if (fs.existsSync(curatedSemanticDir)) {
-      console.log(`\nApplying curated ${demoDataset} semantic layer...\n`);
+      console.log(`\nApplying curated ecommerce semantic layer...\n`);
       copyDirRecursive(curatedSemanticDir, outputBase);
     } else {
       console.warn(
-        `\nWarning: Curated semantic layer for "${demoDataset}" not found at ${curatedSemanticDir}.` +
+        `\nWarning: Curated semantic layer not found at ${curatedSemanticDir}.` +
         `\nThe auto-profiled semantic layer will be used, which may have less descriptive metadata.` +
         `\nThis usually indicates an incomplete package installation — try reinstalling @atlas/cli.\n`,
       );
@@ -701,7 +692,7 @@ Next steps:
         ? SEMANTIC_DIR
         : path.join(SEMANTIC_DIR, id);
     const entry = createSnapshot(semanticRoot, {
-      message: `Initial snapshot from atlas init${demoDataset ? ` (demo: ${demoDataset})` : ""}`,
+      message: `Initial snapshot from atlas init${demoDataset ? " (demo)" : ""}`,
       trigger: "init",
     });
     if (entry) {
@@ -1188,7 +1179,7 @@ Next steps:
         filterTables,
         shouldEnrich,
         explicitEnrich,
-        demoDataset: isMultiSource ? null : demoDataset,
+        demoDataset: isMultiSource ? false : demoDataset,
         force: forceInit,
         orgId,
       });

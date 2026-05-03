@@ -44,6 +44,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@useatlas/types": "^0.0.16"
+    "@useatlas/types": "^0.0.17"
   }
 }

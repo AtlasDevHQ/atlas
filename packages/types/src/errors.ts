@@ -211,6 +211,13 @@ export function isChatContextWarningCode(value: string): value is ChatContextWar
  * Fields are `readonly` to signal the wire-DTO intent — once a frame is
  * pushed onto the agent's `contextWarnings` out-array, the chat route
  * only reads it. Mutating in place would be a write-after-publish bug.
+ *
+ * Field naming uses `camelCase` (`requestId`) because this shape is
+ * consumed by React on the same channel as the AI-SDK message stream,
+ * which is camelCase throughout. The sibling `AtlasMcpToolError` in
+ * `mcp.ts` uses `snake_case` (`request_id`) intentionally — it crosses
+ * an LLM/MCP boundary where snake_case is the convention. Don't
+ * mass-rename one to match the other.
  */
 export interface ChatContextWarning {
   readonly severity: "warning";

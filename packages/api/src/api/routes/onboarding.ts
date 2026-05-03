@@ -683,11 +683,12 @@ onboarding.openapi(
       // strips unknown keys; we peek the raw body for telemetry so operators
       // can see when a stale client is in the wild. The route always
       // provisions ecommerce regardless. We also surface a custom
-      // `Deprecation` header (a non-standard hint, not RFC 9745 — that RFC
-      // requires a Structured Field date value) so client developers see the
-      // ignored field in their browser DevTools / API explorer. Hono caches
-      // `req.json()` so this raw read doesn't conflict with the validated
-      // body consumed downstream.
+      // `Deprecation` header (a non-standard hint, NOT RFC 9745 — that RFC
+      // requires a Structured Field date value) whose format is intentionally
+      // human-readable for DevTools / API-explorer inspection; clients are
+      // not expected to parse it. Hono caches the raw request body, so this
+      // telemetry peek doesn't consume the stream the validated body
+      // downstream relies on.
       const rawBody = (yield* Effect.tryPromise({
         try: () => c.req.json() as Promise<unknown>,
         catch: () => null,

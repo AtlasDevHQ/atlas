@@ -192,6 +192,29 @@ export function validateCase(
   if (typeof doc.gold_sql !== "string" || !doc.gold_sql.trim()) {
     throw new Error(`Invalid gold_sql in ${filePath}: must be a non-empty string`);
   }
+
+  if (typeof doc.category !== "string" || !doc.category.trim()) {
+    throw new Error(`Invalid category in ${filePath}: must be a non-empty string`);
+  }
+
+  if (
+    doc.tags !== undefined &&
+    (!Array.isArray(doc.tags) || !doc.tags.every((t) => typeof t === "string"))
+  ) {
+    throw new Error(`Invalid tags in ${filePath}: must be an array of strings`);
+  }
+
+  if (doc.skip !== undefined && typeof doc.skip !== "boolean") {
+    throw new Error(`Invalid skip in ${filePath}: must be a boolean`);
+  }
+
+  if (doc.expected_rows !== undefined && typeof doc.expected_rows !== "number") {
+    throw new Error(`Invalid expected_rows in ${filePath}: must be a number`);
+  }
+
+  if (doc.notes !== undefined && typeof doc.notes !== "string") {
+    throw new Error(`Invalid notes in ${filePath}: must be a string`);
+  }
 }
 
 export function filterCases(

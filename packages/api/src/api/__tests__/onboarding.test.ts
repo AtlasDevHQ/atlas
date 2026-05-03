@@ -138,9 +138,11 @@ mock.module("@atlas/api/lib/security", () => ({
 }));
 
 // Spyable logger so tests can assert deprecation/info paths fire correctly.
-// Pino's API is `(bindings, msg?)` — typing the mock to match means
-// `call[0].legacyDemoType` and `call[1]` (string) typecheck without `as`.
-type LogFn = (bindings: Record<string, unknown>, msg?: string) => void;
+// Pino accepts both `log.warn("string only")` (e.g. onboarding.ts handler-
+// level log calls) and `log.warn({ bindings }, "msg")`. Union-typed first
+// arg covers both shapes; tests narrow with `typeof call[0] === "object"`
+// before reading bindings fields.
+type LogFn = (arg: string | Record<string, unknown>, msg?: string) => void;
 const mockLogInfo = mock<LogFn>(() => {});
 const mockLogWarn = mock<LogFn>(() => {});
 const mockLogError = mock<LogFn>(() => {});
@@ -762,7 +764,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       typeof call[1] === "string" && call[1].includes("Legacy demoType"),
     );
     expect(warnCall).toBeDefined();
-    expect(warnCall![0].legacyDemoType).toBe("cybersec");
+    expect(warnCall![0]).toMatchObject({ legacyDemoType: "cybersec" });
   });
 
   it("ignores legacy demoType: 'demo' (the old default)", async () => {
@@ -785,7 +787,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     const warnCall = mockLogWarn.mock.calls.find((call) =>
       typeof call[1] === "string" && call[1].includes("Legacy demoType"),
     );
-    expect(warnCall![0].legacyDemoType).toBe("demo");
+    expect(warnCall![0]).toMatchObject({ legacyDemoType: "demo" });
   });
 
   it("accepts garbage body fields without erroring", async () => {
@@ -803,16 +805,17 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(res.headers.get("Deprecation")).toContain('field="demoType"');
   });
 
-  it("rejects an array body and never fires deprecation telemetry", async () => {
-    // Hono's OpenAPI validator rejects non-object bodies against
-    // `UseDemoBodySchema` — what matters is that the deprecation peek
-    // never fires on a body shape that fails validation upstream.
+  it("rejects an array body with 422 and never fires deprecation telemetry", async () => {
+    // The validation hook (validation-hook.ts) deterministically returns 422
+    // for any Zod failure on this OpenAPI route. Pinning the status catches
+    // a regression where someone drops `defaultHook: validationHook` from
+    // the OpenAPIHono construction.
     const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(["demoType", "cybersec"]),
     });
-    expect([400, 422]).toContain(res.status);
+    expect(res.status).toBe(422);
     expect(res.headers.get("Deprecation")).toBeNull();
     expect(
       mockLogWarn.mock.calls.some((call) =>
@@ -834,18 +837,19 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(res.headers.get("Deprecation")).toBeNull();
   });
 
-  it("does not 500 when the body is malformed JSON", async () => {
-    // The Effect.tryPromise + catchAll wrapping c.req.json() inside the
-    // handler must absorb parse failures so the deprecation peek never
-    // blocks. The route's main body validator (Hono OpenAPI middleware)
-    // typically returns 400 for malformed JSON before we even reach the
-    // handler — what matters is no 5xx escapes.
+  it("returns 400 invalid_request when the body is malformed JSON", async () => {
+    // onboarding.onError normalizes JSON parse errors to a deterministic
+    // shape: 400 + { error: "invalid_request", message: "Invalid JSON body." }.
+    // Pinning the status + error code locks in that contract so a future
+    // refactor of the error normalizer can't silently change the response.
     const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "not-json-at-all",
     });
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("invalid_request");
     expect(res.headers.get("Deprecation")).toBeNull();
   });
 
@@ -872,7 +876,9 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       typeof call[1] === "string" && call[1].includes("bundled-seed dev fallback"),
     );
     expect(fallbackLog).toBeDefined();
-    expect(fallbackLog![0].semanticDir).toContain("seeds/ecommerce/semantic");
+    expect(fallbackLog![0]).toMatchObject({
+      semanticDir: expect.stringContaining("seeds/ecommerce/semantic"),
+    });
   });
 
   it("does NOT warn or send Deprecation header for canonical body or empty body", async () => {

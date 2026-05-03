@@ -14,7 +14,7 @@
 
 import { Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withSpan } from "@atlas/api/lib/tracing";
+import { withSpan, withEffectSpan } from "@atlas/api/lib/tracing";
 import {
   getTasksDueForExecution,
   lockTaskForExecution,
@@ -303,24 +303,25 @@ function createScheduler(): Scheduler {
 
       const semaphore = Effect.unsafeMakeSemaphore(cfg.maxConcurrentTasks);
 
-      const tickWithSpan = Effect.tryPromise({
-        try: () =>
-          withSpan(
-            "atlas.scheduler.tick",
-            {},
-            () =>
-              Effect.runPromise(
-                tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
-              ),
-            (r) => ({
-              "atlas.tasks_found": r.tasksFound,
-              "atlas.tasks_dispatched": r.tasksDispatched,
-              "atlas.tasks_completed": r.tasksCompleted,
-              "atlas.tasks_failed": r.tasksFailed,
-            }),
-          ),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      // `withEffectSpan` keeps the tick on the same fiber as the outer
+      // `Effect.runFork(program)` runtime — calling `Effect.runPromise`
+      // inside an `Effect.tryPromise` would boot a *new* detached runtime,
+      // severing the fiber lineage. `Fiber.interrupt(fiber)` in `stop()`
+      // would then cancel only the outer fiber; the inner `tickEffect`
+      // runtime would survive and the `Effect.onInterrupt` finalizer
+      // inside `executeAndDeliverEffect` (line 141) would never fire,
+      // leaving orphaned `running` task_run rows on shutdown.
+      const tickWithSpan = withEffectSpan(
+        "atlas.scheduler.tick",
+        {},
+        tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
+        (r) => ({
+          "atlas.tasks_found": r.tasksFound,
+          "atlas.tasks_dispatched": r.tasksDispatched,
+          "atlas.tasks_completed": r.tasksCompleted,
+          "atlas.tasks_failed": r.tasksFailed,
+        }),
+      );
 
       // Build the repeating tick program
       const program = tickWithSpan.pipe(
@@ -427,19 +428,18 @@ export interface TickResult {
 export async function runTick(): Promise<TickResult> {
   const cfg = getSchedulerConfig();
   const semaphore = Effect.unsafeMakeSemaphore(cfg.maxConcurrentTasks);
-  return withSpan(
-    "atlas.scheduler.tick",
-    {},
-    () =>
-      Effect.runPromise(
-        tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
-      ),
-    (r) => ({
-      "atlas.tasks_found": r.tasksFound,
-      "atlas.tasks_dispatched": r.tasksDispatched,
-      "atlas.tasks_completed": r.tasksCompleted,
-      "atlas.tasks_failed": r.tasksFailed,
-    }),
+  return Effect.runPromise(
+    withEffectSpan(
+      "atlas.scheduler.tick",
+      {},
+      tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
+      (r) => ({
+        "atlas.tasks_found": r.tasksFound,
+        "atlas.tasks_dispatched": r.tasksDispatched,
+        "atlas.tasks_completed": r.tasksCompleted,
+        "atlas.tasks_failed": r.tasksFailed,
+      }),
+    ),
   );
 }
 

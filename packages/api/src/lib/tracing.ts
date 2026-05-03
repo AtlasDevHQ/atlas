@@ -58,11 +58,15 @@ export async function withSpan<T>(
 
 /**
  * Effect-aware variant of `withSpan`. Wraps an Effect in an OTel span
- * without crossing the Promise boundary, so typed errors stay typed.
+ * without crossing the Promise boundary, so `Data.TaggedError` types
+ * propagate through the chain unchanged — `withSpan` returns `Promise<T>`
+ * and forces the caller to widen typed errors back to `unknown` at the
+ * boundary, which breaks downstream `Effect.retry({ while: ... })` policies
+ * that discriminate on the error tag.
  *
- * Use this from Effect chains (scheduler, plugin lifecycle) where the inner
- * computation is `Effect.Effect<A, E, R>`. For Promise-based code, prefer
- * `withSpan` above.
+ * Pure-interrupt causes (clean shutdown via `Fiber.interrupt`) are not
+ * recorded as exceptions — they leave `SpanStatusCode.UNSET` so a graceful
+ * stop doesn't surface as an error in the trace explorer.
  */
 export function withEffectSpan<A, E, R>(
   name: string,
@@ -89,6 +93,10 @@ export function withEffectSpan<A, E, R>(
         ),
         Effect.tapErrorCause((cause) =>
           Effect.sync(() => {
+            // Clean interrupt (e.g. Fiber.interrupt on shutdown) is not a
+            // failure — leave the span status UNSET and skip recordException
+            // so a graceful stop doesn't surface as a spurious error.
+            if (Cause.isInterruptedOnly(cause)) return;
             const message = Cause.pretty(cause);
             span.setStatus({ code: SpanStatusCode.ERROR, message });
             const failure = Cause.failureOption(cause);

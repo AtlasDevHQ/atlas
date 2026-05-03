@@ -14,6 +14,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
     spanCalls.push({ name, attributes });
     return fn();
   },
+  withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 const { PluginRegistry } = await import("../registry");
@@ -429,6 +430,16 @@ describe("PluginRegistry", () => {
       const healthSpans = spanCalls.filter((s) => s.name === "atlas.plugin.healthCheckAll");
       expect(healthSpans).toHaveLength(1);
       expect(healthSpans[0].attributes["atlas.plugin_count"]).toBe(2);
+    });
+
+    test("register() is intentionally NOT span-wrapped (sub-ms array push)", () => {
+      // Pinning the registry comment: a drive-by adding a span around
+      // register() would dwarf its own measurement and clutter every plugin
+      // boot trace. This test fails fast if that asymmetry is broken.
+      registry.register(makePlugin({ id: "p1" }));
+      registry.register(makePlugin({ id: "p2" }));
+      registry.register(makePlugin({ id: "p3" }));
+      expect(spanCalls).toHaveLength(0);
     });
   });
 });

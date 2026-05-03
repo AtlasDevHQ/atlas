@@ -95,6 +95,11 @@ export class PluginRegistry {
   private idSet = new Set<string>();
   private initialized = false;
 
+  // `register` is intentionally not span-wrapped: synchronous, sub-millisecond
+  // array push. A span here would dwarf its own measurement and clutter every
+  // plugin boot trace. `init` / `teardown` / `healthCheckAll` are wrapped
+  // because they may run async work (DB pools, external services) where slow
+  // paths are worth observing.
   register(plugin: PluginLike): void {
     if (!plugin.id || !plugin.id.trim()) {
       throw new Error("Plugin id must not be empty");

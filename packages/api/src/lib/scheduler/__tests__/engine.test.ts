@@ -83,6 +83,8 @@ mock.module("@atlas/api/lib/config", () => ({
 // without bringing up an in-memory span exporter.
 const spanCalls: { name: string; attributes: Record<string, unknown> }[] = [];
 
+const { Effect: EffectModule } = await import("effect");
+
 mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     name: string,
@@ -101,6 +103,22 @@ mock.module("@atlas/api/lib/tracing", () => ({
     }
     return result;
   },
+  // The real withEffectSpan composes natively into the Effect chain so
+  // interrupts propagate. The stub records the span at *run* time (not
+  // construction time) via Effect.zipRight so each Effect.repeat tick or
+  // Effect.retry attempt produces its own entry — matching the real
+  // Effect.acquireUseRelease span-per-execution behavior.
+  withEffectSpan: (
+    name: string,
+    attributes: Record<string, unknown>,
+    effect: unknown,
+  ): unknown =>
+    EffectModule.zipRight(
+      EffectModule.sync(() => {
+        spanCalls.push({ name, attributes });
+      }),
+      effect as never,
+    ),
 }));
 
 const { getScheduler, triggerTask, runTick, _resetScheduler } = await import("../engine");

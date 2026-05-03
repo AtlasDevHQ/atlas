@@ -499,8 +499,16 @@ export async function runAgent({
    * Out-parameter (#1988 B5). When supplied, the agent's preflight loaders
    * push a structured {@link ChatContextWarning} entry per failure so the
    * caller can write each one as an SSE `data-context-warning` frame
-   * before merging the model stream. Self-hosted callers that don't supply
-   * this array still get the legacy system-prompt string in `warnings`.
+   * before merging the model stream.
+   *
+   * Independent of {@link warnings}: both populate on the same failure
+   * branch. `warnings` feeds the system-prompt note that primes the model
+   * (caller-allocated; `runAgent` no-ops the push when the array is
+   * absent because the parameter binding is local to this function).
+   * `contextWarnings` feeds the SSE frame the UI renders. A caller that
+   * supplies one and not the other gets exactly that subset of the
+   * failure signal — the chat route supplies both; legacy embedded
+   * callers (SDK, tests) may only supply `warnings`.
    */
   contextWarnings?: ChatContextWarning[];
   /** Override the default agent step limit (e.g. for demo mode). */

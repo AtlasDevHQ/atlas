@@ -32,12 +32,15 @@
  *     `lib/plugins/secrets.ts:checkStrictPluginSecrets()` and run on
  *     every admin write.
  *   - Catalog-level `pluginCatalog.config_schema` drift detection —
- *     the catalog schema is the same `ConfigSchemaField[]` shape and
- *     drift between catalog and live plugin would be surfaced through
- *     this same path on the next boot.
+ *     this function reads the *live* plugin's `getConfigSchema()`. If
+ *     the live plugin and the catalog row diverge (e.g. plugin code
+ *     updated without re-registering the catalog row), this path
+ *     won't catch it. That's a separate concern handled at plugin
+ *     registration / migration time.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import type { ConfigSchemaField, PluginLike } from "./registry";
 
@@ -59,11 +62,20 @@ type StoredPluginRow = Record<string, unknown> & {
   id: string;
   workspace_id: string;
   catalog_id: string;
-  config: Record<string, unknown> | null;
+  config: unknown;
 };
 
-export interface ValidateStoredPluginConfigsResult {
-  readonly issues: readonly PluginConfigIssue[];
+/**
+ * Coerce a JSONB row value to a plain `Record<string, unknown>`. JSONB
+ * legitimately holds primitives, arrays, or `null` — using `in` /
+ * `Object.keys` on any of those throws at runtime. Treat anything that
+ * isn't a non-array object as "empty config" so the loop downgrades to
+ * a single structured issue instead of crashing the boot guard.
+ */
+function coerceConfigObject(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
 }
 
 /**
@@ -76,13 +88,17 @@ export interface ValidateStoredPluginConfigsResult {
  *
  * Every issue is logged at `warn` level here so an operator running
  * without `ATLAS_STRICT_PLUGIN_SECRETS=true` still sees the drift in
- * the boot log. Strict mode collects the same issues into a tagged
- * error (`PluginConfigStaleError`) for the boot Layer to fail with.
+ * the boot log. SaaS regions ALSO get a single `log.error` summary so
+ * a partial opt-in (warn-only mode) still surfaces in error tracking
+ * — review-flagged silent failure (#1988 PR review).
+ *
+ * Strict mode collects the same issues into a tagged error
+ * (`PluginConfigStaleError`) for the boot Layer to fail with.
  */
 export async function validateStoredPluginConfigs(deps: {
   pluginRegistry: PluginRegistryLike;
-}): Promise<ValidateStoredPluginConfigsResult> {
-  if (!hasInternalDB()) return { issues: [] };
+}): Promise<readonly PluginConfigIssue[]> {
+  if (!hasInternalDB()) return [];
 
   let rows: StoredPluginRow[];
   try {
@@ -90,20 +106,22 @@ export async function validateStoredPluginConfigs(deps: {
       "SELECT id, workspace_id, catalog_id, config FROM workspace_plugins",
     );
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Same `42P01 / does not exist` pattern as `lib/settings.ts` —
-    // treat as "no plugins installed yet" and skip. The C9 boot
+    // Match by SQLSTATE only — the English `"does not exist"` string
+    // also appears in role/schema/extension/function errors and is
+    // localized via `lc_messages`, so a string check would silently
+    // route permission errors to the "first boot" path. The C9 boot
     // guard catches "table missing post-migration" via the migration
     // path; we don't second-guess it here.
-    if (msg.includes("does not exist") || msg.includes("42P01")) {
-      log.debug({ err: msg }, "workspace_plugins table not present yet — skipping validation");
-      return { issues: [] };
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "42P01") {
+      log.debug({ err: errorMessage(err) }, "workspace_plugins table not present yet — skipping validation");
+      return [];
     }
     log.warn(
-      { err: msg },
+      { err: errorMessage(err) },
       "Failed to read workspace_plugins for boot validation — proceeding without stale-config checks",
     );
-    return { issues: [] };
+    return [];
   }
 
   const issues: PluginConfigIssue[] = [];
@@ -121,7 +139,24 @@ export async function validateStoredPluginConfigs(deps: {
     const schema = plugin.getConfigSchema();
     if (!Array.isArray(schema) || schema.length === 0) continue;
 
-    const config = row.config ?? {};
+    const config = coerceConfigObject(row.config);
+    if (config === null) {
+      // Surface as a structured issue rather than silently treating
+      // a malformed JSONB row as empty. Only fires when a row has
+      // been corrupted (manual ops edit, schemaless drift) AND has a
+      // schema that requires fields — the empty case below is a no-op.
+      const hasRequired = schema.some((f) => f.required === true);
+      if (hasRequired) {
+        issues.push({
+          catalogId: row.catalog_id,
+          installationId: row.id,
+          workspaceId: row.workspace_id,
+          reason: "stored config is not a JSON object (corrupt JSONB or schema-shape drift)",
+        });
+      }
+      continue;
+    }
+
     const declaredKeys = new Set(schema.map((f) => f.key));
 
     for (const field of schema) {
@@ -152,7 +187,21 @@ export async function validateStoredPluginConfigs(deps: {
     );
   }
 
-  return { issues };
+  // SaaS-only: emit a single `error`-level summary so a region running
+  // in warn-only mode still surfaces this in error tracking (Sentry,
+  // pino → ES, etc). Without this, an unattended SaaS pod could carry
+  // stale plugin configs for weeks before anyone reads the boot log.
+  if (issues.length > 0 && process.env.ATLAS_DEPLOY_MODE === "saas") {
+    log.error(
+      {
+        issueCount: issues.length,
+        affectedCatalogIds: Array.from(new Set(issues.map((i) => i.catalogId))),
+      },
+      "SaaS region has stale plugin configs — surfacing for error tracking. Set ATLAS_STRICT_PLUGIN_SECRETS=true to fail boot instead.",
+    );
+  }
+
+  return issues;
 }
 
 /**

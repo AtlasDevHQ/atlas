@@ -158,6 +158,14 @@ export const ConfigLive: Layer.Layer<Config, Error> = Layer.effect(
 export interface MigrationShape {
   /** Whether migrations ran successfully. */
   readonly migrated: boolean;
+  /**
+   * When `migrated === false`, the error message captured from the
+   * `Effect.catchAll` in `MigrationLive`. `MigrationGuardLive` threads
+   * this into `MigrationsRequiredError.cause` so the SaaS boot-failure
+   * log line names the actual Drizzle / pg error rather than telling
+   * the operator to "see the prior log".
+   */
+  readonly error?: string;
 }
 
 export class Migration extends Context.Tag("Migration")<
@@ -182,13 +190,13 @@ export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.ef
       return { migrated: false } satisfies MigrationShape;
     }
 
-    const migrated = yield* Effect.tryPromise({
+    const result = yield* Effect.tryPromise({
       try: async () => {
         const { migrateAuthTables } = await import(
           "@atlas/api/lib/auth/migrate"
         );
         await migrateAuthTables();
-        return true;
+        return { migrated: true } satisfies MigrationShape;
       },
       catch: (err) => (err instanceof Error ? err.message : String(err)),
     }).pipe(
@@ -197,11 +205,15 @@ export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.ef
           { err: new Error(errMsg) },
           "Boot migration failed",
         );
-        return Effect.succeed(false);
+        // Carry the underlying error message through the Migration Tag
+        // so `MigrationGuardLive` can surface it on the boot-failure
+        // log line in SaaS — review-flagged "MigrationsRequiredError
+        // shouldn't punt to 'see prior log'" (#1988 PR review).
+        return Effect.succeed({ migrated: false, error: errMsg } satisfies MigrationShape);
       }),
     );
 
-    return { migrated } satisfies MigrationShape;
+    return result;
   }),
 );
 
@@ -777,13 +789,17 @@ export const DpaGuardLive: Layer.Layer<never, Error, Config | Settings> = Layer.
 // ══════════════════════════════════════════════════════════════════════
 
 /**
- * Fail boot in SaaS when Drizzle migrations did not complete. Depends
- * on {@link Migration} so it sequences after `MigrationLive` runs and
- * observes its `migrated` flag. The error class
+ * Sibling shape to `DpaGuardLive` — both are `Layer.effectDiscard`
+ * SaaS-mode boot guards that depend on a domain Tag they need to
+ * assert against (`Settings` for DPA, `Migration` here) and fail with
+ * a tagged error when the contract is violated. The error class
  * (`MigrationsRequiredError`) lives in `saas-guards.ts` next to its
  * siblings; this Layer lives here because it directly yields the
- * `Migration` Tag defined above and importing the Tag from
- * `saas-guards.ts` would create a static cycle.
+ * `Migration` Tag defined above. Putting the Layer in `saas-guards.ts`
+ * would force every consumer of that module (test layers, future
+ * sibling guards) to pull the full Layer DAG via `layers.ts`'s dynamic
+ * imports — kept here so the boot-only modules stay walled off from
+ * request-path consumers.
  *
  * Why promote `MigrationLive`'s soft failure to fatal in SaaS:
  *
@@ -812,12 +828,15 @@ export const MigrationGuardLive: Layer.Layer<never, MigrationsRequiredError, Con
 
     yield* Effect.fail(
       new MigrationsRequiredError({
+        ...(migration.error !== undefined && { cause: migration.error }),
         message:
           `SaaS region booted but Drizzle migrations did not complete. The internal DB schema is ` +
           `incomplete; settings reads would fall back to env-vars only and bypass admin overrides ` +
-          `that other boot guards (DPA, plan limits) rely on. Inspect the prior 'Boot migration ` +
-          `failed' log line for the underlying cause and re-run after the schema is repaired. ` +
-          `See #1988.`,
+          `that other boot guards (DPA, plan limits) rely on. ` +
+          (migration.error !== undefined
+            ? `Underlying error: ${migration.error}. `
+            : `Inspect the prior 'Boot migration failed' log line for the underlying cause. `) +
+          `Re-run after the schema is repaired. See #1988.`,
       }),
     );
   }),

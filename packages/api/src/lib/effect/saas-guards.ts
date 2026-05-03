@@ -133,11 +133,18 @@ export class InternalDatabaseRequiredError extends Data.TaggedError("InternalDat
  * log line can list the valid keys without re-reading config — important
  * because the typo class for region keys (`eu` vs `eu-west`) is exactly
  * what produces this misconfig.
+ *
+ * `cause` discriminates the two failure modes (`unknown_region` vs
+ * `malformed_database_url`) so consumers can branch programmatically
+ * without parsing `message` — the second mode fires when
+ * `claimedRegion ∈ availableRegions` and the URL is bad, which the
+ * first mode's "key not present" wording would contradict.
  */
 export class RegionMisconfiguredError extends Data.TaggedError("RegionMisconfiguredError")<{
   readonly message: string;
   readonly claimedRegion: string;
   readonly availableRegions: readonly string[];
+  readonly cause: "unknown_region" | "malformed_database_url";
 }> {}
 
 /**
@@ -151,17 +158,34 @@ export class RegionMisconfiguredError extends Data.TaggedError("RegionMisconfigu
  * same knob `secrets.ts:checkStrictPluginSecrets` already uses for
  * F-42 secret-residue checks. Reusing the knob keeps the strict-mode
  * surface small (one env var, two related contracts).
+ *
+ * `PluginConfigIssue` is re-exported from `lib/plugins/validation.ts`
+ * (the producer of these values) — kept as the single declaration so a
+ * future field addition there flows through here without two structural
+ * shapes drifting apart.
  */
-export interface PluginConfigIssue {
-  readonly catalogId: string;
-  readonly installationId: string;
-  readonly workspaceId: string;
-  readonly reason: string;
-}
+import type { PluginConfigIssue } from "@atlas/api/lib/plugins/validation";
+export type { PluginConfigIssue };
 
 export class PluginConfigStaleError extends Data.TaggedError("PluginConfigStaleError")<{
   readonly message: string;
   readonly issues: readonly PluginConfigIssue[];
+}> {}
+
+/**
+ * `PluginConfigGuardLive` ran but the underlying validation function
+ * threw before it could produce an issue list (e.g. third-party plugin
+ * `getConfigSchema()` raised, lazy import of the validation module
+ * failed). Distinct from `PluginConfigStaleError`: this is "we couldn't
+ * even check", not "we checked and found drift".
+ *
+ * In strict mode this fails boot; otherwise the guard logs and continues
+ * (consistent with how the validation function itself handles unexpected
+ * DB errors — proceed without checks rather than wedge the boot Layer).
+ */
+export class PluginConfigCheckFailedError extends Data.TaggedError("PluginConfigCheckFailedError")<{
+  readonly message: string;
+  readonly cause: Error;
 }> {}
 
 /**
@@ -174,9 +198,16 @@ export class PluginConfigStaleError extends Data.TaggedError("PluginConfigStaleE
  * other boot guards rely on (e.g. `ATLAS_EMAIL_PROVIDER` for the DPA
  * check). Promote the failure to fatal so a missing schema can never
  * masquerade as "first boot, nothing configured yet".
+ *
+ * `cause` carries the underlying error message threaded through
+ * `MigrationLive` (when available) so the boot-failure log line names
+ * the actual Drizzle / pg error rather than punting to "see the prior
+ * log line". Optional because the legacy fallback in `MigrationLive`
+ * predates the threading; older boots without it surface as `undefined`.
  */
 export class MigrationsRequiredError extends Data.TaggedError("MigrationsRequiredError")<{
   readonly message: string;
+  readonly cause?: string;
 }> {}
 
 // ══════════════════════════════════════════════════════════════════════
@@ -414,6 +445,7 @@ export const RegionGuardLive: Layer.Layer<never, RegionMisconfiguredError, Confi
         new RegionMisconfiguredError({
           claimedRegion,
           availableRegions,
+          cause: "unknown_region",
           message:
             `SaaS region booted with ATLAS_API_REGION="${claimedRegion}" (or residency.defaultRegion) ` +
             `but config.residency.regions does not declare that key. Available regions: ` +
@@ -431,6 +463,7 @@ export const RegionGuardLive: Layer.Layer<never, RegionMisconfiguredError, Confi
         new RegionMisconfiguredError({
           claimedRegion,
           availableRegions,
+          cause: "malformed_database_url",
           message:
             `SaaS region "${claimedRegion}" is declared in config.residency.regions but its ` +
             `databaseUrl is missing or malformed (must start with postgres:// or postgresql://). ` +
@@ -463,6 +496,13 @@ function isStrictPluginMode(): boolean {
  * removed required fields) are always logged as warnings; in strict
  * mode (`ATLAS_STRICT_PLUGIN_SECRETS=true`) they fail boot.
  *
+ * **Unlike its siblings, this guard runs in every deploy mode** —
+ * stale plugin configs are a real risk for self-hosted operators too,
+ * and the strict-mode env knob (`ATLAS_STRICT_PLUGIN_SECRETS=true`) is
+ * the SaaS-vs-self-hosted decision lever rather than `deployMode`. The
+ * SaaS-only `log.error` summary inside `validateStoredPluginConfigs`
+ * handles the unattended-region visibility concern separately.
+ *
  * The validation function lives in `lib/plugins/validation.ts` so it
  * can be unit-tested in isolation (no Layer DAG, no Config Tag
  * dependency). The Layer here is a thin wrapper that:
@@ -472,27 +512,73 @@ function isStrictPluginMode(): boolean {
  *   - delegates to `validateStoredPluginConfigs()` for per-row checks
  *   - decides warn-only vs fail-fast based on `isStrictPluginMode()`
  *
- * Self-hosted is unaffected when strict mode is off — a missing
- * stored config is not fatal in any deployment.
+ * The lazy-import + validator call is wrapped in an inner try/catch
+ * that converts any throw (module-load failure, third-party plugin
+ * `getConfigSchema()` raising, malformed JSONB tripping the per-row
+ * walker) into a discriminated `{ ok, ... }` result — same
+ * defect-channel-narrowing pattern as `EncryptionKeyGuardLive`. Without
+ * this wrap, `Effect.promise` would route rejections into the defect
+ * channel and bypass the typed `E` channel the boot Layer relies on.
  *
  * The guard skips silently when no internal DB is configured
  * (`hasInternalDB() === false`) — that case is already covered by
  * `InternalDbGuardLive` in SaaS, and self-hosted may legitimately run
  * without persisted plugin configs.
  */
-export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError, Config> = Layer.effectDiscard(
+export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | PluginConfigCheckFailedError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* Config;
 
-    const result = yield* Effect.promise(async () => {
-      const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
-      if (!hasInternalDB()) return { issues: [] as PluginConfigIssue[] };
-      const { plugins } = await import("@atlas/api/lib/plugins/registry");
-      const { validateStoredPluginConfigs } = await import(
-        "@atlas/api/lib/plugins/validation"
-      );
-      return validateStoredPluginConfigs({ pluginRegistry: plugins });
-    });
+    // The inner async function catches every synchronous throw and the
+    // dynamic `import()` rejection, converting both into a discriminated
+    // `{ ok, ... }` result. Mirror the `EncryptionKeyGuardLive` pattern
+    // to keep the surrounding Effect's E channel narrowed to the two
+    // tagged errors below; without this wrap a rejected dynamic import
+    // would land in the defect channel and bypass typed handling.
+    const result = yield* Effect.promise(
+      async (): Promise<
+        | { ok: true; issues: readonly PluginConfigIssue[] }
+        | { ok: false; cause: Error }
+      > => {
+        try {
+          const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
+          if (!hasInternalDB()) return { ok: true, issues: [] };
+          const { plugins } = await import("@atlas/api/lib/plugins/registry");
+          const { validateStoredPluginConfigs } = await import(
+            "@atlas/api/lib/plugins/validation"
+          );
+          const issues = await validateStoredPluginConfigs({ pluginRegistry: plugins });
+          return { ok: true, issues };
+        } catch (err) {
+          return { ok: false, cause: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    );
+
+    if (!result.ok) {
+      // In strict mode a check failure fails boot (operator opted in to
+      // "fail boot rather than run with stale plugin state" — they get
+      // the same default for "we couldn't even check"). Otherwise log
+      // and continue; the validation function itself follows the same
+      // policy for unexpected DB errors so the contract is consistent.
+      if (isStrictPluginMode()) {
+        return yield* Effect.fail(
+          new PluginConfigCheckFailedError({
+            cause: result.cause,
+            message:
+              `ATLAS_STRICT_PLUGIN_SECRETS=true and the boot-time plugin config validation threw: ` +
+              `${result.cause.message}. Either fix the underlying issue (third-party plugin throwing ` +
+              `in getConfigSchema(), JSONB shape drift) or unset ATLAS_STRICT_PLUGIN_SECRETS to fall ` +
+              `back to warn-only mode. See ${ISSUE_REF_1988}.`,
+          }),
+        );
+      }
+      // Warn-only: surface the failure but keep booting. The strict
+      // path covers operators who explicitly chose "fail boot on this
+      // class of error"; everyone else keeps the existing "best effort
+      // validation" behavior.
+      return;
+    }
 
     if (result.issues.length === 0) return;
 

@@ -171,6 +171,10 @@ export interface ChatErrorInfo {
  *   falls back to the file-based default semantic layer.
  * - `learned_patterns_unavailable` — the learned-patterns lookup failed.
  *   The agent runs without question-similarity hints.
+ *
+ * When adding a new code: also add a server emit site (currently
+ * `lib/agent.ts`'s preflight `Effect.catchAll` branches) AND a corresponding
+ * UI banner branch so the structured frame round-trips end-to-end.
  */
 export const CHAT_CONTEXT_WARNING_CODES = [
   "semantic_layer_unavailable",
@@ -178,6 +182,11 @@ export const CHAT_CONTEXT_WARNING_CODES = [
 ] as const;
 
 export type ChatContextWarningCode = (typeof CHAT_CONTEXT_WARNING_CODES)[number];
+
+/** Type guard — checks whether a string is a known `ChatContextWarningCode`. */
+export function isChatContextWarningCode(value: string): value is ChatContextWarningCode {
+  return (CHAT_CONTEXT_WARNING_CODES as ReadonlyArray<string>).includes(value);
+}
 
 /**
  * Mid-stream warning frame written to the AI-SDK UI message stream when the
@@ -190,13 +199,17 @@ export type ChatContextWarningCode = (typeof CHAT_CONTEXT_WARNING_CODES)[number]
  * The discriminator is load-bearing: the AI-SDK transport delivers errors
  * and these warnings on the same `data-*` channel, and a UI that surfaces
  * a warning as a fatal modal would scare users away from a good answer.
+ *
+ * Fields are `readonly` to signal the wire-DTO intent — once a frame is
+ * pushed onto the agent's `contextWarnings` out-array, the chat route
+ * only reads it. Mutating in place would be a write-after-publish bug.
  */
 export interface ChatContextWarning {
-  severity: "warning";
-  code: ChatContextWarningCode;
-  title: string;
-  detail?: string;
-  requestId?: string;
+  readonly severity: "warning";
+  readonly code: ChatContextWarningCode;
+  readonly title: string;
+  readonly detail?: string;
+  readonly requestId?: string;
 }
 
 // ---------------------------------------------------------------------------

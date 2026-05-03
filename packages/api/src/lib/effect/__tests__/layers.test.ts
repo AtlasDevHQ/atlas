@@ -38,6 +38,7 @@ function makeTestMigrationLayer(
 ): Layer.Layer<Migration> {
   return Layer.succeed(Migration, {
     migrated: partial.migrated ?? true,
+    ...(partial.error !== undefined && { error: partial.error }),
   });
 }
 
@@ -325,6 +326,7 @@ describe("MigrationGuardLive", () => {
   function runGuard(opts: {
     deployMode: string;
     migrated: boolean;
+    error?: string;
     databaseUrl?: string | undefined;
   }): Promise<Exit.Exit<void, MigrationsRequiredError>> {
     const savedDb = process.env.DATABASE_URL;
@@ -337,7 +339,10 @@ describe("MigrationGuardLive", () => {
       Layer.provide(
         Layer.merge(
           makeTestConfigLayer({ deployMode: opts.deployMode }),
-          makeTestMigrationLayer({ migrated: opts.migrated }),
+          makeTestMigrationLayer({
+            migrated: opts.migrated,
+            ...(opts.error !== undefined && { error: opts.error }),
+          }),
         ),
       ),
     );
@@ -358,6 +363,27 @@ describe("MigrationGuardLive", () => {
     expect(failure).toBeInstanceOf(MigrationsRequiredError);
     expect((failure as MigrationsRequiredError)._tag).toBe("MigrationsRequiredError");
     expect((failure as MigrationsRequiredError).message).toContain("#1988");
+  });
+
+  test("threads underlying error from MigrationLive into cause + message", async () => {
+    // Pin the contract: `MigrationGuardLive` promotes the captured
+    // MigrationLive error into `cause` (so Sentry / log queries can
+    // group on it) and inlines it into the operator-actionable message
+    // so "see prior log" punting goes away.
+    const exit = await runGuard({
+      deployMode: "saas",
+      migrated: false,
+      error: "drizzle: relation 'sessions' does not exist",
+      databaseUrl: "postgres://u:p@h:5432/db",
+    });
+    expect(Exit.isFailure(exit)).toBe(true);
+    const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+    expect(failure).toBeInstanceOf(MigrationsRequiredError);
+    expect((failure as MigrationsRequiredError).cause).toBe(
+      "drizzle: relation 'sessions' does not exist",
+    );
+    expect((failure as MigrationsRequiredError).message).toContain("Underlying error:");
+    expect((failure as MigrationsRequiredError).message).toContain("drizzle:");
   });
 
   test("succeeds in SaaS when migrated=true", async () => {
@@ -490,4 +516,13 @@ describe("buildAppLayer", () => {
       else delete process.env.ATLAS_ENCRYPTION_KEYS;
     }
   });
+
+  // Wiring regression for the #1988 C7/C8/C9 guards is intentionally
+  // not added end-to-end. The InternalDbGuard wiring test above is the
+  // family canary — its failure proves `Layer.mergeAll(...)` honors
+  // every Layer.effectDiscard guard added to it. Per-guard end-to-end
+  // tests would force a real-or-mocked InternalDB pool to satisfy
+  // `InternalDbGuardLive` (which must pass for the later guards to
+  // fire); that pulls real I/O into a unit test for no extra coverage
+  // beyond the existing unit-level guard tests.
 });

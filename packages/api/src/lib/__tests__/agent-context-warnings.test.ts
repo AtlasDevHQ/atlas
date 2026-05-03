@@ -42,15 +42,28 @@ mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic" as const,
 }));
 
-// Semantic loaders — both throw to trigger BOTH B5 frames in one run.
+// Semantic loaders — toggleable so each test can independently choose
+// whether the whitelist + index branch throws or succeeds. The
+// `loaderShouldFail` flags are mutated per-test in beforeEach hooks.
+const semanticState = {
+  whitelistThrows: true,
+  patternsThrows: true,
+};
+
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => {
-    throw new Error("simulated pool exhaustion (whitelist)");
+    if (semanticState.whitelistThrows) {
+      throw new Error("simulated pool exhaustion (whitelist)");
+    }
+    return new Map();
   },
   invalidateOrgWhitelist: () => {},
   getOrgSemanticIndex: async () => {
-    throw new Error("simulated pool exhaustion (semantic index)");
+    if (semanticState.whitelistThrows) {
+      throw new Error("simulated pool exhaustion (semantic index)");
+    }
+    return "";
   },
   invalidateOrgSemanticIndex: () => {},
   _resetOrgWhitelists: () => {},
@@ -60,11 +73,14 @@ mock.module("@atlas/api/lib/semantic", () => ({
   getCrossSourceJoins: () => [],
 }));
 
-// Learned-patterns loader — also throws so we can verify the second
-// frame fires independently of the first.
+// Learned-patterns loader — also toggleable so the per-branch tests
+// can pin "patterns fails alone" and "whitelist fails alone" cases.
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildLearnedPatternsSection: async () => {
-    throw new Error("simulated pool exhaustion (learned patterns)");
+    if (semanticState.patternsThrows) {
+      throw new Error("simulated pool exhaustion (learned patterns)");
+    }
+    return "";
   },
 }));
 
@@ -154,6 +170,11 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
         return { stream: convertArrayToReadableStream(final) };
       },
     });
+    // Default: both branches fail so the "all-fail" test case still
+    // exercises the original shape. Per-branch tests override these
+    // before running.
+    semanticState.whitelistThrows = true;
+    semanticState.patternsThrows = true;
   });
 
   it("populates structured warnings when both preflight loaders fail", async () => {
@@ -176,6 +197,50 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
     // Title and detail are both populated so the UI has copy to render.
     expect(contextWarnings.every((w) => w.title.length > 0)).toBe(true);
     expect(contextWarnings.every((w) => (w.detail ?? "").length > 0)).toBe(true);
+  });
+
+  it("populates ONLY semantic_layer_unavailable when only the whitelist branch fails", async () => {
+    // Per-branch regression test: a refactor that accidentally moved
+    // both pushes into one arm would still see length === 2 in the
+    // all-fail case above. This test pins per-branch independence.
+    semanticState.whitelistThrows = true;
+    semanticState.patternsThrows = false;
+    const contextWarnings: ChatContextWarning[] = [];
+    const result = await runAgent({
+      messages: userMessages("how many companies?"),
+      contextWarnings,
+    });
+    await result.steps;
+
+    expect(contextWarnings.length).toBe(1);
+    expect(contextWarnings[0].code).toBe("semantic_layer_unavailable");
+  });
+
+  it("populates ONLY learned_patterns_unavailable when only the patterns branch fails", async () => {
+    semanticState.whitelistThrows = false;
+    semanticState.patternsThrows = true;
+    const contextWarnings: ChatContextWarning[] = [];
+    const result = await runAgent({
+      messages: userMessages("how many companies?"),
+      contextWarnings,
+    });
+    await result.steps;
+
+    expect(contextWarnings.length).toBe(1);
+    expect(contextWarnings[0].code).toBe("learned_patterns_unavailable");
+  });
+
+  it("populates nothing when both branches succeed", async () => {
+    semanticState.whitelistThrows = false;
+    semanticState.patternsThrows = false;
+    const contextWarnings: ChatContextWarning[] = [];
+    const result = await runAgent({
+      messages: userMessages("how many companies?"),
+      contextWarnings,
+    });
+    await result.steps;
+
+    expect(contextWarnings).toEqual([]);
   });
 
   it("does not populate warnings when caller omits the array (legacy path)", async () => {

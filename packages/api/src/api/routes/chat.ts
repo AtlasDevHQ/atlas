@@ -855,6 +855,13 @@ chat.openapi(chatRoute, async (c) => {
               // (#1980) does not misclassify a degraded answer as a
               // failure. `requestId` is stamped so log correlation works
               // end-to-end without the client having to plumb the header.
+              //
+              // Ordering is load-bearing: this loop runs BEFORE
+              // `writer.merge(agentResult.toUIMessageStream(...))` below,
+              // so the UI receives the warning frame(s) ahead of any
+              // model text-delta. A "render banner before content"
+              // assumption in the UI depends on this — moving the loop
+              // after merge would race the first delta.
               for (const warning of contextWarnings) {
                 writer.write({
                   type: "data-context-warning",

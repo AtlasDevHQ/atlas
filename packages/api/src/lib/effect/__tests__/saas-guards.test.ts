@@ -45,8 +45,6 @@ import type {
   EncryptionKeyMalformedError as TEncryptionKeyMalformedError,
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
-  PluginConfigStaleError as TPluginConfigStaleError,
-  PluginConfigIssue,
 } from "../saas-guards";
 
 const {
@@ -59,8 +57,6 @@ const {
   InternalDatabaseRequiredError,
   RegionGuardLive,
   RegionMisconfiguredError,
-  PluginConfigGuardLive,
-  PluginConfigStaleError,
 } = await import("../saas-guards");
 const { Config } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
@@ -451,6 +447,7 @@ describe("RegionGuardLive", () => {
       expect((failure as TRegionMisconfiguredError)._tag).toBe("RegionMisconfiguredError");
       expect((failure as TRegionMisconfiguredError).claimedRegion).toBe("eu-typo");
       expect((failure as TRegionMisconfiguredError).availableRegions).toEqual(["eu-west"]);
+      expect((failure as TRegionMisconfiguredError).cause).toBe("unknown_region");
       expect((failure as TRegionMisconfiguredError).message).toContain("#1988");
     });
   });
@@ -476,6 +473,9 @@ describe("RegionGuardLive", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
       expect(failure).toBeInstanceOf(RegionMisconfiguredError);
+      // The cause discriminator is load-bearing — programmatic
+      // consumers branch on it without parsing `message`.
+      expect((failure as TRegionMisconfiguredError).cause).toBe("malformed_database_url");
       expect((failure as TRegionMisconfiguredError).message).toContain("databaseUrl");
     });
   });
@@ -535,115 +535,7 @@ describe("RegionGuardLive", () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════
-// ██  PluginConfigGuardLive (#1988 C8)
-// ══════════════════════════════════════════════════════════════════════
-
-describe("PluginConfigGuardLive", () => {
-  // The guard lazy-imports `lib/db/internal`, `lib/plugins/registry`, and
-  // `lib/plugins/validation`. We mock the validation module so the guard
-  // sees a deterministic issue list without needing a real internal DB
-  // or registered plugins. Validation function unit tests in
-  // `lib/plugins/__tests__/validation.test.ts` cover the per-row logic.
-  function mockValidation(issues: readonly PluginConfigIssue[]): void {
-    mock.module("@atlas/api/lib/plugins/validation", () => ({
-      validateStoredPluginConfigs: async () => ({ issues }),
-    }));
-    // Make the lazy-imported `hasInternalDB` return true so the guard
-    // calls into our mocked validator.
-    mock.module("@atlas/api/lib/db/internal", () => ({
-      hasInternalDB: () => true,
-    }));
-    mock.module("@atlas/api/lib/plugins/registry", () => ({
-      plugins: {
-        getAll: () => [],
-        get: () => undefined,
-      },
-    }));
-  }
-
-  test("succeeds (warn-only) when issues exist but ATLAS_STRICT_PLUGIN_SECRETS is not set", async () => {
-    await withCleanEnv(async () => {
-      mockValidation([
-        { catalogId: "plugin-a", installationId: "inst-1", workspaceId: "ws-1", reason: "stored key removed" },
-      ]);
-      const exit = await Effect.runPromiseExit(
-        Effect.void.pipe(
-          Effect.provide(
-            PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
-            ),
-          ),
-        ),
-      );
-      expect(Exit.isSuccess(exit)).toBe(true);
-    });
-  });
-
-  test("fails boot when ATLAS_STRICT_PLUGIN_SECRETS=true and any issue is present", async () => {
-    await withCleanEnv(async () => {
-      process.env.ATLAS_STRICT_PLUGIN_SECRETS = "true";
-      const issues: PluginConfigIssue[] = [
-        { catalogId: "plugin-a", installationId: "inst-1", workspaceId: "ws-1", reason: "missing required field 'apiKey'" },
-        { catalogId: "plugin-b", installationId: "inst-2", workspaceId: "ws-2", reason: "field type drift" },
-      ];
-      mockValidation(issues);
-      const exit = await Effect.runPromiseExit(
-        Effect.void.pipe(
-          Effect.provide(
-            PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
-            ),
-          ),
-        ),
-      );
-      expect(Exit.isFailure(exit)).toBe(true);
-      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
-      expect(failure).toBeInstanceOf(PluginConfigStaleError);
-      expect((failure as TPluginConfigStaleError)._tag).toBe("PluginConfigStaleError");
-      expect((failure as TPluginConfigStaleError).issues.length).toBe(2);
-      expect((failure as TPluginConfigStaleError).message).toContain("#1988");
-      expect((failure as TPluginConfigStaleError).message).toContain("ATLAS_STRICT_PLUGIN_SECRETS");
-    });
-  });
-
-  test("succeeds in strict mode when no issues are reported", async () => {
-    await withCleanEnv(async () => {
-      process.env.ATLAS_STRICT_PLUGIN_SECRETS = "true";
-      mockValidation([]);
-      const exit = await Effect.runPromiseExit(
-        Effect.void.pipe(
-          Effect.provide(
-            PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
-            ),
-          ),
-        ),
-      );
-      expect(Exit.isSuccess(exit)).toBe(true);
-    });
-  });
-
-  test("succeeds on self-hosted with strict mode + issues (self-hosted parity preserved)", async () => {
-    // Strict mode is honored on any deploy mode — both warn and fatal
-    // paths are intentional for an operator who opted in. The contract
-    // is "strict mode == fail on stale", not "strict mode == SaaS only".
-    // This test pins the warn-only behavior on self-hosted WITHOUT
-    // strict mode — the legacy operator gets logs, not a boot failure.
-    await withCleanEnv(async () => {
-      mockValidation([
-        { catalogId: "plugin-a", installationId: "inst-1", workspaceId: "ws-1", reason: "stale" },
-      ]);
-      const exit = await Effect.runPromiseExit(
-        Effect.void.pipe(
-          Effect.provide(
-            PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
-            ),
-          ),
-        ),
-      );
-      expect(Exit.isSuccess(exit)).toBe(true);
-    });
-  });
-});
+// `PluginConfigGuardLive` tests live in their own file
+// (`plugin-config-guard.test.ts`) — the validator is mocked via
+// `mock.module()` and bun's mock scope is per-file, so isolating
+// avoids leaking the mocks into the other guards' tests in this file.

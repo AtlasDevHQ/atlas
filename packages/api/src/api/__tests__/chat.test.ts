@@ -1040,6 +1040,118 @@ describe("POST /api/v1/chat", () => {
   });
 
   // ---------------------------------------------------------------------
+  // #1988 B5 — context-warning SSE frames
+  //
+  // The agent's preflight `Effect.catchAll` paths push structured
+  // `ChatContextWarning` entries into a caller-supplied out-array.
+  // The chat route serializes each as a `data-context-warning` SSE
+  // frame BEFORE merging the model stream, so the UI receives the
+  // warning ahead of any text-delta. These tests pin:
+  //   - the frame `type` literal is exactly `"data-context-warning"`
+  //   - the frame carries `severity: "warning"`, `code`, `requestId`
+  //   - frames are emitted before any model output
+  // A typo in the `type` would silently drop the UI affordance —
+  // pin it here so the user-facing contract has a behavioral test.
+  // ---------------------------------------------------------------------
+
+  describe("#1988 B5 — context-warning SSE frames", () => {
+    /** Read every SSE frame whose data JSON has `type: "data-context-warning"`. */
+    async function readContextWarningFrames(
+      response: Response,
+    ): Promise<Array<Record<string, unknown>>> {
+      const text = await response.text();
+      const frames: Array<Record<string, unknown>> = [];
+      for (const chunk of text.split("\n\n")) {
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            const obj = JSON.parse(payload) as Record<string, unknown>;
+            if (obj.type === "data-context-warning") {
+              frames.push(obj);
+            }
+          } catch {
+            // ignore malformed lines
+          }
+        }
+      }
+      return frames;
+    }
+
+    /**
+     * Build a runAgent stub that pushes the supplied warnings into the
+     * caller-provided `contextWarnings` out-array (matching real-agent
+     * semantics) before returning a no-op stream.
+     */
+    function runAgentPushingWarnings(
+      warnings: ReadonlyArray<Record<string, unknown>>,
+    ) {
+      return (params: { contextWarnings?: Array<Record<string, unknown>> }) => {
+        if (params.contextWarnings) {
+          for (const w of warnings) params.contextWarnings.push(w);
+        }
+        return Promise.resolve({
+          toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+          toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+          text: Promise.resolve(""),
+          steps: Promise.resolve([]),
+        });
+      };
+    }
+
+    it("emits a data-context-warning frame for every preflight degradation", async () => {
+      mockRunAgent.mockImplementationOnce(
+        runAgentPushingWarnings([
+          {
+            severity: "warning",
+            code: "semantic_layer_unavailable",
+            title: "Semantic layer unavailable",
+            detail: "fallback to default",
+          },
+          {
+            severity: "warning",
+            code: "learned_patterns_unavailable",
+            title: "Query history hints unavailable",
+            detail: "skipping few-shot priming",
+          },
+        ]) as unknown as typeof mockRunAgent,
+      );
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+
+      const frames = await readContextWarningFrames(response);
+      expect(frames.length).toBe(2);
+
+      // Each frame's data carries the warning fields + a server-stamped
+      // `requestId`. The `type` literal is exactly the string the UI
+      // matches on — a typo here silently drops the banner.
+      const codes = frames
+        .map((f) => (f.data as Record<string, unknown>).code as string)
+        .sort();
+      expect(codes).toEqual(["learned_patterns_unavailable", "semantic_layer_unavailable"]);
+
+      for (const frame of frames) {
+        const data = frame.data as Record<string, unknown>;
+        expect(data.severity).toBe("warning");
+        expect(typeof data.title).toBe("string");
+        expect(typeof data.requestId).toBe("string");
+        expect((data.requestId as string).length).toBeGreaterThan(0);
+      }
+    });
+
+    it("emits no context-warning frames when runAgent's preflight succeeded", async () => {
+      // Default mockRunAgent doesn't push anything, mirroring the
+      // happy path. A spurious frame here would be a false-positive
+      // banner in the UI.
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      const frames = await readContextWarningFrames(response);
+      expect(frames).toEqual([]);
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // #1980 — synchronous classifier coverage (every emit branch)
   //
   // Pin every code `classifyChatError` can emit to its expected status

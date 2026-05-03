@@ -226,6 +226,13 @@ if (frame.type === "data-context-warning") {
     // Surface a per-message warning banner — the answer is still usable
     // but was generated against reduced context. Do NOT treat it as a
     // hard error.
+  } else {
+    // Log on null so a future server wire-shape regression (e.g. an
+    // unknown `code`, missing `title`, or wrong `severity` literal) is
+    // observable in dev. The pre-2005 plan-warning channel went two
+    // releases undetected because nothing logged its typed mismatch —
+    // surface drops loudly so you don't repeat that mistake.
+    console.warn("[atlas-sdk] dropped malformed data-context-warning frame", frame.data);
   }
 }
 ```

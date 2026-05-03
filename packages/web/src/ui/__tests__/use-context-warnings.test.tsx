@@ -40,7 +40,7 @@ function buildHarness() {
     const ctlRef = useRef(ctl);
     ctlRef.current = ctl;
 
-    // Expose an imperative step() so the test drives the timeline.
+    // Expose an imperative flush() so the test drives the timeline.
     stepRef.current = async () => {
       while (indexRef.current < frames.length) {
         const f = frames[indexRef.current];
@@ -382,12 +382,22 @@ describe("useContextWarnings (integration)", () => {
       console.warn = originalWarn;
     });
 
-    test("malformed data-context-warning frame logs (so wire regressions are observable)", async () => {
+    test("malformed data-context-warning frame logs once per session (deduped to avoid spam)", async () => {
       const frames: Frame[] = [
         { type: "user-message", id: "u1" },
+        // Three malformed frames — only the first should log so a
+        // runaway stream of bad frames doesn't drown out the warning.
         {
           type: "data-context-warning",
-          data: { severity: "warning", code: "made_up", title: "x" },
+          data: { severity: "warning", code: "made_up", title: "first bad" },
+        },
+        {
+          type: "data-context-warning",
+          data: { severity: "warning", code: "also_made_up", title: "second bad" },
+        },
+        {
+          type: "data-context-warning",
+          data: { severity: "warning", code: "still_bad", title: "third bad" },
         },
         { type: "assistant-message", id: "a1" },
       ];
@@ -395,13 +405,16 @@ describe("useContextWarnings (integration)", () => {
       render(<Harness frames={frames} />);
       await flush();
 
-      // Console.warn fires once for the dropped malformed frame.
-      // The pre-#2005 `data-plan-warning` channel went undetected for
-      // two releases because nothing logged the typed mismatch — this
-      // pin keeps that mistake from recurring quietly.
-      expect(warnSpy).toHaveBeenCalled();
+      // Exactly one log fires for the dropped malformed frames. The
+      // pre-#2005 `data-plan-warning` channel went undetected for two
+      // releases because nothing logged the typed mismatch — pin the
+      // first-frame log so that mistake can't quietly recur. The
+      // dedup keeps a runaway stream's worth of drops from drowning
+      // out the signal.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
       const args = warnSpy.mock.calls[0];
       expect(args[0]).toContain("dropped malformed");
+      expect(args[0]).toContain("further drops suppressed");
     });
   });
 

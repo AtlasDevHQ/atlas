@@ -109,6 +109,14 @@ export function useContextWarnings(messages: ReadonlyArray<{ id: string; role: s
     });
   }, [messages]);
 
+  // First-malformed-frame log gate. Logging every dropped frame is
+  // tempting for observability but a server-side wire regression could
+  // emit hundreds per session — at which point users tune out the noise
+  // and the regression is effectively invisible again. We log once per
+  // session with the offending payload so the first user to hit it
+  // surfaces the bug; subsequent drops still happen but stay quiet.
+  const loggedMalformedRef = useRef(false);
+
   const handleData = useCallback(
     (dataPart: { type: string; data: unknown }): boolean => {
       if (dataPart.type === "data-context-warning") {
@@ -120,14 +128,16 @@ export function useContextWarnings(messages: ReadonlyArray<{ id: string; role: s
               ? { warnings: [parsed], anchorMessageCount: anchor }
               : { ...p, warnings: [...p.warnings, parsed] },
           );
-        } else {
+        } else if (!loggedMalformedRef.current) {
           // The legacy `data-plan-warning` channel had a typed mismatch
           // (server wrote an object, client guarded on string) and went
           // undetected for two releases because nothing logged the
-          // drop. Logging here makes any future wire-shape regression
-          // observable without waiting for users to file bugs.
+          // drop. Logging once here makes any future wire-shape
+          // regression observable on the first hit, without spamming
+          // a runaway-stream's worth of warnings into the console.
+          loggedMalformedRef.current = true;
           console.warn(
-            "[atlas-chat] dropped malformed data-context-warning frame",
+            "[atlas-chat] dropped malformed data-context-warning frame (further drops suppressed)",
             dataPart.data,
           );
         }

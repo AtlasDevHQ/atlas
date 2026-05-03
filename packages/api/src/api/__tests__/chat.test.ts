@@ -172,8 +172,8 @@ mock.module("@atlas/api/lib/plugins/tools", () => ({
 // Plan-limit enforcement is mocked at the module boundary so tests can
 // dial in a {allowed: true, warning: ...} result without standing up the
 // full billing pipeline. Default returns the no-warning happy path; the
-// `#2005 — plan_limit_warning` describe block opts in to the warning
-// shape per-test.
+// `#2005 — plan-warning` test section inside the `#1988 B5` describe
+// block opts in to the warning shape per-test.
 type PlanCheckMockResult =
   | { allowed: true; warning?: { code: "plan_limit_warning"; message: string; metrics: unknown[] } }
   | {
@@ -1327,6 +1327,30 @@ describe("POST /api/v1/chat", () => {
       expect(frames.length).toBe(1);
       const data = frames[0].data as Record<string, unknown>;
       expect(data.requestId).toBe("agent-stamped-id");
+    });
+
+    it("treats an empty-string requestId on a warning as missing (uses route id)", async () => {
+      // Empty string is a useless correlation id and should not pollute
+      // the wire. The route's `warning.requestId ? warning : ...`
+      // ternary intentionally treats empty-string as falsy — pin it so
+      // a future "tighter" refactor (e.g. `!== undefined`) can't quietly
+      // start propagating empty correlation ids into the SSE stream.
+      mockRunAgent.mockImplementationOnce(
+        runAgentPushingWarnings([
+          {
+            severity: "warning",
+            code: "semantic_layer_unavailable",
+            title: "x",
+            requestId: "",
+          },
+        ]) as unknown as typeof mockRunAgent,
+      );
+      const response = await app.fetch(makeRequest());
+      const frames = await readContextWarningFrames(response);
+      expect(frames.length).toBe(1);
+      const data = frames[0].data as Record<string, unknown>;
+      expect(typeof data.requestId).toBe("string");
+      expect((data.requestId as string).length).toBeGreaterThan(0);
     });
   });
 

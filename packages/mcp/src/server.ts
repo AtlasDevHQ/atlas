@@ -17,9 +17,9 @@ import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
 import { resolveMcpActor } from "./actor.js";
-// Tracks @atlas/mcp's package.json version. #2019 — clients (Claude Desktop,
-// Cursor) display this in the server picker; a hardcoded "0.1.0" misrepresented
-// the product, which is well past pre-alpha.
+// `serverInfo.version` is what MCP clients (Claude Desktop, Cursor) show
+// in their server picker. Reading from package.json keeps the value in
+// sync without a hand-edit on every bump.
 import pkg from "../package.json" with { type: "json" };
 
 const VERSION: string = pkg.version;
@@ -46,9 +46,11 @@ interface CreateMcpServerOptions {
  *    fails loud when approval rules exist without
  *    `ATLAS_MCP_USER_ID` + `ATLAS_MCP_ORG_ID`, otherwise produces the
  *    bound user or a synthetic `system:mcp` actor.
- * 3. Registers the core tools (explore, executeSQL) as MCP tools, wrapping
- *    every dispatch in `withRequestContext({ user })` so the approval gate
- *    sees a bound actor.
+ * 3. Registers the core tools (explore, executeSQL) and the typed
+ *    semantic-layer tools (listEntities, describeEntity, searchGlossary,
+ *    runMetric) as MCP tools, wrapping every dispatch in
+ *    `withRequestContext({ user })` so the approval gate sees a bound
+ *    actor.
  * 4. Registers semantic layer YAML files as MCP resources
  * 5. Registers prompt templates (built-in, semantic layer, prompt library)
  */

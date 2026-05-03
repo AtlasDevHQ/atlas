@@ -157,6 +157,6 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
       ),
   );
 
-  // --- typed semantic-layer tools (#2020) ---
+  // --- typed semantic-layer tools ---
   registerSemanticTools(server, opts);
 }

@@ -88,7 +88,7 @@ The SSE endpoint is available at `http://localhost:8080/mcp`.
 
 ## Available Tools
 
-The MCP server exposes six tools — two general-purpose and four typed accessors over the semantic layer ([#2020](https://github.com/AtlasDevHQ/atlas/issues/2020)). Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
+The MCP server exposes six tools — two general-purpose and four typed accessors over the semantic layer. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
 
 ### explore
 
@@ -145,7 +145,7 @@ Returns `{ found: false, name }` when the entity does not exist. Always call thi
 
 ### searchGlossary
 
-Search the business glossary for a term. Case-insensitive substring match across term, definition, and note.
+Search the business glossary for a term. Case-insensitive substring match across term, definition, note, and `possible_mappings` — searching by an underlying column name (e.g. `orders.status`) will hit the ambiguous parent term that lists it.
 
 ```
 term: "revenue"
@@ -177,7 +177,7 @@ Execute a canonical metric defined under `semantic/metrics/`. Looks the metric u
 
 ```
 id: "orders_count"
-connectionId: "warehouse"   // optional — overrides the metric's default connection
+connectionId: "warehouse"   // optional — overrides the default connection
 ```
 
 ```jsonc

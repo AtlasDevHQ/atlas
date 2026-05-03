@@ -1,16 +1,8 @@
 /**
- * Typed semantic-layer MCP tools (#2020).
- *
- * Exposes four tools that wrap the semantic layer's existing read paths so
- * MCP clients can discover and use it without grepping YAML through the
- * `explore` shell:
- *
- * - `listEntities`    — catalog discovery
- * - `describeEntity`  — full entity schema
- * - `searchGlossary`  — business term lookup, surfaces `status: ambiguous`
- * - `runMetric`       — execute a canonical metric through the same SQL
- *                       pipeline as `executeSQL` (4-layer validation, RLS
- *                       injection, auto-LIMIT, statement timeout)
+ * Typed semantic-layer MCP tools — `listEntities`, `describeEntity`,
+ * `searchGlossary`, and `runMetric` — that wrap the existing semantic-
+ * layer read paths so MCP clients can discover and use the catalog
+ * without grepping YAML through the `explore` shell.
  *
  * Actor binding mirrors `tools.ts`: every dispatch is wrapped in
  * `withRequestContext({ user: actor, requestId })` so any downstream
@@ -34,7 +26,22 @@ import {
   DESCRIBE_ENTITY_TOOL_DESCRIPTION,
   SEARCH_GLOSSARY_TOOL_DESCRIPTION,
   RUN_METRIC_TOOL_DESCRIPTION,
+  type SemanticToolName,
 } from "@atlas/api/lib/tools/descriptions";
+
+// Modest input bounds — MCP clients (including hostile ones in BYOC
+// SaaS) shouldn't be able to drive megabyte strings into the catalog
+// scanners or substring search. Identifiers stay short; free-text
+// filter/term get a bit more headroom. Bumping these is fine if a real
+// user need surfaces.
+const MAX_IDENTIFIER_LEN = 256;
+const MAX_FREE_TEXT_LEN = 1024;
+
+// Mirrors the entity-name shape `isValidEntityName` accepts in
+// `lib/semantic/files.ts` (no `/`, `\`, `..`, `\0`). Surfacing the
+// constraint at the Zod boundary gives the MCP client an immediate
+// error instead of an indistinguishable `{ found: false }`.
+const ENTITY_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
 
 export interface RegisterSemanticToolsOptions {
   /** Actor bound on every tool dispatch — see tools.ts. */
@@ -59,7 +66,13 @@ function toErrorContent(message: string): CallToolResult {
 }
 
 function errorMessage(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback;
+  if (err instanceof Error) return err.message;
+  // CLAUDE.md: `err instanceof Error ? err.message : String(err)`. The
+  // fallback only kicks in for the truly opaque case (`String(err)` →
+  // `""` or `"[object Object]"`) where preserving the original would
+  // give the caller no signal anyway.
+  const s = String(err);
+  return s && s !== "[object Object]" ? s : fallback;
 }
 
 export function registerSemanticTools(
@@ -70,13 +83,14 @@ export function registerSemanticTools(
 
   // --- listEntities ---
   server.registerTool(
-    "listEntities",
+    "listEntities" satisfies SemanticToolName,
     {
       title: "List Semantic Entities",
       description: LIST_ENTITIES_TOOL_DESCRIPTION,
       inputSchema: {
         filter: z
           .string()
+          .max(MAX_FREE_TEXT_LEN)
           .optional()
           .describe(
             "Optional case-insensitive substring matched against name, table, and description.",
@@ -101,7 +115,7 @@ export function registerSemanticTools(
 
   // --- describeEntity ---
   server.registerTool(
-    "describeEntity",
+    "describeEntity" satisfies SemanticToolName,
     {
       title: "Describe Semantic Entity",
       description: DESCRIBE_ENTITY_TOOL_DESCRIPTION,
@@ -109,8 +123,10 @@ export function registerSemanticTools(
         name: z
           .string()
           .min(1)
+          .max(MAX_IDENTIFIER_LEN)
+          .regex(ENTITY_NAME_PATTERN)
           .describe(
-            "Entity name (`name` field) or table name. Must not contain path separators.",
+            "Entity name (`name` field) or table name. Alphanumerics, `_`, `-`, `.` only — no path separators.",
           ),
       },
     },
@@ -135,7 +151,7 @@ export function registerSemanticTools(
 
   // --- searchGlossary ---
   server.registerTool(
-    "searchGlossary",
+    "searchGlossary" satisfies SemanticToolName,
     {
       title: "Search Business Glossary",
       description: SEARCH_GLOSSARY_TOOL_DESCRIPTION,
@@ -143,6 +159,7 @@ export function registerSemanticTools(
         term: z
           .string()
           .min(1)
+          .max(MAX_FREE_TEXT_LEN)
           .describe(
             "Term, phrase, or substring to search across glossary entries.",
           ),
@@ -169,12 +186,11 @@ export function registerSemanticTools(
   );
 
   // --- runMetric ---
-  // The metric SQL is run through executeSQL.execute — same dispatch path
-  // as the agent's executeSQL tool — so it inherits the four validation
-  // layers, plugin hooks, RLS injection, auto-LIMIT, statement timeout,
-  // and audit logging without re-implementing any of them.
+  // The metric SQL goes through executeSQL.execute, inheriting all four
+  // validation layers, plugin hooks, RLS injection, auto-LIMIT,
+  // statement timeout, and audit logging.
   server.registerTool(
-    "runMetric",
+    "runMetric" satisfies SemanticToolName,
     {
       title: "Run Canonical Metric",
       description: RUN_METRIC_TOOL_DESCRIPTION,
@@ -182,11 +198,17 @@ export function registerSemanticTools(
         id: z
           .string()
           .min(1)
+          .max(MAX_IDENTIFIER_LEN)
           .describe("Metric id from semantic/metrics/*.yml."),
         filters: z
           .record(
-            z.string(),
-            z.union([z.string(), z.number(), z.boolean(), z.null()]),
+            z.string().max(MAX_IDENTIFIER_LEN),
+            z.union([
+              z.string().max(MAX_FREE_TEXT_LEN),
+              z.number(),
+              z.boolean(),
+              z.null(),
+            ]),
           )
           .optional()
           .describe(
@@ -194,9 +216,10 @@ export function registerSemanticTools(
           ),
         connectionId: z
           .string()
+          .max(MAX_IDENTIFIER_LEN)
           .optional()
           .describe(
-            "Target connection id. Omit to use the metric's default connection.",
+            "Target connection id. Omit to use the default connection.",
           ),
       },
     },

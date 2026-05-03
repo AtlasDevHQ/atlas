@@ -115,6 +115,18 @@ async function createTestClient(actor = TEST_ACTOR) {
   return { client, server };
 }
 
+// Default executeSQL behaviour — single column / single row scalar metric.
+// Restored in beforeEach so any test that uses `mockImplementationOnce`
+// can't leak its custom behaviour into the next test.
+const defaultExecuteSqlResult = {
+  success: true,
+  explanation: "ok",
+  row_count: 1,
+  columns: ["count"],
+  rows: [{ count: 42 }],
+  truncated: false,
+};
+
 describe("MCP semantic tools", () => {
   beforeEach(() => {
     mockListEntities.mockClear();
@@ -122,6 +134,10 @@ describe("MCP semantic tools", () => {
     mockSearchGlossary.mockClear();
     mockFindMetricById.mockClear();
     mockExecuteSQLExecute.mockClear();
+    // Reset to the documented base implementation so tests are
+    // order-independent. Without this, a `mockImplementationOnce` left
+    // over from a previous run could shape the next test's response.
+    mockExecuteSQLExecute.mockImplementation(async () => defaultExecuteSqlResult);
   });
 
   it("registers four typed tools", async () => {
@@ -225,16 +241,73 @@ describe("MCP semantic tools", () => {
     expect(mockFindMetricById).toHaveBeenCalledWith("orders_count");
     expect(mockExecuteSQLExecute).toHaveBeenCalledTimes(1);
 
-    const sqlArgs = (mockExecuteSQLExecute.mock.calls[0] as unknown[])[0] as {
-      sql: string;
-    };
+    const callArgs = mockExecuteSQLExecute.mock.calls[0] as unknown[];
+    const sqlArgs = callArgs[0] as { sql: string };
+    const ctxArgs = callArgs[1] as { toolCallId?: string };
     expect(sqlArgs.sql).toContain("SELECT COUNT(DISTINCT id)");
+    // The AI SDK execute signature is `(input, ctx)`; ctx must include
+    // a toolCallId or downstream telemetry can't correlate the call.
+    expect(ctxArgs.toolCallId).toBe("mcp-runMetric");
 
     const parsed = JSON.parse(getContentText(result.content));
     expect(parsed.id).toBe("orders_count");
     expect(parsed.value).toBe(42);
     expect(parsed.row_count).toBe(1);
-    expect(typeof parsed.executed_at).toBe("string");
+    // ISO-8601: a numeric or RFC2822 fallback would still be a string but
+    // would silently break MCP clients that parse this as a Date. Pin
+    // the format with a regex.
+    expect(parsed.executed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  // Scalar coercion edge cases — `0`, `false`, and `null` are the most
+  // likely metric values to silently break under a defensive `?? rows`.
+  it.each([
+    ["zero", 0],
+    ["false", false],
+    ["null", null],
+  ])("runMetric coerces a single-column / single-row %s value as the scalar", async (_label, scalar) => {
+    mockExecuteSQLExecute.mockImplementationOnce(async () => ({
+      success: true,
+      explanation: "ok",
+      row_count: 1,
+      columns: ["count"],
+      rows: [{ count: scalar }],
+      truncated: false,
+    }));
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      arguments: { id: "orders_count" },
+    });
+
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.value).toBe(scalar);
+    expect(parsed.row_count).toBe(1);
+  });
+
+  it("runMetric returns an empty array as `value` when columns has one entry but rows is empty", async () => {
+    mockExecuteSQLExecute.mockImplementationOnce(async () => ({
+      success: true,
+      explanation: "ok",
+      row_count: 0,
+      columns: ["count"],
+      rows: [],
+      truncated: false,
+    }));
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      arguments: { id: "orders_count" },
+    });
+
+    const parsed = JSON.parse(getContentText(result.content));
+    // Falls into the multi-row branch (rows.length !== 1) and hands back
+    // the (empty) rows array — distinct from `null` (single-row null
+    // scalar) so callers can tell "no result" from "the result is null".
+    expect(parsed.value).toEqual([]);
+    expect(parsed.row_count).toBe(0);
   });
 
   it("runMetric returns rows array when result has multiple columns or rows", async () => {
@@ -259,6 +332,10 @@ describe("MCP semantic tools", () => {
     const parsed = JSON.parse(getContentText(result.content));
     expect(Array.isArray(parsed.value)).toBe(true);
     expect(parsed.value).toHaveLength(2);
+    // `rows` is included unconditionally so MCP clients that always read
+    // `rows` (rather than discriminating on `value`) keep working when
+    // the metric has a breakdown shape. Lock that contract.
+    expect(parsed.rows).toEqual(parsed.value);
   });
 
   it("runMetric returns isError for an unknown metric id", async () => {

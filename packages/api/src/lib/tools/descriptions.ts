@@ -1,23 +1,13 @@
 /**
- * Shared tool descriptions for typed semantic-layer tools (#2020).
+ * Shared LLM-facing prose for the typed semantic-layer tools, imported
+ * by both MCP `registerSemanticTools` and (eventually) the agent tool
+ * registry so the description stays in lockstep across surfaces.
  *
- * Both surfaces — agent tool registry and MCP `registerSemanticTools` —
- * import from this module so the LLM-facing prose for `listEntities`,
- * `describeEntity`, `searchGlossary`, and `runMetric` stays in lockstep.
- *
- * Why these strings live here and not next to each tool:
- * - The agent registry exposes tool descriptions in the system prompt;
- *   the MCP server exposes them in tool metadata. Both need identical
- *   prose, and neither surface owns the other.
- * - `explore` and `executeSQL` keep their descriptions inline because
- *   they're already AI SDK `tool({ description })` definitions
- *   (`packages/api/src/lib/tools/{explore,sql}.ts`). The MCP layer reads
- *   `tool.description` directly. New typed tools have no AI SDK wrapper
- *   yet, so this file is their single source of truth.
- *
- * Style: terse, schema-first, tells the LLM when to call the tool and
- * what shape to expect back. Avoid prose that duplicates the input/output
- * Zod schema — the schema is the contract.
+ * `explore` and `executeSQL` keep their descriptions inline on the AI
+ * SDK `tool({ description })` definition in `lib/tools/{explore,sql}.ts`
+ * — the MCP layer reads `tool.description` directly. New typed tools
+ * have no AI SDK wrapper yet, so this file is their single source of
+ * truth.
  */
 
 export const LIST_ENTITIES_TOOL_DESCRIPTION = `List semantic-layer entities (tables/views) declared in the project.
@@ -41,7 +31,9 @@ Always call this before writing SQL against an unfamiliar table. Returns
 export const SEARCH_GLOSSARY_TOOL_DESCRIPTION = `Search the business glossary for a term.
 
 Returns matching glossary entries with { term, status, definition, note,
-possible_mappings, source }. Substring match across term, definition, and note.
+possible_mappings, source }. Substring match across term, definition, note,
+and possible_mappings — searching by an underlying column name (e.g.
+\`orders.status\`) will hit the ambiguous parent term that lists it.
 
 Critical: when a returned term has \`status: ambiguous\`, do NOT pick a mapping
 silently — surface the ambiguity to the user with the \`possible_mappings\` and

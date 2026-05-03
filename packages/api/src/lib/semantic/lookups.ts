@@ -1,12 +1,11 @@
 /**
- * Semantic-layer lookup helpers used by the typed MCP tools (#2020).
+ * Public lookup-by-id helpers for semantic-layer entities, glossary terms,
+ * and metrics — typed sibling of the scan-and-format loaders in `search.ts`.
  *
- * Provides public lookup-by-id helpers for entities, glossary terms, and
- * metrics. The existing scanners and search-index loaders are scan-and-
- * format helpers — these are scan-and-find helpers consumed by tool wrappers
- * (MCP today, agent tools later) that need a typed shape, not formatted
- * prose. All loaders are read-only and stay within the resolved semantic
- * root via the existing scanner traversal.
+ * `search.ts` builds a compressed prose summary for the agent's system
+ * prompt; this module returns typed records consumed by tool wrappers that
+ * need to project specific fields. Every read stays within the resolved
+ * semantic root via the existing scanner traversal.
  */
 
 import * as fs from "fs";
@@ -24,11 +23,12 @@ const log = createLogger("semantic-lookups");
 
 export interface EntityListEntry {
   /** Display name — `name` field if present, otherwise the table name. */
-  name: string;
-  table: string;
-  description: string;
+  readonly name: string;
+  readonly table: string;
+  /** Description from the entity YAML; `null` when absent. */
+  readonly description: string | null;
   /** Source name: `"default"` for root `entities/`, subdir name otherwise. */
-  source: string;
+  readonly source: string;
 }
 
 /**
@@ -49,7 +49,9 @@ export function listEntities(
     const name =
       typeof raw.name === "string" && raw.name ? raw.name : raw.table;
     const description =
-      typeof raw.description === "string" ? raw.description : "";
+      typeof raw.description === "string" && raw.description
+        ? raw.description
+        : null;
     const entry: EntityListEntry = {
       name,
       table: raw.table,
@@ -58,7 +60,7 @@ export function listEntities(
     };
 
     if (filter) {
-      const haystack = `${name}\n${entry.table}\n${description}`.toLowerCase();
+      const haystack = `${name}\n${entry.table}\n${description ?? ""}`.toLowerCase();
       if (!haystack.includes(filter)) continue;
     }
 
@@ -104,13 +106,19 @@ export function getEntityByName(
 // Glossary
 // ---------------------------------------------------------------------------
 
-export interface GlossaryTerm {
-  term: string;
-  status: string | null;
-  definition: string | null;
-  note: string | null;
-  possible_mappings: string[];
-  source: string;
+export interface GlossaryTermLookup {
+  /** Term name. Non-empty (loader-enforced). */
+  readonly term: string;
+  /**
+   * Lifecycle status from the YAML. The literal `"ambiguous"` is
+   * load-bearing — MCP clients are instructed to surface ambiguity to the
+   * user instead of silently picking a mapping.
+   */
+  readonly status: string | null;
+  readonly definition: string | null;
+  readonly note: string | null;
+  readonly possible_mappings: readonly string[];
+  readonly source: string;
 }
 
 /**
@@ -122,9 +130,9 @@ export interface GlossaryTerm {
  */
 export function loadGlossaryTerms(
   opts: { semanticRoot?: string } = {},
-): GlossaryTerm[] {
+): GlossaryTermLookup[] {
   const root = opts.semanticRoot ?? getSemanticRoot();
-  const out: GlossaryTerm[] = [];
+  const out: GlossaryTermLookup[] = [];
 
   loadGlossaryFile(path.join(root, "glossary.yml"), "default", out);
 
@@ -156,7 +164,7 @@ export function loadGlossaryTerms(
 export function searchGlossary(
   query: string,
   opts: { semanticRoot?: string } = {},
-): GlossaryTerm[] {
+): GlossaryTermLookup[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
 
@@ -176,7 +184,7 @@ export function searchGlossary(
 function loadGlossaryFile(
   filePath: string,
   source: string,
-  out: GlossaryTerm[],
+  out: GlossaryTermLookup[],
 ): void {
   if (!fs.existsSync(filePath)) return;
 
@@ -216,7 +224,7 @@ function normalizeGlossaryEntry(
   raw: unknown,
   source: string,
   key?: string,
-): GlossaryTerm | null {
+): GlossaryTermLookup | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
 
@@ -242,19 +250,27 @@ function normalizeGlossaryEntry(
 // Metrics
 // ---------------------------------------------------------------------------
 
+/**
+ * Source binding for a metric — at least one of `entity` or `measure` is
+ * always set when present (constructor enforces; the empty `{ }` shape is
+ * unrepresentable). `null` means the metric has no source binding at all.
+ */
+export type MetricBinding =
+  | { readonly entity: string; readonly measure: string | null }
+  | { readonly entity: string | null; readonly measure: string };
+
 export interface MetricDefinition {
-  /** Canonical id used for runMetric lookup. */
-  id: string;
-  label: string | null;
-  description: string | null;
-  /** Authoritative SQL — used as-is. */
-  sql: string;
-  type: string | null;
-  aggregation: string | null;
-  unit: string | null;
-  source: string;
-  /** Optional source binding (entity + measure). */
-  binding: { entity?: string; measure?: string } | null;
+  /** Canonical id used for runMetric lookup. Non-empty (loader-enforced). */
+  readonly id: string;
+  readonly label: string | null;
+  readonly description: string | null;
+  /** Authoritative SQL — used as-is. Non-empty (loader-enforced). */
+  readonly sql: string;
+  readonly type: string | null;
+  readonly aggregation: string | null;
+  readonly unit: string | null;
+  readonly source: string;
+  readonly binding: MetricBinding | null;
 }
 
 /** Load every metric defined under `metrics/` (default + per-source). */
@@ -360,12 +376,16 @@ function normalizeMetric(raw: unknown, source: string): MetricDefinition | null 
   const sql = typeof r.sql === "string" ? r.sql : "";
   if (!sql) return null;
 
-  let binding: MetricDefinition["binding"] = null;
+  let binding: MetricBinding | null = null;
   if (r.source && typeof r.source === "object") {
     const s = r.source as Record<string, unknown>;
-    const entity = typeof s.entity === "string" ? s.entity : undefined;
-    const measure = typeof s.measure === "string" ? s.measure : undefined;
-    if (entity || measure) binding = { entity, measure };
+    const entity = typeof s.entity === "string" ? s.entity : null;
+    const measure = typeof s.measure === "string" ? s.measure : null;
+    if (entity !== null) {
+      binding = { entity, measure };
+    } else if (measure !== null) {
+      binding = { entity, measure };
+    }
   }
 
   return {

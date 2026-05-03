@@ -1,19 +1,5 @@
 import { type CSSProperties } from "react";
 
-const UPTIME_DAYS = 90;
-const UPTIME_BAD_DAYS: ReadonlySet<number> = new Set([23, 67]);
-
-function buildUptimeBars() {
-  const bars: { i: number; bad: boolean; opacity: number }[] = [];
-  for (let i = 0; i < UPTIME_DAYS; i++) {
-    const bad = UPTIME_BAD_DAYS.has(i);
-    bars.push({ i, bad, opacity: bad ? 0.9 : 0.6 + (i % 7) * 0.05 });
-  }
-  return bars;
-}
-
-const UPTIME_BARS = buildUptimeBars();
-
 function SelfHostCard() {
   return (
     <div
@@ -147,60 +133,27 @@ function CloudCard() {
         Live in 3 minutes.
       </p>
 
-      <div
-        className="mb-5 rounded-lg border border-white/10 px-[18px] py-4"
+      <a
+        href="https://atlas.openstatus.dev"
+        target="_blank"
+        rel="noreferrer"
+        className="mb-5 flex items-center justify-between rounded-lg border border-white/10 px-[18px] py-4 transition-colors hover:border-white/20"
         style={{ background: "oklch(0.16 0 0)" }}
       >
-        <div className="mb-3 flex items-baseline justify-between">
+        <div className="flex items-center gap-2.5">
+          <span
+            className="h-2 w-2 rounded-full"
+            style={{ background: "var(--atlas-brand)" }}
+            aria-hidden="true"
+          />
           <span className="font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-            uptime · 90d
-          </span>
-          <span className="text-[22px] font-semibold tracking-[-0.02em] text-brand">
-            99.97%
+            live status
           </span>
         </div>
-        <div
-          className="mb-2 grid h-8"
-          style={{ gridTemplateColumns: `repeat(${UPTIME_DAYS}, 1fr)`, gap: 1.5 }}
-          aria-hidden="true"
-        >
-          {UPTIME_BARS.map((bar) => (
-            <span
-              key={bar.i}
-              className="h-full rounded-[1px]"
-              style={{
-                background: bar.bad ? "oklch(0.65 0.18 50)" : "var(--atlas-brand)",
-                opacity: bar.opacity,
-              }}
-            />
-          ))}
-        </div>
-        <div className="flex justify-between font-mono text-[10px] text-zinc-400">
-          <span>90 days ago</span>
-          <span>today</span>
-        </div>
-        <div
-          className="mt-4 grid grid-cols-3 gap-3 border-t border-white/5 pt-4"
-        >
-          {[
-            { n: "1.2s", l: "p50 latency" },
-            { n: "3.4s", l: "p99 latency" },
-            { n: "2.1M", l: "queries / day" },
-          ].map((stat) => (
-            <div key={stat.l}>
-              <p
-                className="text-[18px] font-semibold tracking-[-0.02em] text-zinc-50"
-                style={{ fontVariantNumeric: "tabular-nums" }}
-              >
-                {stat.n}
-              </p>
-              <p className="mt-0.5 font-mono text-[10px] tracking-[0.04em] text-zinc-400">
-                {stat.l}
-              </p>
-            </div>
-          ))}
-        </div>
-      </div>
+        <span className="text-[13px] font-medium text-zinc-200">
+          atlas.openstatus.dev →
+        </span>
+      </a>
 
       <ul className="m-0 mb-6 flex list-none flex-col gap-2 p-0">
         {[

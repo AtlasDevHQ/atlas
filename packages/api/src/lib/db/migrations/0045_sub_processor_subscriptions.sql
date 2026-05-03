@@ -41,14 +41,17 @@ CREATE TABLE IF NOT EXISTS sub_processor_subscriptions (
   token_encrypted          TEXT        NOT NULL,
   token_key_version        INT         NOT NULL DEFAULT 1,
   created_by_user_id       TEXT,
-  created_by_email         TEXT,
+  -- AtlasUser.label at registration time. NOT necessarily an email —
+  -- managed-mode sessions carry an email, AAD/Slack-bound sessions
+  -- carry a UPN or handle. Stored verbatim for the audit trail.
+  created_by_label         TEXT,
   created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Most queries (publisher delivery loop) walk the full table. No selective
--- index needed — the table is per-customer-team-procurement-contact small.
--- A unique index on (url) prevents accidental duplicate registrations from
--- the same procurement form double-submit.
+-- The publisher's delivery loop walks the full table on every tick.
+-- Sub-second on tables up to ~10k rows; revisit if subscription volume
+-- grows past that. A unique index on (url) prevents accidental duplicate
+-- registrations from the same procurement form double-submit.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_processor_subscriptions_url
   ON sub_processor_subscriptions (url);
 

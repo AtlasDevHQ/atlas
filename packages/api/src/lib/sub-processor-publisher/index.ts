@@ -2,17 +2,31 @@
  * Sub-processor change-feed publisher (#1924, phase 3).
  *
  * Outbound flow — opposite direction from `@useatlas/webhook` (which is
- * inbound, accepting Zapier/Make/n8n requests). The wire format here is
- * intentionally symmetric with the inbound plugin's `verifyHmacWithTimestamp`
- * helper so customer Slack adapters can reuse the same verification snippet:
+ * inbound, accepting Zapier/Make/n8n requests).
  *
  *   POST <subscription.url>
  *   Content-Type: application/json
  *   X-Webhook-Timestamp: <unix seconds>
  *   X-Webhook-Signature: sha256=<hex>      // HMAC over `${ts}:${body}`
  *
+ * The signing input (`${ts}:${body}`) and the headers are the same shape
+ * the inbound `@useatlas/webhook` plugin already verifies. The one
+ * difference: outbound deliveries prefix the digest with `sha256=`
+ * (Stripe/GitHub-style), whereas the inbound plugin currently expects
+ * bare hex. The verify helper in
+ * apps/docs/content/docs/integrations/sub-processor-feed.mdx accounts
+ * for the prefix, so customer Slack adapters that copy from those docs
+ * are correct out of the box. A literal copy of the inbound plugin's
+ * `verifyHmacWithTimestamp` would need a one-line `s.replace(/^sha256=/, "")`
+ * before comparison.
+ *
  * On startup the SchedulerLayer forks `subProcessorPublisherTick` on a
- * configurable interval (default 6h). Each tick:
+ * configurable interval (default 6h). `Effect.repeat(Schedule.spaced(...))`
+ * runs the tick once eagerly on boot and then waits the interval — so
+ * the first sweep happens within seconds of API boot, not after the
+ * first 6h window.
+ *
+ * Each tick:
  *
  *   1. Fetches the live JSON from `ATLAS_SUBPROCESSORS_URL` (default the
  *      production www static asset). Skipped if no subscriptions exist —
@@ -20,23 +34,42 @@
  *   2. Hashes the payload and compares against the most recent row in
  *      `sub_processor_snapshots`. No diff → exit.
  *   3. Computes per-entry add / change / remove events keyed by `name`.
- *   4. For every (event, subscription) pair, signs and POSTs. Failures
- *      log with the subscription id but never crash the tick — the
- *      publisher is best-effort, not transactional.
+ *   4. For every (event, subscription) pair, signs and POSTs. Per-row
+ *      4xx/5xx responses log but never crash the tick — the publisher
+ *      is best-effort across subscribers, not transactional.
  *   5. Inserts the new snapshot row last so a delivery crash mid-fan-out
  *      replays the same diff on the next tick.
+ *
+ * Two early-exit cases insert a snapshot **without** any fan-out:
+ *
+ *   (a) Hash drift with zero semantic diff (e.g. whitespace re-format,
+ *       sort order change). Stamping the new snapshot stops the diff
+ *       from re-firing every 6h.
+ *   (b) The very first snapshot for this internal DB. Establishes a
+ *       baseline so existing subscribers don't get flooded with N
+ *       "added" events on day one.
  *
  * The "snapshot row last" ordering matters: a partial fan-out followed
  * by a snapshot insert would drop events for subscribers we hadn't
  * reached yet. Inserting last means the next tick re-derives the same
  * diff and re-delivers — at-least-once semantics, which is the right
- * default for compliance notifications. Subscribers de-dupe by `(name,
- * event, changed_at)`.
+ * default for compliance notifications. Subscribers should treat
+ * repeated `(name, event)` pairs as idempotent updates; we recommend
+ * `(name, event, changed_at)` as the de-dupe key.
+ *
+ * Decrypt failure is **not** treated as a per-delivery hiccup — it
+ * means the encryption keyset has been misconfigured (key rotated out,
+ * env var dropped) or the row is corrupted. The error propagates so
+ * the outer scheduler `catchAll` records it as a tick-level failure
+ * rather than silently retrying every 6h while subscribers go dark.
  */
 
 import crypto from "crypto";
 
+import { z } from "zod";
+
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { decryptSecret, encryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -57,13 +90,25 @@ const DELIVERY_MAX_ATTEMPTS = 3;
 const DELIVERY_BACKOFF_BASE_MS = 1000;
 const DELIVERY_TIMEOUT_MS = 10_000;
 
-export interface SubProcessor {
-  name: string;
-  purpose: string;
-  region: string;
-  since: string;
-  changed_at: string;
-}
+// ──────────────────────────────────────────────────────────────────────
+// Types + runtime schema
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * `since` carries either the legacy display shorthand `YYYY-MM` (kept
+ * stable for the rendered table) or a full ISO date. `changed_at` must
+ * be a full ISO `YYYY-MM-DD` — it drives Atom <updated> and is part of
+ * the recommended subscriber de-dupe key.
+ */
+export const SubProcessorSchema = z.object({
+  name: z.string().min(1),
+  purpose: z.string().min(1),
+  region: z.string().min(1),
+  since: z.string().regex(/^\d{4}-\d{2}(-\d{2})?$/, "since must be YYYY-MM or YYYY-MM-DD"),
+  changed_at: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "changed_at must be YYYY-MM-DD"),
+});
+
+export type SubProcessor = z.infer<typeof SubProcessorSchema>;
 
 export type ChangeEvent =
   | { event: "added"; entry: SubProcessor }
@@ -76,12 +121,24 @@ export interface SubscriptionRow extends Record<string, unknown> {
   token_encrypted: string;
 }
 
-export interface DeliveryAttempt {
-  subscriptionId: string;
-  status: number | null;
-  ok: boolean;
-  attempts: number;
-  error: string | null;
+/**
+ * Tagged union — illegal field combinations (e.g. `ok: true, error: …`)
+ * cannot be constructed. Mirrors the discriminated-union pattern used
+ * for `SubmitState` in apps/www/src/components/sub-processor-webhook-button.tsx
+ * and `ChangeEvent` above. `decrypt_failed` does not actually escape
+ * `deliver()` — it re-throws — but the variant is reserved for tests
+ * and for any future caller that decides to swallow it.
+ */
+export type DeliveryAttempt =
+  | { kind: "ok"; subscriptionId: string; status: number; attempts: number }
+  | { kind: "http_error"; subscriptionId: string; status: number; attempts: number; error: string }
+  | { kind: "transport_error"; subscriptionId: string; attempts: number; error: string };
+
+export interface SignedRequest {
+  readonly body: string;
+  readonly timestamp: number;
+  readonly signature: string;
+  readonly headers: Readonly<Record<string, string>>;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -123,13 +180,6 @@ export function computeDiff(
   return events;
 }
 
-export interface SignedRequest {
-  body: string;
-  timestamp: number;
-  signature: string;
-  headers: Record<string, string>;
-}
-
 export function signRequest(
   payload: unknown,
   token: string,
@@ -159,6 +209,11 @@ export function signRequest(
 
 export type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
+/**
+ * Deliver one event to one subscription. Returns a tagged outcome for
+ * caller introspection (tests assert against it; the tick currently
+ * only logs). Throws on decrypt failure — see file header for why.
+ */
 export async function deliver(
   subscription: SubscriptionRow,
   event: ChangeEvent,
@@ -171,16 +226,18 @@ export async function deliver(
     token = decryptSecret(subscription.token_encrypted);
   } catch (err) {
     log.error(
-      { err: errorMessage(err), subscriptionId: subscription.id },
-      "Failed to decrypt subscription token — skipping delivery",
+      {
+        err: errorMessage(err),
+        subscriptionId: subscription.id,
+        url: subscription.url,
+        errorId: "subprocessor_token_unsignable",
+      },
+      "Sub-processor subscription token cannot be decrypted — check ATLAS_ENCRYPTION_KEYS keyset / rotation history. The next tick will fail identically until this is resolved.",
     );
-    return {
-      subscriptionId: subscription.id,
-      status: null,
-      ok: false,
-      attempts: 0,
-      error: "decrypt_failed",
-    };
+    // Re-throw so the outer scheduler catchAll records a tick failure.
+    // A decrypt failure is a configuration emergency, not a delivery
+    // hiccup — silently retrying every 6h would just hide the misconfig.
+    throw err instanceof Error ? err : new Error(String(err));
   }
 
   const signed = signRequest(event, token, options.nowSeconds);
@@ -194,25 +251,43 @@ export async function deliver(
     try {
       const res = await fetcher(subscription.url, {
         method: "POST",
-        headers: signed.headers,
+        headers: { ...signed.headers },
         body: signed.body,
         signal: controller.signal,
       });
       lastStatus = res.status;
       if (res.ok) {
         return {
+          kind: "ok",
           subscriptionId: subscription.id,
           status: res.status,
-          ok: true,
           attempts: attempt,
-          error: null,
         };
       }
       // 4xx is a permanent failure — no point retrying. 5xx + transport
       // errors get the backoff treatment.
       if (res.status >= 400 && res.status < 500) {
-        lastError = `http_${res.status}`;
-        break;
+        // Surface as error (not warn): a 4xx after our own validation
+        // shipped means the subscriber's endpoint rejects our payload —
+        // a contract bug worth visibility, not a transient blip.
+        log.error(
+          {
+            subscriptionId: subscription.id,
+            status: res.status,
+            url: subscription.url,
+            eventKind: event.event,
+            entry: event.entry.name,
+            errorId: "subprocessor_delivery_4xx",
+          },
+          "Sub-processor webhook delivery rejected with 4xx — the subscriber's endpoint will not see this event again unless reconstructed from sub_processor_snapshots",
+        );
+        return {
+          kind: "http_error",
+          subscriptionId: subscription.id,
+          status: res.status,
+          attempts: attempt,
+          error: `http_${res.status}`,
+        };
       }
       lastError = `http_${res.status}`;
     } catch (err) {
@@ -234,16 +309,24 @@ export async function deliver(
       err: lastError,
       eventKind: event.event,
       entry: event.entry.name,
+      errorId: "subprocessor_delivery_exhausted",
     },
     "Sub-processor webhook delivery failed after retries",
   );
-  return {
-    subscriptionId: subscription.id,
-    status: lastStatus,
-    ok: false,
-    attempts: DELIVERY_MAX_ATTEMPTS,
-    error: lastError,
-  };
+  return lastStatus !== null
+    ? {
+        kind: "http_error",
+        subscriptionId: subscription.id,
+        status: lastStatus,
+        attempts: DELIVERY_MAX_ATTEMPTS,
+        error: lastError ?? `http_${lastStatus}`,
+      }
+    : {
+        kind: "transport_error",
+        subscriptionId: subscription.id,
+        attempts: DELIVERY_MAX_ATTEMPTS,
+        error: lastError ?? "transport_error",
+      };
 }
 
 function globalFetch(input: string, init: RequestInit): Promise<Response> {
@@ -296,36 +379,37 @@ export interface CreateSubscriptionInput {
   id: string;
   url: string;
   token: string;
-  createdByUserId?: string | null;
-  createdByEmail?: string | null;
+  /** Authenticated user id at registration time (audit only). */
+  createdByUserId: string | null;
+  /**
+   * AtlasUser.label at registration time (audit only). Note: this is
+   * the user's display label, not a guaranteed email — managed-mode
+   * sessions carry an email, AAD/Slack-bound sessions carry a UPN or
+   * handle. Stored verbatim, never rendered back to other users.
+   */
+  createdByLabel: string | null;
 }
 
 export async function createSubscription(
   input: CreateSubscriptionInput,
 ): Promise<{ id: string }> {
   const tokenEncrypted = encryptSecret(input.token);
-  const keyVersion = parseStoredKeyVersion(tokenEncrypted);
   await internalQuery(
     `INSERT INTO sub_processor_subscriptions
-       (id, url, token_encrypted, token_key_version, created_by_user_id, created_by_email)
+       (id, url, token_encrypted, token_key_version, created_by_user_id, created_by_label)
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       input.id,
       input.url,
       tokenEncrypted,
-      keyVersion,
-      input.createdByUserId ?? null,
-      input.createdByEmail ?? null,
+      activeKeyVersion(),
+      input.createdByUserId,
+      // Trim and collapse empty strings to null so the audit column
+      // doesn't accumulate "" rows from edge-case label sources.
+      input.createdByLabel?.trim() || null,
     ],
   );
   return { id: input.id };
-}
-
-function parseStoredKeyVersion(stored: string): number {
-  const match = stored.match(/^enc:v(\d+):/);
-  if (!match) return 1;
-  const parsed = Number.parseInt(match[1], 10);
-  return Number.isFinite(parsed) ? parsed : 1;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -340,25 +424,66 @@ async function fetchCurrent(
   fetcher: Fetcher,
   url: string,
 ): Promise<SubProcessor[] | null> {
+  let res: Response;
   try {
-    const res = await fetcher(url, { method: "GET" });
-    if (!res.ok) {
-      log.warn({ url, status: res.status }, "Sub-processor source returned non-OK");
-      return null;
-    }
-    const body = (await res.json()) as unknown;
-    if (!Array.isArray(body)) {
-      log.warn({ url }, "Sub-processor source returned non-array payload");
-      return null;
-    }
-    return body as SubProcessor[];
+    res = await fetcher(url, { method: "GET" });
   } catch (err) {
+    // Transport/DNS errors are usually transient — log warn so retries
+    // on the next tick clear the blip without paging anyone.
     log.warn(
-      { url, err: errorMessage(err) },
+      { url, err: errorMessage(err), errorId: "subprocessor_source_unreachable" },
       "Failed to fetch sub-processor source — will retry next tick",
     );
     return null;
   }
+  if (!res.ok) {
+    // 4xx/5xx from a *static asset* on www is a misconfig (URL typo,
+    // www route removed, broken deploy), not a transient blip — log
+    // error so it surfaces in alerts.
+    log.error(
+      { url, status: res.status, errorId: "subprocessor_source_unreachable" },
+      "Sub-processor source returned non-OK — check ATLAS_SUBPROCESSORS_URL",
+    );
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (err) {
+    log.error(
+      { url, err: errorMessage(err), errorId: "subprocessor_source_malformed" },
+      "Sub-processor source did not return valid JSON",
+    );
+    return null;
+  }
+  if (!Array.isArray(body)) {
+    log.error(
+      { url, errorId: "subprocessor_source_malformed" },
+      "Sub-processor source returned non-array payload",
+    );
+    return null;
+  }
+  // Per-row validation. A single bad row poisons the whole tick — we
+  // refuse to fan out HMAC-signed payloads with fields TS says are
+  // strings but JSON proved otherwise.
+  const parsed: SubProcessor[] = [];
+  for (const [index, raw] of body.entries()) {
+    const result = SubProcessorSchema.safeParse(raw);
+    if (!result.success) {
+      log.error(
+        {
+          url,
+          index,
+          err: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+          errorId: "subprocessor_source_malformed",
+        },
+        "Sub-processor source contains an entry that fails schema validation — skipping tick",
+      );
+      return null;
+    }
+    parsed.push(result.data);
+  }
+  return parsed;
 }
 
 // ──────────────────────────────────────────────────────────────────────

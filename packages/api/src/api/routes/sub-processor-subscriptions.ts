@@ -8,6 +8,10 @@
  * Auth: standardAuth (any logged-in Atlas user). The /dpa modal explains
  * "sign in first" if the POST returns 401 — we don't want anonymous URL
  * dumping into the table.
+ *
+ * SSRF guard: stored URLs are POSTed to from inside the API process every
+ * 6 hours, so we reject loopback / RFC1918 / link-local / non-https
+ * targets at registration time via the shared `isSafeExternalUrl` helper.
  */
 
 import crypto from "crypto";
@@ -18,6 +22,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createSubscription } from "@atlas/api/lib/sub-processor-publisher";
@@ -30,11 +35,17 @@ import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("sub-processor-subscriptions");
 
+const PG_UNIQUE_VIOLATION = "23505";
+
 const CreateSubscriptionBodySchema = z.object({
   url: z
     .string()
-    .url("URL must be a fully-qualified https:// or http:// URL")
-    .max(2048),
+    .url("URL must be a fully-qualified https:// URL")
+    .max(2048)
+    .refine(isSafeExternalUrl, {
+      message:
+        "URL must be https:// and resolve to a public host — loopback, RFC1918, link-local, and metadata-service targets are rejected",
+    }),
   token: z
     .string()
     .min(16, "Token must be at least 16 characters — used as the HMAC signing key"),
@@ -53,9 +64,11 @@ const createSubscriptionRoute = createRoute({
     "Registers an HTTPS endpoint that Atlas POSTs to whenever the published " +
     "sub-processor list changes (add / change / remove). The token is stored " +
     "encrypted at rest and used as the HMAC-SHA256 signing key for every " +
-    "delivery; verify the `X-Webhook-Signature` header against `${X-Webhook-" +
-    "Timestamp}:${body}`. Tokens cannot be retrieved after registration — " +
-    "save your copy locally.",
+    "delivery; verify the `X-Webhook-Signature` header (formatted as " +
+    "`sha256=<hex_digest>`, Stripe/GitHub-style) against `${X-Webhook-" +
+    "Timestamp}:${body}`. The full payload schema and a runnable verify " +
+    "snippet live at https://docs.useatlas.dev/integrations/sub-processor-feed. " +
+    "Tokens cannot be retrieved after registration — save your copy locally.",
   request: {
     body: {
       content: { "application/json": { schema: CreateSubscriptionBodySchema } },
@@ -119,16 +132,19 @@ router.openapi(createSubscriptionRoute, async (c) => {
             url,
             token,
             createdByUserId: user?.id ?? null,
-            // AtlasUser doesn't carry a dedicated email field — `label`
-            // is the closest user-facing identifier (email in managed
-            // mode, AAD upn / Slack handle elsewhere). Stored only for
-            // the audit trail; never returned in responses.
-            createdByEmail: user?.label ?? null,
+            // AtlasUser.label is the closest user-facing identifier we
+            // have (email in managed mode, AAD upn / Slack handle
+            // elsewhere). Stored verbatim for the audit trail.
+            createdByLabel: user?.label ?? null,
           });
           return { kind: "ok", id };
         } catch (err) {
-          // Postgres unique-violation on idx_sub_processor_subscriptions_url.
-          if (err instanceof Error && /duplicate key/i.test(err.message)) {
+          // Match by SQLSTATE, not error message — the message is locale-
+          // and pg-version dependent. Same precedent as
+          // packages/api/src/lib/starter-prompts/favorite-store.ts and
+          // packages/api/src/lib/suggestions/approval-store.ts.
+          const code = (err as { code?: string } | undefined)?.code;
+          if (code === PG_UNIQUE_VIOLATION) {
             return { kind: "duplicate" };
           }
           throw err instanceof Error ? err : new Error(String(err));

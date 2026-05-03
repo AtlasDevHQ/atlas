@@ -33,8 +33,14 @@ function toRfc3339(date: string): string {
   return `${padded}T00:00:00Z`;
 }
 
+// Tag URI per RFC 4151. The `name` segment may contain characters that
+// need percent-encoding for URI-safety (spaces, `&`, non-ASCII). Wrap
+// with encodeURIComponent so vendor names like "AT&T" or "Google Cloud"
+// produce a valid id, then let escapeXml at the call site take care of
+// any remaining XML-reserved chars in the surrounding element body.
 function tagUri(entry: SubProcessor): string {
-  return `tag:useatlas.dev,${toRfc3339(entry.changed_at).slice(0, 10)}:sub-processors/${entry.name}`;
+  const datePart = toRfc3339(entry.changed_at).slice(0, 10);
+  return `tag:useatlas.dev,${datePart}:sub-processors/${encodeURIComponent(entry.name)}`;
 }
 
 function feedUpdated(entries: readonly SubProcessor[]): string {

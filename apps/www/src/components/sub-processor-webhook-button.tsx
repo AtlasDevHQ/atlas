@@ -53,9 +53,16 @@ export function SubProcessorWebhookButton() {
         body: JSON.stringify({ url, token }),
       });
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Request failed before reaching the server.";
-      setState({ kind: "error", message, needsAuth: false });
+      // Browser fetch rejection is opaque ("Failed to fetch", "Load
+      // failed", etc.) and not actionable for users. Log raw to console
+      // for support, render an actionable message.
+      console.error("[sub-processor-webhook] pre-flight fetch failed:", err);
+      setState({
+        kind: "error",
+        message:
+          "Couldn't reach Atlas — check your network connection or try again in a moment. If this persists, email legal@useatlas.dev.",
+        needsAuth: false,
+      });
       return;
     }
 
@@ -80,7 +87,21 @@ export function SubProcessorWebhookButton() {
       return;
     }
 
-    const body = (await res.json()) as { id?: string };
+    // The 200 was sent by the API but the body might not be JSON
+    // (proxy injecting an HTML maintenance page, truncated stream, etc).
+    // The subscription was created server-side; surface that fact even
+    // if we can't recover the id, so the user isn't stuck on the spinner.
+    let body: { id?: string };
+    try {
+      body = (await res.json()) as { id?: string };
+    } catch (err) {
+      console.error("[sub-processor-webhook] success response was not JSON:", err);
+      setState({
+        kind: "success",
+        id: "registered (id unavailable — email legal@useatlas.dev to look up)",
+      });
+      return;
+    }
     setState({ kind: "success", id: body.id ?? "registered" });
   }
 

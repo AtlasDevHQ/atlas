@@ -1,10 +1,11 @@
 /**
  * Pure-helper + delivery tests for the sub-processor change-feed publisher.
  *
- * The DB-bound `subProcessorPublisherTick` is exercised end-to-end by the
- * route test that creates a subscription and pokes the tick — we keep this
- * file focused on the parts that are easiest to reason about in isolation
- * (hashing, diffing, HMAC signing, delivery retry).
+ * The DB-bound `subProcessorPublisherTick` is exercised in
+ * `sub-processor-publisher-tick.test.ts` (snapshot/diff/fan-out
+ * orchestration). This file focuses on the pieces that are easiest to
+ * reason about in isolation: hashing, diffing, HMAC signing, retry
+ * semantics, and the decrypt-failure re-throw contract.
  */
 
 import { describe, it, expect, mock } from "bun:test";
@@ -78,7 +79,7 @@ describe("computeDiff", () => {
 describe("signRequest", () => {
   const TOKEN = "shared-secret-at-least-16-chars";
 
-  it("matches HMAC-SHA256(`${ts}:${body}`, token) — wire-compatible with the inbound webhook plugin", () => {
+  it("formats the digest as `sha256=<hex>` (Stripe/GitHub-style) over `${ts}:${body}`", () => {
     const ts = 1700000000;
     const payload = { event: "added", entry: A };
     const signed = signRequest(payload, TOKEN, ts);
@@ -113,10 +114,10 @@ describe("signRequest", () => {
 });
 
 describe("deliver", () => {
-  // We pass the token through `encryptSecret` would normally happen at write
-  // time — but in tests with no ATLAS_ENCRYPTION_KEYS configured, the cipher
-  // pass-through means the stored value equals the plaintext. Simulating that
-  // here with an unprefixed token keeps the test independent of key state.
+  // Tests pass an unprefixed token because in the test env (no
+  // ATLAS_ENCRYPTION_KEYS configured) `decryptSecret` is a pass-through.
+  // The encryption round-trip is covered separately in
+  // `create-subscription-encryption.test.ts`.
   const SUB: SubscriptionRow = {
     id: "sub-1",
     url: "https://hooks.example.com/sub-processors",
@@ -124,14 +125,13 @@ describe("deliver", () => {
   };
   const EVENT: ChangeEvent = { event: "added", entry: A };
 
-  it("returns ok=true and stops retrying on the first 2xx", async () => {
+  it("returns kind=ok and stops retrying on the first 2xx", async () => {
     const fetcher = mock(async () => new Response(null, { status: 200 }));
     const result = await deliver(SUB, EVENT, { fetcher: fetcher as Fetcher });
     expect(result).toMatchObject({
-      ok: true,
+      kind: "ok",
       status: 200,
       attempts: 1,
-      error: null,
       subscriptionId: "sub-1",
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -140,8 +140,11 @@ describe("deliver", () => {
   it("does not retry on 4xx — the receiver said no, retrying spams them", async () => {
     const fetcher = mock(async () => new Response("bad", { status: 400 }));
     const result = await deliver(SUB, EVENT, { fetcher: fetcher as Fetcher });
-    expect(result.ok).toBe(false);
-    expect(result.status).toBe(400);
+    expect(result.kind).toBe("http_error");
+    if (result.kind === "http_error") {
+      expect(result.status).toBe(400);
+      expect(result.attempts).toBe(1);
+    }
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
@@ -152,8 +155,11 @@ describe("deliver", () => {
       return new Response("upstream", { status: 502 });
     });
     const result = await deliver(SUB, EVENT, { fetcher: fetcher as Fetcher });
-    expect(result.ok).toBe(false);
-    expect(result.attempts).toBe(3);
+    expect(result.kind).toBe("http_error");
+    if (result.kind === "http_error") {
+      expect(result.attempts).toBe(3);
+      expect(result.status).toBe(502);
+    }
     expect(calls).toBe(3);
   });
 
@@ -176,5 +182,22 @@ describe("deliver", () => {
         .update(`1700000002:${captured.body}`)
         .digest("hex");
     expect(captured.headers?.["X-Webhook-Signature"]).toBe(expected);
+  });
+
+  it("re-throws when the token cannot be decrypted (config emergency, not a delivery hiccup)", async () => {
+    // A token shaped like an `enc:vN:` envelope but referencing an
+    // unknown key version triggers `decryptSecret` to throw.
+    const broken: SubscriptionRow = {
+      id: "sub-broken",
+      url: "https://hooks.example.com/sp",
+      // valid envelope shape with a key version that doesn't exist
+      token_encrypted: "enc:v999:Zg==:Zg==:Zg==",
+    };
+    const fetcher = mock(async () => new Response(null, { status: 200 }));
+    await expect(
+      deliver(broken, EVENT, { fetcher: fetcher as Fetcher }),
+    ).rejects.toThrow();
+    // Decrypt failure must not even attempt delivery.
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });

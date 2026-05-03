@@ -98,7 +98,7 @@ Two headers ride alongside the body:
 | Header | Value |
 |--------|-------|
 | `X-Webhook-Timestamp` | Unix seconds at signing time. |
-| `X-Webhook-Signature` | `sha256=<hex>` over `${X-Webhook-Timestamp}:${body}`. |
+| `X-Webhook-Signature` | HMAC-SHA256 over `${X-Webhook-Timestamp}:${body}`, formatted as `sha256=<hex_digest>` (Stripe/GitHub-style). |
 
 ### Verify the HMAC signature
 
@@ -128,19 +128,28 @@ function verify(rawBody: string, headers: Headers, token: string): boolean {
 }
 ```
 
-The wire format is intentionally symmetric with the inbound
-[`@useatlas/webhook`](https://www.npmjs.com/package/@useatlas/webhook) plugin's
-verification helper — if you already have receivers wired up for that
-plugin, you can reuse the same primitive.
+The signing input (`${ts}:${body}`) and the headers are the same shape
+that the inbound [`@useatlas/webhook`](https://www.npmjs.com/package/@useatlas/webhook)
+plugin already verifies. The one difference: outbound deliveries prefix
+the digest with `sha256=`, while the inbound plugin currently expects
+bare hex. The verifier above accounts for the prefix; if you copy the
+inbound plugin's `verifyHmacWithTimestamp` helper directly, strip the
+`sha256=` prefix from the header value first.
 
 ### Delivery semantics
 
-- Atlas retries `5xx` responses and transport errors with capped
-  exponential backoff (3 attempts, 1s/2s base). `4xx` responses are
-  treated as permanent failures and not retried — fix your endpoint and
-  contact `legal@useatlas.dev` to replay.
-- Delivery is **at-least-once**. De-dupe in your handler using
-  `(entry.name, event, entry.changed_at)` as the key.
+- Atlas retries `5xx` responses and transport errors with bounded
+  exponential backoff: up to 3 attempts, with a 1s wait before retry 2
+  and a 2s wait before retry 3 (per-attempt request timeout 10s). `4xx`
+  responses are treated as permanent failures and not retried — fix
+  your endpoint, then email `legal@useatlas.dev` with the timestamp
+  window to have us reconstruct the missed event from
+  `sub_processor_snapshots` (no self-serve replay endpoint today).
+- Delivery is **at-least-once**. Treat repeated `(entry.name, event)`
+  pairs as idempotent updates. The recommended de-dupe key is
+  `(entry.name, event, entry.changed_at)` — note that two unrelated
+  changes within one `changed_at` window (rare in practice) will share
+  a key, so make your handler safe to apply twice.
 - Each tick fans out the diff against the most recent published
   snapshot; if a tick crashes mid-fan-out, the next tick re-derives and
   re-delivers the same diff.
@@ -152,7 +161,9 @@ is yours, not ours). Run a tiny adapter in front of your Slack incoming
 webhook:
 
 ```ts
-// adapter.ts — deploy as a Vercel/Cloudflare/Lambda function.
+// adapter.ts — deploy as a Vercel or AWS Lambda function. On Cloudflare
+// Workers, replace `process.env.ATLAS_WEBHOOK_TOKEN` with the `env`
+// binding from the Worker handler signature: `(req, env, ctx) => ...`.
 // Set env vars: ATLAS_WEBHOOK_TOKEN, SLACK_WEBHOOK_URL.
 
 export async function POST(request: Request): Promise<Response> {

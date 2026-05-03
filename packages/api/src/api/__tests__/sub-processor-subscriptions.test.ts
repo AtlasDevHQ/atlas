@@ -1,9 +1,12 @@
 /**
  * Route-level test for POST /api/v1/sub-processor-subscriptions (#1924).
  *
- * Exercises the auth gate and the round-trip into createSubscription. The
- * publisher's HMAC + diff logic has its own pure-helper tests in
- * src/lib/__tests__/sub-processor-publisher.test.ts.
+ * Covers the auth gate, validation (URL safety + token length), the
+ * unique-violation 409 path, and the no-internal-DB 503 path. The
+ * downstream encryption call is exercised in
+ * src/lib/__tests__/create-subscription-encryption.test.ts; the
+ * publisher tick is exercised in
+ * src/lib/__tests__/sub-processor-publisher-tick.test.ts.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from "bun:test";
@@ -22,24 +25,42 @@ const mockCreateSubscription = mock(
     id: string;
     url: string;
     token: string;
-    createdByUserId?: string | null;
-    createdByEmail?: string | null;
+    createdByUserId: string | null;
+    createdByLabel: string | null;
   }) => ({ id: input.id }),
 );
 
+// `mock.module` replaces ALL named exports with whatever this factory
+// returns. Under `bun test` (single process) other test files that
+// import from this module get the mocked surface, so we must list
+// every export the publisher actually has — missing entries surface as
+// `undefined is not a function` in unrelated sibling tests. CLAUDE.md
+// "Mock all exports" rule. The CI runner (`scripts/test-isolated.ts`)
+// forks each file so the leak doesn't bite, but we keep the file
+// robust under both runners. If you add a new export to
+// sub-processor-publisher, add a stub here.
 mock.module("@atlas/api/lib/sub-processor-publisher", () => ({
   createSubscription: mockCreateSubscription,
-  // The route never imports the rest of the module, but mock.module replaces
-  // the entire module — re-export the other named exports as no-ops so
-  // sibling tests that pull them in are not affected when this file runs
-  // first under the isolated runner.
   SUBPROCESSOR_PUBLISH_INTERVAL_MS: 21_600_000,
   subProcessorPublisherTick: async () => {},
   computeDiff: () => [],
   hashPayload: () => "stub-hash",
-  signRequest: () => ({ body: "", timestamp: 0, signature: "", headers: {} }),
-  deliver: async () => ({ subscriptionId: "stub", status: 200, ok: true, attempts: 1, error: null }),
+  signRequest: () => ({
+    body: "",
+    timestamp: 0,
+    signature: "",
+    headers: { "Content-Type": "application/json" },
+  }),
+  deliver: async () => ({
+    kind: "ok" as const,
+    subscriptionId: "stub",
+    status: 200,
+    attempts: 1,
+  }),
   getSourceUrl: () => "https://www.useatlas.dev/sub-processors/data.json",
+  SubProcessorSchema: {
+    safeParse: (v: unknown) => ({ success: true, data: v }),
+  },
 }));
 
 const { app } = await import("../index");
@@ -112,12 +133,48 @@ describe("POST /api/v1/sub-processor-subscriptions", () => {
     const arg = mockCreateSubscription.mock.calls[0][0];
     expect(arg.url).toBe("https://hooks.example.com/sp");
     expect(arg.createdByUserId).toBe("user-1");
-    expect(arg.createdByEmail).toBe("user@example.com");
+    expect(arg.createdByLabel).toBe("user@example.com");
   });
 
   it("rejects malformed URLs with 400", async () => {
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "not-a-url",
+      token: "shared-secret-at-least-16",
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("rejects http:// URLs with 400 (SSRF guard requires https)", async () => {
+    const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
+      url: "http://hooks.example.com/sp",
+      token: "shared-secret-at-least-16",
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("rejects loopback URLs with 400 (SSRF guard)", async () => {
+    const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
+      url: "https://127.0.0.1/sp",
+      token: "shared-secret-at-least-16",
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("rejects RFC1918 URLs with 400 (SSRF guard)", async () => {
+    const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
+      url: "https://10.0.0.5/sp",
+      token: "shared-secret-at-least-16",
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("rejects 169.254 metadata-service URLs with 400 (SSRF guard)", async () => {
+    const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
+      url: "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
       token: "shared-secret-at-least-16",
     });
     expect(res.status).toBe(400);
@@ -133,9 +190,14 @@ describe("POST /api/v1/sub-processor-subscriptions", () => {
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 
-  it("returns 409 when the URL is already registered", async () => {
+  it("returns 409 when the URL is already registered (matches by SQLSTATE 23505, not error message)", async () => {
     mockCreateSubscription.mockImplementationOnce(async () => {
-      throw new Error("duplicate key value violates unique constraint");
+      // Simulate the pg unique-violation shape — code field is what
+      // the route matches on, message text is locale-dependent and
+      // intentionally not relied on.
+      const err = new Error("ignored — locale-dependent message");
+      (err as { code?: string }).code = "23505";
+      throw err;
     });
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "https://hooks.example.com/sp",
@@ -144,6 +206,19 @@ describe("POST /api/v1/sub-processor-subscriptions", () => {
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("subscription_already_exists");
+  });
+
+  it("does NOT mistake a non-23505 error for a duplicate (regression: regex would have matched)", async () => {
+    mockCreateSubscription.mockImplementationOnce(async () => {
+      // An unrelated error whose message happens to contain "duplicate
+      // key" — the old regex would have wrongly returned 409 for this.
+      throw new Error("decryption error: duplicate key version detected");
+    });
+    const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
+      url: "https://hooks.example.com/sp",
+      token: "shared-secret-at-least-16",
+    });
+    expect(res.status).toBe(500);
   });
 
   it("returns 503 when the internal DB is not configured", async () => {

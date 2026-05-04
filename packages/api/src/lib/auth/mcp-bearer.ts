@@ -12,6 +12,13 @@
  * returns an `AuthResult` ready to be dropped into the existing
  * `runHandler` Effect bridge.
  *
+ * Error wording is deliberately uniform across every 401 branch
+ * (missing header, wrong scheme, unknown token, revoked token,
+ * expired token). Distinguishing them would form an enumeration
+ * oracle: a probing attacker could distinguish "header shape wrong"
+ * from "token doesn't exist" from "token was revoked" via
+ * differences in error strings.
+ *
  * Issue: #2024
  */
 
@@ -61,7 +68,7 @@ function extractBearer(req: Request): string | null {
  */
 function identityToUser(identity: ResolvedMcpIdentity) {
   // `id` must be non-empty (createAtlasUser asserts this). When the
-  // token isn't bound to a specific user (device-code flow, PR C),
+  // token isn't bound to a specific user (device-code flow, RFC 8628),
   // fall back to a stable id derived from the token row so audit logs
   // can still pivot on actor.
   const id = identity.userId ?? `mcp:${identity.tokenId}`;
@@ -82,13 +89,13 @@ function identityToUser(identity: ResolvedMcpIdentity) {
  * Resolve a `Request` to an `AuthResult` using only MCP bearer-token
  * credentials. Mirrors the shape of `validateApiKey` in
  * `simple-key.ts` so this fits naturally into the existing Auth
- * patterns when MCP routes mount in PR B.
+ * patterns when MCP routes are mounted in a follow-up PR.
  *
- * Returns 401 with a generic message on every miss — we deliberately
- * do not distinguish "unknown token" from "revoked token" or "expired
- * token" so a probing attacker cannot enumerate the token-space
- * shape via timing or wording.
+ * Every 401 path uses the same generic error string so the failure
+ * wording cannot be used as an enumeration oracle (see file header).
  */
+const INVALID_MCP_TOKEN = "Invalid MCP token";
+
 export async function validateMcpBearer(req: Request): Promise<AuthResult> {
   const bearer = extractBearer(req);
   if (!bearer) {
@@ -96,7 +103,7 @@ export async function validateMcpBearer(req: Request): Promise<AuthResult> {
       authenticated: false,
       mode: "managed",
       status: 401,
-      error: "MCP token required",
+      error: INVALID_MCP_TOKEN,
     };
   }
 
@@ -104,8 +111,13 @@ export async function validateMcpBearer(req: Request): Promise<AuthResult> {
   try {
     identity = await lookupMcpTokenByBearer(bearer);
   } catch (err) {
+    // Preserve the original error as `cause` so the stack survives
+    // through the AuthResult boundary into the middleware's
+    // log.error and any downstream observability shim.
+    const wrapped =
+      err instanceof Error ? err : new Error(String(err), { cause: err });
     log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
+      { err: wrapped },
       "MCP bearer lookup threw — failing closed with 500",
     );
     return {
@@ -121,7 +133,7 @@ export async function validateMcpBearer(req: Request): Promise<AuthResult> {
       authenticated: false,
       mode: "managed",
       status: 401,
-      error: "Invalid MCP token",
+      error: INVALID_MCP_TOKEN,
     };
   }
 

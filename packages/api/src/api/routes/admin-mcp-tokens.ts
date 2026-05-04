@@ -12,13 +12,24 @@
  *   POST /{id}/revoke           — revoke an existing token
  *
  * Audit emission contract:
- *   - `mcp_token.create`  (success path, route emits)
+ *   - `mcp_token.create`  (success path, route emits; on audit
+ *      failure the freshly-inserted row is DELETEd before the 500
+ *      propagates, so a 500 from this endpoint never leaves an
+ *      authenticatable bearer in the table without a forensic row)
  *   - `mcp_token.revoke`  (success path, route emits; idempotent
  *      re-revoke does NOT emit a second row — the audit trail must
  *      reflect when the token was actually revoked, not every time
- *      somebody clicks the button)
+ *      somebody clicks the button. Metadata carries the row's
+ *      prefix and name so forensic queries pivot correctly even
+ *      after retention sweeps the row itself)
  *   - `mcp_token.use`     (NOT emitted here — owned by the bearer
- *      middleware on first-use, sampled, and lands in PR B)
+ *      middleware on first-use, sampled, in a follow-up PR)
+ *
+ * Cross-org probe defence: a workspace admin from org-A passing an
+ * id that belongs to org-B sees a 404 (no oracle distinguishing
+ * "doesn't exist" from "exists but not yours"), and the route emits
+ * a `log.warn` so a SIEM can detect the probe pattern even though
+ * the response itself is indistinguishable from "doesn't exist".
  *
  * The `_encrypted` rule: the token-store helpers
  * (`createMcpToken` / `lookupMcpTokenByBearer`) own all
@@ -30,10 +41,13 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createLogger } from "@atlas/api/lib/logger";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
   createMcpToken,
   listMcpTokensForOrg,
   revokeMcpToken,
+  computeMcpTokenStatus,
+  type McpTokenSummary,
 } from "@atlas/api/lib/auth/mcp-token";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -50,6 +64,17 @@ const TokenSummarySchema = z.object({
       "Public prefix for masked display (`atl_mcp_abcdef12…`). Safe to log.",
   }),
   scopes: z.array(z.string()),
+  /**
+   * Derived lifecycle state. Surfaced so clients render off a
+   * literal instead of computing precedence from three nullable
+   * timestamps (revoked > expired > active). The timestamps remain
+   * for audit/UI ("revoked just now") but should not drive control
+   * flow.
+   */
+  status: z.enum(["active", "expired", "revoked"]).openapi({
+    description:
+      "Lifecycle state derived from revoked_at/expires_at. Render off this; revoked beats expired beats active.",
+  }),
   lastUsedAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
@@ -175,28 +200,52 @@ const revokeRouteDef = createRoute({
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-function summaryToWire(s: {
-  id: string;
-  name: string | null;
-  prefix: string;
-  scopes: ReadonlyArray<string>;
-  lastUsedAt: Date | null;
-  expiresAt: Date | null;
-  revokedAt: Date | null;
-  createdAt: Date;
-  createdByUserId: string | null;
-}) {
+/**
+ * Render an `McpTokenSummary` to its JSON wire shape. Typed against
+ * the imported `McpTokenSummary` (not an inline structural type) so
+ * that adding a field on the source-of-truth interface forces a
+ * compile error here instead of silently dropping the field on the
+ * wire.
+ */
+function summaryToWire(s: McpTokenSummary) {
   return {
     id: s.id,
     name: s.name,
     prefix: s.prefix,
     scopes: [...s.scopes],
+    status: s.status,
     lastUsedAt: s.lastUsedAt ? s.lastUsedAt.toISOString() : null,
     expiresAt: s.expiresAt ? s.expiresAt.toISOString() : null,
     revokedAt: s.revokedAt ? s.revokedAt.toISOString() : null,
     createdAt: s.createdAt.toISOString(),
     createdByUserId: s.createdByUserId,
   };
+}
+
+/**
+ * Best-effort cleanup of a freshly-minted token row when the
+ * subsequent audit emission fails. The DELETE removes the bearer
+ * before the 500 propagates so a retry doesn't accumulate orphan
+ * authenticatable tokens. Failures here are logged but never mask
+ * the original audit error — the route still returns 500 so an
+ * operator notices.
+ */
+async function deleteOrphanToken(id: string, orgId: string, requestId: string): Promise<void> {
+  try {
+    await internalQuery(
+      `DELETE FROM mcp_tokens WHERE id = $1 AND org_id = $2`,
+      [id, orgId],
+    );
+  } catch (cleanupErr) {
+    log.error(
+      {
+        err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+        tokenId: id,
+        requestId,
+      },
+      "mcp_token.create cleanup DELETE failed — orphan row may persist; investigate",
+    );
+  }
 }
 
 // ── Router ─────────────────────────────────────────────────────────
@@ -243,10 +292,13 @@ adminMcpTokens.openapi(createRouteDef, async (c) =>
       expiresAt,
     });
 
-    // Emit the audit row BEFORE returning so a 200 cannot ship without
-    // a forensic record. The caller retries on 500 (createMcpToken
-    // already inserted the row, so the retry is safe — the duplicate
-    // audit row is preferable to a silent token mint).
+    // Emit the audit row BEFORE returning so a 200 cannot ship
+    // without a forensic record. If the audit write fails, DELETE
+    // the freshly-minted row before propagating 500 — without the
+    // cleanup, the row stays valid for `lookupMcpTokenByBearer`
+    // forever with no client copy of the plaintext and no audit
+    // trail. The 500 still surfaces so the admin notices and the
+    // (idempotent) retry mints a fresh token from a clean state.
     try {
       await logAdminActionAwait({
         actionType: ADMIN_ACTIONS.mcp_token.create,
@@ -268,8 +320,9 @@ adminMcpTokens.openapi(createRouteDef, async (c) =>
           tokenId: created.id,
           requestId,
         },
-        "mcp_token.create audit emission failed — propagating 500",
+        "mcp_token.create audit emission failed — deleting orphan row and propagating 500",
       );
+      await deleteOrphanToken(created.id, orgId, requestId);
       throw err;
     }
 
@@ -281,6 +334,13 @@ adminMcpTokens.openapi(createRouteDef, async (c) =>
           name: created.name,
           prefix: created.prefix,
           scopes: [...created.scopes],
+          // A freshly-minted token is always active. If we ever
+          // return one in any other state we have a bigger problem
+          // than the wire shape.
+          status: computeMcpTokenStatus(null, created.expiresAt) as
+            | "active"
+            | "expired"
+            | "revoked",
           lastUsedAt: null,
           expiresAt: created.expiresAt
             ? created.expiresAt.toISOString()
@@ -305,8 +365,16 @@ adminMcpTokens.openapi(revokeRouteDef, async (c) =>
 
     // No row at all — return 404 so the caller doesn't see "200, but
     // it wasn't actually yours". Distinguishes a non-existent token
-    // from a still-revocable one.
+    // from a still-revocable one. Also a cross-org probe surface:
+    // a workspace admin from org-A passing org-B's id ends up here.
+    // The 4xx wording is the same as a genuine missing row (no
+    // oracle distinguishing the two), but a SIEM tailing this
+    // log.warn can detect the probe pattern across many requests.
     if (!result.revoked && result.alreadyRevokedAt === null) {
+      log.warn(
+        { requestId, orgId, tokenId: id },
+        "mcp_token.revoke targeted unknown id — returned 404 (could be cross-org probe)",
+      );
       return c.json(
         {
           error: "not_found",
@@ -323,6 +391,15 @@ adminMcpTokens.openapi(revokeRouteDef, async (c) =>
           actionType: ADMIN_ACTIONS.mcp_token.revoke,
           targetType: "mcp_token",
           targetId: id,
+          metadata: {
+            // Pre-fetched in the same UPDATE that performed the
+            // revocation so the audit row survives even after a
+            // future retention sweep hard-deletes the source row.
+            // Forensic queries pivot on prefix without joining
+            // `mcp_tokens`.
+            prefix: result.prefix,
+            name: result.name,
+          },
         });
       } catch (err) {
         // Audit write failure on the revoke path is severe — a

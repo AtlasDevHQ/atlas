@@ -246,13 +246,16 @@ export const ADMIN_ACTIONS = {
     revoke: "apikey.revoke",
   },
   /**
-   * MCP bearer-token lifecycle (#2024). `created` and `revoked` are
-   * emitted by the admin CRUD route. `used` is emitted by the bearer
+   * MCP bearer-token lifecycle (#2024). `mcp_token.create` and
+   * `mcp_token.revoke` are emitted by the admin CRUD route in
+   * `admin-mcp-tokens.ts`. `mcp_token.use` is emitted by the bearer
    * middleware on first-use only (sampled — every call would dwarf
    * every other audit signal in the table). Without these entries a
    * compromised admin could mint an MCP token, exfiltrate workspace
    * data through a hosted agent, then revoke the token leaving zero
-   * forensic trace of the issuance.
+   * forensic trace of the issuance. Action strings match the wire
+   * values exactly so a forensic query can `grep mcp_token.create`
+   * against this catalog and the emit sites.
    */
   mcp_token: {
     create: "mcp_token.create",

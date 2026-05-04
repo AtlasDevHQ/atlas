@@ -2,9 +2,10 @@
  * MCP bearer-token store + minting helpers (#2024).
  *
  * Tokens authenticate hosted MCP requests against a specific workspace.
- * They are issued from `Settings → MCP Tokens` (admin UI; PR D) or via
- * the device-code OAuth flow (PR C). The bearer middleware in
- * `mcp-bearer.ts` consumes them on every MCP request.
+ * They are issued from the admin `Settings → MCP Tokens` surface or via
+ * the device-code OAuth flow (RFC 8628) — both follow-up PRs land on
+ * top of this store. The bearer middleware in `mcp-bearer.ts` consumes
+ * them on every MCP request.
  *
  * ── Storage model ──────────────────────────────────────────────────
  *
@@ -17,14 +18,15 @@
  *
  * `token_prefix` is the public shard ("atl_mcp_<8 hex>") shown to users
  * in the UI and used by the bearer middleware to narrow lookup
- * candidates without decrypting every row. Prefix collisions are
- * negligible at 32 bits per workspace.
+ * candidates without decrypting every row. The prefix is a lookup
+ * shard, not entropy — secret material lives in the 24-hex body
+ * (96 bits, far past exhaustion).
  *
  * ── Revocation semantics ───────────────────────────────────────────
  *
  * `revoked_at` is a tombstone — never cleared. Lookup filters it out at
  * the SQL layer, so revocation is *immediate*: there is no in-process
- * cache to invalidate. The audit row for `mcp.token.revoked` references
+ * cache to invalidate. The audit row for `mcp_token.revoke` references
  * the surviving row by id.
  *
  * Issue: #2024
@@ -43,10 +45,12 @@ const log = createLogger("mcp-token");
 
 // ── Public token format ─────────────────────────────────────────────
 //
-// The plaintext bearer is `atl_mcp_<8 hex prefix><24 hex body>`. 32
-// hex chars = 128 bits of entropy, enough to make exhaustion infeasible
-// even if `revoked_at` is somehow ignored. The prefix doubles as the
-// lookup index in the DB and the masked display in the UI.
+// The plaintext bearer is `atl_mcp_<8 hex prefix><24 hex body>`. The
+// 24-hex body carries the actual secret entropy (96 bits, far past
+// exhaustion). The 8-hex prefix is non-secret — it is indexed in the
+// DB and displayed in the UI for masked listings; treating it as
+// entropy would be wrong even though it makes the bearer string look
+// longer.
 //
 // `last_used_at` updates are sampled (≥ this many ms since the last
 // recorded touch) so the hot path doesn't issue an UPDATE per request.
@@ -55,10 +59,13 @@ const log = createLogger("mcp-token");
 // burst of MCP calls from a single agent doesn't add a write per call.
 
 const TOKEN_PREFIX = "atl_mcp_";
-const PREFIX_HEX_LEN = 8;   // chars after the literal prefix
-const BODY_HEX_LEN = 24;    // remaining random bytes
+const PREFIX_HEX_LEN = 8;   // chars after the literal prefix (lookup shard, NOT entropy)
+const BODY_HEX_LEN = 24;    // 96 bits of secret entropy
 const TOKEN_TOTAL_LEN = TOKEN_PREFIX.length + PREFIX_HEX_LEN + BODY_HEX_LEN; // 40
 const LAST_USED_TOUCH_INTERVAL_MS = 60_000;
+// Hot-path validator. Hoisted to module scope so we don't recompile
+// the regex on every bearer middleware call.
+const HEX_BODY_RE = /^[0-9a-f]+$/;
 
 /**
  * Result of `createMcpToken`. The plaintext `token` is returned exactly
@@ -80,6 +87,15 @@ export interface CreatedMcpToken {
 }
 
 /**
+ * Lifecycle of an MCP token from the admin UI's perspective. Derived
+ * from `revoked_at` / `expires_at` rather than stored as a column —
+ * the timestamps remain the source of truth for *when*, this is the
+ * source of truth for *what*. Revoked beats expired beats active so
+ * a manually-revoked then-expired token still shows as revoked.
+ */
+export type McpTokenStatus = "active" | "expired" | "revoked";
+
+/**
  * Row shape returned by `listMcpTokens`. Excludes `token_hash_encrypted`
  * — there is no surface that needs the encrypted hash outside of the
  * lookup hot path. Including it would make it easier to leak the column
@@ -92,6 +108,8 @@ export interface McpTokenSummary {
   readonly name: string | null;
   readonly prefix: string;
   readonly scopes: ReadonlyArray<string>;
+  /** Derived from revoked_at / expires_at. UI renders off this, not the timestamps. */
+  readonly status: McpTokenStatus;
   readonly lastUsedAt: Date | null;
   readonly expiresAt: Date | null;
   readonly revokedAt: Date | null;
@@ -139,7 +157,7 @@ type McpTokenRow = Record<string, unknown> & {
  *
  * Exposed (rather than inlined into `createMcpToken`) so tests can
  * verify the format invariants without touching the DB and so the
- * device-code flow (PR C) can re-use the same helper from a different
+ * device-code flow (RFC 8628) can re-use the same helper from a different
  * code path.
  */
 export function generateMcpToken(): {
@@ -163,17 +181,17 @@ export function hashTokenSha256(token: string): string {
  * Extract the public prefix from a plaintext token. Returns null when
  * the input is not a valid Atlas MCP bearer — the middleware uses that
  * branch to short-circuit before issuing a DB query.
+ *
+ * The lookup itself is exact equality (`WHERE token_prefix = $1`), so
+ * this validator is not a SQL-injection guard. It exists to fail-fast
+ * on obviously-malformed bearers and avoid wasted DB roundtrips.
  */
 export function splitTokenPrefix(token: string): string | null {
   if (token.length !== TOKEN_TOTAL_LEN) return null;
   if (!token.startsWith(TOKEN_PREFIX)) return null;
   const prefix = token.slice(0, TOKEN_PREFIX.length + PREFIX_HEX_LEN);
-  // Validate the hex shape so a malformed token (e.g. attacker
-  // probing prefix collisions with non-hex chars) doesn't produce a
-  // surprising LIKE-style query.
-  const HEX = /^[0-9a-f]+$/;
-  if (!HEX.test(prefix.slice(TOKEN_PREFIX.length))) return null;
-  if (!HEX.test(token.slice(prefix.length))) return null;
+  if (!HEX_BODY_RE.test(prefix.slice(TOKEN_PREFIX.length))) return null;
+  if (!HEX_BODY_RE.test(token.slice(prefix.length))) return null;
   return prefix;
 }
 
@@ -255,54 +273,82 @@ export async function listMcpTokensForOrg(
   return rows.map(rowToSummary);
 }
 
+/** Outcome of `revokeMcpToken`. */
+export interface RevokeOutcome {
+  /** True iff this call performed the revocation. */
+  readonly revoked: boolean;
+  /**
+   * Pre-existing tombstone, when the row was already revoked before
+   * this call. Null on a fresh revocation OR when the row didn't
+   * exist for the caller's org. The route distinguishes those cases
+   * via the `prefix`/`name` fields below: both are populated whenever
+   * the row exists for the caller's org.
+   */
+  readonly alreadyRevokedAt: Date | null;
+  /** Token prefix, populated when the row was found for the caller's org. */
+  readonly prefix: string | null;
+  /** Token label, populated when the row was found for the caller's org. */
+  readonly name: string | null;
+}
+
 /**
- * Revoke a token. Returns the prior revoked_at if the row already
- * carried one, or null when this call performed the revocation. The
- * route layer uses the difference to suppress duplicate audit rows on
- * idempotent re-revoke.
+ * Revoke a token. Returns metadata about the row (prefix, name) so
+ * the route layer can attach forensic context to the audit row that
+ * survives even after the token row itself is hard-deleted by a
+ * retention sweep.
  *
  * Scoped to `orgId` so a workspace admin cannot revoke tokens issued
- * against a different workspace by URL-tampering with the id.
+ * against a different workspace by URL-tampering with the id. The
+ * `WHERE revoked_at IS NULL` guard preserves the original tombstone
+ * across idempotent re-revokes.
  */
 export async function revokeMcpToken(input: {
   id: string;
   orgId: string;
-}): Promise<{ revoked: boolean; alreadyRevokedAt: Date | null }> {
+}): Promise<RevokeOutcome> {
   const rows = await internalQuery<{
-    revoked_at: Date | null;
-    prior_revoked_at: Date | null;
+    token_prefix: string;
+    name: string | null;
   }>(
-    // First-revocation path uses `WHERE revoked_at IS NULL` so a second
-    // call doesn't overwrite the original tombstone (preserves the
-    // forensic timestamp). The RETURNING clause distinguishes the
-    // two outcomes: `revoked_at` is the post-update value, while
-    // `prior_revoked_at` came from the SELECT subquery above the UPDATE.
-    `WITH prior AS (
-       SELECT revoked_at FROM mcp_tokens WHERE id = $1 AND org_id = $2
-     )
-     UPDATE mcp_tokens
+    `UPDATE mcp_tokens
         SET revoked_at = NOW()
       WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL
-      RETURNING revoked_at,
-                (SELECT revoked_at FROM prior) AS prior_revoked_at`,
+      RETURNING token_prefix, name`,
     [input.id, input.orgId],
   );
 
-  if (rows.length === 0) {
-    // No row updated. Either the id doesn't exist, the org doesn't
-    // own it, or it was already revoked. Re-read to disambiguate so
-    // the caller can return the right status code.
-    const lookup = await internalQuery<{ revoked_at: Date | null }>(
-      `SELECT revoked_at FROM mcp_tokens WHERE id = $1 AND org_id = $2`,
-      [input.id, input.orgId],
-    );
-    if (lookup.length === 0) {
-      return { revoked: false, alreadyRevokedAt: null };
-    }
-    return { revoked: false, alreadyRevokedAt: lookup[0].revoked_at };
+  if (rows.length > 0) {
+    return {
+      revoked: true,
+      alreadyRevokedAt: null,
+      prefix: rows[0].token_prefix,
+      name: rows[0].name,
+    };
   }
 
-  return { revoked: true, alreadyRevokedAt: null };
+  // UPDATE matched nothing. Either the id doesn't exist, the org
+  // doesn't own it, or it was already revoked — re-read to
+  // disambiguate so the caller can return the right status code AND
+  // attach prefix/name to the audit row in the already-revoked case.
+  const lookup = await internalQuery<{
+    revoked_at: Date | null;
+    token_prefix: string;
+    name: string | null;
+  }>(
+    `SELECT revoked_at, token_prefix, name
+       FROM mcp_tokens
+      WHERE id = $1 AND org_id = $2`,
+    [input.id, input.orgId],
+  );
+  if (lookup.length === 0) {
+    return { revoked: false, alreadyRevokedAt: null, prefix: null, name: null };
+  }
+  return {
+    revoked: false,
+    alreadyRevokedAt: lookup[0].revoked_at,
+    prefix: lookup[0].token_prefix,
+    name: lookup[0].name,
+  };
 }
 
 /**
@@ -341,6 +387,8 @@ export async function lookupMcpTokenByBearer(
     [prefix],
   );
 
+  let decryptFailures = 0;
+
   for (const row of rows) {
     let storedHashHex: string;
     try {
@@ -350,7 +398,10 @@ export async function lookupMcpTokenByBearer(
       // sweep — log + skip so a corrupt or misversioned ciphertext
       // doesn't mask a sibling valid match. Rotation tooling
       // (`scripts/rotate-encryption-key.ts`) will surface the row
-      // separately.
+      // separately. The aggregate detector below promotes a
+      // *systemic* failure (every candidate fell over) to a thrown
+      // error so `validateMcpBearer` returns 500 instead of
+      // wallpapering 401s during a keyset misconfiguration.
       log.warn(
         {
           err: err instanceof Error ? err.message : String(err),
@@ -358,6 +409,7 @@ export async function lookupMcpTokenByBearer(
         },
         "mcp_token: decrypt failed for candidate row — skipping",
       );
+      decryptFailures++;
       continue;
     }
 
@@ -375,10 +427,45 @@ export async function lookupMcpTokenByBearer(
     };
   }
 
+  // Aggregate-failure detector: when there ARE candidate rows but
+  // every one of them failed to decrypt, this is not a "no match"
+  // outcome — it's a systemic outage (most likely a missing legacy
+  // key in `ATLAS_ENCRYPTION_KEYS` after rotation). Throwing here
+  // routes through `validateMcpBearer`'s 500 path and the
+  // error-level log there, instead of returning null and surfacing
+  // a quiet 401 to every customer.
+  if (rows.length > 0 && decryptFailures === rows.length) {
+    log.error(
+      { prefix, candidateCount: rows.length },
+      "mcp_token: every candidate row failed to decrypt — possible keyset misconfiguration",
+    );
+    throw new Error(
+      "mcp_token: all candidate rows failed to decrypt — keyset misconfigured",
+    );
+  }
+
   return null;
 }
 
 // ── Internal helpers ────────────────────────────────────────────────
+
+/**
+ * Compute the lifecycle status from the row's tombstone columns.
+ * Revoked beats expired beats active — a row with both
+ * `revoked_at` and a past `expires_at` reports as revoked.
+ *
+ * Exported so the admin-CRUD route can stamp the same status on the
+ * `created` response without rebuilding the precedence rules.
+ */
+export function computeMcpTokenStatus(
+  revokedAt: Date | null,
+  expiresAt: Date | null,
+  now: number = Date.now(),
+): McpTokenStatus {
+  if (revokedAt !== null) return "revoked";
+  if (expiresAt !== null && expiresAt.getTime() <= now) return "expired";
+  return "active";
+}
 
 function rowToSummary(row: McpTokenRow): McpTokenSummary {
   return {
@@ -388,6 +475,7 @@ function rowToSummary(row: McpTokenRow): McpTokenSummary {
     name: row.name,
     prefix: row.token_prefix,
     scopes: row.scopes ?? [],
+    status: computeMcpTokenStatus(row.revoked_at, row.expires_at),
     lastUsedAt: row.last_used_at,
     expiresAt: row.expires_at,
     revokedAt: row.revoked_at,

@@ -94,7 +94,7 @@ beforeEach(() => {
 // ── GET / — list ──────────────────────────────────────────────────
 
 describe("GET /api/v1/admin/mcp-tokens", () => {
-  it("returns the list filtered by the caller's active org", async () => {
+  it("returns the list filtered by the caller's active org, with derived status", async () => {
     const now = new Date("2026-05-01T00:00:00Z");
     routeSql((sql, params) => {
       expect(sql).toContain("FROM mcp_tokens");
@@ -129,11 +129,36 @@ describe("GET /api/v1/admin/mcp-tokens", () => {
       id: "mcp_111",
       name: "Claude Desktop",
       prefix: "atl_mcp_aaaaaaaa",
+      status: "active",
       revokedAt: null,
     });
     // Encrypted column never appears in the wire shape.
     expect(body.tokens[0]).not.toHaveProperty("token_hash_encrypted");
     expect(body.tokens[0]).not.toHaveProperty("tokenHashEncrypted");
+  });
+
+  it("surfaces status: 'revoked' for tombstoned rows", async () => {
+    routeSql(() => [
+      {
+        id: "mcp_999",
+        org_id: "org-alpha",
+        user_id: "admin-1",
+        name: null,
+        token_prefix: "atl_mcp_zzzzzzzz",
+        token_hash_encrypted: "ignored",
+        token_hash_key_version: 1,
+        scopes: [],
+        last_used_at: null,
+        expires_at: null,
+        revoked_at: new Date("2026-04-30T00:00:00Z"),
+        created_at: new Date("2026-04-01T00:00:00Z"),
+        created_by_user_id: "admin-1",
+      },
+    ]);
+    const res = await req("GET", "/");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tokens: Array<{ status: string }> };
+    expect(body.tokens[0].status).toBe("revoked");
   });
 
   it("rejects non-admin callers with 403", async () => {
@@ -146,9 +171,8 @@ describe("GET /api/v1/admin/mcp-tokens", () => {
 // ── POST / — create ───────────────────────────────────────────────
 
 describe("POST /api/v1/admin/mcp-tokens", () => {
-  it("mints a token, returns plaintext once, and emits a create audit row", async () => {
+  it("mints a token, returns plaintext + status:active once, and emits a create audit row", async () => {
     routeSql((sql) => {
-      // Only the INSERT is expected on this path.
       expect(sql).toContain("INSERT INTO mcp_tokens");
       return [];
     });
@@ -157,14 +181,19 @@ describe("POST /api/v1/admin/mcp-tokens", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       token: string;
-      summary: { id: string; prefix: string; name: string | null };
+      summary: {
+        id: string;
+        prefix: string;
+        name: string | null;
+        status: string;
+      };
     };
     expect(body.token.startsWith("atl_mcp_")).toBe(true);
     expect(body.token.length).toBe(40);
     expect(body.summary.prefix.length).toBe(16);
     expect(body.summary.name).toBe("Claude Desktop");
+    expect(body.summary.status).toBe("active");
 
-    // Audit emission — exactly one row, mcp_token.create
     expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
     const entry = mockLogAdminActionAwait.mock.calls[0][0];
     expect(entry).toMatchObject({
@@ -184,24 +213,48 @@ describe("POST /api/v1/admin/mcp-tokens", () => {
     expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
   });
 
-  it("propagates 500 when audit emission fails (no silent token mint)", async () => {
+  it("propagates 500 AND deletes the orphan row when audit emission fails", async () => {
+    // The fix for the audit-failure-leaves-an-orphan-bearer issue:
+    // when the mint succeeds but the audit row can't be written, the
+    // route must DELETE the freshly-inserted token row before
+    // propagating 500. Otherwise the hash is live in the DB with no
+    // forensic record and no client copy of the plaintext — the
+    // exact silent-mint scenario this test guards against.
     mockLogAdminActionAwait.mockImplementation(async () => {
       throw new Error("audit DB down");
     });
-    routeSql(() => []);
+    const captured: Array<{ sql: string; params: unknown[] }> = [];
+    mocks.mockInternalQuery.mockImplementation(
+      async (sql: string, params?: unknown[]) => {
+        captured.push({ sql, params: params ?? [] });
+        return [];
+      },
+    );
+
     const res = await req("POST", "/", {});
     expect(res.status).toBe(500);
+
+    const insert = captured.find((c) =>
+      c.sql.includes("INSERT INTO mcp_tokens"),
+    );
+    expect(insert).toBeDefined();
+    const cleanup = captured.find((c) =>
+      c.sql.includes("DELETE FROM mcp_tokens"),
+    );
+    expect(cleanup).toBeDefined();
+    // Cleanup must scope on org so a misbehaving handler can't blow
+    // away an arbitrary id.
+    expect(cleanup?.params[1]).toBe("org-alpha");
   });
 });
 
 // ── POST /{id}/revoke — revoke ────────────────────────────────────
 
 describe("POST /api/v1/admin/mcp-tokens/{id}/revoke", () => {
-  it("revokes an active token and emits a revoke audit row", async () => {
-    const revokedAt = new Date("2026-05-01T12:00:00Z");
+  it("revokes an active token and emits a revoke audit row carrying prefix + name", async () => {
     routeSql((sql) => {
-      if (sql.startsWith("WITH prior")) {
-        return [{ revoked_at: revokedAt, prior_revoked_at: null }];
+      if (sql.startsWith("UPDATE mcp_tokens")) {
+        return [{ token_prefix: "atl_mcp_abcdef12", name: "Claude Desktop" }];
       }
       return [];
     });
@@ -217,19 +270,32 @@ describe("POST /api/v1/admin/mcp-tokens/{id}/revoke", () => {
     expect(body.alreadyRevoked).toBe(false);
 
     expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
-    expect(mockLogAdminActionAwait.mock.calls[0][0]).toMatchObject({
+    const entry = mockLogAdminActionAwait.mock.calls[0][0];
+    expect(entry).toMatchObject({
       actionType: "mcp_token.revoke",
       targetType: "mcp_token",
       targetId: "mcp_111",
     });
+    // The audit metadata MUST carry prefix + name. Forensic queries
+    // pivot on prefix; without it, a retention-purged source row
+    // turns the audit log into a dead-end.
+    const meta = entry.metadata as Record<string, unknown>;
+    expect(meta.prefix).toBe("atl_mcp_abcdef12");
+    expect(meta.name).toBe("Claude Desktop");
   });
 
   it("returns alreadyRevoked: true on idempotent re-revoke and does NOT emit a second audit row", async () => {
     const priorRevoked = new Date("2026-05-01T11:00:00Z");
     routeSql((sql) => {
-      if (sql.startsWith("WITH prior")) return []; // UPDATE matched 0 rows
-      if (sql.startsWith("SELECT revoked_at FROM mcp_tokens")) {
-        return [{ revoked_at: priorRevoked }];
+      if (sql.startsWith("UPDATE mcp_tokens")) return []; // UPDATE matched 0 rows
+      if (sql.includes("SELECT revoked_at, token_prefix, name")) {
+        return [
+          {
+            revoked_at: priorRevoked,
+            token_prefix: "atl_mcp_abcdef12",
+            name: "Claude Desktop",
+          },
+        ];
       }
       return [];
     });
@@ -246,8 +312,8 @@ describe("POST /api/v1/admin/mcp-tokens/{id}/revoke", () => {
 
   it("returns 404 when the token doesn't exist in this workspace (cross-org isolation)", async () => {
     routeSql((sql) => {
-      if (sql.startsWith("WITH prior")) return [];
-      if (sql.startsWith("SELECT revoked_at FROM mcp_tokens")) return [];
+      if (sql.startsWith("UPDATE mcp_tokens")) return [];
+      if (sql.includes("SELECT revoked_at, token_prefix, name")) return [];
       return [];
     });
 

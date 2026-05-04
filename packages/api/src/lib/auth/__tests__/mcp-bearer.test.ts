@@ -76,12 +76,12 @@ function makeReq(headers: Record<string, string> = {}): Request {
 // ── Header parsing ─────────────────────────────────────────────────
 
 describe("validateMcpBearer — header parsing", () => {
-  it("returns 401 'MCP token required' when no Authorization header is present", async () => {
+  it("returns 401 'Invalid MCP token' when no Authorization header is present", async () => {
     const result = await validateMcpBearer(makeReq());
     expect(result.authenticated).toBe(false);
     if (!result.authenticated) {
       expect(result.status).toBe(401);
-      expect(result.error).toBe("MCP token required");
+      expect(result.error).toBe("Invalid MCP token");
     }
     expect(mockLookup).not.toHaveBeenCalled();
   });
@@ -93,11 +93,35 @@ describe("validateMcpBearer — header parsing", () => {
     expect(result.authenticated).toBe(false);
     if (!result.authenticated) {
       expect(result.status).toBe(401);
-      // Same wording as the no-header case so there's no
-      // enumeration oracle.
-      expect(result.error).toBe("MCP token required");
+      // Identical wording across every 401 path — see mcp-bearer.ts
+      // header for the enumeration-oracle rationale.
+      expect(result.error).toBe("Invalid MCP token");
     }
     expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  it("uses identical 401 wording for missing-header, wrong-scheme, and invalid-token paths", async () => {
+    // Locks in the no-enumeration-oracle invariant. If a future
+    // change differentiates these paths, this test fails — that's
+    // the intended forcing function: any difference in error
+    // wording is a deliberate choice the change author has to
+    // re-justify.
+    const noHeader = await validateMcpBearer(makeReq());
+    const wrongScheme = await validateMcpBearer(
+      makeReq({ Authorization: "Basic abc:def" }),
+    );
+    mockLookup.mockImplementation(async () => null);
+    const unknownToken = await validateMcpBearer(
+      makeReq({ Authorization: `Bearer ${VALID_BEARER}` }),
+    );
+
+    expect(noHeader.authenticated).toBe(false);
+    expect(wrongScheme.authenticated).toBe(false);
+    expect(unknownToken.authenticated).toBe(false);
+    if (!noHeader.authenticated && !wrongScheme.authenticated && !unknownToken.authenticated) {
+      expect(noHeader.error).toBe(wrongScheme.error);
+      expect(wrongScheme.error).toBe(unknownToken.error);
+    }
   });
 
   it("forwards the bearer body (after `Bearer `) to the lookup", async () => {

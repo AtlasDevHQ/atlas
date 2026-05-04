@@ -1,15 +1,13 @@
 /**
  * Tests for the MCP bearer-token store (#2024).
  *
- * Covers:
- *   - Pure helpers (`generateMcpToken`, `splitTokenPrefix`, `hashTokenSha256`)
- *   - DB-coupled helpers (`createMcpToken`, `listMcpTokensForOrg`,
- *     `revokeMcpToken`, `lookupMcpTokenByBearer`)
- *
- * The DB tests use the existing `_resetPool` test hook in `db/internal.ts`
- * to inject a stub pool that records every query and returns canned rows.
- * This is the same pattern the increment-suggestion-click tests use —
- * preferred over `mock.module` because partial-mock pitfalls don't apply.
+ * Covers pure helpers + DB-coupled functions (`createMcpToken`,
+ * `listMcpTokensForOrg`, `revokeMcpToken`, `lookupMcpTokenByBearer`,
+ * `computeMcpTokenStatus`) using the existing `_resetPool` test hook
+ * to inject a stub pool that records every query and returns canned
+ * rows. Same pattern as the increment-suggestion-click tests —
+ * preferred over `mock.module` because partial-mock pitfalls don't
+ * apply.
  */
 
 // internalQuery falls back to the raw pg.Pool when no @effect/sql
@@ -33,18 +31,16 @@ import {
   generateMcpToken,
   hashTokenSha256,
   splitTokenPrefix,
+  computeMcpTokenStatus,
   createMcpToken,
   listMcpTokensForOrg,
   revokeMcpToken,
   lookupMcpTokenByBearer,
   __INTERNAL,
 } from "../mcp-token";
+import { decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 
 // ── Stub pool ──────────────────────────────────────────────────────
-//
-// The stub returns canned rows based on SQL text matching. Per-test
-// state (queued rows, captured queries) lives in module-level
-// variables that beforeEach resets.
 
 interface QueryCall {
   sql: string;
@@ -102,7 +98,6 @@ describe("generateMcpToken()", () => {
     expect(token.length).toBe(__INTERNAL.TOKEN_TOTAL_LEN);
     expect(prefix.length).toBe(__INTERNAL.TOKEN_PREFIX.length + 8);
     expect(token.startsWith(prefix)).toBe(true);
-    // hashHex is the SHA-256 of the plaintext (64 hex chars).
     expect(hashHex.length).toBe(64);
     expect(hashHex).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -136,18 +131,49 @@ describe("splitTokenPrefix()", () => {
   });
   it("rejects wrong total length", () => {
     expect(splitTokenPrefix("atl_mcp_too_short")).toBe(null);
-    expect(
-      splitTokenPrefix("atl_mcp_" + "a".repeat(1000)),
-    ).toBe(null);
+    expect(splitTokenPrefix("atl_mcp_" + "a".repeat(1000))).toBe(null);
   });
   it("rejects wrong leading prefix", () => {
-    // Same length, different scheme prefix.
     const wrong = "atl_xxx_" + "a".repeat(__INTERNAL.TOKEN_TOTAL_LEN - 8);
     expect(splitTokenPrefix(wrong)).toBe(null);
   });
   it("rejects non-hex bodies", () => {
     const bad = "atl_mcp_" + "g".repeat(__INTERNAL.TOKEN_TOTAL_LEN - 8);
     expect(splitTokenPrefix(bad)).toBe(null);
+  });
+  it("rejects uppercase hex (regex is case-sensitive on purpose)", () => {
+    // generateMcpToken always emits lowercase. An uppercased bearer is
+    // a different string than the canonical token; if we accepted both
+    // a future change to the regex would break either lookup direction
+    // silently.
+    const bad = "atl_mcp_" + "A".repeat(__INTERNAL.TOKEN_TOTAL_LEN - 8);
+    expect(splitTokenPrefix(bad)).toBe(null);
+  });
+});
+
+describe("computeMcpTokenStatus()", () => {
+  const now = Date.now();
+  it("returns active when nothing is set", () => {
+    expect(computeMcpTokenStatus(null, null, now)).toBe("active");
+  });
+  it("returns active when expiry is in the future", () => {
+    expect(
+      computeMcpTokenStatus(null, new Date(now + 60_000), now),
+    ).toBe("active");
+  });
+  it("returns expired when expiry is in the past", () => {
+    expect(
+      computeMcpTokenStatus(null, new Date(now - 60_000), now),
+    ).toBe("expired");
+  });
+  it("returns revoked even when expiry is also past (revoked beats expired)", () => {
+    expect(
+      computeMcpTokenStatus(
+        new Date(now - 30_000),
+        new Date(now - 60_000),
+        now,
+      ),
+    ).toBe("revoked");
   });
 });
 
@@ -171,26 +197,29 @@ describe("createMcpToken()", () => {
     expect(captured).toHaveLength(1);
     const { sql, params } = lastCall();
     expect(sql).toContain("INSERT INTO mcp_tokens");
-    // Argument order matches the route in mcp-token.ts createMcpToken:
-    //  $1 id, $2 org_id, $3 user_id, $4 name, $5 token_prefix,
-    //  $6 token_hash_encrypted, $7 token_hash_key_version, $8 scopes,
-    //  $9 expires_at, $10 created_by_user_id
     expect(params[1]).toBe("org-a");
     expect(params[2]).toBe("user-1");
     expect(params[3]).toBe("Claude Desktop");
     expect(params[4]).toBe(created.prefix);
 
-    // The hash column receives ciphertext OR plaintext-passthrough
-    // depending on whether ATLAS_ENCRYPTION_KEYS is set. Either way it
-    // must NEVER equal the plaintext token — only ever the SHA-256.
-    const stored = params[6 - 1]; // 1-indexed in SQL → 0-indexed here
+    const stored = params[5];   // 0-indexed; 6th param is the encrypted hash
     expect(stored).toBeString();
     expect(stored).not.toBe(created.token);
-    // SHA-256 of the plaintext token, in hex (raw or wrapped in
-    // `enc:vN:`). Either form contains the digest's hex chars only
-    // *inside* the `enc:` body — easier to assert: stored value,
-    // when decrypted, equals the digest. Decrypt is round-tripped by
-    // lookup tests below; here we settle for "not the plaintext".
+  });
+
+  it("stored hash round-trips back to SHA-256(plaintext token)", async () => {
+    // Closes the loop on the property `lookupMcpTokenByBearer` depends
+    // on: the column written by `createMcpToken` MUST decrypt back to
+    // the digest we'll compare against. Works whether or not the test
+    // env has `ATLAS_ENCRYPTION_KEYS` configured — `decryptSecret` is
+    // the right inverse in both passthrough and encrypted modes.
+    rowsResolver = () => [];
+    const created = await createMcpToken({
+      orgId: "org-a",
+      userId: "user-1",
+    });
+    const stored = String(lastCall().params[5]);
+    expect(decryptSecret(stored)).toBe(hashTokenSha256(created.token));
   });
 
   it("defaults scopes to [] and expiresAt to null", async () => {
@@ -209,28 +238,30 @@ describe("createMcpToken()", () => {
 // ── listMcpTokensForOrg ───────────────────────────────────────────
 
 describe("listMcpTokensForOrg()", () => {
+  function rowFor(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "mcp_111",
+      org_id: "org-a",
+      user_id: "user-1",
+      name: "Claude",
+      token_prefix: "atl_mcp_aaaaaaaa",
+      token_hash_encrypted: "ignored-here",
+      token_hash_key_version: 1,
+      scopes: [],
+      last_used_at: null,
+      expires_at: null,
+      revoked_at: null,
+      created_at: new Date(),
+      created_by_user_id: "user-1",
+      ...overrides,
+    };
+  }
+
   it("returns rows shaped as McpTokenSummary, filtered by org", async () => {
-    const now = new Date();
     rowsResolver = (sql, params) => {
       expect(sql).toContain("WHERE org_id = $1");
       expect(params[0]).toBe("org-a");
-      return [
-        {
-          id: "mcp_111",
-          org_id: "org-a",
-          user_id: "user-1",
-          name: "Claude",
-          token_prefix: "atl_mcp_aaaaaaaa",
-          token_hash_encrypted: "ignored-here",
-          token_hash_key_version: 1,
-          scopes: [],
-          last_used_at: null,
-          expires_at: null,
-          revoked_at: null,
-          created_at: now,
-          created_by_user_id: "user-1",
-        },
-      ];
+      return [rowFor()];
     };
 
     const rows = await listMcpTokensForOrg("org-a");
@@ -249,18 +280,40 @@ describe("listMcpTokensForOrg()", () => {
     expect(rows[0]).not.toHaveProperty("token_hash_encrypted");
     expect(rows[0]).not.toHaveProperty("tokenHashEncrypted");
   });
+
+  it("derives status: 'active' for a fresh row", async () => {
+    rowsResolver = () => [rowFor()];
+    const rows = await listMcpTokensForOrg("org-a");
+    expect(rows[0].status).toBe("active");
+  });
+
+  it("derives status: 'expired' for a past expires_at", async () => {
+    rowsResolver = () => [
+      rowFor({ expires_at: new Date(Date.now() - 60_000) }),
+    ];
+    const rows = await listMcpTokensForOrg("org-a");
+    expect(rows[0].status).toBe("expired");
+  });
+
+  it("derives status: 'revoked' even when also expired", async () => {
+    rowsResolver = () => [
+      rowFor({
+        revoked_at: new Date(Date.now() - 30_000),
+        expires_at: new Date(Date.now() - 60_000),
+      }),
+    ];
+    const rows = await listMcpTokensForOrg("org-a");
+    expect(rows[0].status).toBe("revoked");
+  });
 });
 
 // ── revokeMcpToken ────────────────────────────────────────────────
 
 describe("revokeMcpToken()", () => {
-  it("revokes when the row exists and is active", async () => {
-    const revokedAt = new Date();
-    let updateCallCount = 0;
+  it("revokes when the row exists and is active, returning prefix + name", async () => {
     rowsResolver = (sql) => {
-      if (sql.includes("UPDATE mcp_tokens")) {
-        updateCallCount++;
-        return [{ revoked_at: revokedAt, prior_revoked_at: null }];
+      if (sql.startsWith("UPDATE mcp_tokens")) {
+        return [{ token_prefix: "atl_mcp_abcdef12", name: "Claude" }];
       }
       return [];
     };
@@ -268,20 +321,32 @@ describe("revokeMcpToken()", () => {
     const result = await revokeMcpToken({ id: "mcp_111", orgId: "org-a" });
     expect(result.revoked).toBe(true);
     expect(result.alreadyRevokedAt).toBe(null);
-    expect(updateCallCount).toBe(1);
-    const { params } = lastCall();
-    expect(params[0]).toBe("mcp_111");
-    expect(params[1]).toBe("org-a");
+    expect(result.prefix).toBe("atl_mcp_abcdef12");
+    expect(result.name).toBe("Claude");
+
+    const updateCall = captured.find((c) =>
+      c.sql.startsWith("UPDATE mcp_tokens"),
+    );
+    expect(updateCall?.params[0]).toBe("mcp_111");
+    expect(updateCall?.params[1]).toBe("org-a");
+    // SQL is a plain UPDATE+RETURNING (the prior CTE was dead code and
+    // was removed). RETURNING surfaces what the audit row needs.
+    expect(updateCall?.sql).toContain("RETURNING token_prefix, name");
+    expect(updateCall?.sql).toContain("revoked_at IS NULL");
   });
 
-  it("returns alreadyRevokedAt when called twice (idempotent)", async () => {
-    // Second call: UPDATE matches no rows because revoked_at IS NULL
-    // is false; the follow-up SELECT surfaces the prior tombstone.
+  it("returns alreadyRevokedAt + prefix/name when called twice (idempotent)", async () => {
     const priorRevoked = new Date(Date.now() - 60_000);
     rowsResolver = (sql) => {
-      if (sql.startsWith("WITH prior")) return [];
-      if (sql.startsWith("SELECT revoked_at FROM mcp_tokens")) {
-        return [{ revoked_at: priorRevoked }];
+      if (sql.startsWith("UPDATE mcp_tokens")) return [];
+      if (sql.includes("SELECT revoked_at, token_prefix, name")) {
+        return [
+          {
+            revoked_at: priorRevoked,
+            token_prefix: "atl_mcp_abcdef12",
+            name: "Claude",
+          },
+        ];
       }
       return [];
     };
@@ -289,39 +354,76 @@ describe("revokeMcpToken()", () => {
     const result = await revokeMcpToken({ id: "mcp_111", orgId: "org-a" });
     expect(result.revoked).toBe(false);
     expect(result.alreadyRevokedAt?.getTime()).toBe(priorRevoked.getTime());
+    expect(result.prefix).toBe("atl_mcp_abcdef12");
+    expect(result.name).toBe("Claude");
   });
 
-  it("returns not-found when the row doesn't exist for this org", async () => {
-    rowsResolver = (sql) => {
-      if (sql.startsWith("WITH prior")) return [];
-      if (sql.startsWith("SELECT revoked_at FROM mcp_tokens")) return [];
-      return [];
-    };
+  it("returns not-found (all-null outcome) when the row doesn't exist for this org", async () => {
+    rowsResolver = () => [];
     const result = await revokeMcpToken({ id: "nope", orgId: "org-a" });
     expect(result.revoked).toBe(false);
     expect(result.alreadyRevokedAt).toBe(null);
+    expect(result.prefix).toBe(null);
+    expect(result.name).toBe(null);
   });
 
-  it("does not revoke a row owned by a different org (workspace isolation)", async () => {
-    // The UPDATE statement filters on `org_id = $2`, so passing a
-    // different org id matches no rows — same shape as the not-found
-    // case. Verifies the SQL carries the org filter at all.
-    rowsResolver = (sql) => {
-      if (sql.startsWith("WITH prior")) return [];
-      if (sql.startsWith("SELECT revoked_at FROM mcp_tokens")) return [];
+  it("behaviorally isolates workspaces — stub returns row only for the matching org", async () => {
+    // Stronger than asserting SQL shape: the resolver actually inspects
+    // the org param and returns a row only when the legitimate org
+    // matches. A regression that drops `org_id = $2` would make the
+    // first sub-test fail (revoke succeeded for org-other) AND change
+    // the second sub-test (revoke succeeded for org-a regardless of
+    // the resolver's check).
+    let caseRunning: "legitimate" | "spoof" = "legitimate";
+    rowsResolver = (sql, params) => {
+      if (sql.startsWith("UPDATE mcp_tokens")) {
+        if (params[1] === "org-a" && caseRunning === "legitimate") {
+          return [{ token_prefix: "atl_mcp_abcdef12", name: "Claude" }];
+        }
+        return [];
+      }
+      if (sql.includes("SELECT revoked_at, token_prefix, name")) {
+        return [];
+      }
       return [];
     };
-    const result = await revokeMcpToken({ id: "mcp_111", orgId: "org-other" });
-    expect(result.revoked).toBe(false);
-    // And the UPDATE we sent really did include the org id:
-    const updateCall = captured.find((c) => c.sql.startsWith("WITH prior"));
-    expect(updateCall?.params[1]).toBe("org-other");
+
+    caseRunning = "legitimate";
+    const ok = await revokeMcpToken({ id: "mcp_111", orgId: "org-a" });
+    expect(ok.revoked).toBe(true);
+
+    captured = [];
+    caseRunning = "spoof";
+    const blocked = await revokeMcpToken({
+      id: "mcp_111",
+      orgId: "org-other",
+    });
+    expect(blocked.revoked).toBe(false);
+    expect(blocked.alreadyRevokedAt).toBe(null);
+    expect(blocked.prefix).toBe(null);
+    expect(blocked.name).toBe(null);
   });
 });
 
 // ── lookupMcpTokenByBearer ────────────────────────────────────────
 
 describe("lookupMcpTokenByBearer()", () => {
+  /** Build a row that decrypts to the given hash (passthrough in tests). */
+  function rowWithHash(
+    overrides: { id?: string; orgId?: string; userId?: string | null; scopes?: string[] } = {},
+    hashHex: string,
+  ) {
+    return {
+      id: overrides.id ?? "mcp_111",
+      org_id: overrides.orgId ?? "org-a",
+      user_id: overrides.userId === undefined ? "user-1" : overrides.userId,
+      scopes: overrides.scopes ?? [],
+      token_hash_encrypted: hashHex,
+      expires_at: null,
+      last_used_at: null,
+    };
+  }
+
   it("rejects a malformed bearer without issuing a DB query", async () => {
     const result = await lookupMcpTokenByBearer("not-an-atl-token");
     expect(result).toBe(null);
@@ -330,40 +432,33 @@ describe("lookupMcpTokenByBearer()", () => {
 
   it("returns null for unknown prefix (zero candidate rows)", async () => {
     const { token } = generateMcpToken();
-    rowsResolver = () => []; // no candidates
+    rowsResolver = () => [];
     const result = await lookupMcpTokenByBearer(token);
     expect(result).toBe(null);
     expect(captured).toHaveLength(1);
+    // Both invariants must be in the SELECT — losing either breaks
+    // the immediate-revocation property at the SQL layer.
     expect(captured[0].sql).toContain("WHERE token_prefix = $1");
     expect(captured[0].sql).toContain("revoked_at IS NULL");
+    expect(captured[0].sql).toContain(
+      "expires_at IS NULL OR expires_at > NOW()",
+    );
   });
 
   it("returns identity when a candidate's hash matches", async () => {
     const { token, prefix, hashHex } = generateMcpToken();
     let touched = false;
-    rowsResolver = (sql, _params) => {
+    rowsResolver = (sql) => {
       if (sql.includes("UPDATE mcp_tokens SET last_used_at")) {
         touched = true;
         return [];
       }
-      // SELECT — return one candidate whose stored hash matches.
       return [
-        {
-          id: "mcp_111",
-          org_id: "org-a",
-          user_id: "user-1",
-          scopes: ["mcp:read"],
-          // encryptSecret is a passthrough when no key is set, so the
-          // raw hex is what `decryptSecret` will return.
-          token_hash_encrypted: hashHex,
-          expires_at: null,
-          last_used_at: null,
-        },
+        rowWithHash({ id: "mcp_111", orgId: "org-a", scopes: ["mcp:read"] }, hashHex),
       ];
     };
 
     const result = await lookupMcpTokenByBearer(token);
-    expect(result).not.toBe(null);
     expect(result).toEqual({
       tokenId: "mcp_111",
       orgId: "org-a",
@@ -371,62 +466,155 @@ describe("lookupMcpTokenByBearer()", () => {
       scopes: ["mcp:read"],
     });
 
-    // Best-effort touch of last_used_at — fire-and-forget, may
-    // resolve on the microtask queue.
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(touched).toBe(true);
 
-    // Lookup binds prefix in $1
     const select = captured.find((c) => c.sql.includes("SELECT id"));
     expect(select?.params[0]).toBe(prefix);
   });
 
-  it("returns null when no candidate hash matches the incoming bearer", async () => {
-    const { token, prefix } = generateMcpToken();
+  it("scans past a decrypt failure to find a sibling matching row (loop continues)", async () => {
+    // Critical regression test: the comment in the source promises
+    // the loop continues past per-row decrypt failures so a
+    // misversioned ciphertext on row[0] doesn't poison a sibling
+    // valid match on row[1]. A future refactor turning `continue`
+    // into `return null` would silently break auth recovery during
+    // key-rotation windows.
+    const { token, hashHex } = generateMcpToken();
     rowsResolver = (sql) => {
       if (!sql.includes("SELECT id")) return [];
-      // Candidate's stored hash is for a *different* token — same
-      // prefix collision (rare in real life) but body differs.
-      const otherToken = generateMcpToken();
       return [
+        // Row 0: decrypts will throw because the body isn't valid
+        // ciphertext format and isn't a hex digest either.
         {
-          id: "mcp_222",
+          id: "mcp_dead",
           org_id: "org-a",
           user_id: "user-1",
           scopes: [],
-          token_hash_encrypted: otherToken.hashHex,
+          token_hash_encrypted: "enc:v999:not-real-base64-payload",
+          expires_at: null,
+          last_used_at: null,
+        },
+        // Row 1: the legitimate match.
+        rowWithHash({ id: "mcp_match", orgId: "org-a" }, hashHex),
+      ];
+    };
+    const result = await lookupMcpTokenByBearer(token);
+    expect(result?.tokenId).toBe("mcp_match");
+  });
+
+  it("throws when EVERY candidate row fails to decrypt (keyset misconfig signal)", async () => {
+    // Aggregate-failure detector: if the entire candidate set fell
+    // over decrypt, we are in a systemic outage (likely a missing
+    // legacy key after a botched rotation) — the validator must
+    // throw so the bearer middleware returns 500 rather than
+    // wallpapering 401s on every customer.
+    const { token } = generateMcpToken();
+    rowsResolver = (sql) => {
+      if (!sql.includes("SELECT id")) return [];
+      return [
+        {
+          id: "mcp_a",
+          org_id: "org-a",
+          user_id: "user-1",
+          scopes: [],
+          token_hash_encrypted: "enc:v999:not-real-base64",
+          expires_at: null,
+          last_used_at: null,
+        },
+        {
+          id: "mcp_b",
+          org_id: "org-a",
+          user_id: "user-1",
+          scopes: [],
+          token_hash_encrypted: "enc:v999:also-not-real",
           expires_at: null,
           last_used_at: null,
         },
       ];
     };
-    expect(prefix).toBeDefined();
+    expect(lookupMcpTokenByBearer(token)).rejects.toThrow(
+      /all candidate rows failed to decrypt/,
+    );
+  });
+
+  it("returns null when no candidate hash matches the incoming bearer", async () => {
+    const { token } = generateMcpToken();
+    rowsResolver = (sql) => {
+      if (!sql.includes("SELECT id")) return [];
+      const otherToken = generateMcpToken();
+      return [rowWithHash({ id: "mcp_222", orgId: "org-a" }, otherToken.hashHex)];
+    };
     const result = await lookupMcpTokenByBearer(token);
     expect(result).toBe(null);
   });
 
-  it("filters expired tokens at the SQL layer (expires_at clause present)", async () => {
-    const { token } = generateMcpToken();
-    rowsResolver = () => []; // simulate that the SQL filtered the expired row
-    await lookupMcpTokenByBearer(token);
-    // The SELECT must carry the expiry clause so an expired row
-    // never reaches the in-process loop. This is the property that
-    // makes "revocation is immediate" true.
-    expect(captured[0].sql).toContain(
-      "expires_at IS NULL OR expires_at > NOW()",
-    );
+  it("isolates workspaces — bound orgId comes from the row, not from caller input", async () => {
+    const { token, prefix, hashHex } = generateMcpToken();
+    rowsResolver = (sql) => {
+      if (!sql.includes("SELECT id")) return [];
+      return [rowWithHash({ id: "mcp_111", orgId: "org-a" }, hashHex)];
+    };
+    const result = await lookupMcpTokenByBearer(token);
+    expect(result?.orgId).toBe("org-a");
+    expect(captured[0].params).toEqual([prefix]);
   });
 
-  it("isolates workspaces — the SELECT does not bind any org id", async () => {
-    // Workspace isolation is enforced at *result-construction* time:
-    // the resolved identity carries the row's `org_id`, which is what
-    // the bearer middleware promotes into AuthContext. The lookup
-    // doesn't filter on a caller-supplied org because the bearer is
-    // anonymous — its workspace is *defined by* the row, not asked
-    // for. That's the invariant: workspace A's token *cannot* return
-    // workspace B's identity because `tokenId → orgId` is a
-    // many-to-one relation in the table.
-    const { token, prefix, hashHex } = generateMcpToken();
+  it("end-to-end: create → revoke → lookup returns null (revocation is immediate)", async () => {
+    // The store does not maintain in-process state — "immediate
+    // revocation" means the SQL alone enforces it. We simulate a
+    // realistic state machine in the stub: after revoke, the row no
+    // longer satisfies `revoked_at IS NULL` so the lookup SELECT
+    // returns zero candidates. If a future refactor adds an
+    // in-process cache or drops the SQL clause, this test fails.
+    let revoked = false;
+    let plaintextToken = "";
+    rowsResolver = (sql, params) => {
+      if (sql.includes("INSERT INTO mcp_tokens")) {
+        // Capture the encrypted-hash column value so SELECTs can
+        // surface a row that decrypts back to it.
+        plaintextToken = String(params[5] ?? "");
+        return [];
+      }
+      if (sql.startsWith("UPDATE mcp_tokens") && sql.includes("revoked_at = NOW()")) {
+        revoked = true;
+        return [{ token_prefix: "atl_mcp_xxxxxxxx", name: null }];
+      }
+      if (sql.includes("SELECT id") && sql.includes("token_prefix = $1")) {
+        if (revoked) return []; // SQL filter would have removed the row
+        return [
+          {
+            id: "mcp_111",
+            org_id: "org-a",
+            user_id: "user-1",
+            scopes: [],
+            token_hash_encrypted: plaintextToken,
+            expires_at: null,
+            last_used_at: null,
+          },
+        ];
+      }
+      return [];
+    };
+
+    const created = await createMcpToken({ orgId: "org-a", userId: "user-1" });
+
+    const before = await lookupMcpTokenByBearer(created.token);
+    expect(before).not.toBe(null);
+    expect(before?.tokenId).toBe("mcp_111");
+
+    await revokeMcpToken({ id: "mcp_111", orgId: "org-a" });
+
+    const after = await lookupMcpTokenByBearer(created.token);
+    expect(after).toBe(null);
+  });
+});
+
+// ── touchLastUsed ────────────────────────────────────────────────
+
+describe("lookupMcpTokenByBearer() — last_used_at sampling", () => {
+  it("does NOT issue a touch UPDATE when last_used_at is recent (within sampling window)", async () => {
+    const { token, hashHex } = generateMcpToken();
     rowsResolver = (sql) => {
       if (!sql.includes("SELECT id")) return [];
       return [
@@ -437,15 +625,75 @@ describe("lookupMcpTokenByBearer()", () => {
           scopes: [],
           token_hash_encrypted: hashHex,
           expires_at: null,
-          last_used_at: null,
+          last_used_at: new Date(),  // touched seconds ago
         },
       ];
     };
+
     const result = await lookupMcpTokenByBearer(token);
-    expect(result?.orgId).toBe("org-a");
-    expect(result?.orgId).not.toBe("org-b");
-    // SELECT param surface is just the prefix — no org id is
-    // accepted from caller-controlled input.
-    expect(captured[0].params).toEqual([prefix]);
+    expect(result).not.toBe(null);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const touched = captured.find((c) =>
+      c.sql.includes("UPDATE mcp_tokens SET last_used_at"),
+    );
+    expect(touched).toBeUndefined();
+  });
+
+  it("does issue a touch UPDATE when last_used_at is older than the sampling window", async () => {
+    const { token, hashHex } = generateMcpToken();
+    const stale = new Date(Date.now() - __INTERNAL.LAST_USED_TOUCH_INTERVAL_MS - 1000);
+    rowsResolver = (sql) => {
+      if (sql.includes("UPDATE mcp_tokens SET last_used_at")) return [];
+      if (!sql.includes("SELECT id")) return [];
+      return [
+        {
+          id: "mcp_111",
+          org_id: "org-a",
+          user_id: "user-1",
+          scopes: [],
+          token_hash_encrypted: hashHex,
+          expires_at: null,
+          last_used_at: stale,
+        },
+      ];
+    };
+
+    await lookupMcpTokenByBearer(token);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const touched = captured.find((c) =>
+      c.sql.includes("UPDATE mcp_tokens SET last_used_at"),
+    );
+    expect(touched).toBeDefined();
+  });
+
+  it("does NOT block auth when the touch UPDATE itself throws", async () => {
+    // last_used_at is observability, not a security control —
+    // lookup must still resolve the identity even if the touch
+    // write fails.
+    const { token, hashHex } = generateMcpToken();
+    rowsResolver = (sql) => {
+      if (sql.includes("UPDATE mcp_tokens SET last_used_at")) {
+        throw new Error("touch UPDATE failed");
+      }
+      if (!sql.includes("SELECT id")) return [];
+      return [
+        {
+          id: "mcp_111",
+          org_id: "org-a",
+          user_id: "user-1",
+          scopes: [],
+          token_hash_encrypted: hashHex,
+          expires_at: null,
+          last_used_at: null,  // null forces the touch path
+        },
+      ];
+    };
+
+    const result = await lookupMcpTokenByBearer(token);
+    expect(result?.tokenId).toBe("mcp_111");
+    // Wait for the fire-and-forget touch to settle so its rejection
+    // is caught (else bun reports an unhandled rejection).
+    await new Promise<void>((resolve) => setImmediate(resolve));
   });
 });

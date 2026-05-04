@@ -5,6 +5,7 @@
   "pages": [
     "choosing-an-integration",
     "mcp",
+    "mcp-hosted",
     "slack",
     "python",
     "notebook",

@@ -420,6 +420,26 @@ if (process.env.DISCORD_CLIENT_ID) {
   log.debug("Discord integration disabled (DISCORD_CLIENT_ID not set)");
 }
 
+// Hosted MCP endpoint — issue #2024 / #2028. Mounts the MCP server as a
+// Hono route under /mcp/{workspace_id}/sse so the same per-region API
+// instance that serves the data also serves the agent. Keeps residency
+// guarantees from 1.0.0 — workspace data never crosses regions even via
+// the agent path.
+//
+// Lazy import + try/catch so a missing or broken @atlas/mcp install
+// doesn't crash the api server (mirrors the admin / billing / slack
+// patterns above).
+try {
+  const { createHostedMcpRouter } = await import("@atlas/mcp/hosted");
+  app.route("/mcp", createHostedMcpRouter());
+  log.info("Hosted MCP endpoint mounted at /mcp/{workspace_id}/sse");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to mount hosted MCP endpoint — agent connections via mcp.useatlas.dev will be unavailable",
+  );
+}
+
 app.onError((err, c) => {
   // Framework HTTP exceptions (e.g., malformed JSON from @hono/zod-openapi) carry
   // their own status code and response — forward them instead of converting to 500.

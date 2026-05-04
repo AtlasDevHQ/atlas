@@ -5,7 +5,8 @@
   "license": "AGPL-3.0-or-later",
   "exports": {
     "./server": "./src/server.ts",
-    "./sse": "./src/sse.ts"
+    "./sse": "./src/sse.ts",
+    "./hosted": "./src/hosted.ts"
   },
   "bin": {
     "atlas-mcp": "./bin/serve.ts",
@@ -21,7 +22,8 @@
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@useatlas/mcp": "workspace:*",
     "@useatlas/types": "workspace:*",
-    "effect": "^3.21.0"
+    "effect": "^3.21.0",
+    "hono": "^4.12.9"
   },
   "devDependencies": {
     "zod": "^4.3.6"

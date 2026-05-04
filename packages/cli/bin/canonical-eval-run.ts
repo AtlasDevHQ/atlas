@@ -283,7 +283,7 @@ async function runWithAgent(
     // Glossary mode never invokes the agent — we assert the
     // disambiguation contract by checking semantic-layer state directly.
     if (q.mode === "glossary") {
-      return compareGlossaryResult(q, toGlossaryMatches(lookups, q.term ?? ""));
+      return compareGlossaryResult(q, toGlossaryMatches(lookups, q.term));
     }
 
     // Narrow the try/catch to ONLY the agent invocation. Comparator
@@ -337,7 +337,7 @@ async function runWithAgent(
       case "virtual":
         return compareVirtualResult(q, executed);
       default: {
-        const _exhaustive: never = q.mode;
+        const _exhaustive: never = q;
         throw new Error(`unreachable mode: ${String(_exhaustive)}`);
       }
     }

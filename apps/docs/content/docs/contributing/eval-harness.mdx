@@ -62,7 +62,11 @@ Atlas canonical-question eval
    - `pattern` — pass `entity` + `pattern`. Resolves a `query_patterns[*].sql` from an entity YAML.
    - `virtual` — pass `entity`, `dimension`, and an inline `sql`. Used to prove a `virtual: true` dimension compiles against the seed.
    - `glossary` — pass `term`. The harness asserts the glossary status (`ambiguous` / `defined`) and minimum mapping count.
-3. Choose loose `expect:` assertions — the harness runs against a deterministic seed, but absolute scalar values are brittle. Prefer `sql_pattern` (substrings the resolved SQL must contain), `min_rows` / `max_rows` (row-count bounds), `non_zero` (scalar metric guards), and `column` (single named column).
+3. Choose loose `expect:` assertions — the harness runs against a deterministic seed, but absolute scalar values are brittle. The accepted fields are per-mode:
+   - `metric` / `pattern` / `virtual` — `sql_pattern` (substrings the resolved SQL must contain), `min_rows` / `max_rows` (row-count bounds), `non_zero` (scalar metric guards), `column` (single named column).
+   - `glossary` — `status` (`defined` / `ambiguous`) and `mappings_min` (minimum number of `possible_mappings`).
+
+   The loader rejects mismatched shapes (e.g. a `glossary` question with `sql_pattern`, or a `metric` question with `status`) — the offending question id is named in the error message.
 4. Run `bun run eval:canonical` locally to confirm.
 5. Update this page if your question category isn't already covered.
 

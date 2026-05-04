@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.AtlasDevHQ/atlas",
+  "title": "Atlas",
+  "description": "Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.",
+  "version": "0.0.2",
+  "websiteUrl": "https://docs.useatlas.dev/guides/mcp",
+  "repository": {
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@useatlas/mcp",
+      "version": "0.0.2",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "ATLAS_DATASOURCE_URL",
+          "description": "Analytics datasource URL (postgres, mysql, clickhouse, snowflake, duckdb, bigquery, salesforce). Optional — falls back to a bundled NovaMart SQLite demo when unset.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "ATLAS_PROVIDER",
+          "description": "LLM provider: anthropic, openai, bedrock, ollama, openai-compatible, gateway. Optional — the MCP server does not call an LLM directly (the client does); set this only if you also run Atlas's chat or scheduler.",
+          "isRequired": false
+        },
+        {
+          "name": "ATLAS_API_URL",
+          "description": "URL of a running Atlas API. Optional — defaults to http://localhost:3001. When set, the MCP server inherits the API's connections, semantic layer, and governance.",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

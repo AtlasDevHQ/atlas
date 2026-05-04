@@ -1,6 +1,7 @@
 {
   "name": "@useatlas/mcp",
-  "version": "0.0.1",
+  "version": "0.0.2",
+  "mcpName": "io.github.AtlasDevHQ/atlas",
   "description": "Atlas MCP plugin + bunx installer for Claude Desktop / Cursor / Continue",
   "type": "module",
   "main": "./src/index.ts",
@@ -30,6 +31,7 @@
     "bin/",
     "src/",
     "fixtures/",
+    "server.json",
     "README.md",
     "LICENSE"
   ],

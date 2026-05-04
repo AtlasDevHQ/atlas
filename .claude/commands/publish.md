@@ -109,9 +109,7 @@ done
 | `@useatlas/sdk` | `sdk-v*` | `sdk-v0.0.7` |
 | `@useatlas/plugin-sdk` | `plugin-sdk-v*` | `plugin-sdk-v0.0.7` |
 | `@useatlas/react` | `react-v*` | `react-v0.0.2` |
-| `@useatlas/<plugin>` | `<plugin>-v*` | `clickhouse-v0.0.6` |
-
-**Excluded:** `@useatlas/mcp` — private, depends on unpublished `@atlas/mcp` workspace package.
+| `@useatlas/<plugin>` | `<plugin>-v*` | `clickhouse-v0.0.6`, `mcp-v0.0.2` |
 
 **Publish order:** `types` must be published before `sdk` or `react` (they depend on it).
 
@@ -203,7 +201,6 @@ After initial setup, all subsequent publishes work automatically via tags.
 - Always verify the workflow actually triggered for each tag
 - Don't publish without user confirmation — wrong versions on npm are hard to undo
 - If a publish fails, don't retry blindly — check the error first
-- The `@useatlas/mcp` package is excluded (private, unpublished workspace dep)
 - Tags are always cut from main — never push a tag from a feature branch
 - Core packages (types, sdk, plugin-sdk, react) build before publish; sdk and plugin-sdk also test; plugins ship raw TypeScript
 - npm uses OIDC trusted publisher — no tokens needed, but the GitHub environment must be `npm`

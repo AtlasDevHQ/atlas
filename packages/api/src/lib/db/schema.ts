@@ -1497,42 +1497,9 @@ export const subProcessorSnapshots = pgTable(
   ],
 );
 
-// ---------------------------------------------------------------------------
-// MCP bearer tokens (#2024) — see migration 0046 for design notes.
-//
-// Storage convention: token plaintext is never persisted. The bearer
-// middleware compares against `decryptSecret(token_hash_encrypted)` —
-// this is the encrypted SHA-256 of the token. INTEGRATION_TABLES catalog
-// covers the column for F-47 rotation + F-42 residue audit.
-// ---------------------------------------------------------------------------
-
-export const mcpTokens = pgTable(
-  "mcp_tokens",
-  {
-    id: text("id").primaryKey(),
-    orgId: text("org_id").notNull(),
-    userId: text("user_id"),
-    name: text("name"),
-    tokenPrefix: text("token_prefix").notNull(),
-    tokenHashEncrypted: text("token_hash_encrypted").notNull(),
-    tokenHashKeyVersion: integer("token_hash_key_version").notNull().default(1),
-    // Stored as TEXT[] rather than JSONB — the shape is a flat list and
-    // array-overlap operators give the cleanest authorization-check SQL.
-    scopes: text("scopes").array().notNull().default(sql`ARRAY[]::TEXT[]`),
-    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    createdByUserId: text("created_by_user_id"),
-  },
-  (t) => [
-    // Bearer-middleware lookup. Partial index keeps the working set
-    // tight after revocations accumulate — only active rows are
-    // candidates for an incoming token.
-    index("idx_mcp_tokens_prefix_active")
-      .on(t.tokenPrefix)
-      .where(sql`revoked_at IS NULL`),
-    // Admin-UI list view: all tokens for the workspace, newest first.
-    index("idx_mcp_tokens_org_created").on(t.orgId, t.createdAt.desc()),
-  ],
-);
+// MCP bearer tokens (`mcp_tokens`) were added in PR A of #2024 and removed
+// in PR C when the hosted MCP path moved to OAuth 2.1 access tokens issued
+// by `@better-auth/oauth-provider`. The drizzle table definition lived
+// here through the soak; migration 0047 drops the table. Token lifecycle
+// for hosted MCP is now Better Auth's `oauthAccessToken` /
+// `oauthRefreshToken` schema, which Better Auth's runtime owns.

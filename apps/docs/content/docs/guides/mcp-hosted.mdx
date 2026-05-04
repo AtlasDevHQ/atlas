@@ -1,14 +1,14 @@
 ---
 title: Hosted MCP Endpoint
-description: Connect MCP clients to Atlas SaaS over HTTP using a workspace-scoped bearer token.
+description: Connect any MCP client to Atlas SaaS over OAuth 2.1 — Dynamic Client Registration, PKCE, JWT-signed access tokens.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Self-hosted Atlas exposes MCP over stdio (see the [MCP guide](/guides/mcp)). Atlas SaaS adds a hosted MCP endpoint over Streamable HTTP so the same `bunx @useatlas/mcp init` flow can target the regional API hostnames instead of a local subprocess.
+Self-hosted Atlas exposes MCP over stdio (see the [MCP guide](/guides/mcp)). Atlas SaaS adds a hosted MCP endpoint over Streamable HTTP that speaks **OAuth 2.1 + PKCE + Dynamic Client Registration (RFC 7591)** — the authorization model the [MCP spec](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization) requires. Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor, Gemini, Anthropic agents) connect via the hostnames below without any manual token minting.
 
 <Callout type="info">
-The hosted endpoint is reachable today via the regional hostnames below. The Settings → MCP Tokens UI and the `bunx @useatlas/mcp init --hosted` flag are in flight. Until those land, mint tokens via the admin REST surface and paste the URL into your client manually.
+The Settings → OAuth Clients UI and the `bunx @useatlas/mcp init --hosted` CLI flag are in flight (PR D and PR E of #2024). Until those land, MCP clients that support DCR can connect today using the metadata documents below; tokens are issued through the `/oauth2/authorize` flow.
 </Callout>
 
 ## URL pattern
@@ -35,25 +35,57 @@ The MCP SDK handles dispatch automatically — clients pointed at the URL above 
 
 ## Authentication
 
-```
-Authorization: Bearer atl_mcp_<token>
+Atlas's authorization server lives at `/api/auth`. Three discovery documents drive the OAuth flow:
+
+| Document | URL |
+|----------|-----|
+| Authorization-server metadata (RFC 8414) | `/.well-known/oauth-authorization-server/api/auth` |
+| OIDC discovery | `/.well-known/openid-configuration/api/auth` |
+| Protected-resource metadata (RFC 9728) | `/.well-known/oauth-protected-resource/mcp/{workspace_id}` |
+
+A standards-compliant MCP client:
+
+1. Hits the resource URL `/mcp/{workspace_id}/sse` without a bearer
+2. Receives a `401` with `WWW-Authenticate: Bearer realm="Atlas MCP", resource_metadata="…"` pointing at the protected-resource document
+3. Reads the document, finds Atlas's `/api/auth` issuer
+4. Registers as a public OAuth client via `POST /api/auth/oauth2/register` (DCR — no admin pre-issuance required)
+5. Sends the user through `/api/auth/oauth2/authorize` with PKCE + `scope=openid mcp:read offline_access`
+6. The user signs in (if needed), reviews and approves on `/oauth2/consent`
+7. Client exchanges the code at `/api/auth/oauth2/token` and gets a JWT access token + refresh token
+8. Reconnects to `/mcp/{workspace_id}/sse` with `Authorization: Bearer <jwt>`
+
+```http
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs…
 ```
 
-Bearer tokens are minted by workspace admins from the admin console (`/api/v1/admin/mcp-tokens`) and are workspace-scoped — they carry no permissions outside their workspace. Tokens are hashed (SHA-256) before storage, and the hash is encrypted at rest; lookups compare via timing-safe equality on the decrypted hash.
+### Scopes
 
-The plaintext token is shown **once** when minted. It's not retrievable afterwards. Lost tokens are revoked and replaced.
+| Scope | Grants |
+|-------|--------|
+| `openid` | The user's Atlas identity (`sub` claim) |
+| `profile` | Name and avatar |
+| `email` | Email address |
+| `offline_access` | A refresh token so the client doesn't have to send the user back through the browser |
+| `mcp:read` | Query workspace data through the MCP endpoint — required for any agent that wants to use Atlas as a data source |
+| `mcp:write` | Reserved for future write paths (run mutations, edit semantic layer). Currently the hosted MCP surface is read-only, so a token without `mcp:write` works for every shipping MCP tool |
+
+### Audience
+
+Tokens are bound to a per-region resource audience (`https://<region>.api.useatlas.dev/mcp`). A token issued at `api.useatlas.dev` won't verify at `api-eu.useatlas.dev` — audience mismatch is the first line of residency defense. The protected-resource metadata advertises the correct audience for each workspace.
+
+### Workspace claim
+
+Every issued JWT carries a custom claim `https://atlas.useatlas.dev/workspace_id` set to the workspace the user authenticated against. The hosted MCP route verifies this claim matches the `{workspace_id}` path segment — mismatch is `403 forbidden`. The server never reveals whether a given workspace exists.
 
 ## Workspace scoping
 
-The path `{workspace_id}` must match the workspace the bearer is bound to. A bearer for workspace A pointed at workspace B's URL returns `403 forbidden` — the server never reveals whether workspace B exists.
-
 ```http
 GET /mcp/org_b/sse                 ← path workspace
-Authorization: Bearer atl_mcp_…    ← token bound to org_a
+Authorization: Bearer <jwt>        ← workspace_id claim = org_a
 → 403 forbidden
 ```
 
-This guards against probing: an attacker who steals a workspace A token can't pivot to workspace B by URL.
+This guards against probing: a user authenticated against workspace A cannot pivot to workspace B by URL.
 
 ## Cross-region routing
 
@@ -74,7 +106,7 @@ MCP clients do not follow HTTP redirects by default, so the response body carrie
 
 ## Sessions and identity
 
-A POST without the `mcp-session-id` header is treated as a session-init request — the SDK creates a fresh server-side MCP session bound to the bearer's identity and returns the new session id in the response header. Subsequent frames send the header back and route to the same session. POSTs with an unknown session id return `404 unknown_session`; the client recovers by re-initializing.
+A POST without the `mcp-session-id` header is treated as a session-init request — the SDK creates a fresh server-side MCP session bound to the bearer's verified identity and returns the new session id in the response header. Subsequent frames send the header back and route to the same session. POSTs with an unknown session id return `404 unknown_session`; the client recovers by re-initializing.
 
 The session lives in memory on the API instance that handled init; behind a multi-replica load balancer, sticky routing is required so frames stay on the same instance.
 
@@ -82,18 +114,32 @@ The session lives in memory on the API instance that handled init; behind a mult
 
 ## Audit
 
-A `mcp_token.use` row is written to the workspace's admin action log when a session is established — once per session, not per JSON-RPC frame. The row carries `sessionId`, `orgId`, and the API region in its metadata so forensic queries can pivot on either dimension.
+A `mcp_session.start` row is written to the workspace's admin action log when a session is established — once per session, not per JSON-RPC frame. The row metadata carries `sessionId`, `orgId`, `clientId` (the registered OAuth client — e.g. `claude-desktop` or a DCR-allocated UUID), `tokenJti` (the JWT ID for forensic lookup), `region`, and the granted scopes.
 
-`mcp_token.create` and `mcp_token.revoke` are emitted by the admin CRUD route in the usual way.
+OAuth client lifecycle (register, rotate, delete) and token lifecycle (issue, revoke) are recorded by Better Auth's `oauthProvider` plugin in its own tables (`oauthClient`, `oauthAccessToken`, `oauthRefreshToken`, `oauthConsent`).
 
 ## Operational notes
 
-- **Max sessions per instance** is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100). Hitting the cap returns `503 too_many_sessions`. The cap counts both registered sessions and in-flight initializations, so a burst cannot overshoot it.
+- **Max sessions per instance** is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100). Hitting the cap returns `503 too_many_sessions`. The cap counts both registered sessions and in-flight initializations.
 - **Sticky routing** is required when running multiple API replicas behind a load balancer. Sessions are in-process; a frame routed to the wrong replica returns `404 unknown_session`. The client recovers by calling `initialize` again.
-- **Region failure mode**: residency is fail-closed. If the region of the workspace cannot be looked up (internal DB unreachable), this surface returns `503 region_unavailable` rather than serving traffic that might cross residency. The shared data-path misrouting check is graceful by default; the MCP path overrides that.
+- **Region failure mode**: residency is fail-closed. If the region of the workspace cannot be looked up (internal DB unreachable), this surface returns `503 region_unavailable` rather than serving traffic that might cross residency.
+- **Unauthenticated DCR** is enabled by default to support standard MCP clients. Operators with stricter threat models can opt out via `ATLAS_OAUTH_ALLOW_UNAUTH_DCR=false` — but doing so prevents Claude Desktop / ChatGPT / Cursor from onboarding without manual client provisioning.
 - A dedicated `mcp.useatlas.dev` hostname (regional CNAME-set) is on the ops backlog. Use the regional API hostnames in the meantime.
+
+## Migrating from the v1.4.0-dev `mcp_tokens` bearer
+
+PR A of #2024 introduced a custom `mcp_tokens` table for admin-minted bearers. PR C replaced it with OAuth 2.1 access tokens before v1.4.0 shipped — there are no production tokens to migrate. Self-hosted dev DBs that ran migration `0046_mcp_tokens.sql` get the table dropped by `0047_drop_mcp_tokens.sql` automatically.
+
+If you'd built a script against the legacy `/api/v1/admin/mcp-tokens` endpoints, replace it with:
+
+- `POST /api/auth/oauth2/register` for client registration (RFC 7591 / DCR)
+- `POST /api/auth/oauth2/token` with the `client_credentials` grant for machine-to-machine
+- `POST /api/auth/oauth2/revoke` for revocation (RFC 7009)
 
 ## See also
 
 - [MCP guide](/guides/mcp) — stdio installer for self-hosted Atlas and local IDE clients
-- [Admin: MCP tokens](/api-reference/admin-mcp-tokens/getAdminMcpTokens) — REST surface for minting and revoking tokens
+- [MCP authorization spec (2025-03-26)](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization)
+- [OAuth 2.1 (draft)](https://datatracker.ietf.org/doc/draft-ietf-oauth-v2-1/) — the protocol Atlas's auth server implements
+- [RFC 7591 — Dynamic Client Registration](https://datatracker.ietf.org/doc/html/rfc7591)
+- [RFC 9728 — Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)

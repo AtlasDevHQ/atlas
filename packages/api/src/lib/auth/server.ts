@@ -12,13 +12,16 @@
  */
 
 import { betterAuth, type Session, type User } from "better-auth";
-import { bearer, admin, organization } from "better-auth/plugins";
+import { bearer, admin, organization, jwt } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
-// @better-auth/api-key must match the better-auth core version.
-// Both are pinned to ^1.5.1 in package.json — update together.
+// @better-auth/* plugins must match the better-auth core version line.
+// All pinned to ^1.6.x in package.json — update together (the peer-dep
+// constraint is exact-version per minor on the @better-auth/* side).
 import { apiKey } from "@better-auth/api-key";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
+import { oauthProvider } from "@better-auth/oauth-provider";
+import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -497,6 +500,99 @@ function encodeAttributeValue(raw: string): string {
     .replaceAll(">", "&gt;");
 }
 
+// ---------------------------------------------------------------------------
+// OAuth 2.1 provider configuration (#2024)
+// ---------------------------------------------------------------------------
+
+/**
+ * Scopes advertised by the OAuth 2.1 authorization server. Standard OIDC
+ * scopes plus Atlas-specific MCP scopes for the hosted MCP endpoint.
+ *
+ * The MCP authorization spec (2025-03-26) requires the resource server to
+ * declare scopes in `/.well-known/oauth-protected-resource`; the `mcp:*`
+ * scopes here are the ones Atlas-shaped MCP clients (Claude Desktop,
+ * ChatGPT, Cursor, etc.) request when connecting to a hosted MCP endpoint.
+ *
+ * Order matters for the consent UI — declare the high-frequency scopes
+ * first so the rendered list matches user expectations.
+ */
+export const ATLAS_OAUTH_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  "offline_access",
+  // mcp:read = query workspace data through the MCP endpoint. Required
+  // for any agent that wants to use Atlas as a data source.
+  "mcp:read",
+  // mcp:write = reserved for future write paths (run mutations, edit
+  // semantic layer). Currently the hosted MCP surface is read-only, so
+  // a token without mcp:write still works for every shipping MCP tool.
+  // Declared so clients can request it now and the gate flips when we
+  // add write tools.
+  "mcp:write",
+] as const;
+
+/**
+ * Resolve the list of valid OAuth audiences from the environment.
+ *
+ * The MCP spec wants each MCP endpoint to be its own resource (with an
+ * audience URI) so a token issued to the SaaS US region cannot replay
+ * against the EU region. Per-region API hosts provide that natively.
+ *
+ * The audience the issuer accepts MUST equal what the resource server
+ * advertises and what the verifier checks. All three sites resolve to
+ * `<base>/mcp` (region-scoped, NOT workspace-scoped — see well-known.ts
+ * `buildResourceUri` for the rationale and the spec citation).
+ *
+ * Resolution priority:
+ *   1. ATLAS_OAUTH_VALID_AUDIENCES — comma-separated explicit list.
+ *      Used verbatim, no `/mcp` suffix appended (operator owns the
+ *      values and may want non-MCP audiences too).
+ *   2. ATLAS_PUBLIC_API_URL — same env var well-known.ts and hosted.ts
+ *      prefer; we suffix `/mcp` here so the issuer accepts the verifier's
+ *      expected audience.
+ *   3. BETTER_AUTH_URL — last fallback, `/mcp` suffix appended.
+ *
+ * Empty string in the env var → no override → fall back to (2)/(3).
+ */
+export function resolveOAuthValidAudiences(env: NodeJS.ProcessEnv): string[] {
+  const explicit = env.ATLAS_OAUTH_VALID_AUDIENCES?.trim();
+  if (explicit) {
+    return explicit
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  const base =
+    env.ATLAS_PUBLIC_API_URL?.trim() || env.BETTER_AUTH_URL?.trim();
+  if (!base) return [];
+  return [`${base.replace(/\/+$/, "")}/mcp`];
+}
+
+/**
+ * Resolve `allowUnauthenticatedClientRegistration` from the environment.
+ *
+ * MCP clients (Claude Desktop, ChatGPT, third-party agents) bootstrap by
+ * dynamically registering as public clients without an authentication
+ * header — this flag has to be on for the standard MCP onboarding flow
+ * to work. The plugin's README flags it as deprecation-bound: the MCP
+ * spec is debating Client ID Metadata Documents and signed `software_
+ * statement` registration, both of which would supersede the unauth path.
+ *
+ * Default on for SaaS deployments (the only path where the hosted MCP
+ * endpoint is reachable). Self-hosted operators can opt out via
+ * `ATLAS_OAUTH_ALLOW_UNAUTH_DCR=false` if their threat model rejects
+ * unattended client registration.
+ *
+ * Track the upstream MCP spec evolution and phase this off when CIMD or
+ * software-statement registration lands on `@better-auth/oauth-provider`.
+ */
+export function resolveAllowUnauthDcr(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.ATLAS_OAUTH_ALLOW_UNAUTH_DCR?.trim().toLowerCase();
+  if (raw === undefined) return true;
+  return !["false", "0", "no", "off"].includes(raw);
+}
+
 /**
  * Build the Better Auth plugins array.
  *
@@ -558,6 +654,64 @@ function buildPlugins() {
   plugins.push(
     twoFactor({
       issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
+    }),
+  );
+
+  // OAuth 2.1 authorization server — powers the hosted MCP endpoint
+  // (#2024) and is the standards-compliant path for any external client
+  // that needs to authenticate against Atlas (Claude Desktop, ChatGPT,
+  // Cursor, third-party MCP agents).
+  //
+  // The `jwt()` plugin must come BEFORE `oauthProvider()` — the OAuth
+  // provider depends on it for JWT-formatted access tokens. Without
+  // `jwt()`, oauthProvider would fall back to opaque-only tokens and
+  // every resource-server verify would round-trip to the introspection
+  // endpoint, which is fine functionally but ~10× slower under load.
+  //
+  // Schema (`oauthClient`, `oauthAccessToken`, `oauthRefreshToken`,
+  // `oauthConsent`, `jwks`) lands automatically through Better Auth's
+  // `ctx.runMigrations()` at boot — see migrate.ts.
+  plugins.push(jwt());
+  plugins.push(
+    oauthProvider({
+      // Where the user is sent when they hit /oauth2/authorize without
+      // a session. Existing managed-auth login page handles it.
+      loginPage: "/login",
+      // Consent screen for the user-grants-scopes step. Page lives in
+      // packages/web at src/app/oauth2/consent/page.tsx.
+      consentPage: "/oauth2/consent",
+      // Required for MCP onboarding — Claude Desktop / ChatGPT / Cursor
+      // dynamically register as public clients without prior credentials.
+      // See `resolveAllowUnauthDcr` for the deprecation-tracking note.
+      allowDynamicClientRegistration: true,
+      allowUnauthenticatedClientRegistration: resolveAllowUnauthDcr(process.env),
+      scopes: [...ATLAS_OAUTH_SCOPES],
+      validAudiences: resolveOAuthValidAudiences(process.env),
+      // Bind issued tokens to the authenticating user's active workspace
+      // so a token issued under workspace A cannot query workspace B's
+      // data through the hosted MCP endpoint. The cast is required
+      // because Better Auth's session-organization extension is
+      // contributed by the organization plugin and isn't part of the
+      // base session type the oauthProvider sees.
+      clientReference: ({ session }) => {
+        const orgId = (session as { activeOrganizationId?: string | null } | null | undefined)
+          ?.activeOrganizationId;
+        return typeof orgId === "string" ? orgId : undefined;
+      },
+      // Stamp the workspace id onto access tokens issued under a
+      // session that carries an active workspace. Tokens issued without
+      // one (e.g. an authenticated user with no organization yet)
+      // emit no claim and are rejected at the MCP edge with
+      // `missing_workspace_claim` — the issuer doesn't try to fabricate
+      // a binding, and the verifier doesn't accept an unbound bearer.
+      // Claim key is sourced from `oauth-claims.ts` so production
+      // issuance, MCP verification, and the test fixture share one
+      // literal — drift between sites silently breaks every token.
+      customAccessTokenClaims: ({ referenceId }) => {
+        return referenceId
+          ? { [ATLAS_OAUTH_WORKSPACE_CLAIM]: referenceId }
+          : {};
+      },
     }),
   );
 

@@ -246,21 +246,24 @@ export const ADMIN_ACTIONS = {
     revoke: "apikey.revoke",
   },
   /**
-   * MCP bearer-token lifecycle (#2024). `mcp_token.create` and
-   * `mcp_token.revoke` are emitted by the admin CRUD route in
-   * `admin-mcp-tokens.ts`. `mcp_token.use` is emitted by the bearer
-   * middleware on first-use only (sampled — every call would dwarf
-   * every other audit signal in the table). Without these entries a
-   * compromised admin could mint an MCP token, exfiltrate workspace
-   * data through a hosted agent, then revoke the token leaving zero
-   * forensic trace of the issuance. Action strings match the wire
-   * values exactly so a forensic query can `grep mcp_token.create`
-   * against this catalog and the emit sites.
+   * Hosted MCP session lifecycle (#2024 PR C). Emitted on every new
+   * session-init at `/mcp/{workspace_id}/sse` — sampled per session,
+   * not per JSON-RPC frame, since a single agent connection can issue
+   * thousands of tool calls. Metadata carries `sessionId`, `orgId`,
+   * `clientId` (the OAuth client_id, e.g. `claude-desktop` or a DCR
+   * UUID), and `region` so forensic queries pivot on either the
+   * workspace, the registered OAuth client, or the API region without
+   * a join.
+   *
+   * The original PR A/B catalog had `mcp_token.{create,revoke,use}`.
+   * Those actions were dropped along with the `mcp_tokens` table when
+   * the hosted MCP path moved to OAuth 2.1 access tokens — token
+   * lifecycle is now Better Auth's `oauthAccessToken` table and lives
+   * in its built-in audit log if you wire one. The `start` action here
+   * is the only Atlas-side trace of an MCP connection happening.
    */
-  mcp_token: {
-    create: "mcp_token.create",
-    revoke: "mcp_token.revoke",
-    use: "mcp_token.use",
+  mcp_session: {
+    start: "mcp_session.start",
   },
   /**
    * Approval-workflow domain. `approve` / `deny` cover the review decision

@@ -1,0 +1,24 @@
+-- 0047 — Drop the mcp_tokens table (#2024 PR C).
+--
+-- PR A of #2024 (migration 0046) introduced a custom `mcp_tokens` bearer
+-- table for the hosted MCP endpoint. PR C pivots to OAuth 2.1 access
+-- tokens issued by `@better-auth/oauth-provider`, which manages its own
+-- `oauthAccessToken` / `oauthRefreshToken` schema via Better Auth's
+-- `ctx.runMigrations()`. The custom bearer machinery is gone:
+--   • `lib/auth/mcp-token.ts`       — deleted
+--   • `lib/auth/mcp-bearer.ts`      — deleted
+--   • `api/routes/admin-mcp-tokens.ts` — deleted
+--   • `api/routes/mcp-middleware.ts`   — deleted
+--   • `audit/actions.ts:mcp_token`     — replaced by `mcp_session.start`
+--   • `db/integration-tables.ts:mcp_tokens` — removed
+-- Hosted MCP authentication now flows through `verifyAccessToken` from
+-- `better-auth/oauth2`. See `packages/mcp/src/hosted.ts` for the new
+-- bearer path.
+--
+-- This migration drops the table unconditionally. v1.4.0 has not shipped,
+-- so no SaaS production data exists in this table — `IF EXISTS` covers
+-- self-hosted dev DBs that ran 0046 against their own deploys.
+--
+-- Issue: #2024
+
+DROP TABLE IF EXISTS mcp_tokens;

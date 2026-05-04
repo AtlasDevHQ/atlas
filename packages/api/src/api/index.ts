@@ -37,6 +37,7 @@ import { onboardingEmails } from "./routes/onboarding-emails";
 import { mode } from "./routes/mode";
 import { starterPrompts } from "./routes/starter-prompts";
 import { subProcessorSubscriptions } from "./routes/sub-processor-subscriptions";
+import { wellKnown } from "./routes/well-known";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -183,6 +184,12 @@ app.route("/api/v1/onboarding-emails", onboardingEmails);
 app.route("/api/v1/mode", mode);
 app.route("/api/v1/starter-prompts", starterPrompts);
 app.route("/api/v1/sub-processor-subscriptions", subProcessorSubscriptions);
+
+// .well-known metadata endpoints — RFC 8414 OAuth authorization-server
+// metadata, OIDC discovery, RFC 9728 protected-resource metadata for the
+// hosted MCP endpoint. Public, CORS-permissive — these are discovery
+// documents that any client must be able to fetch unauthenticated.
+app.route("/.well-known", wellKnown);
 
 // Onboarding routes — self-serve signup flow (test-connection, complete setup).
 try {

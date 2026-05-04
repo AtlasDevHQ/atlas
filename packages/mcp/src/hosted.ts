@@ -1,61 +1,75 @@
 /**
- * Hosted MCP endpoint — Hono router that mounts on the existing per-region
- * API server.
+ * Hosted MCP endpoint — Hono router that mounts on the per-region API server.
  *
  * Self-hosted users connect via stdio (the bunx installer in @useatlas/mcp).
- * SaaS users connect via this hosted endpoint:
+ * SaaS / remote users connect via this hosted endpoint:
  *
  *   POST   /mcp/{workspace_id}/sse   — JSON-RPC frames
  *   GET    /mcp/{workspace_id}/sse   — SSE notifications
  *   DELETE /mcp/{workspace_id}/sse   — explicit session termination
  *
- * Why a route on the existing api server (not a separate service):
- *   - The work MCP does (semantic-layer reads, executeSQL) already runs on
- *     the api/api-eu/api-apac instances. Mounting MCP as a route colocates
- *     it with the data path and inherits the existing per-region residency
- *     guarantees.
- *   - Per-region routing fails closed: if the workspace's region cannot
- *     be resolved (DB lookup throws), this surface returns 503, never
- *     serves traffic from a region that may be the wrong one. The shared
- *     `detectMisrouting` helper used by the data path is graceful by
- *     default — that's the wrong contract for the agent path, where a
- *     single request can fan out into many tool calls.
+ * ── Authentication (#2024 PR C) ────────────────────────────────────
  *
- * Why path-scoped by workspace ID:
- *   - The bearer already names the workspace (the token store resolves
- *     `org_id`). The path param exists so an attacker who steals a token
- *     from workspace A cannot point the same bearer at workspace B's URL
- *     and probe for inconsistent behavior — mismatch is 403, not 404,
- *     and never leaks whether the workspace exists.
+ * Authentication is OAuth 2.1 — the bearer is a JWT-signed access token
+ * issued by the Better Auth `@better-auth/oauth-provider` plugin against
+ * the `mcp:read` (and optionally `mcp:write`) scopes. Verification:
  *
- * Session ownership:
- *   - Each new session creates a fresh `McpServer` bound to the bearer's
- *     identity (`createAtlasMcpServer({ actor: bearerUser })`). The
- *     server lives for the duration of the session; the per-session
- *     transport handles JSON-RPC dispatch internally.
- *   - The bearer's identity is captured at session-init and reused for
- *     every JSON-RPC frame in that session. A session never crosses
- *     identities even if the same bearer is reused across sessions.
+ *   1. `Authorization: Bearer <jwt>` header is required.
+ *   2. `verifyAccessToken` validates the signature against the JWKS
+ *      published at `/.well-known/jwks.json`, plus issuer + audience.
+ *   3. Audience MUST match the per-region MCP resource URI
+ *      (`https://<api-host>/mcp` — see `resourceAudience()` below).
+ *   4. The custom claim `https://atlas.useatlas.dev/workspace_id`
+ *      MUST match the `{workspace_id}` path segment. Mismatch → 403.
  *
- * Audit emission:
- *   - `mcp_token.use` fires on session-init notification — sampled, not
- *     per JSON-RPC frame. A single agent connection can issue thousands
- *     of frames per session; per-frame emission would drown the audit
- *     log without adding signal.
+ * The legacy `mcp_tokens` admin-bearer path that PR A shipped is gone.
+ * MCP clients (Claude Desktop, ChatGPT, Cursor) bootstrap via Dynamic
+ * Client Registration at `/api/auth/oauth2/register` and complete the
+ * authorization-code-with-PKCE flow against `/api/auth/oauth2/authorize`.
+ *
+ * ── Residency (fail-closed) ────────────────────────────────────────
+ *
+ * Distinct from the data path's `detectMisrouting` which is graceful
+ * by default. The MCP surface cannot tolerate a region-lookup miss —
+ * a single MCP request fans out to many tool calls. If `getWorkspaceRegion`
+ * throws, this surface returns 503 rather than serving traffic that
+ * might cross residency. Audience verification (above) is a second
+ * guarantee: per-region instances configure distinct `validAudiences`,
+ * so a token issued against api-eu won't even verify at api-us.
+ *
+ * ── Session ownership ──────────────────────────────────────────────
+ *
+ * Each new session creates a fresh `McpServer` bound to the bearer's
+ * verified identity. The server lives for the duration of the session;
+ * the per-session transport handles JSON-RPC dispatch internally. A
+ * session never crosses identities even if the same bearer is reused
+ * across sessions.
+ *
+ * ── Audit ──────────────────────────────────────────────────────────
+ *
+ * `mcp_session.start` fires on session-init — sampled, not per JSON-RPC
+ * frame. Metadata carries `sessionId`, `orgId`, `clientId` (the OAuth
+ * `azp` / authorized-party claim — i.e. which DCR-registered client is
+ * connecting), and `region` so forensic queries pivot on any axis.
  */
 
 import { Hono } from "hono";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { mcpBearerAuth } from "@atlas/api/api/routes/mcp-middleware";
-import type { AuthEnv } from "@atlas/api/api/routes/middleware";
+// `better-auth/oauth2` exposes the `verifyAccessToken` helper that this
+// route's bearer middleware relies on. Static import (rather than the
+// dynamic import other Better-Auth-touching modules use) is fine here —
+// the hosted MCP path is SaaS-only, and the only deployment shape that
+// loads `@atlas/mcp/hosted` already has Better Auth in its module graph
+// via `@atlas/api`. Keeping the import static gives us proper type
+// resolution at the call site below.
+import { verifyAccessToken } from "better-auth/oauth2";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { getMcpTokenId } from "@atlas/api/lib/auth/mcp-bearer";
-import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
 import { createAtlasMcpServer } from "./server.js";
 
 const log = createLogger("mcp-hosted");
@@ -110,12 +124,195 @@ export async function _resetHostedSessions(): Promise<void> {
   }
 }
 
-// ── Residency check (fail-closed) ──────────────────────────────────
+// ── OAuth 2.1 verification ─────────────────────────────────────────
 //
-// Distinct from the data path's `detectMisrouting` which is graceful
-// by default: a DB lookup throw there logs a warning and serves the
-// request as in-region. The MCP surface cannot tolerate that failure
-// mode — a region-lookup miss could route an EU workspace through US.
+// Custom-claim key for the authenticated workspace. Set on every issued
+// access token by `customAccessTokenClaims` in server.ts. Stored as a
+// URN-shaped string so it cannot collide with future standard JWT claims
+// — Atlas-namespaced custom claims should always look like this.
+const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
+
+/**
+ * Required scopes for any MCP request. Today every shipping MCP tool
+ * is read-only (executeSQL is read-only by validation, semantic-layer
+ * tools are reads). When write tools land, gate them at the tool layer
+ * on `mcp:write` and keep the connection-level requirement at
+ * `mcp:read` so existing clients keep working.
+ */
+const REQUIRED_SCOPES = ["mcp:read"] as const;
+
+/**
+ * Build the resource-server audience for this API instance. Tokens
+ * issued for this MCP region must have `aud` matching this exactly. We
+ * resolve from the env in the same order as well-known.ts so the
+ * audience advertised in the protected-resource metadata equals the
+ * audience accepted here.
+ */
+function resourceAudience(req: Request): string {
+  const base =
+    process.env.ATLAS_PUBLIC_API_URL?.trim() ||
+    process.env.BETTER_AUTH_URL?.trim() ||
+    new URL(req.url).origin;
+  return `${base.replace(/\/+$/, "")}/mcp`;
+}
+
+/**
+ * Build the token issuer URL. `verifyAccessToken` requires `issuer` to
+ * be set so a leaked token from a different OAuth server can't replay
+ * against us — the issuer claim has to match exactly.
+ */
+function tokenIssuer(req: Request): string {
+  const base =
+    process.env.ATLAS_PUBLIC_API_URL?.trim() ||
+    process.env.BETTER_AUTH_URL?.trim() ||
+    new URL(req.url).origin;
+  return `${base.replace(/\/+$/, "")}/api/auth`;
+}
+
+/** JWKS endpoint — Better Auth's `jwt()` plugin publishes here. */
+function jwksUrl(req: Request): string {
+  return `${tokenIssuer(req)}/jwks`;
+}
+
+interface VerifiedBearer {
+  readonly user: AtlasUser;
+  readonly orgId: string;
+  readonly clientId: string;
+  readonly tokenJti: string | null;
+  readonly scopes: ReadonlyArray<string>;
+}
+
+interface BearerFailure {
+  readonly status: 401 | 403;
+  readonly body: {
+    error: string;
+    message: string;
+    requestId: string;
+  };
+}
+
+/**
+ * Extract + verify the bearer. Returns either a verified identity
+ * envelope or a structured failure for the route to surface.
+ *
+ * `verifyAccessToken` failures all collapse to 401 here. The route
+ * adds 403 separately when the claim's workspace_id mismatches the
+ * URL's `{workspace_id}` — that's a different failure ("you have a
+ * valid token, just not for this URL") and the wire shape is the
+ * MCP spec's `WWW-Authenticate` 401 vs an opaque 403.
+ */
+async function verifyMcpBearer(
+  req: Request,
+  requestId: string,
+): Promise<VerifiedBearer | BearerFailure> {
+  const auth = req.headers.get("authorization");
+  if (!auth?.toLowerCase().startsWith("bearer ")) {
+    return {
+      status: 401,
+      body: {
+        error: "missing_bearer",
+        message:
+          "Authorization header must carry a Bearer access token. See the MCP authorization spec for client setup.",
+        requestId,
+      },
+    };
+  }
+  const token = auth.slice("bearer ".length).trim();
+  if (!token) {
+    return {
+      status: 401,
+      body: {
+        error: "missing_bearer",
+        message: "Bearer token is empty.",
+        requestId,
+      },
+    };
+  }
+
+  try {
+    const payload = await verifyAccessToken(token, {
+      verifyOptions: {
+        audience: resourceAudience(req),
+        issuer: tokenIssuer(req),
+      },
+      scopes: [...REQUIRED_SCOPES],
+      jwksUrl: jwksUrl(req),
+    });
+
+    // Extract the workspace claim; the route enforces path/claim
+    // match, so a missing claim is unauthenticated (401) rather than
+    // forbidden — the token was issued under a session with no active
+    // org, which is a misconfiguration on the issuer side.
+    const orgIdRaw = (payload as Record<string, unknown>)[WORKSPACE_CLAIM];
+    if (typeof orgIdRaw !== "string" || orgIdRaw.length === 0) {
+      log.warn(
+        { requestId, sub: typeof payload.sub === "string" ? payload.sub : null },
+        "MCP bearer is valid but carries no workspace claim — token issued without an active organization",
+      );
+      return {
+        status: 401,
+        body: {
+          error: "missing_workspace_claim",
+          message:
+            "Access token does not carry a workspace claim. Re-authenticate after selecting a workspace.",
+          requestId,
+        },
+      };
+    }
+
+    const sub = typeof payload.sub === "string" ? payload.sub : null;
+    const azp = (payload as { azp?: unknown }).azp;
+    const clientId = typeof azp === "string" ? azp : "unknown_client";
+
+    if (!sub) {
+      // A JWT without `sub` cannot be tied to an actor. Refuse to
+      // proceed — every audit row and every per-tool authorization
+      // check downstream needs an actor id.
+      return {
+        status: 401,
+        body: {
+          error: "missing_subject",
+          message: "Access token does not carry a subject claim.",
+          requestId,
+        },
+      };
+    }
+
+    const user = createAtlasUser(sub, "managed", sub, {
+      activeOrganizationId: orgIdRaw,
+      claims: { ...payload, [WORKSPACE_CLAIM]: orgIdRaw },
+    });
+
+    const scopeRaw = (payload as { scope?: unknown }).scope;
+    const scopes =
+      typeof scopeRaw === "string" ? scopeRaw.split(/\s+/).filter(Boolean) : [];
+
+    return {
+      user,
+      orgId: orgIdRaw,
+      clientId,
+      tokenJti: typeof payload.jti === "string" ? payload.jti : null,
+      scopes,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(
+      { requestId, err: message },
+      "MCP bearer verification failed — returning 401",
+    );
+    return {
+      status: 401,
+      body: {
+        error: "invalid_bearer",
+        message:
+          "Access token did not verify. Check audience, issuer, scopes, and expiry.",
+        requestId,
+      },
+    };
+  }
+}
+
+// ── Residency check (fail-closed) ──────────────────────────────────
 
 interface ResidencyCheckResult {
   readonly kind: "ok";
@@ -201,9 +398,8 @@ async function checkResidency(
 
 // ── Audit emission on session-init ──────────────────────────────────
 
-function emitTokenUseAudit(
-  tokenId: string,
-  orgId: string,
+function emitSessionStartAudit(
+  bearer: VerifiedBearer,
   sessionId: string,
   region: string | null,
 ): void {
@@ -214,16 +410,19 @@ function emitTokenUseAudit(
   // should not block a legitimate MCP connection. The audit module
   // already swallows its own internal failures and writes pino lines;
   // we add this outer guard to also catch the rare case where the
-  // module itself throws synchronously (e.g. malformed systemActor).
+  // module itself throws synchronously.
   try {
     logAdminAction({
-      actionType: ADMIN_ACTIONS.mcp_token.use,
-      targetType: "mcp_token",
-      targetId: tokenId,
+      actionType: ADMIN_ACTIONS.mcp_session.start,
+      targetType: "mcp_session",
+      targetId: sessionId,
       metadata: {
         sessionId,
-        orgId,
+        orgId: bearer.orgId,
+        clientId: bearer.clientId,
+        ...(bearer.tokenJti !== null ? { tokenJti: bearer.tokenJti } : {}),
         ...(region !== null ? { region } : {}),
+        scopes: [...bearer.scopes],
       },
     });
   } catch (err) {
@@ -231,34 +430,31 @@ function emitTokenUseAudit(
       {
         err: err instanceof Error ? err.message : String(err),
         sessionId,
-        tokenId,
+        orgId: bearer.orgId,
       },
-      "mcp_token.use audit emission threw — session continues",
+      "mcp_session.start audit emission threw — session continues",
     );
   }
 }
 
 // ── Per-session bind helpers ────────────────────────────────────────
-//
-// `bindFactoryContext` is the only constructor for `InitialFactoryContext`.
-// It derives every field from the verified `AtlasUser` so a future caller
-// cannot mix path-param and bearer-derived workspaceIds. The runtime
-// guard for missing claims is also captured here, in one place.
 
 interface InitialFactoryContext {
   readonly user: AtlasUser;
   readonly orgId: string;
-  readonly tokenId: string;
+  readonly clientId: string;
+  readonly tokenJti: string | null;
+  readonly scopes: ReadonlyArray<string>;
 }
 
-function bindFactoryContext(
-  user: AtlasUser | undefined,
-): InitialFactoryContext | null {
-  if (!user) return null;
-  const orgId = user.activeOrganizationId;
-  const tokenId = getMcpTokenId(user);
-  if (!orgId || !tokenId) return null;
-  return { user, orgId, tokenId };
+function bindFactoryContext(bearer: VerifiedBearer): InitialFactoryContext {
+  return {
+    user: bearer.user,
+    orgId: bearer.orgId,
+    clientId: bearer.clientId,
+    tokenJti: bearer.tokenJti,
+    scopes: bearer.scopes,
+  };
 }
 
 async function createBoundMcpServer(
@@ -323,9 +519,24 @@ async function dispatchNewSession(
       onsessioninitialized: (id) => {
         sessions.set(id, { transport, server: mcpServer });
         registered = true;
-        emitTokenUseAudit(ctx.tokenId, ctx.orgId, id, region);
+        emitSessionStartAudit(
+          {
+            user: ctx.user,
+            orgId: ctx.orgId,
+            clientId: ctx.clientId,
+            tokenJti: ctx.tokenJti,
+            scopes: ctx.scopes,
+          },
+          id,
+          region,
+        );
         log.info(
-          { sessionId: id, orgId: ctx.orgId, tokenId: ctx.tokenId, region },
+          {
+            sessionId: id,
+            orgId: ctx.orgId,
+            clientId: ctx.clientId,
+            region,
+          },
           "MCP session created",
         );
       },
@@ -396,59 +607,61 @@ async function dispatchNewSession(
 
 const HANDLED_METHODS = ["POST", "GET", "DELETE"];
 
-export function createHostedMcpRouter(): Hono<AuthEnv> {
-  const router = new Hono<AuthEnv>();
+/**
+ * `WWW-Authenticate` header pointer at the protected-resource
+ * metadata document. Per RFC 9728 + the MCP authorization spec, a
+ * 401 from the resource server SHOULD include this header so the
+ * client can discover the auth server without out-of-band config.
+ */
+function wwwAuthenticateHeader(req: Request, workspaceId: string): string {
+  const base =
+    process.env.ATLAS_PUBLIC_API_URL?.trim() ||
+    process.env.BETTER_AUTH_URL?.trim() ||
+    new URL(req.url).origin;
+  const trimmed = base.replace(/\/+$/, "");
+  const resourceMetadata = `${trimmed}/.well-known/oauth-protected-resource/mcp/${workspaceId}`;
+  return `Bearer realm="Atlas MCP", resource_metadata="${resourceMetadata}"`;
+}
 
-  router.use("*", mcpBearerAuth);
+export function createHostedMcpRouter(): Hono {
+  const router = new Hono();
 
   router.on(HANDLED_METHODS, "/:workspaceId/sse", async (c) => {
-    const requestId = c.get("requestId");
-    const authResult = c.get("authResult");
-    const factoryCtx = bindFactoryContext(authResult.user);
-
-    // mcpBearerAuth guarantees both fields are set; this guard
-    // protects against a future refactor that loosens the contract.
-    if (!factoryCtx) {
-      log.error(
-        { requestId },
-        "MCP bearer authenticated without orgId/tokenId — refusing to dispatch",
-      );
-      return c.json(
-        {
-          error: "auth_error",
-          message: "MCP authentication system error",
-          requestId,
-        },
-        500,
-      );
-    }
-
+    const requestId = crypto.randomUUID();
     const pathWorkspaceId = c.req.param("workspaceId");
 
-    // Path/bearer mismatch is opaque 403 — 404 would leak whether the
+    const verified = await verifyMcpBearer(c.req.raw, requestId);
+    if ("status" in verified) {
+      const headers: Record<string, string> = {
+        "WWW-Authenticate": wwwAuthenticateHeader(c.req.raw, pathWorkspaceId),
+      };
+      return c.json(verified.body, verified.status, headers);
+    }
+
+    // Path/claim mismatch is opaque 403 — 404 would leak whether the
     // path workspace exists, 401 would say the bearer is invalid (it
     // isn't, just not for this URL).
-    if (pathWorkspaceId !== factoryCtx.orgId) {
+    if (pathWorkspaceId !== verified.orgId) {
       log.warn(
         {
           requestId,
-          bearerOrgId: factoryCtx.orgId,
+          claimWorkspaceId: verified.orgId,
           pathWorkspaceId,
-          tokenId: factoryCtx.tokenId,
+          clientId: verified.clientId,
         },
         "MCP path/bearer workspace mismatch — refusing dispatch",
       );
       return c.json(
         {
           error: "forbidden",
-          message: "MCP token not authorized for this workspace.",
+          message: "Access token not authorized for this workspace.",
           requestId,
         },
         403,
       );
     }
 
-    const residency = await checkResidency(factoryCtx.orgId, requestId);
+    const residency = await checkResidency(verified.orgId, requestId);
     if (residency.kind === "misrouted") {
       return c.json(residency.body, residency.status);
     }
@@ -456,6 +669,7 @@ export function createHostedMcpRouter(): Hono<AuthEnv> {
       return c.json(residency.body, residency.status);
     }
 
+    const factoryCtx = bindFactoryContext(verified);
     const sessionId = c.req.raw.headers.get("mcp-session-id");
 
     try {

@@ -23,7 +23,9 @@
       "default": "./bin/cli.ts"
     }
   },
-  "bin": "./bin/cli.ts",
+  "bin": {
+    "atlas-mcp": "./bin/cli.ts"
+  },
   "files": [
     "bin/",
     "src/",

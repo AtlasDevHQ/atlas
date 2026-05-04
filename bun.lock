@@ -544,7 +544,6 @@
       },
       "optionalPeers": [
         "@modelcontextprotocol/sdk",
-        "@useatlas/plugin-sdk",
       ],
     },
     "plugins/mysql": {

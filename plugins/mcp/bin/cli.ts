@@ -13,10 +13,21 @@
  * it boots the server, otherwise it prints a clear "not yet supported"
  * message pointing at #2024 (hosted MCP).
  */
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+
 import { runInit, type RunInitOptions } from "../src/init/index.js";
 import { KNOWN_CLIENTS, type McpClientId } from "../src/init/clients.js";
 
 const KNOWN_CLIENT_IDS: readonly string[] = KNOWN_CLIENTS.map((c) => c.id);
+
+/**
+ * Thrown by argv parsers on bad input. `main()` catches it, prints the
+ * message to stderr, and returns exit 1. Keeps the parsers as pure
+ * functions — testable in-process and recoverable for non-CLI callers.
+ */
+export class CliUsageError extends Error {
+  override readonly name = "CliUsageError";
+}
 
 export interface InitFlags {
   mode: "local" | "hosted";
@@ -54,10 +65,9 @@ export function parseInitArgs(argv: string[]): InitFlags {
       case "--client": {
         const next = argv[i + 1];
         if (!next || !KNOWN_CLIENT_IDS.includes(next)) {
-          console.error(
+          throw new CliUsageError(
             `[atlas-mcp init] --client expects one of: ${KNOWN_CLIENT_IDS.join(", ")}`,
           );
-          process.exit(1);
         }
         flags.client = next as McpClientId;
         i++;
@@ -66,18 +76,16 @@ export function parseInitArgs(argv: string[]): InitFlags {
       case "--api-url": {
         const next = argv[i + 1];
         if (!next || next.startsWith("--")) {
-          console.error(
+          throw new CliUsageError(
             `[atlas-mcp init] --api-url expects a URL value (e.g. http://localhost:3001)`,
           );
-          process.exit(1);
         }
         flags.apiUrl = next;
         i++;
         break;
       }
       default:
-        console.error(`[atlas-mcp init] Unknown flag: ${a}`);
-        process.exit(1);
+        throw new CliUsageError(`[atlas-mcp init] Unknown flag: ${a}`);
     }
   }
 
@@ -151,31 +159,30 @@ export function parseServeArgs(argv: string[]): ServeFlags {
     if (a === "--transport") {
       const next = argv[i + 1];
       if (!next) {
-        console.error(`[atlas-mcp serve] --transport expects a value: stdio | sse`);
-        process.exit(1);
+        throw new CliUsageError(`[atlas-mcp serve] --transport expects a value: stdio | sse`);
       }
       if (next !== "stdio" && next !== "sse") {
-        console.error(`[atlas-mcp serve] Unknown transport: "${next}". Use "stdio" or "sse".`);
-        process.exit(1);
+        throw new CliUsageError(
+          `[atlas-mcp serve] Unknown transport: "${next}". Use "stdio" or "sse".`,
+        );
       }
       flags.transport = next;
       i++;
     } else if (a === "--port") {
       const next = argv[i + 1];
       if (!next) {
-        console.error(`[atlas-mcp serve] --port expects a positive integer (e.g. 8080)`);
-        process.exit(1);
+        throw new CliUsageError(`[atlas-mcp serve] --port expects a positive integer (e.g. 8080)`);
       }
       const parsed = parseInt(next, 10);
       if (isNaN(parsed) || parsed <= 0) {
-        console.error(`[atlas-mcp serve] Invalid port: "${next}". Must be a positive integer.`);
-        process.exit(1);
+        throw new CliUsageError(
+          `[atlas-mcp serve] Invalid port: "${next}". Must be a positive integer.`,
+        );
       }
       flags.port = parsed;
       i++;
     } else {
-      console.error(`[atlas-mcp serve] Unknown flag: ${a}`);
-      process.exit(1);
+      throw new CliUsageError(`[atlas-mcp serve] Unknown flag: ${a}`);
     }
   }
   return flags;
@@ -205,7 +212,7 @@ export function isModuleNotFound(err: unknown): boolean {
 }
 
 interface AtlasMcpServer {
-  connect(transport: unknown): Promise<void>;
+  connect(transport: Transport): Promise<void>;
   close(): Promise<void>;
 }
 interface CreateMcpServerOptions {
@@ -223,6 +230,13 @@ interface SseModule {
     factory: () => Promise<AtlasMcpServer>,
     opts: { port: number },
   ) => Promise<SseHandle>;
+}
+
+function formatErr(err: unknown): string {
+  if (err instanceof Error) {
+    return err.stack ?? err.message;
+  }
+  return String(err);
 }
 
 export async function runServeCommand(argv: string[]): Promise<number> {
@@ -268,22 +282,21 @@ export async function runServeCommand(argv: string[]): Promise<number> {
     return 1;
   }
 
-  // Build a Promise that ONLY resolves on graceful shutdown. We can't return
-  // synchronously after `server.connect(...)` — `main().then(process.exit)`
-  // would tear the process down before stdio reads a single JSON-RPC frame
-  // (and the same applies to the SSE listener).
+  // Returns a Promise that only resolves on graceful shutdown. Resolving
+  // synchronously here would let `main().then(process.exit)` tear stdio /
+  // SSE down before they read a single byte.
   return new Promise<number>((resolve, reject) => {
     let shuttingDown = false;
 
     if (flags.transport === "sse") {
-      const sseImport = import("@atlas/mcp/sse")
+      (async () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see note on serverMod above
-        .then((m) => m as any as SseModule)
-        .then(async (sseMod) => {
-          const handle = await sseMod.startSseServer(
-            () => serverMod.createAtlasMcpServer({ transport: "sse" }),
-            { port: flags.port },
-          );
+        const sseMod = (await import("@atlas/mcp/sse")) as any as SseModule;
+        const handle = await sseMod.startSseServer(
+          () => serverMod.createAtlasMcpServer({ transport: "sse" }),
+          { port: flags.port },
+        );
+        try {
           const shutdown = async (): Promise<void> => {
             if (shuttingDown) return;
             shuttingDown = true;
@@ -292,7 +305,7 @@ export async function runServeCommand(argv: string[]): Promise<number> {
               resolve(0);
             } catch (err) {
               console.error(
-                `[atlas-mcp serve] Error closing SSE server: ${err instanceof Error ? err.message : String(err)}`,
+                `[atlas-mcp serve] Error closing SSE server: ${formatErr(err)}`,
               );
               resolve(1);
             }
@@ -302,39 +315,60 @@ export async function runServeCommand(argv: string[]): Promise<number> {
           console.error(
             `[atlas-mcp serve] SSE server running on http://${handle.server.hostname}:${handle.server.port}/mcp`,
           );
-        });
-      sseImport.catch(reject);
+        } catch (err) {
+          // Anything thrown after `startSseServer` resolved (signal-handler
+          // setup, console write) leaves a live listener bound to the port.
+          // Drain it before rejecting so we don't leak.
+          await handle.close().catch((closeErr) => {
+            console.error(
+              `[atlas-mcp serve] cleanup failed after partial SSE boot: ${formatErr(closeErr)}`,
+            );
+          });
+          throw err;
+        }
+      })().catch(reject);
       return;
     }
 
-    const stdioBoot = (async () => {
+    (async () => {
       const server = await serverMod.createAtlasMcpServer({ transport: "stdio" });
-      const { StdioServerTransport } = await import(
-        "@modelcontextprotocol/sdk/server/stdio.js"
-      );
-      const transport = new StdioServerTransport();
-      await server.connect(transport);
+      try {
+        const { StdioServerTransport } = await import(
+          "@modelcontextprotocol/sdk/server/stdio.js"
+        );
+        const transport = new StdioServerTransport();
+        await server.connect(transport);
 
-      const shutdown = async (): Promise<void> => {
-        if (shuttingDown) return;
-        shuttingDown = true;
-        try {
-          await server.close();
-          resolve(0);
-        } catch (err) {
+        const shutdown = async (): Promise<void> => {
+          if (shuttingDown) return;
+          shuttingDown = true;
+          try {
+            await server.close();
+            resolve(0);
+          } catch (err) {
+            console.error(
+              `[atlas-mcp serve] Error closing server: ${formatErr(err)}`,
+            );
+            resolve(1);
+          }
+        };
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+
+        // Log to stderr so it doesn't interfere with JSON-RPC on stdout
+        console.error("[atlas-mcp serve] Server running on stdio");
+      } catch (err) {
+        // Transport setup or connect() failed AFTER createAtlasMcpServer
+        // returned a live server — the caller has lost the reference, so
+        // we own the cleanup before propagating.
+        await server.close().catch((closeErr) => {
           console.error(
-            `[atlas-mcp serve] Error closing server: ${err instanceof Error ? err.message : String(err)}`,
+            `[atlas-mcp serve] cleanup failed after partial stdio boot: ${formatErr(closeErr)}`,
           );
-          resolve(1);
-        }
-      };
-      process.on("SIGINT", shutdown);
-      process.on("SIGTERM", shutdown);
-
-      // Log to stderr so it doesn't interfere with JSON-RPC on stdout
-      console.error("[atlas-mcp serve] Server running on stdio");
-    })();
-    stdioBoot.catch(reject);
+        });
+        throw err;
+      }
+    })().catch(reject);
   });
 }
 
@@ -348,15 +382,23 @@ export async function main(): Promise<number> {
     return 0;
   }
 
-  switch (subcommand) {
-    case "init":
-      return runInitCommand(rest);
-    case "serve":
-      return runServeCommand(rest);
-    default:
-      console.error(`[atlas-mcp] Unknown command: ${subcommand}`);
-      console.error(TOP_HELP);
+  try {
+    switch (subcommand) {
+      case "init":
+        return await runInitCommand(rest);
+      case "serve":
+        return await runServeCommand(rest);
+      default:
+        console.error(`[atlas-mcp] Unknown command: ${subcommand}`);
+        console.error(TOP_HELP);
+        return 1;
+    }
+  } catch (err) {
+    if (err instanceof CliUsageError) {
+      console.error(err.message);
       return 1;
+    }
+    throw err;
   }
 }
 
@@ -366,11 +408,7 @@ if (import.meta.main) {
   main()
     .then((code) => process.exit(code))
     .catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[atlas-mcp] Fatal: ${msg}`);
-      if (err instanceof Error && err.stack) {
-        console.error(err.stack);
-      }
+      console.error(`[atlas-mcp] Fatal: ${formatErr(err)}`);
       process.exit(1);
     });
 }

@@ -17,6 +17,10 @@
     "./init/clients": {
       "types": "./src/init/clients.ts",
       "default": "./src/init/clients.ts"
+    },
+    "./cli": {
+      "types": "./bin/cli.ts",
+      "default": "./bin/cli.ts"
     }
   },
   "bin": "./bin/cli.ts",
@@ -54,9 +58,6 @@
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
-      "optional": true
-    },
-    "@useatlas/plugin-sdk": {
       "optional": true
     }
   },

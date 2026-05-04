@@ -155,34 +155,11 @@ describe("isModuleNotFound", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// runInitCommand — hosted short-circuit pin
-// ---------------------------------------------------------------------------
-
-describe("runInitCommand — hosted mode", () => {
-  it("intentionally drops --write / --client / --api-url when --hosted is passed", async () => {
-    // Capture stdout — the hosted stub prints the #2024 link rather than
-    // touching the filesystem. Pinning the discard prevents a future
-    // refactor from accidentally honoring --write while the hosted
-    // backend doesn't exist yet (#2024).
-    const { runInitCommand } = await import("../bin/cli.js");
-    const logs: string[] = [];
-    const origLog = console.log;
-    console.log = (...a: unknown[]) => {
-      logs.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
-    };
-    try {
-      const code = await runInitCommand(["--hosted", "--write", "--client", "cursor"]);
-      expect(code).toBe(0);
-      const out = logs.join("\n");
-      expect(out).toMatch(/issues\/2024/);
-      // No filesystem write, no client-specific path
-      expect(out).not.toContain("Wrote ");
-    } finally {
-      console.log = origLog;
-    }
-  });
-});
+// runInitCommand --hosted is now a real OAuth 2.1 loopback flow that
+// passes --write, --client, --api-url through to runInit. End-to-end
+// behaviour is exercised in __tests__/init/hosted.test.ts via the
+// HostedFlowOptions test seams (no real browser, no real network).
+// Pure-parser flag handling is already covered by parseInitArgs above.
 
 // ---------------------------------------------------------------------------
 // Subprocess — exit codes + help output for real argv handling

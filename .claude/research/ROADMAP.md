@@ -141,7 +141,7 @@ Tracker: [milestone #40](https://github.com/AtlasDevHQ/atlas/milestones/40). Lea
 - [x] One-command MCP installer — `bunx @useatlas/mcp init --local` writes a paste-ready config or merges into the detected client (#2018, PR #2032)
 - [x] Typed semantic-layer MCP tools + version sync — `listEntities` / `describeEntity` / `listMetrics` / `runMetric` exposed; server version tracks `package.json` (#2019 + #2020, PR #2031)
 - [x] Scaffolder rename — `bun create atlas-agent` / `bun create atlas-plugin` reads as English; old `@useatlas/create*` deprecated with redirect (PR #2033)
-- [ ] Hosted MCP endpoint at `mcp.useatlas.dev` with SaaS auth (#2024, #2028) — pivoted mid-flight to OAuth 2.1 + DCR via `@better-auth/oauth-provider` (PRs #2054/#2056/#2057); Settings UI + `bunx … init --hosted` loopback flow + DNS still open.
+- [ ] Hosted MCP endpoint at `mcp.useatlas.dev` with SaaS auth (#2024, #2028) — pivoted mid-flight to OAuth 2.1 + DCR via `@better-auth/oauth-provider` (PRs #2054/#2056/#2057); `bunx … init --hosted` loopback flow shipped (PR E); Settings UI + DNS still open.
 - [x] OTel coverage for MCP tool calls — activation + tool-call counters (#2029, PR #2035)
 - [x] Structured error envelope for typed MCP tools so agents can recover gracefully (#2030, PR #2034)
 - [ ] List Atlas in MCP registries (mcp.so + others) before close (#2027)

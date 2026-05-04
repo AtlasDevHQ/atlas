@@ -8,11 +8,26 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export interface ServerConfig {
+/** Stdio launcher — `bunx @useatlas/mcp serve`, used by `init --local`. */
+export interface StdioServerConfig {
   command: string;
   args: string[];
   env?: Record<string, string>;
 }
+
+/**
+ * HTTP/SSE server pointer — used by `init --hosted` against
+ * `app.useatlas.dev` (or a self-hosted instance with managed auth). MCP
+ * clients (Claude Desktop, Cursor, Continue) all accept this `url` +
+ * `headers` shape for remote MCP servers; the bearer is the JWT minted
+ * by the OAuth 2.1 loopback flow in `init/hosted.ts`.
+ */
+export interface HttpServerConfig {
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type ServerConfig = StdioServerConfig | HttpServerConfig;
 
 interface BuildOpts {
   /** Inline ATLAS_DATASOURCE_URL into the env block. Omit to inherit the user's shell env. */
@@ -23,9 +38,9 @@ interface BuildOpts {
 
 const DEFAULT_PACKAGE = "@useatlas/mcp";
 
-export function buildServerConfig(opts: BuildOpts = {}): ServerConfig {
+export function buildServerConfig(opts: BuildOpts = {}): StdioServerConfig {
   const pkg = opts.packageName ?? DEFAULT_PACKAGE;
-  const cfg: ServerConfig = {
+  const cfg: StdioServerConfig = {
     command: "bunx",
     args: [pkg, "serve"],
   };
@@ -33,6 +48,20 @@ export function buildServerConfig(opts: BuildOpts = {}): ServerConfig {
     cfg.env = { ATLAS_DATASOURCE_URL: opts.datasourceUrl };
   }
   return cfg;
+}
+
+interface BuildHostedOpts {
+  /** The hosted MCP endpoint URL — e.g. `https://api.useatlas.dev/mcp/<workspace>/sse`. */
+  url: string;
+  /** OAuth 2.1 access token (JWT). Written verbatim into the Authorization header. */
+  accessToken: string;
+}
+
+export function buildHostedServerConfig(opts: BuildHostedOpts): HttpServerConfig {
+  return {
+    url: opts.url,
+    headers: { Authorization: `Bearer ${opts.accessToken}` },
+  };
 }
 
 interface ExistingShape {

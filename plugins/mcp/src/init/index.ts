@@ -6,6 +6,7 @@
 
 import { detectClients, getDefaultConfigPath, type ClientInfo, type McpClientId } from "./clients.js";
 import {
+  buildHostedServerConfig,
   buildServerConfig,
   mergeMcpServerConfig,
   readConfigOrNull,
@@ -14,9 +15,16 @@ import {
 } from "./config-merge.js";
 import { detectLocalAtlas, resolveApiUrl } from "./local-atlas.js";
 import { resolveFixturePaths, shouldUseFixture } from "./fixture.js";
+import {
+  HostedFlowError,
+  runHostedAuthFlow,
+  type HostedFlowOptions,
+  type OpenBrowserImpl,
+  type ServeImpl,
+} from "./hosted.js";
 
 const SERVER_NAME = "atlas";
-const HOSTED_TRACKING_ISSUE = "https://github.com/AtlasDevHQ/atlas/issues/2024";
+const DEFAULT_HOSTED_API_URL = "https://api.useatlas.dev";
 
 export interface LocalInitOptions {
   mode: "local";
@@ -36,6 +44,21 @@ export interface LocalInitOptions {
 
 export interface HostedInitOptions {
   mode: "hosted";
+  /** Override the hosted Atlas API base. Defaults to `https://api.useatlas.dev`. */
+  apiUrl?: string;
+  client?: McpClientId;
+  write?: boolean;
+  /** Override the resolved config file path (test seam). */
+  configPathOverride?: string;
+  /** Process env (test seam). Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** Test seams — passthrough to the hosted flow. */
+  fetchImpl?: typeof fetch;
+  serveImpl?: ServeImpl;
+  openBrowserImpl?: OpenBrowserImpl;
+  randomBytesImpl?: (length: number) => Uint8Array;
+  callbackTimeoutMs?: number;
+  detectClientsImpl?: () => ClientInfo[];
 }
 
 export type RunInitOptions = LocalInitOptions | HostedInitOptions;
@@ -46,19 +69,84 @@ export interface RunInitResult {
 
 export async function runInit(options: RunInitOptions): Promise<RunInitResult> {
   if (options.mode === "hosted") {
-    return runHostedStub();
+    return runHosted(options);
   }
   return runLocal(options);
 }
 
-function runHostedStub(): RunInitResult {
-  console.log(
-    [
-      `Hosted mode (against app.useatlas.dev) is not yet available — tracking at ${HOSTED_TRACKING_ISSUE}.`,
-      "Run `bunx @useatlas/mcp init --local` for now to point an MCP client at a local Atlas",
-      "instance or the bundled demo fixture.",
-    ].join("\n"),
-  );
+async function runHosted(opts: HostedInitOptions): Promise<RunInitResult> {
+  const env = opts.env ?? process.env;
+  const apiUrl = opts.apiUrl ?? env.ATLAS_PUBLIC_API_URL ?? DEFAULT_HOSTED_API_URL;
+
+  let result;
+  try {
+    const flowOpts: HostedFlowOptions = {
+      apiUrl,
+      fetchImpl: opts.fetchImpl,
+      serveImpl: opts.serveImpl,
+      openBrowserImpl: opts.openBrowserImpl,
+      randomBytesImpl: opts.randomBytesImpl,
+      callbackTimeoutMs: opts.callbackTimeoutMs,
+    };
+    result = await runHostedAuthFlow(flowOpts);
+  } catch (err) {
+    if (err instanceof HostedFlowError) {
+      console.error(`[atlas-mcp init --hosted] ${err.message}`);
+      return { exitCode: 1 };
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[atlas-mcp init --hosted] Unexpected error: ${msg}`);
+    return { exitCode: 1 };
+  }
+
+  const serverCfg = buildHostedServerConfig({
+    url: result.mcpUrl,
+    accessToken: result.accessToken,
+  });
+  const clientId = opts.client ?? pickDefaultClient(opts.detectClientsImpl);
+  const configPath = opts.configPathOverride ?? getDefaultConfigPath(clientId);
+
+  console.log(`Authorized for workspace ${result.workspaceId} at ${apiUrl}.`);
+
+  if (!opts.write || configPath === null) {
+    printPasteSnippet(clientId, serverCfg, configPath);
+    if (result.refreshToken) {
+      console.log(
+        "# A refresh token was issued. Atlas's MCP clients re-authenticate transparently — keep this config file at mode 0600.",
+      );
+    }
+    return { exitCode: 0 };
+  }
+
+  const existing = readConfigOrNull(configPath);
+  let merged: string;
+  try {
+    merged = mergeMcpServerConfig(existing, SERVER_NAME, serverCfg);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[atlas-mcp init] could not merge into existing config (${configPath}): ${msg}`);
+    console.error("Aborting — your config was not modified. Re-run without --write to print a snippet instead.");
+    return { exitCode: 1 };
+  }
+
+  let writeResult;
+  try {
+    writeResult = await writeConfigWithBackup(configPath, merged);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[atlas-mcp init] failed to write ${configPath}: ${msg}`);
+    if (existing !== null) {
+      console.error(`A backup of your previous config is at ${configPath}.bak (or a timestamped sibling).`);
+      console.error(`Restore with: cp '${configPath}.bak' '${configPath}'`);
+    }
+    return { exitCode: 1 };
+  }
+
+  console.log(`Wrote ${configPath}`);
+  if (writeResult.backupPath) {
+    console.log(`Backed up the previous config to ${writeResult.backupPath}`);
+  }
+  console.log("Restart your MCP client to pick up the new server.");
   return { exitCode: 0 };
 }
 

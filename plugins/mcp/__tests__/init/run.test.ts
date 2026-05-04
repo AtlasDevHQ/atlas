@@ -30,20 +30,11 @@ function captureStdio(): { logs: string[]; errs: string[]; restore: () => void }
   };
 }
 
-describe("runInit --hosted (stub)", () => {
-  it("prints a tracking-issue link and exits non-fatally", async () => {
-    const cap = captureStdio();
-    try {
-      const res = await runInit({ mode: "hosted" });
-      expect(res.exitCode).toBe(0);
-      const out = [...cap.logs, ...cap.errs].join("\n");
-      expect(out).toMatch(/issues\/2024/);
-      expect(out).toMatch(/hosted/i);
-    } finally {
-      cap.restore();
-    }
-  });
-});
+// runInit --hosted is now a real OAuth 2.1 loopback flow. Behaviour
+// (state mismatch, token exchange error, --write merge, browser fallback)
+// is exercised end-to-end in `__tests__/init/hosted.test.ts` with all
+// external deps stubbed via the test seams. Smoke tests of the stub
+// removed when the stub itself was removed.
 
 describe("runInit --local (print-only, no --write)", () => {
   it("prints a JSON snippet that uses bunx @useatlas/mcp serve", async () => {

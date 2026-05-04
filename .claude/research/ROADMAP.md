@@ -150,6 +150,9 @@ Tracker: [milestone #40](https://github.com/AtlasDevHQ/atlas/milestones/40). Lea
 - [x] Consolidate canonical demo dataset across landing, docs, scaffolder (#2021, PR #2036) — three seeds collapsed to one canonical NovaMart ecommerce seed; multi-seed picker reverted; canonical question set locked for #2025/#2026.
 - [x] Streaming chat CORS fix (PR #2037) — surfaced by the post-#2021 demo smoke; same latent bug existed for cross-origin embedders of `@useatlas/react`.
 - [x] CI un-stuck — partial `mock.module(@atlas/api/lib/config)` in @atlas/mcp tests was breaking `bun test`'s in-process runner across files (PR #2038).
+- [x] Publish `@useatlas/mcp` to npm — vendor + dynamic-import detangle resolves the workspace dep; the lead install command now runs against the published artifact (#2042, PRs #2048/#2049/#2050).
+- [x] Retarget `concepts.mdx` from cybersec to NovaMart — final stale-reference cleanup from #2021's seed consolidation (#2043, PR #2045).
+- [x] `Question` discriminated-union refactor — drops every `?? ""` fallback in the eval harness; loader rejects mode/expect mismatches at compile time (#2044, PR #2046).
 
 Backlog (not committed for 1.4.0): `/agent-mode` view (#2022), `runbooks-context` plugin (#2023).
 

@@ -1,15 +1,8 @@
 /**
- * Tests for the hosted MCP Hono router (#2024 PR B / #2028).
+ * Tests for the hosted MCP Hono router.
  *
- * Covers the route-layer behavior:
- *   - bearer required (401 on missing/invalid token, via mcpBearerAuth)
- *   - path workspaceId must match bearer's orgId (403 on mismatch)
- *   - cross-region detected by detectMisrouting → 421 with correctApiUrl
- *   - successful initialize → MCP session created, tools listable
- *   - mcp_token.use audit emitted exactly once per session, not per call
- *
- * Mocks the bearer lookup, residency check, and audit emitter so the
- * test exercises the route's branching without standing up the
+ * Mocks the bearer lookup, region lookup, audit emitter, and config so
+ * the test exercises the route's branching without standing up the
  * internal DB or pulling in real plugin/SQL plumbing.
  */
 
@@ -25,17 +18,14 @@ import {
 } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import type { ResolvedMcpIdentity } from "@atlas/api/lib/auth/mcp-token";
-import type { MisroutingResult } from "@atlas/api/lib/residency/misrouting";
 import type { AdminActionEntry } from "@atlas/api/lib/audit";
 
 // ── Module-scope mocks ────────────────────────────────────────────────
 //
-// Same partial-mock guidance as the sse.test.ts neighbour: every named
-// export from a mocked module must be present, otherwise sibling files
-// that import a different export from the same module break with
-// `SyntaxError: Export named 'X' not found`.
+// CLAUDE.md: every named export of a mocked module must be present.
+// Partial mocks leak via the in-process Bun runner and break unrelated
+// test files with `Export named 'X' not found`.
 
 const mockLookup: Mock<(bearer: string) => Promise<ResolvedMcpIdentity | null>> =
   mock(async () => null);
@@ -63,14 +53,12 @@ mock.module("@atlas/api/lib/auth/mcp-token", () => ({
   },
 }));
 
-const mockMisrouting: Mock<
-  (orgId: string | undefined, requestId: string) => Promise<MisroutingResult | null>
-> = mock(async () => null);
 const mockApiRegion: Mock<() => string | null> = mock(() => null);
 
 mock.module("@atlas/api/lib/residency/misrouting", () => ({
-  detectMisrouting: (orgId: string | undefined, requestId: string) =>
-    mockMisrouting(orgId, requestId),
+  // hosted.ts no longer uses detectMisrouting — kept here so any
+  // sibling test that imports it still resolves.
+  detectMisrouting: async () => null,
   getApiRegion: () => mockApiRegion(),
   isStrictRoutingEnabled: () => false,
   getMisroutedCount: () => 0,
@@ -78,8 +66,28 @@ mock.module("@atlas/api/lib/residency/misrouting", () => ({
   _resetRegionCache: () => undefined,
 }));
 
-// Capture every audit emission so we can assert the per-session
-// sampling contract.
+const mockWorkspaceRegion: Mock<(orgId: string) => Promise<string | null>> =
+  mock(async () => null);
+
+// `@atlas/api/lib/db/internal` has many exports. The hosted route only
+// uses `getWorkspaceRegion`; mocking the rest as throw-on-call surfaces
+// any accidental dep clearly.
+mock.module("@atlas/api/lib/db/internal", () => {
+  const notUsed = (name: string) => () => {
+    throw new Error(`db/internal.${name} called from hosted.test — add a mock`);
+  };
+  return {
+    getWorkspaceRegion: (orgId: string) => mockWorkspaceRegion(orgId),
+    hasInternalDB: () => true,
+    internalQuery: notUsed("internalQuery"),
+    internalExecute: notUsed("internalExecute"),
+    getInternalDB: notUsed("getInternalDB"),
+    assignWorkspaceRegion: notUsed("assignWorkspaceRegion"),
+    isWorkspaceMigrating: async () => false,
+    closeInternalDB: async () => undefined,
+  };
+});
+
 const auditedEntries: AdminActionEntry[] = [];
 const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
   (entry: AdminActionEntry) => {
@@ -105,15 +113,25 @@ mock.module("@atlas/api/lib/audit", () => ({
     err instanceof Error ? err : new Error(String(err)),
 }));
 
-// Atlas config mock — same shape as sse.test.ts so server boot
-// doesn't require a real database.
-const __mockedConfig = {
+interface MockedConfig {
+  datasources: Record<string, unknown>;
+  tools: string[];
+  auth: string;
+  semanticLayer: string;
+  source: string;
+  residency?: {
+    regions: Record<string, { apiUrl?: string }>;
+  };
+}
+
+let __mockedConfig: MockedConfig = {
   datasources: {},
   tools: ["explore", "executeSQL"],
   auth: "auto",
   semanticLayer: "./semantic",
   source: "env",
 };
+
 mock.module("@atlas/api/lib/config", () => ({
   initializeConfig: mock(async () => __mockedConfig),
   getConfig: mock(() => __mockedConfig),
@@ -150,8 +168,6 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   },
 }));
 
-// Import after mocks. Use dynamic imports so module-graph cache picks
-// up the mocked versions.
 const { Hono } = await import("hono");
 const { createHostedMcpRouter, _resetHostedSessions, _hostedSessionCount } =
   await import("../hosted.js");
@@ -166,25 +182,25 @@ const TOKEN_ID_B = "tok_b";
 const BEARER_A = "atl_mcp_aaaaaaaa" + "1".repeat(24);
 const BEARER_B = "atl_mcp_bbbbbbbb" + "2".repeat(24);
 
-function userFor(orgId: string, tokenId: string) {
-  return createAtlasUser(`u_${tokenId}`, "managed", `member-${tokenId}`, {
-    role: "member",
-    activeOrganizationId: orgId,
-    claims: { mcpTokenId: tokenId, mcpScopes: [] },
-  });
-}
-
 beforeEach(() => {
   mockLookup.mockReset();
-  mockMisrouting.mockReset();
   mockApiRegion.mockReset();
+  mockWorkspaceRegion.mockReset();
   mockLogAdminAction.mockReset();
   auditedEntries.length = 0;
-  mockMisrouting.mockImplementation(async () => null);
+  __mockedConfig = {
+    datasources: {},
+    tools: ["explore", "executeSQL"],
+    auth: "auto",
+    semanticLayer: "./semantic",
+    source: "env",
+  };
   mockApiRegion.mockImplementation(() => null);
+  mockWorkspaceRegion.mockImplementation(async () => null);
   mockLogAdminAction.mockImplementation((entry) => {
     auditedEntries.push(entry);
   });
+  delete process.env.ATLAS_MCP_MAX_SESSIONS;
 });
 
 afterEach(async () => {
@@ -195,9 +211,6 @@ afterAll(() => {
   mock.restore();
 });
 
-// Build a Hono app with the router mounted under /mcp — mirrors the
-// production mount point in packages/api/src/api/index.ts. Bun.serve
-// off port 0 gives an ephemeral port for in-process tests.
 async function startServer() {
   const app = new Hono();
   app.route("/mcp", createHostedMcpRouter());
@@ -210,6 +223,38 @@ async function startServer() {
     url: `http://localhost:${server.port}`,
     close: () => server.stop(true),
   };
+}
+
+function bindBearer(
+  bearer: string,
+  orgId: string,
+  tokenId: string,
+): void {
+  mockLookup.mockImplementation(async (b) =>
+    b === bearer
+      ? { tokenId, orgId, userId: `u_${tokenId}`, scopes: [] }
+      : null,
+  );
+}
+
+function bindBearerAB(): void {
+  mockLookup.mockImplementation(async (b) => {
+    if (b === BEARER_A)
+      return {
+        tokenId: TOKEN_ID_A,
+        orgId: ORG_A,
+        userId: `u_${TOKEN_ID_A}`,
+        scopes: [],
+      };
+    if (b === BEARER_B)
+      return {
+        tokenId: TOKEN_ID_B,
+        orgId: ORG_B,
+        userId: `u_${TOKEN_ID_B}`,
+        scopes: [],
+      };
+    return null;
+  });
 }
 
 // ── Bearer / authorization ────────────────────────────────────────────
@@ -254,19 +299,8 @@ describe("hosted MCP — bearer enforcement", () => {
 // ── Path/bearer workspace match ───────────────────────────────────────
 
 describe("hosted MCP — path/bearer workspace match", () => {
-  it("returns 403 when the path workspaceId does not match the bearer's org", async () => {
-    mockLookup.mockImplementation(async (bearer) => {
-      // Bearer A is bound to ORG_A — but the path will say ORG_B.
-      if (bearer === BEARER_A) {
-        return {
-          tokenId: TOKEN_ID_A,
-          orgId: ORG_A,
-          userId: `u_${TOKEN_ID_A}`,
-          scopes: [],
-        };
-      }
-      return null;
-    });
+  it("returns 403 — never 404 — when path workspaceId does not match the bearer's org", async () => {
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/mcp/${ORG_B}/sse`, {
@@ -277,38 +311,28 @@ describe("hosted MCP — path/bearer workspace match", () => {
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
-      // 403, NOT 404 — 404 would leak whether the path workspace exists.
       expect(res.status).toBe(403);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("forbidden");
-      // No audit row — the request never made it to session-init.
-      const useRows = auditedEntries.filter(
-        (e) => e.actionType === "mcp_token.use",
-      );
-      expect(useRows).toHaveLength(0);
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_token.use"),
+      ).toHaveLength(0);
     } finally {
       handle.close();
     }
   });
 });
 
-// ── Cross-region 421 ──────────────────────────────────────────────────
+// ── Cross-region residency ────────────────────────────────────────────
 
-describe("hosted MCP — cross-region residency", () => {
+describe("hosted MCP — residency", () => {
   it("returns 421 with correctApiUrl when workspace region differs from this instance", async () => {
-    mockLookup.mockImplementation(async () => ({
-      tokenId: TOKEN_ID_A,
-      orgId: ORG_A,
-      userId: `u_${TOKEN_ID_A}`,
-      scopes: [],
-    }));
-    // Workspace lives in eu-west, this instance is us-east — fire 421
-    // even though strictRouting is off.
-    mockMisrouting.mockImplementation(async () => ({
-      expectedRegion: "eu-west",
-      actualRegion: "us-east",
-      correctApiUrl: "https://api-eu.useatlas.dev",
-    }));
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    mockApiRegion.mockImplementation(() => "us-east");
+    mockWorkspaceRegion.mockImplementation(async () => "eu-west");
+    __mockedConfig.residency = {
+      regions: { "eu-west": { apiUrl: "https://api-eu.useatlas.dev" } },
+    };
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
@@ -335,17 +359,43 @@ describe("hosted MCP — cross-region residency", () => {
     }
   });
 
+  it("returns 503 region_unavailable (fail-closed) when the region lookup throws", async () => {
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    mockApiRegion.mockImplementation(() => "us-east");
+    mockWorkspaceRegion.mockImplementation(async () => {
+      throw new Error("internal db down");
+    });
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BEARER_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as {
+        error: string;
+        requestId: string;
+      };
+      expect(body.error).toBe("region_unavailable");
+      expect(body.requestId).toBeTruthy();
+      // No session was created — no audit row.
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_token.use"),
+      ).toHaveLength(0);
+      expect(_hostedSessionCount()).toBe(0);
+    } finally {
+      handle.close();
+    }
+  });
+
   it("does not emit mcp_token.use when residency check fires 421", async () => {
-    mockLookup.mockImplementation(async () => ({
-      tokenId: TOKEN_ID_A,
-      orgId: ORG_A,
-      userId: `u_${TOKEN_ID_A}`,
-      scopes: [],
-    }));
-    mockMisrouting.mockImplementation(async () => ({
-      expectedRegion: "eu-west",
-      actualRegion: "us-east",
-    }));
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    mockApiRegion.mockImplementation(() => "us-east");
+    mockWorkspaceRegion.mockImplementation(async () => "eu-west");
     const handle = await startServer();
     try {
       await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
@@ -356,10 +406,9 @@ describe("hosted MCP — cross-region residency", () => {
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
-      const useRows = auditedEntries.filter(
-        (e) => e.actionType === "mcp_token.use",
-      );
-      expect(useRows).toHaveLength(0);
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_token.use"),
+      ).toHaveLength(0);
     } finally {
       handle.close();
     }
@@ -370,13 +419,7 @@ describe("hosted MCP — cross-region residency", () => {
 
 describe("hosted MCP — successful session", () => {
   it("connects an MCP client through the route and lists tools", async () => {
-    mockLookup.mockImplementation(async () => ({
-      tokenId: TOKEN_ID_A,
-      orgId: ORG_A,
-      userId: `u_${TOKEN_ID_A}`,
-      scopes: [],
-    }));
-    void userFor;
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
     const handle = await startServer();
     try {
       const client = new Client({
@@ -395,8 +438,6 @@ describe("hosted MCP — successful session", () => {
 
       const tools = await client.listTools();
       const names = tools.tools.map((t) => t.name).sort();
-      // Should include the typed semantic-layer tools shipped in #2031
-      // alongside explore and executeSQL.
       expect(names).toContain("listEntities");
       expect(names).toContain("describeEntity");
       expect(names).toContain("explore");
@@ -409,12 +450,7 @@ describe("hosted MCP — successful session", () => {
   });
 
   it("emits mcp_token.use exactly once per session — not per JSON-RPC frame", async () => {
-    mockLookup.mockImplementation(async () => ({
-      tokenId: TOKEN_ID_A,
-      orgId: ORG_A,
-      userId: `u_${TOKEN_ID_A}`,
-      scopes: [],
-    }));
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
     mockApiRegion.mockImplementation(() => "us-east");
     const handle = await startServer();
     try {
@@ -432,7 +468,6 @@ describe("hosted MCP — successful session", () => {
       );
       await client.connect(transport);
 
-      // Multiple JSON-RPC frames in the same session.
       await client.listTools();
       await client.listTools();
       await client.listResources();
@@ -443,7 +478,6 @@ describe("hosted MCP — successful session", () => {
       expect(useRows).toHaveLength(1);
       expect(useRows[0].targetType).toBe("mcp_token");
       expect(useRows[0].targetId).toBe(TOKEN_ID_A);
-      // Audit metadata pivots forensic queries on session/region.
       const meta = useRows[0].metadata as
         | { sessionId: string; orgId: string; region?: string }
         | undefined;
@@ -457,26 +491,13 @@ describe("hosted MCP — successful session", () => {
     }
   });
 
-  it("isolates sessions across workspaces — bearer A and bearer B never share state", async () => {
-    mockLookup.mockImplementation(async (bearer) => {
-      if (bearer === BEARER_A) {
-        return {
-          tokenId: TOKEN_ID_A,
-          orgId: ORG_A,
-          userId: `u_${TOKEN_ID_A}`,
-          scopes: [],
-        };
-      }
-      if (bearer === BEARER_B) {
-        return {
-          tokenId: TOKEN_ID_B,
-          orgId: ORG_B,
-          userId: `u_${TOKEN_ID_B}`,
-          scopes: [],
-        };
-      }
-      return null;
-    });
+  it("isolates sessions across workspaces — distinct audit rows per token", async () => {
+    // The audit row's `targetId` (= tokenId) and `metadata.orgId` come
+    // from the same `factoryCtx` that is passed as `actor` into
+    // `createAtlasMcpServer`. Distinct values per session prove the
+    // bearer-derived identity is threaded through the whole pipeline,
+    // not shared across concurrent sessions.
+    bindBearerAB();
     const handle = await startServer();
     try {
       const clientA = new Client({ name: "client-a", version: "0.0.1" });
@@ -503,11 +524,160 @@ describe("hosted MCP — successful session", () => {
         (e) => e.actionType === "mcp_token.use",
       );
       expect(useRows).toHaveLength(2);
+
       const targetIds = useRows.map((r) => r.targetId).sort();
       expect(targetIds).toEqual([TOKEN_ID_A, TOKEN_ID_B].sort());
 
+      const orgIds = useRows
+        .map((r) => (r.metadata as { orgId: string }).orgId)
+        .sort();
+      expect(orgIds).toEqual([ORG_A, ORG_B].sort());
+
+      // Each (tokenId, orgId) pair is consistent — workspace A's audit
+      // row carries token A's id, not token B's.
+      for (const row of useRows) {
+        const meta = row.metadata as { orgId: string };
+        if (row.targetId === TOKEN_ID_A) expect(meta.orgId).toBe(ORG_A);
+        if (row.targetId === TOKEN_ID_B) expect(meta.orgId).toBe(ORG_B);
+      }
+
       await clientA.close();
       await clientB.close();
+    } finally {
+      handle.close();
+    }
+  });
+});
+
+// ── Session lifecycle ────────────────────────────────────────────────
+
+describe("hosted MCP — session lifecycle", () => {
+  it("returns 404 unknown_session when mcp-session-id points at a nonexistent session", async () => {
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BEARER_A}`,
+          "mcp-session-id": "00000000-0000-0000-0000-000000000000",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as {
+        error: string;
+        requestId: string;
+      };
+      expect(body.error).toBe("unknown_session");
+      expect(body.requestId).toBeTruthy();
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("supports DELETE for explicit session termination", async () => {
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    const handle = await startServer();
+    try {
+      const client = new Client({ name: "client-delete", version: "0.0.1" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        {
+          requestInit: { headers: { Authorization: `Bearer ${BEARER_A}` } },
+        },
+      );
+      await client.connect(transport);
+      expect(_hostedSessionCount()).toBeGreaterThanOrEqual(1);
+
+      // The SDK's transport.terminateSession() issues the DELETE on
+      // the session URL with the mcp-session-id header — the canonical
+      // way for clients to tear down. We exercise it here so a future
+      // regression that drops DELETE from HANDLED_METHODS is caught.
+      await transport.terminateSession();
+      // Allow the SDK's onsessionclosed callback to drain.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(_hostedSessionCount()).toBe(0);
+
+      await client.close().catch(() => {});
+    } finally {
+      handle.close();
+    }
+  });
+});
+
+// ── Capacity and reliability ─────────────────────────────────────────
+
+describe("hosted MCP — capacity", () => {
+  it("returns 503 too_many_sessions when the cap is reached", async () => {
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    const handle = await startServer();
+    try {
+      const client = new Client({ name: "client-capacity", version: "0.0.1" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        {
+          requestInit: { headers: { Authorization: `Bearer ${BEARER_A}` } },
+        },
+      );
+      await client.connect(transport);
+      expect(_hostedSessionCount()).toBe(1);
+
+      // Second session-init must be rejected before any McpServer is
+      // even allocated.
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${BEARER_A}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "raw", version: "0.0.1" },
+          },
+          id: 1,
+        }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("too_many_sessions");
+
+      await client.close();
+    } finally {
+      handle.close();
+    }
+  });
+});
+
+describe("hosted MCP — audit failure", () => {
+  it("audit emission failures must not break session creation", async () => {
+    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    mockLogAdminAction.mockImplementation(() => {
+      throw new Error("pino broken");
+    });
+    const handle = await startServer();
+    try {
+      const client = new Client({ name: "client-audit", version: "0.0.1" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        {
+          requestInit: { headers: { Authorization: `Bearer ${BEARER_A}` } },
+        },
+      );
+      // `connect()` performs initialize + listTools — both must succeed
+      // even though the audit emit threw on session-init.
+      await client.connect(transport);
+      const tools = await client.listTools();
+      expect(tools.tools.length).toBeGreaterThan(0);
+      await client.close();
     } finally {
       handle.close();
     }

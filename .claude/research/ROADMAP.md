@@ -153,6 +153,7 @@ Tracker: [milestone #40](https://github.com/AtlasDevHQ/atlas/milestones/40). Lea
 - [x] Publish `@useatlas/mcp` to npm — vendor + dynamic-import detangle resolves the workspace dep; the lead install command now runs against the published artifact (#2042, PRs #2048/#2049/#2050).
 - [x] Retarget `concepts.mdx` from cybersec to NovaMart — final stale-reference cleanup from #2021's seed consolidation (#2043, PR #2045).
 - [x] `Question` discriminated-union refactor — drops every `?? ""` fallback in the eval harness; loader rejects mode/expect mismatches at compile time (#2044, PR #2046).
+- [x] NovaMart seed `order_items → products` join fix — the canonical-question harness surfaced two metrics returning 0 rows; replaced denormalized name-string join with a `product_id` FK (#2039, PR #2051).
 
 Backlog (not committed for 1.4.0): `/agent-mode` view (#2022), `runbooks-context` plugin (#2023).
 

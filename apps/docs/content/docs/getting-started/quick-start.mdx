@@ -192,9 +192,11 @@ Another dev server is using the port. Find it with `lsof -i :3000` (or `:3001`),
 
 The chat UI shows suggested questions based on the demo dataset. Try one:
 
-- "How many companies are there by industry?"
-- "What are the top 5 companies by revenue?"
-- "Which department has the most people?"
+- "What's our GMV this quarter?"
+- "What's our top-performing category by GMV this month?"
+- "Monthly GMV trend over the past 6 months."
+- "Show me revenue last quarter." — `revenue` is `status: ambiguous` in the glossary, so the agent will ask which definition you mean (GMV vs net revenue vs seller revenue)
+- "What are our most common return reasons?"
 
 <Callout type="info" title="You should see">
 The agent will:

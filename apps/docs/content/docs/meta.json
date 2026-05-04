@@ -4,6 +4,7 @@
   "icon": "Book",
   "pages": [
     "getting-started",
+    "semantic-layer",
     "guides",
     "reference",
     "sdk",

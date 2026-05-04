@@ -1,10 +1,10 @@
 import { type CSSProperties } from "react";
 
-const HEADLINE_LINES = ["Text-to-SQL,", "that actually", "ships."] as const;
-const ITALIC_LINE_INDEX = 1;
+const HEADLINE_LINES = ["A semantic layer", "for analytics,", "agent-native."] as const;
+const ITALIC_LINE_INDEX = 2;
 
 const SUBHEAD =
-  "Your data has structure — schemas, joins, metrics, glossaries. Atlas reads them, writes deterministic SQL, and runs it through 7 validators before it ever touches your warehouse.";
+  "Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents. Entities, glossary, and metrics live in your repo; the agent reads them, writes deterministic SQL, and runs it through a 7-stage validation pipeline — read-only, table-whitelisted, statement-timed.";
 
 type NodeKind =
   | "input"
@@ -17,17 +17,17 @@ type NodeKind =
   | "widget";
 
 type SchemaNode = {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  label: string;
-  value: string;
-  kind: NodeKind;
+  readonly id: string;
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly label: string;
+  readonly value: string;
+  readonly kind: NodeKind;
 };
 
-const NODES: SchemaNode[] = [
-  { id: "prompt",     x: 600,  y: 560, w: 220, label: "prompt",                value: '"top 5 accounts by arr…"',   kind: "input"   },
+const NODES = [
+  { id: "prompt",     x: 600,  y: 560, w: 220, label: "prompt",                value: '"top categories by gmv…"',   kind: "input"   },
   { id: "semantic",   x: 620,  y: 100, w: 240, label: "semantic_layer.yaml",   value: "entities · metrics · glossary", kind: "yaml"  },
   { id: "compiler",   x: 640,  y: 320, w: 200, label: "compiler",              value: "AST → SQL",                    kind: "process" },
   { id: "validators", x: 900,  y: 320, w: 240, label: "7 validators",          value: "ast · perms · row_limit · …",  kind: "gate"    },
@@ -35,15 +35,17 @@ const NODES: SchemaNode[] = [
   { id: "result",     x: 1190, y: 460, w: 220, label: "result",                value: "rows · read-only",             kind: "result"  },
   { id: "audit",      x: 900,  y: 560, w: 240, label: "audit_log",             value: "every query · every op",       kind: "audit"   },
   { id: "widget",     x: 640,  y: 460, w: 200, label: "<AtlasChat />",         value: "react widget",                 kind: "widget"  },
-];
+] as const satisfies ReadonlyArray<SchemaNode>;
 
-const NODE_BY_ID: Record<string, SchemaNode> = Object.fromEntries(
+type NodeId = (typeof NODES)[number]["id"];
+
+const NODE_BY_ID: Record<NodeId, SchemaNode> = Object.fromEntries(
   NODES.map((n) => [n.id, n]),
-);
+) as Record<NodeId, SchemaNode>;
 
-type Edge = { from: string; to: string; label: string };
+type Edge = { readonly from: NodeId; readonly to: NodeId; readonly label: string };
 
-const EDGES: Edge[] = [
+const EDGES: ReadonlyArray<Edge> = [
   { from: "prompt",     to: "compiler",   label: "01"  },
   { from: "semantic",   to: "compiler",   label: "02"  },
   { from: "compiler",   to: "validators", label: "03"  },
@@ -54,8 +56,8 @@ const EDGES: Edge[] = [
   { from: "result",     to: "audit",      label: "log" },
 ];
 
-const EDGE_DELAY_MS = [0, 300, 600, 900, 1200, 1500, 1800, 2100];
-const NODE_DELAY_MS: Record<string, number> = {
+const EDGE_DELAY_MS: ReadonlyArray<number> = [0, 300, 600, 900, 1200, 1500, 1800, 2100];
+const NODE_DELAY_MS: Record<NodeId, number> = {
   prompt: 0,
   semantic: 0,
   compiler: 300,
@@ -117,8 +119,8 @@ function SchemaMap() {
       <ellipse cx="980" cy="380" rx="420" ry="300" fill="url(#hero-halo)" />
 
       {EDGES.map((e, i) => {
-        const a = NODE_BY_ID[e.from]!;
-        const b = NODE_BY_ID[e.to]!;
+        const a = NODE_BY_ID[e.from];
+        const b = NODE_BY_ID[e.to];
         const ax = a.x + a.w / 2;
         const ay = a.y + 32;
         const bx = b.x + b.w / 2;
@@ -262,22 +264,22 @@ export function Hero() {
         </p>
         <div className="mt-7 flex flex-wrap gap-2.5">
           <a
-            href="https://app.useatlas.dev"
+            href="https://docs.useatlas.dev/guides/mcp"
             className="inline-flex items-center gap-2 rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
           >
-            Start 14-day trial →
+            Install the MCP server →
           </a>
           <a
-            href="https://docs.useatlas.dev/getting-started"
+            href="https://docs.useatlas.dev/guides/mcp"
             className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-zinc-50 transition-colors hover:border-white/20"
           >
             <code className="font-mono text-[12.5px]">
-              $ bun create atlas-agent
+              $ bunx @useatlas/mcp init
             </code>
           </a>
         </div>
         <p className="mt-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-          no card · self-host is free, every feature
+          works in claude desktop, cursor, continue · self-host is free
         </p>
       </div>
 

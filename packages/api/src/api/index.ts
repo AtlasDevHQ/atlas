@@ -420,23 +420,29 @@ if (process.env.DISCORD_CLIENT_ID) {
   log.debug("Discord integration disabled (DISCORD_CLIENT_ID not set)");
 }
 
-// Hosted MCP endpoint — issue #2024 / #2028. Mounts the MCP server as a
-// Hono route under /mcp/{workspace_id}/sse so the same per-region API
-// instance that serves the data also serves the agent. Keeps residency
-// guarantees from 1.0.0 — workspace data never crosses regions even via
-// the agent path.
+// Hosted MCP endpoint — mounts the MCP server as a Hono route under
+// /mcp/{workspace_id}/sse so the same per-region API instance that
+// serves the data also serves the agent. Keeps residency guarantees —
+// workspace data never crosses regions even via the agent path.
 //
-// Lazy import + try/catch so a missing or broken @atlas/mcp install
-// doesn't crash the api server (mirrors the admin / billing / slack
-// patterns above).
+// `turbopackIgnore: true` tells Next.js / Turbopack not to trace this
+// dynamic import into the bundle. The standalone Vercel template
+// (examples/nextjs-standalone) doesn't ship hosted MCP — it's a
+// single-tenant deploy where stdio MCP is the right shape — and
+// dragging the heavy @atlas/mcp graph (sandbox runtime, plugin
+// lifecycle, semantic-tools) into the function bundle would inflate
+// cold starts. The Hono API server (which Bun runs natively, no
+// bundler) resolves the import at runtime via the workspace dep.
 try {
-  const { createHostedMcpRouter } = await import("@atlas/mcp/hosted");
+  const { createHostedMcpRouter } = await import(
+    /* turbopackIgnore: true */ "@atlas/mcp/hosted"
+  );
   app.route("/mcp", createHostedMcpRouter());
   log.info("Hosted MCP endpoint mounted at /mcp/{workspace_id}/sse");
 } catch (err) {
-  log.error(
-    { err: err instanceof Error ? err : new Error(String(err)) },
-    "Failed to mount hosted MCP endpoint — agent connections via mcp.useatlas.dev will be unavailable",
+  log.debug(
+    { err: err instanceof Error ? err.message : String(err) },
+    "Hosted MCP endpoint not available in this build — agent connections via mcp.useatlas.dev will be unavailable",
   );
 }
 

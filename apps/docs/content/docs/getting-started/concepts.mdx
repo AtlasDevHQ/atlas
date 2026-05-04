@@ -75,7 +75,7 @@ dimensions:
     sample_values: ["Small (<$25)", "Medium ($25-$75)", "Large ($75-$150)", "XL ($150+)"]
 ```
 
-Use virtual dimensions for common groupings (revenue tiers, date buckets, status categories) that users ask about frequently but don't exist as raw columns.
+Use virtual dimensions for common groupings (order-size buckets, date buckets, status categories) that users ask about frequently but don't exist as raw columns.
 
 <Callout type="info">
 Virtual dimensions can also be defined in a separate `virtual_dimensions` section of the entity YAML. Both approaches are functionally identical — the agent reads the raw YAML either way. The demo dataset and `atlas init` both use the inline `virtual: true` style.

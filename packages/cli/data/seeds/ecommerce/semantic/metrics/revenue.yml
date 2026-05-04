@@ -58,7 +58,7 @@ metrics:
              COUNT(DISTINCT oi.order_id) AS order_count,
              SUM(oi.quantity) AS units_sold
       FROM order_items oi
-      JOIN products p ON oi.product_name = p.name
+      JOIN products p ON oi.product_id = p.id
       JOIN categories c ON p.category_id = c.id
       GROUP BY c.name
       ORDER BY revenue DESC
@@ -76,7 +76,7 @@ metrics:
              COUNT(DISTINCT oi.order_id) AS order_count,
              AVG(oi.unit_price_cents) / 100.0 AS avg_unit_price
       FROM order_items oi
-      JOIN products p ON oi.product_name = p.name
+      JOIN products p ON oi.product_id = p.id
       GROUP BY CASE WHEN p.seller_id IS NULL THEN 'DTC' ELSE 'Marketplace' END
 
   - id: refund_rate

@@ -541,6 +541,33 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas eval --baseline",
     ],
   },
+  "canonical-eval": {
+    description:
+      "Run the canonical-question harness against the consolidated NovaMart demo dataset. Proves the semantic layer (metrics, query_patterns, glossary) returns correct answers to a curated question set without involving an LLM by default.",
+    usage: "canonical-eval [options]",
+    flags: [
+      {
+        flag: "--schema <name>",
+        description:
+          "Demo dataset to seed (only `ecommerce` ships today; flag stays open for future seeds)",
+      },
+      {
+        flag: "--questions <path>",
+        description:
+          "Override the questions.yml path (default: eval/canonical-questions/questions.yml)",
+      },
+      {
+        flag: "--llm",
+        description:
+          "Run the full agent loop (slower, nondeterministic) instead of calling typed semantic-layer reads directly",
+      },
+      { flag: "--json", description: "JSON summary output" },
+    ],
+    examples: [
+      "atlas canonical-eval",
+      "atlas canonical-eval --llm",
+    ],
+  },
   smoke: {
     description:
       "Run end-to-end smoke tests against a running Atlas deployment.",
@@ -634,6 +661,7 @@ export function printOverviewHelp(): void {
       "  validate         Validate config, semantic layer, and connectivity\n" +
       "  doctor           Alias for validate\n" +
       "  eval             Run eval pipeline against demo schemas\n" +
+      "  canonical-eval   Run canonical-question harness against the demo dataset (no LLM by default)\n" +
       "  smoke            Run E2E smoke tests against a running Atlas deployment\n" +
       "  migrate          Semantic layer versioning (snapshot, diff, rollback)\n" +
       "  plugin           Manage plugins (list, create, add)\n" +

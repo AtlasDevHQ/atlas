@@ -199,6 +199,11 @@ async function main() {
     return handleEval(args);
   }
 
+  if (command === "canonical-eval") {
+    const { handleCanonicalEval } = await import("./canonical-eval-run");
+    return handleCanonicalEval(args);
+  }
+
   if (command === "benchmark") {
     const { handleBenchmark } = await import("./benchmark");
     return handleBenchmark(args);

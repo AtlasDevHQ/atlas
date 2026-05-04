@@ -145,8 +145,8 @@ Tracker: [milestone #40](https://github.com/AtlasDevHQ/atlas/milestones/40). Lea
 - [x] OTel coverage for MCP tool calls — activation + tool-call counters (#2029, PR #2035)
 - [x] Structured error envelope for typed MCP tools so agents can recover gracefully (#2030, PR #2034)
 - [ ] List Atlas in MCP registries (mcp.so + others) before close (#2027)
-- [x] Lead README, docs homepage, and landing with MCP + the YAML-first story (#2026)
-- [ ] Canonical-question eval harness for the demo dataset (#2025)
+- [x] Lead README, docs homepage, and landing with MCP + the YAML-first story (#2026, PR #2040) — moat sentence verbatim across README, docs homepage, www landing; new `/semantic-layer` docs section; NovaMart canonical 5 questions consistent across surfaces.
+- [x] Canonical-question eval harness for the demo dataset (#2025, PR #2041) — 20-question curated set under `eval/canonical-questions/`, deterministic by default (calls typed semantic-layer reads + executes the resolved SQL directly, mirroring the typed MCP `runMetric`), `--llm` mode for the full agent loop. CI gate at `.github/workflows/eval.yml` is informational on PRs and blocking on release tags.
 - [x] Consolidate canonical demo dataset across landing, docs, scaffolder (#2021, PR #2036) — three seeds collapsed to one canonical NovaMart ecommerce seed; multi-seed picker reverted; canonical question set locked for #2025/#2026.
 - [x] Streaming chat CORS fix (PR #2037) — surfaced by the post-#2021 demo smoke; same latent bug existed for cross-origin embedders of `@useatlas/react`.
 - [x] CI un-stuck — partial `mock.module(@atlas/api/lib/config)` in @atlas/mcp tests was breaking `bun test`'s in-process runner across files (PR #2038).

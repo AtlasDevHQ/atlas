@@ -114,6 +114,7 @@
         "@ai-sdk/gateway": "^3.0.83",
         "@ai-sdk/openai": "^3.0.48",
         "@atlas/ee": "workspace:*",
+        "@atlas/mcp": "workspace:*",
         "@better-auth/api-key": "^1.5.6",
         "@better-auth/scim": "^1.5.6",
         "@better-auth/stripe": "^1.5.6",
@@ -206,6 +207,7 @@
         "@useatlas/mcp": "workspace:*",
         "@useatlas/types": "workspace:*",
         "effect": "^3.21.0",
+        "hono": "^4.12.9",
       },
       "devDependencies": {
         "zod": "^4.3.6",

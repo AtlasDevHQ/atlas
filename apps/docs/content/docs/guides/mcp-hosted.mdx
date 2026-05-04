@@ -1,0 +1,99 @@
+---
+title: Hosted MCP Endpoint
+description: Connect MCP clients to Atlas SaaS over HTTP using a workspace-scoped bearer token.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Self-hosted Atlas exposes MCP over stdio (see the [MCP guide](/guides/mcp)). Atlas SaaS adds a hosted MCP endpoint over Streamable HTTP so the same `bunx @useatlas/mcp init` flow can target the regional API hostnames instead of a local subprocess.
+
+<Callout type="info">
+The hosted endpoint is reachable today via the regional hostnames below. The Settings → MCP Tokens UI and the `bunx @useatlas/mcp init --hosted` flag are in flight. Until those land, mint tokens via the admin REST surface and paste the URL into your client manually.
+</Callout>
+
+## URL pattern
+
+```
+https://<region>.api.useatlas.dev/mcp/{workspace_id}/sse
+```
+
+| Region | Hostname |
+|--------|----------|
+| US | `api.useatlas.dev` |
+| EU | `api-eu.useatlas.dev` |
+| APAC | `api-apac.useatlas.dev` |
+
+Hit any region with a workspace assigned to a different region and you'll get a `421 Misdirected Request` (see [Cross-region routing](#cross-region-routing) below). Use the workspace's home region.
+
+The single endpoint accepts:
+
+- `POST` — JSON-RPC frames (`initialize`, `tools/list`, `tools/call`, etc.)
+- `GET` — SSE notifications stream
+- `DELETE` — explicit session termination
+
+The MCP SDK handles dispatch automatically — clients pointed at the URL above just work.
+
+## Authentication
+
+```
+Authorization: Bearer atl_mcp_<token>
+```
+
+Bearer tokens are minted by workspace admins from the admin console (`/api/v1/admin/mcp-tokens`) and are workspace-scoped — they carry no permissions outside their workspace. Tokens are hashed (SHA-256) before storage, and the hash is encrypted at rest; lookups compare via timing-safe equality on the decrypted hash.
+
+The plaintext token is shown **once** when minted. It's not retrievable afterwards. Lost tokens are revoked and replaced.
+
+## Workspace scoping
+
+The path `{workspace_id}` must match the workspace the bearer is bound to. A bearer for workspace A pointed at workspace B's URL returns `403 forbidden` — the server never reveals whether workspace B exists.
+
+```http
+GET /mcp/org_b/sse                 ← path workspace
+Authorization: Bearer atl_mcp_…    ← token bound to org_a
+→ 403 forbidden
+```
+
+This guards against probing: an attacker who steals a workspace A token can't pivot to workspace B by URL.
+
+## Cross-region routing
+
+Atlas guarantees data residency from 1.0.0 onward. The MCP endpoint enforces this strictly: a request for an EU workspace that lands on the US instance returns `421 Misdirected Request`, even when the API is configured for graceful (non-strict) routing on the data path.
+
+```json
+{
+  "error": "misdirected_request",
+  "message": "MCP requests for this workspace must be directed to the eu-west region.",
+  "correctApiUrl": "https://api-eu.useatlas.dev",
+  "expectedRegion": "eu-west",
+  "actualRegion": "us-east",
+  "requestId": "…"
+}
+```
+
+MCP clients do not follow HTTP redirects by default, so the response body carries the correct URL. Clients should read `correctApiUrl` and reconnect against that hostname.
+
+## Sessions and identity
+
+A POST without the `mcp-session-id` header is treated as a session-init request — the SDK creates a fresh server-side MCP session bound to the bearer's identity and returns the new session id in the response header. Subsequent frames send the header back and route to the same session. POSTs with an unknown session id return `404 unknown_session`; the client recovers by re-initializing.
+
+The session lives in memory on the API instance that handled init; behind a multi-replica load balancer, sticky routing is required so frames stay on the same instance.
+
+`DELETE` on the URL (with the `mcp-session-id` header) tears the session down. Sessions are also garbage-collected when the underlying connection drops.
+
+## Audit
+
+A `mcp_token.use` row is written to the workspace's admin action log when a session is established — once per session, not per JSON-RPC frame. The row carries `sessionId`, `orgId`, and the API region in its metadata so forensic queries can pivot on either dimension.
+
+`mcp_token.create` and `mcp_token.revoke` are emitted by the admin CRUD route in the usual way.
+
+## Operational notes
+
+- **Max sessions per instance** is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100). Hitting the cap returns `503 too_many_sessions`. The cap counts both registered sessions and in-flight initializations, so a burst cannot overshoot it.
+- **Sticky routing** is required when running multiple API replicas behind a load balancer. Sessions are in-process; a frame routed to the wrong replica returns `404 unknown_session`. The client recovers by calling `initialize` again.
+- **Region failure mode**: residency is fail-closed. If the region of the workspace cannot be looked up (internal DB unreachable), this surface returns `503 region_unavailable` rather than serving traffic that might cross residency. The shared data-path misrouting check is graceful by default; the MCP path overrides that.
+- A dedicated `mcp.useatlas.dev` hostname (regional CNAME-set) is on the ops backlog. Use the regional API hostnames in the meantime.
+
+## See also
+
+- [MCP guide](/guides/mcp) — stdio installer for self-hosted Atlas and local IDE clients
+- [Admin: MCP tokens](/api-reference/admin-mcp-tokens/getAdminMcpTokens) — REST surface for minting and revoking tokens

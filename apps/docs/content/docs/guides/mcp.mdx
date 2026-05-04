@@ -21,7 +21,7 @@ bunx @useatlas/mcp init --local --write
 
 If `ATLAS_DATASOURCE_URL` is unset, the installer points at a bundled accounts/companies/people SQLite fixture so the install works zero-config. If a local Atlas is running at `http://localhost:3001` (override via `ATLAS_API_URL`), the installer leaves the datasource env blank so the MCP server inherits your shell env.
 
-> Hosted mode (`bunx @useatlas/mcp init --hosted` against `app.useatlas.dev`) is tracked in [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024) and prints a clear "coming soon" message today.
+> Hosted mode against `app.useatlas.dev` is partially live: mint a workspace token via `/api/v1/admin/mcp-tokens` and point any MCP client at the regional URL. See the [hosted endpoint reference](/guides/mcp-hosted) for the URL pattern, bearer model, and operational notes. The Settings → MCP Tokens UI and the `bunx @useatlas/mcp init --hosted` flag are in flight.
 
 <Callout title="Prerequisites">
 - An MCP-compatible client (Claude Desktop, Cursor, Continue, or any stdio/SSE client)

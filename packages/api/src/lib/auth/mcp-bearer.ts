@@ -22,7 +22,7 @@
  * Issue: #2024
  */
 
-import type { AuthResult } from "@atlas/api/lib/auth/types";
+import type { AtlasUser, AuthResult } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -31,6 +31,31 @@ import {
 } from "./mcp-token";
 
 const log = createLogger("mcp-bearer");
+
+// ── Typed claim shape ───────────────────────────────────────────────
+
+/**
+ * The shape of the `claims` payload an MCP-bearer-authenticated
+ * `AtlasUser` carries. Callers downstream of `validateMcpBearer` should
+ * use `getMcpTokenId` rather than reading the claim key directly so the
+ * literal `"mcpTokenId"` lives in exactly one file.
+ */
+export interface McpClaims {
+  readonly mcpTokenId: string;
+  readonly mcpScopes: readonly string[];
+}
+
+const MCP_TOKEN_ID_CLAIM = "mcpTokenId" as const;
+
+/**
+ * Read the MCP token id from a verified `AtlasUser`. Returns `null`
+ * when the user wasn't authenticated via MCP bearer (no claim present)
+ * or when the claim key is malformed.
+ */
+export function getMcpTokenId(user: AtlasUser | undefined): string | null {
+  const value = user?.claims?.[MCP_TOKEN_ID_CLAIM];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
 // ── Header extraction ───────────────────────────────────────────────
 

@@ -246,6 +246,20 @@ export const ADMIN_ACTIONS = {
     revoke: "apikey.revoke",
   },
   /**
+   * MCP bearer-token lifecycle (#2024). `created` and `revoked` are
+   * emitted by the admin CRUD route. `used` is emitted by the bearer
+   * middleware on first-use only (sampled — every call would dwarf
+   * every other audit signal in the table). Without these entries a
+   * compromised admin could mint an MCP token, exfiltrate workspace
+   * data through a hosted agent, then revoke the token leaving zero
+   * forensic trace of the issuance.
+   */
+  mcp_token: {
+    create: "mcp_token.create",
+    revoke: "mcp_token.revoke",
+    use: "mcp_token.use",
+  },
+  /**
    * Approval-workflow domain. `approve` / `deny` cover the review decision
    * on a single pending request. `rule_create` / `rule_update` / `rule_delete`
    * cover rule-catalog CRUD; `expire_sweep` covers the manual

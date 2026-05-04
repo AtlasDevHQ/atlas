@@ -274,8 +274,9 @@ CREATE TABLE orders (
 CREATE TABLE order_items (
     id                 SERIAL PRIMARY KEY,
     order_id           INTEGER NOT NULL REFERENCES orders(id),
+    product_id         INTEGER NOT NULL REFERENCES products(id),
     product_variant_id INTEGER,        -- TECH DEBT: NO FK to product_variants
-    product_name       TEXT NOT NULL,
+    product_name       TEXT NOT NULL,  -- TECH DEBT: denormalized snapshot of products.name at purchase time; can drift from current name
     quantity           INTEGER NOT NULL DEFAULT 1,
     unit_price_cents   INTEGER NOT NULL,
     total_cents        INTEGER NOT NULL,
@@ -652,6 +653,7 @@ CREATE INDEX idx_orders_customer ON orders(customer_id);
 CREATE INDEX idx_orders_created ON orders(created_at);
 CREATE INDEX idx_orders_status ON orders(status);
 CREATE INDEX idx_order_items_order ON order_items(order_id);
+CREATE INDEX idx_order_items_product ON order_items(product_id);
 CREATE INDEX idx_order_events_order ON order_events(order_id);
 CREATE INDEX idx_order_events_created ON order_events(created_at);
 CREATE INDEX idx_payments_order ON payments(order_id);
@@ -1041,16 +1043,17 @@ FROM (
 ) AS src;
 
 -- ---------- Order Items (55,000) ----------
-INSERT INTO order_items (order_id, product_variant_id, product_name, quantity, unit_price_cents, total_cents, created_at)
+-- product_id is a real FK into products.id (1..800). product_name is a
+-- denormalized snapshot of products.name at purchase time — kept for the
+-- "denormalized convenience column" demo pattern, but joins should always
+-- go through product_id (see semantic/entities/order_items.yml).
+INSERT INTO order_items (order_id, product_id, product_variant_id, product_name, quantity, unit_price_cents, total_cents, created_at)
 SELECT
     order_id,
+    product_id,
     -- TECH DEBT: no FK to product_variants
     1 + floor(random() * 3200)::int,
-    (ARRAY['Egyptian Cotton Sheet Set','Bamboo Pillowcase','Memory Foam Pillow','Linen Duvet Cover',
-           'Cast Iron Skillet','Nonstick Pan Set','Turkish Bath Towel','Waffle Bath Robe',
-           'Patio Lounge Chair','Soy Candle Set','Area Rug','Throw Pillow',
-           'Weighted Blanket','Mattress Topper','Chef Knife','Cutting Board Set',
-           'Solar String Lights','Ceramic Vase','Wall Print','Hand Towel Set'])[1 + floor(random() * 20)::int],
+    (SELECT name FROM products WHERE id = product_id),
     qty,
     unit_price,
     unit_price * qty,
@@ -1059,6 +1062,7 @@ FROM (
     SELECT
         g,
         1 + floor(random() * 25000)::int AS order_id,
+        1 + floor(random() * 800)::int AS product_id,
         (ARRAY[1,1,1,1,1,1,2,2,3])[1 + floor(random() * 9)::int] AS qty,
         (1999 + floor(random() * 15000))::int AS unit_price
     FROM generate_series(1, 55000) AS g
@@ -1499,8 +1503,8 @@ SELECT
     p.id,
     p.name,
     cat.name,
-    COALESCE((SELECT sum(oi.quantity) FROM order_items oi WHERE oi.product_name = p.name), 0)::int,
-    COALESCE((SELECT sum(oi.total_cents) FROM order_items oi WHERE oi.product_name = p.name), 0)::int,
+    COALESCE((SELECT sum(oi.quantity) FROM order_items oi WHERE oi.product_id = p.id), 0)::int,
+    COALESCE((SELECT sum(oi.total_cents) FROM order_items oi WHERE oi.product_id = p.id), 0)::int,
     COALESCE((SELECT round(avg(pr.rating)::numeric, 2) FROM product_reviews pr WHERE pr.product_id = p.id), NULL),
     COALESCE((SELECT count(*) FROM product_reviews pr WHERE pr.product_id = p.id), 0)::int,
     round((random() * 8)::numeric, 2),

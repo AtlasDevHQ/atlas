@@ -4,9 +4,14 @@ table: order_items
 grain: one row per line item in an order
 description: |
   Individual line items within orders. Each row represents a specific product purchased
-  at a quantity and price. product_name is denormalized for convenience.
+  at a quantity and price.
 
   Data quality notes:
+  - product_id is the real foreign key to products.id — use this for any join
+    against products.
+  - product_name is a denormalized snapshot of products.name at purchase time
+    and may drift from the current name. Do NOT join to products via
+    product_name; use product_id.
   - product_variant_id has no foreign key constraint — not all values may match
     product_variants.id.
   - All monetary values (unit_price_cents, total_cents) are in cents.
@@ -24,6 +29,11 @@ dimensions:
     type: number
     description: Foreign key to orders — which order this item belongs to
 
+  - name: product_id
+    sql: product_id
+    type: number
+    description: Foreign key to products — the canonical join key for product attribution
+
   - name: product_variant_id
     sql: product_variant_id
     type: number
@@ -34,7 +44,9 @@ dimensions:
   - name: product_name
     sql: product_name
     type: string
-    description: Denormalized product name (copied at time of purchase)
+    description: |
+      Denormalized snapshot of products.name at purchase time. May drift from
+      the current product name — for joins to products, use product_id.
 
   - name: quantity
     sql: quantity
@@ -114,6 +126,13 @@ joins:
       from: order_id
       to: id
     description: Each line item belongs to one order
+
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    description: Each line item references one product (use product_id, not product_name)
 
 use_cases:
   - Product-level revenue attribution — which products drive the most revenue

@@ -35,36 +35,78 @@ export type QuestionCategory =
   | "glossary"
   | "filtered_pattern";
 
-export interface QuestionExpectations {
-  /** Case-insensitive substrings that must appear in the executed SQL. */
-  readonly sql_pattern?: readonly string[];
+interface BaseExpectations {
   /** Lower bound on row count. */
   readonly min_rows?: number;
   /** Upper bound on row count. */
   readonly max_rows?: number;
-  /** Scalar metric must return a non-zero numeric value. */
-  readonly non_zero?: boolean;
   /** Named column must appear in the result columns. */
   readonly column?: string;
+}
+
+/**
+ * Expectations for SQL-bearing modes (metric / pattern / virtual).
+ *
+ * The `?: never` slots make the discriminated `Question` union exclusive at
+ * the type level — a literal that mixes SQL-shaped and glossary-shaped
+ * fields fails at compile time, so `rejectKeys` in `loadQuestions` is a
+ * runtime echo of a TS guarantee, not the only line of defence.
+ */
+export interface SqlExpectations extends BaseExpectations {
+  /** Case-insensitive substrings that must appear in the executed SQL. */
+  readonly sql_pattern?: readonly string[];
+  /** Scalar metric must return a non-zero numeric value. */
+  readonly non_zero?: boolean;
+  readonly status?: never;
+  readonly mappings_min?: never;
+}
+
+/** Expectations for glossary disambiguation lookups. */
+export interface GlossaryExpectations {
   /** Glossary status (`defined` / `ambiguous`). */
   readonly status?: "defined" | "ambiguous";
   /** Minimum number of `possible_mappings` on an ambiguous glossary term. */
   readonly mappings_min?: number;
+  readonly sql_pattern?: never;
+  readonly non_zero?: never;
+  readonly min_rows?: never;
+  readonly max_rows?: never;
+  readonly column?: never;
 }
 
-export interface Question {
+interface QuestionBase {
   readonly id: string;
   readonly category: QuestionCategory;
   readonly question: string;
-  readonly mode: QuestionMode;
-  readonly metric_id?: string;
-  readonly entity?: string;
-  readonly pattern?: string;
-  readonly dimension?: string;
-  readonly sql?: string;
-  readonly term?: string;
-  readonly expect: QuestionExpectations;
 }
+
+export type Question =
+  | (QuestionBase & {
+      readonly mode: "metric";
+      readonly metric_id: string;
+      readonly expect: SqlExpectations;
+    })
+  | (QuestionBase & {
+      readonly mode: "pattern";
+      readonly entity: string;
+      readonly pattern: string;
+      readonly expect: SqlExpectations;
+    })
+  | (QuestionBase & {
+      readonly mode: "virtual";
+      readonly entity: string;
+      readonly dimension: string;
+      readonly sql: string;
+      readonly expect: SqlExpectations;
+    })
+  | (QuestionBase & {
+      readonly mode: "glossary";
+      readonly term: string;
+      readonly expect: GlossaryExpectations;
+    });
+
+export type SqlQuestion = Extract<Question, { mode: "metric" | "pattern" | "virtual" }>;
+export type GlossaryQuestion = Extract<Question, { mode: "glossary" }>;
 
 /**
  * Wire shape returned by an executed SQL query — used by both the metric /
@@ -97,12 +139,23 @@ export interface GlossaryMatch {
 
 export type ResultStatus = "pass" | "warn" | "fail";
 
-export interface QuestionResult {
+interface QuestionResultBase {
   readonly question: Question;
-  readonly status: ResultStatus;
-  readonly detail: string;
   readonly sql: string | null;
 }
+
+/**
+ * Discriminated by `status`:
+ *   - `pass` — `detail` is an optional summary ("12 rows").
+ *   - `warn` / `fail` — `detail` is required and explains why.
+ *
+ * Splitting the shape lets formatters and downstream consumers ask "is there
+ * a reason to print" without falling back on truthiness of an always-present
+ * string.
+ */
+export type QuestionResult =
+  | (QuestionResultBase & { readonly status: "pass"; readonly detail?: string })
+  | (QuestionResultBase & { readonly status: "warn" | "fail"; readonly detail: string });
 
 interface QuestionsFile {
   readonly version?: string;
@@ -129,6 +182,47 @@ const VALID_CATEGORIES: ReadonlySet<QuestionCategory> = new Set([
 
 // ── Loader ───────────────────────────────────────────────────────────────
 
+/** Fields only valid on glossary-mode `expect`. Rejected on SQL-bearing modes. */
+const GLOSSARY_ONLY_EXPECT_KEYS = ["status", "mappings_min"] as const;
+/** Fields only valid on SQL-bearing-mode `expect`. Rejected on glossary mode. */
+const SQL_ONLY_EXPECT_KEYS = [
+  "sql_pattern",
+  "non_zero",
+  "min_rows",
+  "max_rows",
+  "column",
+] as const;
+
+function requireString(id: string, field: string, value: unknown): string {
+  if (typeof value !== "string" || !value) {
+    throw new Error(`${id}: ${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+/**
+ * Reject any forbidden keys present on an `expect:` block. An explicit YAML
+ * `null` (e.g. `expect: { sql_pattern: ~ }`) counts as set and is rejected
+ * — a contributor who typed the key intended it; the right response is to
+ * surface the cross-mode mismatch, not silently treat null as absent.
+ */
+function rejectKeys(
+  id: string,
+  mode: QuestionMode,
+  expect: Record<string, unknown>,
+  forbidden: readonly string[],
+): void {
+  const offenders = forbidden.filter((k) => expect[k] !== undefined);
+  if (offenders.length > 0) {
+    throw new Error(
+      `${id}: mode "${mode}" rejects expect.${offenders.join(", expect.")} ` +
+        `— those fields are only valid on ${
+          mode === "glossary" ? "metric/pattern/virtual" : "glossary"
+        } questions`,
+    );
+  }
+}
+
 export function loadQuestions(filePath: string): Question[] {
   if (!fs.existsSync(filePath)) {
     throw new Error(`Canonical questions file not found: ${filePath}`);
@@ -152,24 +246,25 @@ export function loadQuestions(filePath: string): Question[] {
     if (!rawQ || typeof rawQ !== "object") {
       throw new Error(`questions[${i}] is not an object in ${filePath}`);
     }
-    const q = rawQ as Partial<Question>;
+    const q = rawQ as Record<string, unknown>;
 
     if (typeof q.id !== "string" || !/^cq-\d{3}$/.test(q.id)) {
       throw new Error(
         `questions[${i}].id must match /^cq-\\d{3}$/ in ${filePath} (got ${String(q.id)})`,
       );
     }
-    if (seen.has(q.id)) {
-      throw new Error(`Duplicate question id "${q.id}" in ${filePath}`);
+    const id = q.id;
+    if (seen.has(id)) {
+      throw new Error(`Duplicate question id "${id}" in ${filePath}`);
     }
-    seen.add(q.id);
+    seen.add(id);
 
     if (typeof q.question !== "string" || !q.question.trim()) {
-      throw new Error(`${q.id}: question must be a non-empty string`);
+      throw new Error(`${id}: question must be a non-empty string`);
     }
     if (typeof q.mode !== "string" || !VALID_MODES.has(q.mode as QuestionMode)) {
       throw new Error(
-        `${q.id}: mode must be one of ${[...VALID_MODES].join(", ")} (got ${String(q.mode)})`,
+        `${id}: mode must be one of ${[...VALID_MODES].join(", ")} (got ${String(q.mode)})`,
       );
     }
     if (
@@ -177,28 +272,68 @@ export function loadQuestions(filePath: string): Question[] {
       !VALID_CATEGORIES.has(q.category as QuestionCategory)
     ) {
       throw new Error(
-        `${q.id}: category must be one of ${[...VALID_CATEGORIES].join(", ")} (got ${String(q.category)})`,
+        `${id}: category must be one of ${[...VALID_CATEGORIES].join(", ")} (got ${String(q.category)})`,
       );
     }
     if (!q.expect || typeof q.expect !== "object") {
-      throw new Error(`${q.id}: expect must be an object`);
+      throw new Error(`${id}: expect must be an object`);
     }
 
     const mode = q.mode as QuestionMode;
-    if (mode === "metric" && !q.metric_id) {
-      throw new Error(`${q.id}: metric mode requires metric_id`);
-    }
-    if (mode === "pattern" && (!q.entity || !q.pattern)) {
-      throw new Error(`${q.id}: pattern mode requires entity + pattern`);
-    }
-    if (mode === "virtual" && (!q.entity || !q.dimension || !q.sql)) {
-      throw new Error(`${q.id}: virtual mode requires entity + dimension + sql`);
-    }
-    if (mode === "glossary" && !q.term) {
-      throw new Error(`${q.id}: glossary mode requires term`);
-    }
+    const category = q.category as QuestionCategory;
+    const question = q.question;
+    const expect = q.expect as Record<string, unknown>;
+    const base = { id, category, question } as const;
 
-    out.push(q as Question);
+    switch (mode) {
+      case "metric": {
+        rejectKeys(id, mode, expect, GLOSSARY_ONLY_EXPECT_KEYS);
+        out.push({
+          ...base,
+          mode,
+          metric_id: requireString(id, "metric_id", q.metric_id),
+          expect: expect as SqlExpectations,
+        });
+        break;
+      }
+      case "pattern": {
+        rejectKeys(id, mode, expect, GLOSSARY_ONLY_EXPECT_KEYS);
+        out.push({
+          ...base,
+          mode,
+          entity: requireString(id, "entity", q.entity),
+          pattern: requireString(id, "pattern", q.pattern),
+          expect: expect as SqlExpectations,
+        });
+        break;
+      }
+      case "virtual": {
+        rejectKeys(id, mode, expect, GLOSSARY_ONLY_EXPECT_KEYS);
+        out.push({
+          ...base,
+          mode,
+          entity: requireString(id, "entity", q.entity),
+          dimension: requireString(id, "dimension", q.dimension),
+          sql: requireString(id, "sql", q.sql),
+          expect: expect as SqlExpectations,
+        });
+        break;
+      }
+      case "glossary": {
+        rejectKeys(id, mode, expect, SQL_ONLY_EXPECT_KEYS);
+        out.push({
+          ...base,
+          mode,
+          term: requireString(id, "term", q.term),
+          expect: expect as GlossaryExpectations,
+        });
+        break;
+      }
+      default: {
+        const _exhaustive: never = mode;
+        throw new Error(`unreachable mode: ${String(_exhaustive)}`);
+      }
+    }
   }
 
   return out;
@@ -207,7 +342,7 @@ export function loadQuestions(filePath: string): Question[] {
 // ── Per-mode comparators ────────────────────────────────────────────────
 
 function checkSqlPattern(
-  expectations: QuestionExpectations,
+  expectations: SqlExpectations,
   sql: string,
 ): string | null {
   const patterns = expectations.sql_pattern ?? [];
@@ -221,7 +356,7 @@ function checkSqlPattern(
 }
 
 function checkRowBounds(
-  expectations: QuestionExpectations,
+  expectations: SqlExpectations,
   rowCount: number,
 ): { kind: "pass" } | { kind: "warn"; detail: string } {
   if (typeof expectations.min_rows === "number" && rowCount < expectations.min_rows) {
@@ -240,7 +375,7 @@ function checkRowBounds(
 }
 
 function checkColumn(
-  expectations: QuestionExpectations,
+  expectations: SqlExpectations,
   columns: readonly string[],
 ): string | null {
   if (!expectations.column) return null;
@@ -251,7 +386,7 @@ function checkColumn(
 }
 
 function checkNonZero(
-  expectations: QuestionExpectations,
+  expectations: SqlExpectations,
   rows: readonly Record<string, unknown>[],
   columns: readonly string[],
 ): string | null {
@@ -270,11 +405,13 @@ function checkNonZero(
 /**
  * Generic comparator used by metric / pattern / virtual modes. The three
  * exported `compare*Result` functions below are aliases — the per-mode
- * dispatch happens in `resolveQuestion`, but distinct names document intent
- * at the call sites in `canonical-eval-run.ts`.
+ * dispatch happens in `resolveQuestion`, and the `SqlQuestion` parameter
+ * type now type-enforces that callers can't pass a glossary question. The
+ * named aliases document intent at the LLM-mode call sites in
+ * `canonical-eval-run.ts`.
  */
 function compareSqlResult(
-  question: Question,
+  question: SqlQuestion,
   executed: ExecutedQuery,
 ): QuestionResult {
   const { sql } = executed;
@@ -305,7 +442,7 @@ export const comparePatternResult = compareSqlResult;
 export const compareVirtualResult = compareSqlResult;
 
 export function compareGlossaryResult(
-  question: Question,
+  question: GlossaryQuestion,
   matches: readonly GlossaryMatch[],
 ): QuestionResult {
   const fail = (detail: string): QuestionResult => ({
@@ -322,7 +459,7 @@ export function compareGlossaryResult(
   });
 
   if (matches.length === 0) {
-    return fail(`no glossary match for term "${question.term ?? ""}"`);
+    return fail(`no glossary match for term "${question.term}"`);
   }
 
   const expectedStatus = question.expect.status ?? null;
@@ -462,12 +599,20 @@ export async function resolveQuestion(
   });
 
   try {
-    // Resolve SQL up-front so the execute + compare tail is shared across
-    // the three SQL-bearing modes. Glossary mode skips SQL entirely.
+    // Glossary mode skips SQL entirely — branch out of the dispatcher
+    // before resolving SQL so TS narrows `question` to `SqlQuestion` for
+    // the shared execute + compare tail below.
+    if (question.mode === "glossary") {
+      return compareGlossaryResult(
+        question,
+        opts.searchGlossary(question.term),
+      );
+    }
+
     let sql: string;
     switch (question.mode) {
       case "metric": {
-        const m = opts.findMetricSql(question.metric_id ?? "");
+        const m = opts.findMetricSql(question.metric_id);
         if (!m) {
           return failNoSql(
             `unknown metric ${JSON.stringify(question.metric_id)}`,
@@ -477,10 +622,7 @@ export async function resolveQuestion(
         break;
       }
       case "pattern": {
-        const p = opts.findPatternSql(
-          question.entity ?? "",
-          question.pattern ?? "",
-        );
+        const p = opts.findPatternSql(question.entity, question.pattern);
         if (!p) {
           return failNoSql(
             `unknown query_pattern ${JSON.stringify(question.entity)}.${JSON.stringify(question.pattern)}`,
@@ -490,17 +632,12 @@ export async function resolveQuestion(
         break;
       }
       case "virtual":
-        sql = question.sql ?? "";
+        sql = question.sql;
         break;
-      case "glossary":
-        return compareGlossaryResult(
-          question,
-          opts.searchGlossary(question.term ?? ""),
-        );
       default: {
         // Compile-time exhaustiveness — adding a new mode here forces TS to
         // flag this branch. Mirrors the dispatcher in `runWithAgent`.
-        const _exhaustive: never = question.mode;
+        const _exhaustive: never = question;
         throw new Error(`unreachable mode: ${String(_exhaustive)}`);
       }
     }

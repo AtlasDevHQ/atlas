@@ -283,7 +283,7 @@ async function runWithAgent(
     // Glossary mode never invokes the agent — we assert the
     // disambiguation contract by checking semantic-layer state directly.
     if (q.mode === "glossary") {
-      return compareGlossaryResult(q, toGlossaryMatches(lookups, q.term ?? ""));
+      return compareGlossaryResult(q, toGlossaryMatches(lookups, q.term));
     }
 
     // Narrow the try/catch to ONLY the agent invocation. Comparator
@@ -304,6 +304,11 @@ async function runWithAgent(
       };
     }
 
+    // The `?? ""` / `?? null` are required under TS strict
+    // `noUncheckedIndexedAccess` — array index access is `T | undefined`.
+    // The empty-array hard-fail below at `agent.sql.length === 0` is the
+    // load-bearing guard for the empty case; these defaults only feed the
+    // early-return branch's `sql: lastSql || null` mapping.
     const lastSql = agent.sql[agent.sql.length - 1] ?? "";
     const lastData = agent.data[agent.data.length - 1] ?? null;
 
@@ -337,7 +342,7 @@ async function runWithAgent(
       case "virtual":
         return compareVirtualResult(q, executed);
       default: {
-        const _exhaustive: never = q.mode;
+        const _exhaustive: never = q;
         throw new Error(`unreachable mode: ${String(_exhaustive)}`);
       }
     }

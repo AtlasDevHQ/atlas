@@ -2,20 +2,32 @@
 
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 
+import { CATEGORY_ROWS } from "./data";
+
 type TraceKind = "input" | "info" | "gate" | "result";
 
-type TraceStep = {
-  t: number;
-  k: string;
-  v: string;
-  kind: TraceKind;
-  /** Gate index (1..7). Only set when `kind === "gate"`. */
-  n?: number;
+type GateIndex = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+type BaseStep = {
+  readonly t: number;
+  readonly k: string;
+  readonly v: string;
   /** Long-form copy shown in the viewer's detail strip when this step is active. */
-  detail?: string;
+  readonly detail?: string;
 };
 
-const TRACE_STEPS: TraceStep[] = [
+type GateStep = BaseStep & {
+  readonly kind: "gate";
+  readonly n: GateIndex;
+};
+
+type OtherStep = BaseStep & {
+  readonly kind: Exclude<TraceKind, "gate">;
+};
+
+type TraceStep = GateStep | OtherStep;
+
+const TRACE_STEPS: ReadonlyArray<TraceStep> = [
   { t: 0.0, k: "prompt", v: "Top-performing category by GMV this month.", kind: "input" },
   {
     t: 0.041,
@@ -167,14 +179,6 @@ const SQL_TOKENS: SqlToken[] = [
 
 const SQL_TOTAL = SQL_TOKENS.reduce((sum, tok) => sum + tok.v.length, 0);
 
-const RESULT_ROWS: ReadonlyArray<readonly [string, string, string]> = [
-  ["Bedding",     "$184,219", "2,041"],
-  ["Kitchen",     "$142,718", "1,587"],
-  ["Bath",        "$98,402",  "1,103"],
-  ["Outdoor",     "$71,288",  "812"],
-  ["Accessories", "$54,011",  "693"],
-];
-
 const SQL_KIND_STYLE: Record<SqlTokenKind, CSSProperties> = {
   cm:  { color: "oklch(0.65 0 0)" },
   kw:  { color: "var(--atlas-brand)" },
@@ -272,7 +276,7 @@ export function Trace() {
     used += slice.length;
   }
 
-  const resultsVisible = idx >= LAST_INDEX ? RESULT_ROWS.length : 0;
+  const resultsVisible = idx >= LAST_INDEX ? CATEGORY_ROWS.length : 0;
   const gatesPassed = Math.min(7, Math.max(0, idx - 2));
   const isDone = idx >= LAST_INDEX;
 
@@ -354,7 +358,7 @@ export function Trace() {
                         : "oklch(0.65 0 0)",
                   }}
                 >
-                  {step.kind === "gate" && step.n != null && (
+                  {step.kind === "gate" && (
                     <span
                       className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm text-[9px] font-semibold text-brand"
                       style={{
@@ -386,7 +390,7 @@ export function Trace() {
             <span className="tracking-[0.06em] text-zinc-400">result</span>
             <span className="tracking-[0.06em] text-zinc-400">raw</span>
             <span className="ml-auto text-[10.5px] tracking-[0.06em] text-brand">
-              {cur.kind === "gate" && cur.n != null ? `gate ${cur.n} of 7` : cur.kind}
+              {cur.kind === "gate" ? `gate ${cur.n} of 7` : cur.kind}
             </span>
           </div>
 
@@ -430,16 +434,16 @@ export function Trace() {
                 {idx >= LAST_INDEX - 1 ? "// executing…" : "// awaiting validation"}
               </div>
             ) : (
-              RESULT_ROWS.slice(0, resultsVisible).map(([name, gmv, orders]) => (
+              CATEGORY_ROWS.slice(0, resultsVisible).map(({ category, gmv, orders }) => (
                 <div
-                  key={name}
+                  key={category}
                   className="grid py-2 font-mono text-[12px] text-zinc-200"
                   style={{
                     gridTemplateColumns: "2fr 1fr 1fr",
                     borderBottom: "1px solid oklch(1 0 0 / 0.04)",
                   }}
                 >
-                  <span>{name}</span>
+                  <span>{category}</span>
                   <span className="text-brand">{gmv}</span>
                   <span className="text-zinc-400">{orders}</span>
                 </div>

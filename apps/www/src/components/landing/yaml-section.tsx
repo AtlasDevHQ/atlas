@@ -1,3 +1,5 @@
+import { CATEGORY_ROWS } from "./data";
+
 const YAML_LINES: ReadonlyArray<string> = [
   "name: Orders",
   "type: fact_table",
@@ -96,14 +98,6 @@ function YamlPane() {
 
 const QUESTION = "What's our top-performing category by GMV this month?";
 
-const ANSWER_ROWS: ReadonlyArray<{ category: string; gmv: string; orders: string }> = [
-  { category: "Bedding", gmv: "$184,219", orders: "2,041" },
-  { category: "Kitchen", gmv: "$142,718", orders: "1,587" },
-  { category: "Bath", gmv: "$98,402", orders: "1,103" },
-  { category: "Outdoor", gmv: "$71,288", orders: "812" },
-  { category: "Accessories", gmv: "$54,011", orders: "693" },
-];
-
 function AnswerPane() {
   return (
     <div
@@ -177,7 +171,7 @@ function AnswerPane() {
               <span className="text-right">gmv</span>
               <span className="text-right">orders</span>
             </div>
-            {ANSWER_ROWS.map((row, i) => (
+            {CATEGORY_ROWS.map((row, i) => (
               <div
                 key={row.category}
                 className="grid grid-cols-[1fr_auto_auto] gap-4 px-3 py-1.5 font-mono text-[12px] text-zinc-200"

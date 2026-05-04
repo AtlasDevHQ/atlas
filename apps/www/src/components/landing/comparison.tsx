@@ -1,9 +1,12 @@
-type Row = {
-  feature: string;
-  atlas: string;
-  bi: string;
-  textToSql: string;
-};
+const COLUMNS = [
+  { id: "atlas", label: "atlas", mobileLabel: "Atlas", tone: "brand" },
+  { id: "bi", label: "traditional bi", mobileLabel: "Traditional BI", tone: "muted" },
+  { id: "textToSql", label: "other text-to-sql", mobileLabel: "Other text-to-SQL", tone: "muted" },
+] as const;
+
+type ColumnId = (typeof COLUMNS)[number]["id"];
+
+type Row = { readonly feature: string } & Readonly<Record<ColumnId, string>>;
 
 const ROWS: ReadonlyArray<Row> = [
   {
@@ -80,15 +83,16 @@ export function Comparison() {
           <div className="px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-zinc-400">
             feature
           </div>
-          <div className="px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-brand">
-            atlas
-          </div>
-          <div className="px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-zinc-400">
-            traditional bi
-          </div>
-          <div className="px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-zinc-400">
-            other text-to-sql
-          </div>
+          {COLUMNS.map((col) => (
+            <div
+              key={col.id}
+              className={`px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] ${
+                col.tone === "brand" ? "text-brand" : "text-zinc-400"
+              }`}
+            >
+              {col.label}
+            </div>
+          ))}
         </div>
 
         {ROWS.map((row, i) => (
@@ -102,24 +106,23 @@ export function Comparison() {
             <div className="px-4 py-3 font-mono text-[12.5px] font-medium text-zinc-50">
               {row.feature}
             </div>
-            <div className="px-4 py-3 text-[13px] leading-[1.55] text-zinc-200">
-              <span className="md:hidden font-mono text-[10.5px] uppercase tracking-[0.06em] text-brand">
-                Atlas:{" "}
-              </span>
-              {row.atlas}
-            </div>
-            <div className="px-4 py-3 text-[13px] leading-[1.55] text-zinc-400">
-              <span className="md:hidden font-mono text-[10.5px] uppercase tracking-[0.06em] text-zinc-500">
-                Traditional BI:{" "}
-              </span>
-              {row.bi}
-            </div>
-            <div className="px-4 py-3 text-[13px] leading-[1.55] text-zinc-400">
-              <span className="md:hidden font-mono text-[10.5px] uppercase tracking-[0.06em] text-zinc-500">
-                Other text-to-SQL:{" "}
-              </span>
-              {row.textToSql}
-            </div>
+            {COLUMNS.map((col) => (
+              <div
+                key={col.id}
+                className={`px-4 py-3 text-[13px] leading-[1.55] ${
+                  col.tone === "brand" ? "text-zinc-200" : "text-zinc-400"
+                }`}
+              >
+                <span
+                  className={`md:hidden font-mono text-[10.5px] uppercase tracking-[0.06em] ${
+                    col.tone === "brand" ? "text-brand" : "text-zinc-500"
+                  }`}
+                >
+                  {col.mobileLabel}:{" "}
+                </span>
+                {row[col.id]}
+              </div>
+            ))}
           </div>
         ))}
       </div>

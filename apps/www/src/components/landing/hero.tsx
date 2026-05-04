@@ -17,16 +17,16 @@ type NodeKind =
   | "widget";
 
 type SchemaNode = {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  label: string;
-  value: string;
-  kind: NodeKind;
+  readonly id: string;
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly label: string;
+  readonly value: string;
+  readonly kind: NodeKind;
 };
 
-const NODES: SchemaNode[] = [
+const NODES = [
   { id: "prompt",     x: 600,  y: 560, w: 220, label: "prompt",                value: '"top categories by gmv…"',   kind: "input"   },
   { id: "semantic",   x: 620,  y: 100, w: 240, label: "semantic_layer.yaml",   value: "entities · metrics · glossary", kind: "yaml"  },
   { id: "compiler",   x: 640,  y: 320, w: 200, label: "compiler",              value: "AST → SQL",                    kind: "process" },
@@ -35,15 +35,17 @@ const NODES: SchemaNode[] = [
   { id: "result",     x: 1190, y: 460, w: 220, label: "result",                value: "rows · read-only",             kind: "result"  },
   { id: "audit",      x: 900,  y: 560, w: 240, label: "audit_log",             value: "every query · every op",       kind: "audit"   },
   { id: "widget",     x: 640,  y: 460, w: 200, label: "<AtlasChat />",         value: "react widget",                 kind: "widget"  },
-];
+] as const satisfies ReadonlyArray<SchemaNode>;
 
-const NODE_BY_ID: Record<string, SchemaNode> = Object.fromEntries(
+type NodeId = (typeof NODES)[number]["id"];
+
+const NODE_BY_ID: Record<NodeId, SchemaNode> = Object.fromEntries(
   NODES.map((n) => [n.id, n]),
-);
+) as Record<NodeId, SchemaNode>;
 
-type Edge = { from: string; to: string; label: string };
+type Edge = { readonly from: NodeId; readonly to: NodeId; readonly label: string };
 
-const EDGES: Edge[] = [
+const EDGES: ReadonlyArray<Edge> = [
   { from: "prompt",     to: "compiler",   label: "01"  },
   { from: "semantic",   to: "compiler",   label: "02"  },
   { from: "compiler",   to: "validators", label: "03"  },
@@ -54,8 +56,8 @@ const EDGES: Edge[] = [
   { from: "result",     to: "audit",      label: "log" },
 ];
 
-const EDGE_DELAY_MS = [0, 300, 600, 900, 1200, 1500, 1800, 2100];
-const NODE_DELAY_MS: Record<string, number> = {
+const EDGE_DELAY_MS: ReadonlyArray<number> = [0, 300, 600, 900, 1200, 1500, 1800, 2100];
+const NODE_DELAY_MS: Record<NodeId, number> = {
   prompt: 0,
   semantic: 0,
   compiler: 300,
@@ -117,8 +119,8 @@ function SchemaMap() {
       <ellipse cx="980" cy="380" rx="420" ry="300" fill="url(#hero-halo)" />
 
       {EDGES.map((e, i) => {
-        const a = NODE_BY_ID[e.from]!;
-        const b = NODE_BY_ID[e.to]!;
+        const a = NODE_BY_ID[e.from];
+        const b = NODE_BY_ID[e.to];
         const ax = a.x + a.w / 2;
         const ay = a.y + 32;
         const bx = b.x + b.w / 2;

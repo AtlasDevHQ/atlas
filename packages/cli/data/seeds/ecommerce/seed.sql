@@ -276,7 +276,7 @@ CREATE TABLE order_items (
     order_id           INTEGER NOT NULL REFERENCES orders(id),
     product_id         INTEGER NOT NULL REFERENCES products(id),
     product_variant_id INTEGER,        -- TECH DEBT: NO FK to product_variants
-    product_name       TEXT NOT NULL,  -- TECH DEBT: denormalized snapshot of products.name at purchase time; can drift from current name
+    product_name       TEXT NOT NULL,  -- denormalized snapshot of products.name at purchase time; can drift from current name
     quantity           INTEGER NOT NULL DEFAULT 1,
     unit_price_cents   INTEGER NOT NULL,
     total_cents        INTEGER NOT NULL,
@@ -1043,21 +1043,19 @@ FROM (
 ) AS src;
 
 -- ---------- Order Items (55,000) ----------
--- product_id is a real FK into products.id (1..800). product_name is a
--- denormalized snapshot of products.name at purchase time — kept for the
--- "denormalized convenience column" demo pattern, but joins should always
--- go through product_id (see semantic/entities/order_items.yml).
+-- Always join order_items → products via product_id. product_name is a
+-- denormalized snapshot of products.name at purchase time and can drift.
 INSERT INTO order_items (order_id, product_id, product_variant_id, product_name, quantity, unit_price_cents, total_cents, created_at)
 SELECT
-    order_id,
-    product_id,
+    src.order_id,
+    src.product_id,
     -- TECH DEBT: no FK to product_variants
     1 + floor(random() * 3200)::int,
-    (SELECT name FROM products WHERE id = product_id),
-    qty,
-    unit_price,
-    unit_price * qty,
-    '2020-03-01'::timestamptz + (power(g::float / 55000, 1.0) * interval '1795 days')
+    p.name,
+    src.qty,
+    src.unit_price,
+    src.unit_price * src.qty,
+    '2020-03-01'::timestamptz + (power(src.g::float / 55000, 1.0) * interval '1795 days')
 FROM (
     SELECT
         g,
@@ -1066,7 +1064,8 @@ FROM (
         (ARRAY[1,1,1,1,1,1,2,2,3])[1 + floor(random() * 9)::int] AS qty,
         (1999 + floor(random() * 15000))::int AS unit_price
     FROM generate_series(1, 55000) AS g
-) AS src;
+) AS src
+JOIN products p ON p.id = src.product_id;
 
 -- ---------- Order Events (60,000) ----------
 INSERT INTO order_events (order_id, event_type, description, created_at)

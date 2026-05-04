@@ -62,7 +62,7 @@ questions:
     mode: metric
     metric_id: revenue_by_category
     expect:
-      sql_pattern: ["GROUP BY", "categories", "order_items"]
+      sql_pattern: ["GROUP BY", "categories", "order_items", "product_id = p.id"]
       min_rows: 1
 
   - id: cq-005
@@ -92,8 +92,8 @@ questions:
     mode: metric
     metric_id: revenue_dtc_vs_marketplace
     expect:
-      sql_pattern: ["JOIN products", "seller_id IS NULL"]
-      min_rows: 1
+      sql_pattern: ["JOIN products", "product_id = p.id", "seller_id IS NULL"]
+      min_rows: 2
       max_rows: 2
       column: channel
 

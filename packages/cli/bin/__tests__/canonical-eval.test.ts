@@ -904,13 +904,13 @@ describe("runHarness", () => {
     total_customers: "SELECT COUNT(DISTINCT id) AS v FROM customers",
     aov: "SELECT AVG(total_cents) AS v FROM orders",
     revenue_by_category:
-      "SELECT 1 AS v FROM order_items JOIN categories GROUP BY 1",
+      "SELECT 1 AS v FROM order_items oi JOIN products p ON oi.product_id = p.id JOIN categories GROUP BY 1",
     customers_by_acquisition_source:
       "SELECT LOWER(acquisition_source) AS channel, 1 FROM customers GROUP BY 1",
     inventory_health:
       "SELECT 'Adequate' AS stock_status, 1 AS v FROM inventory_levels GROUP BY 1",
     revenue_dtc_vs_marketplace:
-      "SELECT 'DTC' AS channel, 1 AS v FROM orders JOIN products ON p WHERE seller_id IS NULL GROUP BY 1",
+      "SELECT channel, 1 AS v FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE seller_id IS NULL GROUP BY 1",
     top_customers_by_spend: "SELECT 1 AS v FROM customers JOIN orders ON o",
     monthly_gmv_trend:
       "SELECT TO_CHAR(created_at, 'YYYY-MM') AS month, 1 AS v FROM orders GROUP BY 1",
@@ -955,7 +955,13 @@ describe("runHarness", () => {
           };
         }
         if (lower.includes("seller_id is null") && lower.includes("products")) {
-          return { columns: ["channel"], rows: [{ channel: "DTC" }] };
+          // cq-007 (revenue_dtc_vs_marketplace) requires both channels via min_rows: 2.
+          // cq-017 (Products/dtc_vs_marketplace pattern) only checks the column,
+          // so an extra row is harmless there.
+          return {
+            columns: ["channel"],
+            rows: [{ channel: "DTC" }, { channel: "Marketplace" }],
+          };
         }
         if (lower.includes("promotion_id is not null")) {
           return {

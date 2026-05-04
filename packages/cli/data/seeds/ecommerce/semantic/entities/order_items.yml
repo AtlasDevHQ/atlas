@@ -44,9 +44,7 @@ dimensions:
   - name: product_name
     sql: product_name
     type: string
-    description: |
-      Denormalized snapshot of products.name at purchase time. May drift from
-      the current product name — for joins to products, use product_id.
+    description: Denormalized snapshot of products.name at purchase time (may drift; join via product_id).
 
   - name: quantity
     sql: quantity
@@ -145,12 +143,14 @@ query_patterns:
   - name: top_products_by_revenue
     description: Highest-revenue products
     sql: |-
-      SELECT product_name,
-             SUM(total_cents) / 100.0 AS total_revenue,
-             SUM(quantity) AS total_units,
-             COUNT(DISTINCT order_id) AS order_count
-      FROM order_items
-      GROUP BY product_name
+      SELECT p.id AS product_id,
+             p.name AS product_name,
+             SUM(oi.total_cents) / 100.0 AS total_revenue,
+             SUM(oi.quantity) AS total_units,
+             COUNT(DISTINCT oi.order_id) AS order_count
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      GROUP BY p.id, p.name
       ORDER BY total_revenue DESC
       LIMIT 20
 
@@ -170,9 +170,11 @@ query_patterns:
   - name: revenue_by_product_and_month
     description: Monthly revenue trend by top products
     sql: |-
-      SELECT product_name,
+      SELECT p.id AS product_id,
+             p.name AS product_name,
              TO_CHAR(oi.created_at, 'YYYY-MM') AS month,
              SUM(oi.total_cents) / 100.0 AS revenue
       FROM order_items oi
-      GROUP BY product_name, TO_CHAR(oi.created_at, 'YYYY-MM')
+      JOIN products p ON oi.product_id = p.id
+      GROUP BY p.id, p.name, TO_CHAR(oi.created_at, 'YYYY-MM')
       ORDER BY month, revenue DESC

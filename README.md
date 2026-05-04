@@ -37,8 +37,6 @@ bunx @useatlas/mcp init --local            # print paste-ready config
 bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
 ```
 
-> **Note:** The `@useatlas/mcp` npm package is in final review for publishing — see [#2042](https://github.com/AtlasDevHQ/atlas/issues/2042). Until then, the installer runs from the monorepo via `bun packages/mcp/bin/init.ts --local`.
-
 Restart Claude Desktop / Cursor and ask one of the canonical questions:
 
 - *"What's our GMV this quarter?"*

@@ -30,6 +30,8 @@ on:
     paths:
       - "eval/canonical-questions/**"
       - "packages/cli/bin/canonical-eval*.ts"
+      - "packages/cli/bin/atlas.ts"
+      - "packages/cli/lib/help.ts"
       - "packages/cli/data/seeds/ecommerce/**"
       - "packages/api/src/lib/semantic/**"
       - ".github/workflows/eval.yml"

@@ -257,6 +257,8 @@ async function runWithAgent(
           case "virtual":
             result = compareVirtualResult(q, executed);
             break;
+          default:
+            throw new Error(`unreachable mode: ${q.mode satisfies never}`);
         }
       }
     } catch (err) {
@@ -301,7 +303,6 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     // — same hook used by bin/eval.ts. seedDemoPostgres takes a connection
     // string, not a schema; only `ecommerce` ships today (#2021).
     await seedDemoPostgres(connStr);
-    process.env.ATLAS_DATASOURCE_URL = connStr;
 
     // Reset cached connection / whitelist / explore-backend state so the
     // freshly installed semantic layer is re-resolved.

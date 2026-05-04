@@ -661,6 +661,7 @@ export function printOverviewHelp(): void {
       "  validate         Validate config, semantic layer, and connectivity\n" +
       "  doctor           Alias for validate\n" +
       "  eval             Run eval pipeline against demo schemas\n" +
+      "  canonical-eval   Run canonical-question harness against the demo dataset (no LLM by default)\n" +
       "  smoke            Run E2E smoke tests against a running Atlas deployment\n" +
       "  migrate          Semantic layer versioning (snapshot, diff, rollback)\n" +
       "  plugin           Manage plugins (list, create, add)\n" +

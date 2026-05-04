@@ -27,7 +27,7 @@
 version: "1.0"
 schema: ecommerce
 questions:
-  # ── Simple metrics (3) ──────────────────────────────────────────────────
+  # ── Simple metrics (5) ──────────────────────────────────────────────────
   - id: cq-001
     category: simple_metric
     question: What is our total GMV?
@@ -55,7 +55,7 @@ questions:
       sql_pattern: ["AVG(total_cents)", "FROM orders"]
       non_zero: true
 
-  # ── Segmentation (3) ────────────────────────────────────────────────────
+  # ── Segmentation (4) ────────────────────────────────────────────────────
   - id: cq-004
     category: segmentation
     question: What is our revenue broken down by category?
@@ -232,7 +232,7 @@ questions:
       max_rows: 2
       column: channel
 
-  # ── Extra coverage (3) ───────────────────────────────────────────────────
+  # ── Continued: simple_metric + segmentation tail (3) ────────────────────
   - id: cq-018
     category: simple_metric
     question: What is our refund rate?

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.AtlasDevHQ/atlas",
+  "title": "Atlas",
+  "description": "Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents. The MCP server exposes validated SELECT-only SQL execution and typed semantic-layer accessors (listEntities, describeEntity, searchGlossary, runMetric) over your warehouse, plus query-pattern prompts and read-only resources for entities, glossary, and metrics.",
+  "version": "0.0.2",
+  "websiteUrl": "https://docs.useatlas.dev/guides/mcp",
+  "repository": {
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@useatlas/mcp",
+      "version": "0.0.2",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "ATLAS_DATASOURCE_URL",
+          "description": "Connection URL for your analytics datasource (PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce). Optional — when unset, the installer points at a bundled NovaMart demo SQLite fixture so the install works zero-config.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "ATLAS_PROVIDER",
+          "description": "LLM provider (anthropic, openai, bedrock, ollama, vercel-ai-gateway). Optional — the MCP server itself does not call an LLM (the client does), so this only matters if you also run Atlas's chat or scheduler surfaces.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "ATLAS_API_URL",
+          "description": "URL of a running Atlas API. Optional — defaults to http://localhost:3001. When set, the MCP server inherits the API's connections, semantic layer, and governance.",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

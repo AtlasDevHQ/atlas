@@ -9,18 +9,17 @@ The MCP interaction plugin wraps the `@atlas/mcp` server package as an Atlas plu
 
 Tool bridging and resource registration are handled internally by `@atlas/mcp` -- this plugin is a thin lifecycle wrapper that makes it configurable via `atlas.config.ts`.
 
-<Callout type="warn">
-`@useatlas/mcp` is **not published to npm** — it depends on the internal `@atlas/mcp` workspace package. Use it from the monorepo only. See the [MCP guide](/guides/mcp) for standalone MCP server setup via `atlas mcp`.
+<Callout type="info">
+For one-command setup against Claude Desktop / Cursor / Continue, prefer `bunx @useatlas/mcp init --local` — see the [MCP guide](/guides/mcp). This page documents using `@useatlas/mcp` as an Atlas plugin inside an existing project.
 </Callout>
 
-## Installation (monorepo only)
+## Installation
 
 ```bash
-# Only works inside the Atlas monorepo — not available on npm
 bun add @useatlas/mcp @modelcontextprotocol/sdk
 ```
 
-The `@atlas/mcp` server package is pulled in automatically via dynamic import.
+The `@atlas/mcp` server runtime is pulled in automatically via dynamic import — published as part of the `@useatlas/mcp` package itself, no monorepo dependency.
 
 ## Configuration
 

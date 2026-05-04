@@ -528,8 +528,10 @@
     },
     "plugins/mcp": {
       "name": "@useatlas/mcp",
-      "version": "0.0.1",
-      "bin": "./bin/cli.ts",
+      "version": "0.0.2",
+      "bin": {
+        "atlas-mcp": "./bin/cli.ts",
+      },
       "devDependencies": {
         "@atlas/mcp": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.28.0",

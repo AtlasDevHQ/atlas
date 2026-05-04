@@ -32,6 +32,7 @@ import {
   compareGlossaryResult,
   DEFAULT_QUESTIONS_PATH,
   type GlossaryMatch,
+  type GlossaryStatus,
   type Question,
   type QuestionResult,
   type RunHarnessOptions,
@@ -68,6 +69,12 @@ function parseOptions(args: string[]): CanonicalEvalOptions {
     );
   }
   const questionsPath = getFlag(args, "--questions") ?? DEFAULT_QUESTIONS_PATH;
+  // Validate up front, before any destructive setup (semantic-layer backup,
+  // demo seed). A typo in --questions used to surface as a confusing error
+  // partway through a partially-staged run.
+  if (!fs.existsSync(questionsPath)) {
+    throw new Error(`--questions file not found: ${questionsPath}`);
+  }
   const llm = args.includes("--llm");
   const json = args.includes("--json");
   return {
@@ -97,20 +104,29 @@ function backupSemanticLayer(): void {
   }
 }
 
-function restoreSemanticLayer(): void {
-  if (!fs.existsSync(BACKUP_DIR)) return;
+/**
+ * Restore the user's original semantic layer from the backup made by
+ * `backupSemanticLayer`. Returns `true` on success, `false` on failure —
+ * the caller MUST surface a non-zero exit code on failure so a user
+ * doesn't see "all green" output while their `semantic/` directory is
+ * gone.
+ */
+function restoreSemanticLayer(): boolean {
+  if (!fs.existsSync(BACKUP_DIR)) return true;
   try {
     if (fs.existsSync(SEMANTIC_DIR)) {
       fs.rmSync(SEMANTIC_DIR, { recursive: true });
     }
     fs.cpSync(BACKUP_DIR, SEMANTIC_DIR, { recursive: true });
     fs.rmSync(BACKUP_DIR, { recursive: true });
+    return true;
   } catch (err) {
     process.stderr.write(
       `\nCRITICAL: Failed to restore semantic layer: ${err instanceof Error ? err.message : String(err)}\n` +
         `Your original semantic layer was backed up to: ${BACKUP_DIR}\n` +
         `To restore manually: rm -rf ${SEMANTIC_DIR} && cp -r ${BACKUP_DIR} ${SEMANTIC_DIR}\n`,
     );
+    return false;
   }
 }
 
@@ -130,11 +146,6 @@ function installSchemaSemanticLayer(schema: ValidSchema): void {
 
 // ── Pattern / entity lookup ─────────────────────────────────────────────
 
-interface QueryPattern {
-  name: string;
-  sql: string;
-}
-
 /**
  * Find a `query_patterns[*].sql` by entity name + pattern name. Walks the
  * semantic root directly so it doesn't depend on the in-process scanner —
@@ -151,8 +162,24 @@ function findPatternSqlFromDisk(
   for (const file of fs.readdirSync(entitiesDir)) {
     if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue;
     const filePath = path.join(entitiesDir, file);
-    const raw = yaml.load(fs.readFileSync(filePath, "utf-8"));
-    if (!raw || typeof raw !== "object") continue;
+    let raw: unknown;
+    try {
+      raw = yaml.load(fs.readFileSync(filePath, "utf-8"));
+    } catch (err) {
+      // Re-throw with file context so a malformed entity YAML is debuggable
+      // — yaml.load's default error references neither the file nor the
+      // calling harness.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to parse semantic entity ${filePath}: ${msg}`, {
+        cause: err,
+      });
+    }
+    if (!raw || typeof raw !== "object") {
+      process.stderr.write(
+        `[canonical-eval] WARN: skipping ${filePath} — top-level value is not an object\n`,
+      );
+      continue;
+    }
     const r = raw as Record<string, unknown>;
     const matchesEntity =
       (typeof r.name === "string" && r.name === entity) ||
@@ -160,9 +187,14 @@ function findPatternSqlFromDisk(
     if (!matchesEntity) continue;
     const patterns = r.query_patterns;
     if (!Array.isArray(patterns)) return null;
-    for (const p of patterns as QueryPattern[]) {
-      if (p && typeof p === "object" && p.name === patternName) {
-        return typeof p.sql === "string" ? p.sql : null;
+    // Duck-type each pattern entry — the YAML is operator-authored, so
+    // never trust the shape. The previous `as QueryPattern[]` cast was a
+    // lie that hid malformed entries.
+    for (const p of patterns) {
+      if (!p || typeof p !== "object") continue;
+      const pp = p as { name?: unknown; sql?: unknown };
+      if (typeof pp.name === "string" && pp.name === patternName) {
+        return typeof pp.sql === "string" ? pp.sql : null;
       }
     }
     return null;
@@ -171,8 +203,17 @@ function findPatternSqlFromDisk(
 }
 
 // Map a `lookups.searchGlossary` result to the wire shape the harness
-// comparator expects. Shared by deterministic + LLM paths.
+// comparator expects. Shared by deterministic + LLM paths. Upstream
+// `status` is typed `string | null` (the YAML is operator-authored) — we
+// narrow at the boundary to the harness's `GlossaryStatus | null`, mapping
+// any unrecognised value to `null` so the comparator never asserts on a
+// status it doesn't understand.
 type LookupsModule = typeof import("@atlas/api/lib/semantic/lookups");
+
+function narrowGlossaryStatus(value: string | null): GlossaryStatus | null {
+  if (value === "defined" || value === "ambiguous") return value;
+  return null;
+}
 
 function toGlossaryMatches(
   lookups: LookupsModule,
@@ -180,7 +221,7 @@ function toGlossaryMatches(
 ): readonly GlossaryMatch[] {
   return lookups.searchGlossary(term).map((m) => ({
     term: m.term,
-    status: m.status,
+    status: narrowGlossaryStatus(m.status),
     possible_mappings: m.possible_mappings,
   }));
 }
@@ -239,39 +280,66 @@ async function runWithAgent(
 
   const questions = loadQuestions(options.questionsPath);
   return evalEachQuestion(questions, " (--llm)", async (q) => {
-    try {
-      // For glossary, the agent should refuse / disambiguate. We assert
-      // that the disambiguation contract is honored by checking the
-      // semantic-layer state directly — same as deterministic.
-      if (q.mode === "glossary") {
-        return compareGlossaryResult(q, toGlossaryMatches(lookups, q.term ?? ""));
-      }
+    // Glossary mode never invokes the agent — we assert the
+    // disambiguation contract by checking semantic-layer state directly.
+    if (q.mode === "glossary") {
+      return compareGlossaryResult(q, toGlossaryMatches(lookups, q.term ?? ""));
+    }
 
-      const agent = await executeAgentQuery(q.question);
-      const lastSql = agent.sql[agent.sql.length - 1] ?? "";
-      const lastData = agent.data[agent.data.length - 1] ?? null;
-      const executed = {
-        sql: lastSql,
-        columns: lastData?.columns ?? [],
-        rows: lastData?.rows ?? [],
-      };
-      switch (q.mode) {
-        case "metric":
-          return compareMetricResult(q, executed);
-        case "pattern":
-          return comparePatternResult(q, executed);
-        case "virtual":
-          return compareVirtualResult(q, executed);
-        default:
-          throw new Error(`unreachable mode: ${q.mode satisfies never}`);
-      }
+    // Narrow the try/catch to ONLY the agent invocation. Comparator
+    // throws + the unreachable-mode default below are harness bugs (not
+    // eval failures) and should propagate so they're visible.
+    let agent;
+    try {
+      agent = await executeAgentQuery(q.question);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       return {
         question: q,
         status: "fail",
-        detail: `agent error: ${err instanceof Error ? err.message : String(err)}`,
+        detail:
+          `agent error: ${msg}. ` +
+          `Tip: verify ATLAS_DATASOURCE_URL is reachable and the configured model provider is responsive.`,
         sql: null,
       };
+    }
+
+    const lastSql = agent.sql[agent.sql.length - 1] ?? "";
+    const lastData = agent.data[agent.data.length - 1] ?? null;
+
+    // Hard-fail when the agent never executed SQL or returned no rows.
+    // Without this guard the executed shape `{ sql: "", columns: [], rows: [] }`
+    // falls through to the comparators which return pass/warn depending
+    // on whether `min_rows` is set — masking a legitimate LLM failure as
+    // a green run.
+    if (agent.sql.length === 0 || agent.data.length === 0) {
+      return {
+        question: q,
+        status: "fail",
+        detail:
+          agent.sql.length === 0
+            ? "agent did not execute any SQL"
+            : "agent executed SQL but returned no result rows",
+        sql: lastSql || null,
+      };
+    }
+
+    const executed = {
+      sql: lastSql,
+      columns: lastData?.columns ?? [],
+      rows: lastData?.rows ?? [],
+    };
+    switch (q.mode) {
+      case "metric":
+        return compareMetricResult(q, executed);
+      case "pattern":
+        return comparePatternResult(q, executed);
+      case "virtual":
+        return compareVirtualResult(q, executed);
+      default: {
+        const _exhaustive: never = q.mode;
+        throw new Error(`unreachable mode: ${String(_exhaustive)}`);
+      }
     }
   });
 }
@@ -303,10 +371,22 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     // Seed the demo Postgres before running so the harness is self-contained
     // — same hook used by bin/eval.ts. seedDemoPostgres takes a connection
     // string, not a schema; only `ecommerce` ships today (#2021).
-    await seedDemoPostgres(connStr);
+    try {
+      await seedDemoPostgres(connStr);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `\nError: failed to seed demo Postgres: ${msg}\n` +
+          `Tip: bun run db:up && export ATLAS_DATASOURCE_URL=postgres://atlas:atlas@localhost:5433/atlas_demo\n`,
+      );
+      exitCode = 1;
+      return;
+    }
 
     // Reset cached connection / whitelist / explore-backend state so the
-    // freshly installed semantic layer is re-resolved.
+    // freshly installed semantic layer is re-resolved. `connections._reset()`
+    // is intentionally synchronous — it queues async pool closes via
+    // `.catch()` handlers (verified in lib/db/connection.ts).
     const { connections } = await import("@atlas/api/lib/db/connection");
     const { _resetWhitelists } = await import("@atlas/api/lib/semantic");
     const { invalidateExploreBackend } = await import(
@@ -349,7 +429,12 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
 
     if (results.some((r) => r.status === "fail")) exitCode = 1;
   } finally {
-    restoreSemanticLayer();
+    // Surface restore failure via the exit code — silently swallowing it
+    // would let a developer see an "all green" run while their original
+    // semantic/ directory is gone. Use exit 2 so it's distinguishable from
+    // a normal eval failure (exit 1).
+    const restored = restoreSemanticLayer();
+    if (!restored) exitCode = Math.max(exitCode, 2);
   }
   process.exit(exitCode);
 }

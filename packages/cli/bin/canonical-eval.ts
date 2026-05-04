@@ -66,15 +66,32 @@ export interface Question {
   readonly expect: QuestionExpectations;
 }
 
-export interface ExecutedQuery {
-  readonly sql: string;
+/**
+ * Wire shape returned by an executed SQL query — used by both the metric /
+ * pattern / virtual comparators and the `RunHarnessOptions.executeSql`
+ * dependency. Extracted so the CLI driver and tests share a single source
+ * of truth for what `executeSql` returns.
+ */
+export interface SqlQueryResult {
   readonly columns: readonly string[];
   readonly rows: readonly Record<string, unknown>[];
 }
 
+export interface ExecutedQuery extends SqlQueryResult {
+  readonly sql: string;
+}
+
+/**
+ * Glossary status values recognised by the harness. The literal
+ * `"ambiguous"` is load-bearing — agent clients are instructed to surface
+ * ambiguity to the user instead of silently picking a mapping. `null`
+ * means the underlying YAML omitted a status.
+ */
+export type GlossaryStatus = "defined" | "ambiguous";
+
 export interface GlossaryMatch {
   readonly term: string;
-  readonly status: string | null;
+  readonly status: GlossaryStatus | null;
   readonly possible_mappings: readonly string[];
 }
 
@@ -88,9 +105,9 @@ export interface QuestionResult {
 }
 
 interface QuestionsFile {
-  version?: string;
-  schema?: string;
-  questions: Question[];
+  readonly version?: string;
+  readonly schema?: string;
+  readonly questions: readonly unknown[];
 }
 
 const VALID_MODES: ReadonlySet<QuestionMode> = new Set([
@@ -131,10 +148,11 @@ export function loadQuestions(filePath: string): Question[] {
   const out: Question[] = [];
 
   for (let i = 0; i < file.questions.length; i++) {
-    const q = file.questions[i] as Partial<Question> | undefined;
-    if (!q || typeof q !== "object") {
+    const rawQ = file.questions[i];
+    if (!rawQ || typeof rawQ !== "object") {
       throw new Error(`questions[${i}] is not an object in ${filePath}`);
     }
+    const q = rawQ as Partial<Question>;
 
     if (typeof q.id !== "string" || !/^cq-\d{3}$/.test(q.id)) {
       throw new Error(
@@ -424,10 +442,7 @@ export interface RunHarnessOptions {
    * Execute a SQL string and return the result. The CLI driver wires this
    * to the configured Postgres datasource; tests inject stubs.
    */
-  readonly executeSql: (sql: string) => Promise<{
-    columns: readonly string[];
-    rows: readonly Record<string, unknown>[];
-  }>;
+  readonly executeSql: (sql: string) => Promise<SqlQueryResult>;
 }
 
 /**
@@ -482,6 +497,12 @@ export async function resolveQuestion(
           question,
           opts.searchGlossary(question.term ?? ""),
         );
+      default: {
+        // Compile-time exhaustiveness — adding a new mode here forces TS to
+        // flag this branch. Mirrors the dispatcher in `runWithAgent`.
+        const _exhaustive: never = question.mode;
+        throw new Error(`unreachable mode: ${String(_exhaustive)}`);
+      }
     }
 
     const { columns, rows } = await opts.executeSql(sql);

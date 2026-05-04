@@ -66,7 +66,7 @@ Atlas canonical-question eval
    - `metric` / `pattern` / `virtual` — `sql_pattern` (substrings the resolved SQL must contain), `min_rows` / `max_rows` (row-count bounds), `non_zero` (scalar metric guards), `column` (single named column).
    - `glossary` — `status` (`defined` / `ambiguous`) and `mappings_min` (minimum number of `possible_mappings`).
 
-   The loader rejects mismatched shapes (e.g. a `glossary` question with `sql_pattern`, or a `metric` question with `status`) — the offending question id is named in the error message.
+   The loader rejects mismatched shapes (e.g. a `glossary` question with `sql_pattern`, or a `metric` question with `status`) — the offending question id and every offending field are named in the error message.
 4. Run `bun run eval:canonical` locally to confirm.
 5. Update this page if your question category isn't already covered.
 

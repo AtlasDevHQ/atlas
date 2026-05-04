@@ -44,12 +44,21 @@ interface BaseExpectations {
   readonly column?: string;
 }
 
-/** Expectations for SQL-bearing modes (metric / pattern / virtual). */
+/**
+ * Expectations for SQL-bearing modes (metric / pattern / virtual).
+ *
+ * The `?: never` slots make the discriminated `Question` union exclusive at
+ * the type level — a literal that mixes SQL-shaped and glossary-shaped
+ * fields fails at compile time, so `rejectKeys` in `loadQuestions` is a
+ * runtime echo of a TS guarantee, not the only line of defence.
+ */
 export interface SqlExpectations extends BaseExpectations {
   /** Case-insensitive substrings that must appear in the executed SQL. */
   readonly sql_pattern?: readonly string[];
   /** Scalar metric must return a non-zero numeric value. */
   readonly non_zero?: boolean;
+  readonly status?: never;
+  readonly mappings_min?: never;
 }
 
 /** Expectations for glossary disambiguation lookups. */
@@ -58,6 +67,11 @@ export interface GlossaryExpectations {
   readonly status?: "defined" | "ambiguous";
   /** Minimum number of `possible_mappings` on an ambiguous glossary term. */
   readonly mappings_min?: number;
+  readonly sql_pattern?: never;
+  readonly non_zero?: never;
+  readonly min_rows?: never;
+  readonly max_rows?: never;
+  readonly column?: never;
 }
 
 interface QuestionBase {
@@ -186,6 +200,12 @@ function requireString(id: string, field: string, value: unknown): string {
   return value;
 }
 
+/**
+ * Reject any forbidden keys present on an `expect:` block. An explicit YAML
+ * `null` (e.g. `expect: { sql_pattern: ~ }`) counts as set and is rejected
+ * — a contributor who typed the key intended it; the right response is to
+ * surface the cross-mode mismatch, not silently treat null as absent.
+ */
 function rejectKeys(
   id: string,
   mode: QuestionMode,
@@ -385,8 +405,10 @@ function checkNonZero(
 /**
  * Generic comparator used by metric / pattern / virtual modes. The three
  * exported `compare*Result` functions below are aliases — the per-mode
- * dispatch happens in `resolveQuestion`, but distinct names document intent
- * at the call sites in `canonical-eval-run.ts`.
+ * dispatch happens in `resolveQuestion`, and the `SqlQuestion` parameter
+ * type now type-enforces that callers can't pass a glossary question. The
+ * named aliases document intent at the LLM-mode call sites in
+ * `canonical-eval-run.ts`.
  */
 function compareSqlResult(
   question: SqlQuestion,

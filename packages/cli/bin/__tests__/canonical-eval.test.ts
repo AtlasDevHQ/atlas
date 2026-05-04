@@ -7,7 +7,7 @@
  * wiring; these tests inject stubs.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import * as path from "path";
 import {
   loadQuestions,
@@ -164,6 +164,71 @@ describe("loadQuestions", () => {
     expect(() => loadQuestions(tmp)).toThrow(
       /cq-205.*sql_pattern.*non_zero/s,
     );
+    cleanup();
+  });
+
+  test("rejects forbidden expect key set to YAML null (~ counts as set)", async () => {
+    // `key: ~` and `key: null` parse to JS `null`. The loader treats null
+    // as "operator typed it, surface the cross-mode mismatch" — not as
+    // "absent". Pin this so a future refactor can't silently flip to
+    // `expect[k] != null` (which would tolerate explicit null).
+    const { path: tmp, cleanup } = await writeTempYaml(
+      "  - id: cq-206\n    category: glossary\n    question: x\n    mode: glossary\n    term: revenue\n    expect:\n      sql_pattern: ~\n      status: ambiguous\n",
+    );
+    expect(() => loadQuestions(tmp)).toThrow(/cq-206.*"glossary".*sql_pattern/);
+    cleanup();
+  });
+
+  // ── Per-arm required-field rejection ────────────────────────────────────
+  // `requireString` enforces non-empty discriminator-adjacent fields per
+  // mode. Previously untested — a future no-op refactor of the helper or
+  // its call sites would silently pass without these gates.
+
+  test("rejects metric question without metric_id", async () => {
+    const { path: tmp, cleanup } = await writeTempYaml(
+      "  - id: cq-301\n    category: simple_metric\n    question: x\n    mode: metric\n    expect: {}\n",
+    );
+    expect(() => loadQuestions(tmp)).toThrow(/cq-301.*metric_id.*non-empty/);
+    cleanup();
+  });
+
+  test("rejects pattern question missing entity", async () => {
+    const { path: tmp, cleanup } = await writeTempYaml(
+      "  - id: cq-302\n    category: filtered_pattern\n    question: x\n    mode: pattern\n    pattern: orders_with_promotions\n    expect: {}\n",
+    );
+    expect(() => loadQuestions(tmp)).toThrow(/cq-302.*entity.*non-empty/);
+    cleanup();
+  });
+
+  test("rejects virtual question missing inline sql", async () => {
+    const { path: tmp, cleanup } = await writeTempYaml(
+      "  - id: cq-303\n    category: virtual_dimension\n    question: x\n    mode: virtual\n    entity: Orders\n    dimension: order_size_bucket\n    expect: {}\n",
+    );
+    expect(() => loadQuestions(tmp)).toThrow(/cq-303.*sql.*non-empty/);
+    cleanup();
+  });
+
+  test("rejects glossary question without term", async () => {
+    const { path: tmp, cleanup } = await writeTempYaml(
+      "  - id: cq-304\n    category: glossary\n    question: x\n    mode: glossary\n    expect: {}\n",
+    );
+    expect(() => loadQuestions(tmp)).toThrow(/cq-304.*term.*non-empty/);
+    cleanup();
+  });
+
+  test("rejects metric_id with the wrong type (numeric YAML literal)", async () => {
+    const { path: tmp, cleanup } = await writeTempYaml(
+      "  - id: cq-305\n    category: simple_metric\n    question: x\n    mode: metric\n    metric_id: 42\n    expect: {}\n",
+    );
+    expect(() => loadQuestions(tmp)).toThrow(/cq-305.*metric_id.*non-empty/);
+    cleanup();
+  });
+
+  test("rejects an unknown mode value", async () => {
+    const { path: tmp, cleanup } = await writeTempYaml(
+      "  - id: cq-306\n    category: simple_metric\n    question: x\n    mode: sqlite\n    metric_id: total_gmv\n    expect: {}\n",
+    );
+    expect(() => loadQuestions(tmp)).toThrow(/cq-306.*mode must be one of/);
     cleanup();
   });
 });
@@ -547,6 +612,26 @@ describe("formatSummary", () => {
     expect(out).toMatch(/cq-002/);
     expect(out).toMatch(/cq-013/);
   });
+
+  test("pass result with omitted detail does not render 'undefined'", () => {
+    // `QuestionResult` makes `detail` optional on pass-arm results. The
+    // formatter only prints `detail` for warn|fail, but an explicit
+    // regression test pins that — guards against a refactor that
+    // accidentally re-adds an unconditional `${r.detail}` line.
+    const passQ: Question = {
+      id: "cq-401",
+      category: "simple_metric",
+      question: "Probe?",
+      mode: "metric",
+      metric_id: "total_gmv",
+      expect: {},
+    };
+    const out = formatSummary([
+      { question: passQ, status: "pass", sql: "SELECT 1" },
+    ]);
+    expect(out).not.toMatch(/undefined/);
+    expect(out).toMatch(/1\/1 passing/);
+  });
 });
 
 // ── resolveQuestion / runHarness ─────────────────────────────────────────
@@ -681,26 +766,17 @@ describe("resolveQuestion", () => {
 // "fail: no glossary match" — confusing failure mode).
 
 describe("resolveQuestion dispatcher routing", () => {
-  function spy<T extends (...args: never[]) => unknown>(impl: T) {
-    const calls: Parameters<T>[] = [];
-    const fn = ((...args: Parameters<T>) => {
-      calls.push(args);
-      return impl(...args);
-    }) as T;
-    return { fn, calls };
-  }
-
   test("metric mode hits findMetricSql + executeSql, skips findPatternSql/searchGlossary", async () => {
-    const findMetric = spy((_id: string) => "SELECT 1 AS v FROM orders");
-    const findPattern = spy((_e: string, _p: string) => null as string | null);
-    const search = spy((_t: string) => [] as readonly GlossaryMatch[]);
-    const exec = spy(async (_sql: string) => ({
+    const findMetric = mock((_id: string) => "SELECT 1 AS v FROM orders");
+    const findPattern = mock((_e: string, _p: string) => null as string | null);
+    const search = mock((_t: string) => [] as readonly GlossaryMatch[]);
+    const exec = mock(async (_sql: string) => ({
       columns: ["v"] as readonly string[],
       rows: [{ v: 1 }] as readonly Record<string, unknown>[],
     }));
 
     const q: Question = {
-      id: "cq-301",
+      id: "cq-401",
       category: "simple_metric",
       question: "x",
       mode: "metric",
@@ -708,31 +784,31 @@ describe("resolveQuestion dispatcher routing", () => {
       expect: { sql_pattern: ["FROM orders"] },
     };
     await resolveQuestion(q, {
-      findMetricSql: findMetric.fn,
-      findPatternSql: findPattern.fn,
-      searchGlossary: search.fn,
-      executeSql: exec.fn,
+      findMetricSql: findMetric,
+      findPatternSql: findPattern,
+      searchGlossary: search,
+      executeSql: exec,
     });
 
-    expect(findMetric.calls).toEqual([["total_gmv"]]);
-    expect(exec.calls.length).toBe(1);
-    expect(findPattern.calls.length).toBe(0);
-    expect(search.calls.length).toBe(0);
+    expect(findMetric.mock.calls).toEqual([["total_gmv"]]);
+    expect(exec.mock.calls.length).toBe(1);
+    expect(findPattern.mock.calls.length).toBe(0);
+    expect(search.mock.calls.length).toBe(0);
   });
 
   test("pattern mode hits findPatternSql + executeSql, skips findMetricSql/searchGlossary", async () => {
-    const findMetric = spy((_id: string) => null as string | null);
-    const findPattern = spy(
+    const findMetric = mock((_id: string) => null as string | null);
+    const findPattern = mock(
       (_e: string, _p: string) => "SELECT 1 FROM orders WHERE 1=1",
     );
-    const search = spy((_t: string) => [] as readonly GlossaryMatch[]);
-    const exec = spy(async (_sql: string) => ({
+    const search = mock((_t: string) => [] as readonly GlossaryMatch[]);
+    const exec = mock(async (_sql: string) => ({
       columns: [] as readonly string[],
       rows: [] as readonly Record<string, unknown>[],
     }));
 
     const q: Question = {
-      id: "cq-302",
+      id: "cq-402",
       category: "filtered_pattern",
       question: "x",
       mode: "pattern",
@@ -741,29 +817,29 @@ describe("resolveQuestion dispatcher routing", () => {
       expect: {},
     };
     await resolveQuestion(q, {
-      findMetricSql: findMetric.fn,
-      findPatternSql: findPattern.fn,
-      searchGlossary: search.fn,
-      executeSql: exec.fn,
+      findMetricSql: findMetric,
+      findPatternSql: findPattern,
+      searchGlossary: search,
+      executeSql: exec,
     });
 
-    expect(findPattern.calls).toEqual([["Orders", "orders_with_promotions"]]);
-    expect(exec.calls.length).toBe(1);
-    expect(findMetric.calls.length).toBe(0);
-    expect(search.calls.length).toBe(0);
+    expect(findPattern.mock.calls).toEqual([["Orders", "orders_with_promotions"]]);
+    expect(exec.mock.calls.length).toBe(1);
+    expect(findMetric.mock.calls.length).toBe(0);
+    expect(search.mock.calls.length).toBe(0);
   });
 
   test("virtual mode hits executeSql with inline question.sql, skips lookup deps", async () => {
-    const findMetric = spy((_id: string) => null as string | null);
-    const findPattern = spy((_e: string, _p: string) => null as string | null);
-    const search = spy((_t: string) => [] as readonly GlossaryMatch[]);
-    const exec = spy(async (_sql: string) => ({
+    const findMetric = mock((_id: string) => null as string | null);
+    const findPattern = mock((_e: string, _p: string) => null as string | null);
+    const search = mock((_t: string) => [] as readonly GlossaryMatch[]);
+    const exec = mock(async (_sql: string) => ({
       columns: ["bucket"] as readonly string[],
       rows: [{ bucket: "Small" }] as readonly Record<string, unknown>[],
     }));
 
     const q: Question = {
-      id: "cq-303",
+      id: "cq-403",
       category: "virtual_dimension",
       question: "x",
       mode: "virtual",
@@ -773,31 +849,31 @@ describe("resolveQuestion dispatcher routing", () => {
       expect: { column: "bucket" },
     };
     await resolveQuestion(q, {
-      findMetricSql: findMetric.fn,
-      findPatternSql: findPattern.fn,
-      searchGlossary: search.fn,
-      executeSql: exec.fn,
+      findMetricSql: findMetric,
+      findPatternSql: findPattern,
+      searchGlossary: search,
+      executeSql: exec,
     });
 
-    expect(exec.calls).toEqual([["SELECT 'Small' AS bucket"]]);
-    expect(findMetric.calls.length).toBe(0);
-    expect(findPattern.calls.length).toBe(0);
-    expect(search.calls.length).toBe(0);
+    expect(exec.mock.calls).toEqual([["SELECT 'Small' AS bucket"]]);
+    expect(findMetric.mock.calls.length).toBe(0);
+    expect(findPattern.mock.calls.length).toBe(0);
+    expect(search.mock.calls.length).toBe(0);
   });
 
   test("glossary mode hits searchGlossary only — never executeSql or SQL lookups", async () => {
-    const findMetric = spy((_id: string) => null as string | null);
-    const findPattern = spy((_e: string, _p: string) => null as string | null);
-    const search = spy((term: string) => [
+    const findMetric = mock((_id: string) => null as string | null);
+    const findPattern = mock((_e: string, _p: string) => null as string | null);
+    const search = mock((term: string) => [
       { term, status: "ambiguous", possible_mappings: ["a", "b"] },
     ] as readonly GlossaryMatch[]);
-    const exec = spy(async (_sql: string) => ({
+    const exec = mock(async (_sql: string) => ({
       columns: [] as readonly string[],
       rows: [] as readonly Record<string, unknown>[],
     }));
 
     const q: Question = {
-      id: "cq-304",
+      id: "cq-404",
       category: "glossary",
       question: "x",
       mode: "glossary",
@@ -805,16 +881,16 @@ describe("resolveQuestion dispatcher routing", () => {
       expect: { status: "ambiguous", mappings_min: 2 },
     };
     await resolveQuestion(q, {
-      findMetricSql: findMetric.fn,
-      findPatternSql: findPattern.fn,
-      searchGlossary: search.fn,
-      executeSql: exec.fn,
+      findMetricSql: findMetric,
+      findPatternSql: findPattern,
+      searchGlossary: search,
+      executeSql: exec,
     });
 
-    expect(search.calls).toEqual([["revenue"]]);
-    expect(exec.calls.length).toBe(0);
-    expect(findMetric.calls.length).toBe(0);
-    expect(findPattern.calls.length).toBe(0);
+    expect(search.mock.calls).toEqual([["revenue"]]);
+    expect(exec.mock.calls.length).toBe(0);
+    expect(findMetric.mock.calls.length).toBe(0);
+    expect(findPattern.mock.calls.length).toBe(0);
   });
 });
 

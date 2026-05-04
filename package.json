@@ -40,6 +40,7 @@
     "test:e2e:scaffold": "bash e2e/scripts/run.sh --tier scaffold",
     "test:e2e:all": "bash e2e/scripts/run.sh --all",
     "test:e2e:docker": "bash e2e/scripts/run.sh --tier docker",
+    "eval:canonical": "bun packages/cli/bin/atlas.ts canonical-eval",
     "smoke": "bash scripts/smoke.sh",
     "smoke:scaffold": "bash create-atlas/smoke-test.sh",
     "smoke:remote": "bun run atlas -- smoke",

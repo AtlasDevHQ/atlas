@@ -1,0 +1,262 @@
+# Canonical questions — proves the consolidated NovaMart demo dataset (#2021)
+# answers the curated question set correctly.
+#
+# Each question has a `mode` that determines how it's resolved:
+#   - metric:   call findMetricById(id) and execute the metric's authoritative
+#               SQL. Deterministic mode asserts result shape / SQL pattern.
+#   - pattern:  execute a `query_patterns[*].sql` from a specific entity YAML.
+#               Used to exercise WHERE-filtered patterns and joins.
+#   - virtual:  run an inline SELECT that exercises a `virtual: true` dimension
+#               from an entity YAML so the harness proves virtual dims compile.
+#   - glossary: search the glossary for a term; assert `status === 'ambiguous'`
+#               or another expected status.
+#
+# `expect` fields are intentionally loose:
+#   - sql_pattern:  case-insensitive substrings every executed SQL must contain
+#   - min_rows / max_rows: row-count bounds on the result
+#   - non_zero:     scalar metrics must return a non-zero numeric value
+#   - column:       single named column expected on the result
+#
+# Adding a question:
+#   1. Append a new entry below — keep ids zero-padded (cq-001 .. cq-020).
+#   2. Pick the simplest mode that proves the property you care about.
+#   3. Run `bun run eval:canonical` locally to confirm it passes.
+#   4. Update apps/docs/content/docs/contributing/eval-harness.mdx if your
+#      question category isn't already covered.
+
+version: "1.0"
+schema: ecommerce
+questions:
+  # ── Simple metrics (3) ──────────────────────────────────────────────────
+  - id: cq-001
+    category: simple_metric
+    question: What is our total GMV?
+    mode: metric
+    metric_id: total_gmv
+    expect:
+      sql_pattern: ["SUM(total_cents)", "FROM orders"]
+      non_zero: true
+
+  - id: cq-002
+    category: simple_metric
+    question: How many customers do we have?
+    mode: metric
+    metric_id: total_customers
+    expect:
+      sql_pattern: ["COUNT(DISTINCT id)", "FROM customers"]
+      non_zero: true
+
+  - id: cq-003
+    category: simple_metric
+    question: What is our average order value?
+    mode: metric
+    metric_id: aov
+    expect:
+      sql_pattern: ["AVG(total_cents)", "FROM orders"]
+      non_zero: true
+
+  # ── Segmentation (3) ────────────────────────────────────────────────────
+  - id: cq-004
+    category: segmentation
+    question: What is our revenue broken down by category?
+    mode: metric
+    metric_id: revenue_by_category
+    expect:
+      sql_pattern: ["GROUP BY", "categories", "order_items"]
+      min_rows: 1
+
+  - id: cq-005
+    category: segmentation
+    question: How many customers do we have by acquisition source?
+    mode: metric
+    metric_id: customers_by_acquisition_source
+    expect:
+      sql_pattern: ["LOWER(acquisition_source)", "GROUP BY"]
+      min_rows: 1
+      column: channel
+
+  - id: cq-006
+    category: segmentation
+    question: What is our inventory health by stock status?
+    mode: metric
+    metric_id: inventory_health
+    expect:
+      sql_pattern: ["FROM inventory_levels", "GROUP BY"]
+      min_rows: 1
+      column: stock_status
+
+  # ── Joins (2) ────────────────────────────────────────────────────────────
+  - id: cq-007
+    category: join
+    question: What is our revenue split between DTC and marketplace?
+    mode: metric
+    metric_id: revenue_dtc_vs_marketplace
+    expect:
+      sql_pattern: ["JOIN products", "seller_id IS NULL"]
+      min_rows: 1
+      max_rows: 2
+      column: channel
+
+  - id: cq-008
+    category: join
+    question: Who are our top customers by spend?
+    mode: metric
+    metric_id: top_customers_by_spend
+    expect:
+      sql_pattern: ["JOIN orders", "FROM customers"]
+      min_rows: 1
+      max_rows: 20
+
+  # ── Time-series (2) ──────────────────────────────────────────────────────
+  - id: cq-009
+    category: timeseries
+    question: How has our GMV changed by month?
+    mode: metric
+    metric_id: monthly_gmv_trend
+    expect:
+      sql_pattern: ["TO_CHAR(created_at", "GROUP BY"]
+      min_rows: 1
+      column: month
+
+  - id: cq-010
+    category: timeseries
+    question: How many new customers signed up each month?
+    mode: metric
+    metric_id: new_customers_by_month
+    expect:
+      sql_pattern: ["TO_CHAR(created_at", "FROM customers"]
+      min_rows: 1
+      column: month
+
+  # ── Virtual dimensions (2) ───────────────────────────────────────────────
+  - id: cq-011
+    category: virtual_dimension
+    question: How are orders distributed by size bucket?
+    mode: virtual
+    entity: Orders
+    dimension: order_size_bucket
+    sql: |-
+      SELECT
+        CASE
+          WHEN total_cents < 2500 THEN 'Small (<$25)'
+          WHEN total_cents < 7500 THEN 'Medium ($25-$75)'
+          WHEN total_cents < 15000 THEN 'Large ($75-$150)'
+          ELSE 'XL ($150+)'
+        END AS order_size_bucket,
+        COUNT(*) AS order_count
+      FROM orders
+      GROUP BY order_size_bucket
+      ORDER BY order_count DESC
+    expect:
+      min_rows: 1
+      max_rows: 4
+      column: order_size_bucket
+
+  - id: cq-012
+    category: virtual_dimension
+    question: How are active products distributed by price tier?
+    mode: virtual
+    entity: Products
+    dimension: price_tier
+    sql: |-
+      SELECT
+        CASE
+          WHEN price < 25 THEN 'Budget'
+          WHEN price < 75 THEN 'Mid-Range'
+          WHEN price < 200 THEN 'Premium'
+          ELSE 'Luxury'
+        END AS price_tier,
+        COUNT(*) AS product_count
+      FROM products
+      WHERE status = 'active'
+      GROUP BY price_tier
+      ORDER BY product_count DESC
+    expect:
+      min_rows: 1
+      max_rows: 4
+      column: price_tier
+
+  # ── Glossary disambiguation (3) ──────────────────────────────────────────
+  # `status: ambiguous` terms — agent must ASK, never silently pick.
+  # The forthcoming MCP `searchGlossary` (#2020) returns the `ambiguous_term`
+  # envelope code; this harness asserts on the underlying glossary state.
+  - id: cq-013
+    category: glossary
+    question: Show me revenue last quarter
+    mode: glossary
+    term: revenue
+    expect:
+      status: ambiguous
+      mappings_min: 2
+
+  - id: cq-014
+    category: glossary
+    question: Filter by status
+    mode: glossary
+    term: status
+    expect:
+      status: ambiguous
+      mappings_min: 2
+
+  - id: cq-015
+    category: glossary
+    question: What's the price?
+    mode: glossary
+    term: price
+    expect:
+      status: ambiguous
+      mappings_min: 2
+
+  # ── Filtered query_patterns (2) ──────────────────────────────────────────
+  - id: cq-016
+    category: filtered_pattern
+    question: How does promotion usage affect order value?
+    mode: pattern
+    entity: Orders
+    pattern: orders_with_promotions
+    expect:
+      sql_pattern: ["WHERE status != 'cancelled'", "promotion_id IS NOT NULL"]
+      min_rows: 1
+      max_rows: 2
+      column: promo_status
+
+  - id: cq-017
+    category: filtered_pattern
+    question: What is the DTC vs marketplace product mix among active products?
+    mode: pattern
+    entity: Products
+    pattern: dtc_vs_marketplace
+    expect:
+      sql_pattern: ["WHERE status = 'active'", "seller_id IS NULL"]
+      min_rows: 1
+      max_rows: 2
+      column: channel
+
+  # ── Extra coverage (3) ───────────────────────────────────────────────────
+  - id: cq-018
+    category: simple_metric
+    question: What is our refund rate?
+    mode: metric
+    metric_id: refund_rate
+    expect:
+      sql_pattern: ["FROM payments", "FILTER (WHERE status = 'refunded')"]
+      column: refund_rate
+
+  - id: cq-019
+    category: simple_metric
+    question: What is our return rate?
+    mode: metric
+    metric_id: return_rate
+    expect:
+      sql_pattern: ["FROM orders", "LEFT JOIN returns"]
+      column: return_rate
+
+  - id: cq-020
+    category: segmentation
+    question: How are our shipping carriers performing?
+    mode: metric
+    metric_id: carrier_performance
+    expect:
+      sql_pattern: ["FROM shipments", "GROUP BY carrier"]
+      min_rows: 1
+      column: carrier

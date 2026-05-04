@@ -1,0 +1,90 @@
+---
+title: Canonical-Question Eval Harness
+description: Proves the consolidated NovaMart demo dataset returns correct answers to a curated question set. Locks in semantic-layer correctness for demos, the README, and every change to entity / metric / glossary YAMLs.
+---
+
+> Why this is separate from `atlas eval`: that suite is the LLM SQL-quality benchmark (gold SQL, single shot, LLM nondeterminism). This harness is the *semantic-layer correctness* gate — it calls metric SQL exactly as the typed MCP `runMetric` tool does, asserts ambiguous glossary terms still trigger disambiguation, and proves `query_patterns:` and `virtual:` dimensions compile against the seed.
+
+## What it covers
+
+A curated set of ~20 canonical questions in `eval/canonical-questions/questions.yml`, exercising:
+
+- **Simple metrics** — `total_gmv`, `total_customers`, `aov`, `refund_rate`, `return_rate`
+- **Segmentation** — revenue by category, customers by acquisition source, inventory health, carrier performance
+- **Joins** — DTC vs marketplace revenue (joins `order_items` → `products`), top customers by spend (joins `customers` → `orders`)
+- **Time-series** — monthly GMV trend, new customers by month
+- **Virtual dimensions** — `orders.order_size_bucket`, `products.price_tier`
+- **Glossary disambiguation** — `revenue`, `status`, `price` are `status: ambiguous` and must trigger the disambiguation contract documented in [the typed MCP tools](../platform-ops/mcp-tools), never resolve to a single mapping
+- **Filtered query_patterns** — `orders.orders_with_promotions` (`WHERE status != 'cancelled'`), `products.dtc_vs_marketplace` (`WHERE status = 'active'`)
+
+## Running locally
+
+```bash
+# Spin up Postgres + sandbox sidecar and seed the demo dataset
+bun run db:up
+export ATLAS_DATASOURCE_URL=postgres://atlas:atlas@localhost:5432/atlas_demo
+
+# Deterministic mode (default) — no LLM. Calls semantic-layer reads and
+# executes the resolved SQL directly. Fast, repeatable.
+bun run eval:canonical
+
+# Optional LLM mode — runs the full agent loop and asserts on the SQL
+# pattern of the last executeSQL call. Slower, nondeterministic.
+bun run eval:canonical -- --llm
+```
+
+The output is human-readable, with a `X/N passing` summary line and a per-category breakdown:
+
+```text
+Atlas canonical-question eval
+============================================================
+20/20 passing  (0 warn, 0 fail)
+
+[PASS] cq-001  simple_metric      What is our total GMV?
+[PASS] cq-002  simple_metric      How many customers do we have?
+...
+============================================================
+20/20 passing
+  filtered_pattern     2/2
+  glossary             3/3
+  join                 2/2
+  segmentation         4/4
+  simple_metric        5/5
+  timeseries           2/2
+  virtual_dimension    2/2
+```
+
+## Adding a question
+
+1. Append a new entry to `eval/canonical-questions/questions.yml`. Ids are zero-padded `cq-NNN` and must be unique.
+2. Pick the simplest `mode` that proves the property you care about:
+   - `metric` — pass `metric_id`. The harness calls `findMetricById(id)` and executes the metric's authoritative SQL.
+   - `pattern` — pass `entity` + `pattern`. Resolves a `query_patterns[*].sql` from an entity YAML.
+   - `virtual` — pass `entity`, `dimension`, and an inline `sql`. Used to prove a `virtual: true` dimension compiles against the seed.
+   - `glossary` — pass `term`. The harness asserts the glossary status (`ambiguous` / `defined`) and minimum mapping count.
+3. Choose loose `expect:` assertions — the harness runs against a deterministic seed, but absolute scalar values are brittle. Prefer `sql_pattern` (substrings the resolved SQL must contain), `min_rows` / `max_rows` (row-count bounds), `non_zero` (scalar metric guards), and `column` (single named column).
+4. Run `bun run eval:canonical` locally to confirm.
+5. Update this page if your question category isn't already covered.
+
+## CI policy
+
+`.github/workflows/eval.yml` runs the deterministic mode against a fresh Postgres on every PR that touches:
+
+- `eval/canonical-questions/**`
+- `packages/cli/bin/canonical-eval*.ts`
+- `packages/cli/data/seeds/ecommerce/**`
+- `packages/api/src/lib/semantic/**`
+
+| Trigger | Behavior |
+|---|---|
+| Pull request to `main` | Informational. `continue-on-error: true` — a regression posts the `X/N passing` line in the run log but doesn't block merge. Mirrors the [Lighthouse budget](#lighthouse-budget-advisory) first-month policy. |
+| Tag push (`v*.*.*`) | Blocking. `continue-on-error` flips off. A regression on a release tag trips the workflow red. |
+
+The LLM mode (`--llm`) is **not** run in CI. We keep the gate stable and deterministic; the LLM mode exists for local exploration when debugging an agent regression.
+
+## Out of scope
+
+- Eval coverage beyond the demo dataset (real customer data is separate).
+- LLM-as-judge scoring (we use deterministic SQL substring + value comparison).
+- Latency / throughput benchmarks.
+- Multi-LLM eval — the existing `atlas eval` LLM benchmark covers single-model correctness.

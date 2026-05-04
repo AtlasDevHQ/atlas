@@ -33,7 +33,7 @@ Entities have a **type** that reflects their role in the semantic layer:
 A short phrase on an entity that describes what one row represents. Grain helps the agent avoid double-counting and understand cardinality.
 
 ```yaml
-grain: one row per subscription account
+grain: one row per order
 ```
 
 If the grain is "one row per order line item" and a user asks "how many orders?", the agent knows it needs `COUNT(DISTINCT order_id)`, not `COUNT(*)`.
@@ -44,11 +44,11 @@ A column or expression on an entity that users can filter, group, or select. Dim
 
 ```yaml
 dimensions:
-  - name: plan
-    sql: plan
+  - name: acquisition_source
+    sql: acquisition_source
     type: string
-    description: Subscription tier (Free, Starter, Pro, Enterprise)
-    sample_values: [Enterprise, Pro, Starter, Free]
+    description: How this customer was acquired
+    sample_values: [organic, paid_search, social, referral, email, direct]
 ```
 
 A dimension marked `primary_key: true` identifies the unique row. A dimension marked `virtual: true` is computed from an expression, not a raw database column (see [Virtual dimension](#virtual-dimension)).
@@ -61,18 +61,18 @@ A computed dimension defined by a SQL expression — typically a `CASE` statemen
 
 ```yaml
 dimensions:
-  - name: monthly_value_bucket
+  - name: order_size_bucket
     sql: |-
       CASE
-        WHEN monthly_value = 0 THEN 'Free'
-        WHEN monthly_value < 100 THEN 'Low'
-        WHEN monthly_value < 1000 THEN 'Mid'
-        ELSE 'High'
+        WHEN total_cents < 2500 THEN 'Small (<$25)'
+        WHEN total_cents < 7500 THEN 'Medium ($25-$75)'
+        WHEN total_cents < 15000 THEN 'Large ($75-$150)'
+        ELSE 'XL ($150+)'
       END
     type: string
-    description: MRR tier bucket — Free / Low / Mid / High
+    description: Order size bucket based on total value
     virtual: true
-    sample_values: [Free, Low, Mid, High]
+    sample_values: ["Small (<$25)", "Medium ($25-$75)", "Large ($75-$150)", "XL ($150+)"]
 ```
 
 Use virtual dimensions for common groupings (revenue tiers, date buckets, status categories) that users ask about frequently but don't exist as raw columns.
@@ -87,10 +87,10 @@ A pre-defined aggregation on an entity. Measures tell the agent how to summarize
 
 ```yaml
 measures:
-  - name: total_mrr
-    sql: monthly_value
+  - name: total_gmv_cents
+    sql: total_cents
     type: sum
-    description: Total Monthly Recurring Revenue
+    description: Total GMV in cents (sum of all order totals)
 ```
 
 **Aggregation types:** `count_distinct`, `sum`, `avg`, `min`, `max`
@@ -103,17 +103,17 @@ A relationship between two entities, defined by foreign key columns and cardinal
 
 ```yaml
 joins:
-  - target_entity: Companies
+  - target_entity: Customers
     relationship: many_to_one
     join_columns:
-      from: company_id
+      from: customer_id
       to: id
-    description: Each account belongs to one company (customer)
+    description: Each order belongs to one customer
 ```
 
 **Relationship types:** `many_to_one`, `one_to_many`, `one_to_one`, `many_to_many`
 
-When a question spans multiple entities (e.g., "MRR by industry" requires joining accounts to companies), the agent uses these definitions to generate the correct `JOIN` clause.
+When a question spans multiple entities (e.g., "GMV by acquisition source" requires joining orders to customers), the agent uses these definitions to generate the correct `JOIN` clause.
 
 ### Cross-source join
 
@@ -136,16 +136,17 @@ A pre-written SQL query for a common question. When a user asks something that m
 
 ```yaml
 query_patterns:
-  - name: churn_rate_by_plan
-    description: Churn rate by plan type
+  - name: monthly_gmv
+    description: Monthly GMV trend
     sql: |-
-      SELECT plan,
-             COUNT(*) FILTER (WHERE status = 'Churned') AS churned,
-             COUNT(*) AS total,
-             ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'Churned') / COUNT(*), 1) AS churn_pct
-      FROM accounts
-      GROUP BY plan
-      ORDER BY churn_pct DESC
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS order_month,
+             COUNT(*) AS order_count,
+             SUM(total_cents) / 100.0 AS gmv_dollars,
+             AVG(total_cents) / 100.0 AS aov_dollars
+      FROM orders
+      WHERE status != 'cancelled'
+      GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+      ORDER BY order_month
 ```
 
 Query patterns are especially valuable for complex queries involving window functions, CTEs, or non-obvious filter conditions that the agent might get wrong.
@@ -158,11 +159,11 @@ An array of example values on a dimension. Sample values help the agent understa
 - name: status
   sql: status
   type: string
-  description: Current billing status
-  sample_values: [Active, Churned, Inactive, Suspended]
+  description: Order fulfillment status
+  sample_values: [pending, processing, shipped, delivered, cancelled]
 ```
 
-Without sample values, the agent might filter on `WHERE status = 'active'` (lowercase) when the actual data uses `'Active'` (title case). Sample values eliminate this class of error.
+Without sample values, the agent might filter on `WHERE status = 'Pending'` (title case) when the actual data uses `'pending'` (lowercase). Sample values eliminate this class of error.
 
 ### Metric
 
@@ -170,25 +171,31 @@ An authoritative, named business KPI defined in `semantic/metrics/*.yml`. Unlike
 
 ```yaml
 metrics:
-  - id: churn_rate
-    label: Churn Rate
-    description: Percentage of all accounts that have churned
-    type: derived
-    unit: percent
+  - id: total_gmv
+    label: Total GMV
+    description: >
+      Gross Merchandise Value — total value of all non-cancelled orders.
+      Calculated from orders.total_cents / 100.
+    type: atomic
+    unit: USD
+    source:
+      entity: Orders
+      measure: total_gmv_cents
     sql: |-
-      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'Churned') / COUNT(*), 1) AS churn_rate
-      FROM accounts
-    aggregation: ratio
-    objective: minimize
+      SELECT SUM(total_cents) / 100.0 AS total_gmv
+      FROM orders
+      WHERE status != 'cancelled'
+    aggregation: sum
+    objective: maximize
 ```
 
 **Metric types:**
 
 | Type | Description | Example |
 |------|-------------|---------|
-| `atomic` | Base metric directly from data | Total MRR, Active Accounts |
-| `derived` | Calculated from an expression or ratio | Churn Rate, ARPA |
-| `breakdown` | A metric split by one or more dimensions | MRR by Plan, Churn by Region |
+| `atomic` | Base metric directly from data | Total GMV, Active Customers |
+| `derived` | Calculated from an expression or ratio | AOV, Refund Rate |
+| `breakdown` | A metric split by one or more dimensions | Revenue by Category, Monthly GMV Trend |
 
 <Callout type="warn">
 Metric SQL is authoritative — the agent executes it verbatim. If a metric's SQL is wrong, the agent will produce wrong results. Treat metric files as source code.
@@ -202,24 +209,28 @@ Each term is marked `defined` (unambiguous) or `ambiguous` (needs clarification)
 
 ```yaml
 terms:
-  MRR:
+  GMV:
     status: defined
     definition: >
-      Monthly Recurring Revenue. The sum of monthly_value across all active accounts.
+      Gross Merchandise Value. Total value of all orders before refunds and returns.
+      Use SUM(orders.total_cents) / 100 for dollar amount. Filter by status != 'cancelled'
+      for net GMV.
     tables:
-      - accounts
+      - orders
 
   revenue:
     status: ambiguous
     note: >
-      Could mean company revenue (companies.revenue — annual total revenue)
-      or account revenue (accounts.monthly_value — our MRR). Clarify which.
+      Could mean GMV (total order value from orders.total_cents), net revenue
+      (GMV minus refunds), or seller revenue (after commission). ASK the user
+      which definition they mean.
     possible_mappings:
-      - companies.revenue
-      - accounts.monthly_value
+      - orders.total_cents
+      - payments.amount_cents
+      - refunds (subtracted)
 ```
 
-When a user asks about "revenue" and the glossary marks it as ambiguous, the agent asks "Do you mean company revenue or account MRR?" rather than guessing.
+When a user asks about "revenue" and the glossary marks it as ambiguous, the agent asks "Do you mean GMV, net revenue (GMV minus refunds), or seller revenue (after commission)?" rather than guessing.
 
 ### Catalog
 

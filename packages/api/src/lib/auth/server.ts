@@ -21,6 +21,7 @@ import { apiKey } from "@better-auth/api-key";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import { oauthProvider } from "@better-auth/oauth-provider";
+import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -536,23 +537,36 @@ export const ATLAS_OAUTH_SCOPES = [
  *
  * The MCP spec wants each MCP endpoint to be its own resource (with an
  * audience URI) so a token issued to the SaaS US region cannot replay
- * against the EU region. Per-region API hosts provide that natively —
- * we accept a comma-separated env var and fall back to BETTER_AUTH_URL
- * (the auth server's own base) when unset, which is the right default
- * for single-region self-hosted installs.
+ * against the EU region. Per-region API hosts provide that natively.
  *
- * Empty string in the env var → no override → fall back to baseURL.
+ * The audience the issuer accepts MUST equal what the resource server
+ * advertises and what the verifier checks. All three sites resolve to
+ * `<base>/mcp` (region-scoped, NOT workspace-scoped — see well-known.ts
+ * `buildResourceUri` for the rationale and the spec citation).
+ *
+ * Resolution priority:
+ *   1. ATLAS_OAUTH_VALID_AUDIENCES — comma-separated explicit list.
+ *      Used verbatim, no `/mcp` suffix appended (operator owns the
+ *      values and may want non-MCP audiences too).
+ *   2. ATLAS_PUBLIC_API_URL — same env var well-known.ts and hosted.ts
+ *      prefer; we suffix `/mcp` here so the issuer accepts the verifier's
+ *      expected audience.
+ *   3. BETTER_AUTH_URL — last fallback, `/mcp` suffix appended.
+ *
+ * Empty string in the env var → no override → fall back to (2)/(3).
  */
 export function resolveOAuthValidAudiences(env: NodeJS.ProcessEnv): string[] {
-  const raw = env.ATLAS_OAUTH_VALID_AUDIENCES?.trim();
-  if (!raw) {
-    const fallback = env.BETTER_AUTH_URL?.trim();
-    return fallback ? [fallback] : [];
+  const explicit = env.ATLAS_OAUTH_VALID_AUDIENCES?.trim();
+  if (explicit) {
+    return explicit
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const base =
+    env.ATLAS_PUBLIC_API_URL?.trim() || env.BETTER_AUTH_URL?.trim();
+  if (!base) return [];
+  return [`${base.replace(/\/+$/, "")}/mcp`];
 }
 
 /**
@@ -684,13 +698,18 @@ function buildPlugins() {
           ?.activeOrganizationId;
         return typeof orgId === "string" ? orgId : undefined;
       },
-      // Stamp the workspace id onto every issued access token so the
-      // hosted MCP endpoint can resolve `workspace_id` from the JWT
-      // without an extra DB lookup. The MCP path verifies that the
-      // claim matches the URL's `{workspace_id}`.
+      // Stamp the workspace id onto access tokens issued under a
+      // session that carries an active workspace. Tokens issued without
+      // one (e.g. an authenticated user with no organization yet)
+      // emit no claim and are rejected at the MCP edge with
+      // `missing_workspace_claim` — the issuer doesn't try to fabricate
+      // a binding, and the verifier doesn't accept an unbound bearer.
+      // Claim key is sourced from `oauth-claims.ts` so production
+      // issuance, MCP verification, and the test fixture share one
+      // literal — drift between sites silently breaks every token.
       customAccessTokenClaims: ({ referenceId }) => {
         return referenceId
-          ? { "https://atlas.useatlas.dev/workspace_id": referenceId }
+          ? { [ATLAS_OAUTH_WORKSPACE_CLAIM]: referenceId }
           : {};
       },
     }),

@@ -25,15 +25,15 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { AdminActionEntry } from "@atlas/api/lib/audit";
+// Import the same constant the production code reads — keeps the
+// fixture from drifting out of sync with the issuer's claim key.
+import { ATLAS_OAUTH_WORKSPACE_CLAIM as WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 
 // ── Module-scope mocks ────────────────────────────────────────────────
 //
 // CLAUDE.md: every named export of a mocked module must be present.
 // Partial mocks leak via the in-process Bun runner and break unrelated
 // test files with `Export named 'X' not found`.
-
-// The custom claim hosted.ts reads to derive the workspace.
-const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
 
 interface FakeJwtPayload {
   sub: string;
@@ -352,7 +352,12 @@ describe("hosted MCP — bearer enforcement", () => {
     }
   });
 
-  it("returns 401 when verifyAccessToken throws", async () => {
+  it("returns 401 when verifyAccessToken throws (bad signature / audience / issuer / expired)", async () => {
+    // verifyAccessToken collapses these distinct failure modes into a
+    // single thrown Error / APIError("UNAUTHORIZED"). Our route
+    // uniformly maps them to 401 invalid_bearer (RFC 6750 §3.1) — the
+    // client retries via the discovery doc the WWW-Authenticate header
+    // points at.
     mockVerifyAccessToken.mockImplementation(async () => {
       throw new Error("bad signature");
     });
@@ -369,12 +374,136 @@ describe("hosted MCP — bearer enforcement", () => {
       expect(res.status).toBe(401);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("invalid_bearer");
+      // RFC 9728 / MCP spec — 401 from the resource server MUST point
+      // clients at the protected-resource metadata so DCR can recover.
+      // The header presence is the contract; specific URL is asserted
+      // in the missing-bearer test above.
+      expect(res.headers.get("www-authenticate")).toContain(
+        "resource_metadata=",
+      );
     } finally {
       handle.close();
     }
   });
 
-  it("returns 401 missing_workspace_claim when token has no workspace_id custom claim", async () => {
+  // Parameterized verifyAccessToken-throw cases pin the specific error
+  // shapes Better Auth's `verifyAccessToken` emits. These maintain a
+  // working alarm if a future better-auth bump changes how a specific
+  // failure mode (audience mismatch / issuer mismatch / expiry) gets
+  // surfaced — without these, a regression where audience verification
+  // gets silently dropped in the verify call ships unchallenged.
+  for (const [name, message] of [
+    ["audience mismatch", "unexpected audience"],
+    ["issuer mismatch", "unexpected issuer"],
+    ["expired token", '"exp" claim timestamp check failed'],
+  ] as const) {
+    it(`returns 401 invalid_bearer + WWW-Authenticate when verifyAccessToken throws: ${name}`, async () => {
+      mockVerifyAccessToken.mockImplementation(async () => {
+        throw new Error(message);
+      });
+      const handle = await startServer();
+      try {
+        const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${TOKEN_A}`,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+        });
+        expect(res.status).toBe(401);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe("invalid_bearer");
+        expect(res.headers.get("www-authenticate")).toContain(
+          "resource_metadata=",
+        );
+        expect(
+          auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+        ).toHaveLength(0);
+      } finally {
+        handle.close();
+      }
+    });
+  }
+
+  it("returns 403 insufficient_scope when verifyAccessToken throws APIError(FORBIDDEN, scope)", async () => {
+    // Better Auth's verifyAccessToken throws `APIError("FORBIDDEN",
+    // "invalid scope mcp:read")` when a token authenticates but lacks
+    // a required scope. RFC 6750 §3.1 mandates 403 + the `scope`
+    // attribute on the WWW-Authenticate header — collapsing this to
+    // 401 (the prior catch-all) tells the client to refresh, which
+    // won't add a missing scope.
+    const apiErr = Object.assign(new Error("invalid scope mcp:read"), {
+      name: "APIError",
+      status: "FORBIDDEN",
+      statusCode: 403,
+      body: { message: "invalid scope mcp:read" },
+    });
+    mockVerifyAccessToken.mockImplementation(async () => {
+      throw apiErr;
+    });
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; scope?: string };
+      expect(body.error).toBe("insufficient_scope");
+      expect(body.scope).toBe("mcp:read");
+      // 403 insufficient_scope is NOT an auth challenge — re-running
+      // DCR / refresh wouldn't help. WWW-Authenticate is suppressed.
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 503 auth_unavailable when JWKS is unreachable", async () => {
+    // `Error("Jwks failed: …")` is the better-auth contract for
+    // "couldn't fetch the JWKS doc". This is a server-side outage,
+    // not a client error — flattening it to 401 would mask a JWKS
+    // outage as a flood of attacker-bad-tokens and confuse triage.
+    mockVerifyAccessToken.mockImplementation(async () => {
+      throw new Error("Jwks failed: connection refused");
+    });
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("auth_unavailable");
+      // WWW-Authenticate suppressed — pointing the client at the
+      // metadata document during a JWKS outage would just send them
+      // around the same broken loop.
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 401 missing_workspace_claim WITHOUT WWW-Authenticate when the JWT verified but carries no workspace claim", async () => {
+    // Structurally-bad token: signature/exp/aud all valid but the
+    // issuer didn't stamp the workspace claim. Re-running DCR would
+    // not fix this; the discovery pointer is suppressed.
     mockVerifyAccessToken.mockImplementation(async () => ({
       sub: SUB_A,
       jti: "jti_a",
@@ -395,12 +524,16 @@ describe("hosted MCP — bearer enforcement", () => {
       expect(res.status).toBe(401);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("missing_workspace_claim");
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
     } finally {
       handle.close();
     }
   });
 
-  it("returns 401 missing_subject when JWT carries no sub claim", async () => {
+  it("returns 401 missing_subject WITHOUT WWW-Authenticate when JWT carries no sub claim", async () => {
     mockVerifyAccessToken.mockImplementation(async () => ({
       sub: "", // empty falsey
       jti: "jti_a",
@@ -420,6 +553,41 @@ describe("hosted MCP — bearer enforcement", () => {
       expect(res.status).toBe(401);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("missing_subject");
+      expect(res.headers.get("www-authenticate")).toBeNull();
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 401 missing_client_id when the JWT carries no azp claim — never the audit-poisoning 'unknown_client' fallback", async () => {
+    // Pre-fix this test would have passed silently: the route accepted
+    // the token, fed the audit row a literal "unknown_client" string,
+    // and forensic queries on `clientId` couldn't tell that apart from
+    // a real client legitimately registered as "unknown_client".
+    mockVerifyAccessToken.mockImplementation(async () => ({
+      sub: SUB_A,
+      jti: "jti_a",
+      // no `azp`
+      [WORKSPACE_CLAIM]: ORG_A,
+    }));
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("missing_client_id");
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      // No audit row written under the "unknown_client" literal.
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
     } finally {
       handle.close();
     }

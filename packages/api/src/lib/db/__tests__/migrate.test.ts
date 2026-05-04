@@ -804,3 +804,34 @@ describe("runSeeds", () => {
     await expect(runSeeds(pool)).resolves.toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: 0047_drop_mcp_tokens.sql
+// ---------------------------------------------------------------------------
+//
+// Pin the migration's SQL contents so a future edit can't silently turn
+// it into something that would crash dev DBs that never ran 0046. The
+// shape we care about: `DROP TABLE IF EXISTS` (idempotent on installs
+// without the table) and NO `CASCADE` (a stray CASCADE here would
+// silently drop dependent FKs in another migration's tables).
+
+describe("0047_drop_mcp_tokens.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0047_drop_mcp_tokens.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("drops mcp_tokens idempotently without CASCADE", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    // Idempotency — self-hosted dev DBs that never ran 0046 still
+    // replay this migration without error.
+    expect(sql).toMatch(/DROP TABLE IF EXISTS\s+mcp_tokens\b/i);
+
+    // No CASCADE — would silently drop FKs in dependent tables we
+    // didn't expect. There are no FKs to mcp_tokens today, but the
+    // bound here is a future-proof invariant.
+    expect(sql).not.toMatch(/DROP TABLE[^;]*CASCADE/i);
+  });
+});

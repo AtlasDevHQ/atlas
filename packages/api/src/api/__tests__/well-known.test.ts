@@ -140,7 +140,12 @@ describe("well-known — managed auth mode", () => {
     }
   });
 
-  it("serves /.well-known/oauth-protected-resource/mcp/:workspace_id with workspace-scoped resource URI", async () => {
+  it("serves /.well-known/oauth-protected-resource/mcp/:workspace_id with the region-scoped resource URI", async () => {
+    // The metadata is fetched per-workspace path so future per-workspace
+    // extensions have somewhere to live, but the `resource` audience in
+    // the document is region-scoped (`<base>/mcp`, no workspace
+    // segment). Workspace isolation runs through the JWT claim, not the
+    // audience — see well-known.ts buildResourceUri docstring.
     const handle = await startServer();
     try {
       const res = await fetch(
@@ -152,7 +157,12 @@ describe("well-known — managed auth mode", () => {
         scopes_supported: string[];
         bearer_methods_supported: string[];
       };
-      expect(body.resource).toContain("/mcp/org_xyz");
+      // Region-scoped resource. Must NOT carry the workspace id —
+      // otherwise the audience advertised here won't match what
+      // `resolveOAuthValidAudiences` accepts on the issuer side, and
+      // every RFC-8707 token request 401s in production.
+      expect(body.resource).toMatch(/\/mcp$/);
+      expect(body.resource).not.toContain("/mcp/org_xyz");
       expect(body.scopes_supported).toEqual(["mcp:read", "mcp:write"]);
       expect(body.bearer_methods_supported).toEqual(["header"]);
     } finally {
@@ -193,6 +203,58 @@ describe("well-known — non-managed auth mode", () => {
       }
     } finally {
       handle.close();
+    }
+  });
+});
+
+describe("well-known — helpers fail to load", () => {
+  // The earlier wiring collapsed import-failure into the not-managed
+  // 404 path, hiding boot bugs (missing @better-auth/oauth-provider,
+  // crashed getAuthInstance) behind a cheerful "managed auth not
+  // enabled" message. Now distinguished via the tagged outcome — this
+  // test pins the 503 path so a future refactor can't silently
+  // re-collapse them.
+  it("returns 503 with a requestId when getAuthInstance throws", async () => {
+    mockDetectAuthMode.current = "managed";
+    // Swap the auth-server module to throw on getAuthInstance(). We
+    // restore the success shape in the `finally` so subsequent tests
+    // in this file (if any are added below) see the original mock.
+    // `bun:test` `mock.module` doesn't return a `.restore()` handle,
+    // so we explicitly re-install the success shape to revert.
+    mock.module("@atlas/api/lib/auth/server", () => ({
+      getAuthInstance: () => {
+        throw new Error("better-auth boot failure");
+      },
+    }));
+    try {
+      const handle = await startServer();
+      try {
+        const res = await fetch(
+          `${handle.url}/.well-known/oauth-authorization-server/api/auth`,
+        );
+        expect(res.status).toBe(503);
+        const body = (await res.json()) as {
+          error: string;
+          requestId?: string;
+          reason?: string;
+        };
+        expect(body.error).toBe("metadata_unavailable");
+        expect(body.requestId).toBeTruthy();
+        // Surface the underlying reason so a customer escalation can
+        // map response → log line directly.
+        expect(body.reason).toContain("better-auth boot failure");
+      } finally {
+        handle.close();
+      }
+    } finally {
+      mock.module("@atlas/api/lib/auth/server", () => ({
+        getAuthInstance: () => ({
+          api: {
+            getOAuthServerConfig: () => ({}),
+            getOpenIdConfig: () => ({}),
+          },
+        }),
+      }));
     }
   });
 });

@@ -47,13 +47,27 @@ const log = createLogger("well-known");
 // ---------------------------------------------------------------------------
 
 /**
- * Build the resource-server audience URI for a given workspace's MCP
- * endpoint. The audience claim on issued JWTs must match what the
- * resource server advertises here, otherwise `verifyAccessToken` in
- * the hosted MCP path returns a `bad audience` error and the client
- * sees a 401 with no actionable diagnostic.
+ * Build the resource-server audience URI for the hosted MCP endpoint.
+ * One audience per *region* — not per workspace — because:
  *
- * Resolution priority:
+ *   - The MCP authorization spec lets the resource server advertise a
+ *     single resource that scopes the JWT's `aud` claim. Per-workspace
+ *     audiences would require either (a) RFC 8707 with workspace ids
+ *     pre-populated in the issuer's `validAudiences` (impossible —
+ *     workspace ids are dynamic), or (b) a wildcard audience accept
+ *     scheme that `oauthProvider` doesn't support today.
+ *   - Workspace isolation is enforced one layer up via the custom
+ *     `ATLAS_OAUTH_WORKSPACE_CLAIM`: `verifyMcpBearer` checks the path
+ *     `{workspace_id}` matches the JWT claim. A leaked region-scoped
+ *     token still can't pivot to a different workspace.
+ *
+ * Three sites must derive the same value:
+ *   - `well-known.ts` (here) — advertised in the protected-resource doc
+ *   - `hosted.ts:resourceAudience()` — passed to `verifyAccessToken`
+ *   - `server.ts:resolveOAuthValidAudiences()` — added to the issuer's
+ *     `validAudiences` allow-list so the token endpoint accepts it
+ *
+ * Resolution priority is identical across all three:
  *   1. ATLAS_PUBLIC_API_URL (per-region API host, e.g.
  *      `https://api.useatlas.dev` or `https://api-eu.useatlas.dev`)
  *   2. BETTER_AUTH_URL (the auth server's own base — same as #1 in
@@ -61,13 +75,13 @@ const log = createLogger("well-known");
  *   3. The request's URL origin — last-resort fallback for local dev
  *      where neither env var is set.
  */
-function buildResourceUri(req: Request, workspaceId: string): string {
+function buildResourceUri(req: Request): string {
   const base =
     process.env.ATLAS_PUBLIC_API_URL?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     new URL(req.url).origin;
   const trimmed = base.replace(/\/+$/, "");
-  return `${trimmed}/mcp/${workspaceId}`;
+  return `${trimmed}/mcp`;
 }
 
 /**
@@ -90,38 +104,56 @@ function buildAuthServerUri(req: Request): string {
 
 export const wellKnown = new Hono();
 
+interface OAuthHelpers {
+  auth: Awaited<ReturnType<typeof import("@atlas/api/lib/auth/server").getAuthInstance>>;
+  oauthProviderAuthServerMetadata: typeof import("@better-auth/oauth-provider").oauthProviderAuthServerMetadata;
+  oauthProviderOpenIdConfigMetadata: typeof import("@better-auth/oauth-provider").oauthProviderOpenIdConfigMetadata;
+  oauthProviderResourceClient: typeof import("@better-auth/oauth-provider/resource-client").oauthProviderResourceClient;
+}
+
 /**
- * Lazy-load the auth instance + oauth-provider helpers. Both depend on
- * the better-auth singleton being constructed, which only happens in
- * managed-auth mode. Returning null here lets the route surface a 404
- * for self-hosted-no-auth deployments instead of crashing.
+ * Tagged outcome for the helper-load step. Three cases the route can
+ * map to distinct responses:
+ *
+ *   - `managed` — `detectAuthMode() === "managed"` and helpers loaded.
+ *     Serve the metadata.
+ *   - `not-managed` — `detectAuthMode()` is anything else (none, byot,
+ *     simple-key). The OAuth provider doesn't run there, so we 404
+ *     without leaking that managed mode is unconfigured.
+ *   - `load-failed` — managed auth IS configured but the helpers
+ *     couldn't be loaded (missing `@better-auth/oauth-provider`,
+ *     getAuthInstance crashed, etc.). Return 503 with a `requestId`
+ *     and the underlying reason. This is a server outage, not a
+ *     client problem; collapsing it to 404 (the prior behavior) hid
+ *     real boot failures behind an irrelevant copy.
  */
-async function loadAuthAndHelpers(): Promise<
-  | {
-      auth: Awaited<ReturnType<typeof import("@atlas/api/lib/auth/server").getAuthInstance>>;
-      oauthProviderAuthServerMetadata: typeof import("@better-auth/oauth-provider").oauthProviderAuthServerMetadata;
-      oauthProviderOpenIdConfigMetadata: typeof import("@better-auth/oauth-provider").oauthProviderOpenIdConfigMetadata;
-      oauthProviderResourceClient: typeof import("@better-auth/oauth-provider/resource-client").oauthProviderResourceClient;
-    }
-  | null
-> {
-  if (detectAuthMode() !== "managed") return null;
+type HelpersOutcome =
+  | { kind: "managed"; helpers: OAuthHelpers }
+  | { kind: "not-managed" }
+  | { kind: "load-failed"; reason: string };
+
+async function loadAuthAndHelpers(): Promise<HelpersOutcome> {
+  if (detectAuthMode() !== "managed") return { kind: "not-managed" };
   try {
     const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
     const oauthProvider = await import("@better-auth/oauth-provider");
     const resourceClient = await import("@better-auth/oauth-provider/resource-client");
     return {
-      auth: getAuthInstance(),
-      oauthProviderAuthServerMetadata: oauthProvider.oauthProviderAuthServerMetadata,
-      oauthProviderOpenIdConfigMetadata: oauthProvider.oauthProviderOpenIdConfigMetadata,
-      oauthProviderResourceClient: resourceClient.oauthProviderResourceClient,
+      kind: "managed",
+      helpers: {
+        auth: getAuthInstance(),
+        oauthProviderAuthServerMetadata: oauthProvider.oauthProviderAuthServerMetadata,
+        oauthProviderOpenIdConfigMetadata: oauthProvider.oauthProviderOpenIdConfigMetadata,
+        oauthProviderResourceClient: resourceClient.oauthProviderResourceClient,
+      },
     };
   } catch (err) {
+    const reason = errorMessage(err);
     log.error(
-      { err: errorMessage(err) },
+      { err: reason },
       "Failed to load OAuth metadata helpers — well-known endpoints will 503",
     );
-    return null;
+    return { kind: "load-failed", reason };
   }
 }
 
@@ -182,6 +214,37 @@ function notManagedResponse(): Response {
   );
 }
 
+/**
+ * 503 response for the `load-failed` outcome of `loadAuthAndHelpers`.
+ * Distinct from `notManagedResponse` because the failure mode is
+ * "managed auth is configured but the OAuth machinery did not boot",
+ * not "this deployment is non-managed". Carries a `requestId` so a
+ * customer escalation can be correlated to a log line.
+ */
+function loadFailedResponse(requestId: string, reason: string): Response {
+  return new Response(
+    JSON.stringify({
+      error: "metadata_unavailable",
+      message:
+        "OAuth metadata helpers failed to load. Check server logs and the @better-auth/oauth-provider install.",
+      reason,
+      requestId,
+    }),
+    {
+      status: 503,
+      headers: METADATA_HEADERS,
+    },
+  );
+}
+
+/** Surface a metadata-generation failure with a correlatable requestId. */
+function metadataUnavailableResponse(requestId: string): Response {
+  return new Response(
+    JSON.stringify({ error: "metadata_unavailable", requestId }),
+    { status: 503, headers: METADATA_HEADERS },
+  );
+}
+
 // The Better Auth metadata helpers each declare a structural generic
 // constraint requiring the auth instance's `api` to expose plugin-
 // extended methods (e.g. `getOAuthServerConfig`, `getOpenIdConfig`).
@@ -202,23 +265,24 @@ type AuthForOidc = Parameters<
 // RFC 8414. Path-insertion form: the issuer's path (`/api/auth`) is
 // appended *after* the well-known segment.
 wellKnown.get("/oauth-authorization-server/api/auth", async (c) => {
-  const helpers = await loadAuthAndHelpers();
-  if (!helpers) return notManagedResponse();
+  const requestId = crypto.randomUUID();
+  const outcome = await loadAuthAndHelpers();
+  if (outcome.kind === "not-managed") return notManagedResponse();
+  if (outcome.kind === "load-failed") {
+    return loadFailedResponse(requestId, outcome.reason);
+  }
   try {
-    const handler = helpers.oauthProviderAuthServerMetadata(
-      helpers.auth as unknown as AuthForHelper,
+    const handler = outcome.helpers.oauthProviderAuthServerMetadata(
+      outcome.helpers.auth as unknown as AuthForHelper,
       { headers: METADATA_HEADERS },
     );
     return await withMetadataHeaders(await handler(c.req.raw));
   } catch (err) {
     log.error(
-      { err: errorMessage(err) },
+      { err: errorMessage(err), requestId },
       "oauth-authorization-server metadata generation failed",
     );
-    return new Response(
-      JSON.stringify({ error: "metadata_unavailable" }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
-    );
+    return metadataUnavailableResponse(requestId);
   }
 });
 
@@ -226,23 +290,24 @@ wellKnown.get("/oauth-authorization-server/api/auth", async (c) => {
 // OIDC discovery. Path-appending form. Same content as the OAuth
 // metadata above plus OIDC-specific fields.
 wellKnown.get("/openid-configuration/api/auth", async (c) => {
-  const helpers = await loadAuthAndHelpers();
-  if (!helpers) return notManagedResponse();
+  const requestId = crypto.randomUUID();
+  const outcome = await loadAuthAndHelpers();
+  if (outcome.kind === "not-managed") return notManagedResponse();
+  if (outcome.kind === "load-failed") {
+    return loadFailedResponse(requestId, outcome.reason);
+  }
   try {
-    const handler = helpers.oauthProviderOpenIdConfigMetadata(
-      helpers.auth as unknown as AuthForOidc,
+    const handler = outcome.helpers.oauthProviderOpenIdConfigMetadata(
+      outcome.helpers.auth as unknown as AuthForOidc,
       { headers: METADATA_HEADERS },
     );
     return await withMetadataHeaders(await handler(c.req.raw));
   } catch (err) {
     log.error(
-      { err: errorMessage(err) },
+      { err: errorMessage(err), requestId },
       "openid-configuration metadata generation failed",
     );
-    return new Response(
-      JSON.stringify({ error: "metadata_unavailable" }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
-    );
+    return metadataUnavailableResponse(requestId);
   }
 });
 
@@ -256,13 +321,17 @@ wellKnown.get("/openid-configuration/api/auth", async (c) => {
 // returned `resource` URI exactly. `bearer_methods_supported: ["header"]`
 // reflects what the hosted MCP path accepts (no body / query bearers).
 wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
-  const helpers = await loadAuthAndHelpers();
-  if (!helpers) return notManagedResponse();
+  const requestId = crypto.randomUUID();
+  const outcome = await loadAuthAndHelpers();
+  if (outcome.kind === "not-managed") return notManagedResponse();
+  if (outcome.kind === "load-failed") {
+    return loadFailedResponse(requestId, outcome.reason);
+  }
 
   const workspaceId = c.req.param("workspace_id");
   if (!workspaceId) {
     return new Response(
-      JSON.stringify({ error: "bad_request", message: "Missing workspace_id" }),
+      JSON.stringify({ error: "bad_request", message: "Missing workspace_id", requestId }),
       { status: 400, headers: { "Content-Type": "application/json" } },
     );
   }
@@ -271,14 +340,21 @@ wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
     // Same structural-cast pattern as the auth-server / openid handlers
     // above — the resource client's generic ties to the plugin-extended
     // Auth shape that we erase at the singleton boundary.
-    const client = helpers.oauthProviderResourceClient(
-      helpers.auth as unknown as Parameters<
-        typeof helpers.oauthProviderResourceClient
+    const client = outcome.helpers.oauthProviderResourceClient(
+      outcome.helpers.auth as unknown as Parameters<
+        typeof outcome.helpers.oauthProviderResourceClient
       >[0],
     );
+    // The resource is region-scoped (one audience per API region), not
+    // workspace-scoped. Workspace isolation is enforced at the verifier
+    // via the `ATLAS_OAUTH_WORKSPACE_CLAIM` custom claim (see
+    // `buildResourceUri` doc + hosted.ts). The path still segments by
+    // `{workspace_id}` so a future per-workspace metadata extension
+    // (e.g. policy URLs, contact info) has somewhere to land without
+    // breaking clients hitting the canonical region resource.
     const metadata = await client.getActions().getProtectedResourceMetadata(
       {
-        resource: buildResourceUri(c.req.raw, workspaceId),
+        resource: buildResourceUri(c.req.raw),
         authorization_servers: [buildAuthServerUri(c.req.raw)],
         bearer_methods_supported: ["header"],
         scopes_supported: ["mcp:read", "mcp:write"],
@@ -295,13 +371,10 @@ wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
     });
   } catch (err) {
     log.error(
-      { err: errorMessage(err), workspaceId },
+      { err: errorMessage(err), workspaceId, requestId },
       "oauth-protected-resource metadata generation failed",
     );
-    return new Response(
-      JSON.stringify({ error: "metadata_unavailable" }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
-    );
+    return metadataUnavailableResponse(requestId);
   }
 });
 

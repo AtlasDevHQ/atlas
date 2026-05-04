@@ -15,19 +15,48 @@ import {
 } from "../server";
 
 describe("resolveOAuthValidAudiences", () => {
-  it("falls back to BETTER_AUTH_URL when ATLAS_OAUTH_VALID_AUDIENCES is unset", () => {
+  it("appends `/mcp` to the BETTER_AUTH_URL fallback so issuer == verifier audience", () => {
+    // Critical invariant: the resource server (well-known.ts) advertises
+    // `<base>/mcp` and the verifier (hosted.ts) compares against the
+    // same string. Without the suffix on the issuer side, every
+    // RFC-8707 token request would fail `requested resource invalid`
+    // and every token issued without `resource=` would still fail at
+    // the verifier with audience mismatch.
     expect(
       resolveOAuthValidAudiences({
         BETTER_AUTH_URL: "https://api.example.test",
       } as NodeJS.ProcessEnv),
-    ).toEqual(["https://api.example.test"]);
+    ).toEqual(["https://api.example.test/mcp"]);
+  });
+
+  it("prefers ATLAS_PUBLIC_API_URL over BETTER_AUTH_URL on the suffixed fallback", () => {
+    // Mirrors the priority chain in well-known.ts and hosted.ts so all
+    // three sites converge on the same audience in a multi-region
+    // deploy where BETTER_AUTH_URL points at a global auth host but
+    // each region runs a different MCP resource server.
+    expect(
+      resolveOAuthValidAudiences({
+        ATLAS_PUBLIC_API_URL: "https://api-eu.useatlas.dev",
+        BETTER_AUTH_URL: "https://api.useatlas.dev",
+      } as NodeJS.ProcessEnv),
+    ).toEqual(["https://api-eu.useatlas.dev/mcp"]);
+  });
+
+  it("strips trailing slashes from the base before suffixing", () => {
+    expect(
+      resolveOAuthValidAudiences({
+        BETTER_AUTH_URL: "https://api.example.test/",
+      } as NodeJS.ProcessEnv),
+    ).toEqual(["https://api.example.test/mcp"]);
   });
 
   it("returns an empty list when neither env var is set", () => {
     expect(resolveOAuthValidAudiences({} as NodeJS.ProcessEnv)).toEqual([]);
   });
 
-  it("parses a comma-separated list, trimming whitespace and dropping empties", () => {
+  it("parses a comma-separated explicit list verbatim — no suffix appended", () => {
+    // When the operator supplies the list explicitly they may include
+    // non-MCP audiences or pre-suffixed values; we don't second-guess.
     expect(
       resolveOAuthValidAudiences({
         ATLAS_OAUTH_VALID_AUDIENCES:
@@ -49,13 +78,13 @@ describe("resolveOAuthValidAudiences", () => {
     ).toEqual(["https://chosen.example"]);
   });
 
-  it("treats a whitespace-only override as 'unset' and falls back", () => {
+  it("treats a whitespace-only override as 'unset' and falls back to the suffixed default", () => {
     expect(
       resolveOAuthValidAudiences({
         ATLAS_OAUTH_VALID_AUDIENCES: "   ",
         BETTER_AUTH_URL: "https://api.example.test",
       } as NodeJS.ProcessEnv),
-    ).toEqual(["https://api.example.test"]);
+    ).toEqual(["https://api.example.test/mcp"]);
   });
 });
 

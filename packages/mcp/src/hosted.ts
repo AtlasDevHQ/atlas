@@ -70,6 +70,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
+import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 import { createAtlasMcpServer } from "./server.js";
 
 const log = createLogger("mcp-hosted");
@@ -126,11 +127,12 @@ export async function _resetHostedSessions(): Promise<void> {
 
 // ── OAuth 2.1 verification ─────────────────────────────────────────
 //
-// Custom-claim key for the authenticated workspace. Set on every issued
-// access token by `customAccessTokenClaims` in server.ts. Stored as a
-// URN-shaped string so it cannot collide with future standard JWT claims
-// — Atlas-namespaced custom claims should always look like this.
-const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
+// `ATLAS_OAUTH_WORKSPACE_CLAIM` is the URN-shaped custom claim key
+// stamped onto every workspace-bound access token by
+// `customAccessTokenClaims` in server.ts. Imported from the shared
+// `oauth-claims.ts` module so production issuance, MCP verification,
+// and the test fixture all read one literal — drift would silently
+// break every token. See the module's docstring for the rationale.
 
 /**
  * Required scopes for any MCP request. Today every shipping MCP tool
@@ -175,6 +177,7 @@ function jwksUrl(req: Request): string {
 }
 
 interface VerifiedBearer {
+  readonly kind: "ok";
   readonly user: AtlasUser;
   readonly orgId: string;
   readonly clientId: string;
@@ -183,32 +186,102 @@ interface VerifiedBearer {
 }
 
 interface BearerFailure {
-  readonly status: 401 | 403;
+  readonly kind: "fail";
+  readonly status: 401 | 403 | 503;
   readonly body: {
     error: string;
     message: string;
     requestId: string;
+    /** RFC 6750 `scope` parameter for `WWW-Authenticate` on insufficient_scope. */
+    scope?: string;
   };
+  /**
+   * Whether to advertise the protected-resource metadata pointer in
+   * the response. We only emit it on auth-challenge failures (401 from
+   * a missing or invalid bearer) — RFC 9728 §3.3. Suppressing on:
+   *   - insufficient_scope (403 — the client has a valid bearer, just
+   *     not enough scope; pointing at metadata invites a useless retry)
+   *   - structurally-malformed claim cases (`missing_workspace_claim`,
+   *     `missing_subject`, `missing_client_id` — the token verified but
+   *     was mis-issued; sending discovery would mislead a client into
+   *     re-running DCR for a server config bug)
+   *   - 503 JWKS / auth-server outages (the server's auth machinery is
+   *     down; the resource-metadata document is also down)
+   */
+  readonly emitChallengeHeader: boolean;
+}
+
+type BearerOutcome = VerifiedBearer | BearerFailure;
+
+/**
+ * Type guard for `better-call`'s `APIError` (the class `verifyAccessToken`
+ * throws for spec-defined failures). We don't `import { APIError }` to
+ * avoid pinning a transitive dependency at our static-import surface;
+ * the runtime shape (`name === "APIError"` + numeric `statusCode`) is
+ * stable across `better-call` versions and is what we need to branch on.
+ */
+function isApiError(
+  err: unknown,
+): err is Error & { statusCode: number; status: string; body?: { message?: string } } {
+  return (
+    err instanceof Error &&
+    err.name === "APIError" &&
+    typeof (err as { statusCode?: unknown }).statusCode === "number"
+  );
+}
+
+/**
+ * Detect the JWKS-infrastructure error class. `better-auth/oauth2` throws
+ * a plain `Error` with one of these prefixes when the JWKS endpoint is
+ * unreachable, returns malformed JSON, or doesn't have the `kid` we
+ * need. These are server-side outages, not client errors — they must
+ * surface as 503 so a JWKS hiccup doesn't look like a flood of bad
+ * tokens (which would otherwise drown the audit log and confuse
+ * support-tier triage).
+ */
+function isJwksError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    err.message.startsWith("Jwks failed:") ||
+    err.message === "No jwks found" ||
+    err.message === "Missing jwt kid"
+  );
 }
 
 /**
  * Extract + verify the bearer. Returns either a verified identity
- * envelope or a structured failure for the route to surface.
+ * envelope (`kind: "ok"`) or a structured failure (`kind: "fail"`). The
+ * `kind` discriminator is load-bearing at this security boundary —
+ * structural narrowing via `"status" in verified` would silently break
+ * if `VerifiedBearer` ever grew a `status` field, so we tag explicitly.
  *
- * `verifyAccessToken` failures all collapse to 401 here. The route
- * adds 403 separately when the claim's workspace_id mismatches the
- * URL's `{workspace_id}` — that's a different failure ("you have a
- * valid token, just not for this URL") and the wire shape is the
- * MCP spec's `WWW-Authenticate` 401 vs an opaque 403.
+ * Failure classes:
+ *   - **401** — bearer absent/empty (`missing_bearer`), JWT signature
+ *     or expiry invalid (`invalid_bearer`), token verified but missing
+ *     a required claim (`missing_workspace_claim`, `missing_subject`,
+ *     `missing_client_id`). The first two emit a `WWW-Authenticate`
+ *     resource-metadata pointer per RFC 9728; the structural-claim
+ *     failures suppress it (the bearer was issued, just incorrectly —
+ *     re-running DCR won't help).
+ *   - **403** — token verified but missing `mcp:read` scope
+ *     (`insufficient_scope`). RFC 6750 §3.1: 403 with
+ *     `WWW-Authenticate: Bearer scope="mcp:read"`.
+ *   - **503** — JWKS endpoint outage or auth-server-side
+ *     misconfiguration (`auth_unavailable`). The token MIGHT be valid;
+ *     we can't tell. Surfacing as 503 lets clients retry rather than
+ *     re-running DCR, and pages operators on Sentry for what is
+ *     genuinely a server outage.
  */
 async function verifyMcpBearer(
   req: Request,
   requestId: string,
-): Promise<VerifiedBearer | BearerFailure> {
+): Promise<BearerOutcome> {
   const auth = req.headers.get("authorization");
   if (!auth?.toLowerCase().startsWith("bearer ")) {
     return {
+      kind: "fail",
       status: 401,
+      emitChallengeHeader: true,
       body: {
         error: "missing_bearer",
         message:
@@ -220,7 +293,9 @@ async function verifyMcpBearer(
   const token = auth.slice("bearer ".length).trim();
   if (!token) {
     return {
+      kind: "fail",
       status: 401,
+      emitChallengeHeader: true,
       body: {
         error: "missing_bearer",
         message: "Bearer token is empty.",
@@ -229,8 +304,9 @@ async function verifyMcpBearer(
     };
   }
 
+  let payload: Awaited<ReturnType<typeof verifyAccessToken>>;
   try {
-    const payload = await verifyAccessToken(token, {
+    payload = await verifyAccessToken(token, {
       verifyOptions: {
         audience: resourceAudience(req),
         issuer: tokenIssuer(req),
@@ -238,78 +314,157 @@ async function verifyMcpBearer(
       scopes: [...REQUIRED_SCOPES],
       jwksUrl: jwksUrl(req),
     });
-
-    // Extract the workspace claim; the route enforces path/claim
-    // match, so a missing claim is unauthenticated (401) rather than
-    // forbidden — the token was issued under a session with no active
-    // org, which is a misconfiguration on the issuer side.
-    const orgIdRaw = (payload as Record<string, unknown>)[WORKSPACE_CLAIM];
-    if (typeof orgIdRaw !== "string" || orgIdRaw.length === 0) {
-      log.warn(
-        { requestId, sub: typeof payload.sub === "string" ? payload.sub : null },
-        "MCP bearer is valid but carries no workspace claim — token issued without an active organization",
+  } catch (err) {
+    // JWKS infrastructure failures → 503. Logging at error so the
+    // operator paging path fires; this is genuinely "auth server side
+    // is unavailable", not client error.
+    if (isJwksError(err)) {
+      log.error(
+        { requestId, err: err instanceof Error ? err.message : String(err) },
+        "MCP bearer verification failed: JWKS infrastructure unavailable",
       );
       return {
-        status: 401,
+        kind: "fail",
+        status: 503,
+        emitChallengeHeader: false,
         body: {
-          error: "missing_workspace_claim",
+          error: "auth_unavailable",
           message:
-            "Access token does not carry a workspace claim. Re-authenticate after selecting a workspace.",
+            "Authentication service is temporarily unavailable. Retry shortly.",
           requestId,
         },
       };
     }
-
-    const sub = typeof payload.sub === "string" ? payload.sub : null;
-    const azp = (payload as { azp?: unknown }).azp;
-    const clientId = typeof azp === "string" ? azp : "unknown_client";
-
-    if (!sub) {
-      // A JWT without `sub` cannot be tied to an actor. Refuse to
-      // proceed — every audit row and every per-tool authorization
-      // check downstream needs an actor id.
+    // Insufficient scope is structurally a 403 (RFC 6750 §3.1) — the
+    // client authenticated successfully, they just don't have the
+    // capability. Returning 401 here would tell the client to refresh
+    // their token, which won't fix the missing scope. Returning 403
+    // with the scope hint lets them re-prompt the user for consent.
+    if (isApiError(err) && err.statusCode === 403) {
+      log.warn(
+        { requestId, err: err.body?.message ?? err.message },
+        "MCP bearer verification failed: insufficient scope",
+      );
       return {
-        status: 401,
+        kind: "fail",
+        status: 403,
+        emitChallengeHeader: false,
         body: {
-          error: "missing_subject",
-          message: "Access token does not carry a subject claim.",
+          error: "insufficient_scope",
+          message:
+            "Access token does not carry the required mcp:read scope.",
+          scope: REQUIRED_SCOPES.join(" "),
           requestId,
         },
       };
     }
-
-    const user = createAtlasUser(sub, "managed", sub, {
-      activeOrganizationId: orgIdRaw,
-      claims: { ...payload, [WORKSPACE_CLAIM]: orgIdRaw },
-    });
-
-    const scopeRaw = (payload as { scope?: unknown }).scope;
-    const scopes =
-      typeof scopeRaw === "string" ? scopeRaw.split(/\s+/).filter(Boolean) : [];
-
-    return {
-      user,
-      orgId: orgIdRaw,
-      clientId,
-      tokenJti: typeof payload.jti === "string" ? payload.jti : null,
-      scopes,
-    };
-  } catch (err) {
+    // Everything else (UNAUTHORIZED — expired / invalid signature /
+    // bad audience / bad issuer / no payload, plus any unexpected
+    // throw) collapses to 401 invalid_bearer. The 401 is a genuine
+    // auth challenge; the resource_metadata pointer helps the client
+    // re-discover the auth server.
     const message = err instanceof Error ? err.message : String(err);
     log.warn(
       { requestId, err: message },
-      "MCP bearer verification failed — returning 401",
+      "MCP bearer verification failed: returning 401 invalid_bearer",
     );
     return {
+      kind: "fail",
       status: 401,
+      emitChallengeHeader: true,
       body: {
         error: "invalid_bearer",
         message:
-          "Access token did not verify. Check audience, issuer, scopes, and expiry.",
+          "Access token did not verify. Check audience, issuer, and expiry.",
         requestId,
       },
     };
   }
+
+  // verifyAccessToken returned a payload — perform the structural
+  // claim checks. Failures here suppress the WWW-Authenticate header:
+  // the bearer was issued, just incorrectly. Re-running DCR / refresh
+  // wouldn't help; this is an issuer-side bug.
+  const orgIdRaw = (payload as Record<string, unknown>)[ATLAS_OAUTH_WORKSPACE_CLAIM];
+  if (typeof orgIdRaw !== "string" || orgIdRaw.length === 0) {
+    log.warn(
+      { requestId, sub: typeof payload.sub === "string" ? payload.sub : null },
+      "MCP bearer is valid but carries no workspace claim — token issued without an active organization",
+    );
+    return {
+      kind: "fail",
+      status: 401,
+      emitChallengeHeader: false,
+      body: {
+        error: "missing_workspace_claim",
+        message:
+          "Access token does not carry a workspace claim. Re-authenticate after selecting a workspace.",
+        requestId,
+      },
+    };
+  }
+
+  const sub = typeof payload.sub === "string" ? payload.sub : null;
+  if (!sub) {
+    // A JWT without `sub` cannot be tied to an actor. Refuse — every
+    // audit row and every per-tool authorization check downstream
+    // needs an actor id.
+    return {
+      kind: "fail",
+      status: 401,
+      emitChallengeHeader: false,
+      body: {
+        error: "missing_subject",
+        message: "Access token does not carry a subject claim.",
+        requestId,
+      },
+    };
+  }
+
+  // `azp` (authorized party / client_id) is set by `oauthProvider` on
+  // every issued token. A missing `azp` means either a bypass or an
+  // issuer config drift; refuse rather than poison the audit log with
+  // a literal `"unknown_client"` string a future forensic query
+  // (`WHERE client_id = ?`) couldn't tell apart from a deliberate
+  // value. Logging at warn so a single bad token surfaces, but
+  // operators paging happens via the issuer-side missing-claim
+  // monitor, not this 401.
+  const azp = (payload as { azp?: unknown }).azp;
+  if (typeof azp !== "string" || azp.length === 0) {
+    log.warn(
+      { requestId, sub },
+      "MCP bearer verified but missing azp claim — token issued without a client identity",
+    );
+    return {
+      kind: "fail",
+      status: 401,
+      emitChallengeHeader: false,
+      body: {
+        error: "missing_client_id",
+        message: "Access token does not carry an authorized-party claim.",
+        requestId,
+      },
+    };
+  }
+  const clientId = azp;
+
+  const user = createAtlasUser(sub, "managed", sub, {
+    activeOrganizationId: orgIdRaw,
+    claims: { ...payload, [ATLAS_OAUTH_WORKSPACE_CLAIM]: orgIdRaw },
+  });
+
+  const scopeRaw = (payload as { scope?: unknown }).scope;
+  const scopes =
+    typeof scopeRaw === "string" ? scopeRaw.split(/\s+/).filter(Boolean) : [];
+
+  return {
+    kind: "ok",
+    user,
+    orgId: orgIdRaw,
+    clientId,
+    tokenJti: typeof payload.jti === "string" ? payload.jti : null,
+    scopes,
+  };
 }
 
 // ── Residency check (fail-closed) ──────────────────────────────────
@@ -521,6 +676,7 @@ async function dispatchNewSession(
         registered = true;
         emitSessionStartAudit(
           {
+            kind: "ok",
             user: ctx.user,
             orgId: ctx.orgId,
             clientId: ctx.clientId,
@@ -612,15 +768,25 @@ const HANDLED_METHODS = ["POST", "GET", "DELETE"];
  * metadata document. Per RFC 9728 + the MCP authorization spec, a
  * 401 from the resource server SHOULD include this header so the
  * client can discover the auth server without out-of-band config.
+ *
+ * The optional `scope` parameter is appended as RFC 6750 §3 directs
+ * for `insufficient_scope` responses (currently a 403 path; the route
+ * does not actually emit this header on 403 today, but the parameter
+ * keeps the helper composable should the contract change).
  */
-function wwwAuthenticateHeader(req: Request, workspaceId: string): string {
+function wwwAuthenticateHeader(
+  req: Request,
+  workspaceId: string,
+  scope?: string,
+): string {
   const base =
     process.env.ATLAS_PUBLIC_API_URL?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     new URL(req.url).origin;
   const trimmed = base.replace(/\/+$/, "");
   const resourceMetadata = `${trimmed}/.well-known/oauth-protected-resource/mcp/${workspaceId}`;
-  return `Bearer realm="Atlas MCP", resource_metadata="${resourceMetadata}"`;
+  const scopeAttr = scope ? `, scope="${scope}"` : "";
+  return `Bearer realm="Atlas MCP", resource_metadata="${resourceMetadata}"${scopeAttr}`;
 }
 
 export function createHostedMcpRouter(): Hono {
@@ -631,10 +797,19 @@ export function createHostedMcpRouter(): Hono {
     const pathWorkspaceId = c.req.param("workspaceId");
 
     const verified = await verifyMcpBearer(c.req.raw, requestId);
-    if ("status" in verified) {
-      const headers: Record<string, string> = {
-        "WWW-Authenticate": wwwAuthenticateHeader(c.req.raw, pathWorkspaceId),
-      };
+    if (verified.kind === "fail") {
+      // Only emit `WWW-Authenticate` for failures that are genuine
+      // auth challenges (RFC 6750 / RFC 9728): missing or invalid
+      // bearer. Structural-claim failures and 503s suppress the
+      // header — see `BearerFailure.emitChallengeHeader`'s docstring.
+      const headers: Record<string, string> = {};
+      if (verified.emitChallengeHeader) {
+        headers["WWW-Authenticate"] = wwwAuthenticateHeader(
+          c.req.raw,
+          pathWorkspaceId,
+          verified.body.scope,
+        );
+      }
       return c.json(verified.body, verified.status, headers);
     }
 

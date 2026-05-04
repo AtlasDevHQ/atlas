@@ -149,6 +149,12 @@ export default function ConsentPage() {
     setSubmitting(accept ? "accept" : "deny");
     setError(null);
     try {
+      // Network-level errors (DNS, offline, CORS preflight) and
+      // server-side rejections both land in this catch — distinguish
+      // so the user sees actionable copy. `TypeError: Failed to fetch`
+      // is the de-facto cross-runtime signal for "couldn't reach the
+      // origin"; everything else is a server-side condition we
+      // surface verbatim.
       // Better Auth's oauth2.consent() automatically threads the signed
       // `oauth_query` back to the server via the `oauthProviderClient`
       // fetch hook. The server completes the authorization flow and
@@ -185,7 +191,13 @@ export default function ConsentPage() {
       }
       window.location.href = redirectURI;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Consent failed.");
+      if (err instanceof TypeError) {
+        setError(
+          "Couldn't reach Atlas. Check your network connection and try again.",
+        );
+      } else {
+        setError(err instanceof Error ? err.message : "Consent failed.");
+      }
     } finally {
       setSubmitting(null);
     }
@@ -310,11 +322,8 @@ export default function ConsentPage() {
 
       <p className="mt-4 max-w-sm text-center text-xs text-muted-foreground">
         Approving lets this application act on your behalf within the listed
-        scopes only. You can revoke access at any time from{" "}
-        <Link href="/admin/oauth-clients" className="underline hover:text-foreground">
-          OAuth clients
-        </Link>
-        .
+        scopes only. You can revoke access at any time from your workspace
+        settings.
       </p>
     </div>
   );

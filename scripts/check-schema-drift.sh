@@ -16,13 +16,36 @@ set -euo pipefail
 MIGRATIONS_DIR="packages/api/src/lib/db/migrations"
 SCHEMA_FILE="packages/api/src/lib/db/schema.ts"
 
+# Fail loudly if the migrations directory disappears (rename, move, or
+# typo here). Silencing stderr on the greps below would otherwise let
+# the checker pass with an empty SQL_TABLES set, masking real drift.
+if [ ! -d "$MIGRATIONS_DIR" ]; then
+  echo "::error::migrations directory not found at $MIGRATIONS_DIR" >&2
+  exit 2
+fi
+
+# Strip SQL line comments before extracting CREATE / DROP statements.
+# Migrations include long prose headers that frequently mention table
+# names — `-- DROP TABLE foo` in a comment would otherwise subtract
+# `foo` from the expected set and silently mask drift on a critical
+# table. We keep block comments (`/* … */`) intact for two reasons:
+#   1. our migrations don't use them, so they're a no-op today
+#   2. handling them robustly requires an actual SQL parser, and bash
+#      isn't the place. If we ever start using block comments, switch
+#      to a node-sql-parser script.
+STRIP_COMMENTS='sed -E "s/--.*$//"'
+
 # Tables created by SQL: CREATE TABLE IF NOT EXISTS <name>
-CREATED=$(grep -ohP 'CREATE TABLE IF NOT EXISTS \K\w+' "$MIGRATIONS_DIR"/*.sql | sort -u)
+CREATED=$(eval "$STRIP_COMMENTS \"$MIGRATIONS_DIR\"/*.sql" \
+  | grep -ohP 'CREATE TABLE IF NOT EXISTS \K\w+' \
+  | sort -u)
 
 # Tables dropped by SQL: DROP TABLE [IF EXISTS] <name> [CASCADE]
 # `\K` resets the match start so `\w+` captures only the table name.
 # `|| true` keeps `set -e` happy when no migrations have any DROPs.
-DROPPED=$(grep -ohiP 'DROP TABLE\s+(?:IF\s+EXISTS\s+)?\K\w+' "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort -u || true)
+DROPPED=$(eval "$STRIP_COMMENTS \"$MIGRATIONS_DIR\"/*.sql" \
+  | grep -ohiP 'DROP TABLE\s+(?:IF\s+EXISTS\s+)?\K\w+' \
+  | sort -u || true)
 
 # Final expected set = created MINUS dropped.
 SQL_TABLES=$(comm -23 <(echo "$CREATED") <(echo "$DROPPED"))

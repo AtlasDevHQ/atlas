@@ -1,9 +1,15 @@
 /**
- * Tests for the hosted MCP Hono router.
+ * Tests for the hosted MCP Hono router (#2024 PR C).
  *
- * Mocks the bearer lookup, region lookup, audit emitter, and config so
- * the test exercises the route's branching without standing up the
- * internal DB or pulling in real plugin/SQL plumbing.
+ * Authentication path: OAuth 2.1 access tokens verified via
+ * `verifyAccessToken` from `better-auth/oauth2`. We mock that helper so
+ * the test exercises the route's branching without standing up an OAuth
+ * server, JWKS endpoint, or real Better Auth instance.
+ *
+ * The mock returns a synthetic JWT payload shape that mirrors what
+ * Better Auth's `oauthProvider` emits — the route only reads `sub`,
+ * `jti`, `azp`, `scope`, and the custom workspace claim, so we only
+ * need those fields populated.
  */
 
 import {
@@ -18,8 +24,10 @@ import {
 } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { ResolvedMcpIdentity } from "@atlas/api/lib/auth/mcp-token";
 import type { AdminActionEntry } from "@atlas/api/lib/audit";
+// Import the same constant the production code reads — keeps the
+// fixture from drifting out of sync with the issuer's claim key.
+import { ATLAS_OAUTH_WORKSPACE_CLAIM as WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 
 // ── Module-scope mocks ────────────────────────────────────────────────
 //
@@ -27,29 +35,89 @@ import type { AdminActionEntry } from "@atlas/api/lib/audit";
 // Partial mocks leak via the in-process Bun runner and break unrelated
 // test files with `Export named 'X' not found`.
 
-const mockLookup: Mock<(bearer: string) => Promise<ResolvedMcpIdentity | null>> =
-  mock(async () => null);
+interface FakeJwtPayload {
+  sub: string;
+  jti?: string;
+  azp?: string;
+  scope?: string;
+  aud?: string | string[];
+  iss?: string;
+  exp?: number;
+  iat?: number;
+  [WORKSPACE_CLAIM]?: string;
+}
 
-mock.module("@atlas/api/lib/auth/mcp-token", () => ({
-  lookupMcpTokenByBearer: (bearer: string) => mockLookup(bearer),
-  generateMcpToken: () => ({
-    token: "atl_mcp_aaaaaaaa" + "b".repeat(24),
-    prefix: "atl_mcp_aaaaaaaa",
-    hashHex: "0".repeat(64),
-  }),
-  hashTokenSha256: (s: string) => s,
-  splitTokenPrefix: (s: string) =>
-    s.startsWith("atl_mcp_") && s.length === 40 ? s.slice(0, 16) : null,
-  createMcpToken: async () => {
-    throw new Error("unexpected createMcpToken in hosted test");
+const mockVerifyAccessToken: Mock<
+  (token: string, opts: unknown) => Promise<FakeJwtPayload>
+> = mock(async () => {
+  throw new Error("verifyAccessToken called without a stub");
+});
+
+mock.module("better-auth/oauth2", () => ({
+  verifyAccessToken: (token: string, opts: unknown) =>
+    mockVerifyAccessToken(token, opts),
+  // Other re-exports from better-auth/oauth2 — none read by hosted.ts,
+  // but partial mocks leak across test files so include throw-on-call
+  // stubs for everything we know is exported.
+  authorizationCodeRequest: () => {
+    throw new Error("authorizationCodeRequest called from hosted test");
   },
-  listMcpTokensForOrg: async () => [],
-  revokeMcpToken: async () => ({ revoked: false, alreadyRevokedAt: null }),
-  computeMcpTokenStatus: () => "active",
-  __INTERNAL: {
-    TOKEN_PREFIX: "atl_mcp_",
-    TOKEN_TOTAL_LEN: 40,
-    LAST_USED_TOUCH_INTERVAL_MS: 60_000,
+  clientCredentialsToken: () => {
+    throw new Error("clientCredentialsToken called from hosted test");
+  },
+  clientCredentialsTokenRequest: () => {
+    throw new Error("clientCredentialsTokenRequest called from hosted test");
+  },
+  createAuthorizationCodeRequest: () => {
+    throw new Error("createAuthorizationCodeRequest called from hosted test");
+  },
+  createAuthorizationURL: () => {
+    throw new Error("createAuthorizationURL called from hosted test");
+  },
+  createClientCredentialsTokenRequest: () => {
+    throw new Error("createClientCredentialsTokenRequest called from hosted test");
+  },
+  createRefreshAccessTokenRequest: () => {
+    throw new Error("createRefreshAccessTokenRequest called from hosted test");
+  },
+  decryptOAuthToken: () => {
+    throw new Error("decryptOAuthToken called from hosted test");
+  },
+  generateCodeChallenge: () => {
+    throw new Error("generateCodeChallenge called from hosted test");
+  },
+  generateState: () => {
+    throw new Error("generateState called from hosted test");
+  },
+  getJwks: () => {
+    throw new Error("getJwks called from hosted test");
+  },
+  getOAuth2Tokens: () => {
+    throw new Error("getOAuth2Tokens called from hosted test");
+  },
+  handleOAuthUserInfo: () => {
+    throw new Error("handleOAuthUserInfo called from hosted test");
+  },
+  parseState: () => {
+    throw new Error("parseState called from hosted test");
+  },
+  refreshAccessToken: () => {
+    throw new Error("refreshAccessToken called from hosted test");
+  },
+  refreshAccessTokenRequest: () => {
+    throw new Error("refreshAccessTokenRequest called from hosted test");
+  },
+  setTokenUtil: () => {
+    throw new Error("setTokenUtil called from hosted test");
+  },
+  validateAuthorizationCode: () => {
+    throw new Error("validateAuthorizationCode called from hosted test");
+  },
+  validateToken: () => {
+    throw new Error("validateToken called from hosted test");
+  },
+  verifyJwsAccessToken: () => {
+    throw new Error("verifyJwsAccessToken called from hosted test");
   },
 }));
 
@@ -97,10 +165,8 @@ const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
 
 mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
-    mcp_token: {
-      create: "mcp_token.create",
-      revoke: "mcp_token.revoke",
-      use: "mcp_token.use",
+    mcp_session: {
+      start: "mcp_session.start",
     },
   },
   logAdminAction: (entry: AdminActionEntry) => mockLogAdminAction(entry),
@@ -176,14 +242,15 @@ const { createHostedMcpRouter, _resetHostedSessions, _hostedSessionCount } =
 
 const ORG_A = "org_a";
 const ORG_B = "org_b";
-const TOKEN_ID_A = "tok_a";
-const TOKEN_ID_B = "tok_b";
-
-const BEARER_A = "atl_mcp_aaaaaaaa" + "1".repeat(24);
-const BEARER_B = "atl_mcp_bbbbbbbb" + "2".repeat(24);
+const CLIENT_A = "claude-desktop";
+const CLIENT_B = "cursor";
+const SUB_A = "user_a";
+const SUB_B = "user_b";
+const TOKEN_A = "fake.jwt.token-a";
+const TOKEN_B = "fake.jwt.token-b";
 
 beforeEach(() => {
-  mockLookup.mockReset();
+  mockVerifyAccessToken.mockReset();
   mockApiRegion.mockReset();
   mockWorkspaceRegion.mockReset();
   mockLogAdminAction.mockReset();
@@ -225,35 +292,37 @@ async function startServer() {
   };
 }
 
-function bindBearer(
-  bearer: string,
-  orgId: string,
-  tokenId: string,
+/** Stub `verifyAccessToken` to return a fixed payload for `token`. */
+function bindToken(
+  token: string,
+  payload: Omit<FakeJwtPayload, "sub"> & { sub: string },
 ): void {
-  mockLookup.mockImplementation(async (b) =>
-    b === bearer
-      ? { tokenId, orgId, userId: `u_${tokenId}`, scopes: [] }
-      : null,
-  );
+  mockVerifyAccessToken.mockImplementation(async (incoming) => {
+    if (incoming === token) return payload;
+    throw new Error(`Unknown token in test: ${incoming}`);
+  });
 }
 
-function bindBearerAB(): void {
-  mockLookup.mockImplementation(async (b) => {
-    if (b === BEARER_A)
-      return {
-        tokenId: TOKEN_ID_A,
-        orgId: ORG_A,
-        userId: `u_${TOKEN_ID_A}`,
-        scopes: [],
-      };
-    if (b === BEARER_B)
-      return {
-        tokenId: TOKEN_ID_B,
-        orgId: ORG_B,
-        userId: `u_${TOKEN_ID_B}`,
-        scopes: [],
-      };
-    return null;
+/** Stub two tokens A/B for cross-workspace tests. */
+function bindTokensAB(): void {
+  const payloadA: FakeJwtPayload = {
+    sub: SUB_A,
+    jti: "jti_a",
+    azp: CLIENT_A,
+    scope: "openid mcp:read",
+    [WORKSPACE_CLAIM]: ORG_A,
+  };
+  const payloadB: FakeJwtPayload = {
+    sub: SUB_B,
+    jti: "jti_b",
+    azp: CLIENT_B,
+    scope: "openid mcp:read",
+    [WORKSPACE_CLAIM]: ORG_B,
+  };
+  mockVerifyAccessToken.mockImplementation(async (incoming) => {
+    if (incoming === TOKEN_A) return payloadA;
+    if (incoming === TOKEN_B) return payloadB;
+    throw new Error(`Unknown token in test: ${incoming}`);
   });
 }
 
@@ -270,44 +339,279 @@ describe("hosted MCP — bearer enforcement", () => {
       });
       expect(res.status).toBe(401);
       const body = (await res.json()) as { error: string; requestId: string };
-      expect(body.error).toBe("unauthorized");
+      expect(body.error).toBe("missing_bearer");
       expect(body.requestId).toBeTruthy();
+      // RFC 9728 + MCP spec — 401 must point clients at the resource
+      // metadata so DCR can bootstrap.
+      const wwwAuth = res.headers.get("www-authenticate");
+      expect(wwwAuth).toBeTruthy();
+      expect(wwwAuth).toContain("Bearer");
+      expect(wwwAuth).toContain("resource_metadata=");
     } finally {
       handle.close();
     }
   });
 
-  it("returns 401 when bearer is unknown", async () => {
-    mockLookup.mockImplementation(async () => null);
+  it("returns 401 when verifyAccessToken throws (bad signature / audience / issuer / expired)", async () => {
+    // verifyAccessToken collapses these distinct failure modes into a
+    // single thrown Error / APIError("UNAUTHORIZED"). Our route
+    // uniformly maps them to 401 invalid_bearer (RFC 6750 §3.1) — the
+    // client retries via the discovery doc the WWW-Authenticate header
+    // points at.
+    mockVerifyAccessToken.mockImplementation(async () => {
+      throw new Error("bad signature");
+    });
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${BEARER_A}`,
+          Authorization: `Bearer ${TOKEN_A}`,
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
       expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("invalid_bearer");
+      // RFC 9728 / MCP spec — 401 from the resource server MUST point
+      // clients at the protected-resource metadata so DCR can recover.
+      // The header presence is the contract; specific URL is asserted
+      // in the missing-bearer test above.
+      expect(res.headers.get("www-authenticate")).toContain(
+        "resource_metadata=",
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+  // Parameterized verifyAccessToken-throw cases pin the specific error
+  // shapes Better Auth's `verifyAccessToken` emits. These maintain a
+  // working alarm if a future better-auth bump changes how a specific
+  // failure mode (audience mismatch / issuer mismatch / expiry) gets
+  // surfaced — without these, a regression where audience verification
+  // gets silently dropped in the verify call ships unchallenged.
+  for (const [name, message] of [
+    ["audience mismatch", "unexpected audience"],
+    ["issuer mismatch", "unexpected issuer"],
+    ["expired token", '"exp" claim timestamp check failed'],
+  ] as const) {
+    it(`returns 401 invalid_bearer + WWW-Authenticate when verifyAccessToken throws: ${name}`, async () => {
+      mockVerifyAccessToken.mockImplementation(async () => {
+        throw new Error(message);
+      });
+      const handle = await startServer();
+      try {
+        const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${TOKEN_A}`,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+        });
+        expect(res.status).toBe(401);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe("invalid_bearer");
+        expect(res.headers.get("www-authenticate")).toContain(
+          "resource_metadata=",
+        );
+        expect(
+          auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+        ).toHaveLength(0);
+      } finally {
+        handle.close();
+      }
+    });
+  }
+
+  it("returns 403 insufficient_scope when verifyAccessToken throws APIError(FORBIDDEN, scope)", async () => {
+    // Better Auth's verifyAccessToken throws `APIError("FORBIDDEN",
+    // "invalid scope mcp:read")` when a token authenticates but lacks
+    // a required scope. RFC 6750 §3.1 mandates 403 + the `scope`
+    // attribute on the WWW-Authenticate header — collapsing this to
+    // 401 (the prior catch-all) tells the client to refresh, which
+    // won't add a missing scope.
+    const apiErr = Object.assign(new Error("invalid scope mcp:read"), {
+      name: "APIError",
+      status: "FORBIDDEN",
+      statusCode: 403,
+      body: { message: "invalid scope mcp:read" },
+    });
+    mockVerifyAccessToken.mockImplementation(async () => {
+      throw apiErr;
+    });
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; scope?: string };
+      expect(body.error).toBe("insufficient_scope");
+      expect(body.scope).toBe("mcp:read");
+      // 403 insufficient_scope is NOT an auth challenge — re-running
+      // DCR / refresh wouldn't help. WWW-Authenticate is suppressed.
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 503 auth_unavailable when JWKS is unreachable", async () => {
+    // `Error("Jwks failed: …")` is the better-auth contract for
+    // "couldn't fetch the JWKS doc". This is a server-side outage,
+    // not a client error — flattening it to 401 would mask a JWKS
+    // outage as a flood of attacker-bad-tokens and confuse triage.
+    mockVerifyAccessToken.mockImplementation(async () => {
+      throw new Error("Jwks failed: connection refused");
+    });
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("auth_unavailable");
+      // WWW-Authenticate suppressed — pointing the client at the
+      // metadata document during a JWKS outage would just send them
+      // around the same broken loop.
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 401 missing_workspace_claim WITHOUT WWW-Authenticate when the JWT verified but carries no workspace claim", async () => {
+    // Structurally-bad token: signature/exp/aud all valid but the
+    // issuer didn't stamp the workspace claim. Re-running DCR would
+    // not fix this; the discovery pointer is suppressed.
+    mockVerifyAccessToken.mockImplementation(async () => ({
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid",
+      // No WORKSPACE_CLAIM key.
+    }));
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("missing_workspace_claim");
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 401 missing_subject WITHOUT WWW-Authenticate when JWT carries no sub claim", async () => {
+    mockVerifyAccessToken.mockImplementation(async () => ({
+      sub: "", // empty falsey
+      jti: "jti_a",
+      azp: CLIENT_A,
+      [WORKSPACE_CLAIM]: ORG_A,
+    }));
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("missing_subject");
+      expect(res.headers.get("www-authenticate")).toBeNull();
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 401 missing_client_id when the JWT carries no azp claim — never the audit-poisoning 'unknown_client' fallback", async () => {
+    // Pre-fix this test would have passed silently: the route accepted
+    // the token, fed the audit row a literal "unknown_client" string,
+    // and forensic queries on `clientId` couldn't tell that apart from
+    // a real client legitimately registered as "unknown_client".
+    mockVerifyAccessToken.mockImplementation(async () => ({
+      sub: SUB_A,
+      jti: "jti_a",
+      // no `azp`
+      [WORKSPACE_CLAIM]: ORG_A,
+    }));
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("missing_client_id");
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      // No audit row written under the "unknown_client" literal.
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
     } finally {
       handle.close();
     }
   });
 });
 
-// ── Path/bearer workspace match ───────────────────────────────────────
+// ── Path/claim workspace match ───────────────────────────────────────
 
-describe("hosted MCP — path/bearer workspace match", () => {
-  it("returns 403 — never 404 — when path workspaceId does not match the bearer's org", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+describe("hosted MCP — path/claim workspace match", () => {
+  it("returns 403 — never 404 — when path workspaceId does not match the claim's workspace", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/mcp/${ORG_B}/sse`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${BEARER_A}`,
+          Authorization: `Bearer ${TOKEN_A}`,
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
@@ -315,7 +619,7 @@ describe("hosted MCP — path/bearer workspace match", () => {
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("forbidden");
       expect(
-        auditedEntries.filter((e) => e.actionType === "mcp_token.use"),
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
       handle.close();
@@ -327,7 +631,12 @@ describe("hosted MCP — path/bearer workspace match", () => {
 
 describe("hosted MCP — residency", () => {
   it("returns 421 with correctApiUrl when workspace region differs from this instance", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     mockApiRegion.mockImplementation(() => "us-east");
     mockWorkspaceRegion.mockImplementation(async () => "eu-west");
     __mockedConfig.residency = {
@@ -339,7 +648,7 @@ describe("hosted MCP — residency", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${BEARER_A}`,
+          Authorization: `Bearer ${TOKEN_A}`,
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
@@ -360,7 +669,12 @@ describe("hosted MCP — residency", () => {
   });
 
   it("returns 503 region_unavailable (fail-closed) when the region lookup throws", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     mockApiRegion.mockImplementation(() => "us-east");
     mockWorkspaceRegion.mockImplementation(async () => {
       throw new Error("internal db down");
@@ -371,7 +685,7 @@ describe("hosted MCP — residency", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${BEARER_A}`,
+          Authorization: `Bearer ${TOKEN_A}`,
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
@@ -382,9 +696,8 @@ describe("hosted MCP — residency", () => {
       };
       expect(body.error).toBe("region_unavailable");
       expect(body.requestId).toBeTruthy();
-      // No session was created — no audit row.
       expect(
-        auditedEntries.filter((e) => e.actionType === "mcp_token.use"),
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
       expect(_hostedSessionCount()).toBe(0);
     } finally {
@@ -392,8 +705,13 @@ describe("hosted MCP — residency", () => {
     }
   });
 
-  it("does not emit mcp_token.use when residency check fires 421", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+  it("does not emit mcp_session.start when residency check fires 421", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     mockApiRegion.mockImplementation(() => "us-east");
     mockWorkspaceRegion.mockImplementation(async () => "eu-west");
     const handle = await startServer();
@@ -402,12 +720,12 @@ describe("hosted MCP — residency", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${BEARER_A}`,
+          Authorization: `Bearer ${TOKEN_A}`,
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
       expect(
-        auditedEntries.filter((e) => e.actionType === "mcp_token.use"),
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
       handle.close();
@@ -419,7 +737,12 @@ describe("hosted MCP — residency", () => {
 
 describe("hosted MCP — successful session", () => {
   it("connects an MCP client through the route and lists tools", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     const handle = await startServer();
     try {
       const client = new Client({
@@ -430,7 +753,7 @@ describe("hosted MCP — successful session", () => {
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
         {
           requestInit: {
-            headers: { Authorization: `Bearer ${BEARER_A}` },
+            headers: { Authorization: `Bearer ${TOKEN_A}` },
           },
         },
       );
@@ -449,8 +772,14 @@ describe("hosted MCP — successful session", () => {
     }
   });
 
-  it("emits mcp_token.use exactly once per session — not per JSON-RPC frame", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+  it("emits mcp_session.start exactly once per session — not per JSON-RPC frame", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     mockApiRegion.mockImplementation(() => "us-east");
     const handle = await startServer();
     try {
@@ -462,7 +791,7 @@ describe("hosted MCP — successful session", () => {
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
         {
           requestInit: {
-            headers: { Authorization: `Bearer ${BEARER_A}` },
+            headers: { Authorization: `Bearer ${TOKEN_A}` },
           },
         },
       );
@@ -472,17 +801,26 @@ describe("hosted MCP — successful session", () => {
       await client.listTools();
       await client.listResources();
 
-      const useRows = auditedEntries.filter(
-        (e) => e.actionType === "mcp_token.use",
+      const startRows = auditedEntries.filter(
+        (e) => e.actionType === "mcp_session.start",
       );
-      expect(useRows).toHaveLength(1);
-      expect(useRows[0].targetType).toBe("mcp_token");
-      expect(useRows[0].targetId).toBe(TOKEN_ID_A);
-      const meta = useRows[0].metadata as
-        | { sessionId: string; orgId: string; region?: string }
+      expect(startRows).toHaveLength(1);
+      expect(startRows[0].targetType).toBe("mcp_session");
+      const meta = startRows[0].metadata as
+        | {
+            sessionId: string;
+            orgId: string;
+            clientId: string;
+            tokenJti?: string;
+            region?: string;
+            scopes?: string[];
+          }
         | undefined;
       expect(meta?.orgId).toBe(ORG_A);
+      expect(meta?.clientId).toBe(CLIENT_A);
       expect(meta?.region).toBe("us-east");
+      expect(meta?.tokenJti).toBe("jti_a");
+      expect(meta?.scopes).toEqual(["openid", "mcp:read"]);
       expect(typeof meta?.sessionId).toBe("string");
 
       await client.close();
@@ -491,27 +829,27 @@ describe("hosted MCP — successful session", () => {
     }
   });
 
-  it("isolates sessions across workspaces — distinct audit rows per token", async () => {
-    // The audit row's `targetId` (= tokenId) and `metadata.orgId` come
-    // from the same `factoryCtx` that is passed as `actor` into
-    // `createAtlasMcpServer`. Distinct values per session prove the
-    // bearer-derived identity is threaded through the whole pipeline,
-    // not shared across concurrent sessions.
-    bindBearerAB();
+  it("isolates sessions across workspaces — distinct audit rows per client/workspace", async () => {
+    // The audit row's `metadata.orgId` and `metadata.clientId` come
+    // from the verified JWT payload that is also used to construct
+    // the `actor` for `createAtlasMcpServer`. Distinct values per
+    // session prove the bearer-derived identity is threaded through
+    // the whole pipeline, not shared across concurrent sessions.
+    bindTokensAB();
     const handle = await startServer();
     try {
       const clientA = new Client({ name: "client-a", version: "0.0.1" });
       const transportA = new StreamableHTTPClientTransport(
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
         {
-          requestInit: { headers: { Authorization: `Bearer ${BEARER_A}` } },
+          requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } },
         },
       );
       const clientB = new Client({ name: "client-b", version: "0.0.1" });
       const transportB = new StreamableHTTPClientTransport(
         new URL(`${handle.url}/mcp/${ORG_B}/sse`),
         {
-          requestInit: { headers: { Authorization: `Bearer ${BEARER_B}` } },
+          requestInit: { headers: { Authorization: `Bearer ${TOKEN_B}` } },
         },
       );
 
@@ -520,25 +858,27 @@ describe("hosted MCP — successful session", () => {
 
       expect(_hostedSessionCount()).toBeGreaterThanOrEqual(2);
 
-      const useRows = auditedEntries.filter(
-        (e) => e.actionType === "mcp_token.use",
+      const startRows = auditedEntries.filter(
+        (e) => e.actionType === "mcp_session.start",
       );
-      expect(useRows).toHaveLength(2);
+      expect(startRows).toHaveLength(2);
 
-      const targetIds = useRows.map((r) => r.targetId).sort();
-      expect(targetIds).toEqual([TOKEN_ID_A, TOKEN_ID_B].sort());
-
-      const orgIds = useRows
+      const orgIds = startRows
         .map((r) => (r.metadata as { orgId: string }).orgId)
         .sort();
       expect(orgIds).toEqual([ORG_A, ORG_B].sort());
 
-      // Each (tokenId, orgId) pair is consistent — workspace A's audit
-      // row carries token A's id, not token B's.
-      for (const row of useRows) {
-        const meta = row.metadata as { orgId: string };
-        if (row.targetId === TOKEN_ID_A) expect(meta.orgId).toBe(ORG_A);
-        if (row.targetId === TOKEN_ID_B) expect(meta.orgId).toBe(ORG_B);
+      const clientIds = startRows
+        .map((r) => (r.metadata as { clientId: string }).clientId)
+        .sort();
+      expect(clientIds).toEqual([CLIENT_A, CLIENT_B].sort());
+
+      // Each (orgId, clientId) pair is consistent — workspace A's
+      // audit row carries claude-desktop, not cursor.
+      for (const row of startRows) {
+        const meta = row.metadata as { orgId: string; clientId: string };
+        if (meta.orgId === ORG_A) expect(meta.clientId).toBe(CLIENT_A);
+        if (meta.orgId === ORG_B) expect(meta.clientId).toBe(CLIENT_B);
       }
 
       await clientA.close();
@@ -553,14 +893,19 @@ describe("hosted MCP — successful session", () => {
 
 describe("hosted MCP — session lifecycle", () => {
   it("returns 404 unknown_session when mcp-session-id points at a nonexistent session", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${BEARER_A}`,
+          Authorization: `Bearer ${TOKEN_A}`,
           "mcp-session-id": "00000000-0000-0000-0000-000000000000",
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
@@ -578,14 +923,19 @@ describe("hosted MCP — session lifecycle", () => {
   });
 
   it("supports DELETE for explicit session termination", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     const handle = await startServer();
     try {
       const client = new Client({ name: "client-delete", version: "0.0.1" });
       const transport = new StreamableHTTPClientTransport(
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
         {
-          requestInit: { headers: { Authorization: `Bearer ${BEARER_A}` } },
+          requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } },
         },
       );
       await client.connect(transport);
@@ -612,7 +962,12 @@ describe("hosted MCP — session lifecycle", () => {
 
 describe("hosted MCP — capacity", () => {
   it("returns 503 too_many_sessions when the cap is reached", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     process.env.ATLAS_MCP_MAX_SESSIONS = "1";
     const handle = await startServer();
     try {
@@ -620,7 +975,7 @@ describe("hosted MCP — capacity", () => {
       const transport = new StreamableHTTPClientTransport(
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
         {
-          requestInit: { headers: { Authorization: `Bearer ${BEARER_A}` } },
+          requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } },
         },
       );
       await client.connect(transport);
@@ -633,7 +988,7 @@ describe("hosted MCP — capacity", () => {
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json, text/event-stream",
-          Authorization: `Bearer ${BEARER_A}`,
+          Authorization: `Bearer ${TOKEN_A}`,
         },
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -659,7 +1014,12 @@ describe("hosted MCP — capacity", () => {
 
 describe("hosted MCP — audit failure", () => {
   it("audit emission failures must not break session creation", async () => {
-    bindBearer(BEARER_A, ORG_A, TOKEN_ID_A);
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
     mockLogAdminAction.mockImplementation(() => {
       throw new Error("pino broken");
     });
@@ -669,7 +1029,7 @@ describe("hosted MCP — audit failure", () => {
       const transport = new StreamableHTTPClientTransport(
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
         {
-          requestInit: { headers: { Authorization: `Bearer ${BEARER_A}` } },
+          requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } },
         },
       );
       // `connect()` performs initialize + listTools — both must succeed

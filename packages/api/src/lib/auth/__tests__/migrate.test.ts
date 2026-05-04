@@ -292,6 +292,7 @@ describe("migrateAuthTables", () => {
             { name: "0044_scheduled_tasks_plugin_id.sql" },
             { name: "0045_sub_processor_subscriptions.sql" },
             { name: "0046_mcp_tokens.sql" },
+            { name: "0047_drop_mcp_tokens.sql" },
           ],
         };
       }

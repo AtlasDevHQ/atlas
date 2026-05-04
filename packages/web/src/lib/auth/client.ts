@@ -18,6 +18,11 @@
 import { createAuthClient } from "better-auth/react";
 import { apiKeyClient } from "@better-auth/api-key/client";
 import { stripeClient } from "@better-auth/stripe/client";
+// @better-auth/oauth-provider client mirror — gives us
+// `authClient.oauth2.consent()` for the /oauth2/consent page (#2024).
+// The same plugin handles passing the signed `oauth_query` through every
+// in-flow request automatically.
+import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import {
   adminClient,
   organizationClient,
@@ -60,6 +65,7 @@ const _authClient = createAuthClient({
     // for the enrollment UI in /admin/settings/security.
     twoFactorClient(),
     stripeClient({ subscription: true }),
+    oauthProviderClient(),
   ],
   // Cross-origin deployments (app.useatlas.dev → api.useatlas.dev) require
   // credentials: "include" so the browser stores and sends session cookies.

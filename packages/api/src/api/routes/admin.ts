@@ -71,7 +71,6 @@ import { adminSandbox } from "./admin-sandbox";
 import { adminResidency } from "./admin-residency";
 import { adminMigrate } from "./admin-migrate";
 import { adminTokens } from "./admin-tokens";
-import { adminMcpTokens } from "./admin-mcp-tokens";
 import { adminConnections } from "./admin-connections";
 import { adminPlugins } from "./admin-plugins";
 import { adminCache } from "./admin-cache";
@@ -276,8 +275,6 @@ admin.route("/migrate", adminMigrate);
 admin.route("/migrate/", adminMigrate);
 admin.route("/tokens", adminTokens);
 admin.route("/tokens/", adminTokens);
-admin.route("/mcp-tokens", adminMcpTokens);
-admin.route("/mcp-tokens/", adminMcpTokens);
 // Invitations — registered directly to avoid sub-router middleware leaking to other /users/* routes
 import { registerInvitationRoutes } from "./admin-invitations";
 registerInvitationRoutes(admin, adminAuthAndContext);

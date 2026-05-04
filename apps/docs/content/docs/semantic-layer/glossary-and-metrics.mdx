@@ -1,0 +1,61 @@
+---
+title: Glossary & Metrics
+description: Two YAML files that turn a schema description into a domain model — glossary terms force clarifying questions, metrics give the agent authoritative SQL.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Beyond entities, two files in `semantic/` raise the YAML format from a schema description to a complete domain model.
+
+## `glossary.yml` — definitions and disambiguation
+
+The glossary defines the business vocabulary your team uses *and* tags ambiguous terms. When a term is `status: ambiguous`, the agent **asks a clarifying question** instead of guessing. This is how Atlas avoids the most common text-to-SQL failure mode: the model picks one plausible meaning and silently runs with it.
+
+```yaml
+terms:
+  GMV:
+    status: defined
+    definition: |
+      Gross Merchandise Value. SUM(orders.total_cents) / 100 for dollars.
+      Filter status != 'cancelled' for net GMV.
+    tables: [orders]
+
+  revenue:
+    status: ambiguous
+    note: |
+      Could mean GMV (orders.total_cents), net revenue (GMV minus refunds),
+      or seller revenue (after commission). ASK the user which definition.
+    possible_mappings:
+      - orders.total_cents
+      - payments.amount_cents
+      - refunds (subtracted)
+```
+
+When a user asks "show me revenue last quarter", the agent reads the glossary, sees `revenue` is ambiguous, and clarifies before writing SQL. This is one of the [canonical questions](/getting-started/demo-datasets) and the most visible part of the moat in action.
+
+## `metrics/*.yml` — authoritative SQL
+
+Metric files give the agent SQL it must use *exactly as written* for a given KPI. Three metric types — `atomic`, `derived`, `breakdown` — cover the spectrum from "single number" to "metric split by dimensions". The `objective` field (`maximize` / `minimize` / `maintain`) tells the agent which direction is "good".
+
+```yaml
+metrics:
+  - id: total_gmv
+    label: Total GMV
+    description: Gross merchandise value, in dollars, excluding cancelled orders.
+    type: atomic
+    unit: USD
+    sql: |
+      SELECT SUM(total_cents) / 100.0 AS total_gmv
+      FROM orders
+      WHERE status != 'cancelled'
+    aggregation: sum
+    objective: maximize
+```
+
+When a user asks "what's our GMV this quarter?", the agent finds the `total_gmv` metric, parameterizes the date filter, and runs the SQL exactly as defined. No invention, no drift.
+
+<Callout type="info" title="Why this matters for an agent">
+  Glossary disambiguation and authoritative metric SQL are the two YAML constructs that most directly shape agent correctness. Without them, "show me revenue" silently runs against whichever column the model finds first; "what's our top month?" picks `MAX` or `MIN` based on a coin flip. With them, the agent's behavior is grounded in artifacts your team owns and reviews.
+</Callout>
+
+For the complete metric and glossary schemas, see the [Semantic Layer reference](/getting-started/semantic-layer#metrics).

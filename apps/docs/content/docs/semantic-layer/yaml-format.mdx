@@ -1,0 +1,21 @@
+---
+title: YAML Format
+description: Pointer to the full entity-YAML reference — dimensions, measures, joins, virtual dimensions, query patterns.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The complete YAML format reference — entity types, dimension fields, measure fields, join fields, virtual dimensions, and query patterns — lives on the [Semantic Layer reference page](/getting-started/semantic-layer) under Getting Started.
+
+That page is the canonical reference for authoring the YAML. This top-level **The Semantic Layer** section frames the moat — *why* the YAML format is the product. Once you've read that, the format reference is the day-to-day book you'll keep open while editing files in `semantic/entities/`.
+
+<Callout title="Where each field lives">
+- **Entity-level fields** (`name`, `type`, `table`, `grain`, `description`, `use_cases`, `cross_source_joins`) — top of every entity YAML
+- **`dimensions[]`** — every column the agent is allowed to reference, plus virtual computed columns
+- **`measures[]`** — pre-defined aggregations the agent can pick up by name
+- **`joins[]`** — same-source relationships, with `relationship` cardinality
+- **`query_patterns[]`** — canonical SQL the agent should prefer for common questions
+- **`virtual_dimensions[]`** — separate from `dimensions` with `virtual: true`; useful for grouping logic that lives outside the column list
+</Callout>
+
+See [Semantic Layer reference](/getting-started/semantic-layer) for the full schema and field tables.

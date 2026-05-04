@@ -1,21 +1,59 @@
 ---
 title: Introduction to Atlas
-description: Atlas is a deploy-anywhere text-to-SQL data analyst agent.
+description: Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.
 ---
 
-Atlas lets you connect your database, auto-generate a semantic layer, and query your data in plain English. Every query is validated, read-only access is enforced, and it deploys anywhere.
+import { Callout } from "fumadocs-ui/components/callout";
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+> Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.
+
+The semantic layer is the product. Everything else — the agent loop, the MCP server, the chat widget, the SQL validation pipeline — exists to make the YAML you write the source of truth for how questions become answers. Every field in the format exists because an LLM needs it: `sample_values` to ground the agent, `glossary.status: ambiguous` to force clarifying questions, `metrics.objective` to pick `MAX` vs `MIN`, `query_patterns` to teach canonical join shapes.
+
+## Get started
+
+The lead path is **MCP**. Install Atlas as a Model Context Protocol server and start asking questions from Claude Desktop, Cursor, or Continue:
+
+```bash
+bunx @useatlas/mcp init --local            # print paste-ready config
+bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
+```
+
+Restart your client and try one of the canonical NovaMart demo questions:
+
+- "What's our GMV this quarter?"
+- "What's our top-performing category by GMV this month?"
+- "Monthly GMV trend over the past 6 months."
+- "Show me revenue last quarter." — the agent asks which definition (GMV vs net revenue vs seller revenue) because `revenue` is `status: ambiguous` in the glossary
+- "What are our most common return reasons?"
+
+<Cards>
+  <Card title="MCP Server" href="/guides/mcp" description="Connect Claude Desktop, Cursor, or Continue with bunx @useatlas/mcp init" />
+  <Card title="The Semantic Layer" href="/semantic-layer" description="The YAML format that powers Atlas — entities, dimensions, measures, joins, glossary, metrics" />
+  <Card title="Hosted Quick Start" href="/getting-started/hosted" description="Sign up at app.useatlas.dev and start querying in minutes" />
+  <Card title="Self-Hosted Quick Start" href="/getting-started/quick-start" description="Local dev with Docker, Bun, and the NovaMart demo dataset" />
+</Cards>
 
 ## Getting Started
 
 - [Hosted Quick Start](/getting-started/hosted) -- Sign up at app.useatlas.dev and start querying in minutes
 - [Self-Hosted Quick Start](/getting-started/quick-start) -- Deploy Atlas on your own infrastructure
 - [Connect Your Data](/getting-started/connect-your-data) -- Connect to PostgreSQL, MySQL, or plugin-based sources (ClickHouse, Snowflake, DuckDB, Salesforce)
-- [Semantic Layer](/getting-started/semantic-layer) -- Define your data schema in YAML so the agent understands your database
-- [Demo Datasets](/getting-started/demo-datasets) -- Try Atlas with pre-built demo data
+- [Semantic Layer Reference](/getting-started/semantic-layer) -- The full YAML format reference (entities, dimensions, measures, joins, virtual dimensions, query patterns)
+- [Demo Dataset](/getting-started/demo-datasets) -- The NovaMart e-commerce dataset and its canonical questions
+
+## The Semantic Layer
+
+The YAML format is a first-class concept — read these before authoring anything in `semantic/`:
+
+- [Overview](/semantic-layer) -- The moat sentence, the canonical questions, and a 20-line YAML excerpt
+- [YAML Format](/semantic-layer/yaml-format) -- Pointer to the full field-level reference
+- [Glossary & Metrics](/semantic-layer/glossary-and-metrics) -- How glossary terms force clarifying questions and how metrics give the agent authoritative SQL
+- [Why YAML?](/semantic-layer/why-yaml) -- Why the semantic layer is files on disk, versioned and reviewable
 
 ## Guides
 
-- [MCP Server](/guides/mcp) -- Use Atlas in Claude Desktop, Cursor, and other MCP clients
+- [MCP Server](/guides/mcp) -- Use Atlas in Claude Desktop, Cursor, and other MCP clients (the lead install path)
 - [Slack Integration](/guides/slack) -- Query your data from Slack with slash commands and threaded follow-ups
 - [Python Data Analysis](/guides/python) -- Sandboxed Python execution for charts and statistical analysis
 - [Scheduled Tasks](/guides/scheduled-tasks) -- Run recurring queries and deliver results via email, Slack, or webhook

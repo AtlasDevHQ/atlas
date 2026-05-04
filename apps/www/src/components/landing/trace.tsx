@@ -16,19 +16,19 @@ type TraceStep = {
 };
 
 const TRACE_STEPS: TraceStep[] = [
-  { t: 0.0, k: "prompt", v: "Top 5 accounts by ARR this quarter, with QoQ growth.", kind: "input" },
+  { t: 0.0, k: "prompt", v: "Top-performing category by GMV this month.", kind: "input" },
   {
     t: 0.041,
     k: "resolve",
-    v: "accounts, arr, quarter, qoq_growth",
+    v: "orders, order_items, products, categories, gmv",
     kind: "info",
     detail:
-      "Maps prompt terms → entities + metrics defined in semantic_layer.yaml. No invented columns.",
+      "Maps prompt terms → entities + metrics defined in the YAML semantic layer. No invented columns.",
   },
   {
     t: 0.124,
     k: "compile",
-    v: "78 lines · 1 join · 5 columns",
+    v: "78 lines · 3 joins · 3 columns",
     kind: "info",
     detail:
       "AST → SQL. Atlas writes deterministic SQL from the entity graph; no LLM-generated joins.",
@@ -54,7 +54,7 @@ const TRACE_STEPS: TraceStep[] = [
   {
     t: 0.168,
     k: "permissions",
-    v: "ok · select on accounts, snapshots",
+    v: "ok · select on orders, order_items, products, categories",
     kind: "gate",
     n: 3,
     detail:
@@ -76,12 +76,12 @@ const TRACE_STEPS: TraceStep[] = [
     kind: "gate",
     n: 5,
     detail:
-      "Joins must use keys declared in semantic_layer.yaml. No cartesian products, no fuzzy joins, no surprises.",
+      "Joins must use keys declared in the YAML semantic layer. No cartesian products, no fuzzy joins, no surprises.",
   },
   {
     t: 0.217,
     k: "metric_whitelist",
-    v: "ok · arr, qoq_growth",
+    v: "ok · total_gmv",
     kind: "gate",
     n: 6,
     detail:
@@ -116,27 +116,49 @@ const SQL_TOKENS: SqlToken[] = [
   { k: "cm", v: "-- session.4f8e · 7 validations passed\n" },
   { k: "cm", v: "-- read-only · scoped to analytics.public\n\n" },
   { k: "kw", v: "SELECT" },
-  { k: "t", v: " a.name,\n       a.arr,\n       " },
-  { k: "fn", v: "ROUND" },
-  { k: "t", v: "(\n         (a.arr - p.arr) / p.arr * " },
-  { k: "num", v: "100" },
-  { k: "t", v: ",\n         " },
-  { k: "num", v: "1" },
-  { k: "t", v: "\n       ) " },
+  { k: "t", v: " c.name,\n       " },
+  { k: "fn", v: "SUM" },
+  { k: "t", v: "(o.total_cents) / " },
+  { k: "num", v: "100.0" },
+  { k: "t", v: " " },
   { k: "kw", v: "AS" },
-  { k: "t", v: " qoq_pct\n  " },
+  { k: "t", v: " gmv,\n       " },
+  { k: "fn", v: "COUNT" },
+  { k: "t", v: "(" },
+  { k: "kw", v: "DISTINCT" },
+  { k: "t", v: " o.id) " },
+  { k: "kw", v: "AS" },
+  { k: "t", v: " orders\n  " },
   { k: "kw", v: "FROM" },
-  { k: "t", v: " accounts a\n  " },
+  { k: "t", v: " orders o\n  " },
   { k: "kw", v: "JOIN" },
-  { k: "t", v: " account_snapshots p\n    " },
+  { k: "t", v: " order_items oi " },
   { k: "kw", v: "ON" },
-  { k: "t", v: " p.account_id = a.id\n   " },
+  { k: "t", v: " oi.order_id = o.id\n  " },
+  { k: "kw", v: "JOIN" },
+  { k: "t", v: " products p " },
+  { k: "kw", v: "ON" },
+  { k: "t", v: " p.id = oi.product_id\n  " },
+  { k: "kw", v: "JOIN" },
+  { k: "t", v: " categories c " },
+  { k: "kw", v: "ON" },
+  { k: "t", v: " c.id = p.category_id\n " },
+  { k: "kw", v: "WHERE" },
+  { k: "t", v: " o.status != " },
+  { k: "str", v: "'cancelled'" },
+  { k: "t", v: "\n   " },
   { k: "kw", v: "AND" },
-  { k: "t", v: " p.quarter = " },
-  { k: "str", v: "'2026-Q1'" },
-  { k: "t", v: "\n " },
+  { k: "t", v: " o.created_at >= " },
+  { k: "fn", v: "DATE_TRUNC" },
+  { k: "t", v: "(" },
+  { k: "str", v: "'month'" },
+  { k: "t", v: ", " },
+  { k: "fn", v: "NOW" },
+  { k: "t", v: "())\n " },
+  { k: "kw", v: "GROUP BY" },
+  { k: "t", v: " c.name\n " },
   { k: "kw", v: "ORDER BY" },
-  { k: "t", v: " a.arr " },
+  { k: "t", v: " gmv " },
   { k: "kw", v: "DESC LIMIT" },
   { k: "t", v: " " },
   { k: "num", v: "5" },
@@ -146,11 +168,11 @@ const SQL_TOKENS: SqlToken[] = [
 const SQL_TOTAL = SQL_TOKENS.reduce((sum, tok) => sum + tok.v.length, 0);
 
 const RESULT_ROWS: ReadonlyArray<readonly [string, string, string]> = [
-  ["Northwind Trading",  "$2.40M", "+18.4%"],
-  ["Gemini Robotics",    "$1.92M", "+9.1%"],
-  ["Helios Aerospace",   "$1.71M", "+5.8%"],
-  ["Kite & Key Capital", "$1.55M", "+22.7%"],
-  ["Orca Logistics",     "$1.41M", "−2.3%"],
+  ["Bedding",     "$184,219", "2,041"],
+  ["Kitchen",     "$142,718", "1,587"],
+  ["Bath",        "$98,402",  "1,103"],
+  ["Outdoor",     "$71,288",  "812"],
+  ["Accessories", "$54,011",  "693"],
 ];
 
 const SQL_KIND_STYLE: Record<SqlTokenKind, CSSProperties> = {
@@ -403,16 +425,16 @@ export function Trace() {
               className="grid border-b border-white/5 py-2 font-mono text-[10px] tracking-[0.1em] uppercase text-zinc-400"
               style={{ gridTemplateColumns: "2fr 1fr 1fr" }}
             >
-              <span>account</span>
-              <span>arr</span>
-              <span>qoq</span>
+              <span>category</span>
+              <span>gmv</span>
+              <span>orders</span>
             </div>
             {resultsVisible === 0 ? (
               <div className="px-0 py-4 font-mono text-[11px] text-zinc-400">
                 {idx >= LAST_INDEX - 1 ? "// executing…" : "// awaiting validation"}
               </div>
             ) : (
-              RESULT_ROWS.slice(0, resultsVisible).map(([name, arr, qoq]) => (
+              RESULT_ROWS.slice(0, resultsVisible).map(([name, gmv, orders]) => (
                 <div
                   key={name}
                   className="grid py-2 font-mono text-[12px] text-zinc-200"
@@ -422,10 +444,8 @@ export function Trace() {
                   }}
                 >
                   <span>{name}</span>
-                  <span className="text-zinc-50">{arr}</span>
-                  <span style={{ color: qoq.startsWith("−") ? "oklch(0.7 0.16 22)" : "var(--atlas-brand)" }}>
-                    {qoq}
-                  </span>
+                  <span className="text-brand">{gmv}</span>
+                  <span className="text-zinc-400">{orders}</span>
                 </div>
               ))
             )}

@@ -1,7 +1,7 @@
 <h1 align="center">Atlas</h1>
 
 <p align="center">
-  Open-source text-to-SQL agent you can embed anywhere.
+  Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/deployment/deploy">Deploy Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
+  <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/getting-started/semantic-layer">The Semantic Layer</a> · <a href="https://docs.useatlas.dev/guides/mcp">MCP Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
 </p>
 
 <p align="center">
@@ -22,11 +22,67 @@
 
 ## What is Atlas?
 
-Atlas is a deploy-anywhere text-to-SQL agent. Connect any database, auto-generate a semantic layer, and let your users ask questions in plain English. Every query is validated through a multi-layer security pipeline — only read-only SQL against whitelisted tables is allowed.
+Atlas turns a directory of YAML files into a complete semantic layer for analytics — entities, dimensions, measures, joins, virtual dimensions, query patterns, glossary terms, and authoritative metrics. Humans author the YAML. AI agents consume it through the **Model Context Protocol (MCP)** to answer business questions in natural language, with deterministic, validated, read-only SQL.
+
+Every YAML field exists because an LLM needs it to write correct SQL: `sample_values` ground the agent in real data, `glossary.status: ambiguous` forces clarifying questions, `metrics.objective` picks `MAX` vs `MIN`, `query_patterns` teach the canonical join shapes for your domain.
 
 Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, and Salesforce.
 
-## Try it in 60 seconds
+## Install Atlas as an MCP server (the lead path)
+
+Add Atlas to Claude Desktop, Cursor, or Continue with one command. Auto-detects the client and falls back to a bundled demo fixture when no datasource is configured:
+
+```bash
+bunx @useatlas/mcp init --local            # print paste-ready config
+bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
+```
+
+Restart Claude Desktop / Cursor and ask one of the canonical questions:
+
+- *"What's our GMV this quarter?"*
+- *"What's our top-performing category by GMV this month?"*
+- *"Monthly GMV trend over the past 6 months."*
+- *"Show me revenue last quarter."* — Atlas asks which definition you mean (GMV vs. net revenue vs. seller revenue) because `revenue` is `status: ambiguous` in the glossary
+- *"What are our most common return reasons?"*
+
+The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow including hosted MCP at `mcp.useatlas.dev` (#2024).
+
+## What's in the YAML?
+
+A 20-line slice of `semantic/entities/orders.yml` from the bundled NovaMart e-commerce demo (#2021):
+
+```yaml
+name: Orders
+type: fact_table
+table: orders
+grain: one row per order
+description: |
+  Customer orders — the primary fact table for revenue analysis.
+  shipping_cost uses MIXED UNITS (some rows in dollars, some in cents).
+dimensions:
+  - name: status
+    sql: status
+    type: string
+    sample_values: [pending, processing, shipped, delivered, cancelled]
+  - name: order_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    virtual: true
+measures:
+  - name: total_gmv_cents
+    sql: total_cents
+    type: sum
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns: { from: customer_id, to: id }
+```
+
+That YAML is the contract between your team and the agent — version-controlled, code-reviewed, diffable. Sibling files (`glossary.yml`, `metrics/*.yml`, `catalog.yml`) round it out: glossary terms with `status: ambiguous` force the agent to clarify, metrics with `objective: maximize` / `minimize` make optimization direction explicit, and the catalog routes the agent to the right entity for a given question.
+
+See the full [Semantic Layer reference](https://docs.useatlas.dev/getting-started/semantic-layer) for the complete schema.
+
+## Try the demo locally
 
 ```bash
 bun create atlas-agent my-app --demo
@@ -34,11 +90,11 @@ cd my-app && bun run dev
 # Open http://localhost:3000
 ```
 
-The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) so you can start asking questions immediately.
+The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) with the same canonical questions baked in as starter prompts.
 
 ## Embed in your app
 
-Drop a single `<script>` tag into any page to add a floating chat widget:
+Atlas also ships an embeddable chat widget for any frontend:
 
 ```html
 <script
@@ -60,24 +116,14 @@ export default function App() {
 
 The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `Atlas.destroy()`), event callbacks, and theming. See the [widget docs](https://docs.useatlas.dev/guides/embedding-widget).
 
-## Use as an MCP server
-
-Add Atlas to Claude Desktop, Cursor, or Continue with a single command — auto-detects the client, falls back to a bundled demo fixture if no datasource is configured:
-
-```bash
-bunx @useatlas/mcp init --local            # print paste-ready config
-bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
-```
-
-See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow.
-
 ## Why Atlas?
 
 | | Atlas | Traditional BI | Other text-to-SQL |
 |---|---|---|---|
-| **Embeddable** | Script tag, React component, or headless API | Standalone app | Standalone app |
+| **Semantic layer** | YAML on disk — `query_patterns`, `virtual_dimensions`, `glossary.status: ambiguous`, `metrics.objective` are all first-class | Proprietary metadata, GUI-authored | None or limited |
+| **Agent-native** | MCP server first — Claude Desktop, Cursor, Continue with `bunx @useatlas/mcp init` | Bolted-on AI feature | Standalone chat UI |
+| **Embeddable** | Script tag, React component, headless API, MCP, Slack, Teams | Standalone app | Standalone app |
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
-| **Semantic layer** | YAML on disk, version-controlled, LLM-enriched | Proprietary metadata | None or limited |
 | **Plugin ecosystem** | 21 plugins across 5 types — extend anything | Closed | Limited |
 | **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
 | **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce | Usually one | Usually one |
@@ -103,13 +149,13 @@ docker compose up
 
 ## How It Works
 
-1. User asks a natural language question
-2. Agent explores the **semantic layer** (YAML files describing your schema)
+1. User (or agent) asks a natural language question — over MCP, the chat widget, the API, Slack, or Teams
+2. Agent explores the **YAML semantic layer** — entities, glossary, metrics, query patterns
 3. Agent writes SQL, validated through a multi-layer security pipeline (regex guard, AST parse, table whitelist, auto-LIMIT, statement timeout)
-4. Results are returned with charts and interpreted narrative
+4. Results are returned with charts and an interpreted narrative
 
 ```
-User question → Semantic layer exploration → SQL generation → Multi-layer validation → Query execution → Charts + narrative
+Question → YAML semantic layer → SQL generation → Multi-layer validation → Query execution → Charts + narrative
 ```
 
 ### Generate the semantic layer
@@ -117,7 +163,7 @@ User question → Semantic layer exploration → SQL generation → Multi-layer 
 ```bash
 bun run atlas -- init                 # Profile DB and generate YAMLs
 bun run atlas -- init --enrich        # Profile + LLM enrichment
-bun run atlas -- init --demo          # Load demo data + profile
+bun run atlas -- init --demo          # Load NovaMart demo data + profile
 ```
 
 ## Architecture
@@ -175,7 +221,10 @@ See [`.env.example`](.env.example) for all options.
 
 ## Documentation
 
+- [The Semantic Layer](https://docs.useatlas.dev/getting-started/semantic-layer) — Entities, dimensions, measures, joins, glossary, metrics — the YAML format reference
+- [MCP Server](https://docs.useatlas.dev/guides/mcp) — Use Atlas from Claude Desktop, Cursor, Continue
 - [Quick Start](https://docs.useatlas.dev/getting-started/quick-start) — Local dev from zero to asking questions
+- [Demo Dataset](https://docs.useatlas.dev/getting-started/demo-datasets) — NovaMart e-commerce dataset and canonical questions
 - [Deploy Options](https://docs.useatlas.dev/deployment/deploy) — Docker, Railway, Vercel, and more
 - [Connect Your Data](https://docs.useatlas.dev/getting-started/connect-your-data) — Connect to an existing database safely
 - [Widget Embedding](https://docs.useatlas.dev/guides/embedding-widget) — Script tag and React component

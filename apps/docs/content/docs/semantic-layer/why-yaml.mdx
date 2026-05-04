@@ -1,0 +1,53 @@
+---
+title: Why YAML?
+description: Why the semantic layer is files on disk — versioned, diffable, and reviewable — instead of a GUI or a database table.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The semantic layer is a directory of YAML files in your repo. Not rows in a metadata database. Not nodes in a GUI tree. Files. On disk. In `semantic/`.
+
+That choice is deliberate.
+
+## Versioned, diffable, reviewable
+
+Your data model evolves the same way the rest of your code does. Someone proposes a change in a pull request. Reviewers see the diff. CI runs `bun run atlas -- validate` to catch broken joins or unknown column references. The change merges, the agent picks it up on the next request, and there's a complete audit trail in `git log`.
+
+You can't get that with a GUI-edited model. You can't get it from a metadata DB without building the diff/review/CI loop yourself.
+
+## Authored by humans, consumed by agents
+
+The YAML is the contract. A human (or an agent assisted by a human) decides what `revenue` means, which terms are ambiguous, what the canonical join shape is for "top products by category". The model doesn't get to decide.
+
+Compare this to schema-only approaches where the agent reads `information_schema` and reasons from raw column names. With Atlas, the agent reads the YAML *first*, before generating SQL. Field names like `total_cents` come with `description: "Order total in cents (subtotal + shipping + tax). Primary revenue field."` and `sample_values: [1299, 2499, 4999]`. Ambiguous terms are flagged. Authoritative metrics override speculation.
+
+## Designed for an LLM consumer, not a BI compiler
+
+The traditional semantic-layer-as-code pattern was designed for BI tools and SQL authors. Atlas takes the same nouns — entities, dimensions, measures, joins, metrics — and shapes every field for an LLM consumer.
+
+| Traditional semantic-layer-as-code | Atlas |
+|---|---|
+| Designed for BI tools and SQL authors | Designed for AI agents (and humans who read YAML) |
+| Fields are types and aggregations | Fields are types, aggregations, **plus** `sample_values`, `glossary.status: ambiguous`, `metrics.objective`, `query_patterns` |
+| Compiled by a server | Read at request time by the agent, exposed over MCP |
+| Output is SQL fragments | Output is a complete answer — interpretation, SQL, validation, results |
+
+The format converges on the same nouns because the underlying problem is the same: turn a database into a queryable domain model. The difference is who's at the other end of the contract.
+
+For a side-by-side feature matrix that names specific products (LookML, dbt, Cube, Metabase, ThoughtSpot, WrenAI, Vanna), see the [Comparisons](/comparisons) page.
+
+<Callout title="What you can do with files on disk that you can't do with a GUI">
+- **Code review the data model.** Every change to `revenue` ships through a PR with reviewers.
+- **CI checks.** `bun run atlas -- validate` catches typos, missing FKs, and orphaned references before they hit production.
+- **Diff schema drift.** `bun run atlas -- diff` compares the live DB to the YAML and tells you what changed.
+- **Roll back.** A bad metric definition is `git revert`, not a frantic GUI edit.
+- **AI-assisted authoring.** The Semantic Editor and `init --enrich` use the same YAML the agent consumes — closing the loop.
+</Callout>
+
+## See also
+
+- [The Semantic Layer overview](/semantic-layer) — the canonical questions and a 20-line YAML excerpt
+- [YAML format reference](/getting-started/semantic-layer) — every field, every type
+- [Glossary & Metrics](/semantic-layer/glossary-and-metrics) — the two files that turn a schema into a domain model
+- [MCP Server](/guides/mcp) — how agents consume the YAML through the Model Context Protocol
+- [Comparisons](/comparisons) — feature matrix vs LookML, dbt, Cube, Metabase, ThoughtSpot, WrenAI, Vanna

@@ -14,27 +14,27 @@ export function EndCta() {
           // ship it
         </p>
         <h2 className="m-0 mb-8 text-[40px] md:text-[56px] font-semibold leading-[1.05] tracking-[-0.035em] text-zinc-50">
-          <span className="block">Stop reviewing AI-written SQL.</span>
+          <span className="block">YAML in.</span>
           <em className="block font-semibold text-brand">
-            Start running it.
+            Validated answers out.
           </em>
         </h2>
         <div className="flex flex-wrap justify-center gap-2.5">
           <a
-            href="https://app.useatlas.dev"
+            href="https://docs.useatlas.dev/guides/mcp"
             className="inline-flex items-center rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
           >
-            Start 14-day trial →
+            Install the MCP server →
           </a>
           <a
             href="https://app.useatlas.dev/demo"
             className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-[13.5px] text-zinc-50 transition-colors hover:border-white/20"
           >
-            book 15-min demo
+            try the NovaMart demo
           </a>
         </div>
         <p className="mt-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-          14-day trial · no card · cancel any time
+          works in claude desktop, cursor, continue · self-host is free
         </p>
       </div>
     </section>

@@ -109,7 +109,7 @@ done
 | `@useatlas/sdk` | `sdk-v*` | `sdk-v0.0.7` |
 | `@useatlas/plugin-sdk` | `plugin-sdk-v*` | `plugin-sdk-v0.0.7` |
 | `@useatlas/react` | `react-v*` | `react-v0.0.2` |
-| `@useatlas/<plugin>` | `<plugin>-v*` | `clickhouse-v0.0.6` |
+| `@useatlas/<plugin>` | `<plugin>-v*` | `clickhouse-v0.0.6`, `mcp-v0.0.2` |
 
 **Publish order:** `types` must be published before `sdk` or `react` (they depend on it).
 

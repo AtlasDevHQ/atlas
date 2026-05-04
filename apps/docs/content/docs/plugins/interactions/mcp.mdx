@@ -19,7 +19,7 @@ For one-command setup against Claude Desktop / Cursor / Continue, prefer `bunx @
 bun add @useatlas/mcp @modelcontextprotocol/sdk
 ```
 
-The `@atlas/mcp` server runtime is pulled in automatically via dynamic import — published as part of the `@useatlas/mcp` package itself, no monorepo dependency.
+When loaded inside an Atlas project (monorepo dev or a `create-atlas-agent` scaffold), the `@atlas/mcp` server runtime is resolved via dynamic import — you don't need to depend on it directly. Standalone `bunx @useatlas/mcp serve` outside an Atlas project is tracked in [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024).
 
 ## Configuration
 

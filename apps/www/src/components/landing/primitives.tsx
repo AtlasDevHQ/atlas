@@ -89,8 +89,8 @@ export function Primitives() {
           kind="entity"
           name="semantic_layer"
           title="Semantic layer"
-          blurb="Entities, metrics, glossary in YAML. Versioned beside your code. Atlas reads them on every prompt."
-          ports={["accounts", "metrics", "glossary"]}
+          blurb="Entities, glossary, metrics in YAML. Versioned beside your code. Atlas reads them on every prompt."
+          ports={["entities", "glossary", "metrics"]}
         />
         <PrimitiveCard
           kind="gate"

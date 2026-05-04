@@ -1,0 +1,12 @@
+{
+  "title": "The Semantic Layer",
+  "description": "The YAML format that powers Atlas — entities, dimensions, measures, joins, glossary, metrics",
+  "icon": "Layers",
+  "defaultOpen": true,
+  "pages": [
+    "index",
+    "yaml-format",
+    "glossary-and-metrics",
+    "why-yaml"
+  ]
+}

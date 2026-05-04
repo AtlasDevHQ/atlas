@@ -28,8 +28,10 @@ export function StickyNav() {
             <span className="font-mono text-sm font-semibold text-zinc-100">atlas</span>
           </a>
           <div className="hidden items-center gap-4 sm:flex">
+            <a href="#yaml" className="text-xs text-zinc-400 transition-colors hover:text-zinc-300">YAML</a>
             <a href="#trace" className="text-xs text-zinc-400 transition-colors hover:text-zinc-300">Trace</a>
             <a href="#primitives" className="text-xs text-zinc-400 transition-colors hover:text-zinc-300">Primitives</a>
+            <a href="#why-atlas" className="text-xs text-zinc-400 transition-colors hover:text-zinc-300">Why Atlas</a>
             <a href="#deploy" className="text-xs text-zinc-400 transition-colors hover:text-zinc-300">Deploy</a>
             <a href="/pricing" className="text-xs text-zinc-400 transition-colors hover:text-zinc-300">Pricing</a>
           </div>

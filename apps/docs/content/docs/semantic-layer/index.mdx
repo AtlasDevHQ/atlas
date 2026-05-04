@@ -1,0 +1,71 @@
+---
+title: The Semantic Layer
+description: The YAML format that powers Atlas — entities, dimensions, measures, joins, glossary, and metrics. Authored by humans, consumed by AI agents.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+> Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.
+
+The semantic layer is the **product**. Everything else in Atlas — the agent loop, the MCP server, the chat widget, the SQL validation pipeline — exists to make the YAML you write the source of truth for how questions become answers.
+
+Every field in the Atlas YAML format exists because an LLM needs it to write correct SQL. `sample_values` ground the agent in real data. `glossary.status: ambiguous` forces the agent to ask a clarifying question instead of guessing. `metrics.objective` tells it whether `MAX` or `MIN` is the right answer to "what's our best month?". `query_patterns` teach the canonical join shapes for your domain.
+
+## What's in the YAML?
+
+A 20-line slice of `semantic/entities/orders.yml` from the bundled NovaMart e-commerce demo:
+
+```yaml
+name: Orders
+type: fact_table
+table: orders
+grain: one row per order
+description: |
+  Customer orders — the primary fact table for revenue analysis.
+  shipping_cost uses MIXED UNITS (some rows in dollars, some in cents).
+dimensions:
+  - name: status
+    sql: status
+    type: string
+    sample_values: [pending, processing, shipped, delivered, cancelled]
+  - name: order_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    virtual: true
+measures:
+  - name: total_gmv_cents
+    sql: total_cents
+    type: sum
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns: { from: customer_id, to: id }
+```
+
+That YAML is the contract between your team and the agent. It's version-controlled, code-reviewed, and diffable. Sibling files round it out: `glossary.yml` for term definitions, `metrics/*.yml` for authoritative SQL, and `catalog.yml` for the agent's index across entities.
+
+## The canonical questions
+
+These five questions — drawn from the [NovaMart demo dataset](/getting-started/demo-datasets) — exercise the full surface of the YAML format. They're the same questions the README, the landing page, and the eval harness all reference.
+
+| Question | What in the YAML answers it |
+|---|---|
+| What's our GMV this quarter? | `measures.total_gmv_cents` on `orders.yml`, plus the `GMV` glossary term |
+| What's our top-performing category by GMV this month? | A join chain through `order_items` → `products` → `categories`, plus the `monthly_gmv` query pattern |
+| Monthly GMV trend over the past 6 months. | The `order_month` virtual dimension, plus the `monthly_gmv` query pattern |
+| Show me revenue last quarter. | The agent **asks a clarifying question** — `revenue` is `status: ambiguous` in the glossary (GMV vs. net revenue vs. seller revenue) |
+| What are our most common return reasons? | `LOWER()` normalization called out on the `return_reason` glossary term, applied across the `returns` entity |
+
+## Read next
+
+<Cards>
+  <Card title="YAML Format Reference" href="/getting-started/semantic-layer" description="Full schema for entities, dimensions, measures, joins, virtual dimensions, query patterns, and use cases" />
+  <Card title="Glossary & Metrics" href="/semantic-layer/glossary-and-metrics" description="How glossary terms force clarifying questions and how metrics give the agent authoritative SQL" />
+  <Card title="Why YAML?" href="/semantic-layer/why-yaml" description="Why the semantic layer is files on disk — versioned, diffable, reviewable — instead of a GUI or DB table" />
+  <Card title="MCP Server" href="/guides/mcp" description="Connect Claude Desktop, Cursor, or Continue to your YAML semantic layer with bunx @useatlas/mcp init" />
+</Cards>
+
+<Callout type="info" title="Generating the YAML">
+  Run `bun run atlas -- init` against any PostgreSQL or MySQL database to auto-generate entity files, glossary, metrics, and catalog from the schema. The profiler picks up types, samples real values, infers joins from foreign keys, and flags data-quality issues. See the [CLI reference](/reference/cli#init) for all flags.
+</Callout>

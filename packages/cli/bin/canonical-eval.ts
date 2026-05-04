@@ -249,151 +249,87 @@ function checkNonZero(
   return null;
 }
 
-/** Generic comparator used by metric / pattern / virtual modes. */
+/**
+ * Generic comparator used by metric / pattern / virtual modes. The three
+ * exported `compare*Result` functions below are aliases — the per-mode
+ * dispatch happens in `resolveQuestion`, but distinct names document intent
+ * at the call sites in `canonical-eval-run.ts`.
+ */
 function compareSqlResult(
   question: Question,
   executed: ExecutedQuery,
 ): QuestionResult {
-  const sqlMismatch = checkSqlPattern(question.expect, executed.sql);
-  if (sqlMismatch) {
-    return {
-      question,
-      status: "fail",
-      detail: sqlMismatch,
-      sql: executed.sql,
-    };
-  }
-
-  const columnMismatch = checkColumn(question.expect, executed.columns);
-  if (columnMismatch) {
-    return {
-      question,
-      status: "fail",
-      detail: columnMismatch,
-      sql: executed.sql,
-    };
-  }
-
-  const nonZeroMismatch = checkNonZero(
-    question.expect,
-    executed.rows,
-    executed.columns,
-  );
-  if (nonZeroMismatch) {
-    return {
-      question,
-      status: "fail",
-      detail: nonZeroMismatch,
-      sql: executed.sql,
-    };
+  const { sql } = executed;
+  const failOn =
+    checkSqlPattern(question.expect, sql) ??
+    checkColumn(question.expect, executed.columns) ??
+    checkNonZero(question.expect, executed.rows, executed.columns);
+  if (failOn) {
+    return { question, status: "fail", detail: failOn, sql };
   }
 
   const rowBounds = checkRowBounds(question.expect, executed.rows.length);
   if (rowBounds.kind === "warn") {
-    return {
-      question,
-      status: "warn",
-      detail: rowBounds.detail,
-      sql: executed.sql,
-    };
+    return { question, status: "warn", detail: rowBounds.detail, sql };
   }
 
+  const n = executed.rows.length;
   return {
     question,
     status: "pass",
-    detail: `${executed.rows.length} row${executed.rows.length === 1 ? "" : "s"}`,
-    sql: executed.sql,
+    detail: `${n} row${n === 1 ? "" : "s"}`,
+    sql,
   };
 }
 
-export function compareMetricResult(
-  question: Question,
-  executed: ExecutedQuery,
-): QuestionResult {
-  return compareSqlResult(question, executed);
-}
-
-export function comparePatternResult(
-  question: Question,
-  executed: ExecutedQuery,
-): QuestionResult {
-  return compareSqlResult(question, executed);
-}
-
-export function compareVirtualResult(
-  question: Question,
-  executed: ExecutedQuery,
-): QuestionResult {
-  return compareSqlResult(question, executed);
-}
+export const compareMetricResult = compareSqlResult;
+export const comparePatternResult = compareSqlResult;
+export const compareVirtualResult = compareSqlResult;
 
 export function compareGlossaryResult(
   question: Question,
   matches: readonly GlossaryMatch[],
 ): QuestionResult {
+  const fail = (detail: string): QuestionResult => ({
+    question,
+    status: "fail",
+    detail,
+    sql: null,
+  });
+  const pass = (detail: string): QuestionResult => ({
+    question,
+    status: "pass",
+    detail,
+    sql: null,
+  });
+
   if (matches.length === 0) {
-    return {
-      question,
-      status: "fail",
-      detail: `no glossary match for term "${question.term ?? ""}"`,
-      sql: null,
-    };
+    return fail(`no glossary match for term "${question.term ?? ""}"`);
   }
 
   const expectedStatus = question.expect.status ?? null;
+  if (expectedStatus === null) {
+    return pass(`${matches.length} match${matches.length === 1 ? "" : "es"}`);
+  }
+
+  const match = matches.find((m) => m.status === expectedStatus);
+  if (!match) {
+    const got = matches.map((m) => `${m.term}=${m.status}`).join(", ");
+    return fail(`expected ${expectedStatus} status but got [${got}]`);
+  }
+
   if (expectedStatus === "ambiguous") {
-    const ambiguous = matches.find((m) => m.status === "ambiguous");
-    if (!ambiguous) {
-      return {
-        question,
-        status: "fail",
-        detail: `expected ambiguous status but got [${matches.map((m) => `${m.term}=${m.status}`).join(", ")}]`,
-        sql: null,
-      };
+    const { mappings_min } = question.expect;
+    const count = match.possible_mappings.length;
+    if (typeof mappings_min === "number" && count < mappings_min) {
+      return fail(
+        `expected at least ${mappings_min} possible_mappings, got ${count}`,
+      );
     }
-    if (
-      typeof question.expect.mappings_min === "number" &&
-      ambiguous.possible_mappings.length < question.expect.mappings_min
-    ) {
-      return {
-        question,
-        status: "fail",
-        detail: `expected at least ${question.expect.mappings_min} possible_mappings, got ${ambiguous.possible_mappings.length}`,
-        sql: null,
-      };
-    }
-    return {
-      question,
-      status: "pass",
-      detail: `ambiguous (${ambiguous.possible_mappings.length} mappings)`,
-      sql: null,
-    };
+    return pass(`ambiguous (${count} mappings)`);
   }
 
-  if (expectedStatus === "defined") {
-    const defined = matches.find((m) => m.status === "defined");
-    if (!defined) {
-      return {
-        question,
-        status: "fail",
-        detail: `expected defined status but got [${matches.map((m) => `${m.term}=${m.status}`).join(", ")}]`,
-        sql: null,
-      };
-    }
-    return {
-      question,
-      status: "pass",
-      detail: "defined",
-      sql: null,
-    };
-  }
-
-  return {
-    question,
-    status: "pass",
-    detail: `${matches.length} match${matches.length === 1 ? "" : "es"}`,
-    sql: null,
-  };
+  return pass("defined");
 }
 
 // ── Formatter ───────────────────────────────────────────────────────────
@@ -503,67 +439,56 @@ export async function resolveQuestion(
   question: Question,
   opts: RunHarnessOptions,
 ): Promise<QuestionResult> {
+  const failNoSql = (detail: string): QuestionResult => ({
+    question,
+    status: "fail",
+    detail,
+    sql: null,
+  });
+
   try {
+    // Resolve SQL up-front so the execute + compare tail is shared across
+    // the three SQL-bearing modes. Glossary mode skips SQL entirely.
+    let sql: string;
     switch (question.mode) {
       case "metric": {
-        const sql = opts.findMetricSql(question.metric_id ?? "");
-        if (!sql) {
-          return {
-            question,
-            status: "fail",
-            detail: `unknown metric ${JSON.stringify(question.metric_id)}`,
-            sql: null,
-          };
+        const m = opts.findMetricSql(question.metric_id ?? "");
+        if (!m) {
+          return failNoSql(
+            `unknown metric ${JSON.stringify(question.metric_id)}`,
+          );
         }
-        const result = await opts.executeSql(sql);
-        return compareMetricResult(question, {
-          sql,
-          columns: result.columns,
-          rows: result.rows,
-        });
+        sql = m;
+        break;
       }
       case "pattern": {
-        const sql = opts.findPatternSql(
+        const p = opts.findPatternSql(
           question.entity ?? "",
           question.pattern ?? "",
         );
-        if (!sql) {
-          return {
-            question,
-            status: "fail",
-            detail: `unknown query_pattern ${JSON.stringify(question.entity)}.${JSON.stringify(question.pattern)}`,
-            sql: null,
-          };
+        if (!p) {
+          return failNoSql(
+            `unknown query_pattern ${JSON.stringify(question.entity)}.${JSON.stringify(question.pattern)}`,
+          );
         }
-        const result = await opts.executeSql(sql);
-        return comparePatternResult(question, {
-          sql,
-          columns: result.columns,
-          rows: result.rows,
-        });
+        sql = p;
+        break;
       }
-      case "virtual": {
-        const sql = question.sql ?? "";
-        const result = await opts.executeSql(sql);
-        return compareVirtualResult(question, {
-          sql,
-          columns: result.columns,
-          rows: result.rows,
-        });
-      }
-      case "glossary": {
-        const matches = opts.searchGlossary(question.term ?? "");
-        return compareGlossaryResult(question, matches);
-      }
+      case "virtual":
+        sql = question.sql ?? "";
+        break;
+      case "glossary":
+        return compareGlossaryResult(
+          question,
+          opts.searchGlossary(question.term ?? ""),
+        );
     }
+
+    const { columns, rows } = await opts.executeSql(sql);
+    return compareSqlResult(question, { sql, columns, rows });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return {
-      question,
-      status: "fail",
-      detail: `error: ${message}`,
-      sql: null,
-    };
+    return failNoSql(`error: ${message}`);
   }
 }
 

@@ -32,6 +32,7 @@ import {
   compareGlossaryResult,
   DEFAULT_QUESTIONS_PATH,
   type GlossaryMatch,
+  type Question,
   type QuestionResult,
   type RunHarnessOptions,
 } from "./canonical-eval";
@@ -169,6 +170,39 @@ function findPatternSqlFromDisk(
   return null;
 }
 
+// Map a `lookups.searchGlossary` result to the wire shape the harness
+// comparator expects. Shared by deterministic + LLM paths.
+type LookupsModule = typeof import("@atlas/api/lib/semantic/lookups");
+
+function toGlossaryMatches(
+  lookups: LookupsModule,
+  term: string,
+): readonly GlossaryMatch[] {
+  return lookups.searchGlossary(term).map((m) => ({
+    term: m.term,
+    status: m.status,
+    possible_mappings: m.possible_mappings,
+  }));
+}
+
+// Iterate questions printing a per-question progress line. The resolver
+// closure isolates the deterministic-vs-LLM behavioral difference; this
+// helper just owns the I/O and the result accumulator.
+async function evalEachQuestion(
+  questions: readonly Question[],
+  label: string,
+  resolve: (q: Question) => Promise<QuestionResult>,
+): Promise<QuestionResult[]> {
+  const results: QuestionResult[] = [];
+  for (const q of questions) {
+    process.stdout.write(`  ${q.id} ${q.category}${label} ... `);
+    const r = await resolve(q);
+    process.stdout.write(`${r.status}\n`);
+    results.push(r);
+  }
+  return results;
+}
+
 // ── Wiring (deterministic mode) ──────────────────────────────────────────
 
 async function runDeterministic(
@@ -180,36 +214,19 @@ async function runDeterministic(
 
   const harnessOpts: RunHarnessOptions = {
     questionsPath: options.questionsPath,
-    findMetricSql: (id) => {
-      const m = lookups.findMetricById(id);
-      return m ? m.sql : null;
-    },
+    findMetricSql: (id) => lookups.findMetricById(id)?.sql ?? null,
     findPatternSql: (entity, pattern) =>
       findPatternSqlFromDisk(entity, pattern, SEMANTIC_DIR),
-    searchGlossary: (term): readonly GlossaryMatch[] => {
-      const matches = lookups.searchGlossary(term);
-      return matches.map((m) => ({
-        term: m.term,
-        status: m.status,
-        possible_mappings: m.possible_mappings,
-      }));
-    },
+    searchGlossary: (term) => toGlossaryMatches(lookups, term),
     executeSql: async (sql) => {
       const db = connections.getDefault();
-      const result = await db.query(sql, 60_000);
-      return { columns: result.columns, rows: result.rows };
+      const { columns, rows } = await db.query(sql, 60_000);
+      return { columns, rows };
     },
   };
 
   const questions = loadQuestions(options.questionsPath);
-  const results: QuestionResult[] = [];
-  for (const q of questions) {
-    process.stdout.write(`  ${q.id} ${q.category} ... `);
-    const r = await resolveQuestion(q, harnessOpts);
-    process.stdout.write(`${r.status}\n`);
-    results.push(r);
-  }
-  return results;
+  return evalEachQuestion(questions, "", (q) => resolveQuestion(q, harnessOpts));
 }
 
 // ── Wiring (LLM mode) ────────────────────────────────────────────────────
@@ -221,58 +238,42 @@ async function runWithAgent(
   const lookups = await import("@atlas/api/lib/semantic/lookups");
 
   const questions = loadQuestions(options.questionsPath);
-  const results: QuestionResult[] = [];
-
-  for (const q of questions) {
-    process.stdout.write(`  ${q.id} ${q.category} (--llm) ... `);
-    let result: QuestionResult;
+  return evalEachQuestion(questions, " (--llm)", async (q) => {
     try {
+      // For glossary, the agent should refuse / disambiguate. We assert
+      // that the disambiguation contract is honored by checking the
+      // semantic-layer state directly — same as deterministic.
       if (q.mode === "glossary") {
-        // For glossary, the agent should refuse / disambiguate. We assert
-        // that the disambiguation contract is honored by checking the
-        // semantic-layer state directly — same as deterministic.
-        const matches = lookups.searchGlossary(q.term ?? "").map((m) => ({
-          term: m.term,
-          status: m.status,
-          possible_mappings: m.possible_mappings,
-        }));
-        result = compareGlossaryResult(q, matches);
-      } else {
-        const agent = await executeAgentQuery(q.question);
-        const lastSql = agent.sql.length > 0 ? agent.sql[agent.sql.length - 1] : "";
-        const lastData =
-          agent.data.length > 0 ? agent.data[agent.data.length - 1] : null;
-        const executed = {
-          sql: lastSql,
-          columns: lastData?.columns ?? [],
-          rows: lastData?.rows ?? [],
-        };
-        switch (q.mode) {
-          case "metric":
-            result = compareMetricResult(q, executed);
-            break;
-          case "pattern":
-            result = comparePatternResult(q, executed);
-            break;
-          case "virtual":
-            result = compareVirtualResult(q, executed);
-            break;
-          default:
-            throw new Error(`unreachable mode: ${q.mode satisfies never}`);
-        }
+        return compareGlossaryResult(q, toGlossaryMatches(lookups, q.term ?? ""));
+      }
+
+      const agent = await executeAgentQuery(q.question);
+      const lastSql = agent.sql[agent.sql.length - 1] ?? "";
+      const lastData = agent.data[agent.data.length - 1] ?? null;
+      const executed = {
+        sql: lastSql,
+        columns: lastData?.columns ?? [],
+        rows: lastData?.rows ?? [],
+      };
+      switch (q.mode) {
+        case "metric":
+          return compareMetricResult(q, executed);
+        case "pattern":
+          return comparePatternResult(q, executed);
+        case "virtual":
+          return compareVirtualResult(q, executed);
+        default:
+          throw new Error(`unreachable mode: ${q.mode satisfies never}`);
       }
     } catch (err) {
-      result = {
+      return {
         question: q,
         status: "fail",
         detail: `agent error: ${err instanceof Error ? err.message : String(err)}`,
         sql: null,
       };
     }
-    process.stdout.write(`${result.status}\n`);
-    results.push(result);
-  }
-  return results;
+  });
 }
 
 // ── Entrypoint ───────────────────────────────────────────────────────────

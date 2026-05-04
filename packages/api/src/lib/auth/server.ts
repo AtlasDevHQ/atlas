@@ -14,15 +14,12 @@
 import { betterAuth, type Session, type User } from "better-auth";
 import { bearer, admin, organization, jwt } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
-// @better-auth/api-key must match the better-auth core version.
-// Both are pinned to ^1.5.1 in package.json — update together.
+// @better-auth/* plugins must match the better-auth core version line.
+// All pinned to ^1.6.x in package.json — update together (the peer-dep
+// constraint is exact-version per minor on the @better-auth/* side).
 import { apiKey } from "@better-auth/api-key";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
-// @better-auth/oauth-provider is pinned to ~1.5.6 to align with the
-// rest of the @better-auth/* line. Bumping to 1.6.x requires bumping
-// better-auth core simultaneously (peer-dep is `1.5.6` exact on this
-// version) — do that as a separate dependency-bump PR.
 import { oauthProvider } from "@better-auth/oauth-provider";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";

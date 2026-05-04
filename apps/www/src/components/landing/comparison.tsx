@@ -34,7 +34,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     feature: "Plugin ecosystem",
-    atlas: "21 plugins across 5 types",
+    atlas: "21 plugins across 5 types — extend anything",
     bi: "Closed",
     textToSql: "Limited",
   },
@@ -43,6 +43,13 @@ const ROWS: ReadonlyArray<Row> = [
     atlas: "AGPL-3.0 core, MIT client libs",
     bi: "Proprietary",
     textToSql: "Varies",
+  },
+  {
+    feature: "Multi-database",
+    atlas:
+      "PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce",
+    bi: "Usually one",
+    textToSql: "Usually one",
   },
 ];
 

@@ -28,7 +28,7 @@ const TRACE_STEPS: TraceStep[] = [
   {
     t: 0.124,
     k: "compile",
-    v: "78 lines · 3 joins · 3 columns",
+    v: "14 lines · 3 joins · 3 columns",
     kind: "info",
     detail:
       "AST → SQL. Atlas writes deterministic SQL from the entity graph; no LLM-generated joins.",
@@ -138,7 +138,7 @@ const SQL_TOKENS: SqlToken[] = [
   { k: "kw", v: "JOIN" },
   { k: "t", v: " products p " },
   { k: "kw", v: "ON" },
-  { k: "t", v: " p.id = oi.product_id\n  " },
+  { k: "t", v: " p.name = oi.product_name\n  " },
   { k: "kw", v: "JOIN" },
   { k: "t", v: " categories c " },
   { k: "kw", v: "ON" },

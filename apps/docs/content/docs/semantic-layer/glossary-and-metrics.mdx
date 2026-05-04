@@ -52,7 +52,7 @@ metrics:
     objective: maximize
 ```
 
-When a user asks "what's our GMV this quarter?", the agent finds the `total_gmv` metric, parameterizes the date filter, and runs the SQL exactly as defined. No invention, no drift.
+When a user asks "what's our GMV this quarter?", the agent finds the `total_gmv` metric, runs its `WHERE` clause as defined (`status != 'cancelled'`), and adds the date filter the question requires. The aggregation, columns, and table semantics come from the metric file — the agent doesn't invent them.
 
 <Callout type="info" title="Why this matters for an agent">
   Glossary disambiguation and authoritative metric SQL are the two YAML constructs that most directly shape agent correctness. Without them, "show me revenue" silently runs against whichever column the model finds first; "what's our top month?" picks `MAX` or `MIN` based on a coin flip. With them, the agent's behavior is grounded in artifacts your team owns and reviews.

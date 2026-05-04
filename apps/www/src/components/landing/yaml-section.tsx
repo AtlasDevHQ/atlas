@@ -81,7 +81,10 @@ function YamlPane() {
           semantic/entities/orders.yml
         </span>
       </div>
-      <pre className="m-0 overflow-auto p-4 font-mono text-[12px] leading-[1.7] text-zinc-300">
+      <pre
+        className="m-0 overflow-auto p-4 font-mono text-[12px] leading-[1.7] text-zinc-300"
+        aria-label="YAML excerpt from semantic/entities/orders.yml"
+      >
         {YAML_LINES.map((line, i) => (
           <span key={i} className="block">
             {tokenize(line.raw).map((tok, j) => (
@@ -140,6 +143,7 @@ function AnswerPane() {
           <pre
             className="m-0 overflow-auto rounded-md border border-white/10 px-3 py-2 font-mono text-[11.5px] leading-[1.6] text-zinc-300"
             style={{ background: "oklch(0.10 0 0)" }}
+            aria-label="Generated SQL for: top-performing category by GMV this month"
           >
             <span className="text-purple-300/90">SELECT</span> c.name,{"\n"}       <span className="text-purple-300/90">SUM</span>(o.total_cents) /{" "}
             <span className="text-amber-200/80">100.0</span> <span className="text-purple-300/90">AS</span> gmv,{"\n"}       <span className="text-purple-300/90">COUNT</span>(<span className="text-purple-300/90">DISTINCT</span> o.id){" "}
@@ -148,7 +152,7 @@ function AnswerPane() {
             <span className="text-purple-300/90">JOIN</span> order_items oi{" "}
             <span className="text-purple-300/90">ON</span> oi.order_id = o.id{"\n"}
             <span className="text-purple-300/90">JOIN</span> products p{" "}
-            <span className="text-purple-300/90">ON</span> p.id = oi.product_id{"\n"}
+            <span className="text-purple-300/90">ON</span> p.name = oi.product_name{"\n"}
             <span className="text-purple-300/90">JOIN</span> categories c{" "}
             <span className="text-purple-300/90">ON</span> c.id = p.category_id{"\n"}
             <span className="text-purple-300/90">WHERE</span> o.status !={" "}

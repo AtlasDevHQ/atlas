@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/getting-started/semantic-layer">The Semantic Layer</a> · <a href="https://docs.useatlas.dev/guides/mcp">MCP Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
+  <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/semantic-layer">The Semantic Layer</a> · <a href="https://docs.useatlas.dev/guides/mcp">MCP Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
 </p>
 
 <p align="center">
@@ -37,6 +37,8 @@ bunx @useatlas/mcp init --local            # print paste-ready config
 bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
 ```
 
+> **Note:** The `@useatlas/mcp` npm package is in final review for publishing — see [#2042](https://github.com/AtlasDevHQ/atlas/issues/2042). Until then, the installer runs from the monorepo via `bun packages/mcp/bin/init.ts --local`.
+
 Restart Claude Desktop / Cursor and ask one of the canonical questions:
 
 - *"What's our GMV this quarter?"*
@@ -45,7 +47,7 @@ Restart Claude Desktop / Cursor and ask one of the canonical questions:
 - *"Show me revenue last quarter."* — Atlas asks which definition you mean (GMV vs. net revenue vs. seller revenue) because `revenue` is `status: ambiguous` in the glossary
 - *"What are our most common return reasons?"*
 
-The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow including hosted MCP at `mcp.useatlas.dev` (#2024).
+The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow. Hosted MCP at `mcp.useatlas.dev` is in development — tracked in [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024).
 
 ## What's in the YAML?
 
@@ -90,7 +92,7 @@ cd my-app && bun run dev
 # Open http://localhost:3000
 ```
 
-The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) with the same canonical questions baked in as starter prompts.
+The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 above drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy.
 
 ## Embed in your app
 

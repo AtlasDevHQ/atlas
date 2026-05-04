@@ -4,7 +4,7 @@ const HEADLINE_LINES = ["A semantic layer", "for analytics,", "agent-native."] a
 const ITALIC_LINE_INDEX = 2;
 
 const SUBHEAD =
-  "Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents. Entities, glossary, and metrics live in your repo; the agent reads them, writes deterministic SQL, and runs it through 7 validators before it ever touches your warehouse.";
+  "Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents. Entities, glossary, and metrics live in your repo; the agent reads them, writes deterministic SQL, and runs it through a 7-stage validation pipeline — read-only, table-whitelisted, statement-timed.";
 
 type NodeKind =
   | "input"

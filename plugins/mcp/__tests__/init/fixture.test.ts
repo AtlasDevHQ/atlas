@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   resolveFixturePaths,
   shouldUseFixture,
-} from "../../init/fixture.js";
+} from "../../src/init/fixture.js";
 
 describe("shouldUseFixture", () => {
   it("returns true when ATLAS_DATASOURCE_URL is unset", () => {

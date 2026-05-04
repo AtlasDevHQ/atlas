@@ -6,7 +6,7 @@ import {
   buildServerConfig,
   mergeMcpServerConfig,
   writeConfigWithBackup,
-} from "../../init/config-merge.js";
+} from "../../src/init/config-merge.js";
 
 const SERVER_NAME = "atlas";
 const SERVER = {

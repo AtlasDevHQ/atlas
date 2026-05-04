@@ -1,12 +1,16 @@
 #!/usr/bin/env bun
 /**
- * `bunx @useatlas/mcp init` entry point. Generates a paste-ready Claude
- * Desktop / Cursor / Continue config; with `--write`, merges into the
- * detected client's config file (timestamped `.bak` backup).
+ * Monorepo-only entry point that forwards to `@useatlas/mcp init`.
+ *
+ * The init code itself lives in `plugins/mcp/src/init/` (the published
+ * package) — this file is kept as a thin delegate so existing monorepo
+ * shortcuts (`bun packages/mcp/bin/init.ts ...`) and the `atlas-mcp-init`
+ * bin entry continue to work. End users should run `bunx @useatlas/mcp init`
+ * once the npm package is published (#2042).
  */
 
-import { runInit, type RunInitOptions } from "../src/init/index.js";
-import { KNOWN_CLIENTS, type McpClientId } from "../src/init/clients.js";
+import { runInit, type RunInitOptions } from "@useatlas/mcp/init";
+import { KNOWN_CLIENTS, type McpClientId } from "@useatlas/mcp/init/clients";
 
 const KNOWN_CLIENT_IDS: readonly string[] = KNOWN_CLIENTS.map((c) => c.id);
 
@@ -74,7 +78,8 @@ function parseArgs(argv: string[]): CliFlags {
   return flags;
 }
 
-const HELP = `bunx @useatlas/mcp init [options]
+const HELP = `bun packages/mcp/bin/init.ts [options]
+(monorepo dev shortcut — end users should run \`bunx @useatlas/mcp init\`)
 
   --local            Configure for a local Atlas (default)
   --hosted           Configure for app.useatlas.dev (not yet available)
@@ -82,11 +87,6 @@ const HELP = `bunx @useatlas/mcp init [options]
   --write            Merge into the client's config file (with a .bak backup)
   --api-url <url>    Override local Atlas detection URL (default: http://localhost:3001)
   -h, --help         Show this help
-
-Examples:
-  bunx @useatlas/mcp init --local
-  bunx @useatlas/mcp init --local --write
-  bunx @useatlas/mcp init --local --client cursor --write
 `;
 
 async function main(): Promise<number> {

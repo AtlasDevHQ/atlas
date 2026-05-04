@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { detectClients, getDefaultConfigPath } from "../../init/clients.js";
+import { detectClients, getDefaultConfigPath } from "../../src/init/clients.js";
 
 const HOME_DARWIN = "/Users/test";
 const HOME_LINUX = "/home/test";

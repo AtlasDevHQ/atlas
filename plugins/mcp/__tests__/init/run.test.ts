@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runInit } from "../../init/index.js";
+import { runInit } from "../../src/init/index.js";
 
 const HEALTHY = (async () => ({ ok: true, status: 200 }) as Response) as unknown as typeof fetch;
 const UNREACHABLE = (async () => {

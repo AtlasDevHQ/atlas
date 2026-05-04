@@ -203,6 +203,7 @@
         "@atlas/api": "workspace:*",
         "@atlas/ee": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.28.0",
+        "@useatlas/mcp": "workspace:*",
         "@useatlas/types": "workspace:*",
         "effect": "^3.21.0",
       },
@@ -528,6 +529,7 @@
     "plugins/mcp": {
       "name": "@useatlas/mcp",
       "version": "0.0.1",
+      "bin": "./bin/cli.ts",
       "devDependencies": {
         "@atlas/mcp": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.28.0",
@@ -536,11 +538,14 @@
         "zod": "^4.3.6",
       },
       "peerDependencies": {
-        "@atlas/mcp": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.27.1",
         "@useatlas/plugin-sdk": ">=0.0.1",
         "zod": "^4.0.0",
       },
+      "optionalPeers": [
+        "@modelcontextprotocol/sdk",
+        "@useatlas/plugin-sdk",
+      ],
     },
     "plugins/mysql": {
       "name": "@useatlas/mysql",

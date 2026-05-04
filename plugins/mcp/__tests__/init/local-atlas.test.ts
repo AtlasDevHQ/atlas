@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { detectLocalAtlas } from "../../init/local-atlas.js";
+import { detectLocalAtlas } from "../../src/init/local-atlas.js";
 
 const HEALTHY = { ok: true, status: 200 } as Response;
 const UNHEALTHY = { ok: false, status: 500 } as Response;

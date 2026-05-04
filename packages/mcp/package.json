@@ -19,6 +19,7 @@
     "@atlas/api": "workspace:*",
     "@atlas/ee": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.28.0",
+    "@useatlas/mcp": "workspace:*",
     "@useatlas/types": "workspace:*",
     "effect": "^3.21.0"
   },

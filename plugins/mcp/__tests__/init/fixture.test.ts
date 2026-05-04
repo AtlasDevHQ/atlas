@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   resolveFixturePaths,
   shouldUseFixture,
-} from "../../init/fixture.js";
+} from "../../src/init/fixture.js";
 
 describe("shouldUseFixture", () => {
   it("returns true when ATLAS_DATASOURCE_URL is unset", () => {
@@ -41,5 +41,18 @@ describe("resolveFixturePaths", () => {
     const fake = "/tmp/atlas-test-cache";
     const { sqlitePath } = resolveFixturePaths({ cacheDir: fake });
     expect(sqlitePath.startsWith(fake)).toBe(true);
+  });
+
+  it("throws loud when the bundled seed.sql is missing", () => {
+    // If `files: ["fixtures/"]` ever drops from package.json (or the seed
+    // doesn't get packed for some other reason), this throw is the user's
+    // only signal — pin the contract so a regression is caught at test time
+    // instead of at first init.
+    expect(() => resolveFixturePaths({ existsSync: () => false })).toThrow(
+      /Bundled fixture seed\.sql is missing/,
+    );
+    expect(() => resolveFixturePaths({ existsSync: () => false })).toThrow(
+      /Reinstall @useatlas\/mcp/,
+    );
   });
 });

@@ -1,8 +1,7 @@
 {
   "name": "@useatlas/mcp",
-  "private": true,
   "version": "0.0.1",
-  "description": "Atlas MCP interaction plugin — monorepo-only (depends on unpublished @atlas/mcp)",
+  "description": "Atlas MCP plugin + bunx installer for Claude Desktop / Cursor / Continue",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -10,15 +9,30 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./init": {
+      "types": "./src/init/index.ts",
+      "default": "./src/init/index.ts"
+    },
+    "./init/clients": {
+      "types": "./src/init/clients.ts",
+      "default": "./src/init/clients.ts"
+    },
+    "./cli": {
+      "types": "./bin/cli.ts",
+      "default": "./bin/cli.ts"
     }
   },
+  "bin": "./bin/cli.ts",
   "files": [
+    "bin/",
     "src/",
+    "fixtures/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/plugin.test.ts"
+    "test": "bun test __tests__/"
   },
   "keywords": [
     "atlas",
@@ -38,10 +52,14 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@atlas/mcp": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "zod": "^4.0.0",
     "@useatlas/plugin-sdk": ">=0.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@atlas/mcp": "workspace:*",

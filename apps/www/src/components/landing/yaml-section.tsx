@@ -1,58 +1,53 @@
-import { type CSSProperties } from "react";
-
-const YAML_LINES: ReadonlyArray<{ raw: string }> = [
-  { raw: "name: Orders" },
-  { raw: "type: fact_table" },
-  { raw: "table: orders" },
-  { raw: "grain: one row per order" },
-  { raw: "" },
-  { raw: "dimensions:" },
-  { raw: "  - name: status" },
-  { raw: "    sql: status" },
-  { raw: "    type: string" },
-  { raw: "    sample_values: [pending, shipped, delivered, cancelled]" },
-  { raw: "" },
-  { raw: "  - name: order_month" },
-  { raw: "    sql: TO_CHAR(created_at, 'YYYY-MM')" },
-  { raw: "    type: string" },
-  { raw: "    virtual: true" },
-  { raw: "" },
-  { raw: "measures:" },
-  { raw: "  - name: total_gmv_cents" },
-  { raw: "    sql: total_cents" },
-  { raw: "    type: sum" },
-  { raw: "" },
-  { raw: "joins:" },
-  { raw: "  - target_entity: Customers" },
-  { raw: "    relationship: many_to_one" },
-  { raw: "    join_columns: { from: customer_id, to: id }" },
+const YAML_LINES: ReadonlyArray<string> = [
+  "name: Orders",
+  "type: fact_table",
+  "table: orders",
+  "grain: one row per order",
+  "",
+  "dimensions:",
+  "  - name: status",
+  "    sql: status",
+  "    type: string",
+  "    sample_values: [pending, shipped, delivered, cancelled]",
+  "",
+  "  - name: order_month",
+  "    sql: TO_CHAR(created_at, 'YYYY-MM')",
+  "    type: string",
+  "    virtual: true",
+  "",
+  "measures:",
+  "  - name: total_gmv_cents",
+  "    sql: total_cents",
+  "    type: sum",
+  "",
+  "joins:",
+  "  - target_entity: Customers",
+  "    relationship: many_to_one",
+  "    join_columns: { from: customer_id, to: id }",
 ];
 
 type Token = { text: string; cls?: string };
 
+function valueClass(rest: string): string {
+  if (/^\[.*\]$/.test(rest) || /^\{.*\}$/.test(rest)) return "text-amber-300/90";
+  if (rest === "true" || rest === "false") return "text-purple-300/90";
+  return "text-amber-200/80";
+}
+
 function tokenize(line: string): Token[] {
-  if (line.trim().startsWith("- ") || line.trim().startsWith("name:") || line.includes(":")) {
-    const match = line.match(/^(\s*)(-?\s*)?([\w\-_]+)(:\s*)(.*)$/);
-    if (match) {
-      const [, indent, dash, key, colon, rest] = match;
-      const tokens: Token[] = [];
-      if (indent) tokens.push({ text: indent });
-      if (dash) tokens.push({ text: dash, cls: "text-brand" });
-      tokens.push({ text: key ?? "", cls: "text-zinc-50 font-medium" });
-      tokens.push({ text: colon ?? "" });
-      if (rest) {
-        if (/^\[.*\]$/.test(rest) || /^\{.*\}$/.test(rest)) {
-          tokens.push({ text: rest, cls: "text-amber-300/90" });
-        } else if (rest === "true" || rest === "false") {
-          tokens.push({ text: rest, cls: "text-purple-300/90" });
-        } else {
-          tokens.push({ text: rest, cls: "text-amber-200/80" });
-        }
-      }
-      return tokens;
-    }
-  }
-  return [{ text: line }];
+  if (!line.includes(":")) return [{ text: line }];
+
+  const match = line.match(/^(\s*)(-?\s*)?([\w\-_]+)(:\s*)(.*)$/);
+  if (!match) return [{ text: line }];
+
+  const [, indent, dash, key, colon, rest] = match;
+  const tokens: Token[] = [];
+  if (indent) tokens.push({ text: indent });
+  if (dash) tokens.push({ text: dash, cls: "text-brand" });
+  tokens.push({ text: key, cls: "text-zinc-50 font-medium" });
+  tokens.push({ text: colon });
+  if (rest) tokens.push({ text: rest, cls: valueClass(rest) });
+  return tokens;
 }
 
 function YamlPane() {
@@ -87,7 +82,7 @@ function YamlPane() {
       >
         {YAML_LINES.map((line, i) => (
           <span key={i} className="block">
-            {tokenize(line.raw).map((tok, j) => (
+            {tokenize(line).map((tok, j) => (
               <span key={j} className={tok.cls}>
                 {tok.text || " "}
               </span>
@@ -211,12 +206,11 @@ const QUESTIONS: ReadonlyArray<string> = [
 ];
 
 export function YamlSection() {
-  const cardStyle: CSSProperties = { background: "oklch(0.16 0 0)" };
   return (
     <section
       id="yaml"
       className="scroll-mt-20 border-b border-white/5 px-6 pt-20 pb-16 md:px-16 md:pt-[100px] md:pb-20"
-      style={cardStyle}
+      style={{ background: "oklch(0.16 0 0)" }}
     >
       <header className="mb-10 max-w-[760px]">
         <p className="mb-4 font-mono text-[11.5px] uppercase tracking-[0.16em] text-brand">

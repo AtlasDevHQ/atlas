@@ -205,7 +205,6 @@ export function Trace() {
   const [playing, setPlaying] = useState(false);
   const [hasAutoPlayed, setHasAutoPlayed] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const playTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Auto-play when scrolled into view, but only once and only if the user
   // hasn't asked us to stop moving things.
@@ -244,10 +243,7 @@ export function Trace() {
     const cur = TRACE_STEPS[idx]!.t;
     const nxt = TRACE_STEPS[idx + 1]!.t;
     const dwell = Math.max(120, Math.min(900, (nxt - cur) * 800));
-    // Capture the local id so cleanup clears *this* run's timer, not whichever
-    // one happens to be in `playTimer.current` when cleanup runs.
     const id = setTimeout(() => setIdx((i) => i + 1), dwell);
-    playTimer.current = id;
     return () => clearTimeout(id);
   }, [playing, idx]);
 

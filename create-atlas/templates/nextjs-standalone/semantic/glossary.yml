@@ -86,13 +86,13 @@ terms:
   revenue:
     status: ambiguous
     note: >
-      Could mean GMV (total order value from orders.total_cents), net revenue
-      (GMV minus refunds), or seller revenue (after commission). ASK the user
+      Could mean gross revenue (GMV before refunds), net revenue (GMV minus
+      refunds), or seller revenue (gross minus commission). ASK the user
       which definition they mean.
     possible_mappings:
       - orders.total_cents
       - payments.amount_cents
-      - refunds (subtracted)
+      - refunds.amount_cents
 
   price:
     status: ambiguous

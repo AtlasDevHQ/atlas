@@ -26,6 +26,7 @@ import {
   MicrosoftIcon,
 } from "@/ui/components/social-icons";
 import { parseSignInError, type SignInErrorState } from "./parse-sign-in-error";
+import { getPostSignInRoute } from "./post-sign-in-route";
 
 type SocialProvider = "google" | "github" | "microsoft";
 
@@ -123,7 +124,7 @@ export default function LoginPage() {
         setError(parseSignInError({ error: res.error }));
         return;
       }
-      router.push("/");
+      router.push(getPostSignInRoute(res.data));
     } catch (err) {
       console.debug(
         "Sign in failed:",

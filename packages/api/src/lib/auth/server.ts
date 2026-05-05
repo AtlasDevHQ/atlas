@@ -655,6 +655,12 @@ function buildPlugins() {
   plugins.push(
     twoFactor({
       issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
+      // 30 days. Matches Better Auth's current default but pinned explicitly:
+      // a future minor bump that lowers the default would silently revoke
+      // every trust cookie in the wild. Surfacing the value here keeps the
+      // contract with the sign-in challenge UI ("Trust this device for 30
+      // days") truthful no matter which Better Auth version is installed.
+      trustDeviceMaxAge: 30 * 24 * 60 * 60,
     }),
   );
 

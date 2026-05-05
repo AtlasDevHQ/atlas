@@ -23,6 +23,7 @@ import {
   checkRateLimit,
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
+import { extractTrustDeviceIdentifier } from "@atlas/api/lib/auth/trust-device-cookie";
 import {
   detectMisrouting,
   isStrictRoutingEnabled,
@@ -73,6 +74,14 @@ export type AuthEnv = Env & {
     authResult: AuthResult & { authenticated: true };
     requestId: string;
     atlasMode: import("@useatlas/types/auth").AtlasMode;
+    /**
+     * Trust-device identifier from the `<prefix>.trust_device` cookie on the
+     * incoming request, or undefined when the cookie is absent / malformed.
+     * Set once by `adminAuth` / `platformAdminAuth` / `standardAuth` so route
+     * handlers and the audit logger don't re-parse the cookie on every call.
+     * Forensic-only — never used as an authorization input.
+     */
+    trustDeviceIdentifier: string | undefined;
   };
 };
 
@@ -278,6 +287,7 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   c.set("authResult", authResult);
   resolveModeForRequest(c, authResult, requestId);
+  setTrustDeviceIdentifier(c);
   await next();
 });
 
@@ -325,6 +335,7 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   c.set("authResult", authResult);
   resolveModeForRequest(c, authResult, requestId);
+  setTrustDeviceIdentifier(c);
   await next();
 });
 
@@ -354,6 +365,7 @@ export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   c.set("authResult", authResult);
   resolveModeForRequest(c, authResult, requestId);
+  setTrustDeviceIdentifier(c);
   await next();
 });
 
@@ -438,6 +450,29 @@ export function resolveMode(
 }
 
 /**
+ * Read the trust-device cookie once per request and surface it on the Hono
+ * context. Downstream consumers:
+ *
+ * - `requestContext` middleware threads it into `withRequestContext` so
+ *   `logAdminAction` can include it in `admin_action_log` metadata without
+ *   the 269 call sites needing to know it exists.
+ * - The Effect bridge (`buildContextLayer` in `lib/effect/hono.ts`) mirrors
+ *   it onto `AuthContext` for Effect-based handlers.
+ *
+ * Cookie absence is the dominant case (BYOT, simple-key, fresh sign-in
+ * without opt-in) — `extractTrustDeviceIdentifier` returns null and we
+ * write `undefined`, never a sentinel string.
+ */
+function setTrustDeviceIdentifier(c: {
+  req: { raw: Request };
+  set: (key: string, value: unknown) => void;
+}): void {
+  const cookieHeader = c.req.raw.headers.get("cookie");
+  const identifier = extractTrustDeviceIdentifier(cookieHeader);
+  c.set("trustDeviceIdentifier", identifier ?? undefined);
+}
+
+/**
  * Resolve mode and log when a developer request is downgraded due to
  * insufficient role. Used by the auth middlewares to centralize the
  * resolve + set + log pattern.
@@ -474,7 +509,11 @@ export const requestContext = createMiddleware<AuthEnv>(async (c, next) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const atlasMode = c.get("atlasMode");
-  await withRequestContext({ requestId, user: authResult.user, atlasMode }, () => next());
+  const trustDeviceIdentifier = c.get("trustDeviceIdentifier");
+  await withRequestContext(
+    { requestId, user: authResult.user, atlasMode, trustDeviceIdentifier },
+    () => next(),
+  );
 });
 
 // ---------------------------------------------------------------------------

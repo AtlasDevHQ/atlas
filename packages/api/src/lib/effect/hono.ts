@@ -474,6 +474,11 @@ function buildContextLayer(
 
   const requestLayer = makeRequestContextLayer(requestId, undefined, atlasMode);
 
+  // Trust-device identifier is set by auth middleware from the request cookie.
+  // Forensic-only — surfaced via AuthContext for parity with the AsyncLocalStorage
+  // RequestContext path consumed by `logAdminAction`. Undefined when no cookie.
+  const trustDeviceIdentifier = c.get("trustDeviceIdentifier") as string | undefined;
+
   // authResult may not be set (e.g. public routes, before auth middleware)
   const authResult = c.get("authResult") as
     | { authenticated: true; mode: string; user?: { activeOrganizationId?: string } & Record<string, unknown> }
@@ -483,6 +488,7 @@ function buildContextLayer(
     const authLayer = makeAuthContextLayer(
       authResult.mode as import("@useatlas/types/auth").AuthMode,
       authResult.user as import("@useatlas/types/auth").AtlasUser | undefined,
+      trustDeviceIdentifier,
     );
     return Layer.merge(requestLayer, authLayer);
   }
@@ -490,7 +496,7 @@ function buildContextLayer(
   // No auth — provide RequestContext with a fallback AuthContext (mode: "none",
   // no user) so programs that yield* AuthContext always get a valid service
   // rather than a cryptic "service not found" at runtime.
-  const noAuthLayer = makeAuthContextLayer("none", undefined);
+  const noAuthLayer = makeAuthContextLayer("none", undefined, trustDeviceIdentifier);
   return Layer.merge(requestLayer, noAuthLayer);
 }
 

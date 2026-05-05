@@ -230,7 +230,7 @@ describe("AdminLayout", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("Two-factor authentication required");
     });
-    expect(document.body.textContent).toContain("Enroll authenticator");
+    expect(document.body.textContent).toContain("Set up second factor");
   });
 
   test("shows password change dialog when required", async () => {

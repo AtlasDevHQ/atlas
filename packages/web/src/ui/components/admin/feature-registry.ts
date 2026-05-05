@@ -43,6 +43,7 @@ export const FEATURE_NAMES = [
   "Integrations",
   "IP Allowlist",
   "Learned Patterns",
+  "OAuth Clients",
   "Organizations",
   "PII Compliance",
   "Platform Admin",

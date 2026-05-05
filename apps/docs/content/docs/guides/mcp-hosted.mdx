@@ -158,6 +158,18 @@ A `mcp_session.start` row is written to the workspace's admin action log when a 
 
 OAuth client lifecycle (register, rotate, delete) and token lifecycle (issue, revoke) are recorded by Better Auth's `oauthProvider` plugin in its own tables (`oauthClient`, `oauthAccessToken`, `oauthRefreshToken`, `oauthConsent`).
 
+## Inspecting and revoking clients
+
+Workspace admins can inspect every OAuth client registered against their workspace at **Admin → Users & Access → OAuth Clients** (`/admin/oauth-clients`). Each row shows the registered name, redirect URIs, registration date, last-use timestamp, and outstanding access-token count.
+
+The **Revoke** action permanently deletes the client and every outstanding access token, refresh token, and consent record for that client (scoped to the active workspace). Standards-compliant clients re-register via DCR on their next authorization attempt — there's no admin step to re-add them. An `oauth_client.revoke` row lands in the admin action log carrying the per-table revocation counts.
+
+Use this when:
+
+- A laptop running an authorized MCP client is lost
+- A teammate offboards and their authorized clients should be invalidated
+- A registered client name no longer matches the agent it was issued to (clean it up — DCR will re-register fresh)
+
 ## Operational notes
 
 - **Max sessions per instance** is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100). Hitting the cap returns `503 too_many_sessions`. The cap counts both registered sessions and in-flight initializations.

@@ -246,6 +246,21 @@ export const ADMIN_ACTIONS = {
     revoke: "apikey.revoke",
   },
   /**
+   * OAuth 2.1 client lifecycle (#2024 PR D — admin Settings → OAuth Clients).
+   * `revoke` deletes a Dynamically-Registered Client and every outstanding
+   * access/refresh token + consent row for that client, scoped to the active
+   * workspace. Without this entry an admin can sever an MCP integration's
+   * authorization with zero forensic record — the `oauthClient` table churns
+   * on every DCR onboarding and revocation is the only customer-facing kill
+   * switch. Metadata: `{ clientId, clientName, accessTokensRevoked,
+   * refreshTokensRevoked, consentRowsRevoked }`. The pre-fetch / DELETE shape
+   * mirrors `user.session_revoke` so a failed revoke still emits one row with
+   * `status: "failure"` and the captured `clientName` from the pre-fetch.
+   */
+  oauth_client: {
+    revoke: "oauth_client.revoke",
+  },
+  /**
    * Hosted MCP session lifecycle (#2024 PR C). Emitted on every new
    * session-init at `/mcp/{workspace_id}/sse` — sampled per session,
    * not per JSON-RPC frame, since a single agent connection can issue

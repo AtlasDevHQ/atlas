@@ -199,6 +199,33 @@ export const ListApiKeysResponseSchema = z.object({
   total: z.number(),
 });
 
+// ── OAuth Clients (#2024) ────────────────────────────────────────
+
+/**
+ * One OAuth 2.1 client row from `/api/v1/admin/oauth-clients`. The hosted MCP
+ * install path issues these via Dynamic Client Registration; the admin page
+ * reads them for inspection + revocation only. `lastUsedAt` is the most
+ * recent `oauthAccessToken.createdAt` for the client and goes null when no
+ * token has been issued yet (registered but never used).
+ */
+export const OAuthClientSchema = z.object({
+  clientId: z.string(),
+  clientName: z.string().nullable(),
+  redirectUris: z.array(z.string()),
+  createdAt: z.string(),
+  updatedAt: z.string().nullable(),
+  disabled: z.boolean(),
+  type: z.string().nullable(),
+  lastUsedAt: z.string().nullable(),
+  tokenCount: z.number(),
+});
+
+export const ListOAuthClientsResponseSchema = z.object({
+  clients: z.array(OAuthClientSchema),
+});
+
+export type OAuthClient = z.infer<typeof OAuthClientSchema>;
+
 // ── Plugins ──────────────────────────────────────────────────────
 
 const PluginDescriptionSchema = z.object({

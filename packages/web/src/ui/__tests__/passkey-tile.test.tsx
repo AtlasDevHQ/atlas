@@ -19,10 +19,8 @@ mock.module("@/lib/auth/passkey-client", () => ({
   }),
 }));
 
-import {
-  PasskeyTile,
-  deriveDefaultPasskeyName,
-} from "../components/admin/security/passkey-tile";
+import { PasskeyTile } from "../components/admin/security/passkey-tile";
+import { deriveDeviceName } from "@/lib/auth/derive-device-name";
 
 const originalPublicKeyCredential = (
   globalThis as unknown as { PublicKeyCredential?: unknown }
@@ -58,31 +56,31 @@ afterEach(() => {
   restorePublicKeyCredential();
 });
 
-describe("deriveDefaultPasskeyName", () => {
+describe("deriveDeviceName", () => {
   test("recognizes Mac Safari", () => {
     const ua =
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
-    expect(deriveDefaultPasskeyName(ua)).toBe("Mac · Safari");
+    expect(deriveDeviceName(ua)).toBe("Mac · Safari");
   });
 
   test("recognizes Windows Chrome", () => {
     const ua =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    expect(deriveDefaultPasskeyName(ua)).toBe("Windows PC · Chrome");
+    expect(deriveDeviceName(ua)).toBe("Windows PC · Chrome");
   });
 
   test("recognizes iPhone Safari", () => {
     const ua =
       "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
-    expect(deriveDefaultPasskeyName(ua)).toBe("iPhone · Safari");
+    expect(deriveDeviceName(ua)).toBe("iPhone · Safari");
   });
 
   test("falls back when nothing matches", () => {
-    expect(deriveDefaultPasskeyName("ExoticHttpBot/1.0")).toBe("This device");
+    expect(deriveDeviceName("ExoticHttpBot/1.0")).toBe("This device");
   });
 
   test("handles bare device without browser", () => {
-    expect(deriveDefaultPasskeyName("Mozilla/5.0 (Android; Mobile)")).toBe("Android");
+    expect(deriveDeviceName("Mozilla/5.0 (Android; Mobile)")).toBe("Android");
   });
 });
 

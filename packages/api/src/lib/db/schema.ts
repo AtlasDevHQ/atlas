@@ -518,6 +518,29 @@ export const userFavoritePrompts = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Trusted devices — per-user 2FA trust grants. See migration 0048.
+// ---------------------------------------------------------------------------
+
+export const trustedDevice = pgTable(
+  "trusted_device",
+  {
+    // Matches Better Auth's `verification.identifier` (the trust-device cookie payload).
+    identifier: text("identifier").primaryKey(),
+    // FK to "user"(id) ON DELETE CASCADE is enforced in the migration —
+    // Drizzle's `references()` would require Better Auth's `user` table to
+    // be defined in this schema, which it isn't. Plain text() matches.
+    userId: text("user_id").notNull(),
+    userAgent: text("user_agent"),
+    ipAddress: text("ip_address"),
+    deviceLabel: text("device_label"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_trusted_device_user_id_created_at").on(t.userId, t.createdAt.desc()),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Query suggestions
 // ---------------------------------------------------------------------------
 

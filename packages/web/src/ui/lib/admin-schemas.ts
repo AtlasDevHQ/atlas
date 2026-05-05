@@ -288,3 +288,33 @@ export const PlatformCatalogResponseSchema = z.object({
   entries: z.array(CatalogEntrySchema),
   total: z.number(),
 });
+
+// ── Security adoption telemetry (#2094) ───────────────────────
+
+export const SecurityMetricsSchema = z.object({
+  adminCount: z.number().int().min(0),
+  mfaEnrolled: z.number().int().min(0),
+  twoFactorOnly: z.number().int().min(0),
+  passkeyOnly: z.number().int().min(0),
+  bothFactors: z.number().int().min(0),
+  noFactors: z.number().int().min(0),
+  activeTrustDevices: z.number().int().min(0),
+  trustDeviceUsersInLast30Days: z.number().int().min(0),
+});
+
+export type SecurityMetrics = z.infer<typeof SecurityMetricsSchema>;
+
+export const WorkspaceSecurityMetricsSchema = SecurityMetricsSchema.extend({
+  workspaceId: z.string(),
+  workspaceName: z.string(),
+  workspaceSlug: z.string().nullable(),
+});
+
+export type WorkspaceSecurityMetrics = z.infer<typeof WorkspaceSecurityMetricsSchema>;
+
+export const PlatformSecurityMetricsSchema = z.object({
+  aggregate: SecurityMetricsSchema,
+  workspaces: z.array(WorkspaceSecurityMetricsSchema),
+});
+
+export type PlatformSecurityMetrics = z.infer<typeof PlatformSecurityMetricsSchema>;

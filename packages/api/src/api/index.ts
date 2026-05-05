@@ -320,6 +320,22 @@ try {
   );
 }
 
+// Platform security adoption telemetry — cross-tenant MFA + passkey + trust-device counts.
+// Mount path mirrors the issue spec (`/api/v1/platform/admin/security/metrics`)
+// rather than the typical `/api/v1/platform/<area>` convention because the
+// "admin" infix signals platform_admin governance scope, not a regular admin
+// surface — matters when reading audit/log lines.
+try {
+  const { platformSecurityMetrics } = await import("./routes/platform-security-metrics");
+  app.route("/api/v1/platform/admin/security", platformSecurityMetrics);
+  log.info("Platform security metrics routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform security metrics routes",
+  );
+}
+
 // Platform SLA monitoring routes — enterprise-gated, platform_admin role.
 try {
   const { platformSLA } = await import("./routes/platform-sla");

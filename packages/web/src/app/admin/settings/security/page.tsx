@@ -24,6 +24,7 @@ import { PasskeyTile } from "@/ui/components/admin/security/passkey-tile";
 import { PasskeyList, type PasskeyRow } from "@/ui/components/admin/security/passkey-list";
 import { BackupCodesStatus } from "@/ui/components/admin/security/backup-codes-status";
 import { TrustedDevicesList } from "@/ui/components/admin/security/trusted-devices-list";
+import { SecurityPosturePanel } from "@/ui/components/admin/security/security-posture-panel";
 
 interface SessionUser {
   email: string;
@@ -105,6 +106,8 @@ export default function SecurityPage() {
       </div>
 
       <div className="mx-auto max-w-2xl space-y-4">
+        <SecurityPosturePanel />
+
         <PasskeyTile hasPasskey={hasPasskey} onChange={handlePasskeyChange} />
 
         <TwoFactorSetup enabled={totpEnabled} onChange={handleTotpChange} />

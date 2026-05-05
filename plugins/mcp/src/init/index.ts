@@ -136,8 +136,7 @@ async function runHosted(opts: HostedInitOptions): Promise<RunInitResult> {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[atlas-mcp init] failed to write ${configPath}: ${msg}`);
     if (existing !== null) {
-      console.error(`A backup of your previous config is at ${configPath}.bak (or a timestamped sibling).`);
-      console.error(`Restore with: cp '${configPath}.bak' '${configPath}'`);
+      console.error("Your existing config was not modified — the new content was staged in a sibling tmp file and the rename never happened.");
     }
     return { exitCode: 1 };
   }
@@ -191,14 +190,10 @@ async function runLocal(opts: LocalInitOptions): Promise<RunInitResult> {
   try {
     writeResult = await writeConfigWithBackup(configPath, merged);
   } catch (err) {
-    // The .bak (if any) was written *before* the failed write, so a partial
-    // failure may have moved the original out of place. Tell the user where
-    // to recover from instead of leaving them with a generic "Fatal".
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[atlas-mcp init] failed to write ${configPath}: ${msg}`);
     if (existing !== null) {
-      console.error(`A backup of your previous config is at ${configPath}.bak (or a timestamped sibling).`);
-      console.error(`Restore with: cp '${configPath}.bak' '${configPath}'`);
+      console.error("Your existing config was not modified — the new content was staged in a sibling tmp file and the rename never happened.");
     }
     return { exitCode: 1 };
   }

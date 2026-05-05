@@ -5,7 +5,15 @@
  * exists).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  copyFileSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 /** Stdio launcher — `bunx @useatlas/mcp serve`, used by `init --local`. */
@@ -28,6 +36,22 @@ export interface HttpServerConfig {
 }
 
 export type ServerConfig = StdioServerConfig | HttpServerConfig;
+
+/**
+ * Type guard for `HttpServerConfig`. Wire format is locked by the MCP
+ * client spec — `{ url, headers? }` for HTTP/SSE, `{ command, args, env? }`
+ * for stdio — so we narrow structurally. Use this guard rather than
+ * inlining `"url" in cfg` at call sites: a future stdio variant adding a
+ * URL field would silently break inline checks.
+ */
+export function isHttpServerConfig(cfg: ServerConfig): cfg is HttpServerConfig {
+  return "url" in cfg && typeof cfg.url === "string";
+}
+
+/** Type guard for `StdioServerConfig`. See `isHttpServerConfig`. */
+export function isStdioServerConfig(cfg: ServerConfig): cfg is StdioServerConfig {
+  return "command" in cfg && typeof cfg.command === "string";
+}
 
 interface BuildOpts {
   /** Inline ATLAS_DATASOURCE_URL into the env block. Omit to inherit the user's shell env. */
@@ -117,24 +141,78 @@ export interface WriteResult {
   backupPath: string | null;
 }
 
+/**
+ * Write a file atomically with a `.bak` of any previous version.
+ *
+ * Order of operations matters: a naive `cp old → bak; write new` leaves
+ * the user without an original config if `write` fails after the copy.
+ * Instead we write to a sibling `.tmp` first, rename it over the live
+ * path (POSIX `rename(2)` is atomic on the same filesystem), and only
+ * then write the backup — so a failed write never destroys the prior
+ * file, and a failed backup leaves the new file in place.
+ */
 export async function writeConfigWithBackup(
   configPath: string,
   newContent: string,
 ): Promise<WriteResult> {
-  let backupPath: string | null = null;
-
-  if (existsSync(configPath)) {
-    backupPath = `${configPath}.bak`;
-    if (existsSync(backupPath)) {
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      backupPath = `${configPath}.${stamp}.bak`;
+  const dir = dirname(configPath);
+  if (!existsSync(configPath)) {
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Could not create config directory ${dir}: ${msg}`,
+        { cause: err },
+      );
     }
-    copyFileSync(configPath, backupPath);
-  } else {
-    mkdirSync(dirname(configPath), { recursive: true });
   }
 
-  writeFileSync(configPath, newContent, { encoding: "utf8", mode: 0o600 });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const tmpPath = `${configPath}.${stamp}.tmp`;
+  try {
+    writeFileSync(tmpPath, newContent, { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Could not write ${tmpPath}: ${msg}`, { cause: err });
+  }
+
+  let backupPath: string | null = null;
+  if (existsSync(configPath)) {
+    backupPath = existsSync(`${configPath}.bak`)
+      ? `${configPath}.${stamp}.bak`
+      : `${configPath}.bak`;
+    try {
+      copyFileSync(configPath, backupPath);
+    } catch (err) {
+      // Best-effort cleanup of the staged tmp file before re-throwing.
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // intentionally ignored: cleanup of a tmp we just wrote is best-effort.
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Could not back up existing config ${configPath} → ${backupPath}: ${msg}`,
+        { cause: err },
+      );
+    }
+  }
+
+  try {
+    renameSync(tmpPath, configPath);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // intentionally ignored: cleanup of a tmp we just wrote is best-effort.
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Could not rename ${tmpPath} → ${configPath}: ${msg}`,
+      { cause: err },
+    );
+  }
   return { backupPath };
 }
 

@@ -151,24 +151,31 @@ interface TokenResponse {
 
 // ── Errors ─────────────────────────────────────────────────────────────
 
+/**
+ * Stable error code for tests + exit-code mapping. Exported as a named
+ * union so call sites can `satisfies HostedFlowErrorCode` against the
+ * full set (e.g. an exhaustive switch over CLI exit codes).
+ */
+export type HostedFlowErrorCode =
+  | "invalid_api_url"
+  | "discovery_failed"
+  | "issuer_mismatch"
+  | "registration_failed"
+  | "loopback_bind_failed"
+  | "browser_failed"
+  | "callback_timeout"
+  | "callback_state_mismatch"
+  | "callback_missing_code"
+  | "callback_oauth_error"
+  | "callback_method_not_allowed"
+  | "token_exchange_failed"
+  | "malformed_jwt"
+  | "missing_workspace_claim";
+
 export class HostedFlowError extends Error {
   constructor(
     message: string,
-    /** Stable error code for tests + exit-code mapping. */
-    public readonly code:
-      | "invalid_api_url"
-      | "discovery_failed"
-      | "issuer_mismatch"
-      | "registration_failed"
-      | "loopback_bind_failed"
-      | "browser_failed"
-      | "callback_timeout"
-      | "callback_state_mismatch"
-      | "callback_missing_code"
-      | "callback_oauth_error"
-      | "callback_method_not_allowed"
-      | "token_exchange_failed"
-      | "missing_workspace_claim",
+    public readonly code: HostedFlowErrorCode,
     options?: ErrorOptions,
   ) {
     super(message, options);
@@ -179,6 +186,7 @@ export class HostedFlowError extends Error {
 // ── Constants ──────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 30 * 1000;
 const REQUESTED_SCOPE = "openid profile email mcp:read offline_access";
 const CLIENT_NAME = "Atlas MCP CLI";
 const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
@@ -220,10 +228,12 @@ export async function runHostedAuthFlow(
   const codeChallenge = await pkceChallenge(codeVerifier);
 
   const callbackResolver = createCallbackResolver(state, timeoutMs);
-  // Defuse unhandled-rejection warnings on the abort path: we cancel the
-  // resolver in `finally`, which calls `reject()`. If the outer flow
-  // already rejected via a different error, that rejection is orphaned.
-  // Attach a no-op catch so it never propagates as unhandled.
+  // intentionally ignored: the outer `finally` calls `cancel()`, which
+  // settles the resolver as a typed rejection. Whenever the outer flow
+  // already failed via a different throw path (register/exchange/etc.)
+  // that cancel-rejection becomes orphaned. The real error is surfaced
+  // by the throw above; this `.catch` only silences Node's unhandled-
+  // rejection warning for the abort path.
   callbackResolver.promise.catch(() => {});
 
   let server: LoopbackServer | undefined;
@@ -333,6 +343,39 @@ function validateApiUrl(apiUrl: string): void {
 
 // ── Step implementations ───────────────────────────────────────────────
 
+/**
+ * Surface OAuth 2.1 error responses as `error: error_description` when
+ * the body parses as the standard `{error,error_description,error_uri}`
+ * shape (RFC 6749 §5.2). Falls back to the raw text (truncated to 1KiB)
+ * when the body is empty / not JSON / not the canonical shape, so we
+ * never silently lose upstream signal.
+ */
+async function describeErrorBody(res: Response): Promise<string> {
+  const raw = await res.text().catch(() => "");
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw) as Partial<{
+      error: string;
+      error_description: string;
+      error_uri: string;
+    }>;
+    const parts: string[] = [];
+    if (typeof parsed.error === "string" && parsed.error.length > 0) {
+      parts.push(parsed.error);
+    }
+    if (typeof parsed.error_description === "string" && parsed.error_description.length > 0) {
+      parts.push(parsed.error_description);
+    }
+    if (typeof parsed.error_uri === "string" && parsed.error_uri.length > 0) {
+      parts.push(`see ${parsed.error_uri}`);
+    }
+    if (parts.length > 0) return parts.join(": ");
+  } catch {
+    // intentionally ignored: not JSON — fall through to raw-text branch.
+  }
+  return raw.length > 1024 ? `${raw.slice(0, 1024)}…` : raw;
+}
+
 async function discover(
   apiUrl: string,
   fetchImpl: typeof fetch,
@@ -343,6 +386,7 @@ async function discover(
     res = await fetchImpl(url, {
       method: "GET",
       headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -405,6 +449,7 @@ async function register(
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -415,9 +460,9 @@ async function register(
     );
   }
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
+    const detail = await describeErrorBody(res);
     throw new HostedFlowError(
-      `Dynamic Client Registration returned ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+      `Dynamic Client Registration returned ${res.status}${detail ? `: ${detail}` : ""}`,
       "registration_failed",
     );
   }
@@ -455,8 +500,6 @@ function buildAuthorizeUrl(args: BuildAuthorizeUrlArgs): string {
     code_challenge: args.codeChallenge,
     code_challenge_method: "S256",
   });
-  // Robust against authorization endpoints that already carry query
-  // (rare, but cheap to handle).
   const sep = args.authorizationEndpoint.includes("?") ? "&" : "?";
   return `${args.authorizationEndpoint}${sep}${params.toString()}`;
 }
@@ -487,6 +530,7 @@ async function exchangeCode(args: ExchangeArgs): Promise<TokenResponse> {
         Accept: "application/json",
       },
       body: body.toString(),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -497,9 +541,9 @@ async function exchangeCode(args: ExchangeArgs): Promise<TokenResponse> {
     );
   }
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
+    const detail = await describeErrorBody(res);
     throw new HostedFlowError(
-      `Token endpoint returned ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+      `Token endpoint returned ${res.status}${detail ? `: ${detail}` : ""}`,
       "token_exchange_failed",
     );
   }
@@ -542,7 +586,7 @@ function decodeJwtPayload(jwt: string): Record<string, unknown> {
   if (parts.length !== 3) {
     throw new HostedFlowError(
       `Access token is not a JWT (expected 3 parts, got ${parts.length})`,
-      "missing_workspace_claim",
+      "malformed_jwt",
     );
   }
   try {
@@ -551,7 +595,7 @@ function decodeJwtPayload(jwt: string): Record<string, unknown> {
   } catch (err) {
     throw new HostedFlowError(
       `Could not decode JWT payload: ${err instanceof Error ? err.message : String(err)}`,
-      "missing_workspace_claim",
+      "malformed_jwt",
       { cause: err },
     );
   }
@@ -640,11 +684,10 @@ function createCallbackResolver(
 
   const handler: LoopbackHandler = (params, method) => {
     if (method !== "GET") {
-      // RFC 8252 §7.3 + OAuth 2.1 §3.1.2.5 — the redirect URI is fetched
-      // by the user-agent on completion of the authorization step;
-      // anything other than GET is an attempt to inject parameters
-      // out-of-band. Reject without settling so a probe can't preempt
-      // the legitimate callback.
+      // User-agents only ever fetch the redirect URI as GET on completion
+      // of the authorization step; anything else is an attempt to inject
+      // parameters out-of-band. Reject without settling so a probe can't
+      // preempt the legitimate callback.
       return {
         status: 405,
         body: renderCallbackPage({
@@ -731,13 +774,16 @@ function createCallbackResolver(
 }
 
 /**
- * Default loopback listener — Bun.serve on 127.0.0.1:0. The handler runs
- * once: subsequent requests get a 410 (the auth flow already settled).
+ * Default loopback listener — Bun.serve on 127.0.0.1:0. The handler is
+ * single-shot; subsequent requests get a 404 (see the inline comment
+ * below for why 404 instead of 410). Exported so the test suite can
+ * exercise the once-fired guard without re-binding through the public
+ * `runHostedAuthFlow` entry point.
  */
-const defaultServeImpl: ServeImpl = async (handler) => {
-  // Once-fired guard. RFC 8252 §8.10 recommends rejecting all but the
-  // first request to the redirect URI — replays could only ever be
-  // probes since the legitimate auth code is single-use server-side.
+export const defaultServeImpl: ServeImpl = async (handler) => {
+  // Once-fired guard. The legitimate auth code is single-use server-side,
+  // so any second hit on the redirect URI is either a stray browser
+  // refresh or a fingerprinting probe — refuse either way.
   let used = false;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -773,12 +819,7 @@ const defaultServeImpl: ServeImpl = async (handler) => {
   return {
     port: server.port,
     stop: async () => {
-      // Bun ≥1.1 returns a Promise from stop(); older versions returned
-      // void. Detect at runtime so this works on either.
-      const out = (server as unknown as { stop: (closeActive?: boolean) => unknown }).stop(true);
-      if (out && typeof (out as Promise<unknown>).then === "function") {
-        await (out as Promise<unknown>);
-      }
+      await server.stop(true);
     },
   };
 };
@@ -815,6 +856,9 @@ const defaultOpenBrowserImpl: OpenBrowserImpl = async (url) => {
   // we just need to invoke it. If the helper isn't found, return
   // ok:false so the caller falls back to "open this URL manually".
   const platform = process.platform;
+  const helper = platform === "darwin" ? "open"
+    : platform === "win32" ? "cmd /c start"
+    : "xdg-open";
   const cmd = platform === "darwin" ? ["open", url]
     : platform === "win32" ? ["cmd", "/c", "start", "", url]
     : ["xdg-open", url];
@@ -827,6 +871,16 @@ const defaultOpenBrowserImpl: OpenBrowserImpl = async (url) => {
     }
     return { ok: true };
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      return {
+        ok: false,
+        detail:
+          platform === "linux"
+            ? `${helper} not found on PATH — install xdg-utils (e.g. apt install xdg-utils) or open the URL above manually`
+            : `${helper} not found on PATH — open the URL above manually`,
+      };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, detail: msg };
   }
@@ -841,7 +895,6 @@ function defaultRandomBytes(length: number): Uint8Array {
 }
 
 function encodeBase64Url(bytes: Uint8Array): string {
-  // bun ships btoa; convert via binary-string round-trip.
   let bin = "";
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

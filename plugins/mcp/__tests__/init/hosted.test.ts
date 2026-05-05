@@ -1,27 +1,26 @@
 /**
  * Tests for the OAuth 2.1 loopback flow in `init --hosted`.
  *
- * Strategy: every external dep (fetch, browser, loopback listener, RNG,
- * timer) is replaced with a deterministic stub via the `HostedFlowOptions`
- * test seams. No real ports are bound, no real browser launches, no real
- * HTTP. The unit under test is pure flow logic.
- *
- * Coverage:
- *   - happy path: discovery → DCR → callback → token exchange → JWT decode
- *   - state mismatch (CSRF probe)
- *   - missing code in callback
- *   - oauth `error=access_denied` path
- *   - token endpoint 400 (invalid_grant)
- *   - browser-launch failure falls back to "open URL manually" but completes
- *   - missing workspace_id claim in JWT
- *   - end-to-end runInit({ mode: "hosted", write: true }) merges into config
+ * Strategy: most external deps (fetch, browser, loopback listener, RNG,
+ * timer) are replaced with deterministic stubs via the `HostedFlowOptions`
+ * test seams. The integration block at the bottom exercises the actual
+ * `defaultServeImpl` against a real Bun.serve port to pin the once-fired
+ * listener guard.
  */
-import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  defaultServeImpl,
   runHostedAuthFlow,
   type HostedFlowOptions,
   type LoopbackHandler,
@@ -32,7 +31,22 @@ import { runInit } from "../../src/init/index.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-function captureStdio() {
+interface StdioCapture {
+  logs: string[];
+  errs: string[];
+  restore: () => void;
+}
+
+let activeCapture: StdioCapture | null = null;
+
+afterEach(() => {
+  if (activeCapture) {
+    activeCapture.restore();
+    activeCapture = null;
+  }
+});
+
+function captureStdio(): StdioCapture {
   const logs: string[] = [];
   const errs: string[] = [];
   const origLog = console.log;
@@ -43,7 +57,7 @@ function captureStdio() {
   console.error = (...a: unknown[]) => {
     errs.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
   };
-  return {
+  const cap: StdioCapture = {
     logs,
     errs,
     restore: () => {
@@ -51,6 +65,8 @@ function captureStdio() {
       console.error = origErr;
     },
   };
+  activeCapture = cap;
+  return cap;
 }
 
 const FAKE_API = "https://atlas.test";
@@ -709,6 +725,226 @@ describe("runInit --hosted error mapping", () => {
       expect(err).toMatch(/state mismatch/i);
     } finally {
       cap.restore();
+    }
+  });
+});
+
+describe("runHostedAuthFlow — wire format header pinning", () => {
+  // OAuth 2.1 §3.2.1 mandates the form-encoded body for the token endpoint.
+  // A regression to `application/json` here would break interop with every
+  // standards-compliant server. DCR is JSON-bodied; pin both directions so
+  // a header swap can't slip through with the existing tests.
+  it("DCR uses application/json + Accept: application/json", async () => {
+    const { serve, controller } = fakeServe({});
+    let dcrHeaders: Headers | null = null;
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        registration: async (req: Request) => {
+          dcrHeaders = req.headers;
+          return new Response(JSON.stringify({ client_id: "cid" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        },
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "x", state: EXPECTED_STATE }));
+    await pending;
+    expect(dcrHeaders).not.toBeNull();
+    expect(dcrHeaders!.get("Content-Type")).toBe("application/json");
+    expect(dcrHeaders!.get("Accept")).toBe("application/json");
+  });
+
+  it("token exchange uses application/x-www-form-urlencoded + Accept: application/json", async () => {
+    const { serve, controller } = fakeServe({});
+    let tokenHeaders: Headers | null = null;
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        token: async (req: Request) => {
+          tokenHeaders = req.headers;
+          return new Response(
+            JSON.stringify({
+              access_token: jwt({
+                sub: "u",
+                iss: DISCOVERY_BODY.issuer,
+                "https://atlas.useatlas.dev/workspace_id": "ws_alpha",
+              }),
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        },
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "x", state: EXPECTED_STATE }));
+    await pending;
+    expect(tokenHeaders).not.toBeNull();
+    expect(tokenHeaders!.get("Content-Type")).toBe("application/x-www-form-urlencoded");
+    expect(tokenHeaders!.get("Accept")).toBe("application/json");
+  });
+});
+
+describe("runHostedAuthFlow — malformed JWT discriminant", () => {
+  it("rejects with malformed_jwt when access_token isn't a 3-part token", async () => {
+    const { serve, controller } = fakeServe({});
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        token: { access_token: "not-a-jwt" },
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+    await expect(pending).rejects.toMatchObject({ code: "malformed_jwt" });
+  });
+
+  it("rejects with malformed_jwt when payload base64 is not JSON", async () => {
+    const { serve, controller } = fakeServe({});
+    // Three parts, middle is base64url("not-json"), signature is junk.
+    const middle = btoa("not-json").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        token: { access_token: `header.${middle}.sig` },
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+    await expect(pending).rejects.toMatchObject({ code: "malformed_jwt" });
+  });
+});
+
+describe("runInit --hosted --write failure path", () => {
+  it("surfaces a write failure and leaves any existing config untouched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-init-hosted-fail-"));
+    // Pre-existing config we expect to survive the failed write.
+    const target = join(dir, "claude_desktop_config.json");
+    const original = `${JSON.stringify({ mcpServers: { existing: { command: "x", args: [] } } }, null, 2)}\n`;
+    writeFileSync(target, original, { encoding: "utf8" });
+    // Make the directory read-only so the tmp write fails. POSIX-only —
+    // skip on win32 where chmod permission bits aren't enforced.
+    if (process.platform === "win32") return;
+    chmodSync(dir, 0o500);
+    const { serve, controller } = fakeServe({});
+    const cap = captureStdio();
+    try {
+      const pending = runInit({
+        mode: "hosted",
+        apiUrl: FAKE_API,
+        client: "claude-desktop",
+        write: true,
+        configPathOverride: target,
+        fetchImpl: fakeFetch({}),
+        serveImpl: serve,
+        openBrowserImpl: async () => ({ ok: true }),
+        randomBytesImpl: deterministicRandom,
+        callbackTimeoutMs: 5000,
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+      const res = await pending;
+      expect(res.exitCode).toBe(1);
+      const err = cap.errs.join("\n");
+      expect(err).toMatch(/failed to write/);
+      expect(err).toMatch(/not modified/);
+      // Original content survives — atomic-write guarantee.
+      expect(readFileSync(target, "utf8")).toBe(original);
+    } finally {
+      cap.restore();
+      // Restore perms so the tmpdir cleanup succeeds.
+      chmodSync(dir, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces a directory-creation failure with the directory in the message", async () => {
+    if (process.platform === "win32") return;
+    const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-init-hosted-mkdir-"));
+    // Write a regular file where we want to create a subdirectory — the
+    // recursive mkdir will fail with ENOTDIR.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "");
+    const target = join(blocker, "child", "claude_desktop_config.json");
+    const { serve, controller } = fakeServe({});
+    const cap = captureStdio();
+    try {
+      const pending = runInit({
+        mode: "hosted",
+        apiUrl: FAKE_API,
+        client: "claude-desktop",
+        write: true,
+        configPathOverride: target,
+        fetchImpl: fakeFetch({}),
+        serveImpl: serve,
+        openBrowserImpl: async () => ({ ok: true }),
+        randomBytesImpl: deterministicRandom,
+        callbackTimeoutMs: 5000,
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+      const res = await pending;
+      expect(res.exitCode).toBe(1);
+      const err = cap.errs.join("\n");
+      expect(err).toMatch(/Could not create config directory/);
+    } finally {
+      cap.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Real Bun.serve integration: once-fired listener guard ──────────────
+//
+// The `defaultServeImpl` once-fired flag and 404-for-everything-else
+// branches live inside Bun.serve's `fetch` callback — they aren't reachable
+// through the `fakeServe` test seam used elsewhere. Bind a real port (port
+// 0 → OS-assigned) and exercise the guards directly.
+
+describe("defaultServeImpl — single-shot listener guard", () => {
+  it("invokes the handler once, returns 404 on subsequent /callback requests, and 404s non-callback paths", async () => {
+    let calls = 0;
+    const handler: LoopbackHandler = (params) => {
+      calls += 1;
+      return { status: 200, body: `ok:${params.get("code") ?? ""}` };
+    };
+    const server = await defaultServeImpl(handler);
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const first = await fetch(`${base}/callback?code=abc&state=xyz`);
+      expect(first.status).toBe(200);
+      expect(await first.text()).toBe("ok:abc");
+      // Replay — the handler MUST NOT run again.
+      const second = await fetch(`${base}/callback?code=abc&state=xyz`);
+      expect(second.status).toBe(404);
+      // Non-callback path is also 404 and never reaches the handler.
+      const stray = await fetch(`${base}/anything-else`);
+      expect(stray.status).toBe(404);
+      expect(calls).toBe(1);
+    } finally {
+      await server.stop();
     }
   });
 });

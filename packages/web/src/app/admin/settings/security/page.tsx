@@ -23,6 +23,7 @@ import { TwoFactorSetup } from "@/ui/components/admin/security/two-factor-setup"
 import { PasskeyTile } from "@/ui/components/admin/security/passkey-tile";
 import { PasskeyList, type PasskeyRow } from "@/ui/components/admin/security/passkey-list";
 import { BackupCodesStatus } from "@/ui/components/admin/security/backup-codes-status";
+import { TrustedDevicesList } from "@/ui/components/admin/security/trusted-devices-list";
 
 interface SessionUser {
   email: string;
@@ -115,6 +116,10 @@ export default function SecurityPage() {
           {listError && (
             <p className="mt-2 text-sm text-destructive">{listError}</p>
           )}
+        </div>
+
+        <div className="pt-2">
+          <TrustedDevicesList />
         </div>
       </div>
     </div>

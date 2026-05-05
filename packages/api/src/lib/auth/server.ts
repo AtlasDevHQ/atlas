@@ -1483,6 +1483,25 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
           },
         },
       },
+      verification: {
+        create: {
+          // Capture device metadata for trust-device cookies. The 2FA plugin
+          // writes the verification row with `identifier: "trust-device-..."`;
+          // we mirror UA / IP / label into `trusted_device` keyed on the same
+          // identifier so the security page can render a meaningful list.
+          // Hook is fire-and-forget — see trusted-device-hook.ts for why
+          // failures here MUST NOT propagate.
+          after: async (record: Record<string, unknown>, ctx: unknown) => {
+            const { onVerificationCreated } = await import(
+              "@atlas/api/lib/auth/trusted-device-hook"
+            );
+            await onVerificationCreated(
+              record,
+              ctx as { headers?: Headers; request?: Request } | null | undefined,
+            );
+          },
+        },
+      },
     },
   };
 

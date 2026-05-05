@@ -281,6 +281,11 @@ admin.route("/oauth-clients/", adminOauthClients);
 // Invitations — registered directly to avoid sub-router middleware leaking to other /users/* routes
 import { registerInvitationRoutes } from "./admin-invitations";
 registerInvitationRoutes(admin, adminAuthAndContext);
+// Per-user trusted-browsers list + revoke. Lives on the parent admin router so
+// it shares the `mfaRequired` carve-out with /me/password-status: a user might
+// be revoking their last MFA factor and must reach the route regardless.
+import { registerTrustedDeviceRoutes } from "./me-trusted-devices";
+registerTrustedDeviceRoutes(admin, reqId);
 admin.route("/connections", adminConnections);
 admin.route("/connections/", adminConnections);
 admin.route("/publish", adminPublish);

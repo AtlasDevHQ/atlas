@@ -4,7 +4,7 @@
  * Covers the role × mode × enrollment-state matrix:
  *   - managed admin without MFA → 403 with mfa_enrollment_required
  *   - managed admin with TOTP → pass-through
- *   - managed admin with passkey only → pass-through (#2082)
+ *   - managed admin with passkey only → pass-through
  *   - managed admin with both factors → pass-through
  *   - managed platform_admin without MFA → 403
  *   - managed owner without MFA → 403 (mirrors adminAuth's role admit-list)
@@ -123,6 +123,8 @@ describe("mfaRequired middleware", () => {
     expect(body.requestId).toBe("test-req-id");
     expect(typeof body.message).toBe("string");
     expect((body.message as string).toLowerCase()).toContain("two-factor");
+    // Copy must mention both options so passkey-only users aren't told to set up TOTP.
+    expect((body.message as string).toLowerCase()).toMatch(/passkey/);
     // Lock the body shape — no leakage of internal fields like userId/role/claims.
     expect(Object.keys(body).toSorted()).toEqual(
       ["enrollmentUrl", "error", "message", "requestId"].toSorted(),
@@ -170,9 +172,6 @@ describe("mfaRequired middleware", () => {
   });
 
   it("passes through when an admin user has only a passkey enrolled (no TOTP)", async () => {
-    // #2082 — passkey-only admins must be admitted. The gate accepts any
-    // strong second factor; before this issue the only acceptable factor
-    // was TOTP, which would have rejected this user with a 403.
     const app = new OpenAPIHono<AuthEnv>();
     injectAuth(app, fakeAuthResult({ role: "admin", twoFactorEnabled: false, passkeyCount: 1 }));
     app.use(mfaRequired);
@@ -354,10 +353,8 @@ describe("mfaRequired middleware", () => {
   });
 
   it("treats passkeyCount values that aren't real positive numbers as not-enrolled", async () => {
-    // Symmetric to the twoFactorEnabled-as-string case. A future internal-DB
-    // shape change that surfaces COUNT(*) as a string ("1") instead of an
-    // integer must NOT silently admit users — the resolver in managed.ts
-    // already coerces, but the gate fail-closes as a second line of defense.
+    // Symmetric to the twoFactorEnabled-as-string case. The gate's strict
+    // narrowing is the load-bearing defense against shape drift.
     const cases: Array<{ name: string; value: unknown }> = [
       { name: "string '1'", value: "1" as unknown as number },
       { name: "string 'true'", value: "true" as unknown as number },
@@ -366,7 +363,7 @@ describe("mfaRequired middleware", () => {
       { name: "negative", value: -1 },
       { name: "zero", value: 0 },
     ];
-    for (const { value } of cases) {
+    for (const { name, value } of cases) {
       const app = new OpenAPIHono<AuthEnv>();
       app.use(
         createMiddleware<AuthEnv>(async (c, next) => {
@@ -391,8 +388,39 @@ describe("mfaRequired middleware", () => {
       app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
 
       const res = await app.request("/admin/anything");
-      expect(res.status).toBe(403);
+      expect(res.status, `passkeyCount=${name} should reject`).toBe(403);
     }
+  });
+
+  it("treats claims with twoFactorEnabled=false and no passkeyCount field as not-enrolled", async () => {
+    // The gate must fail closed when `passkeyCount` is absent from claims —
+    // not just when its value is the wrong shape. Catches a future managed.ts
+    // refactor that stops writing the field under some code path.
+    const app = new OpenAPIHono<AuthEnv>();
+    app.use(
+      createMiddleware<AuthEnv>(async (c, next) => {
+        c.set("requestId", "test-req-id");
+        c.set("authResult", {
+          authenticated: true,
+          mode: "managed",
+          user: {
+            id: "user-1",
+            mode: "managed",
+            label: "test@atlas.dev",
+            role: "admin",
+            activeOrganizationId: "org-1",
+            claims: Object.freeze({ twoFactorEnabled: false }), // no passkeyCount key
+          },
+        });
+        c.set("atlasMode", "published");
+        await next();
+      }),
+    );
+    app.use(mfaRequired);
+    app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/admin/anything");
+    expect(res.status).toBe(403);
   });
 
   it("returns 500 auth_misconfigured when authResult is missing (middleware-order contract)", async () => {

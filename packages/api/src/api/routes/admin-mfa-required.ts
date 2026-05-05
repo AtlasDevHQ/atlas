@@ -6,7 +6,7 @@
  * authenticates against an admin router, this middleware refuses to
  * serve any route until they have enrolled at least one strong second
  * factor — either TOTP via Better Auth's `twoFactor` plugin, or a WebAuthn
- * passkey via `@better-auth/passkey` (#2082).
+ * passkey via `@better-auth/passkey`.
  *
  * Apply downstream of {@link adminAuth} or {@link platformAdminAuth}: this
  * middleware reads `c.get("authResult")` and never re-authenticates.
@@ -177,7 +177,7 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
     {
       error: MFA_ENROLLMENT_REQUIRED,
       message:
-        "Two-factor authentication is required for admin accounts. Enroll a TOTP authenticator to continue.",
+        "Two-factor authentication is required for admin accounts. Enroll an authenticator app or passkey to continue.",
       enrollmentUrl: ENROLLMENT_URL,
       requestId,
     },

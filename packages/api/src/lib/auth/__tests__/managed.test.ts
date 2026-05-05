@@ -1,4 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+
+// Module mock for the internal-DB adapter must be installed BEFORE
+// `validateManaged` is imported so its transitive `hasInternalDB` /
+// `internalQuery` references resolve to these stubs. Tests flip the
+// closures (mockHasInternalDB / mockInternalQuery) to cover the
+// resolvePasskeyCount branches that aren't reachable via env-only setup.
+let mockHasInternalDB = false;
+let mockInternalQuery: (sql: string, params: unknown[]) => Promise<unknown[]> =
+  () => Promise.resolve([]);
+
+mock.module("@atlas/api/lib/db/internal", () => ({
+  hasInternalDB: () => mockHasInternalDB,
+  internalQuery: (sql: string, params: unknown[]) => mockInternalQuery(sql, params),
+}));
+
 import { validateManaged } from "../managed";
 import { _setAuthInstance } from "../server";
 
@@ -13,14 +28,17 @@ describe("validateManaged()", () => {
     // Inject a fake auth instance whose api.getSession is our mock
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance({ api: { getSession: mockGetSession } } as any);
-    // Defensive: validateManaged doesn't itself touch the internal DB, but
-    // unsetting DATABASE_URL keeps these tests immune to any future
-    // internal-DB hooks added to managed validation (mirrors middleware.test.ts).
+    // Internal-DB mock defaults: no DB available, no rows. Individual tests
+    // override these closures to exercise the positive / failure paths.
+    mockHasInternalDB = false;
+    mockInternalQuery = () => Promise.resolve([]);
     delete process.env.DATABASE_URL;
   });
 
   afterEach(() => {
     _setAuthInstance(null);
+    mockHasInternalDB = false;
+    mockInternalQuery = () => Promise.resolve([]);
     if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
     else delete process.env.DATABASE_URL;
   });
@@ -341,20 +359,12 @@ describe("validateManaged()", () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // passkeyCount claims propagation (#2082)
-  //
-  // Read by the `mfaRequired` middleware to admit passkey-only admins. The
-  // claim must always be present — gating logic relies on the strict
-  // `typeof === "number"` check to reject undefined / string drift, so a
-  // missing field would silently lock out every passkey-enrolled admin.
-  // -------------------------------------------------------------------------
-
+  // passkeyCount is read by `mfaRequired` to admit passkey-only admins.
+  // The claim must always be present and authoritative — a missing field
+  // silently locks out passkey users; a spread-overridable field lets a
+  // hostile session-user payload inflate the count.
   describe("passkeyCount claim", () => {
     it("populates passkeyCount: 0 in claims when internal DB is unavailable", async () => {
-      // beforeEach() unsets DATABASE_URL → hasInternalDB() returns false →
-      // resolvePasskeyCount short-circuits to 0. That 0 must still land in
-      // claims so the gate can read it instead of getting undefined.
       mockGetSession.mockResolvedValueOnce({
         user: { id: "usr_123", email: "alice@example.com" },
         session: { id: "sess_abc", userId: "usr_123" },
@@ -369,17 +379,68 @@ describe("validateManaged()", () => {
       }
     });
 
-    it("passkeyCount survives the spread-then-overwrite contract in claims", async () => {
-      // managed.ts spreads `sessionUser` first, then writes computed fields
-      // (sub, passkeyCount, org_id) on top — so a future Better Auth shape
-      // change that puts a stray `passkeyCount` on the user object can't
-      // overwrite the resolver's authoritative value.
+    it("populates passkeyCount with the value from the passkey table when DB is up", async () => {
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ count: 2 }]);
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: { id: "sess_abc", userId: "usr_123" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.claims?.passkeyCount).toBe(2);
+      }
+    });
+
+    it("returns 0 when the count row is missing entirely", async () => {
+      // pg returns no rows — should land 0, not NaN/undefined, so the gate's
+      // `typeof === "number"` narrow continues to read a valid number.
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([]);
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: { id: "sess_abc", userId: "usr_123" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.claims?.passkeyCount).toBe(0);
+        expect(Number.isFinite(result.user.claims?.passkeyCount as number)).toBe(true);
+      }
+    });
+
+    it("falls back to 0 when internalQuery throws (transient infra error)", async () => {
+      // Auth must still succeed — failing the whole login because of a
+      // passkey-count read would be a much worse outcome than gating the user.
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.reject(new Error("connection refused"));
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: { id: "sess_abc", userId: "usr_123" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.claims?.passkeyCount).toBe(0);
+      }
+    });
+
+    it("attacker-controlled passkeyCount on the session user cannot bypass the gate", async () => {
+      // Computed fields land AFTER the spread (managed.ts), so a hostile
+      // session-user payload that already carries `passkeyCount: "9999"`
+      // gets shadowed by the resolver's authoritative 0.
+      mockHasInternalDB = false; // resolver returns 0
       mockGetSession.mockResolvedValueOnce({
         user: {
           id: "usr_123",
           email: "alice@example.com",
-          // hostile drift: a Better Auth user object that already carries a
-          // passkeyCount claim with the wrong shape.
           passkeyCount: "9999" as unknown as number,
         },
         session: { id: "sess_abc", userId: "usr_123" },
@@ -389,7 +450,6 @@ describe("validateManaged()", () => {
 
       expect(result.authenticated).toBe(true);
       if (result.authenticated && result.user) {
-        // Computed value (0) wins, not the spread "9999".
         expect(result.user.claims?.passkeyCount).toBe(0);
       }
     });

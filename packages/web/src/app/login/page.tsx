@@ -26,6 +26,7 @@ import {
   MicrosoftIcon,
 } from "@/ui/components/social-icons";
 import { parseSignInError, type SignInErrorState } from "./parse-sign-in-error";
+import { getPostSignInRoute } from "./post-sign-in-route";
 
 type SocialProvider = "google" | "github" | "microsoft";
 
@@ -123,19 +124,7 @@ export default function LoginPage() {
         setError(parseSignInError({ error: res.error }));
         return;
       }
-      // Better Auth's twoFactor plugin replaces the session payload with
-      // `{ twoFactorRedirect: true, twoFactorMethods: [...] }` when the user
-      // has TOTP enrolled and the device lacks a valid trust cookie. No
-      // session cookie is set on this response — the user must complete
-      // the challenge at `/login/two-factor` before they get one. The cast
-      // through unknown is the documented workaround for the plugin's
-      // discriminated-union not propagating through `createAuthClient`.
-      const data = res.data as { twoFactorRedirect?: boolean } | null;
-      if (data?.twoFactorRedirect) {
-        router.push("/login/two-factor");
-        return;
-      }
-      router.push("/");
+      router.push(getPostSignInRoute(res.data));
     } catch (err) {
       console.debug(
         "Sign in failed:",

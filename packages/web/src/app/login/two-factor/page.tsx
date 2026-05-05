@@ -1,24 +1,14 @@
 "use client";
 
 /**
- * Two-factor sign-in challenge.
- *
- * Reached when `/login`'s `signIn.email` call returns
- * `{ data: { twoFactorRedirect: true } }` — Better Auth's signal that the
- * user has TOTP enrolled and the current device doesn't carry a valid
- * trust cookie. Without this page the half-authenticated state has no UI
- * surface at all, which is the primary regression PR C.1 closes (#2082).
- *
- * The user has NOT been issued a session cookie at this point — only a
- * short-lived two-factor cookie that identifies the pending user. Failing
- * to complete the flow means no session is ever created, so route guards
- * on `/admin/*` simply see "no session" and behave normally.
- *
- * Mode toggle (TOTP ↔ backup code) is the same component on the same URL —
- * not a separate route — so deep-links and the back button stay sane.
+ * Better Auth two-factor challenge surface — landing page for the
+ * `twoFactorRedirect: true` response from `signIn.email`. The user has no
+ * session cookie yet (only a short-lived two-factor cookie identifying the
+ * pending user), so failing to complete the flow leaves the user genuinely
+ * unauthenticated.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,11 +30,8 @@ interface ModeConfig {
   inputLabel: string;
   placeholder: string;
   inputMode: "numeric" | "text";
-  /** TOTP codes are exactly 6 digits; backup codes are 11 chars (5-5 with hyphen). */
   maxLength: number;
-  /** Submit-button enable predicate — TOTP demands all 6 digits, backup tolerates user-entered formatting. */
   isComplete: (value: string) => boolean;
-  /** Sanitiser run on every keystroke. TOTP strips non-digits; backup is left as-typed (codes are alphanumeric). */
   sanitise: (raw: string) => string;
   fallback: string;
   switchLabel: string;
@@ -71,12 +58,8 @@ const BACKUP_MODE: ModeConfig = {
   inputLabel: "Backup code",
   placeholder: "abcde-12345",
   inputMode: "text",
-  // 5-5 layout with optional hyphen, plus the hyphen itself.
   maxLength: 11,
   isComplete: (v) => v.replace(/[-\s]/g, "").length >= 10,
-  // Backup codes from `generateBackupCodesFn` are alphanumeric — strip
-  // whitespace but preserve the hyphen so the user sees the same shape
-  // they copied. The server normalises before comparing.
   sanitise: (raw) => raw.replace(/\s+/g, "").slice(0, 11),
   fallback: "That backup code didn't match. Try a different one.",
   switchLabel: "Use my authenticator app instead",
@@ -84,10 +67,6 @@ const BACKUP_MODE: ModeConfig = {
 
 const MODES: Record<Mode, ModeConfig> = { totp: TOTP_MODE, backup: BACKUP_MODE };
 
-/**
- * Single audit-trail line so support can recover `code` / `status` from a
- * user report — the UI only surfaces the human-friendly message above.
- */
 function logFailure(action: string, raw: TwoFactorApiError | null): void {
   console.warn(`[two-factor:sign-in] ${action} failed`, raw);
 }
@@ -99,15 +78,13 @@ export default function TwoFactorChallengePage() {
   const [trustDevice, setTrustDevice] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Synchronous in-flight flag — `busy` state lags by a render so a
+  // double-click within the same tick would fire two verify calls and burn
+  // two backup codes server-side. Ref takes effect immediately.
+  const submittingRef = useRef(false);
 
   const config = MODES[mode];
 
-  /**
-   * Switch between TOTP and backup mode. Deliberately resets `code` and
-   * `error` (different validation rules, different shape) but PRESERVES
-   * `trustDevice` — switching input methods shouldn't quietly toggle the
-   * security choice the user already made.
-   */
   function switchMode(next: Mode): void {
     setMode(next);
     setCode("");
@@ -116,20 +93,18 @@ export default function TwoFactorChallengePage() {
 
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
-    if (!config.isComplete(code) || busy) return;
+    if (!config.isComplete(code) || submittingRef.current) return;
+    submittingRef.current = true;
     setBusy(true);
     setError(null);
 
     const client = getTwoFactorClient();
     if (!client) {
-      // Plugin missing client-side. Surface a generic failure — the user
-      // can't act on this, but support can recover the cause from the
-      // breadcrumb below.
-      console.warn(
-        "[two-factor:sign-in] twoFactor client plugin not loaded — check packages/web/src/lib/auth/client.ts",
-      );
+      // Developer-facing breadcrumb; user sees the generic copy below.
+      console.warn("[two-factor:sign-in] twoFactor client plugin not loaded");
       setError("Two-factor sign-in is not available. Refresh the page or contact your workspace admin.");
       setBusy(false);
+      submittingRef.current = false;
       return;
     }
 
@@ -143,16 +118,11 @@ export default function TwoFactorChallengePage() {
         logFailure(mode === "totp" ? "verifyTotp" : "verifyBackupCode", outcome.raw);
         setError(outcome.message);
         setBusy(false);
+        submittingRef.current = false;
         return;
       }
-      // Session is now established — Better Auth set the session cookie on
-      // the response. Route to the post-login landing; downstream onboarding
-      // / mode-router state is fetched by the destination page.
       router.push("/");
     } catch (err) {
-      // Network / TypeError path. Catch-and-classify mirrors the main login
-      // page; we don't want a thrown fetch to leave the user staring at a
-      // disabled form with no feedback.
       console.warn(
         "[two-factor:sign-in] verify threw:",
         err instanceof Error ? err.message : String(err),
@@ -165,6 +135,7 @@ export default function TwoFactorChallengePage() {
             : config.fallback,
       );
       setBusy(false);
+      submittingRef.current = false;
     }
   }
 
@@ -237,14 +208,16 @@ export default function TwoFactorChallengePage() {
         </CardContent>
       </Card>
 
-      <button
+      <Button
         type="button"
+        variant="link"
+        size="sm"
         onClick={() => switchMode(mode === "totp" ? "backup" : "totp")}
         disabled={busy}
-        className="mt-4 text-sm font-medium text-muted-foreground transition-colors hover:text-primary hover:underline underline-offset-4 disabled:opacity-50"
+        className="mt-4 text-muted-foreground hover:text-primary"
       >
         {config.switchLabel}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -262,12 +235,6 @@ function ChallengeErrorAlert({ message }: { message: string }) {
   );
 }
 
-/**
- * Best-effort human-readable expiry stamp for the trust-device caption.
- * Reads the current date at render — accurate to the day, which is enough
- * for "Skip the prompt until April 12" copy. Wrapped so a non-`Intl`
- * runtime (older test environments) doesn't crash the page.
- */
 function formatTrustExpiry(): string {
   const expiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   try {
@@ -275,8 +242,14 @@ function formatTrustExpiry(): string {
       month: "short",
       day: "numeric",
     }).format(expiry);
-  } catch {
-    // Intl not available — fall back to ISO date so the caption is still meaningful.
+  } catch (err) {
+    // Intl unavailable in the runtime — surface a breadcrumb so a real
+    // regression doesn't go silent, fall back to ISO so the caption stays
+    // meaningful.
+    console.debug(
+      "[two-factor:sign-in] Intl.DateTimeFormat unavailable:",
+      err instanceof Error ? err.message : String(err),
+    );
     return expiry.toISOString().slice(0, 10);
   }
 }

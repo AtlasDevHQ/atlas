@@ -44421,6 +44421,271 @@
         "operationId": "deleteAdminUsersInvitationsById"
       }
     },
+    "/api/v1/admin/me/trusted-devices": {
+      "get": {
+        "tags": [
+          "Admin — Trusted Devices"
+        ],
+        "summary": "List your trusted browsers",
+        "description": "Returns the calling user's active trust-device grants — browsers where the user opted in to skip the 2FA challenge for the configured trust window. Expired and revoked grants do not appear.",
+        "responses": {
+          "200": {
+            "description": "Trust-grant list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "devices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "identifier": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "deviceLabel": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "userAgent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ipAddress": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "isCurrent": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "identifier",
+                          "deviceLabel",
+                          "userAgent",
+                          "ipAddress",
+                          "createdAt",
+                          "expiresAt",
+                          "isCurrent"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "devices"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not available — requires managed auth",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminMeTrustedDevices"
+      }
+    },
+    "/api/v1/admin/me/trusted-devices/{identifier}": {
+      "delete": {
+        "tags": [
+          "Admin — Trusted Devices"
+        ],
+        "summary": "Revoke a trusted browser",
+        "description": "Revokes a single trust grant. The next request from that browser will be challenged for 2FA. Atomic across the verification row (the cookie Better Auth checks) and our metadata row.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "example": "trust-device-abc123"
+            },
+            "required": true,
+            "name": "identifier",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trust grant revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such grant for this user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminMeTrustedDevicesByIdentifier"
+      }
+    },
     "/api/v1/admin/connections": {
       "get": {
         "tags": [
@@ -63354,6 +63619,9 @@
     },
     {
       "name": "Admin — Tokens"
+    },
+    {
+      "name": "Admin — Trusted Devices"
     },
     {
       "name": "Admin — Usage"

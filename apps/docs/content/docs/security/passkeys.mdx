@@ -40,8 +40,8 @@ it. See [Self-Hosted Configuration](#self-hosted-configuration) below.
    available on your device. The prompt completes the WebAuthn
    ceremony in one step; there is no QR code or secret to copy.
 4. Atlas asks you to name the passkey (default: a userAgent-derived
-   label like *MacBook · Safari*). Save the name so you can
-   recognize it in the list later.
+   label like *Mac · Safari*). Save the name so you can recognize it
+   in the list later.
 
 The new passkey appears under **Enrolled passkeys**. The MFA gate
 sees the credential on your next request — no sign-out and back in
@@ -71,30 +71,33 @@ the row in question is your only second factor.
 
 ## Trust Device (30 days)
 
-After completing a sign-in challenge — passkey or TOTP — the user
-can opt into a 30-day trust grant for the current browser. The gate
-still enforces MFA enrollment for every request, but the *interactive
-challenge* is skipped on subsequent sign-ins from the same browser
-within the trust window.
+The "Trust this device for 30 days" opt-in is collected on the TOTP
+sign-in challenge page (see
+[Two-Factor Authentication](./two-factor-auth)). There is no
+equivalent checkbox on the passkey sign-in path today — passkeys
+already complete in one OS prompt, so the friction the trust-device
+toggle is meant to relieve doesn't really exist on that path.
 
-Trusted devices are visible at **Admin → Settings → Security** under
-**Trusted browsers** and revocable individually. The
-`trustDeviceMaxAge` is pinned at 30 days in
-[`packages/api/src/lib/auth/server.ts:664`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/server.ts)
-and is not configurable via env — the value is also surfaced in the
-sign-in challenge UI ("Trust this device for 30 days") so the
-contract stays truthful.
+Where the trust-device flow does intersect passkeys is the **Trusted
+browsers** list at **Admin → Settings → Security**: any browser the
+admin has trusted via TOTP appears there and is revocable
+individually. Revoking a trusted browser only forces a fresh
+challenge on its next sign-in; it does not delete the underlying
+passkey or TOTP enrollment.
 
-The trust-device cookie is independent of the passkey credential
-itself. Deleting a trusted-browser entry only forces a fresh
-challenge on the next sign-in from that browser; it does not delete
-the underlying passkey.
+Operator detail: the `trustDeviceMaxAge` is pinned at 30 days in
+[`server.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/server.ts)
+(search for `trustDeviceMaxAge`) and is not configurable via env —
+the value is also surfaced in the sign-in challenge UI so the
+contract stays truthful no matter which Better Auth version is
+installed.
 
 ## Self-Hosted Configuration
 
 Two environment variables control the WebAuthn Relying Party. Both
 are passed to `@better-auth/passkey` at boot in
-[`packages/api/src/lib/auth/server.ts:673`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/server.ts):
+[`server.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/server.ts)
+(search for the `passkey({` call):
 
 | Variable        | Default            | What it sets                                                                                                              |
 | --------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
@@ -123,13 +126,15 @@ misses the window will need an out-of-band reset.
 </Callout>
 
 If `ATLAS_RPID` is misconfigured at runtime, the WebAuthn ceremony
-fails on the user's device. Better Auth surfaces the failure as a
-`NotAllowedError` from `navigator.credentials.create`, which the
-security page logs to the browser console and folds into the
-`isUserCancellation` branch — silent on the surface but visible in
-DevTools (see
+fails on the user's device. The browser raises `NotAllowedError`
+from `navigator.credentials.create`; Better Auth re-surfaces it as
+a `result.error` with code `REGISTRATION_CANCELLED` or a message
+containing `notallowed`. The security page's `isUserCancellation`
+helper folds both into the same console-debug branch — see
 [`passkey-tile.tsx`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/web/src/ui/components/admin/security/passkey-tile.tsx)
-`isUserCancellation` for the rationale on always logging this branch).
+for the rationale on always logging this branch (silent in the UI,
+but visible in DevTools, so a misconfigured RP doesn't disappear
+without trace).
 
 ## Operator Reference
 
@@ -179,10 +184,10 @@ gate and works on any browser.
 - Recovery for a user with no remaining passkey and no backup codes
   requires an out-of-band reset by a `platform_admin`.
 - A single global `rpID` is used for all hosted regions
-  (`app.useatlas.dev`). A future enterprise contract that demands
-  region-specific frontends would force re-enrollment for users
-  whose region changes; the architecture decision is captured in
-  [#2082](https://github.com/AtlasDevHQ/atlas/issues/2082).
+  (`app.useatlas.dev`). WebAuthn binds credentials to a single
+  registrable suffix; per-region frontends would each need a
+  distinct `rpID` and would force re-enrollment for any user whose
+  region changes.
 
 ## See Also
 

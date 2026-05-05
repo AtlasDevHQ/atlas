@@ -5,6 +5,15 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
 import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
+import { useMfaGateOptional } from "@/ui/components/admin/mfa-gate-context";
+
+/**
+ * Default redirect target when the server didn't include `enrollmentUrl`
+ * on the `mfa_enrollment_required` body. Mirrors the constant in
+ * `use-admin-fetch.ts` and `ENROLLMENT_URL` in
+ * `packages/api/src/api/routes/admin-mfa-required.ts`.
+ */
+const DEFAULT_ENROLLMENT_URL = "/admin/settings/security";
 
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
@@ -120,6 +129,14 @@ export function useAdminMutation<TResponse = unknown>(
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const queryClient = useQueryClient();
+
+  // MFA gate dispatcher — `useMfaGateOptional` returns a no-op gate when
+  // the provider isn't mounted, so this hook stays safe outside the admin
+  // tree. Captured in a ref so the mutationFn can dispatch through render
+  // churn without recreating the mutation.
+  const mfaGate = useMfaGateOptional();
+  const mfaGateRef = useRef(mfaGate);
+  mfaGateRef.current = mfaGate;
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<FetchError | null>(null);
@@ -262,6 +279,15 @@ export function useAdminMutation<TResponse = unknown>(
 
       if (!res.ok) {
         const fetchError = await extractFetchError(res);
+        // Dispatch the MFA gate alongside the throw so write-path callers
+        // surface the dialog the same way read-path callers do. Without
+        // this, an admin-mutation 403 would set hook-level `error` and
+        // render a banner instead of opening the modal.
+        if (fetchError.code === "mfa_enrollment_required") {
+          mfaGateRef.current.trigger(
+            fetchError.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+          );
+        }
         // Preserve the structured FetchError across the throw boundary so the
         // catch in `mutate()` can return it as `MutateResult.error`. The bare
         // `Error.message` is kept human-readable as a fallback for anything

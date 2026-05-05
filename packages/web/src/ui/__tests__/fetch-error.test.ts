@@ -87,26 +87,63 @@ describe("extractFetchError", () => {
 });
 
 describe("friendlyError", () => {
-  test("maps 401 to sign-in message", () => {
-    expect(friendlyError({ message: "Unauthorized", status: 401 })).toBe(
+  test("server message wins on 401 (typed body)", () => {
+    // After the #2081 precedence flip, a server-authored body message reaches
+    // the user verbatim — masking it with the canned "sign in" copy is what
+    // produced the "Admin role required" lie for unenrolled admins.
+    expect(friendlyError({ message: "Session expired.", status: 401 })).toBe(
+      "Session expired.",
+    );
+  });
+
+  test("server message wins on 403 (typed body)", () => {
+    // The motivating bug: an unenrolled admin saw "Admin role required" when
+    // the real cause was `mfa_enrollment_required`. The server-authored
+    // message must reach the user.
+    expect(
+      friendlyError({
+        message: "Two-factor authentication is required for admin accounts.",
+        status: 403,
+        code: "mfa_enrollment_required",
+      }),
+    ).toBe("Two-factor authentication is required for admin accounts.");
+  });
+
+  test("server message wins on 404 (typed body)", () => {
+    expect(friendlyError({ message: "Workspace not found.", status: 404 })).toBe(
+      "Workspace not found.",
+    );
+  });
+
+  test("server message wins on 503 (typed body)", () => {
+    expect(
+      friendlyError({ message: "Datasource pool draining.", status: 503 }),
+    ).toBe("Datasource pool draining.");
+  });
+
+  test("falls back to canned 401 copy when body is empty (HTTP status placeholder)", () => {
+    // `extractFetchError` substitutes `HTTP ${status}` when the body had no
+    // usable message field. `friendlyError` recognizes that placeholder and
+    // swaps in the canned copy — otherwise the user would see "HTTP 401".
+    expect(friendlyError({ message: "HTTP 401", status: 401 })).toBe(
       "Not authenticated. Please sign in.",
     );
   });
 
-  test("maps 403 to access denied", () => {
-    expect(friendlyError({ message: "Forbidden", status: 403 })).toBe(
-      "Access denied. Admin role required to view this page.",
+  test("falls back to canned 403 copy when body is empty", () => {
+    expect(friendlyError({ message: "HTTP 403", status: 403 })).toBe(
+      "Access denied. You may need additional permissions to view this page.",
     );
   });
 
-  test("maps 404 to feature not enabled", () => {
-    expect(friendlyError({ message: "Not Found", status: 404 })).toBe(
+  test("falls back to canned 404 copy when body is empty", () => {
+    expect(friendlyError({ message: "HTTP 404", status: 404 })).toBe(
       "This feature is not enabled on this server.",
     );
   });
 
-  test("maps 503 to service unavailable", () => {
-    expect(friendlyError({ message: "Service Unavailable", status: 503 })).toBe(
+  test("falls back to canned 503 copy when body is empty", () => {
+    expect(friendlyError({ message: "HTTP 503", status: 503 })).toBe(
       "A required service is unavailable. Check server configuration.",
     );
   });
@@ -125,10 +162,21 @@ describe("friendlyError", () => {
     );
   });
 
-  test("appends requestId to friendly-mapped messages", () => {
-    expect(friendlyError({ message: "x", status: 401, requestId: "req-abc" })).toBe(
-      "Not authenticated. Please sign in. (Request ID: req-abc)",
-    );
+  test("appends requestId to canned fallback copy", () => {
+    expect(
+      friendlyError({ message: "HTTP 401", status: 401, requestId: "req-abc" }),
+    ).toBe("Not authenticated. Please sign in. (Request ID: req-abc)");
+  });
+
+  test("appends requestId to server-authored message", () => {
+    expect(
+      friendlyError({
+        message: "Two-factor required.",
+        status: 403,
+        code: "mfa_enrollment_required",
+        requestId: "req-mfa",
+      }),
+    ).toBe("Two-factor required. (Request ID: req-mfa)");
   });
 
   test("routes schema_mismatch to a version-drift specific message", () => {
@@ -139,16 +187,24 @@ describe("friendlyError", () => {
     );
   });
 
-  test("HTTP status mapping wins over schema_mismatch when status is set", () => {
+  test("server message wins over schema_mismatch when status is set", () => {
     // Defensive: if a server response body ever sets `error: "schema_mismatch"`
-    // on a 401/403/404/503, the auth/role/feature copy must still reach the
-    // user — masking it with "out of sync" would break the sign-in loop.
+    // on an HTTP error, the server message reaches the user — masking it with
+    // "out of sync" would override the real auth/role/feature signal.
     expect(
-      friendlyError({ message: "x", status: 401, code: "schema_mismatch" }),
+      friendlyError({ message: "Bad token.", status: 401, code: "schema_mismatch" }),
+    ).toBe("Bad token.");
+    expect(
+      friendlyError({ message: "Forbidden by policy.", status: 403, code: "schema_mismatch" }),
+    ).toBe("Forbidden by policy.");
+  });
+
+  test("schema_mismatch with status + empty body falls through to canned copy", () => {
+    // The `HTTP 401` placeholder triggers the canned fallback, not the
+    // schema-mismatch copy — schema_mismatch only wins on the no-status path.
+    expect(
+      friendlyError({ message: "HTTP 401", status: 401, code: "schema_mismatch" }),
     ).toBe("Not authenticated. Please sign in.");
-    expect(
-      friendlyError({ message: "x", status: 403, code: "schema_mismatch" }),
-    ).toContain("Access denied");
   });
 
   test("schema_mismatch falls through to raw message when status is set without a friendly mapping", () => {
@@ -306,10 +362,21 @@ describe("friendlyErrorOrNull", () => {
     expect(friendlyErrorOrNull(err)).toBe(friendlyError(err));
   });
 
-  test("preserves EE 403 translation on non-null path", () => {
-    // Routes through friendlyError, so the 403 admin-role copy still fires.
-    expect(friendlyErrorOrNull({ message: "Forbidden", status: 403 })).toBe(
-      "Access denied. Admin role required to view this page.",
+  test("preserves server message on non-null 403 path", () => {
+    // Routes through friendlyError — server-authored messages reach the user
+    // verbatim (post-#2081 precedence flip).
+    expect(
+      friendlyErrorOrNull({
+        message: "Two-factor required.",
+        status: 403,
+        code: "mfa_enrollment_required",
+      }),
+    ).toBe("Two-factor required.");
+  });
+
+  test("falls back to canned 403 copy on empty-body 403", () => {
+    expect(friendlyErrorOrNull({ message: "HTTP 403", status: 403 })).toBe(
+      "Access denied. You may need additional permissions to view this page.",
     );
   });
 });

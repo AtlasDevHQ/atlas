@@ -16,10 +16,25 @@ describe("friendlyError", () => {
     expect(friendlyError(err)).toContain("Not authenticated");
   });
 
-  test("returns access denied for 403", () => {
+  test("returns access denied for 403 with empty body", () => {
+    // Post-#2081 the canned 403 copy fires only when the body has no
+    // usable message (`extractFetchError` substitutes `HTTP ${status}`).
+    // Server-typed messages reach the user verbatim; this case is the
+    // empty-body fallback path.
     const err: FetchError = { message: "HTTP 403", status: 403 };
     expect(friendlyError(err)).toContain("Access denied");
-    expect(friendlyError(err)).toContain("Admin role");
+  });
+
+  test("server-typed 403 message wins over canned copy", () => {
+    // The motivating regression: an unenrolled admin saw "Admin role required"
+    // on a `mfa_enrollment_required` 403. The server-authored message must
+    // reach the user.
+    const err: FetchError = {
+      message: "Two-factor required.",
+      status: 403,
+      code: "mfa_enrollment_required",
+    };
+    expect(friendlyError(err)).toBe("Two-factor required.");
   });
 
   test("returns feature not enabled for 404", () => {

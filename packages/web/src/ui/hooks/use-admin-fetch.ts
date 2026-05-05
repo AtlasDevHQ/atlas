@@ -6,10 +6,20 @@ import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
+import { useMfaGateOptional } from "@/ui/components/admin/mfa-gate-context";
 
 // Re-export from @/ui/lib/fetch-error (canonical location) for backward
 // compatibility. New code should import directly from @/ui/lib/fetch-error.
 export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
+
+/**
+ * Default redirect target when the server didn't include `enrollmentUrl`
+ * on the `mfa_enrollment_required` body. Mirrors `ENROLLMENT_URL` in
+ * `packages/api/src/api/routes/admin-mfa-required.ts` — drift between the
+ * two is a one-line fix when the server-side path moves, so a shared
+ * source of truth isn't worth the cross-package import.
+ */
+const DEFAULT_ENROLLMENT_URL = "/admin/settings/security";
 
 /**
  * Shared fetch hook for admin pages.
@@ -36,6 +46,14 @@ export function useAdminFetch<T>(
   // Ref to avoid stale closure if isCrossOrigin changes at runtime.
   const credentialsRef = useRef(credentials);
   credentialsRef.current = credentials;
+
+  // MFA gate dispatcher — `useMfaGateOptional` returns a no-op gate when
+  // the provider isn't mounted (e.g. embedded chat surfaces), so this hook
+  // remains safe outside the admin tree. Capture in a ref so the queryFn
+  // can dispatch without being torn apart by render churn.
+  const mfaGate = useMfaGateOptional();
+  const mfaGateRef = useRef(mfaGate);
+  mfaGateRef.current = mfaGate;
 
   // Manual error override — exposed via setError for backward compatibility.
   const [errorOverride, setErrorOverride] = useState<FetchError | null>(null);
@@ -67,7 +85,17 @@ export function useAdminFetch<T>(
       }
 
       if (!res.ok) {
-        throw await extractFetchError(res);
+        const fetchError = await extractFetchError(res);
+        // Dispatch the MFA gate before throwing so the dialog opens even
+        // for in-flight queries — the thrown error still surfaces in the
+        // page's `error` state, but with the dialog mounted on top the
+        // friendly message becomes informational rather than the only UI.
+        if (fetchError.code === "mfa_enrollment_required") {
+          mfaGateRef.current.trigger(
+            fetchError.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+          );
+        }
+        throw fetchError;
       }
       const json: unknown = await res.json();
 

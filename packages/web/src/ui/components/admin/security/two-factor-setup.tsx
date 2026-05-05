@@ -26,7 +26,9 @@
  */
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { consumeOriginPath } from "@/ui/components/admin/mfa-gate-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -299,6 +301,7 @@ function logFailure(action: string, raw: ClientResult<unknown>["error"]): void {
 }
 
 export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
+  const router = useRouter();
   const [stage, setStage] = useState<EnrollStage>({ kind: "idle" });
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -350,6 +353,16 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
     }
     reset();
     onChange?.();
+    // If the user landed here via the MFA gate, send them back to where
+    // they were trying to go. `consumeOriginPath` reads + clears the
+    // sessionStorage slot atomically; a null return means they navigated
+    // here directly (settings menu) and stays on the security page.
+    // Skip self-redirects so a fresh enrollment from /admin/settings/security
+    // doesn't no-op into a router.push to the same path.
+    const origin = consumeOriginPath();
+    if (origin && !origin.startsWith("/admin/settings/security")) {
+      router.push(origin);
+    }
   }
 
   async function handleRegenerate() {

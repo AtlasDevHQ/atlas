@@ -849,7 +849,11 @@ export function AtlasChat() {
         getCredentials={getCredentials}
       />
       <ChangePasswordDialog
-        open={!passwordDialogDismissed && (passwordData?.passwordChangeRequired ?? false)}
+        open={
+          !passwordDialogDismissed &&
+          passwordData?.kind === "allowed" &&
+          passwordData.passwordChangeRequired
+        }
         onComplete={() => setPasswordDialogDismissed(true)}
       />
     </>

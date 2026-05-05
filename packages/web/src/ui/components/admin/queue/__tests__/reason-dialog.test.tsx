@@ -284,17 +284,35 @@ describe("ReasonDialog mutationError without feature (#1652, #1716)", () => {
     expect(text).not.toContain("enterprise");
   });
 
-  test("friendlyError's 403 mapping still applies in the feature-less fallback", () => {
-    // A 403 arriving without a feature still gets `friendlyError`'s
-    // admin-role translation — proof the structured status survives the
-    // fallback path even though we lose the EnterpriseUpsell routing.
+  test("server-typed 403 message reaches the user in the feature-less fallback", () => {
+    // Post-#2081 the server message wins over canned 403 copy — proof
+    // the structured FetchError survives the fallback path even though
+    // we lose the EnterpriseUpsell routing. The canned "Access denied"
+    // text now only appears for empty-body 403s.
     render(
       <ReasonDialog
         open
         onOpenChange={() => {}}
         title="Deny"
         onConfirm={async () => {}}
-        mutationError={{ message: "Forbidden", status: 403 }}
+        mutationError={{ message: "Forbidden by policy.", status: 403 }}
+      />,
+    );
+    const text = errorText() ?? "";
+    expect(text).toContain("Forbidden by policy.");
+  });
+
+  test("canned 403 copy still fires when 403 body is empty", () => {
+    // `extractFetchError` substitutes `HTTP 403` when the response body
+    // had no usable message — `friendlyError` swaps in the canned copy
+    // so the user doesn't see the placeholder.
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny"
+        onConfirm={async () => {}}
+        mutationError={{ message: "HTTP 403", status: 403 }}
       />,
     );
     const text = errorText() ?? "";

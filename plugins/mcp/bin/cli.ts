@@ -10,8 +10,9 @@
  * dependency, so it works in a transient `bunx` install. `serve` is a thin
  * pass-through that dynamic-imports `@atlas/mcp/server`; if that resolves
  * (monorepo dev or a create-atlas-agent project that bundles the API code)
- * it boots the server, otherwise it prints a clear "not yet supported"
- * message pointing at #2024 (hosted MCP).
+ * it boots the server, otherwise it prints a clear "not supported" message
+ * pointing users at `bunx @useatlas/mcp init --hosted` (decision recorded
+ * in #2052; the standalone "serve" path is intentionally not vendored).
  */
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
@@ -127,7 +128,8 @@ const SERVE_HELP = `bunx @useatlas/mcp serve [options]
 The serve command requires \`@atlas/mcp\` to be resolvable from the current
 working directory — i.e. you're running it inside a project that includes the
 Atlas API source (the create-atlas-agent template, the monorepo, or a custom
-deployment). Standalone \`bunx\`-only invocations are tracked in #2024.
+deployment). For zero-config use, run \`bunx @useatlas/mcp init --hosted\` to
+connect to Atlas SaaS instead.
 `;
 
 export async function runInitCommand(argv: string[]): Promise<number> {
@@ -201,7 +203,7 @@ export function parseServeArgs(argv: string[]): ServeFlags {
  * the catch on `@atlas/mcp/server` to ONLY these so a config bug or
  * downstream module-evaluation error inside `@atlas/api` (e.g. missing
  * `DATABASE_URL`, an Effect Layer construction failure) doesn't get
- * misreported as "package missing — see #2024."
+ * misreported as "package missing — install via `init --hosted`."
  *
  * Detection strategy: Node sets `err.code === "ERR_MODULE_NOT_FOUND"` /
  * `"MODULE_NOT_FOUND"`. Bun raises a `ResolveMessage` class with a
@@ -258,8 +260,10 @@ export async function runServeCommand(argv: string[]): Promise<number> {
   // Dynamic imports — resolve only when the consumer's project includes
   // `@atlas/mcp` (currently the monorepo + create-atlas-agent scaffolds that
   // path-alias the Atlas API source). A transient `bunx` install does NOT
-  // include `@atlas/mcp`, so this path intentionally fails with a pointer to
-  // #2024 (hosted MCP) rather than pretending to start a broken server.
+  // include `@atlas/mcp`, so this path intentionally fails and points the
+  // user at the hosted installer rather than pretending to start a broken
+  // server. Vendoring a demo runtime (#2052 path B) was considered and
+  // rejected — the supported zero-friction path is `init --hosted`.
   let serverMod: ServerModule;
   try {
     // The cast threads the dynamic-import payload through our local
@@ -280,9 +284,13 @@ export async function runServeCommand(argv: string[]): Promise<number> {
       [
         "[atlas-mcp serve] Could not resolve `@atlas/mcp` from the current project.",
         "",
-        "The serve subcommand currently requires the Atlas API source to be available",
-        "in the same project (monorepo dev or a create-atlas-agent scaffold). Standalone",
-        "`bunx @useatlas/mcp serve` is tracked in https://github.com/AtlasDevHQ/atlas/issues/2024.",
+        "Standalone `bunx @useatlas/mcp serve` is not supported. To connect any MCP",
+        "client to Atlas SaaS in one command, run:",
+        "",
+        "    bunx @useatlas/mcp init --hosted --write",
+        "",
+        "Self-hosted: scaffold a project with `bun create atlas-agent` and run",
+        "`bun run mcp` from inside it. See https://docs.useatlas.dev/guides/mcp.",
         "",
         `Details: ${detail}`,
       ].join("\n"),

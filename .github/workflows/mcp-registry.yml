@@ -1,0 +1,54 @@
+name: MCP Registry publish
+
+# Publish plugins/mcp/server.json to https://registry.modelcontextprotocol.io
+# whenever a mcp-v* tag ships. Auth is GitHub OIDC — the registry validates that
+# the workflow runs in a repo whose owner matches the io.github.<owner>/<name>
+# namespace declared in server.json.
+on:
+  push:
+    tags:
+      - 'mcp-v*'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+
+      - name: Wait for npm to surface the new version
+        working-directory: plugins/mcp
+        run: |
+          version=$(node -p "require('./package.json').version")
+          for i in $(seq 1 30); do
+            if npm view "@useatlas/mcp@${version}" version >/dev/null 2>&1; then
+              echo "npm has @useatlas/mcp@${version}"
+              exit 0
+            fi
+            echo "Waiting for npm to surface @useatlas/mcp@${version} (attempt $i/30)..."
+            sleep 10
+          done
+          echo "Timed out waiting for npm" >&2
+          exit 1
+
+      - name: Validate server.json
+        working-directory: plugins/mcp
+        run: mcp-publisher validate
+
+      - name: Login (GitHub OIDC)
+        working-directory: plugins/mcp
+        run: mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        working-directory: plugins/mcp
+        run: mcp-publisher publish

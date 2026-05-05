@@ -77,12 +77,12 @@ export function MfaEnrollmentDialog() {
           </AlertDialogTitle>
           <AlertDialogDescription className="w-full text-center">
             Admin accounts must enroll a second factor before accessing the
-            admin console. Set up an authenticator app to continue.
+            admin console. Set up an authenticator app or passkey to continue.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter className="sm:flex-col sm:gap-2 sm:space-x-0">
           <AlertDialogAction onClick={handleEnroll}>
-            Enroll authenticator
+            Set up second factor
           </AlertDialogAction>
           <AlertDialogCancel onClick={handleSignOut} className="mt-0">
             Sign out

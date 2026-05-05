@@ -85,15 +85,15 @@ describe("MfaEnrollmentDialog", () => {
     });
   });
 
-  test('"Enroll authenticator" routes to enrollmentUrl and clears gate state', async () => {
+  test('"Set up second factor" routes to enrollmentUrl and clears gate state', async () => {
     const { container } = renderDialog("/admin/settings/security");
 
     await waitFor(() => {
-      expect(document.body.textContent).toContain("Enroll authenticator");
+      expect(document.body.textContent).toContain("Set up second factor");
     });
 
     const enrollBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Enroll authenticator"),
+      b.textContent?.includes("Set up second factor"),
     );
     expect(enrollBtn).toBeTruthy();
 

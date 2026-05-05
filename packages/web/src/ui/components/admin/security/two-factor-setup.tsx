@@ -7,7 +7,7 @@
  * top-level views, with the middle one stepping through password-confirm
  * and code-confirm sub-stages (see {@link EnrollStage}):
  *
- *   1. Not enrolled       — "Set up two-factor" button. The first sub-stage
+ *   1. Not enrolled       — "Set up authenticator app" button. The first sub-stage
  *                           collects the user's password; the second renders
  *                           the otpauth URI + manual key + one-time backup
  *                           codes alongside a 6-digit verification input.
@@ -406,9 +406,10 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
               <ShieldCheck className="size-4" />
             </span>
             <div className="min-w-0 flex-1">
-              <CardTitle className="text-sm font-semibold">Two-factor on</CardTitle>
+              <CardTitle className="text-sm font-semibold">Authenticator app on</CardTitle>
               <p className="text-xs text-muted-foreground">
-                Authenticator app codes are required at every sign-in.
+                A 6-digit code is required at every sign-in. Backup codes were
+                issued during enrollment.
               </p>
             </div>
           </CardHeader>
@@ -544,10 +545,10 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
             <Lock className="size-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <CardTitle className="text-sm font-semibold">Two-factor required</CardTitle>
+            <CardTitle className="text-sm font-semibold">Authenticator app</CardTitle>
             <p className="text-xs text-muted-foreground">
-              Admin accounts must enroll a TOTP authenticator. Until you do, the
-              admin console will be locked.
+              Six-digit codes from Google Authenticator, 1Password, Authy, or
+              any TOTP app. Requires backup codes.
             </p>
           </div>
         </CardHeader>
@@ -555,7 +556,7 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
         {stage.kind === "idle" && (
           <CardContent className="pt-0">
             <Button onClick={() => setStage({ kind: "password" })}>
-              Set up two-factor
+              Set up authenticator app
             </Button>
           </CardContent>
         )}

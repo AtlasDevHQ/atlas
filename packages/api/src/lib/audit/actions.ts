@@ -127,6 +127,32 @@ export const ADMIN_ACTIONS = {
     sessionRevoke: "user.session_revoke",
     sessionRevokeAll: "user.session_revoke_all",
     /**
+     * Force-revoke every auth artifact for a target user — sessions,
+     * trusted-device cookies (and their adjacent verification rows),
+     * passkeys, and any oauth access/refresh tokens issued under that
+     * user's account. Runs as a single transaction so a transient pool
+     * failure mid-sequence cannot leave the user partially revoked
+     * (e.g. session gone but passkey still admits a fresh sign-in via
+     * SSO-as-first-factor — see #2093).
+     *
+     * Distinct from `session_revoke_all`: that surface only signs the
+     * user out of active web sessions and is reachable from the
+     * existing dropdown. `auth_revoke` is the scorched-earth lever for
+     * fired-contractor / compromised-account cleanup; the per-artifact
+     * counts in metadata are the audit signal that every credential
+     * class was reset, not just sessions.
+     *
+     * Workspace admins are scoped to org members via
+     * `verifyOrgMembership`; platform admins cross-org.
+     *
+     * Success metadata: `{ targetUserId, sessionsRevoked,
+     * trustedDevicesRevoked, verificationRowsRevoked, passkeysRevoked,
+     * oauthAccessTokensRevoked, oauthRefreshTokensRevoked, reason? }`.
+     * Failure metadata adds `{ phase, error }` so triage can answer
+     * "did anything actually delete?" without grep'ing pino.
+     */
+    authRevoke: "user.auth_revoke",
+    /**
      * Self-service password change via `POST /me/password`. The actor IS
      * the target — audit row carries `targetType: "user"` and
      * `targetId: actorId` so forensic queries can distinguish a user

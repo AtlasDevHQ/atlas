@@ -284,6 +284,10 @@ registerInvitationRoutes(admin, adminAuthAndContext);
 // Per-user trusted-browsers — see me-trusted-devices.ts header.
 import { registerTrustedDeviceRoutes } from "./me-trusted-devices";
 registerTrustedDeviceRoutes(admin, reqId);
+// Force-revoke every auth artifact for a target user (#2093). Registered
+// directly so the existing /users/* routes share the same middleware chain.
+import { registerRevokeRoutes } from "./admin-revoke";
+registerRevokeRoutes(admin, adminAuthAndContext, verifyOrgMembership);
 admin.route("/connections", adminConnections);
 admin.route("/connections/", adminConnections);
 admin.route("/publish", adminPublish);

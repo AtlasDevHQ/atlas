@@ -23,6 +23,7 @@ import {
   checkRateLimit,
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
+import { extractTrustDeviceIdentifier } from "@atlas/api/lib/auth/trust-device-cookie";
 import {
   detectMisrouting,
   isStrictRoutingEnabled,
@@ -73,6 +74,8 @@ export type AuthEnv = Env & {
     authResult: AuthResult & { authenticated: true };
     requestId: string;
     atlasMode: import("@useatlas/types/auth").AtlasMode;
+    /** See `lib/auth/trust-device-cookie.ts`. Set once by the auth middlewares; reads are uniform. */
+    trustDeviceIdentifier: string | undefined;
   };
 };
 
@@ -278,6 +281,7 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   c.set("authResult", authResult);
   resolveModeForRequest(c, authResult, requestId);
+  setTrustDeviceIdentifier(c);
   await next();
 });
 
@@ -325,6 +329,7 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   c.set("authResult", authResult);
   resolveModeForRequest(c, authResult, requestId);
+  setTrustDeviceIdentifier(c);
   await next();
 });
 
@@ -354,6 +359,7 @@ export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   c.set("authResult", authResult);
   resolveModeForRequest(c, authResult, requestId);
+  setTrustDeviceIdentifier(c);
   await next();
 });
 
@@ -438,6 +444,20 @@ export function resolveMode(
 }
 
 /**
+ * Surface the parsed cookie identifier on Hono context once, so the audit
+ * logger and Effect bridge don't re-parse per call. Always sets the key —
+ * `undefined` when absent — so reads are uniform.
+ */
+function setTrustDeviceIdentifier(c: {
+  req: { raw: Request };
+  set: (key: string, value: unknown) => void;
+}): void {
+  const cookieHeader = c.req.raw.headers.get("cookie");
+  const identifier = extractTrustDeviceIdentifier(cookieHeader);
+  c.set("trustDeviceIdentifier", identifier ?? undefined);
+}
+
+/**
  * Resolve mode and log when a developer request is downgraded due to
  * insufficient role. Used by the auth middlewares to centralize the
  * resolve + set + log pattern.
@@ -474,7 +494,11 @@ export const requestContext = createMiddleware<AuthEnv>(async (c, next) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const atlasMode = c.get("atlasMode");
-  await withRequestContext({ requestId, user: authResult.user, atlasMode }, () => next());
+  const trustDeviceIdentifier = c.get("trustDeviceIdentifier");
+  await withRequestContext(
+    { requestId, user: authResult.user, atlasMode, trustDeviceIdentifier },
+    () => next(),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -485,9 +509,19 @@ export const requestContext = createMiddleware<AuthEnv>(async (c, next) => {
  * Generates a requestId and wraps downstream in withRequestContext.
  * Does NOT run auth — use when auth is handled inline in the handler
  * (e.g. admin.ts which mixes admin and non-admin routes).
+ *
+ * The trust-device cookie is parsed here too — it's available pre-auth and
+ * having it on the AsyncLocalStorage context from the start means
+ * `logAdminAction` picks it up without per-handler ALS mutation. The
+ * `adminAuth` family does the same via `setTrustDeviceIdentifier`; this
+ * keeps both paths symmetric.
  */
 export const withRequestId = createMiddleware<AuthEnv>(async (c, next) => {
   const requestId = crypto.randomUUID();
   c.set("requestId", requestId);
-  await withRequestContext({ requestId }, () => next());
+  const cookieHeader = c.req.raw.headers.get("cookie");
+  const trustDeviceIdentifier =
+    extractTrustDeviceIdentifier(cookieHeader) ?? undefined;
+  c.set("trustDeviceIdentifier", trustDeviceIdentifier);
+  await withRequestContext({ requestId, trustDeviceIdentifier }, () => next());
 });

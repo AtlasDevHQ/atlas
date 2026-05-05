@@ -20,6 +20,8 @@ interface RequestContext {
   user?: AtlasUser;
   /** Resolved atlas mode for this request. When "published", tools should restrict to published entities only. */
   atlasMode?: import("@useatlas/types/auth").AtlasMode;
+  /** See `lib/auth/trust-device-cookie.ts`. Surfaced into `admin_action_log` metadata via `logAdminAction`. */
+  trustDeviceIdentifier?: string;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

@@ -39,6 +39,14 @@ export interface AdminActionEntry {
   /** Client IP address (extracted from request headers by caller). */
   ipAddress?: string | null;
   /**
+   * Auto-resolved from the AsyncLocalStorage request context populated by
+   * the auth middlewares — callers don't need to pass it explicitly.
+   * Explicit values still win, mirroring the `metadata` precedence rule.
+   * Surfaced into `admin_action_log.metadata.trustDeviceIdentifier` and
+   * the pino line as a top-level field. See `lib/auth/trust-device-cookie.ts`.
+   */
+  trustDeviceIdentifier?: string;
+  /**
    * Reserved actor for system-initiated writes with no HTTP request context
    * (schedulers, background jobs). Must match `SYSTEM_ACTOR_PATTERN`
    * (`^system:[a-z0-9][a-z0-9_-]*$`, where the leading char must be
@@ -141,6 +149,8 @@ interface ResolvedEntry {
   readonly requestId: string;
   readonly scope: "platform" | "workspace";
   readonly status: "success" | "failure";
+  readonly trustDeviceIdentifier: string | undefined;
+  readonly metadata: Record<string, unknown> | null;
   readonly params: unknown[];
 }
 
@@ -158,6 +168,25 @@ function resolveEntry(entry: AdminActionEntry): ResolvedEntry {
   const requestId = ctx?.requestId ?? (useSystemActor ? entry.systemActor! : "unknown");
   const scope = entry.scope ?? (useSystemActor ? "platform" : "workspace");
   const status = entry.status ?? "success";
+
+  // Trust-device identifier: explicit caller value wins over the
+  // request-context value so unit tests / future explicit pass paths can
+  // override. systemActor writes have no HTTP request and stay undefined.
+  const trustDeviceIdentifier = useSystemActor
+    ? entry.trustDeviceIdentifier
+    : (entry.trustDeviceIdentifier ?? ctx?.trustDeviceIdentifier);
+
+  // Merge trustDeviceIdentifier into metadata under the same key so
+  // forensic queries can pivot via `metadata->>'trustDeviceIdentifier'`.
+  // Caller-supplied metadata wins on key collision — no surprise
+  // overwrites of an explicit metadata field with the auto-resolved
+  // identifier. `null` (not "{}") when there's nothing to record so the
+  // existing zero-metadata audit rows look identical to before.
+  const metadata: Record<string, unknown> | null =
+    trustDeviceIdentifier !== undefined
+      ? { trustDeviceIdentifier, ...(entry.metadata ?? {}) }
+      : (entry.metadata ?? null);
+
   const params: unknown[] = [
     actorId,
     actorEmail,
@@ -167,11 +196,22 @@ function resolveEntry(entry: AdminActionEntry): ResolvedEntry {
     entry.targetType,
     entry.targetId,
     status,
-    entry.metadata ? JSON.stringify(entry.metadata) : null,
+    metadata ? JSON.stringify(metadata) : null,
     entry.ipAddress ?? null,
     requestId,
   ];
-  return { entry, actorId, actorEmail, orgId, requestId, scope, status, params };
+  return {
+    entry,
+    actorId,
+    actorEmail,
+    orgId,
+    requestId,
+    scope,
+    status,
+    trustDeviceIdentifier,
+    metadata,
+    params,
+  };
 }
 
 function emitPino(resolved: ResolvedEntry): void {
@@ -187,8 +227,15 @@ function emitPino(resolved: ResolvedEntry): void {
       actorEmail: resolved.actorEmail,
       orgId: resolved.orgId,
       requestId: resolved.requestId,
-      ...(resolved.entry.metadata && { metadata: resolved.entry.metadata }),
+      // Log the merged metadata (caller-provided + auto-resolved
+      // trustDeviceIdentifier) so the pino line matches the DB row 1:1.
+      // Top-level `trustDeviceIdentifier` mirrors the `ipAddress` pattern
+      // for grep-friendly forensic queries against the log stream.
+      ...(resolved.metadata && { metadata: resolved.metadata }),
       ...(resolved.entry.ipAddress && { ipAddress: resolved.entry.ipAddress }),
+      ...(resolved.trustDeviceIdentifier && {
+        trustDeviceIdentifier: resolved.trustDeviceIdentifier,
+      }),
     },
     `admin_action: ${resolved.entry.actionType}`,
   );

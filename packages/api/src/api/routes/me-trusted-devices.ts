@@ -23,6 +23,7 @@ import type { OpenAPIHono } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
+import { extractTrustDeviceIdentifier } from "@atlas/api/lib/auth/trust-device-cookie";
 import {
   getInternalDB,
   hasInternalDB,
@@ -30,6 +31,11 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { authErrorCode } from "./admin-auth";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+
+// Re-exported for the audit route's existing callers (tests, the C.2
+// admin route module). New consumers should import directly from
+// `@atlas/api/lib/auth/trust-device-cookie`.
+export { extractTrustDeviceIdentifier };
 
 const log = createLogger("me-trusted-devices");
 
@@ -115,54 +121,6 @@ const deleteRoute = createRoute({
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
-
-// ---------------------------------------------------------------------------
-// Cookie helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Extract the trust-device identifier from the request's cookie header, if any.
- *
- * Better Auth sets a signed cookie named `<prefix>.trust_device` (default
- * `better-auth.trust_device`) with optional `__Secure-` prefix in production,
- * plus an env-overridable `cookiePrefix`. The cookie value format is
- * `${hmac}!${identifier}`.
- *
- * We do NOT verify the HMAC here — `isCurrent` is a UX hint (drives the
- * "This browser" badge), not a security gate. The user can only see their
- * own rows from the GET, so a forged identifier would just light up the
- * badge on a row they already control. Skipping the verify avoids hauling
- * Better Auth's secret + crypto path into the read.
- *
- * Strategy: scan all cookie names ending in `.trust_device` (we don't know
- * the operator's `cookiePrefix` at read time, and it's cheap to scan).
- */
-export function extractTrustDeviceIdentifier(cookieHeader: string | null): string | null {
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    const rawName = part.slice(0, eq).trim();
-    // Strip __Secure- / __Host- prefix so a prod and dev request match the
-    // same suffix logic. Better Auth's createCookieGetter applies the prefix
-    // dynamically based on protocol — we don't know which one is in flight.
-    const name = rawName.replace(/^__(?:Secure|Host)-/, "");
-    if (!name.endsWith(".trust_device")) continue;
-    const rawValue = part.slice(eq + 1).trim();
-    // Cookie values are URL-encoded by setSignedCookie; decode best-effort.
-    let value = rawValue;
-    try {
-      value = decodeURIComponent(rawValue);
-    } catch {
-      // intentionally ignored: malformed encoding falls through with raw value
-    }
-    const bang = value.indexOf("!");
-    if (bang === -1) continue;
-    const identifier = value.slice(bang + 1);
-    if (identifier.startsWith("trust-device-")) return identifier;
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Registration

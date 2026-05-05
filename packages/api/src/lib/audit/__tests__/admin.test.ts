@@ -442,3 +442,235 @@ describe("logAdminAction() — system actor (F-27)", () => {
     expect(PINNED).toMatch(/^system:[a-z0-9][a-z0-9_-]*$/);
   });
 });
+
+/**
+ * Trust-device identifier on the admin audit row.
+ *
+ * Tested separately from `ipAddress` because the resolution path is
+ * different: ipAddress is always caller-supplied (per-handler header
+ * choice), trustDeviceIdentifier flows through the AsyncLocalStorage
+ * RequestContext populated once in middleware.
+ */
+describe("logAdminAction() — trust-device identifier", () => {
+  const origDbUrl = process.env.DATABASE_URL;
+
+  beforeEach(() => {
+    queryCalls = [];
+    queryThrow = null;
+  });
+
+  afterEach(() => {
+    if (origDbUrl) {
+      process.env.DATABASE_URL = origDbUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+    _resetPool(null);
+  });
+
+  function enableInternalDB() {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+  }
+
+  const user: AtlasUser = {
+    id: "admin-1",
+    label: "admin@example.com",
+    mode: "managed",
+    role: "admin",
+    activeOrganizationId: "org-123",
+  };
+
+  it("auto-resolves trustDeviceIdentifier from request context into metadata JSONB", () => {
+    enableInternalDB();
+
+    withRequestContext(
+      {
+        requestId: "req-1",
+        user,
+        trustDeviceIdentifier: "trust-device-abc123",
+      },
+      () => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.workspace.delete,
+          targetType: "workspace",
+          targetId: "ws-1",
+        });
+      },
+    );
+
+    expect(queryCalls).toHaveLength(1);
+    const metadataParam = queryCalls[0].params![8] as string;
+    expect(metadataParam).not.toBeNull();
+    expect(JSON.parse(metadataParam)).toEqual({
+      trustDeviceIdentifier: "trust-device-abc123",
+    });
+  });
+
+  it("merges trustDeviceIdentifier alongside caller-supplied metadata fields", () => {
+    enableInternalDB();
+
+    withRequestContext(
+      {
+        requestId: "req-1",
+        user,
+        trustDeviceIdentifier: "trust-device-abc123",
+      },
+      () => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.user.ban,
+          targetType: "user",
+          targetId: "user-2",
+          metadata: { reason: "abuse", durationDays: 30 },
+        });
+      },
+    );
+
+    expect(queryCalls).toHaveLength(1);
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata).toEqual({
+      trustDeviceIdentifier: "trust-device-abc123",
+      reason: "abuse",
+      durationDays: 30,
+    });
+  });
+
+  it("caller-supplied metadata.trustDeviceIdentifier wins over context value", () => {
+    // Defensive — the auto-resolved value spreads BEFORE caller metadata,
+    // so an explicit caller key wins. Pinned so a future refactor can't
+    // silently invert the precedence.
+    enableInternalDB();
+
+    withRequestContext(
+      {
+        requestId: "req-1",
+        user,
+        trustDeviceIdentifier: "trust-device-from-context",
+      },
+      () => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.user.ban,
+          targetType: "user",
+          targetId: "user-2",
+          metadata: { trustDeviceIdentifier: "trust-device-explicit" },
+        });
+      },
+    );
+
+    expect(queryCalls).toHaveLength(1);
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata.trustDeviceIdentifier).toBe("trust-device-explicit");
+  });
+
+  it("entry.trustDeviceIdentifier wins over context — explicit pass is the override", () => {
+    enableInternalDB();
+
+    withRequestContext(
+      {
+        requestId: "req-1",
+        user,
+        trustDeviceIdentifier: "trust-device-from-context",
+      },
+      () => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.user.ban,
+          targetType: "user",
+          targetId: "user-2",
+          trustDeviceIdentifier: "trust-device-typed-override",
+        });
+      },
+    );
+
+    expect(queryCalls).toHaveLength(1);
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata.trustDeviceIdentifier).toBe("trust-device-typed-override");
+  });
+
+  it("leaves metadata null when no cookie is present and no caller metadata", () => {
+    // Backwards compat: a cookie-less request must keep `metadata = null`,
+    // not flip to `metadata = "{}"` — that would churn forensic queries
+    // that distinguish "no metadata" from "empty metadata".
+    enableInternalDB();
+
+    withRequestContext({ requestId: "req-1", user }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.settings.update,
+        targetType: "settings",
+        targetId: "ATLAS_MODEL",
+      });
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    expect(queryCalls[0].params![8]).toBeNull();
+  });
+
+  it("preserves caller metadata as-is when cookie is absent", () => {
+    enableInternalDB();
+
+    withRequestContext({ requestId: "req-1", user }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.connection.create,
+        targetType: "connection",
+        targetId: "conn-1",
+        metadata: { name: "prod-db", dbType: "postgres" },
+      });
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata).toEqual({ name: "prod-db", dbType: "postgres" });
+    expect(metadata.trustDeviceIdentifier).toBeUndefined();
+  });
+
+  it("systemActor writes never carry a context-derived trust-device identifier", () => {
+    // Schedulers run inside withRequestContext in tests but have no
+    // browser-bound cookie — the trust-device field must never bleed
+    // from an outer request into a system-emitted row, otherwise the
+    // forensic queries pivoting on trustDeviceIdentifier would
+    // mis-attribute scheduler activity to the user whose request
+    // happened to be in flight when the tick fired.
+    enableInternalDB();
+
+    withRequestContext(
+      {
+        requestId: "req-1",
+        user,
+        trustDeviceIdentifier: "trust-device-outer-request",
+      },
+      () => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+          targetType: "audit_log",
+          targetId: "scheduler",
+          systemActor: "system:audit-purge-scheduler",
+          metadata: { softDeleted: 0 },
+        });
+      },
+    );
+
+    expect(queryCalls).toHaveLength(1);
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata).toEqual({ softDeleted: 0 });
+    expect(metadata.trustDeviceIdentifier).toBeUndefined();
+  });
+
+  it("systemActor writes still record an explicit trustDeviceIdentifier when one is passed", () => {
+    // Edge case: a future code path could legitimately attribute a
+    // system-emitted row to a specific browser (e.g. a delayed-job
+    // dispatcher recording the originating request). Explicit values pass
+    // through; only context-bleed is suppressed.
+    enableInternalDB();
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+      targetType: "audit_log",
+      targetId: "scheduler",
+      systemActor: "system:audit-purge-scheduler",
+      trustDeviceIdentifier: "trust-device-explicit",
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata.trustDeviceIdentifier).toBe("trust-device-explicit");
+  });
+});

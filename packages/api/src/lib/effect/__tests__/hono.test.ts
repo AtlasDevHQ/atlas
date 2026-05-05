@@ -21,6 +21,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 const { runEffect, runHandler, mapTaggedError, domainError } = await import("../hono");
+const { AuthContext } = await import("../services");
 const { EnterpriseError } = await import("@atlas/ee/index");
 const {
   EmptyQueryError,
@@ -788,6 +789,102 @@ describe("runHandler", () => {
     expect(res.status).toBe(500);
     const body = (await res.json()) as ErrorBody;
     expect(body.error).toBe("internal_error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trust-device identifier propagation via the Hono → Effect context bridge
+// ---------------------------------------------------------------------------
+
+describe("buildContextLayer — trustDeviceIdentifier on AuthContext", () => {
+  type AuthBridgeEnv = {
+    Variables: {
+      requestId: string;
+      authResult?: {
+        authenticated: true;
+        mode: string;
+        user?: { id: string; activeOrganizationId?: string };
+      };
+      trustDeviceIdentifier?: string;
+    };
+  };
+
+  function appWithAuth() {
+    const app = new Hono<AuthBridgeEnv>();
+    app.use(async (c, next) => {
+      c.set("requestId", "test-req-123");
+      await next();
+    });
+    return app;
+  }
+
+  it("propagates trustDeviceIdentifier to AuthContext when authResult is present", async () => {
+    const app = appWithAuth();
+    app.get("/test", async (c) => {
+      c.set("authResult", {
+        authenticated: true,
+        mode: "managed",
+        user: { id: "admin-1", activeOrganizationId: "org-1" },
+      });
+      c.set("trustDeviceIdentifier", "trust-device-bridge-test");
+      return runEffect(
+        c,
+        Effect.gen(function* () {
+          const auth = yield* AuthContext;
+          return c.json({ identifier: auth.trustDeviceIdentifier ?? null }, 200);
+        }),
+      );
+    });
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { identifier: string | null };
+    expect(body.identifier).toBe("trust-device-bridge-test");
+  });
+
+  it("propagates trustDeviceIdentifier on the no-auth fallback AuthContext", async () => {
+    const app = appWithAuth();
+    app.get("/test", async (c) => {
+      // No authResult — exercises the noAuthLayer branch in buildContextLayer
+      c.set("trustDeviceIdentifier", "trust-device-no-auth");
+      return runEffect(
+        c,
+        Effect.gen(function* () {
+          const auth = yield* AuthContext;
+          return c.json({ identifier: auth.trustDeviceIdentifier ?? null, mode: auth.mode }, 200);
+        }),
+      );
+    });
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { identifier: string | null; mode: string };
+    expect(body.identifier).toBe("trust-device-no-auth");
+    expect(body.mode).toBe("none");
+  });
+
+  it("AuthContext.trustDeviceIdentifier is undefined when no cookie was set", async () => {
+    const app = appWithAuth();
+    app.get("/test", async (c) => {
+      c.set("authResult", {
+        authenticated: true,
+        mode: "managed",
+        user: { id: "admin-1", activeOrganizationId: "org-1" },
+      });
+      // Deliberately do NOT set trustDeviceIdentifier
+      return runEffect(
+        c,
+        Effect.gen(function* () {
+          const auth = yield* AuthContext;
+          return c.json({ identifier: auth.trustDeviceIdentifier ?? null }, 200);
+        }),
+      );
+    });
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { identifier: string | null };
+    expect(body.identifier).toBeNull();
   });
 });
 

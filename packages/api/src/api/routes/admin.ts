@@ -146,8 +146,8 @@ async function adminAuthAndContext(
   }
   // Bind user identity into the existing AsyncLocalStorage context so
   // downstream log lines include userId. The context was created by
-  // withRequestId middleware with { requestId } only — mutating is safe
-  // because each request has its own context object.
+  // withRequestId middleware with { requestId, trustDeviceIdentifier }
+  // — mutating is safe because each request has its own context object.
   const ctx = getRequestContext();
   if (ctx) {
     (ctx as unknown as Record<string, unknown>).user = authResult.user;

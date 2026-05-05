@@ -749,6 +749,8 @@ export interface AuthContextShape {
   readonly user: AtlasUser | undefined;
   /** Convenience: active org ID from user, or undefined. */
   readonly orgId: string | undefined;
+  /** See `lib/auth/trust-device-cookie.ts`. */
+  readonly trustDeviceIdentifier: string | undefined;
 }
 
 export class AuthContext extends Context.Tag("AuthContext")<
@@ -763,11 +765,13 @@ export class AuthContext extends Context.Tag("AuthContext")<
 export function makeAuthContextLayer(
   mode: AuthMode,
   user: AtlasUser | undefined,
+  trustDeviceIdentifier?: string,
 ): Layer.Layer<AuthContext> {
   return Layer.succeed(AuthContext, {
     mode,
     user,
     orgId: user?.activeOrganizationId,
+    trustDeviceIdentifier,
   });
 }
 
@@ -779,5 +783,6 @@ export function createAuthContextTestLayer(
     mode: partial.mode ?? "none",
     user: partial.user,
     orgId: partial.orgId ?? partial.user?.activeOrganizationId,
+    trustDeviceIdentifier: partial.trustDeviceIdentifier,
   });
 }

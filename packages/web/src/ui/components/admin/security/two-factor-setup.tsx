@@ -27,7 +27,11 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { authClient } from "@/lib/auth/client";
+import {
+  requireTwoFactorClient,
+  unwrapTwoFactorResult,
+  type TwoFactorApiError,
+} from "@/lib/auth/two-factor-client";
 import { consumeOriginPath } from "@/ui/components/admin/mfa-gate-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,81 +54,6 @@ import {
   Lock,
   ShieldCheck,
 } from "lucide-react";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/**
- * Shape returned by Better Auth's `twoFactor.enable` action. Typed loosely
- * here because the client plugin's exported type isn't reachable through
- * `createAuthClient`'s plugin generic chain.
- */
-interface EnableResponse {
-  totpURI: string;
-  backupCodes: string[];
-}
-
-/**
- * Result envelope Better Auth uses for client actions. Better Auth's wire
- * shape allows `{ data: null, error: null }` (e.g. an unexpected 204) so the
- * call sites must check both fields — see {@link unwrapResult}.
- *
- * Carries `code` and `status` alongside `message` so the component can log
- * the structured failure for support, even though it only surfaces `message`
- * in the UI.
- */
-type ClientResult<T> = {
-  data: T | null;
-  error: { message?: string; code?: string; status?: number } | null;
-};
-
-/**
- * Normalize a Better Auth result into a tagged union so call sites don't
- * have to repeat the `result.error || !result.data` defensive narrowing
- * — and so a `{ data: null, error: null }` response is treated as failure
- * rather than silent success (verifyTotp regression caught pre-merge).
- */
-type Outcome<T> = { ok: true; data: T } | { ok: false; message: string; raw: ClientResult<T>["error"] };
-
-function unwrapResult<T>(result: ClientResult<T>, fallback: string): Outcome<T> {
-  if (result.error) {
-    return { ok: false, message: result.error.message ?? fallback, raw: result.error };
-  }
-  if (!result.data) {
-    return { ok: false, message: fallback, raw: null };
-  }
-  return { ok: true, data: result.data };
-}
-
-// Minimal contract for the parts of authClient.twoFactor we use. Keeps the
-// component working under TS6's stricter inference of plugin-augmented
-// clients without resorting to `any`.
-interface TwoFactorClient {
-  enable: (opts: { password: string }) => Promise<ClientResult<EnableResponse>>;
-  verifyTotp: (opts: { code: string }) => Promise<ClientResult<{ token?: string }>>;
-  disable: (opts: { password: string }) => Promise<ClientResult<{ status?: boolean }>>;
-  generateBackupCodes: (opts: {
-    password: string;
-  }) => Promise<ClientResult<{ backupCodes: string[] }>>;
-}
-
-/**
- * Resolve the `twoFactor` namespace off authClient. The cast through
- * `unknown` is the documented workaround for TS6's plugin-inference gap;
- * the runtime guard turns "plugin not loaded" from a `Cannot read
- * properties of undefined` deep in a handler into a clear up-front error
- * a caller can surface.
- */
-function getTwoFactor(): TwoFactorClient {
-  const namespace = (authClient as unknown as { twoFactor?: TwoFactorClient }).twoFactor;
-  if (!namespace) {
-    throw new Error(
-      "Better Auth twoFactor client plugin is not loaded — check packages/web/src/lib/auth/client.ts",
-    );
-  }
-  return namespace;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -296,7 +225,7 @@ type EnrollStage =
  * support can still recover the `code` / `status` / `cause` from a user
  * report even though only `message` is shown in the UI.
  */
-function logFailure(action: string, raw: ClientResult<unknown>["error"]): void {
+function logFailure(action: string, raw: TwoFactorApiError | null): void {
   console.warn(`[two-factor] ${action} failed`, raw);
 }
 
@@ -323,9 +252,9 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
   async function handleEnable() {
     setBusy(true);
     setError(null);
-    const result = await getTwoFactor().enable({ password });
+    const result = await requireTwoFactorClient().enable({ password });
     setBusy(false);
-    const outcome = unwrapResult(result, "Could not enable two-factor authentication.");
+    const outcome = unwrapTwoFactorResult(result, "Could not enable two-factor authentication.");
     if (!outcome.ok) {
       logFailure("enable", outcome.raw);
       setError(outcome.message);
@@ -341,11 +270,11 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
   async function handleVerify() {
     setBusy(true);
     setError(null);
-    const result = await getTwoFactor().verifyTotp({ code });
+    const result = await requireTwoFactorClient().verifyTotp({ code });
     setBusy(false);
     // Treat `{ data: null, error: null }` as failure — the regression Better
     // Auth client envelopes can produce on a 204-style response.
-    const outcome = unwrapResult(result, "That code didn't match. Try again.");
+    const outcome = unwrapTwoFactorResult(result, "That code didn't match. Try again.");
     if (!outcome.ok) {
       logFailure("verifyTotp", outcome.raw);
       setError(outcome.message);
@@ -364,10 +293,10 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
   async function handleRegenerate() {
     setBusy(true);
     setError(null);
-    const result = await getTwoFactor().generateBackupCodes({ password: confirmPassword });
+    const result = await requireTwoFactorClient().generateBackupCodes({ password: confirmPassword });
     setBusy(false);
     setConfirmPassword("");
-    const outcome = unwrapResult(result, "Could not regenerate backup codes.");
+    const outcome = unwrapTwoFactorResult(result, "Could not regenerate backup codes.");
     if (!outcome.ok) {
       logFailure("generateBackupCodes", outcome.raw);
       setError(outcome.message);
@@ -382,10 +311,10 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
   async function handleDisable() {
     setBusy(true);
     setError(null);
-    const result = await getTwoFactor().disable({ password: confirmPassword });
+    const result = await requireTwoFactorClient().disable({ password: confirmPassword });
     setBusy(false);
     setConfirmPassword("");
-    const outcome = unwrapResult(result, "Could not disable two-factor authentication.");
+    const outcome = unwrapTwoFactorResult(result, "Could not disable two-factor authentication.");
     if (!outcome.ok) {
       logFailure("disable", outcome.raw);
       setError(outcome.message);

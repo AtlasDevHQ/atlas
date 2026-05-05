@@ -6,10 +6,16 @@ import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
+import { useMfaGateOptional } from "@/ui/components/admin/mfa-gate-context";
 
 // Re-export from @/ui/lib/fetch-error (canonical location) for backward
 // compatibility. New code should import directly from @/ui/lib/fetch-error.
 export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
+
+// Mirrors ENROLLMENT_URL in admin-mfa-required.ts; cross-package import
+// not worth it for one path. Used only when the server response body
+// lacks `enrollmentUrl`.
+const DEFAULT_ENROLLMENT_URL = "/admin/settings/security";
 
 /**
  * Shared fetch hook for admin pages.
@@ -36,6 +42,12 @@ export function useAdminFetch<T>(
   // Ref to avoid stale closure if isCrossOrigin changes at runtime.
   const credentialsRef = useRef(credentials);
   credentialsRef.current = credentials;
+
+  // Optional gate: returns a no-op when the provider isn't mounted (chat
+  // surfaces). Ref keeps the queryFn stable.
+  const mfaGate = useMfaGateOptional();
+  const mfaGateRef = useRef(mfaGate);
+  mfaGateRef.current = mfaGate;
 
   // Manual error override — exposed via setError for backward compatibility.
   const [errorOverride, setErrorOverride] = useState<FetchError | null>(null);
@@ -67,7 +79,15 @@ export function useAdminFetch<T>(
       }
 
       if (!res.ok) {
-        throw await extractFetchError(res);
+        const fetchError = await extractFetchError(res);
+        // Open the dialog before throwing; the thrown error still surfaces
+        // in the page's error state.
+        if (fetchError.code === "mfa_enrollment_required") {
+          mfaGateRef.current.trigger(
+            fetchError.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+          );
+        }
+        throw fetchError;
       }
       const json: unknown = await res.json();
 

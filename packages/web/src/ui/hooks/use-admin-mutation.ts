@@ -5,6 +5,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
 import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
+import { useMfaGateOptional } from "@/ui/components/admin/mfa-gate-context";
+
+// See use-admin-fetch.ts for rationale.
+const DEFAULT_ENROLLMENT_URL = "/admin/settings/security";
 
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
@@ -120,6 +124,12 @@ export function useAdminMutation<TResponse = unknown>(
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const queryClient = useQueryClient();
+
+  // Optional gate: returns a no-op when the provider isn't mounted (chat
+  // surfaces). Ref keeps the mutationFn stable.
+  const mfaGate = useMfaGateOptional();
+  const mfaGateRef = useRef(mfaGate);
+  mfaGateRef.current = mfaGate;
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<FetchError | null>(null);
@@ -262,6 +272,12 @@ export function useAdminMutation<TResponse = unknown>(
 
       if (!res.ok) {
         const fetchError = await extractFetchError(res);
+        // Open the dialog so the write path opens it too, not just the read path.
+        if (fetchError.code === "mfa_enrollment_required") {
+          mfaGateRef.current.trigger(
+            fetchError.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+          );
+        }
         // Preserve the structured FetchError across the throw boundary so the
         // catch in `mutate()` can return it as `MutateResult.error`. The bare
         // `Error.message` is kept human-readable as a fallback for anything

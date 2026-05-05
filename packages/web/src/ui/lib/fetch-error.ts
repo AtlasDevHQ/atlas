@@ -6,12 +6,20 @@
  * `code` captures the machine-readable `error` field from the API's JSON body
  * (e.g. `"enterprise_required"`). Prefer branching on this over string-matching
  * the human-facing `message`.
+ *
+ * `enrollmentUrl` is enrollment-specific — populated only when `code` is
+ * `mfa_enrollment_required`. A future typed code that needs its own
+ * redirect target (e.g. `payment_required` → upgrade URL) should add a
+ * dedicated field rather than reuse this one. Reusing the field for a
+ * non-enrollment redirect would mislead readers and shadow the existing
+ * one when both codes coexist on the wire.
  */
 export interface FetchError {
   message: string;
   status?: number;
   requestId?: string;
   code?: string;
+  enrollmentUrl?: string;
 }
 
 /**
@@ -34,6 +42,7 @@ export function buildFetchError(input: {
   status?: number;
   code?: string;
   requestId?: string;
+  enrollmentUrl?: string;
 }): FetchError {
   const message = input.message?.trim();
   if (!message) {
@@ -52,6 +61,7 @@ export function buildFetchError(input: {
       ...(input.status !== undefined && { status: input.status }),
       ...(input.code && { code: input.code }),
       ...(input.requestId && { requestId: input.requestId }),
+      ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
     };
   }
   return {
@@ -59,6 +69,7 @@ export function buildFetchError(input: {
     ...(input.status !== undefined && { status: input.status }),
     ...(input.code && { code: input.code }),
     ...(input.requestId && { requestId: input.requestId }),
+    ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
   };
 }
 
@@ -71,6 +82,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
   let message: string | undefined;
   let requestId: string | undefined;
   let code: string | undefined;
+  let enrollmentUrl: string | undefined;
   try {
     const body: unknown = await res.json();
     if (typeof body === "object" && body !== null) {
@@ -85,6 +97,9 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
       }
       if (typeof obj.requestId === "string") requestId = obj.requestId;
       if (typeof obj.error === "string") code = obj.error;
+      if (typeof obj.enrollmentUrl === "string" && obj.enrollmentUrl.length > 0) {
+        enrollmentUrl = obj.enrollmentUrl;
+      }
     }
   } catch (err) {
     // Non-JSON body is expected (SyntaxError, swallowed silently). Unexpected
@@ -107,6 +122,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
     status: res.status,
     code,
     requestId,
+    enrollmentUrl,
   });
 }
 
@@ -128,28 +144,51 @@ export function friendlyErrorOrNull(err: FetchError | null | undefined): string 
 
 /**
  * Convert a FetchError into a user-friendly message.
- * Replaces known HTTP status codes (401, 403, 404, 503) with admin-specific
- * guidance; falls back to the raw error message for other codes or non-HTTP
- * errors. Appends request ID for log correlation when available.
+ *
+ * Precedence: a non-empty server-typed message wins over the canned
+ * status copy. `extractFetchError` only populates `message` from a real
+ * body field, so any string here is server-authored — render it verbatim.
+ * The status-code branches are the empty-body fallback;
+ * `extractFetchError` substitutes `HTTP {status}` there, which
+ * `isHttpStatusFallback` round-trips back to the friendly text.
  */
 export function friendlyError(err: FetchError): string {
-  let msg: string;
   // Schema mismatch only wins for client-side parse failures (status undefined),
   // because the body parses as 200 OK but fails Zod — HTTP status alone can't
   // distinguish this case. Gating on `status === undefined` prevents an HTTP
   // error whose body happens to set `error: "schema_mismatch"` from masking
-  // the 401/403/404/503 mappings below — the 401 "sign in" message has to
-  // reach the user even if a misconfigured server tags the body that way.
-  if (err.code === "schema_mismatch" && err.status === undefined)
-    msg = "The server returned data this version of the app can't read. This usually means the server and app are out of sync — contact your administrator or try again later.";
-  else if (err.status === 401) msg = "Not authenticated. Please sign in.";
+  // the friendly mappings — the typed mismatch copy is for the no-status path.
+  if (err.code === "schema_mismatch" && err.status === undefined) {
+    return appendRequestId(
+      "The server returned data this version of the app can't read. This usually means the server and app are out of sync — contact your administrator or try again later.",
+      err.requestId,
+    );
+  }
+
+  // Server-authored message wins on HTTP errors. `extractFetchError` only
+  // populates `message` from a non-empty body field, so any string here is a
+  // real server-typed message — render it. Canned text below covers the
+  // empty-body path where the message was substituted to `HTTP {status}`.
+  if (err.status !== undefined && !isHttpStatusFallback(err.message, err.status)) {
+    return appendRequestId(err.message, err.requestId);
+  }
+
+  let msg: string;
+  if (err.status === 401) msg = "Not authenticated. Please sign in.";
   else if (err.status === 403)
-    msg = "Access denied. Admin role required to view this page.";
+    msg = "Access denied. You may need additional permissions to view this page.";
   else if (err.status === 404)
     msg = "This feature is not enabled on this server.";
   else if (err.status === 503)
     msg = "A required service is unavailable. Check server configuration.";
   else msg = err.message;
-  if (err.requestId) msg += ` (Request ID: ${err.requestId})`;
-  return msg;
+  return appendRequestId(msg, err.requestId);
+}
+
+function isHttpStatusFallback(message: string, status: number): boolean {
+  return message === `HTTP ${status}`;
+}
+
+function appendRequestId(message: string, requestId: string | undefined): string {
+  return requestId ? `${message} (Request ID: ${requestId})` : message;
 }

@@ -106,6 +106,22 @@ function mockDeniedFetch() {
   ) as unknown as typeof fetch;
 }
 
+/** Mock fetch that returns 403 with `mfa_enrollment_required` body. */
+function mockMfaRequiredFetch() {
+  globalThis.fetch = mock(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          error: "mfa_enrollment_required",
+          message: "Two-factor authentication is required for admin accounts.",
+          enrollmentUrl: "/admin/settings/security",
+        }),
+        { status: 403 },
+      ),
+    ),
+  ) as unknown as typeof fetch;
+}
+
 describe("AdminLayout", () => {
   beforeEach(() => {
     testQueryClient = new QueryClient({
@@ -190,6 +206,31 @@ describe("AdminLayout", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("Admin Console");
     });
+  });
+
+  test("does NOT show 'Access denied' Card on mfa_enrollment_required", async () => {
+    // Regression guard for #2081 — the broken behavior was that any 403
+    // routed to the "Access denied. Admin role required." Card. The
+    // discriminated `usePasswordStatus` result keeps the Card in front of
+    // genuine role failures only; missing-second-factor 403s fall through
+    // to the normal layout where the dialog can render.
+    mockMfaRequiredFetch();
+    mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
+    const { container } = renderLayout();
+    await waitFor(() => {
+      expect(container.textContent).toContain("Admin Console");
+    });
+    expect(container.textContent).not.toContain("admin console requires the admin role");
+  });
+
+  test("opens MFA enrollment dialog on mfa_enrollment_required", async () => {
+    mockMfaRequiredFetch();
+    mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
+    renderLayout();
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Two-factor authentication required");
+    });
+    expect(document.body.textContent).toContain("Enroll authenticator");
   });
 
   test("shows password change dialog when required", async () => {

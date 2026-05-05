@@ -19,19 +19,35 @@
  *
  * ### What is NOT gated by this middleware
  *
- * The middleware is mounted on `/api/v1/admin/*` and `/api/v1/platform/*`
- * via `createAdminRouter()` / `createPlatformRouter()`. Better Auth's
- * own routes — `/api/auth/two-factor/*` (enrollment) and `/api/auth/sign-out`
- * — are mounted on a separate sub-app at `/api/auth` (`api/index.ts`)
- * and therefore never traverse this middleware. Admins without an
- * enrolled second factor reach those endpoints regardless of role: the
- * gate sits in front of admin-data routes, not in front of Better Auth.
+ * The middleware is mounted on routers built via `createAdminRouter()` /
+ * `createPlatformRouter()` (see `admin-router.ts`). It is therefore in
+ * front of every admin sub-router that uses those factories: connections,
+ * audit, sandbox, integrations, plugins, etc.
  *
- * The Next.js page at `/admin/settings/security` is rendered by the
- * frontend, not the API admin router, so it is also not gated here.
+ * **Three deliberate carve-outs:**
+ *
+ * 1. **Better Auth (`/api/auth/*`).** Mounted on a separate sub-app at
+ *    `/api/auth` in `api/index.ts`, so the two-factor enrollment endpoints
+ *    (`/api/auth/two-factor/enable`, `/api/auth/two-factor/verify-totp`,
+ *    `/api/auth/two-factor/generate-backup-codes`) and `/api/auth/sign-out`
+ *    never traverse this middleware. Admins without an enrolled second
+ *    factor reach those endpoints regardless of role.
+ *
+ * 2. **The parent admin router itself (`admin.ts`).** That router is built
+ *    as a raw `OpenAPIHono` instance with its own per-handler auth via
+ *    `adminAuthAndContext()`, NOT through `createAdminRouter()`. So the
+ *    self-service routes registered directly on it — `/me/password-status`,
+ *    `/me/password`, `/settings`, semantic editor routes — are NOT gated
+ *    by `mfaRequired`. The web's `usePasswordStatus` hook depends on this
+ *    carve-out: AdminLayout must be able to check password status before
+ *    the user has enrolled a second factor.
+ *
+ * 3. **The Next.js security page (`/admin/settings/security`).** Rendered
+ *    by the frontend, not by the API admin router, so it is reachable
+ *    independent of this middleware.
  *
  * Member-role users are NEVER gated. The enrollment surface is available
- * to them voluntarily; the policy in this milestone is admin-only.
+ * to them voluntarily; the policy is admin-only.
  */
 
 import type { Context } from "hono";

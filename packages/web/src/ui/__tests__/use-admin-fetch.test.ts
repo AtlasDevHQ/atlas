@@ -5,6 +5,16 @@ import { z } from "zod";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { friendlyError, useAdminFetch, type FetchError } from "../hooks/use-admin-fetch";
 import { AtlasProvider } from "../context";
+import {
+  MfaGateProvider,
+  useMfaGate,
+} from "../components/admin/mfa-gate-context";
+
+mock.module("next/navigation", () => ({
+  usePathname: () => "/admin/users",
+  useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 /* ------------------------------------------------------------------ */
 /*  friendlyError (pure function)                                      */
@@ -16,10 +26,25 @@ describe("friendlyError", () => {
     expect(friendlyError(err)).toContain("Not authenticated");
   });
 
-  test("returns access denied for 403", () => {
+  test("returns access denied for 403 with empty body", () => {
+    // Post-#2081 the canned 403 copy fires only when the body has no
+    // usable message (`extractFetchError` substitutes `HTTP ${status}`).
+    // Server-typed messages reach the user verbatim; this case is the
+    // empty-body fallback path.
     const err: FetchError = { message: "HTTP 403", status: 403 };
     expect(friendlyError(err)).toContain("Access denied");
-    expect(friendlyError(err)).toContain("Admin role");
+  });
+
+  test("server-typed 403 message wins over canned copy", () => {
+    // The motivating regression: an unenrolled admin saw "Admin role required"
+    // on a `mfa_enrollment_required` 403. The server-authored message must
+    // reach the user.
+    const err: FetchError = {
+      message: "Two-factor required.",
+      status: 403,
+      code: "mfa_enrollment_required",
+    };
+    expect(friendlyError(err)).toBe("Two-factor required.");
   });
 
   test("returns feature not enabled for 404", () => {
@@ -580,5 +605,135 @@ describe("useAdminFetch", () => {
     expect(result.current.error!.message).toContain("transform boom");
 
     console.warn = originalWarn;
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  useAdminFetch → MfaGate dispatch                                   */
+/* ------------------------------------------------------------------ */
+
+function gatedWrapper({ children }: { children: ReactNode }) {
+  return createElement(
+    QueryClientProvider,
+    { client: testQueryClient },
+    createElement(
+      AtlasProvider,
+      { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient } },
+      createElement(MfaGateProvider, null, children),
+    ),
+  );
+}
+
+function useFetchAndGate(path: string) {
+  const fetched = useAdminFetch(path);
+  const gate = useMfaGate();
+  return { fetched, gate };
+}
+
+describe("useAdminFetch → MfaGate dispatch", () => {
+  beforeEach(() => {
+    testQueryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+  });
+
+  afterEach(() => {
+    testQueryClient.clear();
+    cleanup();
+    globalThis.fetch = originalFetch;
+  });
+
+  test("opens the gate on mfa_enrollment_required 403", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: "mfa_enrollment_required",
+            message: "Two-factor required.",
+            enrollmentUrl: "/admin/settings/security",
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useFetchAndGate("/api/test"), { wrapper: gatedWrapper });
+
+    await waitFor(() => {
+      expect(result.current.fetched.loading).toBe(false);
+    });
+
+    expect(result.current.gate.state).not.toBeNull();
+    expect(result.current.gate.state!.enrollmentUrl).toBe("/admin/settings/security");
+    expect(result.current.fetched.error?.code).toBe("mfa_enrollment_required");
+  });
+
+  test("falls back to default enrollmentUrl when server omits it", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: "mfa_enrollment_required",
+            message: "Two-factor required.",
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useFetchAndGate("/api/test"), { wrapper: gatedWrapper });
+
+    await waitFor(() => {
+      expect(result.current.fetched.loading).toBe(false);
+    });
+
+    expect(result.current.gate.state!.enrollmentUrl).toBe("/admin/settings/security");
+  });
+
+  test("does NOT open the gate on non-MFA 403 (forbidden_role)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ error: "forbidden_role", message: "Admin role required." }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useFetchAndGate("/api/test"), { wrapper: gatedWrapper });
+
+    await waitFor(() => {
+      expect(result.current.fetched.loading).toBe(false);
+    });
+
+    expect(result.current.gate.state).toBeNull();
+    expect(result.current.fetched.error?.code).toBe("forbidden_role");
+  });
+
+  test("hook does not throw when used outside MfaGateProvider", async () => {
+    // useMfaGateOptional fallback path — admin hooks must remain safe on
+    // non-admin surfaces (chat, embedded widget) without a provider mount.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ error: "mfa_enrollment_required", message: "x" }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    // Suppress the dev-warn the NOOP_GATE.trigger emits.
+    const originalWarn = console.warn;
+    console.warn = mock(() => {}) as typeof console.warn;
+
+    try {
+      const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+      expect(result.current.error?.code).toBe("mfa_enrollment_required");
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });

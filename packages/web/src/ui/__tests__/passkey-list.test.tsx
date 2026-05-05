@@ -1,15 +1,9 @@
 /**
- * Coverage for the enrolled-passkey list (#2082 PR B).
- *
- * Covers:
- *  - Empty state copy
- *  - Row rendering (name + createdAt)
- *  - Rename dialog round-trip → calls updatePasskey + onChange
- *  - Delete dialog round-trip → calls deletePasskey + onChange
+ * Coverage for the enrolled-passkey list.
  */
 
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
-import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-library/react";
 
 const updatePasskeyMock = mock(async (_opts?: unknown) => ({
   data: { passkey: { id: "pk_123", name: "Renamed", createdAt: new Date() } },
@@ -19,21 +13,28 @@ const deletePasskeyMock = mock(async (_opts?: unknown) => ({
   data: { status: true },
   error: null,
 }));
+const addPasskeyMock = mock(async (_opts?: unknown) => ({ data: null, error: null }));
+const listUserPasskeysMock = mock(async () => ({ data: [], error: null }));
 
-mock.module("@/lib/auth/client", () => ({
-  authClient: {
-    passkey: {
-      updatePasskey: updatePasskeyMock,
-      deletePasskey: deletePasskeyMock,
-    },
-  },
+mock.module("@/lib/auth/passkey-client", () => ({
+  getPasskeyClient: () => ({
+    addPasskey: addPasskeyMock,
+    updatePasskey: updatePasskeyMock,
+    listUserPasskeys: listUserPasskeysMock,
+    deletePasskey: deletePasskeyMock,
+  }),
 }));
 
 import { PasskeyList } from "../components/admin/security/passkey-list";
 
 beforeEach(() => {
-  updatePasskeyMock.mockClear();
-  deletePasskeyMock.mockClear();
+  updatePasskeyMock.mockReset();
+  deletePasskeyMock.mockReset();
+  updatePasskeyMock.mockImplementation(async () => ({
+    data: { passkey: { id: "pk_123", name: "Renamed", createdAt: new Date() } },
+    error: null,
+  }));
+  deletePasskeyMock.mockImplementation(async () => ({ data: { status: true }, error: null }));
 });
 
 afterEach(() => {
@@ -72,13 +73,8 @@ describe("PasskeyList", () => {
       />,
     );
 
-    const renameBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.getAttribute("aria-label")?.startsWith("Rename"),
-    );
-    expect(renameBtn).toBeTruthy();
-
     await act(async () => {
-      fireEvent.click(renameBtn!);
+      fireEvent.click(screen.getByRole("button", { name: /rename Old name/i }));
     });
 
     await waitFor(() => {
@@ -89,12 +85,8 @@ describe("PasskeyList", () => {
     expect(input).toBeTruthy();
     fireEvent.change(input!, { target: { value: "New name" } });
 
-    const saveBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.textContent?.trim() === "Save",
-    );
-
     await act(async () => {
-      fireEvent.click(saveBtn!);
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     });
 
     await waitFor(() => {
@@ -102,6 +94,37 @@ describe("PasskeyList", () => {
     });
     expect(updatePasskeyMock.mock.calls[0]?.[0]).toEqual({ id: "pk_1", name: "New name" });
     expect(onChange).toHaveBeenCalled();
+  });
+
+  test("rename guard blocks empty / whitespace-only names", async () => {
+    render(
+      <PasskeyList
+        passkeys={[
+          { id: "pk_1", name: "Old name", createdAt: new Date("2026-04-01T12:00:00Z") },
+        ]}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /rename Old name/i }));
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Rename passkey");
+    });
+
+    const input = document.querySelector('input[maxlength="80"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "   " } });
+
+    const saveBtn = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
+
+    // Pressing Enter inside the input must not slip through the guard.
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+
+    expect(updatePasskeyMock).not.toHaveBeenCalled();
   });
 
   test("delete dialog calls deletePasskey and onChange", async () => {
@@ -115,26 +138,16 @@ describe("PasskeyList", () => {
       />,
     );
 
-    const deleteBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.getAttribute("aria-label")?.startsWith("Delete"),
-    );
-    expect(deleteBtn).toBeTruthy();
-
     await act(async () => {
-      fireEvent.click(deleteBtn!);
+      fireEvent.click(screen.getByRole("button", { name: /delete Doomed key/i }));
     });
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Delete passkey?");
     });
 
-    // Confirm dialog presents the Delete action; click it.
-    const confirmBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.textContent?.trim() === "Delete",
-    );
-
     await act(async () => {
-      fireEvent.click(confirmBtn!);
+      fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
     });
 
     await waitFor(() => {

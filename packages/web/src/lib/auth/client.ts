@@ -25,8 +25,8 @@ import { stripeClient } from "@better-auth/stripe/client";
 import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 // @better-auth/passkey client mirror — gives us
 // `authClient.passkey.{addPasskey, listUserPasskeys, deletePasskey, updatePasskey}`
-// for the enrollment UI on /admin/settings/security (#2082 PR B). The server
-// plugin (#2082 PR A) is loaded unconditionally next to twoFactor().
+// for the enrollment UI on /admin/settings/security. The server plugin is
+// loaded unconditionally next to twoFactor().
 import { passkeyClient } from "@better-auth/passkey/client";
 import {
   adminClient,
@@ -65,12 +65,11 @@ const _authClient = createAuthClient({
       ac,
       roles: { owner, admin, member },
     }),
-    // Two-factor (TOTP + backup codes). The server plugin (#1925) is loaded
+    // Two-factor (TOTP + backup codes). Server plugin is loaded
     // unconditionally; the client mirror gives us authClient.twoFactor.*
     // for the enrollment UI in /admin/settings/security.
     twoFactorClient(),
-    // Passkey (WebAuthn). Server plugin lives next to twoFactor() in
-    // packages/api/src/lib/auth/server.ts — see #2082 PR A.
+    // Passkey (WebAuthn). Server plugin lives next to twoFactor().
     passkeyClient(),
     stripeClient({ subscription: true }),
     oauthProviderClient(),

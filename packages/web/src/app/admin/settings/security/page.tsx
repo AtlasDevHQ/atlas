@@ -5,23 +5,20 @@
  *
  * Lets the signed-in admin manage every available second factor:
  *
- *   - Passkey (WebAuthn)            — `authClient.passkey.*` (#2082)
- *   - Authenticator app (TOTP)      — `authClient.twoFactor.*` (#1925)
+ *   - Passkey (WebAuthn)            — `authClient.passkey.*`
+ *   - Authenticator app (TOTP)      — `authClient.twoFactor.*`
  *   - Backup codes                  — issued inside the TOTP flow only;
  *                                     this page surfaces status, not enrollment.
  *
  * The page is rendered by Next.js, not Atlas's API admin router, so the
  * `mfaRequired` API gate doesn't run on the page itself — admins who
  * haven't enrolled any factor can always reach it to complete enrollment.
- * The Better Auth endpoints the page calls (`/api/auth/two-factor/*`,
- * `/api/auth/passkey/*`) are likewise mounted outside the admin router
- * (see `packages/api/src/api/index.ts` and the file header in
- * `packages/api/src/api/routes/admin-mfa-required.ts`).
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
+import { getPasskeyClient, type Passkey } from "@/lib/auth/passkey-client";
 import { TwoFactorSetup } from "@/ui/components/admin/security/two-factor-setup";
 import { PasskeyTile } from "@/ui/components/admin/security/passkey-tile";
 import { PasskeyList, type PasskeyRow } from "@/ui/components/admin/security/passkey-list";
@@ -33,34 +30,12 @@ interface SessionUser {
   twoFactorEnabled?: boolean;
 }
 
-type ClientResult<T> = {
-  data: T | null;
-  error: { message?: string; code?: string; status?: number } | null;
-};
-
-/**
- * Narrow view onto the parts of `authClient.passkey` that this page
- * exercises. Better Auth's plugin-augmented client type doesn't surface
- * `listUserPasskeys` through `createAuthClient`'s generic chain, but the
- * server plugin exposes the endpoint and the client wires it up at
- * runtime (see `@better-auth/passkey/dist/index.mjs`'s endpoint table).
- */
-interface PasskeyClient {
-  listUserPasskeys: () => Promise<ClientResult<PasskeyRow[]>>;
-}
-
-function getPasskeyClient(): PasskeyClient | null {
-  const namespace = (authClient as unknown as { passkey?: PasskeyClient }).passkey;
-  return namespace ?? null;
-}
-
 export default function SecurityPage() {
   const session = authClient.useSession();
 
   // Better Auth's session reactivity is the source of truth for
   // `twoFactorEnabled`. The cast goes from the plugin-erased session shape
-  // to the narrow read above; an `unknown` step would be wider than the
-  // value already is, so we cast directly.
+  // to the narrow read above.
   const user = (session.data?.user ?? null) as SessionUser | null;
   const totpEnabled = user?.twoFactorEnabled === true;
 
@@ -70,11 +45,11 @@ export default function SecurityPage() {
   const refreshPasskeys = useCallback(async () => {
     const client = getPasskeyClient();
     if (!client) {
-      setListError("Passkey support is not loaded — refresh the page.");
+      setListError("Passkey support couldn't be loaded. Refresh the page and try again.");
       return;
     }
     setListError(null);
-    let result: ClientResult<PasskeyRow[]>;
+    let result: Awaited<ReturnType<typeof client.listUserPasskeys>>;
     try {
       result = await client.listUserPasskeys();
     } catch (err) {
@@ -88,7 +63,7 @@ export default function SecurityPage() {
       setListError(result.error.message ?? "Could not load your passkeys.");
       return;
     }
-    setPasskeys(result.data ?? []);
+    setPasskeys((result.data ?? []) as Passkey[]);
   }, []);
 
   useEffect(() => {
@@ -106,8 +81,8 @@ export default function SecurityPage() {
 
   function handlePasskeyChange() {
     void refreshPasskeys();
-    // Session claims include `passkeyCount` (#2082 PR A) — refetch so
-    // the MFA gate sees the new count without a hard reload.
+    // Session claims include `passkeyCount` — refetch so the MFA gate
+    // sees the new count without a hard reload.
     session.refetch?.();
   }
 

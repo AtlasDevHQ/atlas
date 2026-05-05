@@ -1,23 +1,20 @@
 "use client";
 
 /**
- * Read-only status tile for backup codes (#2082 PR B).
+ * Read-only status tile for backup codes.
  *
  * Backup codes are issued and regenerated inside the TOTP enrollment flow
  * (see `two-factor-setup.tsx`); this tile never exposes its own "enroll"
- * affordance. The four states surface what the user should think about
- * next, not what action is available here:
+ * affordance. Three states surface what the user should think about next,
+ * not what action is available here:
  *
- *   - `passkey-only`   — only a passkey is enrolled. Backup codes don't
- *                        apply because there's no shared secret to recover.
- *   - `totp-required`  — neither TOTP nor a passkey is enrolled. Set up
- *                        TOTP first to receive codes.
- *   - `totp-pending`   — only a passkey is enrolled but the user has just
- *                        opened TOTP enrollment. (Reserved — not used yet;
- *                        see comment below.)
- *   - `enrolled`       — TOTP is on, so a fresh code set was issued during
- *                        enrollment. The "Regenerate backup codes" button
- *                        on the TOTP tile owns rotation.
+ *   - `passkey-only`  — only a passkey is enrolled. Backup codes don't
+ *                       apply because there's no shared secret to recover.
+ *   - `totp-required` — neither TOTP nor a passkey is enrolled. Set up
+ *                       TOTP first to receive codes.
+ *   - `enrolled`      — TOTP is on, so a fresh code set was issued during
+ *                       enrollment. The "Regenerate backup codes" button
+ *                       on the TOTP tile owns rotation.
  */
 
 import { CheckCircle2, FileKey, ShieldQuestion } from "lucide-react";

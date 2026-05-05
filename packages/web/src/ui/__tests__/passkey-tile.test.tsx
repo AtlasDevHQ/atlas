@@ -1,26 +1,22 @@
 /**
- * Coverage for the passkey enrollment tile + helpers (#2082 PR B).
- *
- * Covers:
- *  - `deriveDefaultPasskeyName` — userAgent parsing fallbacks
- *  - WebAuthn capability fallback (browser missing PublicKeyCredential)
- *  - addPasskey() user-cancellation must not surface an error
- *  - addPasskey() success opens the rename modal with the derived default
+ * Coverage for the passkey enrollment tile + helpers.
  */
 
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
-import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-library/react";
 
 const addPasskeyMock = mock(async (_opts?: unknown) => ({ data: null, error: null }));
 const updatePasskeyMock = mock(async (_opts?: unknown) => ({ data: null, error: null }));
+const listUserPasskeysMock = mock(async () => ({ data: [], error: null }));
+const deletePasskeyMock = mock(async (_opts?: unknown) => ({ data: { status: true }, error: null }));
 
-mock.module("@/lib/auth/client", () => ({
-  authClient: {
-    passkey: {
-      addPasskey: addPasskeyMock,
-      updatePasskey: updatePasskeyMock,
-    },
-  },
+mock.module("@/lib/auth/passkey-client", () => ({
+  getPasskeyClient: () => ({
+    addPasskey: addPasskeyMock,
+    updatePasskey: updatePasskeyMock,
+    listUserPasskeys: listUserPasskeysMock,
+    deletePasskey: deletePasskeyMock,
+  }),
 }));
 
 import {
@@ -38,8 +34,6 @@ function setPublicKeyCredential(value: unknown): void {
     writable: true,
     configurable: true,
   });
-  // happy-dom mirrors `window`/`globalThis`, but defining on globalThis can
-  // skip the window proxy. Set it explicitly so the hook's typeof check sees it.
   Object.defineProperty(window, "PublicKeyCredential", {
     value,
     writable: true,
@@ -52,8 +46,11 @@ function restorePublicKeyCredential(): void {
 }
 
 beforeEach(() => {
-  addPasskeyMock.mockClear();
-  updatePasskeyMock.mockClear();
+  addPasskeyMock.mockReset();
+  updatePasskeyMock.mockReset();
+  // Default no-op resolves so tests don't accidentally see a leaked impl.
+  addPasskeyMock.mockImplementation(async () => ({ data: null, error: null }));
+  updatePasskeyMock.mockImplementation(async () => ({ data: null, error: null }));
 });
 
 afterEach(() => {
@@ -101,6 +98,19 @@ describe("PasskeyTile", () => {
     expect(document.body.textContent).toContain("Your browser doesn't support passkeys");
   });
 
+  test("button is disabled while WebAuthn capability is still unknown", () => {
+    // Intentionally never resolve the platform-availability probe so the
+    // hook stays in the `unknown` state for the duration of the test.
+    setPublicKeyCredential({
+      isUserVerifyingPlatformAuthenticatorAvailable: () => new Promise(() => {}),
+    });
+
+    render(<PasskeyTile hasPasskey={false} />);
+
+    const addBtn = screen.getByRole("button", { name: /add a passkey/i }) as HTMLButtonElement;
+    expect(addBtn.disabled).toBe(true);
+  });
+
   test("shows recommended badge when no passkey is enrolled and platform auth is available", async () => {
     setPublicKeyCredential({
       isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
@@ -111,7 +121,22 @@ describe("PasskeyTile", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("Recommended");
     });
-    expect(document.body.textContent).toContain("Add a passkey");
+    expect(screen.getByRole("button", { name: /add a passkey/i })).toBeDefined();
+  });
+
+  test("shows downgraded copy and no recommended badge when only roaming auth is available", async () => {
+    setPublicKeyCredential({
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(false),
+    });
+
+    render(<PasskeyTile hasPasskey={false} />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Limited support — security key only");
+    });
+    expect(document.body.textContent).not.toContain("Recommended");
+    const addBtn = screen.getByRole("button", { name: /add a passkey/i }) as HTMLButtonElement;
+    expect(addBtn.disabled).toBe(false);
   });
 
   test('"Add another passkey" replaces the primary CTA when one is already enrolled', async () => {
@@ -122,9 +147,8 @@ describe("PasskeyTile", () => {
     render(<PasskeyTile hasPasskey={true} />);
 
     await waitFor(() => {
-      expect(document.body.textContent).toContain("Add another passkey");
+      expect(screen.getByRole("button", { name: /add another passkey/i })).toBeDefined();
     });
-    // The recommended badge should not appear when a passkey exists.
     expect(document.body.textContent).not.toContain("Recommended");
   });
 
@@ -139,24 +163,40 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    await waitFor(() => {
-      expect(document.body.textContent).toContain("Add a passkey");
-    });
-
-    const addBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Add a passkey"),
-    );
+    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
 
     await act(async () => {
-      fireEvent.click(addBtn!);
+      fireEvent.click(addBtn);
     });
 
     await waitFor(() => {
       expect(addPasskeyMock).toHaveBeenCalledTimes(1);
     });
 
-    // No error banner; the rename dialog should not open.
     expect(document.body.textContent).not.toContain("Could not register that passkey");
+    expect(document.body.textContent).not.toContain("Name this passkey");
+  });
+
+  test("real server error surfaces a banner with the message", async () => {
+    setPublicKeyCredential({
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+    addPasskeyMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { code: "BAD_RP_ID", message: "Origin mismatch", status: 400 },
+    }));
+
+    render(<PasskeyTile hasPasskey={false} />);
+
+    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+
+    await act(async () => {
+      fireEvent.click(addBtn);
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Origin mismatch");
+    });
     expect(document.body.textContent).not.toContain("Name this passkey");
   });
 
@@ -171,20 +211,58 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    await waitFor(() => {
-      expect(document.body.textContent).toContain("Add a passkey");
-    });
-
-    const addBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Add a passkey"),
-    );
+    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
 
     await act(async () => {
-      fireEvent.click(addBtn!);
+      fireEvent.click(addBtn);
     });
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Name this passkey");
     });
+  });
+
+  test("rename failure after successful enrollment fires onChange and shows recovery hint", async () => {
+    setPublicKeyCredential({
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+    addPasskeyMock.mockImplementationOnce(async () => ({
+      data: { id: "pk_456", createdAt: new Date() },
+      error: null,
+    }));
+    updatePasskeyMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { code: "FAILED_TO_UPDATE_PASSKEY", message: "DB write timeout", status: 500 },
+    }));
+
+    const onChange = mock(() => {});
+    render(<PasskeyTile hasPasskey={false} onChange={onChange} />);
+
+    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    await act(async () => {
+      fireEvent.click(addBtn);
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Name this passkey");
+    });
+
+    const saveBtn = await screen.findByRole("button", { name: /^save$/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    await waitFor(() => {
+      expect(updatePasskeyMock).toHaveBeenCalledTimes(1);
+    });
+
+    // Dialog closes; parent is asked to refetch; recovery hint is visible.
+    await waitFor(() => {
+      expect(document.body.textContent).not.toContain("Name this passkey");
+    });
+    expect(onChange).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Saved your passkey, but renaming failed");
+    expect(document.body.textContent).toContain("DB write timeout");
+    expect(document.body.textContent).toContain("rename it from the list below");
   });
 });

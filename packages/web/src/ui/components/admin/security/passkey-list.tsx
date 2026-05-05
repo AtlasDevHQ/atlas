@@ -1,23 +1,17 @@
 "use client";
 
 /**
- * Enrolled-passkey list rendered below the security tiles on
- * /admin/settings/security (#2082 PR B).
+ * Enrolled-passkey list rendered below the security tiles.
  *
  * Each row shows the passkey's name, creation date, and rename/delete
- * affordances. Better Auth's `passkey` model doesn't track last-used time —
- * see `Passkey` in `@better-auth/passkey/dist/index-*.d.mts` — so we don't
- * surface one. Rename uses `authClient.passkey.updatePasskey({ id, name })`
- * and delete uses `authClient.passkey.deletePasskey({ id })`.
- *
- * The list itself is owned by the parent page (driven off
- * `authClient.passkey.listUserPasskeys()`); this component is a controlled
- * renderer that calls back via `onChange()` after any mutation.
+ * affordances. Better Auth's passkey model doesn't track last-used time,
+ * so we don't surface one. The list is owned by the parent page (driven
+ * off `listUserPasskeys()`); this component is a controlled renderer
+ * that calls back via `onChange()` after any mutation.
  */
 
 import { useState } from "react";
 import { Loader2, Pencil, Trash2 } from "lucide-react";
-import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -30,36 +24,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { getPasskeyClient, type Passkey } from "@/lib/auth/passkey-client";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface PasskeyRow {
-  id: string;
-  name?: string;
-  createdAt: Date | string;
-}
-
-type ClientResult<T> = {
-  data: T | null;
-  error: { message?: string; code?: string; status?: number } | null;
-};
-
-interface PasskeyClient {
-  updatePasskey: (opts: { id: string; name: string }) => Promise<ClientResult<{ passkey: PasskeyRow }>>;
-  deletePasskey: (opts: { id: string }) => Promise<ClientResult<{ status?: boolean }>>;
-}
-
-function getPasskeyClient(): PasskeyClient {
-  const namespace = (authClient as unknown as { passkey?: PasskeyClient }).passkey;
-  if (!namespace) {
-    throw new Error(
-      "Better Auth passkey client plugin is not loaded — check packages/web/src/lib/auth/client.ts",
-    );
-  }
-  return namespace;
-}
+export type PasskeyRow = Passkey;
 
 function formatCreatedAt(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
@@ -78,19 +45,17 @@ export interface PasskeyListProps {
 }
 
 type Dialog =
-  | { kind: "rename"; id: string; current: string }
+  | { kind: "rename"; id: string; current: string; draft: string }
   | { kind: "delete"; id: string; current: string };
 
 export function PasskeyList({ passkeys, onChange }: PasskeyListProps) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function openRename(row: PasskeyRow) {
     setError(null);
-    setDraft(row.name ?? "");
-    setDialog({ kind: "rename", id: row.id, current: row.name ?? row.id });
+    setDialog({ kind: "rename", id: row.id, current: row.name ?? row.id, draft: row.name ?? "" });
   }
 
   function openDelete(row: PasskeyRow) {
@@ -100,22 +65,26 @@ export function PasskeyList({ passkeys, onChange }: PasskeyListProps) {
 
   function closeDialog() {
     setDialog(null);
-    setDraft("");
     setError(null);
   }
 
   async function handleRename() {
     if (!dialog || dialog.kind !== "rename") return;
-    const trimmed = draft.trim();
+    const trimmed = dialog.draft.trim();
     if (!trimmed) {
       setError("Name can't be empty.");
       return;
     }
+    const client = getPasskeyClient();
+    if (!client) {
+      setError("Passkey support couldn't be loaded. Refresh the page and try again.");
+      return;
+    }
     setBusy(true);
     setError(null);
-    let result: ClientResult<{ passkey: PasskeyRow }>;
+    let result: Awaited<ReturnType<typeof client.updatePasskey>>;
     try {
-      result = await getPasskeyClient().updatePasskey({ id: dialog.id, name: trimmed });
+      result = await client.updatePasskey({ id: dialog.id, name: trimmed });
     } catch (err) {
       setBusy(false);
       const msg = err instanceof Error ? err.message : String(err);
@@ -135,11 +104,16 @@ export function PasskeyList({ passkeys, onChange }: PasskeyListProps) {
 
   async function handleDelete() {
     if (!dialog || dialog.kind !== "delete") return;
+    const client = getPasskeyClient();
+    if (!client) {
+      setError("Passkey support couldn't be loaded. Refresh the page and try again.");
+      return;
+    }
     setBusy(true);
     setError(null);
-    let result: ClientResult<{ status?: boolean }>;
+    let result: Awaited<ReturnType<typeof client.deletePasskey>>;
     try {
-      result = await getPasskeyClient().deletePasskey({ id: dialog.id });
+      result = await client.deletePasskey({ id: dialog.id });
     } catch (err) {
       setBusy(false);
       const msg = err instanceof Error ? err.message : String(err);
@@ -228,8 +202,14 @@ export function PasskeyList({ passkeys, onChange }: PasskeyListProps) {
                   Passkey name
                 </label>
                 <Input
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
+                  value={dialog.draft}
+                  onChange={(e) =>
+                    setDialog((prev) =>
+                      prev && prev.kind === "rename"
+                        ? { ...prev, draft: e.target.value }
+                        : prev,
+                    )
+                  }
                   maxLength={80}
                   autoFocus
                   onKeyDown={(e) => {
@@ -248,7 +228,7 @@ export function PasskeyList({ passkeys, onChange }: PasskeyListProps) {
                     e.preventDefault();
                     void handleRename();
                   }}
-                  disabled={busy || !draft.trim()}
+                  disabled={busy || !dialog.draft.trim()}
                 >
                   {busy ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
                   Save

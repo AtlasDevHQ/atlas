@@ -1,9 +1,7 @@
 /**
- * Tile state matrix for the backup-codes status tile (#2082 PR B).
- *
- * Brief asks for: no factors → backup codes "required";
- * TOTP only → "ready"; passkey only → "not applicable";
- * both → "ready" (TOTP is the source of truth for backup codes).
+ * Tile state matrix for the backup-codes status tile. Asserts: no factors →
+ * "required"; TOTP only → "ready"; passkey only → "not applicable"; both →
+ * "ready" (TOTP is the source of truth for backup codes).
  */
 
 import { describe, expect, test, afterEach } from "bun:test";

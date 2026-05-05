@@ -1,57 +1,47 @@
 "use client";
 
 /**
- * WebAuthn capability detection for the passkey enrollment flow on
- * /admin/settings/security (#2082 PR B).
+ * WebAuthn capability detection for the passkey enrollment flow.
  *
- * Two checks are surfaced separately because they fail independently:
+ * The hook returns one of three states. Modelling them as a discriminated
+ * union — rather than `boolean | null` for each axis — makes the two
+ * unreachable cross-products (`{ supported: false, platformSupported: true }`
+ * and `{ supported: null, platformSupported: false }`) impossible to express:
  *
- *   - `supported`         — `window.PublicKeyCredential` exists. Required
- *                            for any passkey flow at all (platform OR
- *                            cross-platform / security key).
- *   - `platformSupported` — `isUserVerifyingPlatformAuthenticatorAvailable()`
- *                            resolved `true`. Required for Touch ID / Face ID
- *                            / Windows Hello. A `false` answer doesn't kill
- *                            the flow — roaming authenticators (YubiKey) still
- *                            work — but lets the UI soften the recommended
- *                            badge ("limited support — security key only").
- *
- * Both default to `null` while the platform-availability promise is in flight
- * so the page can render a determinate state from SSR (no hydration mismatch
- * on the tile copy) and only flip to a concrete answer once the answer is
- * actually known.
+ *   - `unknown`     — pre-effect / SSR. Render disabled-but-determinate
+ *                     so there's no hydration mismatch on the tile copy.
+ *   - `unsupported` — `window.PublicKeyCredential` is missing entirely.
+ *                     No passkey flow at all.
+ *   - `supported`   — WebAuthn is available. `platformAuthenticator` tells
+ *                     consumers whether Touch ID / Face ID / Windows Hello
+ *                     is wired up; `false` means roaming authenticators
+ *                     (YubiKey) only — the flow still works, but the UI
+ *                     should soften the recommended badge.
  */
 
 import { useEffect, useState } from "react";
 
-export interface WebAuthnSupport {
-  /** `window.PublicKeyCredential` is defined. `null` until first effect runs. */
-  supported: boolean | null;
-  /** Platform authenticator (Touch ID / Windows Hello) is available. `null` while the promise is in flight. */
-  platformSupported: boolean | null;
-}
+export type WebAuthnSupport =
+  | { kind: "unknown" }
+  | { kind: "unsupported" }
+  | { kind: "supported"; platformAuthenticator: boolean };
 
 export function useWebAuthnSupported(): WebAuthnSupport {
-  const [state, setState] = useState<WebAuthnSupport>({
-    supported: null,
-    platformSupported: null,
-  });
+  const [state, setState] = useState<WebAuthnSupport>({ kind: "unknown" });
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.PublicKeyCredential === "undefined") {
-      setState({ supported: false, platformSupported: false });
+      setState({ kind: "unsupported" });
       return;
     }
 
     let cancelled = false;
-    setState((prev) => ({ ...prev, supported: true }));
-
     const probe = window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable;
     if (typeof probe !== "function") {
       // Older WebAuthn implementations expose PublicKeyCredential without the
-      // platform-availability probe. Treat platform support as unknown-false
-      // so the UI falls back to the neutral copy.
-      setState({ supported: true, platformSupported: false });
+      // platform-availability probe. Treat platform support as absent so the
+      // UI falls back to the roaming-authenticator copy.
+      setState({ kind: "supported", platformAuthenticator: false });
       return;
     }
 
@@ -59,7 +49,7 @@ export function useWebAuthnSupported(): WebAuthnSupport {
       .call(window.PublicKeyCredential)
       .then((available) => {
         if (cancelled) return;
-        setState({ supported: true, platformSupported: available });
+        setState({ kind: "supported", platformAuthenticator: available });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -68,7 +58,7 @@ export function useWebAuthnSupported(): WebAuthnSupport {
         // reject it. Log and assume no platform authenticator so the user
         // still sees a working — if downgraded — tile.
         console.warn("isUserVerifyingPlatformAuthenticatorAvailable() rejected:", msg);
-        setState({ supported: true, platformSupported: false });
+        setState({ kind: "supported", platformAuthenticator: false });
       });
 
     return () => {

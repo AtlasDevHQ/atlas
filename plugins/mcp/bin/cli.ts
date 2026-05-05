@@ -104,16 +104,19 @@ Run \`bunx @useatlas/mcp <command> --help\` for command-specific options.
 const INIT_HELP = `bunx @useatlas/mcp init [options]
 
   --local            Configure for a local Atlas (default)
-  --hosted           Configure for app.useatlas.dev (not yet available)
+  --hosted           Configure for hosted Atlas via OAuth 2.1 loopback flow
   --client <id>      Force a specific client: claude-desktop | cursor | continue | generic
   --write            Merge into the client's config file (with a .bak backup)
-  --api-url <url>    Override local Atlas detection URL (default: http://localhost:3001)
+  --api-url <url>    Override the API base URL (default: http://localhost:3001 for --local,
+                     https://api.useatlas.dev for --hosted; also reads ATLAS_PUBLIC_API_URL)
   -h, --help         Show this help
 
 Examples:
   bunx @useatlas/mcp init --local
   bunx @useatlas/mcp init --local --write
   bunx @useatlas/mcp init --local --client cursor --write
+  bunx @useatlas/mcp init --hosted --write
+  bunx @useatlas/mcp init --hosted --api-url https://api-eu.useatlas.dev --write
 `;
 
 const SERVE_HELP = `bunx @useatlas/mcp serve [options]
@@ -136,7 +139,12 @@ export async function runInitCommand(argv: string[]): Promise<number> {
 
   const opts: RunInitOptions =
     flags.mode === "hosted"
-      ? { mode: "hosted" }
+      ? {
+          mode: "hosted",
+          client: flags.client,
+          write: flags.write,
+          apiUrl: flags.apiUrl,
+        }
       : {
           mode: "local",
           client: flags.client,

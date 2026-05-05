@@ -1,14 +1,54 @@
 ---
 title: Hosted MCP Endpoint
-description: Connect any MCP client to Atlas SaaS over OAuth 2.1 — Dynamic Client Registration, PKCE, JWT-signed access tokens.
+description: Connect any MCP client to Atlas SaaS over OAuth 2.1 — bunx CLI installer, Dynamic Client Registration, PKCE, JWT-signed access tokens.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Self-hosted Atlas exposes MCP over stdio (see the [MCP guide](/guides/mcp)). Atlas SaaS adds a hosted MCP endpoint over Streamable HTTP that speaks **OAuth 2.1 + PKCE + Dynamic Client Registration (RFC 7591)** — the authorization model the [MCP spec](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization) requires. Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor, Gemini, Anthropic agents) connect via the hostnames below without any manual token minting.
+Self-hosted Atlas exposes MCP over stdio (see the [MCP guide](/guides/mcp)). Atlas SaaS adds a hosted MCP endpoint over Streamable HTTP that speaks **OAuth 2.1 + PKCE + Dynamic Client Registration (RFC 7591)** — the authorization model the [MCP spec](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization) requires.
+
+## Install in one command
+
+```bash
+bunx @useatlas/mcp init --hosted --write
+```
+
+That's it. The installer:
+
+1. Discovers Atlas's authorization server at `/.well-known/oauth-authorization-server/api/auth`
+2. Registers itself as a public OAuth client via DCR (no admin pre-issuance needed)
+3. Opens your browser to `/oauth2/authorize` with PKCE (same shape as `gh auth login` / `gcloud auth login`)
+4. Captures the callback on a one-shot `127.0.0.1` listener
+5. Exchanges the auth code for a JWT access token
+6. Merges a workspace-scoped server block into your MCP client config (Claude Desktop, Cursor, or Continue — auto-detected) at mode `0600`
+
+A `.bak` of any prior config is written first. Restart your MCP client to pick up the new server.
+
+```bash
+# Print to stdout instead of writing
+bunx @useatlas/mcp init --hosted
+
+# Force a specific client + override the API region
+bunx @useatlas/mcp init --hosted --client cursor --api-url https://api-eu.useatlas.dev --write
+```
+
+The resulting block looks like:
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "url": "https://api.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "headers": { "Authorization": "Bearer eyJhbGciOiJSUzI1NiIs…" }
+    }
+  }
+}
+```
+
+The `code_verifier` and the registered `client_id` are kept in memory only — never written to disk. The JWT is the single artifact persisted, and only inside your client's config file.
 
 <Callout type="info">
-The Settings → OAuth Clients UI and the `bunx @useatlas/mcp init --hosted` CLI flag are in flight (PR D and PR E of #2024). Until those land, MCP clients that support DCR can connect today using the metadata documents below; tokens are issued through the `/oauth2/authorize` flow.
+Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor, Gemini, Anthropic agents) can also connect directly without the CLI — they bootstrap via DCR + PKCE on their own. The protocol details below describe what those clients see; the CLI installer above is the path for any client that doesn't speak DCR yet.
 </Callout>
 
 ## URL pattern

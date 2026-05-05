@@ -13,10 +13,9 @@
 --
 -- Plaintext UA / IP: these are log-equivalent metadata, not credentials.
 -- Better Auth itself stores `value = userId` in the adjacent `verification`
--- table without encryption, and SCIM/SOC2 reviewers should treat the row
--- as audit data. If a future region needs encryption-at-rest for these
--- columns, follow the `_encrypted` pattern from 0036/0037 — but doing so
--- now would make the admin list expensive (decrypt on every fetch) for
+-- table without encryption. If a future region needs encryption-at-rest for
+-- these columns, follow the `_encrypted` pattern from 0036/0037 — but doing
+-- so now would make the admin list expensive (decrypt on every fetch) for
 -- a privacy gain that doesn't match Better Auth's own posture.
 
 CREATE TABLE IF NOT EXISTS trusted_device (

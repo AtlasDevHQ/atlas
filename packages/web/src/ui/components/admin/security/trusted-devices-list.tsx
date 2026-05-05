@@ -59,7 +59,7 @@ export function TrustedDevicesList() {
   const { data, loading, error, refetch } = useAdminFetch<ListResponse>(
     "/api/v1/admin/me/trusted-devices",
   );
-  const { mutate, isMutating, errorFor } = useAdminMutation({
+  const { mutate, isMutating, errorFor, clearErrorFor } = useAdminMutation({
     method: "DELETE",
     invalidates: refetch,
   });
@@ -68,6 +68,11 @@ export function TrustedDevicesList() {
   const devices = data?.devices ?? [];
 
   function openConfirm(row: TrustedDeviceRow) {
+    // useAdminMutation only clears per-item errors at the start of the SAME
+    // itemId's NEXT mutate call — a Cancel-and-reopen (without retry) would
+    // otherwise re-render the previous attempt's failure inline before the
+    // user clicks Revoke. Clear explicitly so the dialog opens clean.
+    clearErrorFor(row.identifier);
     setPending(row);
   }
 

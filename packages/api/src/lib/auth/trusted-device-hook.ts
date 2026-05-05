@@ -10,19 +10,22 @@
  *
  * The hook is fire-and-forget: it MUST NOT throw. A metadata-write failure
  * would otherwise abort the auth flow on the user's NEXT request (Better Auth
- * surfaces queueAfterTransactionHook errors as 500s). Auth correctness > our
- * metadata. Every failure path logs at warn so a regression is visible.
+ * awaits queueAfterTransactionHook results and rethrows). Auth correctness >
+ * our metadata. The DB write goes through `internalExecute` which is `void`,
+ * participates in the shared circuit breaker (5-failure trip → exponential
+ * recovery), and logs each error itself — the outer try/catch here exists
+ * only to defend against unexpected throws in the metadata-extraction path
+ * (UA parsing, header reads).
  *
  * Cookie rotation (Better Auth re-issues `trust-device-<new>` on every sign-in
- * within the trust window): the new identifier flows in here as a separate
- * INSERT with a fresh `created_at`. The previous row's identifier no longer
- * matches a verification row and falls out of the admin list at read time
- * (the join filters on `verification.identifier`). A future PR can merge
- * rotated rows to preserve the original `created_at` — see follow-up note in
- * the parent issue.
+ * within the trust window): the new identifier flows in as a separate INSERT
+ * with a fresh `created_at`. The previous row's identifier no longer matches
+ * a verification row and falls out of the admin list at read time (the join
+ * filters on `verification.identifier`). Merging rotated rows to preserve the
+ * original `created_at` is a known follow-up.
  */
 
-import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
+import { internalExecute } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { deriveDeviceLabel } from "@atlas/api/lib/auth/device-label";
@@ -32,9 +35,10 @@ const log = createLogger("auth:trusted-device-hook");
 const TRUST_DEVICE_PREFIX = "trust-device-";
 
 /**
- * Read the first non-private IP from a chain like `x-forwarded-for: a, b, c`.
- * Better Auth gives us the `Headers` from the request directly — anything
- * upstream (proxies, ingress) has already concatenated values.
+ * Read the leftmost entry from `x-forwarded-for: a, b, c` (or `x-real-ip`).
+ * No private-range filtering — operators are expected to configure their
+ * ingress to strip spoofed prefixes. The leftmost XFF entry is the original
+ * client claim by RFC convention.
  */
 function extractClientIp(headers: Headers | undefined): string | null {
   if (!headers) return null;
@@ -93,14 +97,15 @@ export async function onVerificationCreated(
       return;
     }
 
-    if (!hasInternalDB()) return;
-
     const headers = ctx?.headers ?? undefined;
     const userAgent = headers?.get("user-agent") ?? null;
     const ip = extractClientIp(headers);
     const deviceLabel = userAgent ? deriveDeviceLabel(userAgent) : null;
 
-    await internalQuery(
+    // `internalExecute` is void — it never rejects. The shared circuit breaker
+    // logs failures and trips after 5 consecutive errors. The hook can return
+    // immediately; the actual INSERT runs on the pool's next available worker.
+    internalExecute(
       `INSERT INTO trusted_device (identifier, user_id, user_agent, ip_address, device_label)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (identifier) DO NOTHING`,
@@ -109,12 +114,15 @@ export async function onVerificationCreated(
 
     log.debug(
       { identifier, userId, hasUa: !!userAgent, hasIp: !!ip },
-      "trust-device metadata recorded",
+      "trust-device metadata queued",
     );
   } catch (err) {
+    // Reaches here only if extractClientIp / deriveDeviceLabel / a record-shape
+    // narrow throws unexpectedly. The DB write itself is fire-and-forget and
+    // logs its own errors via internalExecute's circuit breaker.
     log.warn(
       { err: errorMessage(err) },
-      "trust-device metadata write failed — admin list may be missing this device until next rotation",
+      "trust-device metadata extraction failed — admin list may be missing this device until next rotation",
     );
   }
 }

@@ -8,20 +8,18 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 // the rest of the suite.
 
 let inserts: Array<{ sql: string; params: unknown[] }> = [];
-let internalDbAvailable = true;
-let throwOnNextQuery: Error | null = null;
 
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => internalDbAvailable,
-  internalQuery: async (sql: string, params: unknown[]) => {
-    if (throwOnNextQuery) {
-      const err = throwOnNextQuery;
-      throwOnNextQuery = null;
-      throw err;
-    }
+  // The hook uses `internalExecute` (void, fire-and-forget). The capture
+  // here mirrors the production-side queue — if the hook ever switches back
+  // to a Promise-returning API, this mock must be updated to match.
+  internalExecute: (sql: string, params: unknown[]) => {
     inserts.push({ sql, params });
-    return [];
   },
+  // Kept for any indirect importers that destructure `hasInternalDB` —
+  // the hook itself no longer reads it (internalExecute is a no-op when
+  // DATABASE_URL is unset).
+  hasInternalDB: () => true,
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -48,8 +46,6 @@ function makeHeaders(init: Record<string, string>): Headers {
 
 beforeEach(() => {
   inserts = [];
-  internalDbAvailable = true;
-  throwOnNextQuery = null;
 });
 
 describe("onVerificationCreated", () => {
@@ -141,33 +137,49 @@ describe("onVerificationCreated", () => {
     expect(inserts).toHaveLength(0);
   });
 
-  it("skips when no internal DB is configured", async () => {
-    internalDbAvailable = false;
-    await onVerificationCreated(
-      { identifier: "trust-device-no-db", value: "user_1" },
-      { headers: makeHeaders({}) },
-    );
-
-    expect(inserts).toHaveLength(0);
-  });
-
-  it("never throws — auth flow must not fail on metadata write errors", async () => {
-    throwOnNextQuery = new Error("boom: simulated DB failure");
-
-    await expect(
-      onVerificationCreated(
-        { identifier: "trust-device-explode", value: "user_x" },
-        { headers: makeHeaders({}) },
-      ),
-    ).resolves.toBeUndefined();
-
-    // Insert was attempted (and failed) — no row recorded.
-    expect(inserts).toHaveLength(0);
-  });
-
   it("skips when the record is null/undefined", async () => {
     await onVerificationCreated(null, { headers: makeHeaders({}) });
     await onVerificationCreated(undefined, undefined);
+    expect(inserts).toHaveLength(0);
+  });
+
+  // The hook's only contract is "never throws" — Better Auth awaits its result
+  // inside queueAfterTransactionHook and rethrows. Anything that escapes here
+  // 500s the user's auth flow. Cover the garbage-input matrix so a future
+  // refactor adding an unguarded narrow can't slip past.
+  it("never throws on garbage record/ctx inputs", async () => {
+    const throwingHeaders = {
+      get: () => {
+        throw new Error("rogue Headers shim");
+      },
+    } as unknown as Headers;
+
+    const cases: Array<[unknown, unknown]> = [
+      [{ identifier: 12345, value: "user_x" }, { headers: makeHeaders({}) }],
+      [{ identifier: Symbol("nope"), value: "user_x" }, { headers: makeHeaders({}) }],
+      [{ identifier: "trust-device-x", value: 99 }, { headers: makeHeaders({}) }],
+      [{ identifier: "trust-device-x", value: { nested: "object" } }, { headers: makeHeaders({}) }],
+      [Object.create(null), { headers: makeHeaders({}) }],
+      [
+        { identifier: "trust-device-throw", value: "user_x" },
+        { headers: throwingHeaders },
+      ],
+      [{}, {}],
+      ["not-an-object", "not-an-object"],
+      [42, 42],
+    ];
+
+    for (const [record, ctx] of cases) {
+      await expect(
+        onVerificationCreated(
+          record as Parameters<typeof onVerificationCreated>[0],
+          ctx as Parameters<typeof onVerificationCreated>[1],
+        ),
+      ).resolves.toBeUndefined();
+    }
+
+    // None of the garbage cases should have queued an INSERT — every path
+    // either falls through the prefix check or is caught by the outer try.
     expect(inserts).toHaveLength(0);
   });
 });

@@ -106,6 +106,14 @@ let queryShouldFail = false;
 const txFail: { stage: "verification" | "trusted_device" | null } = { stage: null };
 
 const txLog: string[] = [];
+const releaseArgs: Array<Error | null> = [];
+
+// Records the (sql, params) tuples passed to client.query inside the
+// transaction. Used to assert the route sends the right WHERE filters —
+// without param-level assertions, an IDOR regression that dropped
+// `AND value = $2` would still pass because the mock filters by both
+// fields itself (mock fidelity, not route correctness).
+let txQueryLog: Array<{ sql: string; params: unknown[] }> = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => dbAvailable,
@@ -152,6 +160,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
           }
           if (!started) throw new Error("query without BEGIN");
 
+          // Record param tuples so the IDOR test can assert on the actual
+          // [identifier, userId] the route sends. The mock would still
+          // filter by both fields below, masking a route regression that
+          // dropped the AND clause; the param log is the real signal.
+          txQueryLog.push({ sql, params: params ?? [] });
+
           if (sql.startsWith("DELETE FROM verification")) {
             if (txFail.stage === "verification") throw new Error("verification delete failed");
             const [identifier, userId] = params as string[];
@@ -172,9 +186,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
           }
           throw new Error(`unexpected query: ${sql}`);
         },
-        release: () => {
-          // Track rollback observability so the never-leak assertion in tests
-          // still has signal even if the implementation skips ROLLBACK.
+        release: (err?: Error) => {
+          // The route plumbs the rollback error here so node-pg destroys the
+          // socket on a poisoned connection. Capture for assertions.
+          releaseArgs.push(err ?? null);
           void rolledBack;
         },
       };
@@ -220,6 +235,8 @@ beforeEach(() => {
   queryShouldFail = false;
   txFail.stage = null;
   txLog.length = 0;
+  txQueryLog = [];
+  releaseArgs.length = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -450,6 +467,19 @@ describe("DELETE /me/trusted-devices/:identifier", () => {
     // Victim's rows untouched.
     expect(trustedDevices).toHaveLength(1);
     expect(verifications).toHaveLength(1);
+
+    // Param-level guard: the route MUST send the caller's userId as $2 on
+    // both DELETEs. A regression that dropped the AND clause (or swapped
+    // params) would still drain the in-memory mock the same way, so the
+    // mock-state assertions above can't detect it. This check fails fast
+    // if the IDOR filter ever weakens.
+    const verDelete = txQueryLog.find((q) => q.sql.startsWith("DELETE FROM verification"));
+    const tdDelete = txQueryLog.find((q) => q.sql.startsWith("DELETE FROM trusted_device"));
+    expect(verDelete?.params).toEqual(["trust-device-victim", "user_a"]);
+    expect(tdDelete?.params).toEqual(["trust-device-victim", "user_a"]);
+    // And the SQL itself carries both filter clauses.
+    expect(verDelete?.sql).toMatch(/identifier = \$1 AND value = \$2/);
+    expect(tdDelete?.sql).toMatch(/identifier = \$1 AND user_id = \$2/);
   });
 
   it("returns 404 for an unknown identifier", async () => {
@@ -484,5 +514,26 @@ describe("DELETE /me/trusted-devices/:identifier", () => {
     expect(txLog).toContain("BEGIN");
     expect(txLog).toContain("ROLLBACK");
     expect(txLog).not.toContain("COMMIT");
+
+    // ROLLBACK succeeded → release(undefined) returns the client cleanly.
+    expect(releaseArgs).toEqual([null]);
+  });
+
+  it("rolls back symmetrically when the verification delete fails first", async () => {
+    fakeAuth = { kind: "managed", userId: "user_a" };
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    verifications = [
+      { identifier: "trust-device-ver-fail", value: "user_a", expiresAt: future },
+    ];
+
+    txFail.stage = "verification";
+    const app = buildApp();
+    const res = await app.request("/me/trusted-devices/trust-device-ver-fail", { method: "DELETE" });
+    expect(res.status).toBe(500);
+    expect(txLog).toContain("BEGIN");
+    expect(txLog).toContain("ROLLBACK");
+    expect(txLog).not.toContain("COMMIT");
+    // trusted_device delete never ran (verification failed first).
+    expect(txQueryLog.find((q) => q.sql.startsWith("DELETE FROM trusted_device"))).toBeUndefined();
   });
 });

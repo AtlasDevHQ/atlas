@@ -38,12 +38,17 @@ const log = createLogger("me-trusted-devices");
 // ---------------------------------------------------------------------------
 
 const TrustedDeviceSchema = z.object({
-  identifier: z.string(),
+  // Tightened to match the DB invariant: identifier is the
+  // `trust-device-<random>` payload Better Auth wrote to verification.
+  // The shared `.startsWith` constraint catches a wire-shape regression
+  // where some other verification row (email-verify, 2FA-cookie) leaks
+  // into the response.
+  identifier: z.string().min(1).max(255).startsWith("trust-device-"),
   deviceLabel: z.string().nullable(),
   userAgent: z.string().nullable(),
   ipAddress: z.string().nullable(),
-  createdAt: z.string(),
-  expiresAt: z.string(),
+  createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
   isCurrent: z.boolean(),
 });
 
@@ -163,14 +168,7 @@ export function extractTrustDeviceIdentifier(cookieHeader: string | null): strin
 // Registration
 // ---------------------------------------------------------------------------
 
-/**
- * Register `/me/trusted-devices` GET + DELETE on the parent admin router.
- *
- * Called from `admin.ts` alongside `registerInvitationRoutes` and the
- * semantic editor — see admin.ts header comment for why these per-user
- * surfaces stay outside the createAdminRouter() factory (they share the
- * password-status carve-out from the `mfaRequired` gate).
- */
+/** Mounts GET + DELETE `/me/trusted-devices` on the admin router. */
 export function registerTrustedDeviceRoutes(
   admin: OpenAPIHono,
   reqId: (c: { get(key: string): unknown }) => string,
@@ -303,14 +301,17 @@ export function registerTrustedDeviceRoutes(
     const pool = getInternalDB();
     const client = await pool.connect();
     let deleted: boolean;
+    let rollbackErr: Error | null = null;
     try {
       await client.query("BEGIN");
 
       // Verification first — that's the cookie Better Auth checks, so a
       // partial-failure window where the cookie still works is the worst
-      // outcome. Both filters are mandatory: `value = $userId` plus the
-      // exact identifier prevents IDOR (a user can't revoke another user's
-      // grant by guessing identifiers).
+      // outcome. After cookie rotation only the verification row may match;
+      // before it lands, only the trusted_device row may exist. Either delete
+      // is sufficient — both filters carry the IDOR check (`value = $userId`
+      // and `user_id = $userId` respectively), preventing a caller from
+      // revoking another user's grant by guessing the identifier.
       const verRes = await client.query(
         `DELETE FROM verification WHERE identifier = $1 AND value = $2`,
         [identifier, userId],
@@ -321,23 +322,24 @@ export function registerTrustedDeviceRoutes(
         [identifier, userId],
       );
 
-      // Either delete affecting >=1 row counts as a meaningful revoke.
-      // node-pg surfaces row count via the un-typed `rowCount` field which
-      // isn't on InternalPoolClient's narrow shape — read defensively.
+      // node-pg's rowCount isn't on InternalPoolClient's narrow shape — read defensively.
       const verCount = (verRes as unknown as { rowCount?: number }).rowCount ?? 0;
       const tdCount = (tdRes as unknown as { rowCount?: number }).rowCount ?? 0;
       deleted = verCount > 0 || tdCount > 0;
 
       await client.query("COMMIT");
     } catch (err) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackErr) {
-        log.error(
-          { err: errorMessage(rollbackErr), requestId },
-          "ROLLBACK failed after trusted-device revoke error — connection released anyway",
+      // ROLLBACK can itself fail (TCP reset between BEGIN and ROLLBACK). pg
+      // destroys the socket when `release(err)` is called with a truthy arg,
+      // so a poisoned client doesn't return to the pool to corrupt the next
+      // borrower's transaction.
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+        log.warn(
+          { err: rollbackErr.message, requestId },
+          "ROLLBACK failed after trusted-device revoke error — client will be destroyed",
         );
-      }
+      });
       log.error(
         { err: errorMessage(err), userId, requestId, identifier },
         "Failed to revoke trusted device",
@@ -347,7 +349,7 @@ export function registerTrustedDeviceRoutes(
         500,
       );
     } finally {
-      client.release();
+      client.release(rollbackErr ?? undefined);
     }
 
     if (!deleted) {

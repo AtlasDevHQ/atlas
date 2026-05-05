@@ -198,6 +198,79 @@ describe("TrustedDevicesList", () => {
     });
   });
 
+  test("clears stale per-item error when the dialog is cancelled and reopened", async () => {
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    let failNext = true;
+    mockFetch(({ method }) => {
+      if (method === "GET") {
+        return jsonResponse({
+          devices: [
+            {
+              identifier: "trust-device-stale",
+              deviceLabel: "Mac",
+              userAgent: null,
+              ipAddress: null,
+              createdAt: new Date().toISOString(),
+              expiresAt: future,
+              isCurrent: false,
+            },
+          ],
+        });
+      }
+      if (method === "DELETE") {
+        if (failNext) {
+          failNext = false;
+          return jsonResponse(
+            { error: "internal_error", message: "Could not revoke this browser. Please retry." },
+            500,
+          );
+        }
+        return jsonResponse({ success: true });
+      }
+      return jsonResponse({}, 500);
+    });
+
+    await act(async () => {
+      render(<TrustedDevicesList />, { wrapper: Wrapper });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Mac")).toBeTruthy();
+    });
+
+    // First attempt fails, error renders inline.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(/Revoke Mac/));
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Revoke this trusted browser/)).toBeTruthy();
+    });
+    const revokeActions = screen
+      .getAllByRole("button")
+      .filter((b) => b.textContent?.trim() === "Revoke");
+    await act(async () => {
+      fireEvent.click(revokeActions[revokeActions.length - 1]);
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Could not revoke this browser/)).toBeTruthy();
+    });
+
+    // User cancels, then reopens the dialog from the row.
+    await act(async () => {
+      fireEvent.click(screen.getByText("Cancel"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(/Revoke Mac/));
+    });
+
+    // The reopened dialog must NOT carry the previous attempt's error —
+    // useAdminMutation alone wouldn't clear it until the NEXT mutate.
+    await waitFor(() => {
+      expect(screen.getByText(/Revoke this trusted browser/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/Could not revoke this browser/)).toBeNull();
+  });
+
   test("surfaces an inline error and keeps the dialog open on revoke failure", async () => {
     const future = new Date(Date.now() + 86_400_000).toISOString();
     mockFetch(({ method }) => {

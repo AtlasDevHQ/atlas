@@ -27,6 +27,7 @@ import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
@@ -1489,16 +1490,25 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
           // writes the verification row with `identifier: "trust-device-..."`;
           // we mirror UA / IP / label into `trusted_device` keyed on the same
           // identifier so the security page can render a meaningful list.
-          // Hook is fire-and-forget — see trusted-device-hook.ts for why
-          // failures here MUST NOT propagate.
+          //
+          // Defensive outer try/catch: `onVerificationCreated` already swallows
+          // its own errors, but Better Auth awaits this hook inside
+          // `queueAfterTransactionHook` and rethrows — a future regression that
+          // adds an unguarded throw inside the hook (or any module-level
+          // initialization that fails) would otherwise 500 the user's auth
+          // flow. See trusted-device-hook.ts header for the invariant.
           after: async (record: Record<string, unknown>, ctx: unknown) => {
-            const { onVerificationCreated } = await import(
-              "@atlas/api/lib/auth/trusted-device-hook"
-            );
-            await onVerificationCreated(
-              record,
-              ctx as { headers?: Headers; request?: Request } | null | undefined,
-            );
+            try {
+              await onVerificationCreated(
+                record,
+                ctx as { headers?: Headers; request?: Request } | null | undefined,
+              );
+            } catch (err) {
+              log.warn(
+                { err: errorMessage(err) },
+                "trust-device after-hook escaped its inner catch — auth flow continued",
+              );
+            }
           },
         },
       },

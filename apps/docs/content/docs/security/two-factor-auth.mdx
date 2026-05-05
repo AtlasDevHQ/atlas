@@ -1,6 +1,6 @@
 ---
 title: Two-Factor Authentication
-description: TOTP-based second factor for admin, owner, and platform_admin accounts. Required by default once enabled, with backup codes for recovery.
+description: Authenticator app (TOTP) enrollment for admin, owner, and platform_admin accounts. One of two MFA methods Atlas accepts — passkeys are the other. Includes backup codes for recovery.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -9,12 +9,17 @@ import { Callout } from "fumadocs-ui/components/callout";
 This page covers content for **admin users** (enrolling and recovering),
 **operators** (rollout, scope, and opt-out), and **end users** (members are
 not affected). Jump to the section relevant to your role.
+
+For passkey enrollment (the recommended path), see
+[Passkeys](./passkeys).
 </Callout>
 
-Atlas requires a TOTP second factor on every interactive sign-in for users
-with role `admin`, `owner`, or `platform_admin`. The gate is enforced by
-the API; an unenrolled admin receives `403 mfa_enrollment_required` on
-every admin route until they complete enrollment at
+Atlas requires a strong second factor on every interactive sign-in for
+users with role `admin`, `owner`, or `platform_admin`. Two methods
+satisfy the gate: a TOTP authenticator app (this page) or a WebAuthn
+passkey (see [Passkeys](./passkeys)). The gate is enforced by the API;
+an unenrolled admin receives `403 mfa_enrollment_required` on every
+admin route until they complete enrollment at
 `/admin/settings/security`.
 
 The feature delivers the admin-MFA promise stated on the public-facing
@@ -23,10 +28,11 @@ privacy and DPA pages at
 [useatlas.dev/dpa](https://useatlas.dev/dpa) Annex II.
 
 <Callout type="warn">
-Two-factor is **fail-closed** for managed-mode admin sessions. If a
-session user has role `admin`, `owner`, or `platform_admin` and
-`twoFactorEnabled !== true`, no admin-data route serves them. There is
-no environment variable that disables the gate at runtime.
+The MFA gate is **fail-closed** for managed-mode admin sessions. If a
+session user has role `admin`, `owner`, or `platform_admin` and has
+neither `twoFactorEnabled === true` nor at least one enrolled passkey,
+no admin-data route serves them. There is no environment variable that
+disables the gate at runtime.
 </Callout>
 
 ## Scope
@@ -35,8 +41,9 @@ Two-factor enforcement applies only when **all** of the following hold:
 
 - Auth mode is `managed` (Better Auth interactive sessions). Programmatic
   callers (`simple-key`, `byot`) and the local-dev `none` mode bypass the
-  gate, since TOTP cannot be collected by an API-key client and BYOT JWTs
-  delegate MFA to the upstream identity provider.
+  gate, since neither TOTP nor a WebAuthn ceremony can be collected by an
+  API-key client and BYOT JWTs delegate MFA to the upstream identity
+  provider.
 - The user's role is `admin`, `owner`, or `platform_admin`. `member`
   users are unaffected — they may still enroll voluntarily from the same
   page, but the gate does not block them.
@@ -112,11 +119,16 @@ hand-written SQL migration is required.
 [`packages/api/src/api/routes/admin-mfa-required.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/api/routes/admin-mfa-required.ts)
 is a Hono middleware applied by `createAdminRouter()` and
 `createPlatformRouter()`, immediately after
-`adminAuth`/`platformAdminAuth`. It reads
-`c.get("authResult").user.claims.twoFactorEnabled` (`managed.ts`
-spreads the Better Auth session-user fields into `claims`) and returns
-`403 mfa_enrollment_required` when the flag is missing or not strictly
-`true`.
+`adminAuth`/`platformAdminAuth`. It reads two fields from
+`c.get("authResult").user.claims` (`managed.ts` spreads the Better Auth
+session-user fields and computes `passkeyCount` on every authenticated
+request):
+
+- `twoFactorEnabled` — strict `true` admits the session.
+- `passkeyCount` — any positive number admits the session.
+
+Either signal is sufficient. When both are missing or zero, the
+middleware returns `403 mfa_enrollment_required`.
 
 The middleware is mounted on `/api/v1/admin/*` and
 `/api/v1/platform/*`. Better Auth's own endpoints — `/api/auth/two-factor/*`
@@ -146,8 +158,13 @@ the extra factor; the API will not gate their routes either way.
 
 ## Limitations
 
-- TOTP only. WebAuthn / passkeys and SMS are out of scope for this
-  feature.
+- This page covers TOTP enrollment specifically. Passkeys are a peer
+  factor with their own enrollment surface — see
+  [Passkeys](./passkeys).
+- SMS OTP and email OTP are deliberately not offered. SMS is vulnerable
+  to SIM-swap attacks (NIST SP 800-63B explicitly discourages it for
+  privileged accounts), and email OTP is delivery-dependent and weaker
+  than either TOTP or a hardware-bound passkey.
 - SCIM-managed MFA enforcement is not coupled to this gate. If your IdP
   enforces MFA through SCIM, that policy is enforced upstream of Atlas;
   this gate is independent.
@@ -156,6 +173,8 @@ the extra factor; the API will not gate their routes either way.
 
 ## See Also
 
+- [Passkeys](./passkeys) — the recommended second factor; same gate,
+  no backup codes required when paired with a second device.
 - [Row-Level Security](./row-level-security) — tenant data isolation, also fail-closed.
 - [SQL Validation](./sql-validation) — the four-layer query gate, the
   other half of the admin-side defense in depth.

@@ -1,0 +1,200 @@
+---
+title: Passkeys
+description: WebAuthn / passkey enrollment for admin, owner, and platform_admin accounts. The recommended second factor — phishing-resistant, hardware-bound, and recoverable by enrolling additional devices instead of paper backup codes.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+This page covers content for **admin users** (enrolling and managing
+passkeys), **operators** (self-hosted RP configuration), and **end
+users** (members may enroll voluntarily; the gate doesn't apply to
+them).
+
+For TOTP authenticator-app enrollment, see
+[Two-Factor Authentication](./two-factor-auth).
+</Callout>
+
+A passkey is a hardware-bound WebAuthn credential — Touch ID, Face ID,
+Windows Hello, a YubiKey, or a passkey synced through iCloud Keychain
+or Google Password Manager. Atlas accepts a passkey as a complete
+second factor: an admin who has enrolled at least one passkey
+satisfies the same gate that TOTP satisfies, with no backup codes
+required. The phishing-resistance, hardware binding, and zero-prompt
+sign-in flow make this the recommended path.
+
+<Callout type="warn">
+Passkeys are bound to the **Relying Party ID** (`rpID`) the credential
+was created under. Changing `rpID` after passkeys are enrolled
+**invalidates every existing credential** — affected users must re-
+enroll. Pick a stable domain before any user enrolls and never change
+it. See [Self-Hosted Configuration](#self-hosted-configuration) below.
+</Callout>
+
+## Enrolling (Admin Users)
+
+1. Sign in to Atlas. Open **Admin → Settings → Security**.
+2. In the **Passkey** tile (top of the page), click **Add a passkey**.
+3. Your OS or browser shows a passkey prompt — choose Touch ID, a
+   security key, or a synced cloud passkey, depending on what's
+   available on your device. The prompt completes the WebAuthn
+   ceremony in one step; there is no QR code or secret to copy.
+4. Atlas asks you to name the passkey (default: a userAgent-derived
+   label like *Mac · Safari*). Save the name so you can recognize it
+   in the list later.
+
+The new passkey appears under **Enrolled passkeys**. The MFA gate
+sees the credential on your next request — no sign-out and back in
+required.
+
+### Adding More Devices
+
+Multiple passkeys is the natural recovery path for passkey-only users
+— if your laptop is lost, sign in from your phone. To enroll another
+device, open **Admin → Settings → Security** on that device and click
+**Add another passkey**. Each device's passkey is an independent
+credential bound to that device's secure enclave (or, for cloud-
+synced passkeys, to the user's Apple/Google account).
+
+The Atlas UI nudges users toward enrolling a second passkey rather
+than generating paper backup codes, since cloud-synced passkeys plus
+a hardware-key fallback (e.g. a YubiKey) is a stronger recovery
+posture than printed codes that can be photographed or lost.
+
+### Renaming and Deleting
+
+The **Enrolled passkeys** list under the tiles supports rename and
+delete per credential. Deleting your only second factor leaves you
+unenrolled — the next admin request returns
+`403 mfa_enrollment_required`. The UI warns you before deletion if
+the row in question is your only second factor.
+
+## Trust Device (30 days)
+
+The "Trust this device for 30 days" opt-in is collected on the TOTP
+sign-in challenge page (see
+[Two-Factor Authentication](./two-factor-auth)). There is no
+equivalent checkbox on the passkey sign-in path today — passkeys
+already complete in one OS prompt, so the friction the trust-device
+toggle is meant to relieve doesn't really exist on that path.
+
+Where the trust-device flow does intersect passkeys is the **Trusted
+browsers** list at **Admin → Settings → Security**: any browser the
+admin has trusted via TOTP appears there and is revocable
+individually. Revoking a trusted browser only forces a fresh
+challenge on its next sign-in; it does not delete the underlying
+passkey or TOTP enrollment.
+
+Operator detail: the `trustDeviceMaxAge` is pinned at 30 days in
+[`server.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/server.ts)
+(search for `trustDeviceMaxAge`) and is not configurable via env —
+the value is also surfaced in the sign-in challenge UI so the
+contract stays truthful no matter which Better Auth version is
+installed.
+
+## Self-Hosted Configuration
+
+Two environment variables control the WebAuthn Relying Party. Both
+are passed to `@better-auth/passkey` at boot in
+[`server.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/server.ts)
+(search for the `passkey({` call):
+
+| Variable        | Default            | What it sets                                                                                                              |
+| --------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `ATLAS_RPID`    | `app.useatlas.dev` | The Relying Party ID — the registrable domain that passkeys are bound to. Must equal the page's effective domain or be a registrable suffix of it. |
+| `ATLAS_RPNAME`  | `Atlas`            | The human-readable RP name shown in the OS prompt (*"Use your saved passkey for `<ATLAS_RPNAME>`?"*).                     |
+
+For a self-hosted deployment at `https://atlas.acme.com`, set
+`ATLAS_RPID=atlas.acme.com` and `ATLAS_RPNAME="Acme Atlas"`. Pick the
+hostname your users actually visit — passkeys work across `https`
+and `http://localhost` only; non-localhost HTTP origins are not
+permitted by the WebAuthn spec.
+
+For local development, `ATLAS_RPID=localhost` is the working value
+when the dev server runs at `http://localhost:3000`.
+
+<Callout type="warn">
+Changing `ATLAS_RPID` after users have enrolled passkeys breaks
+every existing credential. The browser computes the credential's
+allow-list on the basis of the originally-enrolled `rpID`; a request
+issued under a different `rpID` matches no credential and the
+authenticator declines. There is no migration path — affected users
+must re-enroll. If you are moving to a new domain, plan a hard
+cut-over: announce the change, ask users to enroll at the new
+domain ahead of time, and accept that any passkey-only user who
+misses the window will need an out-of-band reset.
+</Callout>
+
+If `ATLAS_RPID` is misconfigured at runtime, the WebAuthn ceremony
+fails on the user's device. The browser raises `NotAllowedError`
+from `navigator.credentials.create`; Better Auth re-surfaces it as
+a `result.error` with code `REGISTRATION_CANCELLED` or a message
+containing `notallowed`. The security page's `isUserCancellation`
+helper folds both into the same console-debug branch — see
+[`passkey-tile.tsx`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/web/src/ui/components/admin/security/passkey-tile.tsx)
+for the rationale on always logging this branch (silent in the UI,
+but visible in DevTools, so a misconfigured RP doesn't disappear
+without trace).
+
+## Operator Reference
+
+### What's stored
+
+Better Auth's `@better-auth/passkey` plugin manages all storage:
+
+- `passkey.userId` — references the user.
+- `passkey.credentialID` — the WebAuthn credential ID, encoded.
+- `passkey.publicKey` — the credential's public key. The private key
+  never leaves the user's authenticator.
+- `passkey.counter` — anti-cloning counter; advanced on every
+  authenticator response.
+- `passkey.name` — the human-readable label set during the post-
+  enrollment naming dialog.
+
+The `passkey` table is created at boot by Better Auth's
+`runMigrations()`, alongside `user`, `session`, `twoFactor`, etc. No
+hand-written SQL migration is required.
+
+### How the gate sees passkeys
+
+[`packages/api/src/lib/auth/managed.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/auth/managed.ts)
+computes a `passkeyCount` for every authenticated request and spreads
+it into the session claims alongside `twoFactorEnabled`. The MFA
+middleware in
+[`admin-mfa-required.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/api/routes/admin-mfa-required.ts)
+admits any session where either signal is positive — see
+[Two-Factor Authentication → How the gate works](./two-factor-auth#how-the-gate-works)
+for the full claim resolution.
+
+### Browser support
+
+Passkey enrollment requires a WebAuthn-capable browser. The security
+page detects support via
+[`use-webauthn-supported.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/web/src/ui/hooks/use-webauthn-supported.ts)
+and renders an "unavailable" tile on legacy clients. Affected users
+should enroll a TOTP authenticator instead — it satisfies the same
+gate and works on any browser.
+
+## Limitations
+
+- Passwordless sign-in (using a passkey as both factors at once) is
+  not yet wired through Atlas's sign-in challenge — the current flow
+  always prompts for a password before the second factor. Tracked
+  separately.
+- Recovery for a user with no remaining passkey and no backup codes
+  requires an out-of-band reset by a `platform_admin`.
+- A single global `rpID` is used for all hosted regions
+  (`app.useatlas.dev`). WebAuthn binds credentials to a single
+  registrable suffix; per-region frontends would each need a
+  distinct `rpID` and would force re-enrollment for any user whose
+  region changes.
+
+## See Also
+
+- [Two-Factor Authentication](./two-factor-auth) — TOTP enrollment,
+  the alternative second factor; covers the shared MFA gate behavior
+  in depth.
+- [Row-Level Security](./row-level-security) — tenant data isolation,
+  also fail-closed.
+- [SQL Validation](./sql-validation) — the four-layer query gate, the
+  other half of the admin-side defense in depth.

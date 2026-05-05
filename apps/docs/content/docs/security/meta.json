@@ -1,11 +1,12 @@
 {
   "title": "Security",
-  "description": "SQL validation, sandboxing, row-level security, and admin two-factor authentication",
+  "description": "SQL validation, sandboxing, row-level security, and admin multi-factor authentication",
   "icon": "Shield",
   "pages": [
     "sql-validation",
     "row-level-security",
     "security-headers",
-    "two-factor-auth"
+    "two-factor-auth",
+    "passkeys"
   ]
 }

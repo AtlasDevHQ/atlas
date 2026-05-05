@@ -135,9 +135,43 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ---
 
-## Active: no active milestone
+## Active: 1.4.1 — MCP: Bringing It All Together
 
-1.4.0 closed 2026-05-05. Next milestone TBD — see [Ideas / Backlog](#ideas--backlog) below for candidates.
+Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Round out 1.4.0 properly across five themes — workspace-native UX, brand + production hygiene, governance, eval + tool quality, distribution + extensibility. Each item is a real follow-up that should ideally have been in 1.4.0 but is honest scope for an immediate next pass. No skimping.
+
+### Theme A — Workspace-native UX
+
+- [ ] Settings → AI Agents — per-user MCP connect + manage flow ([#2065](https://github.com/AtlasDevHQ/atlas/issues/2065)) — `/settings/ai-agents` page + 3-step connect wizard + per-user OAuth-client endpoints. Closes the install-path gap for non-CLI users.
+- [ ] Hosted-MCP token refresh + expiry UX, end-to-end tested ([#2066](https://github.com/AtlasDevHQ/atlas/issues/2066)) — refresh-token lifecycle untested; first user across expiry surfaces silently. Adds e2e coverage + UI states for expired/revoked clients.
+- [ ] Admin audit-log filter view for MCP tool calls ([#2067](https://github.com/AtlasDevHQ/atlas/issues/2067)) — audit rows exist; admin UI doesn't have the MCP-shaped filter (`actorKind=mcp`, by `clientId`, by `tool`).
+
+### Theme B — Brand + production hygiene
+
+- [ ] `mcp.useatlas.dev` first-class hostname ([#2068](https://github.com/AtlasDevHQ/atlas/issues/2068)) — DNS + audience switch + protected-resource metadata + CLI defaults + docs. Not cosmetic — tokens audience-bound to the brand surface.
+- [ ] Verify sticky routing for `/mcp/*` in production ([#2069](https://github.com/AtlasDevHQ/atlas/issues/2069)) — risk item: docs say required, nobody's confirmed Railway honors it. Multi-replica integration test + OpenStatus synthetic.
+- [ ] Load-test hosted MCP, document perf profile ([#2070](https://github.com/AtlasDevHQ/atlas/issues/2070)) — `ATLAS_MCP_MAX_SESSIONS=100` is somebody's gut, not a measurement. k6 profile + bottleneck identification + perf-architecture doc.
+
+### Theme C — Governance
+
+- [ ] Per-user / per-client rate limiting for MCP ([#2071](https://github.com/AtlasDevHQ/atlas/issues/2071)) — extend the existing rate-limit middleware to bucket per `clientId`. Greedy agents shouldn't starve others in the same workspace.
+- [ ] MCP-specific approval rules ([#2072](https://github.com/AtlasDevHQ/atlas/issues/2072)) — surface-scoped approval rules so admins can require approval for MCP queries without affecting chat queries.
+- [ ] Cross-workspace agent identity ([#2073](https://github.com/AtlasDevHQ/atlas/issues/2073)) — one OAuth flow + one client config serves multi-workspace users; `X-Atlas-Workspace` header for per-request scoping.
+
+### Theme D — Eval + tool quality
+
+- [ ] Eval harness runs through the MCP path ([#2074](https://github.com/AtlasDevHQ/atlas/issues/2074)) — risk item: production hits MCP, eval doesn't. New `--mcp-deterministic` / `--mcp-llm` modes spawn a real MCP client; CI gate on release tags.
+- [ ] MCP tool description audit ([#2075](https://github.com/AtlasDevHQ/atlas/issues/2075)) — consistency, length, hallucination-bait. Held-out LLM tool-selection accuracy >90% target. Rubric-enforcing test fixture.
+- [ ] MCP prompts library exposes canonical eval questions ([#2076](https://github.com/AtlasDevHQ/atlas/issues/2076)) — the 20 NovaMart canonical questions are the best showcase we have; agents should browse them in the prompts panel alongside `query_patterns`.
+
+### Theme E — Distribution + extensibility
+
+- [ ] Claude Desktop catalog submission, properly resourced ([#2077](https://github.com/AtlasDevHQ/atlas/issues/2077)) — branding pack + review tenant + tool annotations + 60-90s demo video. Anthropic-curated form; submit once, do it right.
+- [ ] Plugin SDK extension point for MCP tools ([#2078](https://github.com/AtlasDevHQ/atlas/issues/2078)) — `AtlasPlugin.mcpTools()` so plugins register custom MCP tools. Foundation for `runbooks-context` plugin (next milestone).
+- [ ] `@useatlas/sdk` programmatic MCP onboarding helper ([#2079](https://github.com/AtlasDevHQ/atlas/issues/2079)) — `atlas.mcp.beginConnect` / `completeConnect` / `buildConfig` / list / revoke. Embedded apps onboard MCP without rolling their own OAuth flow. Includes `useMcpConnect` React hook.
+
+Backlog (post-1.4.1): `runbooks-context` plugin (#2023, next milestone headline), `/agent-mode` chat-first view (#2022), `/ee` decoupling refactor (#2017).
+
+Ordering recommendation: A → B (prod-credibility floor) → D (eval safety net) → C (governance) → E (distribution + foundation). Risk items (B2 sticky routing, A2 token refresh, D1 eval through MCP) frontload — silently broken today, you just don't know yet.
 
 ---
 

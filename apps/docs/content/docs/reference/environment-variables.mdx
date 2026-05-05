@@ -281,6 +281,15 @@ GITHUB_CLIENT_ID=Iv1.abc123
 GITHUB_CLIENT_SECRET=ghs_...
 ```
 
+### OAuth Provider (MCP / DCR)
+
+Atlas issues OAuth 2.1 access tokens via `@better-auth/oauth-provider` so MCP clients (Claude Desktop, ChatGPT, Cursor) can connect to the [hosted MCP endpoint](/guides/mcp-hosted) via Dynamic Client Registration + PKCE. Most operators leave these on defaults; tune only when SaaS regions or stricter threat models require it.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_OAUTH_VALID_AUDIENCES` | Derived from `ATLAS_PUBLIC_API_URL`/`BETTER_AUTH_URL` (`<base>/mcp`) | Comma-separated allowed JWT `aud` values. Used verbatim — operator owns the values and may want non-MCP audiences. The issuer's accepted audience must equal what the resource server advertises and what the verifier checks. |
+| `ATLAS_OAUTH_ALLOW_UNAUTH_DCR` | `true` | When `true`, MCP clients can register as public OAuth clients without authentication (RFC 7591) — required for standard MCP onboarding. Set `false` if your threat model rejects unattended client registration; Claude Desktop / ChatGPT / Cursor will then require manual client provisioning. Track the upstream MCP spec (Client ID Metadata Documents, signed `software_statement`) — this flag is deprecation-bound. |
+
 ### BYOT (Bring Your Own Token)
 
 | Variable | Default | Description |
@@ -375,6 +384,7 @@ Actor binding for the [MCP server](/guides/mcp). The transport runs in one of tw
 |----------|---------|-------------|
 | `ATLAS_MCP_USER_ID` | — | MCP actor binding (#1858) — Atlas user ID the MCP transport should act as. Set **both** `ATLAS_MCP_USER_ID` and `ATLAS_MCP_ORG_ID` for governed transport (approval rules + audit apply to MCP queries). Leaving both unset selects trusted transport with a synthetic `system:mcp` actor — only safe when no approval rules exist |
 | `ATLAS_MCP_ORG_ID` | — | MCP actor binding — org ID the bound user acts under. The MCP server fails to boot when approval rules exist and the binding is missing, or when only one of the two vars is set |
+| `ATLAS_MCP_MAX_SESSIONS` | `100` | Max concurrent hosted-MCP sessions per API instance. Counts both registered sessions and in-flight initializations. Hitting the cap returns `503 too_many_sessions`. Sessions are in-process; behind a multi-replica load balancer, sticky routing is required so frames stay on the same instance |
 
 ---
 

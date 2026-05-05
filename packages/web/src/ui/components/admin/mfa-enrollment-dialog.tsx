@@ -60,14 +60,22 @@ export function MfaEnrollmentDialog() {
         className="sm:max-w-md"
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
+        {/*
+         * shadcn's AlertDialogHeader switches to `sm:place-items-start
+         * sm:text-left` at the `sm:` breakpoint when the content size is
+         * `default`. The title's grid cell shrink-wraps and pins to the
+         * left, so a bare `text-center` on the title doesn't visually
+         * center it. `w-full` on Title + Description makes each fill its
+         * grid cell so the inline `text-center` lands.
+         */}
         <AlertDialogHeader>
           <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-amber-500/10">
             <ShieldAlert className="size-6 text-amber-600 dark:text-amber-400" />
           </div>
-          <AlertDialogTitle className="text-center">
+          <AlertDialogTitle className="w-full text-center">
             Two-factor authentication required
           </AlertDialogTitle>
-          <AlertDialogDescription className="text-center">
+          <AlertDialogDescription className="w-full text-center">
             Admin accounts must enroll a second factor before accessing the
             admin console. Set up an authenticator app to continue.
           </AlertDialogDescription>

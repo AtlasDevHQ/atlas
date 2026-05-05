@@ -7,16 +7,22 @@
  *
  *   GET  /api/v1/admin/oauth-clients         → list rows scoped to the org
  *   POST /api/v1/admin/oauth-clients/:id/revoke
- *                                            → delete client + every
- *                                              outstanding access/refresh
- *                                              token + consent for that
- *                                              client, scoped to the org
+ *                                            → atomic delete: client +
+ *                                              outstanding access tokens +
+ *                                              refresh tokens + consent for
+ *                                              that client, scoped to the
+ *                                              org via `referenceId`
  *
  * Tokens issued under workspace A must remain queryable from workspace A
  * only — `referenceId` ties every row back to the active org. The tests
  * verify the SQL parameterization actually carries the org filter so a
  * future regression that drops the WHERE clause fails loudly here, not in
  * production.
+ *
+ * Atomicity: revocation runs in a single transaction. The MockClient below
+ * captures every BEGIN/COMMIT/ROLLBACK so the tests can assert lifecycle +
+ * race detection (concurrent revoke wins between pre-fetch and BEGIN) +
+ * mid-flight failure (DELETE #2 throws → ROLLBACK → no stale state).
  */
 
 import {
@@ -30,6 +36,16 @@ import {
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
+// `mockGetInternalDB` is wired into `createApiTestMocks` below so the
+// `internal` mock module includes it from the start — adding it via a
+// follow-up `mock.module()` would have to re-mock every named export from
+// `@atlas/api/lib/db/internal` (CLAUDE.md: "Mock all exports — partial
+// mocks cause SyntaxError"). The factory's `internal` override is the
+// supported single-knob path.
+const mockGetInternalDB = mock(() => ({
+  connect: async () => makeMockClient(),
+}));
+
 const mocks = createApiTestMocks({
   authUser: {
     id: "admin-1",
@@ -39,6 +55,9 @@ const mocks = createApiTestMocks({
     activeOrganizationId: "org-alpha",
   },
   authMode: "managed",
+  internal: {
+    getInternalDB: mockGetInternalDB,
+  },
 });
 
 interface AuditEntry {
@@ -61,6 +80,45 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
+// ---------------------------------------------------------------------------
+// Transactional client mock
+// ---------------------------------------------------------------------------
+// `revokeAtomically` calls `getInternalDB().connect()` to acquire a pg client
+// for BEGIN/DELETE×4/COMMIT. Tests need to drive per-DELETE return values and
+// assert the lifecycle, so the mock pool exposes a single shared client whose
+// queries are recorded into `clientQueries`.
+
+interface ClientQuery {
+  sql: string;
+  params?: unknown[];
+}
+
+interface MockClient {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+  release: (err?: unknown) => void;
+}
+
+let clientQueries: ClientQuery[] = [];
+let clientReleased = false;
+// pg destroys the socket when `release(err)` is called with a truthy arg.
+// We assert this on the rollback-failure path so a poisoned client never
+// returns to the pool to corrupt the next borrower.
+let clientReleaseArg: unknown = undefined;
+let queryHandler: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> = async () => ({ rows: [] });
+
+function makeMockClient(): MockClient {
+  return {
+    query: async (sql: string, params?: unknown[]) => {
+      clientQueries.push({ sql, params });
+      return queryHandler(sql, params);
+    },
+    release: (err?: unknown) => {
+      clientReleased = true;
+      clientReleaseArg = err;
+    },
+  };
+}
+
 const { app } = await import("../index");
 
 afterAll(() => mocks.cleanup());
@@ -81,12 +139,20 @@ function lastAuditCall(): AuditEntry {
   return calls[calls.length - 1]![0]!;
 }
 
+function resetTxClient(): void {
+  clientQueries = [];
+  clientReleased = false;
+  clientReleaseArg = undefined;
+  queryHandler = async () => ({ rows: [] });
+}
+
 beforeEach(() => {
   mocks.hasInternalDB = true;
   mocks.setOrgAdmin("org-alpha");
   mocks.mockInternalQuery.mockReset();
   mocks.mockInternalQuery.mockResolvedValue([]);
   mockLogAdminAction.mockClear();
+  resetTxClient();
 });
 
 // ---------------------------------------------------------------------------
@@ -95,18 +161,21 @@ beforeEach(() => {
 
 describe("admin oauth-clients — GET /oauth-clients", () => {
   it("lists clients scoped to the active org via referenceId", async () => {
+    // Gate the row return on the orgId param. A regression that drops the
+    // `referenceId = $1` filter from the SELECT would call this with a
+    // different/empty param and the mock would (correctly) leak nothing —
+    // but the test is also pinning that the SQL we emit IS the org-scoped
+    // shape, not just that the mock got called.
     mocks.mockInternalQuery.mockImplementation(
       async (sql: string, params?: unknown[]) => {
         if (sql.includes("oauthClient")) {
-          // Pin the WHERE clause carries the org binding — a future regression
-          // that drops it would silently leak every workspace's clients.
           expect(sql).toContain(`"referenceId"`);
-          expect(params?.[0]).toBe("org-alpha");
+          if (params?.[0] !== "org-alpha") return [];
           return [
             {
               clientId: "claude-desktop",
               clientName: "Claude Desktop",
-              redirectUris: ["http://localhost:6274/callback"],
+              redirectUris: ["http://127.0.0.1:6274/callback"],
               createdAt: "2026-04-12T10:00:00.000Z",
               updatedAt: "2026-04-12T10:00:00.000Z",
               disabled: false,
@@ -139,7 +208,7 @@ describe("admin oauth-clients — GET /oauth-clients", () => {
     expect(body.clients).toHaveLength(1);
     expect(body.clients[0]!.clientId).toBe("claude-desktop");
     expect(body.clients[0]!.clientName).toBe("Claude Desktop");
-    expect(body.clients[0]!.redirectUris).toEqual(["http://localhost:6274/callback"]);
+    expect(body.clients[0]!.redirectUris).toEqual(["http://127.0.0.1:6274/callback"]);
     expect(body.clients[0]!.disabled).toBe(false);
     expect(body.clients[0]!.tokenCount).toBe(3);
     expect(body.clients[0]!.lastUsedAt).toBe("2026-05-01T15:30:00.000Z");
@@ -225,46 +294,40 @@ describe("admin oauth-clients — GET /oauth-clients", () => {
 // ---------------------------------------------------------------------------
 
 describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
-  it("deletes client + outstanding tokens scoped to org and emits audit", async () => {
-    const deletedTables: string[] = [];
-
+  it("atomically deletes client + outstanding tokens scoped to org and emits audit", async () => {
+    // Pre-fetch (outside the transaction) — confirms the client exists in
+    // the active org.
     mocks.mockInternalQuery.mockImplementation(
       async (sql: string, params?: unknown[]) => {
-        // Pre-fetch confirms the client exists in the active org. Without it
-        // a missing client + a successful no-op DELETE would silently 200.
         if (sql.includes("SELECT") && sql.includes("oauthClient")) {
           expect(params).toContain("claude-desktop");
           expect(params).toContain("org-alpha");
           return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
         }
-        if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
-          deletedTables.push("oauthAccessToken");
-          // Org filter must apply to tokens too — a missed referenceId here
-          // would let an admin in workspace A revoke workspace B's tokens
-          // for a client whose id collided.
-          expect(sql).toContain(`"referenceId"`);
-          expect(params).toContain("claude-desktop");
-          expect(params).toContain("org-alpha");
-          return [{ id: "tok_1" }, { id: "tok_2" }, { id: "tok_3" }];
-        }
-        if (sql.includes("DELETE") && sql.includes("oauthRefreshToken")) {
-          deletedTables.push("oauthRefreshToken");
-          expect(sql).toContain(`"referenceId"`);
-          return [{ id: "rt_1" }];
-        }
-        if (sql.includes("DELETE") && sql.includes("oauthConsent")) {
-          deletedTables.push("oauthConsent");
-          expect(sql).toContain(`"referenceId"`);
-          return [{ id: "cs_1" }];
-        }
-        if (sql.includes("DELETE") && sql.includes("oauthClient")) {
-          deletedTables.push("oauthClient");
-          expect(sql).toContain(`"referenceId"`);
-          return [{ clientId: "claude-desktop" }];
-        }
         return [];
       },
     );
+    // Transactional DELETEs — drive per-table return rows so the route can
+    // count revocations and emit accurate audit metadata.
+    queryHandler = async (sql) => {
+      if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
+        expect(sql).toContain(`"referenceId"`);
+        return { rows: [{ id: "tok_1" }, { id: "tok_2" }, { id: "tok_3" }] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthRefreshToken")) {
+        expect(sql).toContain(`"referenceId"`);
+        return { rows: [{ id: "rt_1" }] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthConsent")) {
+        expect(sql).toContain(`"referenceId"`);
+        return { rows: [{ id: "cs_1" }] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthClient")) {
+        expect(sql).toContain(`"referenceId"`);
+        return { rows: [{ clientId: "claude-desktop" }] };
+      }
+      return { rows: [] };
+    };
 
     const res = await app.fetch(
       adminRequest("POST", "/api/v1/admin/oauth-clients/claude-desktop/revoke"),
@@ -280,8 +343,23 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
     // tokens — they're a separate authorization artefact.
     expect(body.tokensRevoked).toBe(4);
 
-    // Tokens must be deleted before the client to avoid FK contention.
-    expect(deletedTables).toEqual([
+    // Transaction lifecycle: BEGIN must be first, COMMIT must run, ROLLBACK
+    // must NOT run on the happy path. Children deleted before parent so an
+    // FK-RESTRICT adapter doesn't reject the final DELETE.
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls[0]).toBe("BEGIN");
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+    expect(clientReleased).toBe(true);
+    expect(clientReleaseArg).toBeUndefined();
+
+    const deleteOrder = clientQueries
+      .filter((q) => /^\s*DELETE\s+FROM/i.test(q.sql))
+      .map((q) => {
+        const m = q.sql.match(/DELETE FROM "(\w+)"/);
+        return m ? m[1] : null;
+      });
+    expect(deleteOrder).toEqual([
       "oauthAccessToken",
       "oauthRefreshToken",
       "oauthConsent",
@@ -304,12 +382,22 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
   });
 
   it("returns 404 when the client does not belong to the active org", async () => {
-    // Pre-fetch must scope by referenceId. A bare `WHERE clientId = $1`
-    // would let an admin probe / revoke clients in foreign workspaces.
+    // Strong gate: the SELECT returns the row only if the orgId param
+    // matches. A regression that drops `AND "referenceId" = $2` from the
+    // pre-fetch SQL would either omit the param entirely (handled below by
+    // the `params.length` short-circuit) or pass it but stop gating, which
+    // this implementation makes impossible because the mock keys on
+    // params[1].
     mocks.mockInternalQuery.mockImplementation(
       async (sql: string, params?: unknown[]) => {
         if (sql.includes("SELECT") && sql.includes("oauthClient")) {
-          expect(params).toContain("org-alpha");
+          expect(sql).toContain(`"referenceId"`);
+          // Foreign client exists in some other workspace; only return it
+          // when the caller provides that workspace's orgId. The active
+          // org is "org-alpha" so this stays empty under correct routing.
+          if (params?.[1] === "foreign-org") {
+            return [{ clientId: "foreign-client", clientName: "Foreign" }];
+          }
           return [];
         }
         return [];
@@ -331,6 +419,9 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
       clientId: "foreign-client",
       found: false,
     });
+    // Pre-fetch missed — no transaction was opened.
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("BEGIN")).toBe(false);
   });
 
   it("returns 403 for non-admin members", async () => {
@@ -364,18 +455,21 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 500 with requestId on DB failure and emits failure audit", async () => {
+  it("rolls back and emits failure audit with phase + clientName when DELETE throws", async () => {
     mocks.mockInternalQuery.mockImplementation(
       async (sql: string) => {
         if (sql.includes("SELECT") && sql.includes("oauthClient")) {
           return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
         }
-        if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
-          throw new Error("pool timeout");
-        }
         return [];
       },
     );
+    queryHandler = async (sql) => {
+      if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
+        throw new Error("pool timeout");
+      }
+      return { rows: [] };
+    };
 
     const res = await app.fetch(
       adminRequest("POST", "/api/v1/admin/oauth-clients/claude-desktop/revoke"),
@@ -385,14 +479,109 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
     const body = (await res.json()) as { requestId?: string };
     expect(body.requestId).toBeDefined();
 
-    // Failure audit emits via tapErrorCause. Status is "failure" so forensic
-    // queries can pivot on outcome without joining on response code.
+    // Transaction must have rolled back.
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls[0]).toBe("BEGIN");
+    expect(sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(false);
+
+    // Failure audit emitted exactly once with the phase that tripped + the
+    // captured clientName from the pre-fetch. `auditedInline` suppresses
+    // the tapErrorCause duplicate.
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = lastAuditCall();
     expect(entry.actionType).toBe("oauth_client.revoke");
     expect(entry.status).toBe("failure");
     expect(entry.metadata).toMatchObject({
       clientId: "claude-desktop",
+      clientName: "Claude Desktop",
+      phase: "access_tokens",
       error: "pool timeout",
+    });
+  });
+
+  it("scrubs pg connection-string userinfo from the failure-audit error", async () => {
+    // F-29 — admin_action_log must never leak DB credentials. The route
+    // pipes failure-error messages through `errorMessage()`, which strips
+    // `scheme://user:pass@host` userinfo. A future refactor that swaps
+    // `errorMessage(err)` for `(err as Error).message` would silently land
+    // the password in audit metadata; this test pins the scrub.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT") && sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      return [];
+    });
+    queryHandler = async (sql) => {
+      if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
+        throw new Error(
+          "connection refused: postgres://atlas_user:supersecret@db.internal:5432/atlas",
+        );
+      }
+      return { rows: [] };
+    };
+
+    await app.fetch(
+      adminRequest("POST", "/api/v1/admin/oauth-clients/claude-desktop/revoke"),
+    );
+
+    const entry = lastAuditCall();
+    expect(entry.status).toBe("failure");
+    const err = String(entry.metadata?.error ?? "");
+    // Scheme survives, userinfo replaced.
+    expect(err).toContain("postgres://***@db.internal");
+    expect(err).not.toContain("atlas_user");
+    expect(err).not.toContain("supersecret");
+  });
+
+  it("emits a race audit + 404 when a concurrent revoke wins between pre-fetch and BEGIN", async () => {
+    // Pre-fetch sees the row, but the transactional final DELETE returns
+    // 0 rows — concurrent admin (or duplicate request) revoked the same
+    // client in-window. Route must roll back the partial child DELETEs so
+    // the children aren't orphaned, then emit `race: true` audit + 404.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT") && sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      return [];
+    });
+    queryHandler = async (sql) => {
+      if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
+        return { rows: [{ id: "tok_1" }] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthRefreshToken")) {
+        return { rows: [] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthConsent")) {
+        return { rows: [] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthClient")) {
+        // Concurrent revoke already dropped it — final DELETE misses.
+        return { rows: [] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/oauth-clients/claude-desktop/revoke"),
+    );
+
+    expect(res.status).toBe(404);
+
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls[0]).toBe("BEGIN");
+    expect(sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(false);
+
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("oauth_client.revoke");
+    expect(entry.status ?? "success").toBe("success");
+    expect(entry.metadata).toMatchObject({
+      clientId: "claude-desktop",
+      clientName: "Claude Desktop",
+      found: false,
+      race: true,
     });
   });
 });

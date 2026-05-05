@@ -15,11 +15,15 @@
  * issuance, consent flow, and refresh stay in the Better Auth oauth-provider
  * plugin.
  *
- * Token-revocation order matters: tokens reference the client via FK, so a
- * naïve `DELETE FROM oauthClient` first either CASCADEs (depending on the
- * adapter's FK config) or fails on the constraint. We delete tokens →
- * consent → client to keep the order deterministic regardless of FK
- * mode and to give the audit metadata accurate per-table counts.
+ * Revocation is atomic. The four DELETEs (access tokens → refresh tokens →
+ * consent → client) run inside a single transaction so a transient failure
+ * mid-sequence (pool exhaustion, statement timeout, TCP reset) cannot leave
+ * the workspace in a partially-revoked state with stale refresh tokens still
+ * able to mint new access tokens. The pattern mirrors `admin-archive.ts`.
+ * Order is child→parent: oauthAccessToken / oauthRefreshToken / oauthConsent
+ * all FK-reference oauthClient.clientId, so deleting children first prevents
+ * an FK violation on the final parent DELETE regardless of the adapter's
+ * ON DELETE policy.
  */
 
 import { Effect } from "effect";
@@ -27,7 +31,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { queryEffect } from "@atlas/api/lib/db/internal";
+import { getInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -43,20 +47,32 @@ const log = createLogger("admin-oauth-clients");
  */
 const ID_MAX_LEN = 255;
 
+/**
+ * Discriminator on the transactional revoke result. Captures the SQL phase
+ * the rollback was triggered from so the failure-audit metadata can answer
+ * "did anything actually delete?" without forcing the reviewer to grep logs.
+ */
+type RevokePhase = "access_tokens" | "refresh_tokens" | "consent" | "client" | "commit";
+
+type RevokeOutcome =
+  | { status: "ok"; access: number; refresh: number; consent: number }
+  | { status: "race" }
+  | { status: "rolled_back"; phase: RevokePhase; error: Error };
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
 
 const OAuthClientSchema = z.object({
-  clientId: z.string(),
+  clientId: z.string().min(1),
   clientName: z.string().nullable(),
-  redirectUris: z.array(z.string()),
+  redirectUris: z.array(z.string().url()),
   createdAt: z.string(),
   updatedAt: z.string().nullable(),
   disabled: z.boolean(),
   type: z.string().nullable(),
   lastUsedAt: z.string().nullable(),
-  tokenCount: z.number(),
+  tokenCount: z.number().int().nonnegative(),
 });
 
 const ListClientsResponseSchema = z.object({
@@ -65,7 +81,7 @@ const ListClientsResponseSchema = z.object({
 
 const RevokeResponseSchema = z.object({
   success: z.boolean(),
-  tokensRevoked: z.number(),
+  tokensRevoked: z.number().int().nonnegative(),
 });
 
 // ---------------------------------------------------------------------------
@@ -98,7 +114,7 @@ const revokeClientRoute = createRoute({
   tags: ["Admin — OAuth Clients"],
   summary: "Revoke OAuth client",
   description:
-    "Deletes the OAuth client and every outstanding access token, refresh token, and consent record for that client within the active workspace. Standards-compliant clients (Claude Desktop, ChatGPT, Cursor) will need to re-register via DCR after revocation.",
+    "Atomically deletes the OAuth client and every outstanding access token, refresh token, and consent record for that client within the active workspace. Standards-compliant clients (Claude Desktop, ChatGPT, Cursor) will need to re-register via DCR after revocation.",
   request: {
     params: z.object({
       id: z.string().min(1).max(ID_MAX_LEN).openapi({
@@ -119,6 +135,104 @@ const revokeClientRoute = createRoute({
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
+
+// ---------------------------------------------------------------------------
+// Transactional revoke helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Atomically revoke `clientId` for `orgId`. All four DELETEs run inside one
+ * transaction; partial-state failures roll back so the workspace never ends
+ * up with stale refresh tokens after a 500.
+ *
+ * Returns a discriminated outcome so the caller can branch on success / race
+ * / rolled-back without exception handling. Race detection: pre-fetch is
+ * outside this transaction, so a concurrent revoke can win between pre-fetch
+ * and BEGIN — the parent DELETE seeing zero rows is the signal.
+ *
+ * Mirrors `admin-archive.ts:267-315` for the BEGIN/COMMIT/ROLLBACK +
+ * `release(rollbackErr)` destroy-on-poison pattern.
+ */
+async function revokeAtomically(clientId: string, orgId: string): Promise<RevokeOutcome> {
+  const pool = getInternalDB();
+  const client = await pool.connect();
+  let phase: RevokePhase = "access_tokens";
+  let rollbackErr: Error | null = null;
+
+  try {
+    await client.query("BEGIN");
+
+    const access = await client.query(
+      `DELETE FROM "oauthAccessToken"
+        WHERE "clientId" = $1 AND "referenceId" = $2
+        RETURNING "id"`,
+      [clientId, orgId],
+    );
+    phase = "refresh_tokens";
+
+    const refresh = await client.query(
+      `DELETE FROM "oauthRefreshToken"
+        WHERE "clientId" = $1 AND "referenceId" = $2
+        RETURNING "id"`,
+      [clientId, orgId],
+    );
+    phase = "consent";
+
+    const consent = await client.query(
+      `DELETE FROM "oauthConsent"
+        WHERE "clientId" = $1 AND "referenceId" = $2
+        RETURNING "id"`,
+      [clientId, orgId],
+    );
+    phase = "client";
+
+    const deleted = await client.query(
+      `DELETE FROM "oauthClient"
+        WHERE "clientId" = $1 AND "referenceId" = $2
+        RETURNING "clientId"`,
+      [clientId, orgId],
+    );
+
+    // Race: pre-fetch saw the row but the transactional DELETE missed it. A
+    // concurrent admin (or duplicate request) revoked the same client
+    // between the pre-fetch and BEGIN. Roll back so the partial child
+    // DELETEs revert — without rollback, the children would be gone but
+    // the parent client (now owned by the racing tx) would survive.
+    if (deleted.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return { status: "race" };
+    }
+
+    phase = "commit";
+    await client.query("COMMIT");
+
+    return {
+      status: "ok",
+      access: access.rows.length,
+      refresh: refresh.rows.length,
+      consent: consent.rows.length,
+    };
+  } catch (err) {
+    // ROLLBACK can itself fail (TCP reset between BEGIN and ROLLBACK). pg
+    // destroys the socket when `release(err)` is called with a truthy arg,
+    // so a poisoned client doesn't return to the pool to corrupt the next
+    // borrower's transaction.
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        { err: rollbackErr.message, clientId, orgId, phase },
+        "ROLLBACK failed after revoke error — client will be destroyed",
+      );
+    });
+    return {
+      status: "rolled_back",
+      phase,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  } finally {
+    client.release(rollbackErr ?? undefined);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Router
@@ -188,10 +302,15 @@ adminOauthClients.openapi(listClientsRoute, async (c) => {
   }), { label: "list oauth clients" });
 });
 
-// POST /:id/revoke — delete client + outstanding tokens scoped to org
+// POST /:id/revoke — atomic delete of client + outstanding tokens scoped to org
 adminOauthClients.openapi(revokeClientRoute, async (c) => {
   const { id: clientId } = c.req.valid("param");
   const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+  // Closure-scoped flag so the rolled-back path can audit its phase-aware
+  // metadata inline without `tapErrorCause` re-emitting a thinner row on the
+  // same error. Pre-fetch failures (and any other unaudited termination)
+  // still fall through to the tapErrorCause emission.
+  let auditedInline = false;
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
@@ -216,6 +335,7 @@ adminOauthClients.openapi(revokeClientRoute, async (c) => {
         ipAddress,
         metadata: { clientId, found: false },
       });
+      auditedInline = true;
       return c.json(
         { error: "not_found", message: "OAuth client not found in this workspace.", requestId },
         404,
@@ -223,43 +343,56 @@ adminOauthClients.openapi(revokeClientRoute, async (c) => {
     }
 
     const clientName = prior[0]!.clientName;
+    const outcome = yield* Effect.promise(() => revokeAtomically(clientId, orgId!));
 
-    // Order: tokens → consent → client. Tokens FK-reference the client; the
-    // refresh token chain is independent of the access token chain, but
-    // both must be gone before the client row drops to keep deletion safe
-    // regardless of the underlying FK ON DELETE policy.
-    const accessTokens = yield* queryEffect<{ id: string }>(
-      `DELETE FROM "oauthAccessToken"
-        WHERE "clientId" = $1 AND "referenceId" = $2
-        RETURNING "id"`,
-      [clientId, orgId!],
-    );
-    const refreshTokens = yield* queryEffect<{ id: string }>(
-      `DELETE FROM "oauthRefreshToken"
-        WHERE "clientId" = $1 AND "referenceId" = $2
-        RETURNING "id"`,
-      [clientId, orgId!],
-    );
-    const consents = yield* queryEffect<{ id: string }>(
-      `DELETE FROM "oauthConsent"
-        WHERE "clientId" = $1 AND "referenceId" = $2
-        RETURNING "id"`,
-      [clientId, orgId!],
-    );
-    yield* queryEffect<{ clientId: string }>(
-      `DELETE FROM "oauthClient"
-        WHERE "clientId" = $1 AND "referenceId" = $2
-        RETURNING "clientId"`,
-      [clientId, orgId!],
-    );
+    if (outcome.status === "race") {
+      // Concurrent revoke won — partial child DELETEs were rolled back so
+      // no stale tokens were left behind. The race row is forensically
+      // distinct from a plain pre-fetch miss; mirrors admin-sessions.ts.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.oauth_client.revoke,
+        targetType: "oauth_client",
+        targetId: clientId,
+        ipAddress,
+        metadata: { clientId, clientName, found: false, race: true },
+      });
+      auditedInline = true;
+      return c.json(
+        { error: "not_found", message: "OAuth client not found in this workspace.", requestId },
+        404,
+      );
+    }
+
+    if (outcome.status === "rolled_back") {
+      // Transaction rolled back. Audit with the phase that tripped + the
+      // scrubbed error message (errorMessage strips pg userinfo and caps
+      // length), then re-fail the Effect so runHandler classifies it to a
+      // 500 with requestId. The `auditedInline` flag suppresses the
+      // tapErrorCause duplicate.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.oauth_client.revoke,
+        targetType: "oauth_client",
+        targetId: clientId,
+        status: "failure",
+        ipAddress,
+        metadata: {
+          clientId,
+          clientName,
+          phase: outcome.phase,
+          error: errorMessage(outcome.error),
+        },
+      });
+      auditedInline = true;
+      return yield* Effect.fail(outcome.error);
+    }
 
     log.info(
       {
         requestId,
         clientId,
         actorId: user?.id,
-        accessTokensRevoked: accessTokens.length,
-        refreshTokensRevoked: refreshTokens.length,
+        accessTokensRevoked: outcome.access,
+        refreshTokensRevoked: outcome.refresh,
       },
       "OAuth client revoked",
     );
@@ -271,25 +404,28 @@ adminOauthClients.openapi(revokeClientRoute, async (c) => {
       metadata: {
         clientId,
         clientName,
-        accessTokensRevoked: accessTokens.length,
-        refreshTokensRevoked: refreshTokens.length,
-        consentRowsRevoked: consents.length,
+        accessTokensRevoked: outcome.access,
+        refreshTokensRevoked: outcome.refresh,
+        consentRowsRevoked: outcome.consent,
       },
     });
 
     return c.json(
-      { success: true, tokensRevoked: accessTokens.length + refreshTokens.length },
+      { success: true, tokensRevoked: outcome.access + outcome.refresh },
       200,
     );
   }).pipe(
     // Pure-interrupt causes (client disconnect, shutdown) leave the outcome
     // indeterminate and are intentionally not audited — same precedent as
-    // `admin-sessions.ts`. All other failures emit a `status: "failure"` row
-    // so forensic queries can pivot on outcome without joining on response
-    // code. `Effect.ignoreLogged` guards against a future regression that
-    // makes `logAdminAction` throw — the original 500 still flows through
-    // to the caller instead of being masked.
+    // F-23 / `admin-sessions.ts`. All other un-audited failures (pre-fetch
+    // throw, unexpected Effect bubble) emit a `status: "failure"` row so
+    // forensic queries can pivot on outcome without joining on response
+    // code. `auditedInline` suppresses duplicate emission for the
+    // rolled-back path. `Effect.ignoreLogged` guards against a future
+    // regression that makes `logAdminAction` throw — the original 500
+    // still flows through to the caller instead of being masked.
     Effect.tapErrorCause((cause) => {
+      if (auditedInline) return Effect.void;
       const err = causeToError(cause);
       if (err === undefined) return Effect.void;
       return Effect.sync(() =>

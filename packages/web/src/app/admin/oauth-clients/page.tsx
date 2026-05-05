@@ -67,6 +67,14 @@ export default function OAuthClientsPage() {
     setRevokeTarget(client);
   }
 
+  function dismissRevokeDialog() {
+    if (revokeMutation.saving) return;
+    // Clear the mutation error state alongside the dialog so a stale failure
+    // doesn't bleed into other surfaces (e.g. on next open) after dismissal.
+    revokeMutation.reset();
+    setRevokeTarget(null);
+  }
+
   const activeCount = clients.filter((c) => !c.disabled).length;
   const totalCount = clients.length;
   const showStat = !loading && !error && listData != null;
@@ -106,13 +114,12 @@ export default function OAuthClientsPage() {
           emptyDescription="Clients appear here when an MCP agent or other OAuth-compliant tool authorizes against this workspace."
           isEmpty={clients.length === 0}
         >
-          <div className="mb-4">
-            <MutationErrorSurface
-              error={revokeMutation.error}
-              feature="OAuth Clients"
-              onRetry={revokeMutation.clearError}
-            />
-          </div>
+          {/*
+            Revoke errors render inside the open dialog (the dialog stays open
+            on failure so the user can see the message and retry). A
+            page-level surface here would render the same error twice — see
+            silent-failure-hunter I2 from PR #2062 review.
+          */}
 
           <section>
             <SectionHeading
@@ -135,7 +142,7 @@ export default function OAuthClientsPage() {
       <Dialog
         open={!!revokeTarget}
         onOpenChange={(open) => {
-          if (!open && !revokeMutation.saving) setRevokeTarget(null);
+          if (!open) dismissRevokeDialog();
         }}
       >
         <DialogContent className="sm:max-w-md">
@@ -155,7 +162,7 @@ export default function OAuthClientsPage() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setRevokeTarget(null)}
+              onClick={dismissRevokeDialog}
               disabled={revokeMutation.saving}
             >
               Cancel

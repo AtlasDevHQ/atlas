@@ -43692,7 +43692,8 @@
                         "type": "object",
                         "properties": {
                           "clientId": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
                           },
                           "clientName": {
                             "type": [
@@ -43703,7 +43704,8 @@
                           "redirectUris": {
                             "type": "array",
                             "items": {
-                              "type": "string"
+                              "type": "string",
+                              "format": "uri"
                             }
                           },
                           "createdAt": {
@@ -43731,7 +43733,8 @@
                             ]
                           },
                           "tokenCount": {
-                            "type": "number"
+                            "type": "integer",
+                            "minimum": 0
                           }
                         },
                         "required": [
@@ -43848,7 +43851,7 @@
           "Admin — OAuth Clients"
         ],
         "summary": "Revoke OAuth client",
-        "description": "Deletes the OAuth client and every outstanding access token, refresh token, and consent record for that client within the active workspace. Standards-compliant clients (Claude Desktop, ChatGPT, Cursor) will need to re-register via DCR after revocation.",
+        "description": "Atomically deletes the OAuth client and every outstanding access token, refresh token, and consent record for that client within the active workspace. Standards-compliant clients (Claude Desktop, ChatGPT, Cursor) will need to re-register via DCR after revocation.",
         "parameters": [
           {
             "schema": {
@@ -43874,7 +43877,8 @@
                       "type": "boolean"
                     },
                     "tokensRevoked": {
-                      "type": "number"
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [

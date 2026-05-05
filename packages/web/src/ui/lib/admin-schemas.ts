@@ -209,15 +209,25 @@ export const ListApiKeysResponseSchema = z.object({
  * token has been issued yet (registered but never used).
  */
 export const OAuthClientSchema = z.object({
-  clientId: z.string(),
+  clientId: z.string().min(1),
   clientName: z.string().nullable(),
-  redirectUris: z.array(z.string()),
+  // OAuth 2.1 / RFC 7591 require absolute URIs; rejecting malformed values
+  // at the parse boundary catches an adapter regression at the API edge
+  // before it renders as a broken row.
+  redirectUris: z.array(z.string().url()),
   createdAt: z.string(),
   updatedAt: z.string().nullable(),
+  // The DB column is nullable but the route normalizes via `Boolean(...)`
+  // — the wire contract is always boolean, never null. Modeling as
+  // `z.boolean()` saves consumers a `client.disabled === true` vs
+  // `!!client.disabled` ambiguity.
   disabled: z.boolean(),
   type: z.string().nullable(),
   lastUsedAt: z.string().nullable(),
-  tokenCount: z.number(),
+  // Counts come from a Postgres COUNT(*) routed through `parseInt(...)` in
+  // the route. `int().nonnegative()` rejects NaN (parseInt of garbage),
+  // negatives, and fractions — defense-in-depth for the route's coercion.
+  tokenCount: z.number().int().nonnegative(),
 });
 
 export const ListOAuthClientsResponseSchema = z.object({

@@ -89,7 +89,7 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
     ).toBe(false);
   });
 
-  test("redirectUris is required and an array of strings", () => {
+  test("redirectUris is required and an array of valid URIs", () => {
     expect(
       ListOAuthClientsResponseSchema.parse({
         clients: [{ ...FIXTURE.clients[0], redirectUris: [] }],
@@ -112,15 +112,103 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
         ],
       }).success,
     ).toBe(false);
+
+    // OAuth 2.1 / RFC 7591 require absolute URIs. A non-URI string slipping
+    // through the API would render as a broken row in the page; reject at
+    // parse time.
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [{ ...FIXTURE.clients[0], redirectUris: ["not-a-url"] }],
+      }).success,
+    ).toBe(false);
   });
 
-  test("tokenCount is a number — string-encoded counts are rejected", () => {
+  test("disabled is required boolean (drift guard)", () => {
+    // The page renders `client.disabled` as a load-bearing branch (badge
+    // text + status kind). A drift to `boolean | undefined` would silently
+    // resolve every client to "not disabled" via Boolean(undefined) → false.
+    expect(
+      ListOAuthClientsResponseSchema.parse({
+        clients: [{ ...FIXTURE.clients[0], disabled: true }],
+      }).clients[0]!.disabled,
+    ).toBe(true);
+
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [{ ...FIXTURE.clients[0], disabled: null }],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [
+          (() => {
+            const { disabled: _omit, ...rest } = FIXTURE.clients[0]!;
+            return rest;
+          })(),
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("type is string | null — null, string, and omission have distinct semantics", () => {
+    expect(
+      ListOAuthClientsResponseSchema.parse({
+        clients: [{ ...FIXTURE.clients[0], type: "public" }],
+      }).clients[0]!.type,
+    ).toBe("public");
+
+    expect(
+      ListOAuthClientsResponseSchema.parse({
+        clients: [{ ...FIXTURE.clients[0], type: null }],
+      }).clients[0]!.type,
+    ).toBeNull();
+
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [
+          (() => {
+            const { type: _omit, ...rest } = FIXTURE.clients[0]!;
+            return rest;
+          })(),
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("clientId rejects empty string", () => {
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [{ ...FIXTURE.clients[0], clientId: "" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("tokenCount is a non-negative integer — strings, NaN, negatives, fractions all rejected", () => {
     // The route hands back `parseInt(r.tokenCount, 10)`. A future regression
     // that forgets the parse and emits a stringly-typed COUNT(*) result
     // would silently render "[object Object]" or NaN — pin the contract.
     expect(
       ListOAuthClientsResponseSchema.safeParse({
         clients: [{ ...FIXTURE.clients[0], tokenCount: "3" }],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [{ ...FIXTURE.clients[0], tokenCount: Number.NaN }],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [{ ...FIXTURE.clients[0], tokenCount: -1 }],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      ListOAuthClientsResponseSchema.safeParse({
+        clients: [{ ...FIXTURE.clients[0], tokenCount: 1.5 }],
       }).success,
     ).toBe(false);
   });

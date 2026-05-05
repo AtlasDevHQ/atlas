@@ -154,7 +154,7 @@ The session lives in memory on the API instance that handled init; behind a mult
 
 ## Audit
 
-A `mcp_session.start` row is written to the workspace's admin action log when a session is established — once per session, not per JSON-RPC frame. The row metadata carries `sessionId`, `orgId`, `clientId` (the registered OAuth client — e.g. `claude-desktop` or a DCR-allocated UUID), `tokenJti` (the JWT ID for forensic lookup), `region`, and the granted scopes.
+A `mcp_session.start` row is written to the workspace's admin action log when a session is established — once per session, not per JSON-RPC frame. The row metadata carries `sessionId`, `orgId`, `clientId` (the registered OAuth client — e.g. `claude-desktop` or a DCR-allocated UUID), and `region`.
 
 OAuth client lifecycle (register, rotate, delete) and token lifecycle (issue, revoke) are recorded by Better Auth's `oauthProvider` plugin in its own tables (`oauthClient`, `oauthAccessToken`, `oauthRefreshToken`, `oauthConsent`).
 

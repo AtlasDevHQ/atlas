@@ -3,7 +3,9 @@
  *
  * Covers the role × mode × enrollment-state matrix:
  *   - managed admin without MFA → 403 with mfa_enrollment_required
- *   - managed admin with MFA → pass-through
+ *   - managed admin with TOTP → pass-through
+ *   - managed admin with passkey only → pass-through (#2082)
+ *   - managed admin with both factors → pass-through
  *   - managed platform_admin without MFA → 403
  *   - managed owner without MFA → 403 (mirrors adminAuth's role admit-list)
  *   - managed member without MFA → pass-through (not enforced for members)
@@ -47,6 +49,7 @@ import type { AuthEnv } from "../middleware";
 interface FakeUserOpts {
   role?: "admin" | "platform_admin" | "member" | "owner";
   twoFactorEnabled?: boolean;
+  passkeyCount?: number;
 }
 
 function fakeAuthResult(opts: FakeUserOpts = {}): AuthResult & { authenticated: true } {
@@ -60,7 +63,10 @@ function fakeAuthResult(opts: FakeUserOpts = {}): AuthResult & { authenticated: 
       label: "test@atlas.dev",
       role,
       activeOrganizationId: "org-1",
-      claims: Object.freeze({ twoFactorEnabled: opts.twoFactorEnabled === true }),
+      claims: Object.freeze({
+        twoFactorEnabled: opts.twoFactorEnabled === true,
+        passkeyCount: opts.passkeyCount ?? 0,
+      }),
     },
   };
 }
@@ -161,6 +167,44 @@ describe("mfaRequired middleware", () => {
 
     const res = await app.request("/admin/anything");
     expect(res.status).toBe(200);
+  });
+
+  it("passes through when an admin user has only a passkey enrolled (no TOTP)", async () => {
+    // #2082 — passkey-only admins must be admitted. The gate accepts any
+    // strong second factor; before this issue the only acceptable factor
+    // was TOTP, which would have rejected this user with a 403.
+    const app = new OpenAPIHono<AuthEnv>();
+    injectAuth(app, fakeAuthResult({ role: "admin", twoFactorEnabled: false, passkeyCount: 1 }));
+    app.use(mfaRequired);
+    app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/admin/anything");
+    expect(res.status).toBe(200);
+  });
+
+  it("passes through when an admin user has both TOTP and passkeys enrolled", async () => {
+    const app = new OpenAPIHono<AuthEnv>();
+    injectAuth(app, fakeAuthResult({ role: "admin", twoFactorEnabled: true, passkeyCount: 2 }));
+    app.use(mfaRequired);
+    app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/admin/anything");
+    expect(res.status).toBe(200);
+  });
+
+  it("blocks when both factors are absent (twoFactorEnabled=false, passkeyCount=0)", async () => {
+    // The both-zero case is the canonical reject — admin with no second
+    // factor of any kind. Asserted explicitly so a regression where
+    // passkeyCount=0 accidentally short-circuits admit can't slip past.
+    const app = new OpenAPIHono<AuthEnv>();
+    injectAuth(app, fakeAuthResult({ role: "admin", twoFactorEnabled: false, passkeyCount: 0 }));
+    app.use(mfaRequired);
+    app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/admin/anything");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("mfa_enrollment_required");
   });
 
   it("passes through when an owner user has MFA enrolled", async () => {
@@ -307,6 +351,48 @@ describe("mfaRequired middleware", () => {
 
     const res = await app.request("/admin/anything");
     expect(res.status).toBe(403);
+  });
+
+  it("treats passkeyCount values that aren't real positive numbers as not-enrolled", async () => {
+    // Symmetric to the twoFactorEnabled-as-string case. A future internal-DB
+    // shape change that surfaces COUNT(*) as a string ("1") instead of an
+    // integer must NOT silently admit users — the resolver in managed.ts
+    // already coerces, but the gate fail-closes as a second line of defense.
+    const cases: Array<{ name: string; value: unknown }> = [
+      { name: "string '1'", value: "1" as unknown as number },
+      { name: "string 'true'", value: "true" as unknown as number },
+      { name: "boolean true", value: true as unknown as number },
+      { name: "NaN", value: Number.NaN },
+      { name: "negative", value: -1 },
+      { name: "zero", value: 0 },
+    ];
+    for (const { value } of cases) {
+      const app = new OpenAPIHono<AuthEnv>();
+      app.use(
+        createMiddleware<AuthEnv>(async (c, next) => {
+          c.set("requestId", "test-req-id");
+          c.set("authResult", {
+            authenticated: true,
+            mode: "managed",
+            user: {
+              id: "user-1",
+              mode: "managed",
+              label: "test@atlas.dev",
+              role: "admin",
+              activeOrganizationId: "org-1",
+              claims: Object.freeze({ twoFactorEnabled: false, passkeyCount: value }),
+            },
+          });
+          c.set("atlasMode", "published");
+          await next();
+        }),
+      );
+      app.use(mfaRequired);
+      app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+      const res = await app.request("/admin/anything");
+      expect(res.status).toBe(403);
+    }
   });
 
   it("returns 500 auth_misconfigured when authResult is missing (middleware-order contract)", async () => {

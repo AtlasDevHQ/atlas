@@ -18,6 +18,7 @@ import { twoFactor } from "better-auth/plugins/two-factor";
 // All pinned to ^1.6.x in package.json — update together (the peer-dep
 // constraint is exact-version per minor on the @better-auth/* side).
 import { apiKey } from "@better-auth/api-key";
+import { passkey } from "@better-auth/passkey";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import { oauthProvider } from "@better-auth/oauth-provider";
@@ -654,6 +655,32 @@ function buildPlugins() {
   plugins.push(
     twoFactor({
       issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
+    }),
+  );
+
+  // Passkeys (WebAuthn) — second supported MFA factor alongside TOTP.
+  // The `mfaRequired` middleware accepts either `twoFactorEnabled === true`
+  // or `passkeyCount > 0` once any user has enrolled at least one passkey
+  // (see `managed.ts:resolveSessionClaims`).
+  //
+  // `rpID` is the WebAuthn Relying Party ID — the registrable domain that
+  // credentials are bound to. Passkeys created against rpID `app.useatlas.dev`
+  // cannot be used against any other origin, which is the phishing-resistance
+  // guarantee. Self-hosted deployments override via `ATLAS_RPID`. White-label
+  // / multi-region SaaS deployments would force re-enrollment if rpID changes
+  // — captured in `2082` for posterity but not a forcing function today.
+  //
+  // `rpName` is the human-readable string the OS surfaces in the passkey
+  // prompt ("Use your saved passkey for <rpName>?"). Default matches the
+  // TOTP issuer string for visual consistency in authenticator apps + OS UI.
+  //
+  // Loaded unconditionally for the same reason as `twoFactor()`: the
+  // backing `passkey` table must always be present so the schema does not
+  // disappear under feet of users who have already enrolled.
+  plugins.push(
+    passkey({
+      rpID: process.env.ATLAS_RPID ?? "app.useatlas.dev",
+      rpName: process.env.ATLAS_RPNAME ?? "Atlas",
     }),
   );
 

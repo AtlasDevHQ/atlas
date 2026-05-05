@@ -35,6 +35,7 @@
     "@atlas/mcp": "workspace:*",
     "@better-auth/api-key": "^1.6.9",
     "@better-auth/oauth-provider": "^1.6.9",
+    "@better-auth/passkey": "^1.6.9",
     "@better-auth/scim": "^1.6.9",
     "@better-auth/stripe": "^1.6.9",
     "@clickhouse/client": "^1.18.2",

@@ -93,14 +93,29 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // via POST /organization/set-active.
   const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
 
-  // Resolve effective role: the user-level role (from admin plugin) may be
-  // "member" even when the user is "owner" of their active org (org plugin
-  // stores membership roles in the `member` table, not the `user` table).
-  // Use the higher of the two so org owners/admins can access the admin console.
-  const effectiveRole = await resolveEffectiveRole(role, userId, activeOrganizationId);
+  // Resolve effective role + passkey count in parallel — both hit the
+  // internal DB but are otherwise independent. Sequencing them would add a
+  // round-trip to every authenticated request that has an active workspace.
+  //
+  // Effective role: the user-level role (from admin plugin) may be "member"
+  // even when the user is "owner" of their active org (org plugin stores
+  // membership roles in the `member` table, not the `user` table). Use the
+  // higher of the two so org owners/admins can access the admin console.
+  //
+  // Passkey count: number of WebAuthn credentials enrolled against this
+  // user. Read by `mfaRequired` (admin-mfa-required.ts) which accepts
+  // either `twoFactorEnabled === true` or `passkeyCount > 0` as proof of a
+  // strong second factor — see #2082.
+  const [effectiveRole, passkeyCount] = await Promise.all([
+    resolveEffectiveRole(role, userId, activeOrganizationId),
+    resolvePasskeyCount(userId),
+  ]);
 
-  // Carry session user fields as claims for RLS policy evaluation
-  const claims: Record<string, unknown> = { ...sessionUser, sub: userId };
+  // Carry session user fields as claims for RLS policy evaluation. The
+  // explicit fields land AFTER the spread so a future Better Auth shape
+  // change can't accidentally overwrite our computed values with raw user
+  // columns of the same name.
+  const claims: Record<string, unknown> = { ...sessionUser, sub: userId, passkeyCount };
   if (activeOrganizationId) {
     claims.org_id = activeOrganizationId;
   }
@@ -159,5 +174,46 @@ async function resolveEffectiveRole(
       "Failed to look up org member role — falling back to user-level role",
     );
     return userRole;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Passkey count resolution (WebAuthn second factor)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count WebAuthn credentials enrolled against this user. Stored in Better
+ * Auth's `passkey` table (managed by `@better-auth/passkey`'s migration —
+ * see `lib/auth/server.ts:buildPlugins`).
+ *
+ * Read by the `mfaRequired` middleware to admit users whose second factor
+ * is a passkey instead of TOTP. Returns 0 when:
+ *   - The internal DB is not configured (self-hosted minimal install).
+ *   - The query fails (transient infra error). Failing closed here is
+ *     deliberate: a stale `passkeyCount > 0` would let an unenrolled user
+ *     bypass the admin gate. Falling back to 0 means a passkey-only user
+ *     hits a 403 during DB blips and can recover by retrying — strictly
+ *     safer than admitting them on a broken read.
+ *
+ * The `::int` cast is required because PostgreSQL's `COUNT(*)` returns
+ * `bigint`, which `pg` surfaces as a string in JS. Casting to `int` keeps
+ * the return type a JS number and avoids dual-typed handling.
+ */
+async function resolvePasskeyCount(userId: string): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  try {
+    const rows = await internalQuery<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM passkey WHERE "userId" = $1`,
+      [userId],
+    );
+    const raw = rows[0]?.count;
+    const count = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(count) && count >= 0 ? count : 0;
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), userId },
+      "Failed to look up passkey count — treating as 0; passkey-only users will be gated until the read recovers",
+    );
+    return 0;
   }
 }

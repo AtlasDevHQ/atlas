@@ -340,4 +340,58 @@ describe("validateManaged()", () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // passkeyCount claims propagation (#2082)
+  //
+  // Read by the `mfaRequired` middleware to admit passkey-only admins. The
+  // claim must always be present — gating logic relies on the strict
+  // `typeof === "number"` check to reject undefined / string drift, so a
+  // missing field would silently lock out every passkey-enrolled admin.
+  // -------------------------------------------------------------------------
+
+  describe("passkeyCount claim", () => {
+    it("populates passkeyCount: 0 in claims when internal DB is unavailable", async () => {
+      // beforeEach() unsets DATABASE_URL → hasInternalDB() returns false →
+      // resolvePasskeyCount short-circuits to 0. That 0 must still land in
+      // claims so the gate can read it instead of getting undefined.
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: { id: "sess_abc", userId: "usr_123" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.claims?.passkeyCount).toBe(0);
+        expect(typeof result.user.claims?.passkeyCount).toBe("number");
+      }
+    });
+
+    it("passkeyCount survives the spread-then-overwrite contract in claims", async () => {
+      // managed.ts spreads `sessionUser` first, then writes computed fields
+      // (sub, passkeyCount, org_id) on top — so a future Better Auth shape
+      // change that puts a stray `passkeyCount` on the user object can't
+      // overwrite the resolver's authoritative value.
+      mockGetSession.mockResolvedValueOnce({
+        user: {
+          id: "usr_123",
+          email: "alice@example.com",
+          // hostile drift: a Better Auth user object that already carries a
+          // passkeyCount claim with the wrong shape.
+          passkeyCount: "9999" as unknown as number,
+        },
+        session: { id: "sess_abc", userId: "usr_123" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        // Computed value (0) wins, not the spread "9999".
+        expect(result.user.claims?.passkeyCount).toBe(0);
+      }
+    });
+  });
 });

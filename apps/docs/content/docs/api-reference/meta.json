@@ -26,6 +26,7 @@
     "admin-migration",
     "admin-mode",
     "admin-model-config",
+    "admin-oauth-clients",
     "admin-onboarding-emails",
     "admin-organizations",
     "admin-overview",

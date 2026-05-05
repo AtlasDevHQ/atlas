@@ -444,19 +444,14 @@ describe("logAdminAction() — system actor (F-27)", () => {
 });
 
 /**
- * #2082 PR C.3 — trust-device identifier on the admin audit row.
- *
- * `extractTrustDeviceIdentifier` runs once in middleware and surfaces the
- * cookie payload via the AsyncLocalStorage RequestContext. Auto-resolution
- * here means every existing `logAdminAction` call site forensically records
- * which trusted browser an admin used — no per-call wiring across the 269
- * existing emissions.
+ * Trust-device identifier on the admin audit row.
  *
  * Tested separately from `ipAddress` because the resolution path is
  * different: ipAddress is always caller-supplied (per-handler header
- * choice), trustDeviceIdentifier flows through context.
+ * choice), trustDeviceIdentifier flows through the AsyncLocalStorage
+ * RequestContext populated once in middleware.
  */
-describe("logAdminAction() — trust-device identifier (#2082 C.3)", () => {
+describe("logAdminAction() — trust-device identifier", () => {
   const origDbUrl = process.env.DATABASE_URL;
 
   beforeEach(() => {
@@ -592,9 +587,8 @@ describe("logAdminAction() — trust-device identifier (#2082 C.3)", () => {
   });
 
   it("leaves metadata null when no cookie is present and no caller metadata", () => {
-    // Backwards compat: pre-C.3 audit rows had `metadata = null` when the
-    // caller didn't pass any. Adding C.3 must not flip every cookie-less
-    // request to `metadata = "{}"` — that would churn forensic queries
+    // Backwards compat: a cookie-less request must keep `metadata = null`,
+    // not flip to `metadata = "{}"` — that would churn forensic queries
     // that distinguish "no metadata" from "empty metadata".
     enableInternalDB();
 

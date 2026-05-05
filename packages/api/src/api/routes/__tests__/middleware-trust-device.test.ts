@@ -1,14 +1,10 @@
 /**
- * #2082 PR C.3 — verify the trust-device cookie threads through the auth
- * middlewares onto the Hono context (`c.get("trustDeviceIdentifier")`)
- * AND through `withRequestContext` so `logAdminAction` can pick it up
- * via `getRequestContext()`.
- *
  * Tests the orchestration in `setTrustDeviceIdentifier()` indirectly —
  * the helper is private so we drive each public middleware (`adminAuth`,
  * `platformAdminAuth`, `standardAuth`) with a fake request and assert the
- * downstream context state. Auth itself is mocked because the cookie
- * extraction runs after auth succeeds.
+ * downstream context state, plus the thread-through to `withRequestContext`
+ * via the `requestContext` middleware. Auth itself is mocked because the
+ * cookie extraction runs after auth succeeds.
  */
 
 import { describe, it, expect, mock, beforeEach } from "bun:test";
@@ -83,6 +79,7 @@ const {
   platformAdminAuth,
   standardAuth,
   requestContext,
+  withRequestId,
 } = await import("../middleware");
 
 // ---------------------------------------------------------------------------
@@ -237,6 +234,47 @@ describe("requestContext — propagates trustDeviceIdentifier into AsyncLocalSto
     });
 
     const lastCall = withRequestContextCalls[withRequestContextCalls.length - 1];
+    expect(lastCall.trustDeviceIdentifier).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withRequestId — covers the admin.ts path (auth runs inline per-handler,
+// so the cookie has to be parsed by this lightweight middleware before the
+// route preamble has access to authResult)
+// ---------------------------------------------------------------------------
+
+describe("withRequestId — populates trustDeviceIdentifier on Hono context + ALS", () => {
+  it("sets c.get('trustDeviceIdentifier') from a signed cookie", async () => {
+    const c = fakeContext(
+      buildRequest("better-auth.trust_device=hmac!trust-device-via-witness"),
+    );
+
+    await withRequestId(c as never, async () => {});
+
+    expect(c.get("trustDeviceIdentifier")).toBe("trust-device-via-witness");
+  });
+
+  it("threads trustDeviceIdentifier into withRequestContext", async () => {
+    const c = fakeContext(
+      buildRequest("better-auth.trust_device=hmac!trust-device-witness-2"),
+    );
+
+    await withRequestId(c as never, async () => {});
+
+    const lastCall =
+      withRequestContextCalls[withRequestContextCalls.length - 1];
+    expect(lastCall.trustDeviceIdentifier).toBe("trust-device-witness-2");
+  });
+
+  it("passes undefined when no cookie is present", async () => {
+    const c = fakeContext(buildRequest(null));
+
+    await withRequestId(c as never, async () => {});
+
+    expect(c.get("trustDeviceIdentifier")).toBeUndefined();
+    const lastCall =
+      withRequestContextCalls[withRequestContextCalls.length - 1];
     expect(lastCall.trustDeviceIdentifier).toBeUndefined();
   });
 });

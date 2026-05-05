@@ -39,17 +39,11 @@ export interface AdminActionEntry {
   /** Client IP address (extracted from request headers by caller). */
   ipAddress?: string | null;
   /**
-   * Trust-device identifier from the `<prefix>.trust_device` cookie on the
-   * incoming request. Surfaced into `admin_action_log.metadata.trustDeviceIdentifier`
-   * (and the pino line as a top-level field) so audit reviewers can pivot on
-   * which trusted browser an admin used.
-   *
    * Auto-resolved from the AsyncLocalStorage request context populated by
    * the auth middlewares — callers don't need to pass it explicitly.
-   * Explicit values still win, mirroring the `metadata` precedence rule
-   * (caller-supplied keys are not overwritten).
-   *
-   * Forensic-only — never used as an authorization input.
+   * Explicit values still win, mirroring the `metadata` precedence rule.
+   * Surfaced into `admin_action_log.metadata.trustDeviceIdentifier` and
+   * the pino line as a top-level field. See `lib/auth/trust-device-cookie.ts`.
    */
   trustDeviceIdentifier?: string;
   /**

@@ -74,13 +74,7 @@ export type AuthEnv = Env & {
     authResult: AuthResult & { authenticated: true };
     requestId: string;
     atlasMode: import("@useatlas/types/auth").AtlasMode;
-    /**
-     * Trust-device identifier from the `<prefix>.trust_device` cookie on the
-     * incoming request, or undefined when the cookie is absent / malformed.
-     * Set once by `adminAuth` / `platformAdminAuth` / `standardAuth` so route
-     * handlers and the audit logger don't re-parse the cookie on every call.
-     * Forensic-only — never used as an authorization input.
-     */
+    /** See `lib/auth/trust-device-cookie.ts`. Set once by the auth middlewares; reads are uniform. */
     trustDeviceIdentifier: string | undefined;
   };
 };
@@ -450,18 +444,9 @@ export function resolveMode(
 }
 
 /**
- * Read the trust-device cookie once per request and surface it on the Hono
- * context. Downstream consumers:
- *
- * - `requestContext` middleware threads it into `withRequestContext` so
- *   `logAdminAction` can include it in `admin_action_log` metadata without
- *   the 269 call sites needing to know it exists.
- * - The Effect bridge (`buildContextLayer` in `lib/effect/hono.ts`) mirrors
- *   it onto `AuthContext` for Effect-based handlers.
- *
- * Cookie absence is the dominant case (BYOT, simple-key, fresh sign-in
- * without opt-in) — `extractTrustDeviceIdentifier` returns null and we
- * write `undefined`, never a sentinel string.
+ * Surface the parsed cookie identifier on Hono context once, so the audit
+ * logger and Effect bridge don't re-parse per call. Always sets the key —
+ * `undefined` when absent — so reads are uniform.
  */
 function setTrustDeviceIdentifier(c: {
   req: { raw: Request };
@@ -524,9 +509,19 @@ export const requestContext = createMiddleware<AuthEnv>(async (c, next) => {
  * Generates a requestId and wraps downstream in withRequestContext.
  * Does NOT run auth — use when auth is handled inline in the handler
  * (e.g. admin.ts which mixes admin and non-admin routes).
+ *
+ * The trust-device cookie is parsed here too — it's available pre-auth and
+ * having it on the AsyncLocalStorage context from the start means
+ * `logAdminAction` picks it up without per-handler ALS mutation. The
+ * `adminAuth` family does the same via `setTrustDeviceIdentifier`; this
+ * keeps both paths symmetric.
  */
 export const withRequestId = createMiddleware<AuthEnv>(async (c, next) => {
   const requestId = crypto.randomUUID();
   c.set("requestId", requestId);
-  await withRequestContext({ requestId }, () => next());
+  const cookieHeader = c.req.raw.headers.get("cookie");
+  const trustDeviceIdentifier =
+    extractTrustDeviceIdentifier(cookieHeader) ?? undefined;
+  c.set("trustDeviceIdentifier", trustDeviceIdentifier);
+  await withRequestContext({ requestId, trustDeviceIdentifier }, () => next());
 });

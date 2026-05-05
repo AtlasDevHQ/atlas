@@ -15,7 +15,6 @@ import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
 import { withRequestId, resolveMode, parseModeFromCookie } from "./middleware";
-import { extractTrustDeviceIdentifier } from "@atlas/api/lib/auth/trust-device-cookie";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -147,22 +146,11 @@ async function adminAuthAndContext(
   }
   // Bind user identity into the existing AsyncLocalStorage context so
   // downstream log lines include userId. The context was created by
-  // withRequestId middleware with { requestId } only — mutating is safe
-  // because each request has its own context object. Same path also
-  // surfaces the trust-device identifier so `logAdminAction` can record
-  // which trusted browser an admin used (parity with the
-  // adminAuth/standardAuth middleware paths in `./middleware.ts` —
-  // admin.ts uses `withRequestId` which doesn't run auth, so neither
-  // value is set until the per-handler preamble resolves).
+  // withRequestId middleware with { requestId, trustDeviceIdentifier }
+  // — mutating is safe because each request has its own context object.
   const ctx = getRequestContext();
   if (ctx) {
-    const ctxRecord = ctx as unknown as Record<string, unknown>;
-    ctxRecord.user = authResult.user;
-    const cookieHeader = c.req.raw.headers.get("cookie");
-    const trustDeviceIdentifier = extractTrustDeviceIdentifier(cookieHeader);
-    if (trustDeviceIdentifier) {
-      ctxRecord.trustDeviceIdentifier = trustDeviceIdentifier;
-    }
+    (ctx as unknown as Record<string, unknown>).user = authResult.user;
   }
 
   // Resolve and publish atlas mode for downstream handlers. getAtlasMode(c)

@@ -749,11 +749,7 @@ export interface AuthContextShape {
   readonly user: AtlasUser | undefined;
   /** Convenience: active org ID from user, or undefined. */
   readonly orgId: string | undefined;
-  /**
-   * Trust-device identifier from the `<prefix>.trust_device` cookie, if any.
-   * Forensic-only — never read as an authorization input. See
-   * `lib/auth/trust-device-cookie.ts` for the parsing contract.
-   */
+  /** See `lib/auth/trust-device-cookie.ts`. */
   readonly trustDeviceIdentifier: string | undefined;
 }
 

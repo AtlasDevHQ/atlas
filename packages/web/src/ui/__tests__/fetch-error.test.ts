@@ -84,6 +84,41 @@ describe("extractFetchError", () => {
     const err = await extractFetchError(res);
     expect(err).toEqual({ message: "HTTP 500", status: 500, requestId: "req-456" });
   });
+
+  test("extracts enrollmentUrl alongside mfa_enrollment_required code", async () => {
+    const res = mockResponse(403, {
+      error: "mfa_enrollment_required",
+      message: "Two-factor required.",
+      enrollmentUrl: "/admin/settings/security",
+    });
+    const err = await extractFetchError(res);
+    expect(err).toEqual({
+      message: "Two-factor required.",
+      status: 403,
+      code: "mfa_enrollment_required",
+      enrollmentUrl: "/admin/settings/security",
+    });
+  });
+
+  test("ignores empty-string enrollmentUrl", async () => {
+    const res = mockResponse(403, {
+      error: "mfa_enrollment_required",
+      message: "x",
+      enrollmentUrl: "",
+    });
+    const err = await extractFetchError(res);
+    expect(err.enrollmentUrl).toBeUndefined();
+  });
+
+  test("ignores non-string enrollmentUrl", async () => {
+    const res = mockResponse(403, {
+      error: "mfa_enrollment_required",
+      message: "x",
+      enrollmentUrl: 42,
+    });
+    const err = await extractFetchError(res);
+    expect(err.enrollmentUrl).toBeUndefined();
+  });
 });
 
 describe("friendlyError", () => {

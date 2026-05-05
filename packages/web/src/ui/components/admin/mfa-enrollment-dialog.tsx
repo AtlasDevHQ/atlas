@@ -1,16 +1,14 @@
 "use client";
 
 /**
- * Modal that fires when an admin/owner/platform_admin session hits an
- * `mfa_enrollment_required` 403 anywhere on `/admin/*` or
- * `/admin/platform/*`. State lives in {@link MfaGateContext} — the
- * `useAdminFetch` / `useAdminMutation` hooks dispatch the trigger; this
+ * Modal that fires when an admin session hits an `mfa_enrollment_required`
+ * 403 anywhere on `/admin/*` or `/admin/platform/*`. State lives in
+ * {@link MfaGateContext}; the admin hooks dispatch the trigger and this
  * component renders the modal off the same context.
  *
  * Non-dismissable by design (matches `ChangePasswordDialog`): the user
- * either enrolls or signs out. Closing via Escape / outside-click is
- * suppressed, and there is no close X. Re-mounting on every page keep is
- * deliberate — the modal is the single intended exit from the gate state.
+ * either enrolls or signs out. Escape / outside-click are suppressed, no
+ * close X.
  */
 
 import { ShieldAlert } from "lucide-react";
@@ -37,10 +35,8 @@ export function MfaEnrollmentDialog() {
 
   function handleEnroll() {
     if (!state) return;
-    // Clear gate state before navigating so the destination page renders
-    // without the dialog stacked on top — the security page is its own
-    // surface and the skip-on-security-page rule in the provider keeps
-    // the gate from re-arming there.
+    // Clear before navigating — destination's own fetches must not re-arm
+    // the dialog (the provider's skip-on-security-page rule covers that).
     clear();
     router.push(state.enrollmentUrl);
   }
@@ -48,8 +44,14 @@ export function MfaEnrollmentDialog() {
   function handleSignOut() {
     void authClient
       .signOut()
-      .then(() => window.location.assign("/login"))
-      .catch(() => window.location.assign("/login"));
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Recovery is the same either way (navigate to /login), but log the
+        // failure so an underlying issue (auth proxy 5xx, broken plugin
+        // chain, network error) doesn't disappear into a silent redirect.
+        console.warn("MFA dialog sign-out failed; navigating to /login anyway:", msg);
+      })
+      .finally(() => window.location.assign("/login"));
   }
 
   return (

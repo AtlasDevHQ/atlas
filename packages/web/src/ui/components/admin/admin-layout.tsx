@@ -37,11 +37,9 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
   // Shared with AtlasChat — TanStack deduplicates to a single request.
   const { data, isPending, isError } = usePasswordStatus(!!session.data?.user);
 
-  // Defensive: dispatch the MFA gate when password-status comes back as
-  // `mfa-required`. The route isn't gated today (admin.ts parent router has
-  // no `mfaRequired` middleware), so this branch only fires if someone moves
-  // the route or extends the gate later — without this hook, those changes
-  // would silently re-introduce the #2081 "Access denied" misrender.
+  // The password-status endpoint is not behind `mfaRequired` today — the
+  // dispatch is defensive so the gate fires correctly if that ever changes,
+  // instead of falling through to the denied Card below.
   useEffect(() => {
     if (data?.kind === "mfa-required") {
       trigger(data.enrollmentUrl);
@@ -73,9 +71,7 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
   }
 
   // Signed in but not admin — inline forbidden UI using shadcn.
-  // The `mfa-required` branch falls through to the normal layout so the
-  // dialog (mounted below) is the one that gates access; rendering this
-  // Card on top would be the same misleading "Access denied" UX #2081 fixed.
+  // mfa-required falls through — the dialog below is the gating UI, not this Card.
   if (adminCheck === "denied") {
     return (
       <main id="main" tabIndex={-1} className="flex h-full items-center justify-center bg-background p-4">

@@ -7,10 +7,12 @@
  * (e.g. `"enterprise_required"`). Prefer branching on this over string-matching
  * the human-facing `message`.
  *
- * `enrollmentUrl` carries the server-provided redirect target for typed
- * gate codes that ask the client to send the user somewhere (today only
- * `mfa_enrollment_required`). Generic enough that a future
- * `payment_required` 402 can reuse the same field for an upgrade URL.
+ * `enrollmentUrl` is enrollment-specific — populated only when `code` is
+ * `mfa_enrollment_required`. A future typed code that needs its own
+ * redirect target (e.g. `payment_required` → upgrade URL) should add a
+ * dedicated field rather than reuse this one. Reusing the field for a
+ * non-enrollment redirect would mislead readers and shadow the existing
+ * one when both codes coexist on the wire.
  */
 export interface FetchError {
   message: string;
@@ -143,22 +145,12 @@ export function friendlyErrorOrNull(err: FetchError | null | undefined): string 
 /**
  * Convert a FetchError into a user-friendly message.
  *
- * **Precedence — server message wins.** When the API returns a non-empty
- * body message (paired with a typed `code`, e.g. `mfa_enrollment_required`,
- * `enterprise_required`, `forbidden_role`), that text reaches the user
- * verbatim — the alternative was the false "Admin role required" lie that
- * #2081 fixed (an unenrolled admin saw a role-failure message even though
- * the actual cause was a missing second factor).
- *
- * Canned 401/403/404/503 copy is the fallback for HTTP errors whose body
- * is empty or non-JSON (`extractFetchError` substitutes `HTTP {status}` in
- * that case — short-circuit the substitute back to the friendly text).
- *
- * Status-code mappings stay status-only (not code-only) so unknown 4xx/5xx
- * with empty bodies still get reasonable copy; a dedicated `code` branch
- * for one error would force every future code to opt in or get the canned
- * fallback. Server-authored typed messages are the right shape — keep the
- * API surface focused there, not in this file.
+ * Precedence: a non-empty server-typed message wins over the canned
+ * status copy. `extractFetchError` only populates `message` from a real
+ * body field, so any string here is server-authored — render it verbatim.
+ * The status-code branches are the empty-body fallback;
+ * `extractFetchError` substitutes `HTTP {status}` there, which
+ * `isHttpStatusFallback` round-trips back to the friendly text.
  */
 export function friendlyError(err: FetchError): string {
   // Schema mismatch only wins for client-side parse failures (status undefined),
@@ -193,11 +185,6 @@ export function friendlyError(err: FetchError): string {
   return appendRequestId(msg, err.requestId);
 }
 
-/**
- * Detect the `HTTP {status}` substitute that {@link extractFetchError}
- * produces when the response body has no usable message field. Anything
- * else is real server text and should reach the user verbatim.
- */
 function isHttpStatusFallback(message: string, status: number): boolean {
   return message === `HTTP ${status}`;
 }

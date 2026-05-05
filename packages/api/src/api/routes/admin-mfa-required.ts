@@ -47,7 +47,7 @@
  *    independent of this middleware.
  *
  * Member-role users are NEVER gated. The enrollment surface is available
- * to them voluntarily; the policy in this milestone is admin-only.
+ * to them voluntarily; the policy is admin-only.
  */
 
 import type { Context } from "hono";

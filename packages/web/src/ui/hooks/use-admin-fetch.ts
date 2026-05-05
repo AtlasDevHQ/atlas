@@ -12,13 +12,9 @@ import { useMfaGateOptional } from "@/ui/components/admin/mfa-gate-context";
 // compatibility. New code should import directly from @/ui/lib/fetch-error.
 export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
 
-/**
- * Default redirect target when the server didn't include `enrollmentUrl`
- * on the `mfa_enrollment_required` body. Mirrors `ENROLLMENT_URL` in
- * `packages/api/src/api/routes/admin-mfa-required.ts` — drift between the
- * two is a one-line fix when the server-side path moves, so a shared
- * source of truth isn't worth the cross-package import.
- */
+// Mirrors ENROLLMENT_URL in admin-mfa-required.ts; cross-package import
+// not worth it for one path. Used only when the server response body
+// lacks `enrollmentUrl`.
 const DEFAULT_ENROLLMENT_URL = "/admin/settings/security";
 
 /**
@@ -47,10 +43,8 @@ export function useAdminFetch<T>(
   const credentialsRef = useRef(credentials);
   credentialsRef.current = credentials;
 
-  // MFA gate dispatcher — `useMfaGateOptional` returns a no-op gate when
-  // the provider isn't mounted (e.g. embedded chat surfaces), so this hook
-  // remains safe outside the admin tree. Capture in a ref so the queryFn
-  // can dispatch without being torn apart by render churn.
+  // Optional gate: returns a no-op when the provider isn't mounted (chat
+  // surfaces). Ref keeps the queryFn stable.
   const mfaGate = useMfaGateOptional();
   const mfaGateRef = useRef(mfaGate);
   mfaGateRef.current = mfaGate;
@@ -86,10 +80,8 @@ export function useAdminFetch<T>(
 
       if (!res.ok) {
         const fetchError = await extractFetchError(res);
-        // Dispatch the MFA gate before throwing so the dialog opens even
-        // for in-flight queries — the thrown error still surfaces in the
-        // page's `error` state, but with the dialog mounted on top the
-        // friendly message becomes informational rather than the only UI.
+        // Open the dialog before throwing; the thrown error still surfaces
+        // in the page's error state.
         if (fetchError.code === "mfa_enrollment_required") {
           mfaGateRef.current.trigger(
             fetchError.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,

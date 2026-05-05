@@ -353,10 +353,6 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
     }
     reset();
     onChange?.();
-    // If the user landed here via the MFA gate, send them back to where
-    // they were trying to go. `consumeOriginPath` reads + clears the
-    // sessionStorage slot atomically; a null return means they navigated
-    // here directly (settings menu) and stays on the security page.
     // Skip self-redirects so a fresh enrollment from /admin/settings/security
     // doesn't no-op into a router.push to the same path.
     const origin = consumeOriginPath();

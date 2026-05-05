@@ -5,13 +5,9 @@ import { useAtlasConfig } from "@/ui/context";
 
 /**
  * Discriminated result so consumers can distinguish a "not admin" 403 from
- * an "MFA enrollment required" 403 — same status code, different UX.
- *
- * Today `/api/v1/admin/me/password-status` is mounted on the parent admin
- * router (admin.ts) which is NOT gated by `mfaRequired`, so the
- * `mfa-required` branch is defensive: if the route ever moves or the gate
- * extends, AdminLayout would otherwise render the bad "Access denied"
- * Card on a missing-second-factor admin (the symptom #2081 fixed).
+ * an "MFA enrollment required" 403. The `mfa-required` branch is defensive
+ * — the password-status endpoint is not currently behind `mfaRequired`,
+ * but classifying the typed body keeps AdminLayout correct if that changes.
  */
 export type PasswordStatusResult =
   | { kind: "allowed"; passwordChangeRequired: boolean }
@@ -61,7 +57,8 @@ export function usePasswordStatus(enabled: boolean) {
         try {
           body = (await res.json()) as MfaErrorBody;
         } catch {
-          // Non-JSON body — fall through to denied.
+          // intentionally ignored: non-JSON 403 body falls through to
+          // `denied`, the safer default for an unparseable forbidden response.
         }
         if (body.error === "mfa_enrollment_required") {
           return {

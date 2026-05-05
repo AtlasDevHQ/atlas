@@ -1,23 +1,18 @@
 "use client";
 
 /**
- * MFA enrollment gate state — shared across `useAdminFetch` /
- * `useAdminMutation` (which detect `mfa_enrollment_required` 403s) and the
- * dialog mounted in `AdminLayout` (which renders the modal). Keeps the
- * dispatch path React-idiomatic and testable: hooks call
- * `useMfaGate().trigger(...)`, the dialog reads from the same context, no
- * `window` events flying around. See #2081.
+ * Shared state for the MFA enrollment gate. Hook layer dispatches via
+ * `trigger()`; `MfaEnrollmentDialog` reads the same state and renders the
+ * modal.
  *
- * The provider also handles two policies that don't belong in either the
- * hook layer or the dialog:
+ * Two policies that don't belong in either the hook layer or the dialog:
  *
  * 1. **Skip on the enrollment page.** When pathname starts with
- *    `/admin/settings/security`, `trigger` is a no-op. Otherwise the
- *    page's own pre-enroll fetches (which may transitively go through
- *    `useAdminFetch` someday) would re-arm the dialog and trap the user
- *    on the page they are already on.
+ *    `/admin/settings/security`, `trigger` is a no-op. Otherwise a
+ *    pre-enroll fetch on that page could re-arm the dialog and trap the
+ *    user on the page they need to complete enrollment on.
  * 2. **Capture origin path for redirect-back.** Stash the URL that fired
- *    the gate into `sessionStorage` so the security page can bounce the
+ *    the gate in `sessionStorage` so the security page can bounce the
  *    user back after enrollment completes. `consumeOriginPath()` reads +
  *    clears the slot atomically.
  */
@@ -58,12 +53,7 @@ export interface MfaGateContextValue {
 
 const MfaGateContext = createContext<MfaGateContextValue | null>(null);
 
-/**
- * Read + clear the origin path captured when the gate fired. Called by the
- * security page after enrollment so the user lands back where they were.
- * Returns `null` when no origin was stashed (e.g. the user navigated to
- * `/admin/settings/security` directly).
- */
+/** Read + clear the origin path. Null when no origin was captured (direct nav). */
 export function consumeOriginPath(): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -73,8 +63,8 @@ export function consumeOriginPath(): string | null {
     }
     return value;
   } catch {
-    // sessionStorage can throw in private browsing on some browsers.
-    // The redirect-back is a UX nicety — fail open.
+    // intentionally ignored: sessionStorage throws in private browsing on
+    // some browsers; the redirect-back is a UX nicety, fail open.
     return null;
   }
 }
@@ -99,8 +89,9 @@ export function MfaGateProvider({ children }: { children: ReactNode }) {
             const origin = pathname ?? window.location.pathname;
             window.sessionStorage.setItem(ORIGIN_PATH_KEY, origin);
           } catch {
-            // sessionStorage write can throw in private mode — the dialog
-            // still opens, the user just doesn't get the redirect-back nicety.
+            // intentionally ignored: sessionStorage write can throw in
+            // private mode; the dialog still opens, the user just doesn't
+            // get the redirect-back nicety.
           }
         }
         return { enrollmentUrl };
@@ -152,6 +143,19 @@ export function useMfaGateOptional(): MfaGateContextValue {
 
 const NOOP_GATE: MfaGateContextValue = {
   state: null,
-  trigger: () => {},
+  trigger: (enrollmentUrl: string) => {
+    // The optional variant exists so non-admin surfaces (chat, embedded
+    // widget) can use the admin hooks without a provider. But an admin
+    // page that forgot to mount the provider would also land here and
+    // silently never open the dialog — surface that wiring bug in dev
+    // builds without changing runtime behavior. Production stays silent
+    // so the no-op stays cheap on the embedded path.
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        `[mfa-gate] trigger called outside MfaGateProvider — dialog won't open. ` +
+          `enrollmentUrl=${enrollmentUrl}. Mount <MfaGateProvider> in this tree if the dialog UX is desired.`,
+      );
+    }
+  },
   clear: () => {},
 };

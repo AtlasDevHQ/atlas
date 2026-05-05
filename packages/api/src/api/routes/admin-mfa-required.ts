@@ -4,7 +4,9 @@
  * Delivers the admin-MFA promise from `/privacy` §9 + `/dpa` Annex II
  * (#1925). When a user with role `admin`, `owner`, or `platform_admin`
  * authenticates against an admin router, this middleware refuses to
- * serve any route until they have enrolled a TOTP second factor.
+ * serve any route until they have enrolled at least one strong second
+ * factor — either TOTP via Better Auth's `twoFactor` plugin, or a WebAuthn
+ * passkey via `@better-auth/passkey`.
  *
  * Apply downstream of {@link adminAuth} or {@link platformAdminAuth}: this
  * middleware reads `c.get("authResult")` and never re-authenticates.
@@ -80,20 +82,26 @@ export const ENROLLMENT_URL = "/admin/settings/security";
 export const MFA_ENROLLMENT_REQUIRED = "mfa_enrollment_required";
 
 /**
- * Read `twoFactorEnabled` off the auth result. Better Auth's two-factor
- * plugin adds the field to the `user` table; `managed.ts` spreads the
- * session user object into `claims` (see `claims = { ...sessionUser, sub }`),
- * so the field lands here without any extra wiring.
+ * Decide whether the session has any acceptable second factor enrolled.
  *
- * Treat anything other than the strict boolean `true` as not-enabled —
- * the safer default. A `1` / `"true"` / wrapped object from a future
- * Better Auth shape change must continue to fail closed.
+ * Two sources, both injected into `claims` by `managed.ts`:
+ *   - `twoFactorEnabled: boolean` — TOTP (Better Auth `twoFactor` plugin).
+ *     Rides on the `user` table, lands in claims via `...sessionUser` spread.
+ *   - `passkeyCount: number` — count of WebAuthn credentials, looked up
+ *     from the `passkey` table by `resolvePasskeyCount` (managed.ts).
+ *
+ * Defensive narrowing on both fields: only the strict boolean `true` opens
+ * the TOTP path, only a positive `number` opens the passkey path. A future
+ * Better Auth shape change that returns `"true"` / `"1"` / wrapped objects
+ * must continue to fail closed — admitting an unenrolled admin is a worse
+ * outcome than gating one extra retry.
  */
-function isTwoFactorEnabled(c: Context<AuthEnv>): boolean {
-  const authResult = c.get("authResult");
-  const claims = authResult?.user?.claims;
+function isMfaEnrolled(c: Context<AuthEnv>): boolean {
+  const claims = c.get("authResult")?.user?.claims;
   if (!claims) return false;
-  return claims.twoFactorEnabled === true;
+  if (claims.twoFactorEnabled === true) return true;
+  const count = claims.passkeyCount;
+  return typeof count === "number" && count > 0;
 }
 
 /**
@@ -152,7 +160,7 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
     return;
   }
 
-  if (isTwoFactorEnabled(c)) {
+  if (isMfaEnrolled(c)) {
     await next();
     return;
   }
@@ -169,7 +177,7 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
     {
       error: MFA_ENROLLMENT_REQUIRED,
       message:
-        "Two-factor authentication is required for admin accounts. Enroll a TOTP authenticator to continue.",
+        "Two-factor authentication is required for admin accounts. Enroll an authenticator app or passkey to continue.",
       enrollmentUrl: ENROLLMENT_URL,
       requestId,
     },

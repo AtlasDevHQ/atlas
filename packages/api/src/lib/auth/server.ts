@@ -18,6 +18,7 @@ import { twoFactor } from "better-auth/plugins/two-factor";
 // All pinned to ^1.6.x in package.json — update together (the peer-dep
 // constraint is exact-version per minor on the @better-auth/* side).
 import { apiKey } from "@better-auth/api-key";
+import { passkey } from "@better-auth/passkey";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import { oauthProvider } from "@better-auth/oauth-provider";
@@ -654,6 +655,17 @@ function buildPlugins() {
   plugins.push(
     twoFactor({
       issuer: process.env.ATLAS_MFA_ISSUER ?? "Atlas",
+    }),
+  );
+
+  // Passkeys — loaded unconditionally (see `twoFactor()` above for rationale:
+  // schema must persist for already-enrolled users). Changing `rpID` after
+  // enrollment invalidates every existing passkey, so the default is fixed
+  // and self-hosted overrides go through `ATLAS_RPID` / `ATLAS_RPNAME`.
+  plugins.push(
+    passkey({
+      rpID: process.env.ATLAS_RPID ?? "app.useatlas.dev",
+      rpName: process.env.ATLAS_RPNAME ?? "Atlas",
     }),
   );
 

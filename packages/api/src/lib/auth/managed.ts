@@ -93,14 +93,16 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // via POST /organization/set-active.
   const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
 
-  // Resolve effective role: the user-level role (from admin plugin) may be
-  // "member" even when the user is "owner" of their active org (org plugin
-  // stores membership roles in the `member` table, not the `user` table).
-  // Use the higher of the two so org owners/admins can access the admin console.
-  const effectiveRole = await resolveEffectiveRole(role, userId, activeOrganizationId);
+  // Both queries hit the internal DB but are independent — parallelize so
+  // every authenticated request doesn't pay two sequential round-trips.
+  const [effectiveRole, passkeyCount] = await Promise.all([
+    resolveEffectiveRole(role, userId, activeOrganizationId),
+    resolvePasskeyCount(userId),
+  ]);
 
-  // Carry session user fields as claims for RLS policy evaluation
-  const claims: Record<string, unknown> = { ...sessionUser, sub: userId };
+  // Computed fields land AFTER the spread so a session-user field can't
+  // shadow our authoritative claims (asserted in managed.test.ts).
+  const claims: Record<string, unknown> = { ...sessionUser, sub: userId, passkeyCount };
   if (activeOrganizationId) {
     claims.org_id = activeOrganizationId;
   }
@@ -159,5 +161,26 @@ async function resolveEffectiveRole(
       "Failed to look up org member role — falling back to user-level role",
     );
     return userRole;
+  }
+}
+
+// `::int` cast keeps PG's bigint COUNT(*) as a JS number — pg surfaces
+// bigint as a string by default. Returns 0 on missing DB / read failure:
+// fail-closed gates passkey-only users on infra blips, which is strictly
+// safer than admitting them on a stale read.
+async function resolvePasskeyCount(userId: string): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  try {
+    const rows = await internalQuery<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM passkey WHERE "userId" = $1`,
+      [userId],
+    );
+    return rows[0]?.count ?? 0;
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), userId },
+      "Failed to look up passkey count — treating as 0",
+    );
+    return 0;
   }
 }

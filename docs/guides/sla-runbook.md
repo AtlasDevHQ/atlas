@@ -196,6 +196,7 @@ Current state and what needs configuration:
 - [x] **Internal DB tables** — `sla_metrics`, `sla_alerts`, `sla_thresholds` created via migration
 - [x] **Default thresholds seeded** — p99 < 5000ms, error rate < 5% (via `runSeeds()`). Note: internal threshold is p99 which is stricter than the published p95 target — alerts fire before public SLA is breached
 - [ ] **OpenStatus upgrade** — Starter plan needed for Slack notifications and 1-min intervals
+- [ ] **MCP session-locality monitor** — Per-region multi-step synthetic that detects sticky-routing regressions; spec at [`openstatus-mcp-monitor.md`](./openstatus-mcp-monitor.md). Blocked by Starter upgrade (free tier is 1-monitor)
 - [ ] **Active alerting daemon** — No process currently polls `sla_metrics` to fire alerts; metrics are recorded but not acted on automatically
 - [ ] **Slack notifications** — Requires OpenStatus Starter plan or custom webhook integration
 - [ ] **Railway metrics** — Set up dashboard alerts for p95 latency > 5s and error rate > 5%

@@ -29,6 +29,9 @@
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
     "healthcheckPath": "/api/health",
-    "healthcheckTimeout": 300
+    "healthcheckTimeout": 300,
+    "multiRegionConfig": {
+      "europe-west4-drams3a": { "numReplicas": 1 }
+    }
   }
 }

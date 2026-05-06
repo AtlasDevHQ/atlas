@@ -9,6 +9,7 @@ set -euo pipefail
 #   bash e2e/scripts/run.sh --tier query       # Query surface only (needs Docker + ANTHROPIC_API_KEY)
 #   bash e2e/scripts/run.sh --tier scaffold    # Scaffold only (no Docker needed)
 #   bash e2e/scripts/run.sh --tier docker      # Docker runtime tests (builds + runs container)
+#   bash e2e/scripts/run.sh --tier integration # Integration contract tests (no Docker, in-process mocks)
 #   bash e2e/scripts/run.sh --surface auth     # Run a specific surface (needs Docker)
 #   bash e2e/scripts/run.sh --all              # Run all surfaces including query
 #   bash e2e/scripts/run.sh --no-docker ...    # Skip Docker lifecycle (CI: services already provisioned)
@@ -28,13 +29,13 @@ while [ $# -gt 0 ]; do
     --tier)
       shift
       if [ -z "${1:-}" ]; then
-        echo "ERROR: --tier requires a value (core, query, scaffold)" >&2
+        echo "ERROR: --tier requires a value (core, query, scaffold, docker, integration)" >&2
         exit 1
       fi
       case "$1" in
-        core|query|scaffold|docker) TIER="$1" ;;
+        core|query|scaffold|docker|integration) TIER="$1" ;;
         *)
-          echo "ERROR: Unknown tier '$1'. Must be: core, query, scaffold, docker" >&2
+          echo "ERROR: Unknown tier '$1'. Must be: core, query, scaffold, docker, integration" >&2
           exit 1
           ;;
       esac
@@ -67,11 +68,16 @@ CORE_SURFACES=(helpers health auth auth-managed conversations slack actions mcp 
 QUERY_SURFACES=(query)
 SCAFFOLD_SURFACES=(scaffold)
 DOCKER_SURFACES=(docker)
+# Integration tests are contract tests under e2e/integration/. They run
+# in-process via mock.module() (no Docker, no external services) and pin
+# protocol-level invariants — see e2e/integration/mcp-multi-replica.test.ts
+# for the canonical example.
+INTEGRATION_DIR="$E2E_DIR/integration"
 
 # --- Determine if Docker is needed ---
 # Docker tier manages its own container lifecycle — skip the E2E compose services
 NEEDS_DOCKER=true
-if [ "$TIER" = "scaffold" ] || [ "$TIER" = "docker" ] || [ "$NO_DOCKER" = true ]; then
+if [ "$TIER" = "scaffold" ] || [ "$TIER" = "docker" ] || [ "$TIER" = "integration" ] || [ "$NO_DOCKER" = true ]; then
   NEEDS_DOCKER=false
 fi
 
@@ -139,6 +145,26 @@ run_surfaces() {
   done
 }
 
+run_integration_tests() {
+  if [ ! -d "$INTEGRATION_DIR" ]; then
+    return 0
+  fi
+  shopt -s nullglob
+  local files=("$INTEGRATION_DIR"/*.test.ts)
+  shopt -u nullglob
+  if [ "${#files[@]}" -eq 0 ]; then
+    echo "--- No integration tests under $INTEGRATION_DIR ---"
+    return 0
+  fi
+  for test_file in "${files[@]}"; do
+    echo "--- integration/$(basename "$test_file") ---"
+    if ! bun test "$test_file"; then
+      echo "FAIL: integration/$(basename "$test_file")"
+      FAILURES=$((FAILURES + 1))
+    fi
+  done
+}
+
 if [ -n "$SURFACE" ]; then
   echo "==> Running E2E tests for surface: $SURFACE"
   run_surface "$SURFACE"
@@ -151,17 +177,20 @@ elif [ "$RUN_ALL" = true ]; then
 elif [ -n "$TIER" ]; then
   echo "==> Running E2E tests for tier: $TIER"
   case "$TIER" in
-    core)     run_surfaces "${CORE_SURFACES[@]}" ;;
-    query)    run_surfaces "${QUERY_SURFACES[@]}" ;;
-    scaffold) run_surfaces "${SCAFFOLD_SURFACES[@]}" ;;
-    docker)   run_surfaces "${DOCKER_SURFACES[@]}" ;;
+    core)        run_surfaces "${CORE_SURFACES[@]}" ;;
+    query)       run_surfaces "${QUERY_SURFACES[@]}" ;;
+    scaffold)    run_surfaces "${SCAFFOLD_SURFACES[@]}" ;;
+    docker)      run_surfaces "${DOCKER_SURFACES[@]}" ;;
+    integration) run_integration_tests ;;
   esac
 else
-  # Default: core + scaffold (skip query)
+  # Default: core + scaffold + integration (skip query — needs API key)
   echo "==> Running core E2E tests..."
   run_surfaces "${CORE_SURFACES[@]}"
   echo "==> Running scaffold E2E tests..."
   run_surfaces "${SCAFFOLD_SURFACES[@]}"
+  echo "==> Running integration E2E tests..."
+  run_integration_tests
 fi
 
 echo ""

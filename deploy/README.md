@@ -62,6 +62,15 @@ Each service points to its `railway.json` via the Railway dashboard. Key env var
 - `ATLAS_SANDBOX_URL` — Internal sidecar URL
 - `ATLAS_API_REGION` — Region identity for this instance (e.g. `us-east`). Required for multi-region deployments. Each regional API service (api, api-eu, api-apac) must set this so the health endpoint reports its region and misrouting detection works correctly
 
+#### Replica cap (read before scaling)
+
+Each regional API service is **pinned to `numReplicas: 1`** via `multiRegionConfig` in its `railway.json`. This is intentional, not aspirational.
+
+- **Why**: hosted MCP sessions live in the API process's memory (`Map<sessionId, SessionEntry>` at `packages/mcp/src/hosted.ts`). Frames after `initialize` carry an `mcp-session-id` header that must arrive at the same replica that handled init — otherwise the lookup misses and the response is `404 unknown_session`, breaking the agent's connection mid-conversation.
+- **Why not just turn on sticky sessions**: Railway's HTTP load balancer does not support cookie-based or IP-hash session affinity ([docs.railway.com — scaling](https://docs.railway.com/reference/scaling): "Railway does not support sticky sessions"). For multi-replica services, traffic is randomly distributed; Atlas's per-region API services scale horizontally by adding regions, not replicas-within-region.
+- **What to do if you genuinely need horizontal scale**: ship the fallback flagged in #2069 — move MCP session state from in-process Map to the existing internal Postgres (the `oauthProvider` plugin already uses internal DB; reusing it for sessions is a small refactor). Until that lands, raising `numReplicas` will silently break every active MCP session on every load-balancer reroute.
+- **Verification monitor (staged, not yet provisioned)**: a per-region multi-step OpenStatus synthetic is specified at [`docs/guides/openstatus-mcp-monitor.md`](../docs/guides/openstatus-mcp-monitor.md) and gets provisioned the moment the OpenStatus Starter-tier upgrade in [#1936](https://github.com/AtlasDevHQ/atlas/issues/1936) lands (free tier is at the 1-monitor cap). Until then, the contract is held only by the integration test (`e2e/integration/mcp-multi-replica.test.ts`) and the `numReplicas: 1` cap above — a manual scale-up will silently break MCP sessions and there is no production page until #1936 ships. Read the spec doc before lifting the cap.
+
 ### Web service (`app.useatlas.dev`)
 
 - `NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev` — Baked at build time

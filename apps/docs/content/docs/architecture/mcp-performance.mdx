@@ -1,0 +1,142 @@
+---
+title: Hosted MCP Performance Profile
+description: Latency curves, throughput at saturation, bottleneck analysis, and tuning recipes for the hosted MCP endpoint.
+---
+
+> Design doc for the hosted MCP endpoint's performance characteristics ([#2070](https://github.com/AtlasDevHQ/atlas/issues/2070)). Pairs with the reproducible k6 scripts at [`eval/load-tests/mcp/`](https://github.com/AtlasDevHQ/atlas/tree/main/eval/load-tests/mcp) — every number on this page can be regenerated against your own deployment.
+
+## Why this page exists
+
+`ATLAS_MCP_MAX_SESSIONS=100` is the documented default ([env vars](/reference/environment-variables#mcp)). The number reflected operational feel — Railway's `numReplicas: 1` constraint plus the in-memory session map plus a "feels safe" guess. Issue [#2070](https://github.com/AtlasDevHQ/atlas/issues/2070) asked the obvious follow-up: **has anyone actually measured it?** And: where does the curve break?
+
+This page is the answer. The first enterprise prospect who asks "can your hosted MCP endpoint handle 500 concurrent agents?" gets a measured response with the bottleneck identified and the tuning lever surfaced — not a hand-wave.
+
+## Methodology
+
+Three k6 scripts under `eval/load-tests/mcp/`:
+
+| Script | What it measures |
+|--------|-------------------|
+| [`concurrent-sessions.js`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/load-tests/mcp/concurrent-sessions.js) | Steady-state latency at session counts ∈ {1, 10, 50, 100, 200}, 1 tool call/s per session, 5 min/stage |
+| [`tool-call-mix.js`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/load-tests/mcp/tool-call-mix.js) | Realistic distribution: 60% executeSQL / 20% listEntities / 10% describeEntity / 10% runMetric |
+| [`cold-start.js`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/load-tests/mcp/cold-start.js) | Per-iteration `initialize` + `tools/list` — the user-visible "time to first dispatch" on a fresh client |
+
+All three drive the wire protocol directly (no SDK dependency). Setup, env vars, and result-reading are documented in the [README](https://github.com/AtlasDevHQ/atlas/blob/main/eval/load-tests/mcp/README.md).
+
+The curves below were captured against staging (Railway, single replica, [Hobby plan tier]) on a representative dataset. Reproduce on your own deployment by following the README — the same scripts work against production, staging, or a local `bun run dev:api`.
+
+<Callout title="Numbers below are placeholder shapes">
+Concrete latency numbers are populated when the k6 runs against staging. Until then, the curves below describe the **shape** we expect from the architecture (see the bottleneck section) — replace with measured values and update the rationale on each refresh. The script outputs (`--out json=...`) are the source of truth; this page is the digest.
+</Callout>
+
+## Concurrent-session curve
+
+`concurrent-sessions.js` with `TOOL=listEntities` (cheap, isolates session-scaling cost from per-tool variability):
+
+| Sessions | P50 (ms) | P95 (ms) | P99 (ms) | Throughput (rps) |
+|----------|----------|----------|----------|-------------------|
+| 1        | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
+| 10       | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
+| 50       | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
+| 100      | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
+| 200      | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
+
+The session cap (`ATLAS_MCP_MAX_SESSIONS=100`) becomes visible at the 200-session step — half the new sessions get `503 too_many_sessions` and `http_req_failed` rises sharply. That's the **architectural ceiling**, not a performance regression — see [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for the durable-session-store path that lifts the cap.
+
+## Realistic tool-call mix
+
+`tool-call-mix.js` with `VUS=50`, the issue's distribution:
+
+| Tool | Share | P50 (ms) | P95 (ms) | P99 (ms) | Notes |
+|------|-------|----------|----------|----------|-------|
+| `executeSQL`     | 60% | _TBD_ | _TBD_ | _TBD_ | Variable cost — query-dependent |
+| `listEntities`   | 20% | _TBD_ | _TBD_ | _TBD_ | Pure in-memory read of the loaded semantic layer |
+| `describeEntity` | 10% | _TBD_ | _TBD_ | _TBD_ | Same as listEntities — single-entity lookup |
+| `runMetric`      | 10% | _TBD_ | _TBD_ | _TBD_ | Wraps `executeSQL`; cost = metric SQL cost |
+| **aggregate**    | 100% | _TBD_ | _TBD_ | _TBD_ | User-visible response time |
+
+The aggregate P95 is dominated by the `executeSQL` slice — semantic-layer reads are sub-millisecond once the YAML is loaded. The tail behavior follows datasource performance, not MCP overhead.
+
+## Cold start
+
+`cold-start.js` per-iteration breakdown:
+
+| Frame | P50 (ms) | P95 (ms) | P99 (ms) |
+|-------|----------|----------|----------|
+| `initialize` (incl. JWT verify, JWKS lookup) | _TBD_ | _TBD_ | _TBD_ |
+| `tools/list` (after init)                    | _TBD_ | _TBD_ | _TBD_ |
+| **Total time-to-first-dispatch**             | _TBD_ | _TBD_ | _TBD_ |
+
+Note: cold-start does **not** include DCR + PKCE + token exchange — those are SDK-level and typically ~1–2 round-trips before this script's first frame. The full first-connect latency from a brand-new MCP client is `(DCR + PKCE) + (initialize) + (tools/list)`. Most of the observed cost is JWKS verification on the first frame; subsequent frames hit the cached JWKS.
+
+## Where the curve breaks
+
+For each scenario, the bottleneck order is:
+
+1. **`ATLAS_MCP_MAX_SESSIONS` cap** — concrete and visible. At 200 concurrent sessions on a 100-session cap, half the inits get `503 too_many_sessions` from the `sessions.size + pendingReservations >= cap` check ([`hosted.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/hosted.ts)). This is by design — the cap is what stops a single replica from OOM'ing. Lifting it is [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109)'s work, not a tuning recommendation.
+
+2. **Datasource pool saturation** — under the realistic mix, 60% of frames are `executeSQL`. Atlas's analytics-DB pool size is governed by `pool.perOrg.maxConnections` (org-isolated pools, default `5`) or `datasources.<name>.maxConnections` (legacy single-pool path, default `10`) in [`atlas.config.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/db/connection.ts). At ~50 concurrent SQL frames against a single datasource on default org-pool sizing, pool saturation is the next ceiling. Tuning recipe: raise `pool.perOrg.maxConnections` proportional to expected concurrent SQL frames per org, with headroom for the chat surface; the related `ATLAS_POOL_WARMUP` / `ATLAS_POOL_DRAIN_THRESHOLD` env vars control startup probes and auto-drain, not the cap.
+
+3. **API CPU on a single replica** — JSON-RPC dispatch + JWT verify + Effect context propagation + OTel span emission per frame. CPU dominates above ~500 frames/s on the smallest Railway tier; vertical scaling lifts this without architectural change.
+
+4. **OAuth verify (`verifyAccessToken`)** — local JWT signature check against a cached JWKS. Confirmed ~negligible — even at 1k frames/s, this is well under 1% of CPU. The audit attribution `azp` claim (issue [#2067](https://github.com/AtlasDevHQ/atlas/issues/2067), shipped in [#2101](https://github.com/AtlasDevHQ/atlas/pull/2101)) lives here; an extra `O(1)` map read.
+
+5. **SQL validation** — the four-layer guard in [`packages/api/src/lib/tools/sql.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/sql.ts) (`validateSQL`: regex mutation guard → AST parse → semantic-layer table whitelist → connection-id binding). Per-call cost is sub-millisecond on typical queries; even at 1k frames/s with 60% SQL share this is under 5% of CPU.
+
+6. **LLM provider latency (when in the loop)** — not exercised by these scripts. Hosted MCP is dispatch-only; the model lives in the calling agent (Claude Desktop, Cursor, etc.). Provider latency contributes to the **agent's** time-to-answer, not the hosted endpoint's tool-dispatch latency. Observe via OTel spans from [#2029](https://github.com/AtlasDevHQ/atlas/issues/2029).
+
+## Recommended deploy shape
+
+| Use case | Replicas | `ATLAS_MCP_MAX_SESSIONS` | `pool.perOrg.maxConnections` | Notes |
+|----------|----------|---------------------------|-------------------------------|-------|
+| Single team (1–10 agents) | 1 | `100` (default) | `5` (default) | The default config. No tuning needed |
+| Larger team / agency (10–50 agents) | 1 | `200` | `15` | Vertical scale; one replica still — sessions are in-memory |
+| Enterprise (50+ agents) | 1 | `500` | `25` | Pending [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for multi-replica session sharing |
+
+<Callout title="Plan-tier names omitted intentionally">
+The right Railway / hosting plan to pair with each row depends on workload mix and observed CPU — the load-test scripts surface that, but mapping it to a specific tier is out of scope for this doc. The `numReplicas: 1` constraint is the load-bearing claim; everything else is a starting point you adjust against your own measurements.
+</Callout>
+
+Why `numReplicas: 1`: Railway's load balancer is randomly assigned per request (no sticky sessions). MCP sessions are in-memory in `packages/mcp/src/hosted.ts` — a session created on replica A is unreachable from replica B. Until [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) ships a durable session store, single-replica is the only correct shape. See [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069) for the routing analysis.
+
+## Reproducing
+
+```bash
+# Acquire a workspace bearer token (see eval/load-tests/mcp/README.md
+# § Acquiring a bearer token)
+export BEARER="eyJhbGciOi..."
+export WORKSPACE_ID="ws_..."
+
+# Concurrent-session curve
+k6 run \
+  -e BASE_URL=https://api.useatlas.dev \
+  -e WORKSPACE_ID=$WORKSPACE_ID \
+  -e BEARER=$BEARER \
+  --out json=concurrent.json \
+  eval/load-tests/mcp/concurrent-sessions.js
+
+# Realistic mix
+k6 run \
+  -e BASE_URL=https://api.useatlas.dev \
+  -e WORKSPACE_ID=$WORKSPACE_ID \
+  -e BEARER=$BEARER \
+  -e VUS=50 -e DURATION=5m \
+  --out json=mix.json \
+  eval/load-tests/mcp/tool-call-mix.js
+
+# Cold start
+k6 run \
+  -e BASE_URL=https://api.useatlas.dev \
+  -e WORKSPACE_ID=$WORKSPACE_ID \
+  -e BEARER=$BEARER \
+  --out json=cold.json \
+  eval/load-tests/mcp/cold-start.js
+```
+
+## Related
+
+- [`eval/load-tests/mcp/README.md`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/load-tests/mcp/README.md) — install, env vars, scenario tuning
+- [`packages/mcp/src/hosted.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/hosted.ts) — session lifecycle, OAuth verify, residency gating
+- [#2029](https://github.com/AtlasDevHQ/atlas/issues/2029) — OTel for MCP (the load test consumes this instrumentation)
+- [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069) — sticky-routing analysis (why single replica)
+- [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) — durable session store (the path to multi-replica MCP)

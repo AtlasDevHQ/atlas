@@ -6,18 +6,23 @@
  *
  * ── What this test verifies ──────────────────────────────────────────
  *
- * MCP sessions live in the API process's memory (`Map<sessionId,
- * SessionEntry>` at `packages/mcp/src/hosted.ts:85`). After a successful
+ * MCP sessions live in the API process's memory (the module-scoped
+ * `sessions` Map in `packages/mcp/src/hosted.ts`). After a successful
  * `initialize` frame, the SDK assigns a `mcp-session-id` and every
  * subsequent JSON-RPC frame must arrive at the **same replica** that ran
  * the init — otherwise the lookup misses and the response is `404
  * unknown_session`, which breaks the agent's connection mid-conversation.
  *
  * The verified Railway behavior (https://docs.railway.com/reference/scaling):
- * "Railway does not support sticky sessions … Railway will randomly
- * distribute public traffic to the replicas." So a 2-replica deployment
- * with no session affinity gives ~50 % cross-replica frames — half of
- * every active MCP session breaks on every reroute.
+ *
+ *   "For now Railway does not support sticky sessions nor report the
+ *    usage of the replicas within the metrics view."
+ *   "Railway will randomly distribute public traffic to the replicas
+ *    of that region."
+ *
+ * So a 2-replica deployment with no session affinity gives ~50 %
+ * cross-replica frames — half of every active MCP session breaks on
+ * every reroute.
  *
  * The mitigation shipped with this PR is `multiRegionConfig.numReplicas:
  * 1` in each `deploy/<service>/railway.json`. The fallback flagged in
@@ -61,7 +66,6 @@ import {
   mock,
   type Mock,
 } from "bun:test";
-import type { AdminActionEntry } from "../../packages/api/src/lib/audit/index";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM as WORKSPACE_CLAIM } from "../../packages/api/src/lib/auth/oauth-claims";
 
 // ── Module-scope mocks ──────────────────────────────────────────────
@@ -154,17 +158,16 @@ mock.module("@atlas/api/lib/db/internal", () => {
   };
 });
 
-const auditedEntries: AdminActionEntry[] = [];
+// The audit-log mock is a no-op: the existing unit tests in
+// packages/mcp/src/__tests__/hosted.test.ts already pin the
+// "mcp_session.start fires once per session" contract; this suite is
+// scoped to frame routing, so it doesn't need to inspect audit rows.
 mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
     mcp_session: { start: "mcp_session.start" },
   },
-  logAdminAction: (entry: AdminActionEntry) => {
-    auditedEntries.push(entry);
-  },
-  logAdminActionAwait: async (entry: AdminActionEntry) => {
-    auditedEntries.push(entry);
-  },
+  logAdminAction: () => {},
+  logAdminActionAwait: async () => {},
   errorMessage: (err: unknown) =>
     err instanceof Error ? err.message : String(err),
   causeToError: (err: unknown) =>
@@ -240,7 +243,6 @@ beforeEach(() => {
   mockVerifyAccessToken.mockReset();
   mockApiRegion.mockReset();
   mockWorkspaceRegion.mockReset();
-  auditedEntries.length = 0;
   mockApiRegion.mockImplementation(() => null);
   mockWorkspaceRegion.mockImplementation(async () => null);
   mockVerifyAccessToken.mockImplementation(async (token) => {
@@ -267,7 +269,7 @@ afterAll(() => {
 
 interface ServerHandle {
   url: string;
-  close: () => void;
+  close: () => Promise<void>;
 }
 
 async function startServer(): Promise<ServerHandle> {
@@ -281,8 +283,8 @@ async function startServer(): Promise<ServerHandle> {
   const server = Bun.serve({ port: 0, idleTimeout: 0, fetch: router.fetch });
   return {
     url: `http://localhost:${server.port}`,
-    close: () => {
-      server.stop(true);
+    close: async () => {
+      await server.stop(true);
     },
   };
 }
@@ -326,16 +328,21 @@ async function initializeSession(handle: ServerHandle): Promise<InitOutcome> {
   return { sessionId };
 }
 
-interface FrameOutcome {
-  status: number;
-  error: string | null;
-  sentSessionId: string;
-}
+/**
+ * Outcome of one frame, modeled as a discriminated union so the success
+ * path can never carry an `error` field by accident. The hosted MCP
+ * 4xx contract always returns `{ error, requestId }` JSON
+ * (`packages/mcp/src/hosted.ts`); a non-JSON 4xx body would itself be a
+ * contract regression, so the parse path throws rather than returning a
+ * sentinel that the assertions would have to guard.
+ */
+type FrameOutcome =
+  | { kind: "ok"; status: 200; sentSessionId: string }
+  | { kind: "err"; status: number; error: string; sentSessionId: string };
 
 /**
- * Send one JSON-RPC frame with a chosen session-id. Returns the HTTP
- * status and (if 4xx/5xx) the parsed `error` body field. The frame
- * payload is a `tools/list` call — the cheapest non-init frame.
+ * Send one JSON-RPC frame with a chosen session-id. The frame payload
+ * is a `tools/list` call — the cheapest non-init frame.
  */
 async function sendFrame(
   handle: ServerHandle,
@@ -357,19 +364,18 @@ async function sendFrame(
       params: {},
     }),
   });
-  let error: string | null = null;
   if (res.status >= 400) {
-    try {
-      const body = (await res.json()) as { error?: string };
-      error = body.error ?? null;
-    } catch {
-      error = "<non-json>";
-    }
-  } else {
-    // Drain the SSE/JSON body so the connection releases.
-    await res.text();
+    const body = (await res.json()) as { error?: string };
+    return {
+      kind: "err",
+      status: res.status,
+      error: body.error ?? "",
+      sentSessionId: sessionId,
+    };
   }
-  return { status: res.status, error, sentSessionId: sessionId };
+  // Drain the SSE/JSON body so the connection releases.
+  await res.text();
+  return { kind: "ok", status: 200, sentSessionId: sessionId };
 }
 
 type Policy = "sticky" | "round-robin";
@@ -379,7 +385,10 @@ type Policy = "sticky" | "round-robin";
  *
  *   sticky:        always the originating session-id (replica-A)
  *   round-robin:   even N → originating session-id (replica-A); odd N →
- *                  fresh UUID (replica-B, which has no record of it)
+ *                  fresh UUID (replica-B, which has no record of it).
+ *                  Deterministic alternation rather than true random; the
+ *                  property under test is the absence of session affinity,
+ *                  not the LB's specific algorithm.
  */
 function lbPickSessionId(
   policy: Policy,
@@ -387,9 +396,18 @@ function lbPickSessionId(
   fakeSessionIds: string[],
   frameIndex: number,
 ): string {
-  if (policy === "sticky") return realSessionId;
-  if (frameIndex % 2 === 0) return realSessionId;
-  return fakeSessionIds[Math.floor(frameIndex / 2)];
+  switch (policy) {
+    case "sticky":
+      return realSessionId;
+    case "round-robin":
+      return frameIndex % 2 === 0
+        ? realSessionId
+        : fakeSessionIds[Math.floor(frameIndex / 2)];
+    default: {
+      const _exhaustive: never = policy;
+      throw new Error(`Unhandled load-balancer policy: ${String(_exhaustive)}`);
+    }
+  }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -424,7 +442,7 @@ describe("MCP multi-replica frame routing (Theme B2 #2069)", () => {
       expect(body.error).toBe("unknown_session");
       expect(body.requestId).toBeTruthy();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -441,8 +459,8 @@ describe("MCP multi-replica frame routing (Theme B2 #2069)", () => {
         outcomes.push(await sendFrame(handle, sid, i + 2));
       }
 
-      const ok = outcomes.filter((o) => o.status === 200);
-      const failed = outcomes.filter((o) => o.status !== 200);
+      const ok = outcomes.filter((o) => o.kind === "ok");
+      const failed = outcomes.filter((o) => o.kind === "err");
       expect(ok).toHaveLength(FRAMES_PER_RUN);
       expect(failed).toHaveLength(0);
 
@@ -451,7 +469,7 @@ describe("MCP multi-replica frame routing (Theme B2 #2069)", () => {
       // is meaningful.
       expect(_hostedSessionCount()).toBe(1);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -491,13 +509,16 @@ describe("MCP multi-replica frame routing (Theme B2 #2069)", () => {
       expect(onCorrectReplica).toHaveLength(FRAMES_PER_RUN / 2);
       expect(onWrongReplica).toHaveLength(FRAMES_PER_RUN / 2);
 
-      for (const ok of onCorrectReplica) expect(ok.status).toBe(200);
-      for (const bad of onWrongReplica) {
-        expect(bad.status).toBe(404);
-        expect(bad.error).toBe("unknown_session");
+      for (const o of onCorrectReplica) expect(o.kind).toBe("ok");
+      for (const o of onWrongReplica) {
+        expect(o.kind).toBe("err");
+        if (o.kind === "err") {
+          expect(o.status).toBe(404);
+          expect(o.error).toBe("unknown_session");
+        }
       }
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -516,10 +537,11 @@ describe("MCP multi-replica frame routing (Theme B2 #2069)", () => {
         await sendFrame(handle, sid, i + 2);
       }
 
-      // The cap is 1 — only the real `initialize` registered a session.
+      // Only the real `initialize` registered a session — the count is
+      // still 1 despite five frames carrying unknown session-ids.
       expect(_hostedSessionCount()).toBe(1);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });

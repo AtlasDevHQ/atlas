@@ -851,6 +851,44 @@ function buildPlugins() {
     organization({
       ac,
       roles: { owner: ownerRole, admin: adminRole, member: memberRole },
+      organizationHooks: {
+        // Promote the org creator's user-level role to "admin" so Better
+        // Auth's admin plugin APIs (list users, manage roles, etc.) work.
+        // Without this, org owners have user.role="member" and Better Auth
+        // blocks admin operations.
+        //
+        // Lives here rather than in `databaseHooks.member.create.after`
+        // because the org plugin inserts the initial owner-member through
+        // its own internal context, which bypasses user-defined
+        // `databaseHooks` — the previous wiring fired zero times in prod.
+        afterCreateOrganization: async ({ user, organization: org }) => {
+          try {
+            if (!hasInternalDB()) return;
+
+            // Don't downgrade platform_admin → admin
+            const rows = await internalQuery<{ role: string | null }>(
+              `SELECT role FROM "user" WHERE id = $1 LIMIT 1`,
+              [user.id],
+            );
+            const currentRole = rows[0]?.role;
+            if (currentRole === "admin" || currentRole === "platform_admin") return;
+
+            await getInternalDB().query(
+              `UPDATE "user" SET role = 'admin' WHERE id = $1`,
+              [user.id],
+            );
+            log.info(
+              { userId: user.id, orgId: org.id },
+              "Promoted org owner to user-level admin",
+            );
+          } catch (err) {
+            log.warn(
+              { err: errorMessage(err), userId: user.id },
+              "Failed to promote org owner to admin — Better Auth admin APIs may return 403",
+            );
+          }
+        },
+      },
       async sendInvitationEmail(data) {
         log.warn(
           { email: data.email, orgName: data.organization.name, inviterId: data.inviter.user.id },
@@ -1571,13 +1609,14 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
   const adminEmail = deps.bootstrapAdmin.mode === "email" ? deps.bootstrapAdmin.email : undefined;
   const allowFirstSignupAdmin = deps.bootstrapAdmin.mode === "first-signup";
 
-  // Cast at the return point: `databaseHooks.member` is contributed by the
-  // organization plugin at runtime and is not part of Better Auth's base
-  // options shape. `Parameters<typeof betterAuth>[0]` resolves to that
-  // base shape because the function is generic over the plugin tuple,
-  // which we intentionally erase from `BuildAuthOptionsDeps`. The cast
-  // pays the cost of that erasure at the single boundary rather than
-  // forcing every caller through plugin generics.
+  // Cast at the return point: `databaseHooks.session` returns a session
+  // shape augmented with the organization plugin's `activeOrganizationId`,
+  // which is not part of Better Auth's base options shape.
+  // `Parameters<typeof betterAuth>[0]` resolves to that base shape because
+  // the function is generic over the plugin tuple, which we intentionally
+  // erase from `BuildAuthOptionsDeps`. The cast pays the cost of that
+  // erasure at the single boundary rather than forcing every caller
+  // through plugin generics.
   const options = {
     // InternalPool is pg.Pool-shaped via a local alias; Better Auth
     // expects its own pool/adapter surface type. The cast is a one-way
@@ -1670,42 +1709,6 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
     // middleware injects. See `buildAdvancedConfig` for the invariant.
     advanced: buildAdvancedConfig(deps.cookieDomain),
     databaseHooks: {
-      member: {
-        create: {
-          after: async (member: { role: string; userId: string; organizationId: string }) => {
-            // When a user becomes org "owner", promote their user-level role
-            // to "admin" so Better Auth's admin plugin APIs (list users,
-            // manage roles, etc.) work. Without this, org owners have
-            // user.role="member" and Better Auth blocks admin operations.
-            try {
-              if (member.role !== "owner") return;
-              if (!hasInternalDB()) return;
-
-              // Don't downgrade platform_admin → admin
-              const rows = await internalQuery<{ role: string | null }>(
-                `SELECT role FROM "user" WHERE id = $1 LIMIT 1`,
-                [member.userId],
-              );
-              const currentRole = rows[0]?.role;
-              if (currentRole === "admin" || currentRole === "platform_admin") return;
-
-              await getInternalDB().query(
-                `UPDATE "user" SET role = 'admin' WHERE id = $1`,
-                [member.userId],
-              );
-              log.info(
-                { userId: member.userId, orgId: member.organizationId },
-                "Promoted org owner to user-level admin",
-              );
-            } catch (err) {
-              log.warn(
-                { err: errorMessage(err), userId: member.userId },
-                "Failed to promote org owner to admin — Better Auth admin APIs may return 403",
-              );
-            }
-          },
-        },
-      },
       session: {
         create: {
           // Better Auth's hook input for `session.create.before/after` is

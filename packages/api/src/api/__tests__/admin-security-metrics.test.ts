@@ -6,11 +6,8 @@
  *      / both / mixed), verify the SQL produces the expected counts.
  *   2. Authorization — non-admin role rejected, no active org rejected,
  *      missing internal DB returns 404.
- *   3. SQL hygiene — the query is workspace-scoped via `m."organizationId" = $1`.
- *
- * The aggregate tests don't run real SQL; they assert that the route maps the
- * seeded `MetricsRow` fields to the expected response shape so a column rename
- * regression surfaces here rather than at runtime.
+ *   3. SQL hygiene — workspace-scoped, role-scoped on BOTH the admin set
+ *      AND the trust-grants set, single-statement read-only SELECT.
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
@@ -112,7 +109,7 @@ interface MetricsRow {
   both_factors: number;
   no_factors: number;
   active_trust_devices: number;
-  trust_device_users: number;
+  active_trust_device_users: number;
 }
 
 function row(over: Partial<MetricsRow> = {}): MetricsRow {
@@ -124,7 +121,7 @@ function row(over: Partial<MetricsRow> = {}): MetricsRow {
     both_factors: 0,
     no_factors: 0,
     active_trust_devices: 0,
-    trust_device_users: 0,
+    active_trust_device_users: 0,
     ...over,
   };
 }
@@ -147,13 +144,13 @@ describe("GET /api/v1/admin/security/metrics", () => {
     expect(body.bothFactors).toBe(0);
     expect(body.noFactors).toBe(0);
     expect(body.activeTrustDevices).toBe(0);
-    expect(body.trustDeviceUsersInLast30Days).toBe(0);
+    expect(body.activeTrustDeviceUsers).toBe(0);
   });
 
   it("maps the four enrollment buckets and trust-device counts", async () => {
-    // Seeded shape: 7 admins — 1 with neither, 2 TOTP-only, 1 passkey-only,
-    // 2 with both, 1 with neither (already counted). 5/7 enrolled. 4 active
-    // trust grants spanning 3 distinct admins.
+    // 7 admins — 1 with neither, 2 TOTP-only, 1 passkey-only, 2 with both,
+    // 1 with neither (already counted). 5/7 enrolled. 4 active trust grants
+    // spanning 3 distinct admins.
     mockQueryHandler = async () => [row({
       admin_count: 7,
       mfa_enrolled: 5,
@@ -162,7 +159,7 @@ describe("GET /api/v1/admin/security/metrics", () => {
       both_factors: 2,
       no_factors: 2,
       active_trust_devices: 4,
-      trust_device_users: 3,
+      active_trust_device_users: 3,
     })];
 
     const res = await get();
@@ -175,7 +172,7 @@ describe("GET /api/v1/admin/security/metrics", () => {
     expect(body.bothFactors).toBe(2);
     expect(body.noFactors).toBe(2);
     expect(body.activeTrustDevices).toBe(4);
-    expect(body.trustDeviceUsersInLast30Days).toBe(3);
+    expect(body.activeTrustDeviceUsers).toBe(3);
     // Bucket invariant — none + twoFactorOnly + passkeyOnly + bothFactors === adminCount.
     expect(body.noFactors + body.twoFactorOnly + body.passkeyOnly + body.bothFactors)
       .toBe(body.adminCount);
@@ -186,7 +183,6 @@ describe("GET /api/v1/admin/security/metrics", () => {
 
     await get();
 
-    // Single SELECT, no DML, no statement chaining.
     const stripped = lastSql.replace(/\s+/g, " ").toUpperCase();
     expect(stripped).toContain("SELECT");
     expect(stripped).not.toContain("INSERT");
@@ -195,7 +191,6 @@ describe("GET /api/v1/admin/security/metrics", () => {
     expect(stripped).not.toContain("DROP");
     expect(stripped.split(";").filter((s) => s.trim().length > 0)).toHaveLength(1);
 
-    // Workspace scoping — both CTEs filter by $1 (the active org).
     expect(lastSql).toContain('m."organizationId" = $1');
     expect(lastParams).toEqual(["org-1"]);
   });
@@ -207,10 +202,30 @@ describe("GET /api/v1/admin/security/metrics", () => {
     expect(lastSql).toContain('"expiresAt" > NOW()');
   });
 
-  it("scopes admin lookup to admin and owner roles", async () => {
+  it("scopes BOTH the admin set AND the trust-grants set to admin/owner roles", async () => {
+    // Regression for the C1 bug where the workspace endpoint counted
+    // trust-device grants for any member of the workspace, not just admins.
+    // The trust_grants CTE must filter `m.role IN ('admin','owner')`
+    // alongside `m."organizationId" = $1`.
     mockQueryHandler = async () => [row()];
     await get();
-    expect(lastSql).toContain("m.role IN ('admin', 'owner')");
+
+    // Both the admin set and the trust-grants set must include the role
+    // filter. Use direct substring counting — a regex that pairs CTE
+    // parens runs into nested `IN (...)` lists.
+    const occurrences = (lastSql.match(/m\.role IN \('admin', 'owner'\)/g) ?? []).length;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it("uses FILTER clauses for mutually-exclusive bucketing", async () => {
+    // Regression for a SQL drift where bucketing collapses into a single
+    // count — each bucket needs its own FILTER predicate.
+    mockQueryHandler = async () => [row()];
+    await get();
+    expect(lastSql).toContain("FILTER (WHERE has_totp AND NOT has_passkey)");
+    expect(lastSql).toContain("FILTER (WHERE NOT has_totp AND has_passkey)");
+    expect(lastSql).toContain("FILTER (WHERE has_totp AND has_passkey)");
+    expect(lastSql).toContain("FILTER (WHERE NOT has_totp AND NOT has_passkey)");
   });
 
   it("returns 404 when internal DB is not configured", async () => {

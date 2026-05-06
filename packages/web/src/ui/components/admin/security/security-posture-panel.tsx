@@ -2,19 +2,18 @@
 
 /**
  * Security-posture panel — top-of-page traffic-light view for workspace
- * MFA + trust-device adoption (#2094).
+ * MFA + trust-device adoption.
  *
  * Three tiles, one row each:
  *
- *   - "All admins have MFA"          — green when 100% enrolled, amber
- *                                       when partial, red when zero.
- *   - "Backup codes available"        — green when every TOTP-only or
- *                                       both-factor admin has codes (a
- *                                       proxy: TOTP enrolled implies codes
- *                                       were issued by Better Auth).
- *   - "Trust-device adoption"          — informational; counts active
- *                                       trust grants across admin/owner
- *                                       members.
+ *   - "All admins have MFA"        — green when 100% enrolled, amber
+ *                                     when partial, red when zero.
+ *   - "Backup codes available"      — proxy: TOTP enrolled implies codes
+ *                                     were issued by Better Auth; we can't
+ *                                     observe code count without a per-user
+ *                                     join the workspace endpoint doesn't do.
+ *   - "Trust-device adoption"        — informational; counts active grants
+ *                                     held by admin/owner members.
  *
  * Sources data from `/api/v1/admin/security/metrics`. Read-only — the
  * panel never mutates anything, it just surfaces the aggregate counts so
@@ -29,19 +28,29 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
-import { SecurityMetricsSchema, type SecurityMetrics } from "@/ui/lib/admin-schemas";
+import {
+  SecurityBucketsSchema,
+  type SecurityBuckets,
+} from "@/ui/lib/admin-schemas";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { cn } from "@/lib/utils";
 
 type Tone = "green" | "amber" | "red" | "muted";
 
-interface TileStatus {
-  tone: Tone;
-  headline: string;
-  detail: string;
-}
+/**
+ * Tile-state discriminated union.
+ *
+ * Forces every status helper to compute a `tone` consistent with its
+ * payload — a green tile cannot accidentally carry "Action required"
+ * copy because the union ties the tone to its variant.
+ */
+type TileStatus =
+  | { tone: "green"; headline: string; detail: string }
+  | { tone: "amber"; headline: string; detail: string }
+  | { tone: "red"; headline: string; detail: string }
+  | { tone: "muted"; headline: string; detail: string };
 
-function mfaTileStatus(m: SecurityMetrics): TileStatus {
+function mfaTileStatus(m: SecurityBuckets): TileStatus {
   if (m.adminCount === 0) {
     return {
       tone: "muted",
@@ -65,14 +74,15 @@ function mfaTileStatus(m: SecurityMetrics): TileStatus {
         "Every admin should enroll a passkey or authenticator app. Without it, password compromise is a workspace-level breach.",
     };
   }
+  const remaining = m.adminCount - m.mfaEnrolled;
   return {
     tone: "amber",
     headline: `${m.mfaEnrolled} of ${m.adminCount} admins enrolled`,
-    detail: `${m.adminCount - m.mfaEnrolled} admin${m.adminCount - m.mfaEnrolled === 1 ? "" : "s"} still need to enroll. ${bucketSummary(m)}`,
+    detail: `${remaining} admin${remaining === 1 ? "" : "s"} still need to enroll. ${bucketSummary(m)}`,
   };
 }
 
-function bucketSummary(m: SecurityMetrics): string {
+function bucketSummary(m: SecurityBuckets): string {
   const parts: string[] = [];
   if (m.bothFactors > 0) parts.push(`${m.bothFactors} with both factors`);
   if (m.passkeyOnly > 0) parts.push(`${m.passkeyOnly} passkey-only`);
@@ -80,11 +90,12 @@ function bucketSummary(m: SecurityMetrics): string {
   return parts.length > 0 ? parts.join(" · ") : "No enrolled factors yet.";
 }
 
-function backupCodesStatus(m: SecurityMetrics): TileStatus {
+function backupCodesStatus(m: SecurityBuckets): TileStatus {
   // Backup codes are issued by Better Auth alongside TOTP enrollment, so
-  // "every TOTP user has codes" is a reasonable proxy. The accurate status
-  // would require a per-user join into the twoFactor table — out of scope
-  // for the panel; the tile guides toward the per-user view instead.
+  // "TOTP enrolled" is the closest signal we can compute without a per-user
+  // join. We deliberately don't claim "X admins HAVE backup codes" — codes
+  // can be consumed; the workspace endpoint returns a count of admins with
+  // TOTP, not a count of admins with unused codes.
   const totpEnrolled = m.twoFactorOnly + m.bothFactors;
   if (m.adminCount === 0) {
     return {
@@ -110,13 +121,13 @@ function backupCodesStatus(m: SecurityMetrics): TileStatus {
   }
   return {
     tone: "green",
-    headline: `${totpEnrolled} admin${totpEnrolled === 1 ? "" : "s"} with backup codes`,
+    headline: `${totpEnrolled} admin${totpEnrolled === 1 ? "" : "s"} with TOTP enrolled`,
     detail:
-      "Codes are issued at TOTP enrollment. Admins can rotate them from the Authenticator tile below.",
+      "Each TOTP enrollment issues backup codes. Admins can rotate them from the Authenticator tile below.",
   };
 }
 
-function trustDeviceStatus(m: SecurityMetrics): TileStatus {
+function trustDeviceStatus(m: SecurityBuckets): TileStatus {
   if (m.activeTrustDevices === 0) {
     return {
       tone: "muted",
@@ -128,7 +139,7 @@ function trustDeviceStatus(m: SecurityMetrics): TileStatus {
   return {
     tone: "green",
     headline: `${m.activeTrustDevices} active trust grant${m.activeTrustDevices === 1 ? "" : "s"}`,
-    detail: `${m.trustDeviceUsersInLast30Days} distinct admin${m.trustDeviceUsersInLast30Days === 1 ? "" : "s"} skipping the 2FA challenge for the next 30 days.`,
+    detail: `${m.activeTrustDeviceUsers} distinct admin${m.activeTrustDeviceUsers === 1 ? "" : "s"} skipping the 2FA challenge while their grant is valid.`,
   };
 }
 
@@ -220,7 +231,7 @@ function PostureTile({ title, icon, status, expandable }: PostureTileProps) {
 
 export function SecurityPosturePanel() {
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/admin/security/metrics", {
-    schema: SecurityMetricsSchema,
+    schema: SecurityBucketsSchema,
   });
 
   if (loading) {
@@ -238,6 +249,10 @@ export function SecurityPosturePanel() {
 
   if (error || !data) {
     const message = error ? friendlyError(error) : "Could not load security posture.";
+    // Only offer Retry when retrying might actually help. 404
+    // (`not_available`) means the internal DB isn't configured — pressing
+    // Retry will hit the same wall.
+    const canRetry = !error || (error.status !== 404 && error.code !== "not_available");
     return (
       <Card className="shadow-none">
         <CardContent className="flex items-start gap-3 p-4 text-sm">
@@ -246,9 +261,11 @@ export function SecurityPosturePanel() {
             <p className="font-medium">Security posture unavailable</p>
             <p className="text-muted-foreground">{message}</p>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
-          </Button>
+          {canRetry && (
+            <Button variant="outline" size="sm" onClick={() => void refetch()}>
+              Retry
+            </Button>
+          )}
         </CardContent>
       </Card>
     );
@@ -297,7 +314,7 @@ export function SecurityPosturePanel() {
           expandable={
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
               <DetailRow label="Active trust grants" value={data.activeTrustDevices} />
-              <DetailRow label="Distinct admins" value={data.trustDeviceUsersInLast30Days} />
+              <DetailRow label="Distinct admins" value={data.activeTrustDeviceUsers} />
             </dl>
           }
         />

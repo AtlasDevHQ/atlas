@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Platform admin → Security adoption (#2094).
+ * Platform admin → Security adoption.
  *
  * Cross-workspace MFA + passkey + trust-device dashboard. Surfaces the
  * aggregate counts from `/api/v1/platform/admin/security/metrics` and a
@@ -38,6 +38,7 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import {
   PlatformSecurityMetricsSchema,
+  type PlatformSecurityMetrics,
   type WorkspaceSecurityMetrics,
 } from "@/ui/lib/admin-schemas";
 
@@ -111,11 +112,7 @@ function PlatformSecurityContent() {
   );
 }
 
-function SummaryCards({
-  data,
-}: {
-  data: { aggregate: { adminCount: number; mfaEnrolled: number; activeTrustDevices: number; trustDeviceUsersInLast30Days: number; passkeyOnly: number; bothFactors: number }; workspaces: WorkspaceSecurityMetrics[] };
-}) {
+function SummaryCards({ data }: { data: PlatformSecurityMetrics }) {
   const { aggregate, workspaces } = data;
   const enrollmentRate = pct(aggregate.mfaEnrolled, aggregate.adminCount);
   const passkeyAdmins = aggregate.passkeyOnly + aggregate.bothFactors;
@@ -158,11 +155,7 @@ function SummaryCards({
   );
 }
 
-function FactorDistribution({
-  data,
-}: {
-  data: { aggregate: { adminCount: number; bothFactors: number; passkeyOnly: number; twoFactorOnly: number; noFactors: number; activeTrustDevices: number; trustDeviceUsersInLast30Days: number } };
-}) {
+function FactorDistribution({ data }: { data: PlatformSecurityMetrics }) {
   const { aggregate } = data;
   const buckets: Array<{ label: string; value: number; tone: string }> = [
     { label: "Both factors", value: aggregate.bothFactors, tone: "bg-emerald-500" },
@@ -219,7 +212,7 @@ function FactorDistribution({
           <span>
             Distinct admins skipping 2FA:{" "}
             <span className="font-medium text-foreground">
-              {aggregate.trustDeviceUsersInLast30Days}
+              {aggregate.activeTrustDeviceUsers}
             </span>
           </span>
         </div>

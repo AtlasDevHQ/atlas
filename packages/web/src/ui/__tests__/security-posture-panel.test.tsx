@@ -1,11 +1,16 @@
 /**
- * Smoke tests for the workspace security-posture panel (#2094).
+ * Smoke tests for the workspace security-posture panel.
  *
  * Renders the panel with mocked `useAdminFetch` data and asserts the
- * traffic-light tile copy lands in the DOM. Three primary states:
+ * traffic-light tile copy lands in the DOM. Five primary states:
  *   - all admins enrolled        → "OK" + "All N admins have MFA"
  *   - partial enrollment         → "Attention" + "X of Y admins enrolled"
  *   - zero enrollment            → "Action required" + "0 of N admins enrolled"
+ *   - empty workspace            → "No admins yet"
+ *   - passkey-only fallback      → "Attention" + "no fallback codes"
+ *
+ * Plus the error-fallback branches: 404 (no-DB) suppresses the Retry button;
+ * other errors keep it.
  */
 
 import { describe, expect, test, mock, afterEach } from "bun:test";
@@ -13,7 +18,7 @@ import { render, cleanup } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { SecurityMetrics } from "../lib/admin-schemas";
+import type { SecurityBuckets } from "../lib/admin-schemas";
 
 mock.module("next/navigation", () => ({
   usePathname: () => "/admin/settings/security",
@@ -21,8 +26,8 @@ mock.module("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-let mockMetrics: SecurityMetrics | null = null;
-let mockError: { message: string } | null = null;
+let mockMetrics: SecurityBuckets | null = null;
+let mockError: { message: string; status?: number; code?: string } | null = null;
 let mockLoading = false;
 
 mock.module("@/ui/hooks/use-admin-fetch", () => ({
@@ -45,7 +50,7 @@ function wrapper({ children }: { children: ReactNode }) {
   return createElement(QueryClientProvider, { client }, children);
 }
 
-function metrics(over: Partial<SecurityMetrics> = {}): SecurityMetrics {
+function metrics(over: Partial<SecurityBuckets> = {}): SecurityBuckets {
   return {
     adminCount: 0,
     mfaEnrolled: 0,
@@ -54,7 +59,7 @@ function metrics(over: Partial<SecurityMetrics> = {}): SecurityMetrics {
     bothFactors: 0,
     noFactors: 0,
     activeTrustDevices: 0,
-    trustDeviceUsersInLast30Days: 0,
+    activeTrustDeviceUsers: 0,
     ...over,
   };
 }
@@ -111,23 +116,67 @@ describe("SecurityPosturePanel", () => {
       mfaEnrolled: 2,
       bothFactors: 2,
       activeTrustDevices: 3,
-      trustDeviceUsersInLast30Days: 2,
+      activeTrustDeviceUsers: 2,
     });
     render(<SecurityPosturePanel />, { wrapper });
     expect(document.body.textContent).toContain("3 active trust grant");
   });
 
+  test("renders muted trust-device tile when no grants are active", () => {
+    mockMetrics = metrics({ adminCount: 2, mfaEnrolled: 2, bothFactors: 2 });
+    render(<SecurityPosturePanel />, { wrapper });
+    expect(document.body.textContent).toContain("No active trust grants");
+  });
+
+  test("renders amber backup-codes tile for passkey-only enrollment", () => {
+    mockMetrics = metrics({
+      adminCount: 1,
+      mfaEnrolled: 1,
+      passkeyOnly: 1,
+    });
+    render(<SecurityPosturePanel />, { wrapper });
+    expect(document.body.textContent).toContain("Passkey-only admins have no fallback codes");
+  });
+
+  test("backup-codes tile copy reflects 'TOTP enrolled' rather than overclaiming code possession", () => {
+    mockMetrics = metrics({
+      adminCount: 2,
+      mfaEnrolled: 2,
+      bothFactors: 1,
+      twoFactorOnly: 1,
+    });
+    render(<SecurityPosturePanel />, { wrapper });
+    // The tile must not claim to know how many admins HAVE codes — codes
+    // can be consumed; the API only knows TOTP-enrollment status.
+    expect(document.body.textContent).toContain("admins with TOTP enrolled");
+  });
+
   test("renders error fallback when fetch fails", () => {
-    mockError = { message: "Server error (ref: abc)" };
+    mockError = { message: "Server error (ref: abc)", status: 500 };
     render(<SecurityPosturePanel />, { wrapper });
     expect(document.body.textContent).toContain("Security posture unavailable");
     expect(document.body.textContent).toContain("Server error");
+    // Generic 500 — Retry should still be available.
+    expect(document.body.textContent).toContain("Retry");
+  });
+
+  test("suppresses Retry button when error is 404 not_available (S5)", () => {
+    // Internal DB not configured — pressing Retry will hit the same wall.
+    mockError = {
+      message: "Security metrics require an internal database.",
+      status: 404,
+      code: "not_available",
+    };
+    render(<SecurityPosturePanel />, { wrapper });
+    expect(document.body.textContent).toContain("Security posture unavailable");
+    expect(document.body.textContent).not.toContain("Retry");
   });
 
   test("renders loading skeleton while fetching", () => {
     mockLoading = true;
     const { container } = render(<SecurityPosturePanel />, { wrapper });
-    // Skeleton component renders the `bg-accent` class via shadcn defaults.
-    expect(container.querySelector("[data-slot]") || container.firstChild).toBeTruthy();
+    // Skeleton component renders an animate-pulse element; assert that we
+    // rendered at least the four skeleton blocks expected (header + three tiles).
+    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThanOrEqual(3);
   });
 });

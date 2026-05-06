@@ -1,17 +1,14 @@
 /**
  * Admin security adoption telemetry — `/api/v1/admin/security/metrics`.
  *
- * Issue #2094 — closes the observability gap for the multi-method MFA
- * stack shipped by #2082 / #2088 / #2089. Without these counters a
- * workspace admin cannot answer "do my admins actually have MFA?" or
- * "is the trust-device cookie sticky?" without writing SQL by hand.
+ * Closes the observability gap for the multi-method MFA stack: a workspace
+ * admin cannot answer "do my admins actually have MFA?" or "is the
+ * trust-device cookie sticky?" without writing SQL by hand otherwise.
  *
  * **Single read-only aggregate** — one parameterized SELECT (with CTEs)
  * over the internal DB, scoped to the caller's active organization.
  * Buckets workspace admins by enrolled second-factor profile and counts
- * active trust-device grants among the same admin set. The query is
- * intentionally cheap: no per-request fan-out, no joins outside the
- * Better Auth tables we already maintain.
+ * active trust-device grants among the same admin set.
  *
  * Bucket semantics:
  *
@@ -20,40 +17,27 @@
  *   passkeyOnly    — admin has at least one passkey, no TOTP
  *   bothFactors    — admin has both TOTP and at least one passkey
  *
- * `none + twoFactorOnly + passkeyOnly + bothFactors === adminCount`.
+ * `none + twoFactorOnly + passkeyOnly + bothFactors === adminCount`,
+ * validated by the response schema's `.refine()` so a SQL drift fails
+ * loudly at parse time rather than silently miscoloring the panel.
  *
  * Trust-device counts are scoped to admin/owner members of the workspace
- * — surfacing platform-wide trust grants here would be a tenant leak.
- * `trustDeviceUsersInLast30Days` is "distinct admins with at least one
- * unexpired trust grant" because the trust window IS 30 days
- * (`trustDeviceMaxAge: 30 * 24 * 60 * 60` in `auth/server.ts`); an
- * "active" trust grant is by construction <= 30 days old.
+ * — surfacing trust grants for non-admin members would not match the
+ * panel copy ("admins skipping the 2FA challenge"). The trust-device
+ * cookie's value Better Auth writes is the userId (see
+ * `lib/auth/trusted-device-hook.ts`).
  */
 
 import { Effect } from "effect";
-import { createRoute, z } from "@hono/zod-openapi";
+import { createRoute } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { SecurityBucketsSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-security-metrics");
-
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
-const SecurityMetricsSchema = z.object({
-  adminCount: z.number().int().min(0),
-  mfaEnrolled: z.number().int().min(0),
-  twoFactorOnly: z.number().int().min(0),
-  passkeyOnly: z.number().int().min(0),
-  bothFactors: z.number().int().min(0),
-  noFactors: z.number().int().min(0),
-  activeTrustDevices: z.number().int().min(0),
-  trustDeviceUsersInLast30Days: z.number().int().min(0),
-});
 
 // ---------------------------------------------------------------------------
 // Route definition
@@ -71,7 +55,7 @@ const getMetricsRoute = createRoute({
   responses: {
     200: {
       description: "Workspace security metrics",
-      content: { "application/json": { schema: SecurityMetricsSchema } },
+      content: { "application/json": { schema: SecurityBucketsSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -95,7 +79,7 @@ interface MetricsRow {
   both_factors: number;
   no_factors: number;
   active_trust_devices: number;
-  trust_device_users: number;
+  active_trust_device_users: number;
   [key: string]: unknown;
 }
 
@@ -110,10 +94,11 @@ adminSecurityMetrics.openapi(getMetricsRoute, async (c) => {
       );
     }
 
-    // Single SELECT, two CTEs, no DML. The trust-device CTE filters by
-    // membership so cross-tenant grants never bleed into the workspace
-    // counters — `verification.value` carries the userId Better Auth
-    // wrote when the user opted in (see `me-trusted-devices.ts`).
+    // Single SELECT, two CTEs, no DML. Both CTEs filter by membership AND
+    // by `m.role IN ('admin','owner')` so the two counters describe the
+    // same admin set. Better Auth's `member` table is unique on
+    // (userId, organizationId), so the verification × member join is
+    // 1:1 within a workspace — no double-counting.
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<MetricsRow>(
@@ -134,6 +119,7 @@ adminSecurityMetrics.openapi(getMetricsRoute, async (c) => {
              FROM verification v
              JOIN member m ON m."userId" = v.value
              WHERE m."organizationId" = $1
+               AND m.role IN ('admin', 'owner')
                AND v.identifier LIKE 'trust-device-%'
                AND v."expiresAt" > NOW()
            )
@@ -145,7 +131,7 @@ adminSecurityMetrics.openapi(getMetricsRoute, async (c) => {
              COUNT(*) FILTER (WHERE has_totp AND has_passkey)::int AS both_factors,
              COUNT(*) FILTER (WHERE NOT has_totp AND NOT has_passkey)::int AS no_factors,
              (SELECT COUNT(*)::int FROM trust_grants) AS active_trust_devices,
-             (SELECT COUNT(DISTINCT user_id)::int FROM trust_grants) AS trust_device_users
+             (SELECT COUNT(DISTINCT user_id)::int FROM trust_grants) AS active_trust_device_users
            FROM workspace_admins`,
           [orgId],
         ),
@@ -154,12 +140,17 @@ adminSecurityMetrics.openapi(getMetricsRoute, async (c) => {
 
     const row = rows[0];
     if (!row) {
-      // Aggregate queries always return a row, but defend against shape
-      // drift — a missing row would otherwise surface as a misleading
-      // `undefined.admin_count` 500 with no requestId trail.
+      // Aggregate queries always return a row — a missing one means the
+      // shape has drifted (Better Auth schema change, pg-driver upgrade).
+      // Fail loudly: a 200 with all-zero buckets would silently render as
+      // "your workspace has zero admins" on the dashboard.
       log.error({ orgId, requestId }, "Security metrics aggregate returned no row");
       return c.json(
-        { error: "internal_error", message: "Could not load security metrics.", requestId },
+        {
+          error: "internal_error",
+          message: "Security metrics are temporarily unavailable. This is unexpected — please share the request ID with support.",
+          requestId,
+        },
         500,
       );
     }
@@ -173,7 +164,7 @@ adminSecurityMetrics.openapi(getMetricsRoute, async (c) => {
         bothFactors: row.both_factors,
         noFactors: row.no_factors,
         activeTrustDevices: row.active_trust_devices,
-        trustDeviceUsersInLast30Days: row.trust_device_users,
+        activeTrustDeviceUsers: row.active_trust_device_users,
       },
       200,
     );

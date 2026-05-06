@@ -38,6 +38,16 @@ const mocks = createApiTestMocks({
   },
 });
 
+// Mutable detectAuthMode override — the factory captures a frozen mode
+// at construction; we need a runtime knob so the simple-key guard test
+// can flip without rebuilding the whole mock graph. Later mock.module
+// wins, so this overrides the factory's detect stub.
+let currentAuthMode = "managed";
+mock.module("@atlas/api/lib/auth/detect", () => ({
+  detectAuthMode: () => currentAuthMode,
+  resetAuthModeCache: () => {},
+}));
+
 interface AuditEntry {
   actionType: string;
   targetType: string;
@@ -129,6 +139,7 @@ function resetTxClient(): void {
 
 beforeEach(() => {
   mocks.hasInternalDB = true;
+  currentAuthMode = "managed";
   mocks.setOrgAdmin("org-alpha");
   mocks.mockInternalQuery.mockReset();
   mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
@@ -205,22 +216,23 @@ describe("admin reset-mfa — POST /users/:id/reset-mfa", () => {
     expect(clientReleased).toBe(true);
     expect(clientReleaseArg).toBeUndefined();
 
-    // The narrower-scope guard: this route MUST NOT touch sessions /
-    // trust-devices / OAuth tokens. A regression that imported the
-    // wrong DELETE block from admin-revoke.ts would land here.
+    // Positive whitelist: this route MUST mutate exactly { passkey,
+    // twoFactor, user } and nothing else. A copy-paste regression from
+    // admin-revoke.ts that added a DELETE on session/trust-device/OAuth
+    // would surface as an extra entry. Stronger than a negative
+    // blacklist — it catches additions to a fourth table we haven't
+    // thought to forbid.
     const tablesTouched = clientQueries
       .filter((q) => /^\s*(DELETE|UPDATE)\b/i.test(q.sql))
       .map((q) => {
         const m = q.sql.match(/(?:DELETE\s+FROM|UPDATE)\s+"?(\w+)"?/i);
         return m ? m[1] : null;
       });
-    expect(tablesTouched).toContain("passkey");
-    expect(tablesTouched).toContain("twoFactor");
-    expect(tablesTouched).toContain("user");
-    expect(tablesTouched).not.toContain("session");
-    expect(tablesTouched).not.toContain("trusted_device");
-    expect(tablesTouched).not.toContain("oauthAccessToken");
-    expect(tablesTouched).not.toContain("oauthRefreshToken");
+    expect([...new Set(tablesTouched)].sort()).toEqual([
+      "passkey",
+      "twoFactor",
+      "user",
+    ]);
 
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = lastAuditCall();
@@ -495,6 +507,21 @@ describe("admin reset-mfa — POST /users/:id/reset-mfa", () => {
       adminRequest("POST", "/api/v1/admin/users/user-target/reset-mfa", {}),
     );
     expect(res.status).toBe(404);
+  });
+
+  it("returns 404 in simple-key mode even with an internal DB attached", async () => {
+    // The right arm of `!hasInternalDB() || detectAuthMode() !== "managed"`.
+    // A regression that flipped the OR to AND, or dropped the auth-mode
+    // check, would let a self-hosted simple-key admin clear another
+    // user's MFA against the managed Better Auth schema.
+    mocks.hasInternalDB = true;
+    currentAuthMode = "simple-key";
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/users/user-target/reset-mfa", {}),
+    );
+    expect(res.status).toBe(404);
+    // Fast-path guard — no transaction should have been opened.
+    expect(clientQueries.map((q) => q.sql.trim().toUpperCase()).includes("BEGIN")).toBe(false);
   });
 
   it("rejects an oversized reason rather than landing it in audit metadata", async () => {

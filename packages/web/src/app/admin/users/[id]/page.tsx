@@ -45,10 +45,8 @@ export default function UserDetailPage() {
     invalidates: refetch,
   });
 
-  // Sibling primitive (#2092 — Wave 2B). Narrower scope than revoke-auth:
-  // clears passkeys + TOTP only, leaves sessions and OAuth grants alone.
-  // The same `refetch` invalidates the preview counts so the passkey
-  // count tile updates after a successful reset.
+  // Narrower than revoke-auth: passkeys + TOTP only, leaves sessions and
+  // OAuth grants alone. Same refetch updates the passkey-count tile.
   const resetMfa = useAdminMutation({
     path: `/api/v1/admin/users/${userId}/reset-mfa`,
     method: "POST",
@@ -189,12 +187,7 @@ export default function UserDetailPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/*
-                  MFA reset (#2092 — Wave 2B). Narrower scope than full revoke:
-                  clears passkeys + TOTP + bundled backup codes only. Sessions
-                  and OAuth grants stay live so a recovery reset doesn't
-                  double as an unintended sign-out.
-                */}
+                {/* MFA reset — passkeys + TOTP + backup codes only; sessions and OAuth grants stay live. */}
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
                   <h3 className="text-sm font-semibold">Reset MFA enrollment</h3>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -205,12 +198,7 @@ export default function UserDetailPage() {
                     lost their only authenticator and is locked out.
                   </p>
                   <div className="mt-3 flex flex-wrap items-center gap-3">
-                    {/*
-                      Stays clickable even at zero-passkey preview — the
-                      preview endpoint doesn't expose TOTP enrollment, and
-                      a zero-MFA reset still emits a forensic audit row
-                      (same "audit on zero" pattern as revoke-auth).
-                    */}
+                    {/* Always clickable: preview hides TOTP, and zero-MFA reset still emits a forensic audit row. */}
                     <Button
                       variant="outline"
                       size="sm"

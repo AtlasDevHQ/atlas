@@ -140,7 +140,7 @@ export const ADMIN_ACTIONS = {
      */
     authRevoke: "user.auth_revoke",
     /**
-     * Admin-mediated MFA reset for a target user (#2092). Sibling to
+     * Admin-mediated MFA reset for a target user. Sibling to
      * `auth_revoke` — narrower scope: clears only the second-factor
      * artifacts (passkey enrollments, TOTP secrets, backup-code batches)
      * so a locked-out passkey-only user can re-enroll on next sign-in.
@@ -154,10 +154,10 @@ export const ADMIN_ACTIONS = {
      * `mfa_enrollment_required` 403 on the next admin-router request.
      *
      * Success metadata: `{ targetUserId, targetUserEmail, passkeysRevoked,
-     * totpSecretsRevoked, backupCodeBatchesRevoked, reason? }`.
-     * Failure metadata adds `{ phase, error }`. The phase enum is listed
-     * in execution order in `admin-mfa-reset.ts` so a `phase: "two_factor"`
-     * reads as "passkeys deleted, then bail".
+     * totpSecretsRevoked, backupCodeBatchesRevoked, reason? }`. Failure
+     * metadata adds `{ phase, error }` where `phase` names the rolled-back
+     * step so triage can answer "did anything actually delete?" without
+     * grep-ing pino.
      */
     mfaReset: "user.mfa_reset",
     /**

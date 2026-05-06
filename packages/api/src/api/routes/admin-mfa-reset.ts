@@ -1,36 +1,20 @@
 /**
- * Wave 2B passkey-recovery surface (#2092):
+ * Admin-mediated MFA reset for a locked-out user.
  *
- *   - `POST /api/v1/admin/users/{id}/reset-mfa` — admin-mediated reset
- *     for a locked-out user (the load-bearing primitive of this file).
- *   - `GET  /api/v1/admin/me/mfa-factors`       — per-user factor snapshot
- *     consumed by the `BackupMethodBanner` on `/admin/settings/security`
- *     to compute the lockout-risk predicate (one passkey, no password,
- *     no TOTP). Light auth, no `mfaRequired` gate — by definition the
- *     banner has to render before the user has a backup method.
+ *   - `POST /api/v1/admin/users/{id}/reset-mfa` — atomically clears every
+ *     passkey, twoFactor row (TOTP secret + bundled backup-code batch),
+ *     and the `user.twoFactorEnabled` flag. Sessions, OAuth grants, and
+ *     trust-device cookies are deliberately spared — this is recovery,
+ *     not off-boarding.
+ *   - `GET  /api/v1/admin/me/mfa-factors` — per-user `{hasPassword,
+ *     hasTotp, passkeyCount}` snapshot. Light auth (no `mfaRequired`
+ *     gate) so the banner that renders this signal is reachable before
+ *     a second factor is enrolled. Same carve-out as `/me/password-status`.
  *
- * Atomic primitive for "this user lost their only authenticator and is
- * locked out". Sibling to #2093's `admin-revoke.ts`: same transactional
- * shape, same workspace-vs-platform authz split, same `<ReasonDialog>` UI
- * contract — narrower scope. The reset surface only clears second-factor
- * artifacts so the user can re-enroll on next sign-in. Sessions, OAuth
- * grants, and trust-device cookies are deliberately left in place: the
- * goal is recovery, not off-boarding.
- *
- * Re-enrollment is forced by removing every credential the
- * `mfaRequired` middleware accepts:
- *   1. Every passkey row for the user
- *   2. Every `twoFactor` row (TOTP secret + backup-code batch are bundled
- *      together in Better Auth's plugin schema — one row per enrollment)
- *   3. `user.twoFactorEnabled = false` so the gate doesn't see a stale
- *      `claims.twoFactorEnabled = true` for an admin who has no actual
- *      backing twoFactor row
- *
- * No new column is needed. The existing `mfaRequired` middleware in
- * `admin-mfa-required.ts` already returns `mfa_enrollment_required` to
- * any admin/owner/platform_admin session whose claims show neither TOTP
- * nor a passkey — emptying both rows trips that gate on the next
- * admin-router request.
+ * Re-enrollment is forced by emptying every credential `mfaRequired`
+ * accepts; no new column needed. Clearing `twoFactorEnabled` separately
+ * closes a silent-admit gap where the flag could remain `true` for an
+ * account whose backing `twoFactor` row was deleted out-of-band.
  *
  * Workspace admins are scoped to org members via `verifyOrgMembership`;
  * platform admins cross-org. The non-member branch returns 404 (not 403)
@@ -199,12 +183,9 @@ async function resetAtomically(userId: string): Promise<ResetOutcome> {
     );
     phase = "two_factor";
 
-    // Better Auth's twoFactor plugin stores the TOTP secret and the
-    // backup-code batch in the same row — `secret` and `backupCodes`
-    // are sibling columns. Counting `had_backup_codes` separately lets
-    // the audit row distinguish "this user had codes" (a meaningful
-    // recovery fact) from "TOTP secret only" — without a per-row
-    // RETURNING the audit log would conflate the two.
+    // Better Auth bundles TOTP secret + backup codes in the same row.
+    // `had_backup_codes` lets the audit distinguish "had codes" from
+    // "TOTP secret only".
     const twoFactor = await client.query(
       `DELETE FROM "twoFactor"
         WHERE "userId" = $1
@@ -213,11 +194,8 @@ async function resetAtomically(userId: string): Promise<ResetOutcome> {
     );
     phase = "user_flag";
 
-    // Even with no twoFactor row to delete, `user.twoFactorEnabled`
-    // can still be `true` for accounts that enrolled and then dropped
-    // their TOTP via Better Auth's disable path on a non-Atlas client
-    // (rare, but possible). Clearing it unconditionally is cheap and
-    // closes the silent-admit gap described in the file header.
+    // Clear unconditionally — `twoFactorEnabled` can linger as true even
+    // with no twoFactor row (Better Auth disable path on non-Atlas client).
     await client.query(
       `UPDATE "user"
           SET "twoFactorEnabled" = false
@@ -279,10 +257,8 @@ export function registerMfaResetRoutes(
   verifyOrgMembership: (authResult: AuthenticatedResult, targetUserId: string) => Promise<boolean>,
   reqId: (c: { get(key: string): unknown }) => string,
 ) {
-  // GET /me/mfa-factors — per-user factor snapshot for the BackupMethodBanner.
-  // Light auth path: same carve-out rationale as /me/password-status — the
-  // banner is the surface that NUDGES the user toward a second factor, so it
-  // has to be reachable before any factor is enrolled. mfaRequired stays off.
+  // GET /me/mfa-factors — light-auth snapshot for the BackupMethodBanner.
+  // mfaRequired stays off: the banner has to render before any factor is enrolled.
   admin.openapi(myMfaFactorsRoute, async (c) => {
     const req = c.req.raw;
     const requestId = reqId(c);
@@ -302,19 +278,15 @@ export function registerMfaResetRoutes(
       return c.json({ error: code, message: authResult.error, requestId }, authResult.status);
     }
     const user = authResult.user;
-    // Non-managed sessions don't have a Better Auth-backed user record to
-    // bucket — return a "no-risk" snapshot so the banner renders nothing
-    // rather than 500-ing a self-hosted simple-key admin.
+    // Non-managed sessions return a no-risk snapshot so the banner renders
+    // nothing rather than 500-ing a self-hosted simple-key admin.
     if (authResult.mode !== "managed" || !user || !hasInternalDB()) {
       return c.json({ hasPassword: false, hasTotp: false, passkeyCount: 0 }, 200);
     }
 
     try {
-      // Single round-trip: three EXISTS / scalar reads. The `account` JOIN
-      // matches the credential-presence check in lib/auth/migrate.ts —
-      // `providerId = 'credential'` is Better Auth's marker for a
-      // password-backed account. SSO / OAuth-only accounts will land
-      // `hasPassword = false`, which is the signal the banner needs.
+      // `providerId = 'credential'` is Better Auth's password-backed marker
+      // (matches lib/auth/migrate.ts). SSO / OAuth-only accounts land hasPassword=false.
       const rows = await internalQuery<{
         has_password: boolean;
         has_totp: boolean;
@@ -371,9 +343,7 @@ export function registerMfaResetRoutes(
     }
 
     if (!(await verifyOrgMembership(authResult, userId))) {
-      // Probing a foreign-workspace user is a forensic signal — record
-      // the attempt with `found: false` so the audit trail can show
-      // which admin tried to reach across orgs.
+      // Audit the cross-org probe so the trail shows which admin tried.
       logAdminAction({
         actionType: ADMIN_ACTIONS.user.mfaReset,
         targetType: "user",
@@ -384,9 +354,8 @@ export function registerMfaResetRoutes(
       return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
     }
 
-    // Body schema is optional — operators using ReasonDialog with
-    // `required: false` may submit no JSON body. Parse manually with a
-    // safe default; safeParse rejects malformed shapes with 400.
+    // Body is optional (ReasonDialog allows empty submission); safeParse
+    // rejects malformed shapes with 400.
     const rawBody = await c.req.json().catch(() => {
       // intentionally ignored: optional body — safeParse below validates the shape.
       return {};
@@ -397,9 +366,7 @@ export function registerMfaResetRoutes(
     }
     const reason = parsed.data.reason?.trim() || undefined;
 
-    // Pre-fetch the email for the audit row before the DELETEs strip
-    // every artifact pointer. We want the audit row to record who was
-    // reset even if the user later gets erased.
+    // Pre-fetch the email so the audit row survives the user being erased later.
     const userRows = await internalQuery<{ id: string; email: string | null }>(
       `SELECT id, email FROM "user" WHERE id = $1 LIMIT 1`,
       [userId],
@@ -419,10 +386,8 @@ export function registerMfaResetRoutes(
     const outcome = await resetAtomically(userId);
 
     if (outcome.status === "rolled_back") {
-      // Transaction rolled back. Audit with the phase that tripped + the
-      // scrubbed error message (errorMessage strips pg userinfo and caps
-      // length), then re-fail through runHandler so the response surfaces
-      // a 500 with requestId.
+      // Audit the phase + scrubbed error, then re-throw so runHandler
+      // returns a 500 with requestId.
       logAdminAction({
         actionType: ADMIN_ACTIONS.user.mfaReset,
         targetType: "user",

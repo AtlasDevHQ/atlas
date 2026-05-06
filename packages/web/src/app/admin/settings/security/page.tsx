@@ -44,16 +44,13 @@ export default function SecurityPage() {
 
   const [passkeys, setPasskeys] = useState<PasskeyRow[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  // Hop the banner's "Enroll a second passkey" CTA down to the existing
-  // `PasskeyTile` enrollment flow. Scrolling — instead of programmatically
-  // clicking the tile's button — keeps the WebAuthn ceremony scoped to a
-  // single source of truth (the tile owns the OS prompt, naming dialog,
-  // and post-enroll refetch). The banner's job is to nudge, the tile's
-  // job is to enroll.
+  // The banner nudges; the tile owns the WebAuthn ceremony. Scrolling
+  // (vs. programmatic click) keeps enrollment scoped to a single source
+  // of truth.
   const passkeyTileRef = useRef<HTMLDivElement | null>(null);
-  const handleEnrollSecondPasskey = useCallback(() => {
+  function handleEnrollSecondPasskey() {
     passkeyTileRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, []);
+  }
 
   const refreshPasskeys = useCallback(async () => {
     const client = getPasskeyClient();

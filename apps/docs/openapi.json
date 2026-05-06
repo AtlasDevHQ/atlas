@@ -45354,6 +45354,278 @@
         "operationId": "postAdminUsersByIdRevokeAuth"
       }
     },
+    "/api/v1/admin/me/mfa-factors": {
+      "get": {
+        "tags": [
+          "Admin — Security"
+        ],
+        "summary": "Per-user MFA factor snapshot",
+        "description": "Returns the calling user's password / TOTP / passkey-count snapshot used by the BackupMethodBanner on /admin/settings/security to detect the lockout-risk profile (one passkey, no password, no TOTP). Light auth — by definition the banner has to render before the user has a second factor enrolled.",
+        "responses": {
+          "200": {
+            "description": "Factor snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hasPassword": {
+                      "type": "boolean"
+                    },
+                    "hasTotp": {
+                      "type": "boolean"
+                    },
+                    "passkeyCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "hasPassword",
+                    "hasTotp",
+                    "passkeyCount"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — SSO enforcement active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminMeMfaFactors"
+      }
+    },
+    "/api/v1/admin/users/{id}/reset-mfa": {
+      "post": {
+        "tags": [
+          "Admin — Users"
+        ],
+        "summary": "Reset MFA enrollment for a user",
+        "description": "Atomically clears every second-factor artifact (passkey enrollments, TOTP secrets, bundled backup-code batches) for the target user inside a single transaction so a locked-out passkey-only user can re-enroll on next sign-in. Sessions, OAuth grants, and trust-device cookies are left untouched — this is recovery, not off-boarding (#2093 covers off-boarding). Workspace admins are scoped to their org members; platform admins cross-org.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "example": "user_abc123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MFA artifacts reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "targetUserId": {
+                      "type": "string"
+                    },
+                    "passkeysRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "totpSecretsRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "backupCodeBatchesRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "targetUserId",
+                    "passkeysRevoked",
+                    "totpSecretsRevoked",
+                    "backupCodeBatchesRevoked"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found or not in workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminUsersByIdResetMfa"
+      }
+    },
     "/api/v1/admin/connections": {
       "get": {
         "tags": [

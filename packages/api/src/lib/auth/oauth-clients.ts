@@ -34,11 +34,42 @@ const log = createLogger("oauth-clients-helper");
 // ---------------------------------------------------------------------------
 
 /**
+ * Token-state classification surfaced to the per-user UI (#2066).
+ *
+ * - `active`              — the client is enabled and has at least one
+ *                           outstanding non-expired access token. The
+ *                           agent should be able to make a tools/call
+ *                           without re-auth.
+ * - `reconnect_required`  — the client is enabled but every access
+ *                           token has expired *and* no usable refresh
+ *                           token remains (refresh exhausted or never
+ *                           issued). The UI surfaces a re-run-wizard CTA.
+ * - `revoked`             — the client row is `disabled = true`. Either
+ *                           an admin or the user revoked it; the row
+ *                           stays for audit retention but the agent will
+ *                           always 401 from this point.
+ *
+ * The `disabled` flag is authoritative for `revoked` even when tokens
+ * are still in the table — admin revoke doesn't necessarily delete
+ * children inside the same transaction (Better Auth's revoke endpoint
+ * cascades, but a future flow that flips `disabled` without a DELETE
+ * needs the UI state to stay correct).
+ */
+export type OAuthTokenState = "active" | "reconnect_required" | "revoked";
+
+/**
  * One row of the per-client list query. Wire shape — kept aligned with the
  * Zod `OAuthClientSchema` in `me-schemas.ts` so the API edge and the web
  * page agree without a third translation layer. `tokenCount` is normalised
  * to `number` here (Postgres `COUNT(*)` returns string) so callers receive
  * a consistent shape.
+ *
+ * `tokenState` is derived in SQL (see `listOAuthClients`) so the UI
+ * can render Active / Reconnect required / Revoked without needing a
+ * second roundtrip per client. `tokenCount` continues to count *all*
+ * outstanding rows including expired ones — the legacy "active tokens"
+ * UI string is informational; the new state badge is the load-bearing
+ * health signal.
  */
 export interface OAuthClientRow {
   clientId: string;
@@ -50,6 +81,7 @@ export interface OAuthClientRow {
   type: string | null;
   lastUsedAt: string | null;
   tokenCount: number;
+  tokenState: OAuthTokenState;
 }
 
 export type RevokePhase =
@@ -118,6 +150,14 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
     tokenUserClause = `AND t."userId" = $2`;
   }
 
+  // The `liveTokenCount` and `liveRefreshCount` aggregates feed the
+  // tokenState derivation below. We intentionally count "live" (non-
+  // expired) rows separately from the legacy `tokenCount` (every row,
+  // expired or not) so the UI can keep displaying "tokens issued" while
+  // gaining a precise health signal. NOW() is preferred over a JS-side
+  // Date.now() so the read is consistent with whatever transaction
+  // isolation the connection runs at — and so unit tests against a
+  // fixed-clock fixture don't drift.
   const rows = await internalQuery<{
     clientId: string;
     clientName: string | null;
@@ -128,6 +168,8 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
     type: string | null;
     lastUsedAt: string | null;
     tokenCount: string;
+    liveTokenCount: string;
+    liveRefreshCount: string;
   }>(
     `SELECT c."clientId" AS "clientId",
             c."name" AS "clientName",
@@ -137,7 +179,17 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
             c."disabled" AS "disabled",
             c."type" AS "type",
             MAX(t."createdAt") AS "lastUsedAt",
-            COUNT(t."id") AS "tokenCount"
+            COUNT(t."id") AS "tokenCount",
+            COUNT(t."id") FILTER (WHERE t."expiresAt" > NOW()) AS "liveTokenCount",
+            (
+              SELECT COUNT(*)
+                FROM "oauthRefreshToken" r
+               WHERE r."clientId" = c."clientId"
+                 AND r."referenceId" = c."referenceId"
+                 ${scope.kind === "user" ? `AND r."userId" = $2` : ""}
+                 AND (r."revoked" IS NULL)
+                 AND (r."expiresAt" IS NULL OR r."expiresAt" > NOW())
+            ) AS "liveRefreshCount"
        FROM "oauthClient" c
        LEFT JOIN "oauthAccessToken" t
          ON t."clientId" = c."clientId"
@@ -151,17 +203,39 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
     params,
   );
 
-  return rows.map((r) => ({
-    clientId: r.clientId,
-    clientName: r.clientName,
-    redirectUris: r.redirectUris ?? [],
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-    disabled: Boolean(r.disabled),
-    type: r.type,
-    lastUsedAt: r.lastUsedAt,
-    tokenCount: parseInt(r.tokenCount, 10),
-  }));
+  return rows.map((r): OAuthClientRow => {
+    const disabled = Boolean(r.disabled);
+    const liveAccess = parseInt(r.liveTokenCount, 10);
+    const liveRefresh = parseInt(r.liveRefreshCount, 10);
+    // Three-state collapse, in precedence order:
+    //   1. disabled  → "revoked" wins regardless of outstanding tokens
+    //                  (admin / self-revoke flips this; tokens may not
+    //                  yet be DELETEd by the cascading endpoint).
+    //   2. liveAccess > 0 → "active": at least one token will verify
+    //                  on the next agent frame.
+    //   3. liveRefresh > 0 → "active": no live access token, but the
+    //                  refresh path will mint one transparently.
+    //   4. otherwise → "reconnect_required": agent's MCP SDK will 401
+    //                  on next frame and cannot recover without re-DCR.
+    const tokenState: OAuthTokenState = disabled
+      ? "revoked"
+      : liveAccess > 0 || liveRefresh > 0
+        ? "active"
+        : "reconnect_required";
+
+    return {
+      clientId: r.clientId,
+      clientName: r.clientName,
+      redirectUris: r.redirectUris ?? [],
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      disabled,
+      type: r.type,
+      lastUsedAt: r.lastUsedAt,
+      tokenCount: parseInt(r.tokenCount, 10),
+      tokenState,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
+import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -596,6 +597,43 @@ export function resolveAllowUnauthDcr(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * Default access-token TTL — 1 hour (Better Auth's default, OAuth 2.1
+ * "industry standard"). Refresh-token default — 30 days. Documented in
+ * `docs/guides/mcp-hosted.mdx` so SDK consumers have one source of truth
+ * for the contract; the literals here are the implementation half.
+ *
+ * Surfacing both as env vars (#2066) lets the e2e test override them to
+ * run a full register → expire → refresh cycle in seconds. Production
+ * operators rarely need to change these — the override exists so a
+ * Playwright spec can mint a 30-second JWT instead of waiting an hour.
+ */
+const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
+const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
+
+/**
+ * Parse an integer env var of seconds, with a positive lower bound.
+ * Empty string or a non-numeric / non-positive value falls back to the
+ * default — avoids a typo like `ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS=`
+ * silently shipping a 0-second token.
+ */
+function resolveTtlSeconds(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+export function resolveAccessTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
+  return resolveTtlSeconds(env.ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS, DEFAULT_ACCESS_TOKEN_TTL_SECONDS);
+}
+
+export function resolveRefreshTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
+  return resolveTtlSeconds(env.ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS, DEFAULT_REFRESH_TOKEN_TTL_SECONDS);
+}
+
+/**
  * Build the Better Auth plugins array.
  *
  * Stripe plugin is conditionally included when STRIPE_SECRET_KEY is set.
@@ -706,6 +744,13 @@ function buildPlugins() {
       allowUnauthenticatedClientRegistration: resolveAllowUnauthDcr(process.env),
       scopes: [...ATLAS_OAUTH_SCOPES],
       validAudiences: resolveOAuthValidAudiences(process.env),
+      // Token TTLs (#2066). Defaults match Better Auth's own defaults
+      // (1h access / 30d refresh) but surfaced explicitly so the e2e
+      // test can drop access TTL to ~30s without rebuilding the auth
+      // server. The values are documented in mcp-hosted.mdx — keep
+      // that doc in lockstep with the defaults above.
+      accessTokenExpiresIn: resolveAccessTokenTtlSeconds(process.env),
+      refreshTokenExpiresIn: resolveRefreshTokenTtlSeconds(process.env),
       // Bind issued tokens to the authenticating user's active workspace
       // so a token issued under workspace A cannot query workspace B's
       // data through the hosted MCP endpoint. The cast is required
@@ -730,6 +775,30 @@ function buildPlugins() {
         return referenceId
           ? { [ATLAS_OAUTH_WORKSPACE_CLAIM]: referenceId }
           : {};
+      },
+      // Refresh-token audit + telemetry hook (#2066). `customTokenResponseFields`
+      // is the only oauthProvider hook that surfaces `grantType`; we gate
+      // the side-effect on `refresh_token` so initial code-grant issuance
+      // doesn't double-count as a refresh. Returns `{}` — the hook is
+      // observability-only and never reshapes the wire response.
+      //
+      // The `metadata` arg is the parsed `oauthClient.metadata` JSONB
+      // (NOT the clientId column). We surface `clientId` as a best-effort
+      // pull from that blob when present; the bun:test integration calls
+      // `recordOAuthTokenRefresh` directly to validate audit + counter
+      // emit when clientId is known.
+      customTokenResponseFields: ({ grantType, user, scopes, metadata }) => {
+        if (grantType !== "refresh_token") return {};
+        const clientId =
+          metadata && typeof metadata.clientId === "string"
+            ? metadata.clientId
+            : null;
+        recordOAuthTokenRefresh({
+          clientId,
+          userId: user?.id ?? null,
+          scopes,
+        });
+        return {};
       },
     }),
   );

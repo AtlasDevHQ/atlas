@@ -89,3 +89,26 @@ export const mcpActivations: Counter = meter.createCounter(
       "Workspace first-MCP-tool-call observed in this process (process-local dedup)",
   },
 );
+
+/**
+ * `atlas.oauth.token_refresh` — incremented every time Better Auth's
+ * `oauthProvider` issues a fresh access token via the `refresh_token`
+ * grant (#2066). Sibling to `atlas.abuse.escalations`: gives operators a
+ * dashboard signal for "agents are quietly rotating their JWTs"
+ * separate from the noisier `atlas.mcp.tool.calls` series.
+ *
+ * Attributes:
+ *   - `client.id`   — the OAuth client_id presenting the refresh.
+ *                     Lets dashboards split refresh volume by agent
+ *                     (Claude Desktop vs Cursor vs DCR-issued UUID).
+ *   - `deploy.mode` — `self-hosted` / `saas`. SaaS-only growth in this
+ *                     series with self-hosted flat is the expected
+ *                     shape (hosted MCP is SaaS-only).
+ */
+export const oauthTokenRefresh: Counter = meter.createCounter(
+  "atlas.oauth.token_refresh",
+  {
+    description:
+      "OAuth 2.1 refresh_token grants completed (Better Auth oauthProvider)",
+  },
+);

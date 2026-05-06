@@ -23,6 +23,10 @@ interface MockOAuthClient {
   type: string | null;
   lastUsedAt: string | null;
   tokenCount: number;
+  // tokenState (#2066) — required wire field. The page schema rejects
+  // payloads without it; default the fixture rows to "active" to keep
+  // existing assertions on row visibility intact.
+  tokenState: "active" | "reconnect_required" | "revoked";
 }
 
 function buildFixture(): MockOAuthClient[] {
@@ -37,6 +41,7 @@ function buildFixture(): MockOAuthClient[] {
       type: "public",
       lastUsedAt: "2026-05-01T15:30:00.000Z",
       tokenCount: 3,
+      tokenState: "active",
     },
     {
       clientId: "cursor-abc123",
@@ -48,6 +53,7 @@ function buildFixture(): MockOAuthClient[] {
       type: "public",
       lastUsedAt: null,
       tokenCount: 0,
+      tokenState: "active",
     },
   ];
 }

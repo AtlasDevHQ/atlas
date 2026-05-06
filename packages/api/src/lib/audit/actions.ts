@@ -287,6 +287,33 @@ export const ADMIN_ACTIONS = {
     revoke: "oauth_client.revoke",
   },
   /**
+   * OAuth 2.1 token lifecycle audit (#2066). Emitted when Better Auth's
+   * `oauthProvider` issues a fresh access token via the `refresh_token`
+   * grant — the load-bearing event for "the agent stayed connected past
+   * the original JWT's expiry". The hosted MCP path's only Atlas-side
+   * trace of a refresh otherwise lives in pino (which retention rotates
+   * out); this row is the queryable, retention-policy-aligned record.
+   *
+   * Metadata:
+   *   - `clientId`         — the OAuth client_id that presented the
+   *                          refresh token. Pivots forensic queries on
+   *                          which agent (Claude Desktop, Cursor, etc.)
+   *                          is rotating tokens.
+   *   - `userId`           — the user the token is bound to.
+   *   - `tokenJti`         — JWT id of the *new* access token, when the
+   *                          oauthProvider hook surfaces it. May be
+   *                          undefined for opaque tokens (no JWT plugin).
+   *   - `ageAtRefreshSec`  — wall-clock seconds between the previous
+   *                          token's `iat` and the refresh, when known.
+   *
+   * Per-token revoke is intentionally NOT in this catalog — the v1.4.1
+   * surface only exposes whole-client revoke, which lives under
+   * `oauth_client.revoke`. See #2066 "out of scope".
+   */
+  oauth_token: {
+    refresh: "oauth_token.refresh",
+  },
+  /**
    * Hosted MCP session lifecycle (#2024 PR C). Emitted on every new
    * session-init at `/mcp/{workspace_id}/sse` — sampled per session,
    * not per JSON-RPC frame, since a single agent connection can issue

@@ -51,7 +51,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { Bot, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Bot, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 // Wizard is heavier than the list view (carries client-config templates +
 // clipboard glue) and only opens on user action. Dynamic import keeps the
@@ -167,11 +167,20 @@ export default function AIAgentsPage() {
             />
             <div className="space-y-2">
               {clients.map((client) => (
-                <AIAgentShell
+                <div
                   key={client.clientId}
-                  client={client}
-                  onRevoke={requestRevoke}
-                />
+                  // Revoked rows dim slightly so the audit trail is visible
+                  // but the row reads as "no longer active". Active and
+                  // reconnect_required render at full opacity.
+                  className={cn(
+                    client.tokenState === "revoked" && "opacity-60",
+                  )}
+                >
+                  <AIAgentShell
+                    client={client}
+                    onRevoke={requestRevoke}
+                  />
+                </div>
               ))}
             </div>
           </section>
@@ -253,6 +262,46 @@ export default function AIAgentsPage() {
   );
 }
 
+/**
+ * Map the wire-level `tokenState` to the page's three-state UI surface.
+ * The function is a pure switch so the badge / status / description /
+ * row dim treatment all derive from one decision and stay in lockstep.
+ *
+ * The legacy `disabled` flag remains the source of truth for `revoked`
+ * — admin-revoke flips it before the cascading DELETE finishes — and
+ * `tokenState` collapses three signals (disabled, live access, live
+ * refresh) into one render-time enum so the renderer doesn't have to
+ * re-derive the precedence.
+ */
+function presentTokenState(tokenState: OAuthClient["tokenState"]): {
+  status: StatusKind;
+  badge: { label: string; tone: "muted" | "warn" | "danger" } | null;
+  description: string | null;
+} {
+  switch (tokenState) {
+    case "active":
+      return {
+        status: "connected",
+        // No badge for the healthy state — the row stays uncluttered;
+        // the connected status dot already conveys "Active".
+        badge: null,
+        description: null,
+      };
+    case "reconnect_required":
+      return {
+        status: "ready",
+        badge: { label: "Reconnect required", tone: "warn" },
+        description: "Last token expired and refresh failed — re-run the connect wizard to restore this agent.",
+      };
+    case "revoked":
+      return {
+        status: "unavailable",
+        badge: { label: "Revoked", tone: "danger" },
+        description: "Revoked — remove from the list to clean up.",
+      };
+  }
+}
+
 function AIAgentShell({
   client,
   onRevoke,
@@ -260,47 +309,70 @@ function AIAgentShell({
   client: OAuthClient;
   onRevoke: (client: OAuthClient) => void;
 }) {
-  const status: StatusKind = client.disabled
-    ? "unavailable"
-    : client.lastUsedAt
-      ? "connected"
-      : "ready";
+  const presentation = presentTokenState(client.tokenState);
   const displayName = client.clientName ?? client.clientId;
+  const description =
+    presentation.description ??
+    (client.lastUsedAt
+      ? `Last used ${formatDateTime(client.lastUsedAt)}`
+      : "Registered but never used");
+
+  const badge = presentation.badge ? (
+    <Badge
+      variant="outline"
+      className={cn(
+        "shrink-0 text-[10px]",
+        presentation.badge.tone === "danger" && "border-destructive/30 text-destructive",
+        presentation.badge.tone === "warn" && "border-amber-500/40 text-amber-700 dark:text-amber-400",
+      )}
+    >
+      {presentation.badge.tone === "warn" && (
+        <AlertTriangle className="mr-1 size-3" aria-hidden="true" />
+      )}
+      {presentation.badge.label}
+    </Badge>
+  ) : client.type === "public" ? (
+    <Badge variant="outline" className="shrink-0 text-[10px]">
+      Public
+    </Badge>
+  ) : undefined;
 
   return (
     <Shell
       icon={Bot}
       title={displayName}
-      description={
-        client.disabled
-          ? "Disabled — revoke to remove from the list"
-          : client.lastUsedAt
-            ? `Last used ${formatDateTime(client.lastUsedAt)}`
-            : "Registered but never used"
-      }
-      status={status}
-      titleBadge={
-        client.disabled ? (
-          <Badge variant="outline" className="shrink-0 border-destructive/30 text-[10px] text-destructive">
-            Disabled
-          </Badge>
-        ) : client.type === "public" ? (
-          <Badge variant="outline" className="shrink-0 text-[10px]">
-            Public
-          </Badge>
-        ) : undefined
-      }
+      description={description}
+      status={presentation.status}
+      titleBadge={badge}
       actions={
-        <Button
-          variant="outline"
-          size="xs"
-          onClick={() => onRevoke(client)}
-          className="text-destructive hover:text-destructive"
-          aria-label={`Revoke ${displayName}`}
-        >
-          <Trash2 className="mr-1.5 size-3" />
-          Revoke
-        </Button>
+        <div className="flex items-center gap-2">
+          {client.tokenState === "reconnect_required" && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => onRevoke(client)}
+              aria-label={`Reconnect ${displayName}`}
+              // The reconnect path is "revoke + re-run the wizard" today
+              // (no per-token refresh UI in 1.4.1). The CTA shares the
+              // revoke handler so the table state converges immediately
+              // — Out of scope: a one-click "refresh now" that doesn't
+              // tear down the client.
+            >
+              <RefreshCw className="mr-1.5 size-3" />
+              Reconnect
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => onRevoke(client)}
+            className="text-destructive hover:text-destructive"
+            aria-label={`Revoke ${displayName}`}
+          >
+            <Trash2 className="mr-1.5 size-3" />
+            Revoke
+          </Button>
+        </div>
       }
     >
       <DetailList>

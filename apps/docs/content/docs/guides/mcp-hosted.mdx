@@ -204,6 +204,60 @@ Use this when:
 - A teammate offboards and every agent they registered should be invalidated
 - A registered client name no longer matches the agent it was issued to (clean it up — DCR will re-register fresh)
 
+## Token refresh contract
+
+Atlas's auth server issues both **access tokens** and **refresh tokens** when a client authorizes with the `offline_access` scope (the standard MCP install path requests it). SDK consumers should expect the following contract — Atlas will not change it without a major version bump.
+
+### Default lifetimes
+
+| Token | Default | Override |
+|---|---|---|
+| Access token (JWT) | **1 hour** | `ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS` |
+| Refresh token (opaque) | **30 days** | `ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS` |
+| Authorization code | 10 minutes | not configurable |
+
+The lifetimes are global per Atlas instance — they do not vary by workspace, scope, or client. The `expires_in` field in every token response carries the absolute remaining seconds for the access token; clients should refresh before that window closes.
+
+### Refresh path (the happy case)
+
+A standards-compliant MCP SDK refreshes transparently. When the access token's `exp` claim has passed, the next `tools/call` frame returns `401`; the SDK exchanges the refresh token at the auth server's `/api/auth/oauth2/token` endpoint with `grant_type=refresh_token`, receives a fresh access token, and replays the frame. The user observes no interruption.
+
+Each successful refresh increments the `atlas.oauth.token_refresh` OTel counter (attributes: `client.id`, `deploy.mode`) and writes an `oauth_token.refresh` row to the workspace's admin action log. Operators who want a per-agent rotation cadence dashboard wire those signals to whichever observability stack they run.
+
+Refresh-token rotation per [RFC 6749 §6](https://datatracker.ietf.org/doc/html/rfc6749#section-6) is **not** enabled — the same refresh token survives across exchanges until it expires or is revoked. This matches Better Auth's `oauth-provider` plugin defaults and the MCP spec's deployment notes; SDK authors who want strict rotation must wrap the underlying refresh response themselves.
+
+### Refresh failure (the recovery contract)
+
+When the refresh exchange itself returns `400 invalid_grant`, the refresh token has expired or been revoked. The next `tools/call` frame against the resource server returns `401` with a `WWW-Authenticate` header pointing back at the auth-server resource-metadata endpoint:
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="Atlas",
+                  error="invalid_token",
+                  error_description="The access token expired",
+                  resource_metadata="https://api.useatlas.dev/.well-known/oauth-protected-resource"
+```
+
+The contract for the client is:
+
+1. Read `resource_metadata` from the header.
+2. Fetch it (or look up the cached copy) to discover the auth server's authorization endpoint.
+3. Re-run Dynamic Client Registration if the `client_id` was deleted on the server side (e.g. an admin or the user revoked the OAuth client). Otherwise re-run the standard authorization-code + PKCE dance against the existing `client_id`.
+
+Atlas does **not** leak the underlying revocation reason in the response body. A revoked OAuth client and a naturally-expired refresh token return the same `401` envelope — the client cannot distinguish them and should treat both as "re-authorize." The `oauth_client.revoke` audit row carries the actor; the user can see what happened from the workspace's admin log.
+
+### Token-state on the per-user listing
+
+`GET /api/v1/me/oauth-clients` carries a `tokenState` field per client:
+
+| State | Meaning | UI affordance |
+|---|---|---|
+| `active` | Enabled client with at least one outstanding non-expired access or refresh token | Status dot, no badge |
+| `reconnect_required` | Enabled client with no usable token left — the next frame will 401 with `WWW-Authenticate` | Amber badge + Reconnect CTA |
+| `revoked` | The client row is `disabled = true` (admin or self revoke) | Dimmed row, deletion is the next step |
+
+The Settings → AI Agents page renders these three states verbatim. Ops queries should pivot on `tokenState` rather than re-deriving it from `disabled` + `tokenCount`.
+
 ### Per-client setup notes
 
 Documentation anchors used by the in-product wizard "How to paste this in `{agent}`" links:

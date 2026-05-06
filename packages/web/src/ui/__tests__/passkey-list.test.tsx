@@ -23,6 +23,9 @@ mock.module("@/lib/auth/passkey-client", () => ({
     listUserPasskeys: listUserPasskeysMock,
     deletePasskey: deletePasskeyMock,
   }),
+  // Stubbed to satisfy the `mock.module() must mock every named export`
+  // rule — the list view never calls signIn.passkey() itself.
+  getPasskeySignIn: () => null,
 }));
 
 import { PasskeyList } from "../components/admin/security/passkey-list";

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
 import { getApiUrl } from "@/lib/api-url";
@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import {
   Database,
   AlertCircle,
+  Fingerprint,
   Loader2,
   ShieldCheck,
   ArrowRight,
@@ -27,6 +28,9 @@ import {
 } from "@/ui/components/social-icons";
 import { parseSignInError, type SignInErrorState } from "./parse-sign-in-error";
 import { getPostSignInRoute } from "./post-sign-in-route";
+import { getPasskeySignIn } from "@/lib/auth/passkey-client";
+import { parsePasskeySignInError } from "@/lib/auth/parse-passkey-sign-in-error";
+import { useWebAuthnSupported } from "@/ui/hooks/use-webauthn-supported";
 
 type SocialProvider = "google" | "github" | "microsoft";
 
@@ -51,13 +55,21 @@ function getApiBase(): string {
 
 export default function LoginPage() {
   const router = useRouter();
+  const webAuthnSupport = useWebAuthnSupported();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<SignInErrorState | null>(null);
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
   const [socialLoading, setSocialLoading] = useState<SocialProvider | null>(null);
   const [socialProviders, setSocialProviders] = useState<readonly SocialProvider[]>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
+  // The passkey button is hidden entirely on unsupported browsers (no banner —
+  // see issue #2091). `webAuthnSupport.kind === "supported"` is the load-bearing
+  // gate; `unknown` (pre-effect / SSR) hides the button to avoid hydration
+  // mismatch and a no-op click before capability detection settles.
+  const passkeyAvailable = webAuthnSupport.kind === "supported";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -111,6 +123,106 @@ export default function LoginPage() {
     return () => controller.abort();
   }, []);
 
+  // Conditional UI autofill — pairs with `autocomplete="username webauthn"`
+  // on the email input below to surface saved passkeys in the OS autofill
+  // picker without the user clicking the dedicated button. Fires exactly
+  // once after capability detection settles; the ref guard prevents a
+  // re-render from firing duplicate ceremonies (each ceremony allocates a
+  // server-side challenge, so duplicates are wasteful and produce confusing
+  // double prompts on slow autofill hardware).
+  //
+  // Better Auth's wrapper traps `NotAllowedError` from the conditional-UI
+  // ceremony and folds it into `error.code === "AUTH_CANCELLED"`. We treat
+  // that branch as silent — the autofill picker is allowed to be ignored.
+  const autoFillFiredRef = useRef(false);
+  useEffect(() => {
+    if (webAuthnSupport.kind !== "supported") return;
+    if (autoFillFiredRef.current) return;
+    const signIn = getPasskeySignIn();
+    if (!signIn) return;
+    autoFillFiredRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await signIn({ autoFill: true });
+        if (cancelled) return;
+        if (res.error) {
+          // The autofill flow surfaces cancellations + "no passkeys for this
+          // origin" as the same shape — debug-log so a misconfigured rpID
+          // doesn't disappear silently, but never block the password form.
+          console.debug(
+            "[passkey] autoFill returned error:",
+            res.error.code ?? res.error.message ?? "unknown",
+          );
+          return;
+        }
+        if (res.data) router.push("/");
+      } catch (err) {
+        if (cancelled) return;
+        console.debug(
+          "[passkey] autoFill threw:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [webAuthnSupport.kind, router]);
+
+  async function handlePasskeySignIn() {
+    setError(null);
+    setPasskeyError(null);
+    const signIn = getPasskeySignIn();
+    if (!signIn) {
+      // Plugin unavailable — surface a soft message rather than a silent
+      // no-op so a misconfigured client (e.g. passkeyClient() not
+      // registered) is visible to the user rather than baked-in disabled.
+      setPasskeyError(
+        "Passkey sign-in is not available right now. Use email and password instead.",
+      );
+      return;
+    }
+    setPasskeyLoading(true);
+    try {
+      const res = await signIn();
+      if (res.error) {
+        const message = parsePasskeySignInError({ error: res.error });
+        if (message === null) {
+          // User cancellation — log so a misconfigured rpID is visible in
+          // DevTools, but don't render a banner. Same discipline as the
+          // enrollment tile in passkey-tile.tsx.
+          console.debug(
+            "[passkey] sign-in cancelled or NotAllowedError:",
+            res.error,
+          );
+        } else {
+          console.warn("[passkey] sign-in failed", res.error);
+          setPasskeyError(message);
+        }
+        return;
+      }
+      if (!res.data) {
+        // Wire shape technically allows `{ data: null, error: null }`.
+        // Treat as a "refresh the page" hint rather than a silent success.
+        console.warn("[passkey] sign-in returned data:null without error", res);
+        setPasskeyError(
+          "Passkey signed in but the server didn't return a session. Refresh the page.",
+        );
+        return;
+      }
+      router.push("/");
+    } catch (err) {
+      console.warn(
+        "[passkey] sign-in threw:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setPasskeyError(parsePasskeySignInError({ thrown: err }) ?? "Passkey sign-in didn't complete.");
+    } finally {
+      setPasskeyLoading(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!email || !password) return;
@@ -152,7 +264,7 @@ export default function LoginPage() {
     }
   }
 
-  const anyLoading = loading || socialLoading !== null;
+  const anyLoading = loading || socialLoading !== null || passkeyLoading;
   const visibleProviders = SOCIAL_PROVIDERS.filter((p) =>
     socialProviders.includes(p.id),
   );
@@ -174,6 +286,42 @@ export default function LoginPage() {
 
       <Card className="w-full">
         <CardContent className="space-y-4 pt-6">
+          {passkeyAvailable && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={anyLoading}
+                onClick={handlePasskeySignIn}
+                aria-label="Sign in with a passkey"
+              >
+                {passkeyLoading ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <Fingerprint className="size-4" aria-hidden />
+                )}
+                {passkeyLoading ? "Waiting for passkey…" : "Sign in with a passkey"}
+              </Button>
+              {passkeyError && (
+                <div
+                  role="alert"
+                  aria-live="polite"
+                  className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+                >
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <p className="flex-1 text-xs leading-relaxed">{passkeyError}</p>
+                </div>
+              )}
+              <div className="relative">
+                <Separator />
+                <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-xs text-muted-foreground">
+                  or
+                </span>
+              </div>
+            </>
+          )}
+
           {visibleProviders.length > 0 && (
             <>
               <div className="grid gap-2">
@@ -219,7 +367,11 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 autoFocus
-                autoComplete="email"
+                // `username webauthn` opts the field into the OS conditional-UI
+                // picker driven by `signIn.passkey({ autoFill: true })` above.
+                // Falls back to plain `username` (browsers ignore the unknown
+                // token) when WebAuthn is unsupported.
+                autoComplete={passkeyAvailable ? "username webauthn" : "email"}
                 disabled={anyLoading}
               />
               <p className="flex items-start gap-1.5 text-xs text-muted-foreground">

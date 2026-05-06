@@ -6,6 +6,13 @@
  * session cookie yet (only a short-lived two-factor cookie identifying the
  * pending user), so failing to complete the flow leaves the user genuinely
  * unauthenticated.
+ *
+ * A user with a passkey enrolled can also complete the second factor by
+ * calling `signIn.passkey()` — the passkey is itself a possession factor,
+ * so a successful WebAuthn assertion creates a fresh session that supersedes
+ * the partial-auth two-factor cookie. The button is rendered whenever the
+ * browser supports WebAuthn; the "no passkey for this user" path surfaces
+ * a friendly hint via {@link parsePasskeySignInError}.
  */
 
 import { useRef, useState } from "react";
@@ -15,12 +22,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { AlertCircle, Loader2, ShieldCheck } from "lucide-react";
+import { Separator } from "@/components/ui/separator";
+import { AlertCircle, Fingerprint, Loader2, ShieldCheck } from "lucide-react";
 import {
   getTwoFactorClient,
   unwrapTwoFactorResult,
   type TwoFactorApiError,
 } from "@/lib/auth/two-factor-client";
+import { getPasskeySignIn } from "@/lib/auth/passkey-client";
+import { parsePasskeySignInError } from "@/lib/auth/parse-passkey-sign-in-error";
+import { useWebAuthnSupported } from "@/ui/hooks/use-webauthn-supported";
 
 type Mode = "totp" | "backup";
 
@@ -73,17 +84,74 @@ function logFailure(action: string, raw: TwoFactorApiError | null): void {
 
 export default function TwoFactorChallengePage() {
   const router = useRouter();
+  const webAuthnSupport = useWebAuthnSupported();
   const [mode, setMode] = useState<Mode>("totp");
   const [code, setCode] = useState("");
   const [trustDevice, setTrustDevice] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
   // Synchronous in-flight flag — `busy` state lags by a render so a
   // double-click within the same tick would fire two verify calls and burn
   // two backup codes server-side. Ref takes effect immediately.
   const submittingRef = useRef(false);
+  const passkeySubmittingRef = useRef(false);
 
   const config = MODES[mode];
+  const passkeyAvailable = webAuthnSupport.kind === "supported";
+
+  async function handlePasskey(): Promise<void> {
+    if (passkeySubmittingRef.current) return;
+    setPasskeyError(null);
+    const signIn = getPasskeySignIn();
+    if (!signIn) {
+      setPasskeyError(
+        "Passkey sign-in is not available right now. Use your authenticator app instead.",
+      );
+      return;
+    }
+    passkeySubmittingRef.current = true;
+    setPasskeyBusy(true);
+    try {
+      const res = await signIn();
+      if (res.error) {
+        const message = parsePasskeySignInError({ error: res.error });
+        if (message === null) {
+          // Cancellation — log so a misconfigured rpID still leaves a
+          // breadcrumb; never render a banner for an Esc on the OS prompt.
+          console.debug("[two-factor:sign-in] passkey cancelled", res.error);
+        } else {
+          console.warn("[two-factor:sign-in] passkey sign-in failed", res.error);
+          setPasskeyError(message);
+        }
+        return;
+      }
+      if (!res.data) {
+        console.warn(
+          "[two-factor:sign-in] passkey sign-in returned data:null without error",
+          res,
+        );
+        setPasskeyError(
+          "Passkey signed in but the server didn't return a session. Refresh the page.",
+        );
+        return;
+      }
+      router.push("/");
+    } catch (err) {
+      console.warn(
+        "[two-factor:sign-in] passkey sign-in threw:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setPasskeyError(
+        parsePasskeySignInError({ thrown: err }) ??
+          "Passkey sign-in didn't complete. Try your authenticator app.",
+      );
+    } finally {
+      passkeySubmittingRef.current = false;
+      setPasskeyBusy(false);
+    }
+  }
 
   function switchMode(next: Mode): void {
     setMode(next);
@@ -153,6 +221,44 @@ export default function TwoFactorChallengePage() {
 
       <Card className="w-full">
         <CardContent className="space-y-4 pt-6">
+          {passkeyAvailable && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={busy || passkeyBusy}
+                onClick={() => {
+                  void handlePasskey();
+                }}
+                aria-label="Use a passkey instead"
+              >
+                {passkeyBusy ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <Fingerprint className="size-4" aria-hidden />
+                )}
+                {passkeyBusy ? "Waiting for passkey…" : "Use a passkey"}
+              </Button>
+              {passkeyError && (
+                <div
+                  role="alert"
+                  aria-live="polite"
+                  className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+                >
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <p className="flex-1 text-xs leading-relaxed">{passkeyError}</p>
+                </div>
+              )}
+              <div className="relative">
+                <Separator />
+                <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-xs text-muted-foreground">
+                  or
+                </span>
+              </div>
+            </>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <div className="space-y-2">
               <Label htmlFor="two-factor-code">{config.inputLabel}</Label>
@@ -165,7 +271,7 @@ export default function TwoFactorChallengePage() {
                 placeholder={config.placeholder}
                 value={code}
                 onChange={(e) => setCode(config.sanitise(e.target.value))}
-                disabled={busy}
+                disabled={busy || passkeyBusy}
                 autoFocus
                 className="font-mono text-base tracking-widest"
               />
@@ -176,7 +282,7 @@ export default function TwoFactorChallengePage() {
                 id="trust-device"
                 checked={trustDevice}
                 onCheckedChange={(checked) => setTrustDevice(checked === true)}
-                disabled={busy}
+                disabled={busy || passkeyBusy}
                 className="mt-0.5"
               />
               <span className="flex-1 select-none">
@@ -193,7 +299,7 @@ export default function TwoFactorChallengePage() {
             <Button
               type="submit"
               className="w-full"
-              disabled={busy || !config.isComplete(code)}
+              disabled={busy || passkeyBusy || !config.isComplete(code)}
             >
               {busy ? (
                 <>
@@ -213,7 +319,7 @@ export default function TwoFactorChallengePage() {
         variant="link"
         size="sm"
         onClick={() => switchMode(mode === "totp" ? "backup" : "totp")}
-        disabled={busy}
+        disabled={busy || passkeyBusy}
         className="mt-4 text-muted-foreground hover:text-primary"
       >
         {config.switchLabel}

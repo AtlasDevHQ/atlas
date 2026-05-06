@@ -243,7 +243,7 @@ export default function LoginPage() {
     try {
       const res = await authClient.signIn.email({ email, password });
       if (res.error) {
-        setError(parseSignInError({ error: res.error }));
+        setError(parseSignInError({ error: res.error, attemptedEmail: email }));
         return;
       }
       router.push(getPostSignInRoute(res.data));
@@ -252,7 +252,7 @@ export default function LoginPage() {
         "Sign in failed:",
         err instanceof Error ? err.message : String(err),
       );
-      setError(parseSignInError({ thrown: err }));
+      setError(parseSignInError({ thrown: err, attemptedEmail: email }));
     } finally {
       setLoading(false);
     }
@@ -419,7 +419,7 @@ export default function LoginPage() {
               />
             </div>
 
-            {error && <SignInErrorAlert error={error} email={email} />}
+            {error && <SignInErrorAlert error={error} />}
 
             <Button
               type="submit"
@@ -452,13 +452,7 @@ export default function LoginPage() {
   );
 }
 
-function SignInErrorAlert({
-  error,
-  email,
-}: {
-  error: SignInErrorState;
-  email: string;
-}) {
+function SignInErrorAlert({ error }: { error: SignInErrorState }) {
   const isSso = error.kind === "sso_required";
   return (
     <div
@@ -496,7 +490,7 @@ function SignInErrorAlert({
           </a>
         )}
         {error.kind === "email_unverified" && (
-          <ResendVerificationButton email={email} />
+          <ResendVerificationButton email={error.attemptedEmail} />
         )}
       </div>
     </div>

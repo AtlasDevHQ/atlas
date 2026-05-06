@@ -15,13 +15,29 @@
 -- get back in. This migration unsticks them ahead of that boundary.
 --
 -- Heuristic: a user with at least one row in the `session` table has,
--- by definition, completed at least one sign-in. Better Auth only
--- inserts a session row after the credential check passes — meaning
--- the user proved (a) the email exists, (b) they know the password, and
--- (c) some prior version of the auth config let them through. That is
--- a strictly stronger signal than the one-time email-token click that
--- normally flips emailVerified, so promoting them to verified is at
--- worst neutral and never weaker than the original signal.
+-- by definition, completed at least one sign-in (or a federated OAuth
+-- flow that minted a session, or a magic-link verify). Under Atlas's
+-- managed-auth config (see buildEmailAndPasswordConfig:
+-- `autoSignIn = !requireEmailVerification`), a session row implies
+-- one of:
+--   - email/password sign-in — proves password, plus an
+--     `emailVerified=true` precondition once requireEmailVerification
+--     was on (so the only candidates left at `false` predate that flip)
+--   - OAuth callback — federated identity proof; the provider also
+--     sets `emailVerified` directly when it vouches
+--   - magic-link verify — sets `emailVerified=true` at the same time,
+--     so those rows are already filtered out by the WHERE clause
+-- All three are at least as strong as the one-time inbox-token click
+-- the normal verify flow consumes — promoting them is at worst neutral
+-- and never weaker than the original signal.
+--
+-- This migration is `MANAGED_AUTH_MIGRATIONS`-gated in
+-- packages/api/src/lib/db/internal.ts so it only runs against
+-- deployments whose Better Auth `user`/`session` tables exist. The
+-- scope of "session row implies inbox proof" is the SaaS deployment
+-- (app.useatlas.dev) where requireEmailVerification has been on for
+-- the relevant population — operators who flipped between modes
+-- repeatedly should audit before re-enabling managed auth.
 --
 -- We deliberately do NOT backfill users with zero session rows: that
 -- includes accounts created via signup that never completed verification

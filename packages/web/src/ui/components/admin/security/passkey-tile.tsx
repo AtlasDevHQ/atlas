@@ -16,7 +16,7 @@
  * leaves an orphaned name in flight.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Fingerprint, KeyRound, Loader2, ShieldCheck, ShieldX } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
@@ -61,12 +61,11 @@ function isUserCancellation(error: PasskeyApiError | null): boolean {
 
 /**
  * Better Auth's `freshSessionMiddleware` rejects sensitive operations
- * (passkey enrollment, account deletion) when `session.createdAt` is
- * older than `session.freshAge` (default 1 day, since 1.6 keyed on
- * `createdAt`, not `updatedAt` — so re-visits don't refresh it). Detect
- * the rejection by `code` first; fall back to message match because
- * older Better Auth versions surfaced only the literal "Session is not
- * fresh" string with no `code` set on the error envelope.
+ * (passkey enrollment, account deletion) when the session has aged
+ * past `session.freshAge` (default 1 day). Detect the rejection by
+ * `code === "SESSION_NOT_FRESH"`; fall back to a message-substring
+ * match for older Better Auth versions that surfaced only the literal
+ * "Session is not fresh" string with no `code` on the error envelope.
  */
 function isSessionNotFresh(error: PasskeyApiError | null): boolean {
   if (!error) return false;
@@ -385,12 +384,25 @@ function PasskeyReauthDialog({
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Reset state every time the dialog opens so a previous error or
-  // half-typed password from a prior aborted attempt doesn't leak in.
-  // `useState` initializers don't re-run on prop change, so this is a
-  // post-mount sync via an effect-like pattern in the open handler.
+  // Mid-flight cancellation: Esc and click-outside route through Radix's
+  // `onOpenChange(false)` even while `signIn.email` is in flight, but the
+  // promise still resolves later. Without this gate the resolved tail
+  // would surface a stale error or — worse — call `onSuccess()` on a
+  // dialog the user has already dismissed, popping the OS biometric
+  // prompt out of nowhere. The ref resets on every open via the JSX
+  // `onOpenChange` (see `handleOpenChange(true)`).
+  const cancelledRef = useRef(false);
+
+  // Reset local state on close so the next open starts clean — a
+  // dismissed-with-error attempt should not show its old banner the
+  // next time the dialog is invoked. `onCancel` propagates the close
+  // up to the parent which owns the `open` prop.
   function handleOpenChange(next: boolean) {
-    if (next) return;
+    if (next) {
+      cancelledRef.current = false;
+      return;
+    }
+    cancelledRef.current = true;
     setPassword("");
     setErrorMsg(null);
     setBusy(false);
@@ -409,6 +421,7 @@ function PasskeyReauthDialog({
     setErrorMsg(null);
     try {
       const res = await authClient.signIn.email({ email, password });
+      if (cancelledRef.current) return;
       if (res.error) {
         // The most common branch: wrong password OR an OAuth-only user
         // with no `credential` account. Better Auth folds both into
@@ -429,9 +442,17 @@ function PasskeyReauthDialog({
       // Better Auth returns `twoFactorRedirect: true` when the account has
       // TOTP enabled. Re-auth via password alone won't refresh the session
       // in that case — Better Auth issues the new session only after the
-      // 2FA challenge clears. Send the user to /login/two-factor and let
-      // them retry passkey enrollment after they're back.
+      // 2FA challenge clears. Send the user to /login/two-factor with a
+      // callbackURL so they bounce straight back to /admin/settings/security
+      // after the challenge clears (see `two-factor/page.tsx` for the
+      // same-origin allowlist on the redirect target).
+      //
+      // Reset busy/password BEFORE assigning so a navigation that gets
+      // blocked (popup blocker, CSP, an extension intercepting) doesn't
+      // wedge the dialog with `busy === true` and `disabled` Cancel.
       if ((res.data as { twoFactorRedirect?: boolean } | null)?.twoFactorRedirect) {
+        setPassword("");
+        setBusy(false);
         window.location.assign("/login/two-factor?callbackURL=/admin/settings/security");
         return;
       }
@@ -439,6 +460,7 @@ function PasskeyReauthDialog({
       setBusy(false);
       await onSuccess();
     } catch (err) {
+      if (cancelledRef.current) return;
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[passkey] re-auth signIn.email threw", msg);
       setErrorMsg("Could not re-authenticate. Please try again.");

@@ -56,8 +56,13 @@ const MAX_MAX_STEPS = 100;
 
 let lastWarnedMaxSteps: string | undefined;
 
-/** Read agent max steps from settings cache (DB override > env var > default). */
-function getAgentMaxSteps(): number {
+/**
+ * Read agent max steps from settings cache (DB override > env var > default).
+ * Exported so the canonical-eval `--mcp-llm` mode (#2119) can clamp its
+ * LLM-driven dispatch loop to the same operator-controlled budget the
+ * production agent loop honours.
+ */
+export function getAgentMaxSteps(): number {
   const raw = getSetting("ATLAS_AGENT_MAX_STEPS") ?? String(DEFAULT_MAX_STEPS);
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n < MIN_MAX_STEPS || n > MAX_MAX_STEPS) {

@@ -43,6 +43,15 @@ export interface EvalMcpClientOptions {
 export interface ToolListEntry {
   readonly name: string;
   readonly description?: string;
+  /**
+   * JSON Schema for the tool's input. Surfaced verbatim from the MCP
+   * `tools/list` response so callers binding these tools as Vercel AI
+   * SDK `tool({ inputSchema: jsonSchema(...) })` definitions (the
+   * `--mcp-llm` eval mode in #2119) get the exact shape the server
+   * advertises. Keep optional in case a tool registers without one;
+   * `jsonSchema({})` accepts an empty object.
+   */
+  readonly inputSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface PromptListEntry {
@@ -94,7 +103,19 @@ export class EvalMcpClient {
   async listTools(): Promise<readonly ToolListEntry[]> {
     this.ensureConnected("listTools");
     const res = await this.client.listTools();
-    return res.tools.map((t) => ({ name: t.name, description: t.description }));
+    return res.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      // The SDK types `inputSchema` as `unknown`; pass it through as a
+      // readonly record so callers can hand it to AI SDK's `jsonSchema()`
+      // helper without re-asserting. A missing schema (older SDK build /
+      // mis-registered tool) surfaces as `undefined` rather than `{}` so
+      // the LLM-mode binder can pick a sensible fallback.
+      inputSchema:
+        t.inputSchema && typeof t.inputSchema === "object"
+          ? (t.inputSchema as Readonly<Record<string, unknown>>)
+          : undefined,
+    }));
   }
 
   async listPrompts(): Promise<readonly PromptListEntry[]> {

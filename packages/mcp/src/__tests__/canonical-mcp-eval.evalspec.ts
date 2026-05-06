@@ -76,13 +76,13 @@ import {
   DEFAULT_QUESTIONS_PATH,
   type Question,
 } from "../../../cli/bin/canonical-eval";
-import { EvalMcpClient, extractToolJson } from "./canonical-mcp-client";
+import { EvalMcpClient, extractToolJson } from "../eval/client";
 import {
   formatArtifactBundle,
   type FailureCategory,
   type McpFailureArtifact,
-} from "./canonical-mcp-failure-artifact";
-import { startEvalAuthServer, type EvalAuthFixture } from "./canonical-mcp-auth";
+} from "../eval/failure-artifact";
+import { startEvalAuthServer, type EvalAuthFixture } from "../eval/auth";
 
 // ── Module mocks ───────────────────────────────────────────────────
 //
@@ -716,9 +716,15 @@ describe("MCP path canonical eval (#2074)", () => {
   });
 });
 
-describe("MCP path stress (#2074, partial #2070)", () => {
+describe("MCP path stress (#2074, partial #2070, #2119 Part B)", () => {
   it("opens N concurrent sessions through the route without contention", async () => {
-    const N = 5;
+    // Phase 2 Part B (#2119) bumps from 5 → 10 to satisfy the
+    // acceptance criterion "5-10 concurrent sessions under real JWT
+    // issuance + verification". Each client connects with the SAME
+    // bearer issued by the in-process Better Auth instance, so a
+    // regression in JWKS caching or session-binding under contention
+    // surfaces here. The full perf profile is owned by #2070.
+    const N = 10;
     const clients = Array.from({ length: N }, () => newClient());
     try {
       await Promise.all(clients.map((c) => c.connect()));

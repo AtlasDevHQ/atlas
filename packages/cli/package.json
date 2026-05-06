@@ -15,6 +15,7 @@
     "@clickhouse/client": "^1.18.2",
     "@duckdb/node-api": "^1.5.1-r.1",
     "ai": "^6.0.141",
+    "hono": "^4.12.9",
     "js-yaml": "^4.1.1",
     "node-sql-parser": "^5.4.0",
     "jsforce": "^3.10.14",

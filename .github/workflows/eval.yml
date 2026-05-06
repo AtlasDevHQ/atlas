@@ -47,6 +47,13 @@ on:
       # already matches `canonical-mcp-eval.evalspec.ts` since the
       # extension still ends in `.ts`.
       - "packages/mcp/src/__tests__/canonical-mcp-*.ts"
+      # Phase 2 part B (#2119) — eval helpers lifted from __tests__/ to
+      # src/eval/ as a public-ish surface, plus the new LLM-driven CLI
+      # binary that consumes them. Re-trigger on any of these so the
+      # eval-mcp-llm CI job catches a regression in the helpers it imports.
+      - "packages/mcp/src/eval/**"
+      - "packages/cli/bin/canonical-eval-mcp-llm.ts"
+      - "eval/canonical-questions/mcp-llm-baseline.json"
       - "packages/mcp/src/hosted.ts"
       - "packages/mcp/src/server.ts"
       - "packages/mcp/src/actor.ts"
@@ -165,3 +172,93 @@ jobs:
 
       - name: Run MCP-path canonical eval
         run: bun test ./packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts
+
+  # LLM-driven MCP eval (#2119 Part B). Runs every canonical question
+  # through the real hosted MCP route via an LLM (Vercel AI SDK
+  # `streamText` + tools bound to MCP `tools/call`) and grades the
+  # tool-call sequence per question.
+  #
+  # Catches regressions the typed evals cannot:
+  #   - `tool_selection`: misleading tool descriptions route the LLM to
+  #     the wrong tool for a known question.
+  #   - `recovery`: the LLM ignores `unknown_*` / `ambiguous_term`
+  #     envelopes instead of self-correcting.
+  #   - `latency`: dispatch fan-out grows past the committed baseline
+  #     by >25% (early-warning signal; baseline lives at
+  #     `eval/canonical-questions/mcp-llm-baseline.json`).
+  #
+  # Needs a real datasource (the LLM may pick `executeSQL`) and an LLM
+  # API key. The provider defaults to Anthropic; override via
+  # `ATLAS_PROVIDER` / `ATLAS_MODEL` if a future cost target shifts.
+  # Cheap model + small question set keeps a typical run under $0.05.
+  #
+  # ANTHROPIC_API_KEY must be added as a repo secret by an org owner.
+  # Until then the job no-ops on PRs (continue-on-error: true) and
+  # surfaces a "skipped" message in the log on tag pushes.
+  eval-mcp-llm:
+    name: eval-mcp-llm (#2119 Part B)
+    runs-on: ubuntu-latest
+    # Same policy as the deterministic + JWT-path jobs — PRs informational,
+    # tag pushes blocking. A drop below the 18/20 acceptance floor must
+    # not ship in a tag.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U atlas"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build @useatlas/types (resolves api imports)
+        run: bun run --filter '@useatlas/types' build
+
+      - name: Provision atlas_demo database
+        env:
+          PGPASSWORD: atlas
+        run: |
+          bun x wait-on tcp:127.0.0.1:5432 --timeout 60000
+          psql -h 127.0.0.1 -U atlas -d atlas -c "CREATE DATABASE atlas_demo;"
+
+      - name: Skip when ANTHROPIC_API_KEY is not set
+        # `secrets.<name>` evaluates to the empty string when unset, so
+        # this gate works for both forks (which never see secrets) and
+        # repos where the org owner has not yet wired the key. The skip
+        # keeps the job from going red on tag pushes just because the
+        # secret is missing — once the secret lands the gate flips to
+        # blocking automatically.
+        if: ${{ secrets.ANTHROPIC_API_KEY == '' }}
+        run: |
+          echo "::warning::ANTHROPIC_API_KEY not configured — skipping LLM eval. Add the repo secret to enable."
+          echo "ATLAS_LLM_EVAL_SKIPPED=1" >> "$GITHUB_ENV"
+
+      - name: Run LLM-driven MCP canonical eval
+        if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Cheap-and-fast default: Haiku for the eval. Operators can
+          # override at the workflow-dispatch level by setting these
+          # at the job env: layer above.
+          ATLAS_PROVIDER: anthropic
+          ATLAS_MODEL: claude-haiku-4-5-20251001
+          ATLAS_DATASOURCE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas_demo
+          # DATABASE_URL deliberately unset — the in-process auth fixture
+          # short-circuits audit writes via `hasInternalDB() === false`.
+        run: bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm

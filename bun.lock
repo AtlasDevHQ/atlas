@@ -181,6 +181,7 @@
         "@modelcontextprotocol/sdk": "^1.28.0",
         "@useatlas/types": "workspace:*",
         "ai": "^6.0.141",
+        "hono": "^4.12.9",
         "js-yaml": "^4.1.1",
         "jsforce": "^3.10.14",
         "mysql2": "^3.20.0",

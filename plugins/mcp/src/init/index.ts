@@ -24,8 +24,8 @@ import {
 } from "./hosted.js";
 
 const SERVER_NAME = "atlas";
-// #2068 — `mcp.useatlas.dev` is the brand surface for the hosted MCP
-// endpoint. DNS CNAMEs fan it (and the regional siblings
+// Brand hostname: `mcp.useatlas.dev` is the canonical surface for the
+// hosted MCP endpoint. DNS CNAMEs fan it (and the regional siblings
 // `mcp-eu`/`mcp-apac.useatlas.dev`) into the same Railway services as
 // the underlying `api.*` hosts. Defaulting here means the standard
 // `bunx @useatlas/mcp init --hosted --write` flow lands on the brand

@@ -701,7 +701,7 @@ describe("runInit --hosted --write — preserves siblings + writes .bak", () => 
   });
 });
 
-describe("runInit --hosted default API URL (#2068)", () => {
+describe("runInit --hosted default API URL (brand hostname)", () => {
   // The CLI default is the brand hostname so a user running
   // `bunx @useatlas/mcp init --hosted --write` against SaaS lands on
   // `https://mcp.useatlas.dev` without flag plumbing — the cosmetic

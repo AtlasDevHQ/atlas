@@ -251,8 +251,60 @@ describe("LoginPage — conditional UI autofill on mount", () => {
   test("does NOT fire on unsupported browsers", async () => {
     webAuthnSupportMock.mockImplementation(() => ({ kind: "unsupported" }));
     render(<LoginPage />);
-    // Give the effect a chance to run if it were going to.
-    await new Promise((r) => setTimeout(r, 20));
+    // Drain microtasks deterministically — if the gating regressed the
+    // signIn would already be queued by the time the awaited tick resolves.
+    await Promise.resolve();
+    await Promise.resolve();
     expect(signInPasskeyMock).not.toHaveBeenCalled();
+  });
+
+  test("ref guard prevents duplicate ceremonies under re-render churn", async () => {
+    // Hold the autofill promise open so the ref is observably gating
+    // re-renders before the first invocation has settled.
+    let resolveSignIn: (v: { data: unknown; error: null }) => void = () => {};
+    signInPasskeyMock.mockImplementationOnce(
+      () => new Promise((r) => { resolveSignIn = r; }),
+    );
+
+    const { rerender } = render(<LoginPage />);
+    await waitFor(() => {
+      expect(signInPasskeyMock).toHaveBeenCalledTimes(1);
+    });
+
+    // Force several re-renders by re-issuing the same element. Without the
+    // useRef guard the unstable router reference would re-fire the effect
+    // (regression caught by the original review pass — call count went to 5).
+    for (let i = 0; i < 4; i++) {
+      rerender(<LoginPage />);
+      await Promise.resolve();
+    }
+
+    expect(signInPasskeyMock).toHaveBeenCalledTimes(1);
+
+    // Resolve so cleanup is clean.
+    await act(async () => {
+      resolveSignIn({ data: { session: {}, user: {} }, error: null });
+    });
+  });
+});
+
+describe("LoginPage — empty envelope on click", () => {
+  test("data:null + error:null surfaces the 'refresh the page' banner — does not navigate", async () => {
+    signInPasskeyMock.mockImplementation(async () => ({
+      data: null,
+      error: null,
+    }));
+    render(<LoginPage />);
+    const btn = await screen.findByRole("button", { name: /sign in with a passkey/i });
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        "Passkey signed in but the server didn't return a session",
+      );
+    });
+    expect(routerPushMock).not.toHaveBeenCalled();
   });
 });

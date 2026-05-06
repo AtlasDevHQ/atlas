@@ -76,6 +76,24 @@ test.describe("Passkey-only sign-in (no password) @llm", () => {
         timeout: 15_000,
       });
 
+      // Pre-flight — fail fast if a previous run leaked an `e2e-signin-*`
+      // row. A leaked credential silently bypasses the password
+      // requirement on the shared admin and would mask exactly the
+      // regression this spec catches; the actionable error here is far
+      // better than a confusingly-passing run.
+      const leakedRow = page
+        .getByRole("listitem")
+        .filter({ hasText: /^e2e-signin-/ });
+      const leakedCount = await leakedRow.count();
+      if (leakedCount > 0) {
+        const leakedNames = await leakedRow.allTextContents();
+        throw new Error(
+          `Previous run leaked ${leakedCount} passkey(s) onto the shared admin: ` +
+          `${leakedNames.join(", ")}. Delete them via /admin/settings/security or ` +
+          `via the Better Auth API before re-running this spec.`,
+        );
+      }
+
       const addButton = page.getByRole("button", {
         name: /^Add (a|another) passkey$/,
       });
@@ -137,7 +155,24 @@ test.describe("Passkey-only sign-in (no password) @llm", () => {
         timeout: 10_000,
       });
 
-      // ── 4. Sign in via the passkey button (no password) ─────────────
+      // ── 4. Capture the password input state BEFORE the passkey click ─
+      // Reading the input AFTER a successful passkey sign-in is vacuous
+      // because we navigate away from /login — the field no longer exists
+      // in the DOM. Reading here, while the form is still mounted, catches
+      // the failure mode the test is designed to surface: a regression
+      // where browser autofill (or a prefill from a previous session)
+      // leaked a saved password into the input even though we intend to
+      // bypass it entirely.
+      const passwordBeforeClick = await page
+        .locator('input[type="password"]')
+        .inputValue();
+      expect(
+        passwordBeforeClick,
+        "Password input was prefilled before the passkey click — the assertion " +
+          "that signIn.passkey() bypasses the password depends on the field being empty.",
+      ).toBe("");
+
+      // ── 5. Sign in via the passkey button (no password) ─────────────
       // The button only renders when WebAuthn is supported — the virtual
       // authenticator above ensures this is true. If the button is
       // missing, the gating regression itself is the primary signal.
@@ -148,36 +183,31 @@ test.describe("Passkey-only sign-in (no password) @llm", () => {
       await expect(passkeyButton).toBeEnabled();
       await passkeyButton.click();
 
-      // ── 5. Assert a session was issued without typing a password ────
+      // ── 6. Assert a session was issued without typing a password ────
       // After a successful signIn.passkey(), the page navigates to "/".
       // Reaching the chat UI proves an authenticated session exists.
       await expect(
         page.locator('input[placeholder="Ask a question about your data..."]'),
       ).toBeVisible({ timeout: 15_000 });
 
-      // Belt-and-suspenders: the password input should NEVER have received
-      // input during this flow. A regression where the passkey button
-      // silently falls through to the password form would have failed the
-      // assertion above; this assertion catches a more pernicious failure
-      // mode where some upstream code prefilled a saved password.
-      const passwordValue = await page
-        .locator('input[type="password"]')
-        .inputValue()
-        .catch(() => "");
-      expect(passwordValue).toBe("");
-
-      // Sanity: the session-bearing /api/v1/health endpoint authenticates
-      // (returns 200 — auth.spec.ts uses the same surface).
-      const healthRes = await page.request.get("/api/v1/admin/audit?limit=1");
+      // Sanity: an authenticated route is reachable. /api/v1/admin/audit
+      // goes through the same admin-auth + MFA-required pipeline as the
+      // rest of the admin console, so a non-5xx here proves the session
+      // cookie is set and trusted. We accept any 4xx/2xx — a 403 still
+      // means "session present, MFA gate decided" rather than "session
+      // missing", which is what this assertion is guarding against.
+      const auditRes = await page.request.get("/api/v1/admin/audit?limit=1");
       expect(
-        healthRes.status(),
-        `Expected /api/v1/admin/audit to be reachable after passkey-only sign-in, got ${healthRes.status()}`,
+        auditRes.status(),
+        `Expected /api/v1/admin/audit to be reachable after passkey-only sign-in, got ${auditRes.status()}`,
       ).toBeLessThan(500);
     } finally {
-      // ── 6. Clean up — delete the credential and tear down the authn ─
-      // Best-effort, but failures here MUST be visible: a leaked passkey
-      // bypasses the password requirement on the shared admin and would
-      // silently mask exactly the regressions this test catches.
+      // ── 7. Clean up — delete the credential and tear down the authn ─
+      // Best-effort. The cleanup helper warns + continues on inner failures
+      // (page closed, row never rendered) — a hard fail in the finally
+      // block would mask the underlying assertion failure that brought us
+      // here. The pre-flight detection below at the start of subsequent
+      // runs is what catches a genuinely leaked credential.
       if (enrolledPasskeyName) {
         await cleanupEnrolledPasskey(page, enrolledPasskeyName);
       }

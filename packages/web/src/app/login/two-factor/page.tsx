@@ -116,14 +116,14 @@ export default function TwoFactorChallengePage() {
     try {
       const res = await signIn();
       if (res.error) {
-        const message = parsePasskeySignInError({ error: res.error });
-        if (message === null) {
+        const outcome = parsePasskeySignInError({ kind: "wire", error: res.error });
+        if (outcome.kind === "silent") {
           // Cancellation — log so a misconfigured rpID still leaves a
           // breadcrumb; never render a banner for an Esc on the OS prompt.
           console.debug("[two-factor:sign-in] passkey cancelled", res.error);
         } else {
           console.warn("[two-factor:sign-in] passkey sign-in failed", res.error);
-          setPasskeyError(message);
+          setPasskeyError(outcome.message);
         }
         return;
       }
@@ -143,10 +143,10 @@ export default function TwoFactorChallengePage() {
         "[two-factor:sign-in] passkey sign-in threw:",
         err instanceof Error ? err.message : String(err),
       );
-      setPasskeyError(
-        parsePasskeySignInError({ thrown: err }) ??
-          "Passkey sign-in didn't complete. Try your authenticator app.",
-      );
+      const outcome = parsePasskeySignInError({ kind: "thrown", value: err });
+      // Thrown branch never produces `silent` — only the wire-error path
+      // does — but the discriminated outcome makes that contract explicit.
+      if (outcome.kind === "user") setPasskeyError(outcome.message);
     } finally {
       passkeySubmittingRef.current = false;
       setPasskeyBusy(false);

@@ -449,4 +449,24 @@ describe("TwoFactorChallengePage — passkey alternative", () => {
     expect(getPasskeyButton()).toBeDefined();
     expect(screen.getByRole("checkbox", { name: /trust this device/i })).toBeDefined();
   });
+
+  test("data:null + error:null surfaces the 'refresh the page' banner — does not navigate", async () => {
+    signInPasskeyMock.mockImplementation(async () => ({
+      data: null,
+      error: null,
+    }));
+    render(<TwoFactorChallengePage />);
+    await act(async () => {
+      fireEvent.click(getPasskeyButton());
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        "Passkey signed in but the server didn't return a session",
+      );
+    });
+    expect(routerPushMock).not.toHaveBeenCalled();
+    // The TOTP path remains usable after the failed passkey attempt.
+    expect(getCodeInput().disabled).toBe(false);
+  });
 });

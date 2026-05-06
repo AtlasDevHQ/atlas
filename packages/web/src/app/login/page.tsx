@@ -147,19 +147,29 @@ export default function LoginPage() {
         const res = await signIn({ autoFill: true });
         if (cancelled) return;
         if (res.error) {
-          // The autofill flow surfaces cancellations + "no passkeys for this
-          // origin" as the same shape — debug-log so a misconfigured rpID
-          // doesn't disappear silently, but never block the password form.
+          // Debug level (not warn) is intentional: the autofill flow is
+          // expected to fall through silently for users without a saved
+          // passkey, and warn would spam DevTools on every visit. A real
+          // misconfiguration (rpID mismatch) still leaves a breadcrumb.
           console.debug(
             "[passkey] autoFill returned error:",
             res.error.code ?? res.error.message ?? "unknown",
           );
           return;
         }
-        if (res.data) router.push("/");
+        if (res.data) {
+          router.push("/");
+          return;
+        }
+        // Better Auth's wire shape technically allows `{ data: null, error: null }`.
+        // It shouldn't happen in practice; warn so a contract drift is visible.
+        console.warn("[passkey] autoFill returned data:null without error", res);
       } catch (err) {
         if (cancelled) return;
-        console.debug(
+        // A throw out of `signIn()` is genuinely unexpected — Better Auth
+        // catches the user-cancellation NotAllowedError internally — so
+        // warn rather than debug.
+        console.warn(
           "[passkey] autoFill threw:",
           err instanceof Error ? err.message : String(err),
         );
@@ -187,18 +197,15 @@ export default function LoginPage() {
     try {
       const res = await signIn();
       if (res.error) {
-        const message = parsePasskeySignInError({ error: res.error });
-        if (message === null) {
+        const outcome = parsePasskeySignInError({ kind: "wire", error: res.error });
+        if (outcome.kind === "silent") {
           // User cancellation — log so a misconfigured rpID is visible in
           // DevTools, but don't render a banner. Same discipline as the
           // enrollment tile in passkey-tile.tsx.
-          console.debug(
-            "[passkey] sign-in cancelled or NotAllowedError:",
-            res.error,
-          );
+          console.debug("[passkey] sign-in cancelled or NotAllowedError:", res.error);
         } else {
           console.warn("[passkey] sign-in failed", res.error);
-          setPasskeyError(message);
+          setPasskeyError(outcome.message);
         }
         return;
       }
@@ -217,7 +224,10 @@ export default function LoginPage() {
         "[passkey] sign-in threw:",
         err instanceof Error ? err.message : String(err),
       );
-      setPasskeyError(parsePasskeySignInError({ thrown: err }) ?? "Passkey sign-in didn't complete.");
+      const outcome = parsePasskeySignInError({ kind: "thrown", value: err });
+      // Thrown branch never returns `silent` — only the wire-error path
+      // does — but the discriminated outcome forces explicit handling.
+      if (outcome.kind === "user") setPasskeyError(outcome.message);
     } finally {
       setPasskeyLoading(false);
     }

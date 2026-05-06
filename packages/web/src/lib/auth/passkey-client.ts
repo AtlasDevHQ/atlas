@@ -8,10 +8,15 @@
  * guard here keeps the security-page components and the login flow honest
  * about which methods they depend on.
  *
- * The guard returns `null` when the plugin isn't loaded; callers decide
+ * The guards return `null` when the plugin isn't loaded; callers decide
  * whether that is a soft "refresh the page" banner or a thrown error.
  * The user-visible message stays in the consumer — never include
  * developer paths in `Error` messages that bubble up to end users.
+ *
+ * `PasskeyClient` and `PasskeySignIn` are intentionally split: Better Auth
+ * mounts enrollment endpoints under `passkey.*` and sign-in under
+ * `signIn.passkey`, and a future namespace shuffle on either side must
+ * not dark-mode the other surface.
  */
 
 import { authClient } from "./client";
@@ -48,11 +53,6 @@ export interface PasskeySignInData {
   user: Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------------------
-// Method surface — segregated into one interface so each consumer can
-// destructure only what it needs (`const { addPasskey } = client`).
-// ---------------------------------------------------------------------------
-
 export interface PasskeyClient {
   addPasskey: (opts?: {
     name?: string;
@@ -61,62 +61,46 @@ export interface PasskeyClient {
   listUserPasskeys: () => Promise<PasskeyApiResult<Passkey[]>>;
   updatePasskey: (opts: { id: string; name: string }) => Promise<PasskeyApiResult<{ passkey: Passkey }>>;
   deletePasskey: (opts: { id: string }) => Promise<PasskeyApiResult<{ status?: boolean }>>;
-  /**
-   * Initiates a passkey-first sign-in. With `autoFill: true` the call
-   * subscribes the page to the OS conditional-UI picker rather than
-   * triggering a modal prompt — pair it with an email input that has
-   * `autocomplete="username webauthn"` so saved passkeys appear in the
-   * autofill dropdown. Without `autoFill`, Better Auth fires the modal
-   * authenticator prompt immediately (the "Sign in with passkey" CTA path).
-   */
-  signInPasskey: (opts?: {
-    autoFill?: boolean;
-  }) => Promise<PasskeyApiResult<PasskeySignInData>>;
 }
 
-// ---------------------------------------------------------------------------
-// Guards
-// ---------------------------------------------------------------------------
+/**
+ * Initiates a passkey-first sign-in. With `autoFill: true` the call
+ * subscribes the page to the OS conditional-UI picker rather than
+ * triggering a modal prompt — pair it with an email input that has
+ * `autocomplete="username webauthn"` so saved passkeys appear in the
+ * autofill dropdown. Without `autoFill`, Better Auth fires the modal
+ * authenticator prompt immediately (the "Sign in with passkey" CTA path).
+ */
+export type PasskeySignIn = (opts?: {
+  autoFill?: boolean;
+}) => Promise<PasskeyApiResult<PasskeySignInData>>;
 
 /**
- * Resolve the `passkey` namespace from authClient. Returns `null` when the
- * plugin isn't loaded — callers translate that into a user-facing surface
- * (banner / disabled tile / etc).
+ * Resolve the `passkey` namespace from authClient. Returns `null` when
+ * enrollment endpoints aren't loaded — the security page translates that
+ * into a "refresh the page" banner. Independent of `getPasskeySignIn` so
+ * a renamed `signIn.passkey` doesn't dark-mode admin enrollment.
  *
- * Runtime method-presence check guards against Better Auth API drift —
- * a renamed method shows up as a precise null here rather than a
+ * The runtime method-presence check catches Better Auth API drift — a
+ * renamed method surfaces as a precise null rather than a
  * `TypeError: addPasskey is not a function` at click time.
- *
- * `signInPasskey` is resolved separately by {@link getPasskeySignIn} because
- * Better Auth mounts it under the top-level `signIn.passkey` namespace, not
- * under `passkey.*` — keeping the two guards apart prevents a renamed
- * `signIn.passkey` from disabling the security-page tile (or vice versa).
  */
 export function getPasskeyClient(): PasskeyClient | null {
   // The cast is the documented workaround for Better Auth's plugin-inference
-  // gap under TS6. Same pattern as `getTwoFactor()` in `two-factor-setup.tsx`
-  // and the `@ts-expect-error` on `apiKeyClient()` in `client.ts`.
-  const passkeyNamespace = (
-    authClient as unknown as { passkey?: Partial<Omit<PasskeyClient, "signInPasskey">> }
-  ).passkey;
-  const signIn = getPasskeySignIn();
+  // gap under TS6. Same pattern as `getTwoFactorClient()` in
+  // `lib/auth/two-factor-client.ts` and the `@ts-expect-error` on
+  // `apiKeyClient()` in `client.ts`.
+  const namespace = (authClient as unknown as { passkey?: Partial<PasskeyClient> }).passkey;
   if (
-    !passkeyNamespace ||
-    typeof passkeyNamespace.addPasskey !== "function" ||
-    typeof passkeyNamespace.listUserPasskeys !== "function" ||
-    typeof passkeyNamespace.updatePasskey !== "function" ||
-    typeof passkeyNamespace.deletePasskey !== "function" ||
-    !signIn
+    !namespace ||
+    typeof namespace.addPasskey !== "function" ||
+    typeof namespace.listUserPasskeys !== "function" ||
+    typeof namespace.updatePasskey !== "function" ||
+    typeof namespace.deletePasskey !== "function"
   ) {
     return null;
   }
-  return {
-    addPasskey: passkeyNamespace.addPasskey,
-    listUserPasskeys: passkeyNamespace.listUserPasskeys,
-    updatePasskey: passkeyNamespace.updatePasskey,
-    deletePasskey: passkeyNamespace.deletePasskey,
-    signInPasskey: signIn,
-  };
+  return namespace as PasskeyClient;
 }
 
 /**
@@ -125,11 +109,9 @@ export function getPasskeyClient(): PasskeyClient | null {
  * into "passkey button hidden" rather than a hard error: a user without
  * the plugin still has email + password.
  */
-export function getPasskeySignIn(): PasskeyClient["signInPasskey"] | null {
+export function getPasskeySignIn(): PasskeySignIn | null {
   const signInNamespace = (
-    authClient as unknown as {
-      signIn?: { passkey?: PasskeyClient["signInPasskey"] };
-    }
+    authClient as unknown as { signIn?: { passkey?: PasskeySignIn } }
   ).signIn;
   if (!signInNamespace || typeof signInNamespace.passkey !== "function") {
     return null;

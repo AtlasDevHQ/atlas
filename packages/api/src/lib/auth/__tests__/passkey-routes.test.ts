@@ -62,7 +62,7 @@ function makeAuth(): ReturnType<typeof betterAuth> {
 }
 
 describe("Passkey plugin — route surface", () => {
-  it("mounts /api/auth/passkey/generate-authenticate-options (the sign-in entry path)", async () => {
+  it("mounts /api/auth/passkey/generate-authenticate-options with a challenge envelope", async () => {
     const auth = makeAuth();
     const req = new Request(
       "http://localhost:3000/api/auth/passkey/generate-authenticate-options",
@@ -70,11 +70,14 @@ describe("Passkey plugin — route surface", () => {
     );
     const res = await auth.handler(req);
 
-    // The exact body shape is Better Auth's contract; we only assert the
-    // route is RECOGNIZED (anything that isn't 404 means the path was
-    // matched by the plugin). A 200 with a JSON challenge envelope is the
-    // happy path; any 4xx other than 404 still proves wiring.
-    expect(res.status).not.toBe(404);
+    // 200 with a JSON challenge is Better Auth's documented contract for
+    // an unauthenticated GET on this path. A loose `not.toBe(404)` would
+    // pass on a 500 or 503; pin the happy path so a contract drift (or a
+    // boot-time crash that returns 5xx) trips this test.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(typeof body.challenge).toBe("string");
+    expect((body.challenge as string).length).toBeGreaterThan(0);
   });
 
   it("registers `passkey` in the auth options.plugins list", () => {

@@ -170,6 +170,66 @@ describe("well-known — managed auth mode", () => {
     }
   });
 
+  it("advertises mcp.useatlas.dev as the resource when ATLAS_PUBLIC_API_URL points at the us-region api host", async () => {
+    // #2068 — mcp.useatlas.dev is the canonical hostname for the
+    // hosted MCP endpoint. The protected-resource metadata must
+    // advertise the brand hostname so a standards-compliant MCP client
+    // reading this doc binds its token request to the
+    // `https://mcp.useatlas.dev/mcp` audience and never sees the
+    // underlying regional `api.*` infra. The audience the issuer
+    // accepts (`resolveOAuthValidAudiences`) keeps the regional fallback
+    // for backward compat — this doc just stops naming it.
+    const prev = process.env.ATLAS_PUBLIC_API_URL;
+    process.env.ATLAS_PUBLIC_API_URL = "https://api.useatlas.dev";
+    const handle = await startServer();
+    try {
+      const res = await fetch(
+        `${handle.url}/.well-known/oauth-protected-resource/mcp/org_xyz`,
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { resource: string };
+      expect(body.resource).toBe("https://mcp.useatlas.dev/mcp");
+    } finally {
+      handle.close();
+      if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
+      else process.env.ATLAS_PUBLIC_API_URL = prev;
+    }
+  });
+
+  it("advertises mcp-eu.useatlas.dev for the eu-region api host", async () => {
+    const prev = process.env.ATLAS_PUBLIC_API_URL;
+    process.env.ATLAS_PUBLIC_API_URL = "https://api-eu.useatlas.dev";
+    const handle = await startServer();
+    try {
+      const res = await fetch(
+        `${handle.url}/.well-known/oauth-protected-resource/mcp/org_xyz`,
+      );
+      const body = (await res.json()) as { resource: string };
+      expect(body.resource).toBe("https://mcp-eu.useatlas.dev/mcp");
+    } finally {
+      handle.close();
+      if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
+      else process.env.ATLAS_PUBLIC_API_URL = prev;
+    }
+  });
+
+  it("keeps the api.* hostname for non-useatlas.dev bases (self-hosted unchanged)", async () => {
+    const prev = process.env.ATLAS_PUBLIC_API_URL;
+    process.env.ATLAS_PUBLIC_API_URL = "https://api.example.test";
+    const handle = await startServer();
+    try {
+      const res = await fetch(
+        `${handle.url}/.well-known/oauth-protected-resource/mcp/org_xyz`,
+      );
+      const body = (await res.json()) as { resource: string };
+      expect(body.resource).toBe("https://api.example.test/mcp");
+    } finally {
+      handle.close();
+      if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
+      else process.env.ATLAS_PUBLIC_API_URL = prev;
+    }
+  });
+
   it("answers OPTIONS preflight with CORS-permissive 204", async () => {
     const handle = await startServer();
     try {

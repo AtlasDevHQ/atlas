@@ -147,7 +147,7 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 
 ### Theme B — Brand + production hygiene
 
-- [ ] `mcp.useatlas.dev` first-class hostname ([#2068](https://github.com/AtlasDevHQ/atlas/issues/2068)) — DNS + audience switch + protected-resource metadata + CLI defaults + docs. Not cosmetic — tokens audience-bound to the brand surface.
+- [x] `mcp.useatlas.dev` first-class hostname ([#2068](https://github.com/AtlasDevHQ/atlas/issues/2068)) — `resolveOAuthValidAudiences` + protected-resource metadata + hosted MCP verifier all advertise/accept the brand-mirror `mcp*.useatlas.dev/mcp` audience alongside the regional `api.*.useatlas.dev/mcp` fallback (backward compat); CLI default flips to `https://mcp.useatlas.dev`; cross-region 421 body returns the brand URL; Settings → AI Agents wizard surface uses the brand hostname; docs sweep complete. DNS provisioning (Railway custom domains) happens at flip time outside the branch.
 - [x] Verify sticky routing for `/mcp/*` ([#2069](https://github.com/AtlasDevHQ/atlas/issues/2069), [#2107](https://github.com/AtlasDevHQ/atlas/pull/2107)) — Railway confirmed random LB (Context7-verified, no sticky available). Phase 0 boot guard + OpenStatus monitor + doc correction; spawned MCP session-store ADR + Phase 1 issue [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) (deferred until trigger).
 - [ ] Load-test hosted MCP, document perf profile ([#2070](https://github.com/AtlasDevHQ/atlas/issues/2070)) — `ATLAS_MCP_MAX_SESSIONS=100` is somebody's gut, not a measurement. k6 profile + bottleneck identification + perf-architecture doc.
 
@@ -171,7 +171,7 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 
 Backlog (post-1.4.1): `runbooks-context` plugin (#2023, next milestone headline), `/agent-mode` chat-first view (#2022), `/ee` decoupling refactor (#2017).
 
-Ordering recommendation: B → D (eval safety net) → C (governance) → E (distribution + foundation). Theme A complete (3/3); risk items A2 + B2 + D1-Phase-1 closed. Next risk-class item is B1 (`mcp.useatlas.dev` brand hostname, [#2068](https://github.com/AtlasDevHQ/atlas/issues/2068)) — every doc + registry + CLI default still points at the regional API hostname while marketing reads `mcp.useatlas.dev`.
+Ordering recommendation: B → D (eval safety net) → C (governance) → E (distribution + foundation). Theme A complete (3/3); risk items A2 + B2 + B1 + D1-Phase-1 closed. Next risk-class item is B3 (load-test hosted MCP, [#2070](https://github.com/AtlasDevHQ/atlas/issues/2070)) — `ATLAS_MCP_MAX_SESSIONS=100` is somebody's gut, not a measurement; alongside D2 (tool description audit, [#2075](https://github.com/AtlasDevHQ/atlas/issues/2075)) on the eval-quality lane.
 
 ---
 

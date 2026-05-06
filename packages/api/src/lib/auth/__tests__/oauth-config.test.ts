@@ -33,19 +33,70 @@ describe("resolveOAuthValidAudiences", () => {
     // Mirrors the priority chain in well-known.ts and hosted.ts so all
     // three sites converge on the same audience in a multi-region
     // deploy where BETTER_AUTH_URL points at a global auth host but
-    // each region runs a different MCP resource server.
+    // each region runs a different MCP resource server. The brand
+    // `mcp-eu.useatlas.dev` audience is added alongside the regional
+    // fallback so tokens minted post-cutover verify under either name
+    // (and pre-cutover-issued tokens — there are none in production —
+    // still verify against the regional `<region>.api.useatlas.dev/mcp`
+    // they were bound to).
     expect(
       resolveOAuthValidAudiences({
         ATLAS_PUBLIC_API_URL: "https://api-eu.useatlas.dev",
         BETTER_AUTH_URL: "https://api.useatlas.dev",
       } as NodeJS.ProcessEnv),
-    ).toEqual(["https://api-eu.useatlas.dev/mcp"]);
+    ).toEqual([
+      "https://api-eu.useatlas.dev/mcp",
+      "https://mcp-eu.useatlas.dev/mcp",
+    ]);
   });
 
   it("strips trailing slashes from the base before suffixing", () => {
     expect(
       resolveOAuthValidAudiences({
         BETTER_AUTH_URL: "https://api.example.test/",
+      } as NodeJS.ProcessEnv),
+    ).toEqual(["https://api.example.test/mcp"]);
+  });
+
+  it("adds the mcp.useatlas.dev brand audience alongside api.useatlas.dev (us region)", () => {
+    // #2068 — `mcp.useatlas.dev` becomes the canonical hostname for the
+    // hosted MCP endpoint while the regional `api.*` host stays
+    // reachable as the underlying infra. Tokens minted post-cutover are
+    // bound to the brand audience; the regional fallback is preserved
+    // so the issuer keeps accepting tokens minted just before the flip.
+    // Ordering: regional first (backward compat), brand second
+    // (forward-looking) — keeps the diff against the pre-#2068 list a
+    // pure append.
+    expect(
+      resolveOAuthValidAudiences({
+        ATLAS_PUBLIC_API_URL: "https://api.useatlas.dev",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([
+      "https://api.useatlas.dev/mcp",
+      "https://mcp.useatlas.dev/mcp",
+    ]);
+  });
+
+  it("adds the mcp-apac.useatlas.dev brand audience alongside api-apac.useatlas.dev", () => {
+    expect(
+      resolveOAuthValidAudiences({
+        ATLAS_PUBLIC_API_URL: "https://api-apac.useatlas.dev",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([
+      "https://api-apac.useatlas.dev/mcp",
+      "https://mcp-apac.useatlas.dev/mcp",
+    ]);
+  });
+
+  it("does not add a brand mirror for non-useatlas.dev hosts (self-hosted / dev)", () => {
+    // The brand-hostname mirror is a SaaS-specific concern. Self-hosted
+    // operators on `api.example.test` shouldn't see a synthesised
+    // `mcp.example.test` audience appear out of nowhere — keep the
+    // single-audience output the rest of `__tests__/oauth-config.test.ts`
+    // already pins.
+    expect(
+      resolveOAuthValidAudiences({
+        ATLAS_PUBLIC_API_URL: "https://api.example.test",
       } as NodeJS.ProcessEnv),
     ).toEqual(["https://api.example.test/mcp"]);
   });

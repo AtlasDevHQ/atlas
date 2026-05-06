@@ -45,7 +45,7 @@ Restart Claude Desktop / Cursor and ask one of the canonical questions:
 - *"Show me revenue last quarter."* — Atlas asks which definition you mean (GMV vs. net revenue vs. seller revenue) because `revenue` is `status: ambiguous` in the glossary
 - *"What are our most common return reasons?"*
 
-The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow. Hosted MCP at `mcp.useatlas.dev` is in development — tracked in [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024).
+The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow. Hosted MCP is live at `mcp.useatlas.dev` — `bunx @useatlas/mcp init --hosted --write` walks any standards-compliant client through OAuth 2.1 + DCR + PKCE in one command. See the [hosted endpoint reference](https://docs.useatlas.dev/guides/mcp-hosted).
 
 ## What's in the YAML?
 

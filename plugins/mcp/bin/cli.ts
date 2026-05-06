@@ -109,7 +109,7 @@ const INIT_HELP = `bunx @useatlas/mcp init [options]
   --client <id>      Force a specific client: claude-desktop | cursor | continue | generic
   --write            Merge into the client's config file (with a .bak backup)
   --api-url <url>    Override the API base URL (default: http://localhost:3001 for --local,
-                     https://api.useatlas.dev for --hosted; also reads ATLAS_PUBLIC_API_URL)
+                     https://mcp.useatlas.dev for --hosted; also reads ATLAS_PUBLIC_API_URL)
   -h, --help         Show this help
 
 Examples:

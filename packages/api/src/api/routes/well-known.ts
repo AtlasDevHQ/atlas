@@ -74,6 +74,15 @@ const log = createLogger("well-known");
  *      single-region deployments)
  *   3. The request's URL origin — last-resort fallback for local dev
  *      where neither env var is set.
+ *
+ * #2068 — when the resolved base is one of the canonical SaaS regional
+ * `api*.useatlas.dev` hosts, the doc advertises the brand-mirror
+ * `mcp*.useatlas.dev/mcp` instead so clients reading discovery bind
+ * tokens to the brand audience rather than the regional infra. The
+ * issuer keeps accepting BOTH (`resolveOAuthValidAudiences`) so a
+ * pre-cutover token bound to the regional host still verifies; this
+ * function intentionally stops naming the regional surface so new
+ * clients walk forward, not back.
  */
 function buildResourceUri(req: Request): string {
   const base =
@@ -81,7 +90,31 @@ function buildResourceUri(req: Request): string {
     process.env.BETTER_AUTH_URL?.trim() ||
     new URL(req.url).origin;
   const trimmed = base.replace(/\/+$/, "");
-  return `${trimmed}/mcp`;
+  return `${brandedMcpHost(trimmed) ?? trimmed}/mcp`;
+}
+
+/**
+ * Map a SaaS regional API base to its `mcp*.useatlas.dev` brand
+ * counterpart. Returns null for any host outside the documented
+ * regional pattern so self-hosted bases pass through unchanged.
+ *
+ * The match here mirrors the one in `server.ts:brandMcpAudience()`
+ * intentionally — the protected-resource doc must advertise exactly
+ * what `resolveOAuthValidAudiences()` would synthesise as the brand
+ * audience or RFC-8707 token-endpoint resource binding fails. Keep the
+ * two regexes in lockstep.
+ */
+function brandedMcpHost(base: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    return null;
+  }
+  const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);
+  if (!matched) return null;
+  const regionSuffix = matched[1] ?? "";
+  return `https://mcp${regionSuffix}.useatlas.dev`;
 }
 
 /**

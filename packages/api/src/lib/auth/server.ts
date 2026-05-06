@@ -557,6 +557,15 @@ export const ATLAS_OAUTH_SCOPES = [
  *   3. BETTER_AUTH_URL — last fallback, `/mcp` suffix appended.
  *
  * Empty string in the env var → no override → fall back to (2)/(3).
+ *
+ * #2068 — when the resolved base is one of the canonical SaaS regional
+ * `api*.useatlas.dev` hosts (`api`, `api-eu`, `api-apac`), the
+ * brand-mirror `mcp*.useatlas.dev/mcp` audience is appended so tokens
+ * minted post-cutover (advertised on the new canonical hostname)
+ * verify here, AND tokens minted just before the cutover (against the
+ * regional `<region>.api.useatlas.dev/mcp` host) keep verifying.
+ * Self-hosted operators on arbitrary hostnames are unaffected — the
+ * mirror only synthesises for `*.useatlas.dev`.
  */
 export function resolveOAuthValidAudiences(env: NodeJS.ProcessEnv): string[] {
   const explicit = env.ATLAS_OAUTH_VALID_AUDIENCES?.trim();
@@ -569,7 +578,37 @@ export function resolveOAuthValidAudiences(env: NodeJS.ProcessEnv): string[] {
   const base =
     env.ATLAS_PUBLIC_API_URL?.trim() || env.BETTER_AUTH_URL?.trim();
   if (!base) return [];
-  return [`${base.replace(/\/+$/, "")}/mcp`];
+  const trimmed = base.replace(/\/+$/, "");
+  const audiences = [`${trimmed}/mcp`];
+  const brand = brandMcpAudience(trimmed);
+  if (brand) audiences.push(brand);
+  return audiences;
+}
+
+/**
+ * Map a SaaS regional API host to its `mcp*.useatlas.dev` brand
+ * counterpart (#2068). `api.useatlas.dev` → `mcp.useatlas.dev`,
+ * `api-eu.useatlas.dev` → `mcp-eu.useatlas.dev`,
+ * `api-apac.useatlas.dev` → `mcp-apac.useatlas.dev`. Anything else
+ * (self-hosted, dev, custom-domain SaaS) returns null — synthesising
+ * a `.useatlas.dev` mirror for an unrelated host would be wrong. The
+ * match is anchored on hostname only, so a `BETTER_AUTH_URL` with an
+ * unusual port or path still maps cleanly.
+ */
+function brandMcpAudience(base: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    return null;
+  }
+  // Strict match: `api.useatlas.dev` or `api-<region>.useatlas.dev`.
+  // `apiv2`, `api.eu.useatlas.dev`, etc. are intentionally excluded —
+  // we only mirror the three documented regional surfaces.
+  const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);
+  if (!matched) return null;
+  const regionSuffix = matched[1] ?? "";
+  return `https://mcp${regionSuffix}.useatlas.dev/mcp`;
 }
 
 /**

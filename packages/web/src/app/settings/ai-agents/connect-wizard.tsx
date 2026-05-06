@@ -46,6 +46,35 @@ import {
   Sparkles,
 } from "lucide-react";
 
+/**
+ * Map a SaaS regional API base to its `mcp*.useatlas.dev` brand
+ * counterpart (#2068). `https://api.useatlas.dev` →
+ * `https://mcp.useatlas.dev`, `https://api-eu.useatlas.dev` →
+ * `https://mcp-eu.useatlas.dev`, etc. Returns null for any host
+ * outside the documented regional pattern (self-hosted, dev,
+ * custom-domain SaaS) so those bases pass through unchanged.
+ *
+ * Mirrors the matcher in `packages/api/src/lib/auth/server.ts`,
+ * `packages/api/src/api/routes/well-known.ts`, and
+ * `packages/mcp/src/hosted.ts`. Keep the four regexes in lockstep —
+ * the hosted MCP route's audience verifier and the protected-resource
+ * doc must agree on the brand-vs-regional mapping or RFC-8707 token
+ * binding fails.
+ */
+function brandedMcpBase(base: string): string | null {
+  if (!base) return null;
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    return null;
+  }
+  const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);
+  if (!matched) return null;
+  const regionSuffix = matched[1] ?? "";
+  return `https://mcp${regionSuffix}.useatlas.dev`;
+}
+
 type WizardStep = 1 | 2 | 3;
 
 interface ClientPreset {
@@ -149,11 +178,19 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
   }, []);
 
   const mcpUrl = useMemo(() => {
+    // #2068 — when the configured API base is one of the canonical SaaS
+    // regional `api*.useatlas.dev` hosts, surface the brand-mirror
+    // `mcp*.useatlas.dev` host to the user instead of the underlying
+    // infra. The hosted MCP route accepts both audiences (issuer-side
+    // backward compat) but the wizard's snippet should always write the
+    // brand URL — that's what every doc, registry entry, and CLI default
+    // already advertises. Self-hosted bases pass through unchanged.
+    const mcpBase = brandedMcpBase(apiBase) ?? apiBase;
     // Workspace id is part of the URL — without it the agent can't bind to
     // a workspace. Fall back to a placeholder so the JSON parses; the user
     // sees the placeholder and knows something's missing.
-    if (!orgId) return `${apiBase}/mcp/<your_workspace_id>/sse`;
-    return `${apiBase}/mcp/${orgId}/sse`;
+    if (!orgId) return `${mcpBase}/mcp/<your_workspace_id>/sse`;
+    return `${mcpBase}/mcp/${orgId}/sse`;
   }, [apiBase, orgId]);
 
   const configJson = useMemo(() => {

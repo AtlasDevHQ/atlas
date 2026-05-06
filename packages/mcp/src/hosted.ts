@@ -144,18 +144,59 @@ export async function _resetHostedSessions(): Promise<void> {
 const REQUIRED_SCOPES = ["mcp:read"] as const;
 
 /**
- * Build the resource-server audience for this API instance. Tokens
- * issued for this MCP region must have `aud` matching this exactly. We
- * resolve from the env in the same order as well-known.ts so the
- * audience advertised in the protected-resource metadata equals the
- * audience accepted here.
+ * Build the resource-server audience(s) accepted by this API instance.
+ * Tokens issued for this MCP region must have `aud` matching one of
+ * these exactly. We resolve from the env in the same order as
+ * well-known.ts so the audience advertised in the protected-resource
+ * metadata is one of the audiences accepted here.
+ *
+ * #2068 — when the resolved base is one of the canonical SaaS regional
+ * `api*.useatlas.dev` hosts, the brand-mirror `mcp*.useatlas.dev/mcp`
+ * audience is also accepted. Tokens minted post-cutover (advertised
+ * via the brand surface) verify here, AND tokens minted pre-cutover
+ * (bound to the regional host) keep verifying. Self-hosted operators
+ * on arbitrary hostnames are unaffected — the mirror only synthesises
+ * for `*.useatlas.dev`.
+ *
+ * The return is always an array; `verifyAccessToken` forwards directly
+ * to `jose.jwtVerify` whose `audience` option accepts `string[]`. A
+ * one-element array on self-hosted is harmless and keeps the call
+ * site uniform.
  */
-function resourceAudience(req: Request): string {
+function resourceAudience(req: Request): string[] {
   const base =
     process.env.ATLAS_PUBLIC_API_URL?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     new URL(req.url).origin;
-  return `${base.replace(/\/+$/, "")}/mcp`;
+  const trimmed = base.replace(/\/+$/, "");
+  const audiences = [`${trimmed}/mcp`];
+  const brand = brandedMcpHost(trimmed);
+  if (brand) audiences.push(`${brand}/mcp`);
+  return audiences;
+}
+
+/**
+ * Map a SaaS regional API base to its `mcp*.useatlas.dev` brand
+ * counterpart. Returns null for any host outside the documented
+ * regional pattern so self-hosted bases pass through unchanged.
+ *
+ * The match here mirrors the one in `server.ts:brandMcpAudience()` and
+ * `well-known.ts:brandedMcpHost()` intentionally — the issuer's
+ * accepted audiences, the protected-resource doc, and this verifier
+ * must all agree on the brand-vs-regional mapping or RFC-8707 token
+ * binding fails. Keep the three regexes in lockstep.
+ */
+function brandedMcpHost(base: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    return null;
+  }
+  const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);
+  if (!matched) return null;
+  const regionSuffix = matched[1] ?? "";
+  return `https://mcp${regionSuffix}.useatlas.dev`;
 }
 
 /**
@@ -534,8 +575,18 @@ async function checkResidency(
   if (!workspaceRegion) return { kind: "ok" };
   if (workspaceRegion === apiRegion) return { kind: "ok" };
 
-  const correctApiUrl =
+  // #2068 — `residency.regions[X].apiUrl` is the canonical public API
+  // URL for region X (data path). For the MCP misrouting body we
+  // surface the brand-mirror `mcp*.useatlas.dev` so a client redirected
+  // here points its next session at the same surface its config
+  // already advertises. The mapping is a no-op for self-hosted operators
+  // whose `apiUrl` doesn't match the SaaS regional pattern.
+  const regionApiUrl =
     getConfig()?.residency?.regions[workspaceRegion]?.apiUrl;
+  const correctApiUrl =
+    regionApiUrl !== undefined
+      ? (brandedMcpHost(regionApiUrl) ?? regionApiUrl)
+      : undefined;
 
   return {
     kind: "misrouted",
@@ -788,7 +839,14 @@ function wwwAuthenticateHeader(
     process.env.BETTER_AUTH_URL?.trim() ||
     new URL(req.url).origin;
   const trimmed = base.replace(/\/+$/, "");
-  const resourceMetadata = `${trimmed}/.well-known/oauth-protected-resource/mcp/${workspaceId}`;
+  // #2068 — point clients at the brand hostname for SaaS so a client
+  // that never sees the regional `api.*` URL can still complete DCR.
+  // Self-hosted operators on arbitrary hostnames stay on the resolved
+  // base. The well-known route is mounted under either hostname (DNS
+  // CNAMEs fan in to the same Railway service), so the brand URL
+  // resolves identically to the regional one.
+  const metadataBase = brandedMcpHost(trimmed) ?? trimmed;
+  const resourceMetadata = `${metadataBase}/.well-known/oauth-protected-resource/mcp/${workspaceId}`;
   const scopeAttr = scope ? `, scope="${scope}"` : "";
   return `Bearer realm="Atlas MCP", resource_metadata="${resourceMetadata}"${scopeAttr}`;
 }

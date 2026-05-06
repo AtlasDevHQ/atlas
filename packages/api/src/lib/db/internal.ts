@@ -731,10 +731,16 @@ function warnIfSharedDatabase(): void {
   }
 }
 
-/** Migrations that depend on Better Auth's organization table (#1472). */
+/** Migrations that depend on Better Auth tables (#1472, #2117). */
 const ORG_DEPENDENT_MIGRATIONS = [
   "0027_organization_saas_columns.sql",
   "0042_audit_retention_default.sql",
+  // Touches Better Auth's "user" and "session" tables — those tables
+  // only exist when managed auth is enabled (Better Auth's own
+  // runMigrations creates them). Skipping in non-managed mode keeps the
+  // migration runner green on self-hosted deployments that use a
+  // different auth backend.
+  "0050_backfill_email_verified_grandfathered.sql",
 ];
 
 /**

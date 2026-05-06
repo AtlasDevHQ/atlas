@@ -314,6 +314,18 @@ describe("config wiring snapshot — buildAuthOptions", () => {
 
     expect(unhandled).toBeNull();
   });
+
+  it("wires `emailVerification.sendOnSignIn = true` so unverified users self-recover", () => {
+    // Without this, Better Auth's /sign-in/email path throws
+    // EMAIL_NOT_VERIFIED but never re-dispatches the verification link
+    // (see node_modules/better-auth/dist/api/routes/sign-in.mjs — the
+    // `sendOnSignIn` branch is the ONLY place the link gets re-issued
+    // outside the original signup). A regression here permanently locks
+    // out anyone whose `emailVerified=false` — including users
+    // grandfathered in from before `requireEmailVerification` was on.
+    const options = buildAuthOptions(makeDeps());
+    expect(options.emailVerification?.sendOnSignIn).toBe(true);
+  });
 });
 
 describe("live rate-limit loop — /sign-in/email", () => {

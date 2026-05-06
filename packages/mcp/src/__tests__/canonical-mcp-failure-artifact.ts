@@ -9,8 +9,9 @@
  * Categories:
  *   - `protocol`        wire shape changed (missing fields, wrong content[]
  *                       layout, isError on a success path, etc.)
- *   - `tool_selection`  the LLM picked the wrong tool (only meaningful in
- *                       --mcp-llm; emitted by Phase 2)
+ *   - `tool_selection`  reserved for the Phase 2 `--mcp-llm` mode (#2119)
+ *                       where an LLM picks tools through MCP and a wrong
+ *                       pick is the regression — Phase 1 never emits this
  *   - `recovery`        an `ambiguous_term` envelope came back without
  *                       possible_mappings, an `unknown_metric` came back
  *                       without a `hint`, etc.
@@ -83,6 +84,9 @@ function stringifyClipped(value: unknown): string {
   try {
     s = typeof value === "string" ? value : JSON.stringify(value);
   } catch {
+    // intentionally ignored: cyclic / non-JSON-serializable values fall
+    // back to `String(value)` so the artifact is still printable; the
+    // dump is for human triage, not round-tripping.
     s = String(value);
   }
   if (s.length <= MAX_DUMP_LEN) return s;

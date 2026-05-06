@@ -110,11 +110,11 @@ bun test ./packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts
 **Phase split:**
 
 - **Phase 1 (shipped):** mocks `verifyAccessToken` and `executeSQL.execute`. Validates the MCP **protocol** layer end-to-end. SQL correctness is owned by the deterministic eval above; this eval owns the MCP path.
-- **Phase 2 (follow-up issue):** real DCR + PKCE flow against an in-process Better Auth instance — closes the JWT-signature gap. Adds `--mcp-llm` mode where an LLM picks tools through MCP and validates tool-selection accuracy + recovery contract under prose drift.
+- **Phase 2 ([#2119](https://github.com/AtlasDevHQ/atlas/issues/2119)):** real DCR + PKCE flow against an in-process Better Auth instance — closes the JWT-signature gap. Adds `--mcp-llm` mode where an LLM picks tools through MCP and validates tool-selection accuracy + recovery contract under prose drift.
 
 **Failure artifacts.** Every failed dispatch produces a structured artifact (`packages/mcp/src/__tests__/canonical-mcp-failure-artifact.ts`) carrying the wire frame sent, the response received, the response expected, and a regression category — `protocol` / `tool_selection` / `recovery` / `latency` / `assertion`. The artifact bundle prints to the eval log so a CI failure carries enough context to act on without re-running.
 
-**CI gate.** A separate job — `canonical-mcp-eval (deterministic)` — runs alongside the deterministic SQL eval. Same policy: PRs are informational, tag pushes are blocking. Trigger paths cover the MCP route, the auth surface that issues / verifies bearers, and the eval helpers themselves.
+**CI gate.** A separate job — `canonical-mcp-eval (deterministic)` — runs alongside the deterministic SQL eval; the [CI policy](#ci-policy) table above governs both. Trigger paths cover the MCP route, the auth surface that issues / verifies bearers, and the eval helpers themselves.
 
 ## Out of scope
 

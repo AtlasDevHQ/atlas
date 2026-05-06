@@ -19,9 +19,9 @@
  * MCP **protocol** layer end-to-end (transport, dispatch, envelope,
  * prompts, recovery) but NOT the JWT signature path.
  *
- * Phase 2 (follow-up issue) replaces the mocked verifier with the real
- * DCR + PKCE flow against an in-process Better Auth instance + JWKS,
- * closing the JWT-signature gap.
+ * Phase 2 (#2119) replaces the mocked verifier with the real DCR + PKCE
+ * flow against an in-process Better Auth instance + JWKS, closing the
+ * JWT-signature gap.
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -92,14 +92,15 @@ export class EvalMcpClient {
   async listPrompts(): Promise<readonly PromptListEntry[]> {
     this.ensureConnected("listPrompts");
     // `prompts/list` may not be implemented if the server didn't register
-    // any prompts. The SDK throws; surface it as an empty list so the
-    // eval can still distinguish "no prompts" from "method missing".
+    // any prompts. The MCP SDK surfaces "method not found" as JSON-RPC
+    // error code -32601 — narrow on the code, not on a string match. A
+    // server-side 500 whose body happens to mention `prompts/list` is a
+    // real bug and must propagate, not be silently coerced to `[]`.
     try {
       const res = await this.client.listPrompts();
       return res.prompts.map((p) => ({ name: p.name, description: p.description }));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (/Method not found|prompts\/list/.test(message)) return [];
+      if (isMethodNotFoundError(err)) return [];
       throw err;
     }
   }
@@ -119,20 +120,28 @@ export class EvalMcpClient {
   async close(): Promise<void> {
     if (!this.connected) return;
     this.connected = false;
-    // Closing the SDK client also closes the transport — the redundant
-    // transport.close() below catches the case where `client.close`
-    // throws before reaching the transport tear-down.
+    // The SDK's `client.close()` already closes the underlying transport,
+    // so the explicit `transport.close()` below is the duplicate-close
+    // path. We log a debug line on `client.close` failure so genuine
+    // teardown bugs (malformed-response handlers, abort-controller leaks)
+    // leave a trail; the transport double-close is matched against a
+    // narrow signature so EPIPE / socket teardown failures still surface.
     try {
       await this.client.close();
     } catch (err) {
-      // intentionally ignored: best-effort teardown — surface only via
-      // the transport close below if that also fails.
-      void err;
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[mcp-eval] client.close threw: ${message}\n`);
     }
-    await this.transport.close().catch(() => {
-      // intentionally ignored: see above. Logging here would spam every
-      // eval run with the duplicate-close path that's expected.
-    });
+    try {
+      await this.transport.close();
+    } catch (err) {
+      if (!isAlreadyClosedError(err)) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[mcp-eval] transport.close threw (not idempotent close): ${message}\n`,
+        );
+      }
+    }
   }
 
   private ensureConnected(op: string): void {
@@ -163,8 +172,47 @@ export function extractToolJson(
   try {
     parsed = JSON.parse(text);
   } catch {
+    // intentionally ignored: malformed JSON is a category of result, not
+    // an error. The eval branches on `kind` and reports `unparseable` as
+    // a `protocol` regression artifact rather than throwing.
     return { kind: "unparseable", raw: text };
   }
   if (result.isError === true) return { kind: "error", envelope: parsed };
   return { kind: "ok", data: parsed };
+}
+
+// ── Internal error classifiers ────────────────────────────────────────
+
+/**
+ * JSON-RPC `Method not found` is error code `-32601` (per the JSON-RPC
+ * 2.0 spec, mirrored by MCP). The SDK exposes the code on the rejection
+ * payload; fall back to a tightly-anchored prose check for older SDK
+ * builds that don't set `.code`. Anything else is a real failure and
+ * must propagate — a 500 whose body happens to mention `prompts/list`
+ * is exactly the regression class this eval exists to catch.
+ */
+function isMethodNotFoundError(err: unknown): boolean {
+  if (typeof err === "object" && err !== null) {
+    const e = err as { code?: unknown };
+    if (e.code === -32601) return true;
+  }
+  if (err instanceof Error) {
+    return /^Method not found\b/.test(err.message);
+  }
+  return false;
+}
+
+/**
+ * Detect the harmless duplicate-close case: `Client.close()` already
+ * tears the transport down, so a follow-on `transport.close()` may hit
+ * an "already closed" guard. We accept those quietly. Anything else
+ * (EPIPE, socket-leak signatures, generic TypeError from a mis-wired
+ * transport) propagates as a stderr line so test cleanup regressions
+ * are visible.
+ */
+function isAlreadyClosedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /already (closed|disposed)|transport.* (closed|terminated)/i.test(
+    err.message,
+  );
 }

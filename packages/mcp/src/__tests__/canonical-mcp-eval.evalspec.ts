@@ -34,7 +34,7 @@
  *   - Asserts on protocol shape, tool dispatch, envelope codes, prompts
  *     list shape, and concurrent-session behavior.
  *
- * Phase 2 (follow-up issue, see PR description):
+ * Phase 2 (#2119):
  *   - Real DCR + PKCE flow against an in-process Better Auth instance —
  *     covers the JWT signature path the verifier mock currently hides.
  *   - `--mcp-llm` mode where an LLM picks tools through MCP — validates
@@ -168,8 +168,6 @@ mock.module("better-auth/oauth2", () => ({
 }));
 
 // `db/internal` is touched by the route (residency check) and by audit.
-// Pin every named export to keep this mock from leaking into other test
-// files that may run in the same process.
 mock.module("@atlas/api/lib/db/internal", () => {
   const notUsed = (name: string) => () => {
     throw new Error(`db/internal.${name} called from mcp-eval — add a mock`);
@@ -367,16 +365,30 @@ afterAll(async () => {
   const { _resetHostedSessions } = await import("@atlas/mcp/hosted");
   await _resetHostedSessions();
 
-  // Restore semantic layer no matter what; surface failure loudly.
-  if (fs.existsSync(SEMANTIC_BACKUP_DIR)) {
-    if (fs.existsSync(SEMANTIC_DIR)) {
+  // Restore semantic layer no matter what. A failed restore would
+  // silently corrupt the contributor's working tree (eval-seeded
+  // entities staying in `semantic/`); print the recovery commands and
+  // re-throw so the test run fails loudly instead of "all green".
+  try {
+    if (fs.existsSync(SEMANTIC_BACKUP_DIR)) {
+      if (fs.existsSync(SEMANTIC_DIR)) {
+        fs.rmSync(SEMANTIC_DIR, { recursive: true });
+      }
+      fs.cpSync(SEMANTIC_BACKUP_DIR, SEMANTIC_DIR, { recursive: true });
+      fs.rmSync(SEMANTIC_BACKUP_DIR, { recursive: true });
+    } else if (fs.existsSync(SEMANTIC_DIR)) {
+      // No backup means there was nothing in semantic/ before — clean up.
       fs.rmSync(SEMANTIC_DIR, { recursive: true });
     }
-    fs.cpSync(SEMANTIC_BACKUP_DIR, SEMANTIC_DIR, { recursive: true });
-    fs.rmSync(SEMANTIC_BACKUP_DIR, { recursive: true });
-  } else if (fs.existsSync(SEMANTIC_DIR)) {
-    // No backup means there was nothing in semantic/ before — clean up.
-    fs.rmSync(SEMANTIC_DIR, { recursive: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `\nCRITICAL: failed to restore semantic layer after MCP eval: ${message}\n` +
+        `Recover manually:\n` +
+        `  rm -rf ${SEMANTIC_DIR}\n` +
+        `  ${fs.existsSync(SEMANTIC_BACKUP_DIR) ? `mv ${SEMANTIC_BACKUP_DIR} ${SEMANTIC_DIR}` : "# no backup exists — semantic/ is now empty (this is fine if it started empty)"}\n`,
+    );
+    throw err;
   }
 
   mock.restore();
@@ -398,12 +410,15 @@ function newClient(): EvalMcpClient {
 
 // ── Per-question dispatch ─────────────────────────────────────────
 
-interface QuestionOutcome {
-  readonly questionId: string;
-  readonly status: "pass" | "fail";
-  readonly latencyMs: number;
-  readonly artifact?: McpFailureArtifact;
-}
+/**
+ * Discriminated by `status`: a `fail` outcome always carries an
+ * artifact, a `pass` outcome never does. Modeling this as a union
+ * (rather than an optional artifact field) lets the summary code at
+ * the bottom narrow without a guard each time it touches `outcome.artifact`.
+ */
+type QuestionOutcome =
+  | { readonly questionId: string; readonly status: "pass"; readonly latencyMs: number }
+  | { readonly questionId: string; readonly status: "fail"; readonly latencyMs: number; readonly artifact: McpFailureArtifact };
 
 async function runOneQuestion(
   client: EvalMcpClient,
@@ -453,7 +468,13 @@ async function runOneQuestion(
             expected: { id: q.metric_id, success: true },
           });
         }
-        const data = parsed.data as { id?: unknown; sql?: unknown };
+        const data = parsed.data as {
+          id?: unknown;
+          sql?: unknown;
+          columns?: unknown;
+          rows?: unknown;
+          truncated?: unknown;
+        };
         if (data.id !== q.metric_id) {
           return fail("protocol", `runMetric envelope id mismatch`, {
             tool,
@@ -468,6 +489,34 @@ async function runOneQuestion(
             args,
             response: data,
             expected: "non-empty sql string",
+          });
+        }
+        // Wire-shape pin: a regression that flips `truncated` to a string
+        // or drops `columns`/`rows` ships invisible to the agent until a
+        // downstream tool (a notebook, a chat-platform formatter)
+        // crashes on the unexpected type. Catch it at the eval boundary.
+        if (!Array.isArray(data.columns)) {
+          return fail("protocol", `runMetric envelope columns must be an array`, {
+            tool,
+            args,
+            response: data,
+            expected: { columns: "string[]" },
+          });
+        }
+        if (!Array.isArray(data.rows)) {
+          return fail("protocol", `runMetric envelope rows must be an array`, {
+            tool,
+            args,
+            response: data,
+            expected: { rows: "Record<string, unknown>[]" },
+          });
+        }
+        if (typeof data.truncated !== "boolean") {
+          return fail("protocol", `runMetric envelope truncated must be a boolean`, {
+            tool,
+            args,
+            response: data,
+            expected: { truncated: "boolean" },
           });
         }
         return { questionId: q.id, status: "pass", latencyMs: Date.now() - start };
@@ -658,8 +707,13 @@ describe("MCP path canonical eval (#2074)", () => {
       const parsed = extractToolJson(result);
       expect(parsed.kind).toBe("error");
       if (parsed.kind === "error") {
-        const env = parsed.envelope as { code?: unknown };
+        const env = parsed.envelope as { code?: unknown; hint?: unknown };
         expect(env.code).toBe("unknown_metric");
+        // Recovery contract: every `unknown_*` envelope must carry a
+        // non-empty `hint` so an agent can self-correct (e.g. "call
+        // listEntities to discover available metrics"). A regression
+        // that drops the hint would silently degrade agent recovery.
+        expect(env.hint).toBeTruthy();
       }
     } finally {
       await client.close();
@@ -699,22 +753,24 @@ describe("MCP path canonical eval (#2074)", () => {
     }
 
     const passing = outcomes.filter((o) => o.status === "pass").length;
-    const failures = outcomes.filter((o) => o.status === "fail");
+    const failures = outcomes.filter(
+      (o): o is Extract<QuestionOutcome, { status: "fail" }> =>
+        o.status === "fail",
+    );
+    const artifactBundle = formatArtifactBundle(failures.map((f) => f.artifact));
 
     process.stdout.write(
       `\nMCP canonical eval: ${passing}/${outcomes.length} passing\n`,
     );
     if (failures.length > 0) {
-      process.stdout.write(
-        formatArtifactBundle(failures.flatMap((f) => (f.artifact ? [f.artifact] : []))),
-      );
+      process.stdout.write(artifactBundle);
     }
 
     // Acceptance criterion (Phase 1 deterministic): every canonical
     // question round-trips through MCP without protocol / recovery /
     // assertion failure. If this drops below 20/20 something on the
     // MCP path regressed and the artifacts above explain what.
-    expect(failures, formatArtifactBundle(failures.flatMap((f) => (f.artifact ? [f.artifact] : [])))).toEqual([]);
+    expect(failures, artifactBundle).toEqual([]);
   });
 });
 
@@ -736,6 +792,45 @@ describe("MCP path stress (#2074, partial #2070)", () => {
       }
     } finally {
       await Promise.all(clients.map((c) => c.close()));
+    }
+  });
+
+  it("enforces ATLAS_MCP_MAX_SESSIONS without TOCTOU drift under contention", async () => {
+    // The reservation counter at hosted.ts (`pendingReservations`) closes
+    // a TOCTOU window between the cap check and `createAtlasMcpServer`'s
+    // async resolution. Driving the cap with N=DEFAULT_MAX_SESSIONS+ would
+    // be slow; instead we lower the cap and saturate it, which exercises
+    // the exact same code path with concrete contention.
+    const CAP = 3;
+    const previous = process.env.ATLAS_MCP_MAX_SESSIONS;
+    process.env.ATLAS_MCP_MAX_SESSIONS = String(CAP);
+    const { _resetHostedSessions } = await import("@atlas/mcp/hosted");
+    await _resetHostedSessions();
+
+    // Open CAP+2 concurrent connect attempts. The first CAP must
+    // succeed; the remainder must reject with the route's 429-style
+    // session-cap error rather than slip through a race.
+    const N = CAP + 2;
+    const clients = Array.from({ length: N }, () => newClient());
+    const results = await Promise.allSettled(
+      clients.map((c) => c.connect()),
+    );
+    try {
+      const fulfilled = results.filter((r) => r.status === "fulfilled").length;
+      const rejected = results.length - fulfilled;
+      expect(fulfilled).toBeLessThanOrEqual(CAP);
+      expect(rejected).toBeGreaterThanOrEqual(N - CAP);
+    } finally {
+      // Best-effort close — only fulfilled connects need teardown; the
+      // rejected ones never registered a session.
+      await Promise.all(
+        clients.map((c, i) =>
+          results[i].status === "fulfilled" ? c.close() : Promise.resolve(),
+        ),
+      );
+      if (previous === undefined) delete process.env.ATLAS_MCP_MAX_SESSIONS;
+      else process.env.ATLAS_MCP_MAX_SESSIONS = previous;
+      await _resetHostedSessions();
     }
   });
 });

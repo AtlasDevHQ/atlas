@@ -1,13 +1,27 @@
 ---
 title: Hosted MCP Endpoint
-description: Connect any MCP client to Atlas SaaS over OAuth 2.1 — bunx CLI installer, Dynamic Client Registration, PKCE, JWT-signed access tokens.
+description: Connect any MCP client to Atlas SaaS over OAuth 2.1 — UI wizard, bunx CLI installer, Dynamic Client Registration, PKCE, JWT-signed access tokens.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
 Self-hosted Atlas exposes MCP over stdio (see the [MCP guide](/guides/mcp)). Atlas SaaS adds a hosted MCP endpoint over Streamable HTTP that speaks **OAuth 2.1 + PKCE + Dynamic Client Registration (RFC 7591)** — the authorization model the [MCP spec](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization) requires.
 
-## Install in one command
+There are three paths to connect — pick whichever fits your context. **All three end up at the same place**: a workspace-scoped JWT in your agent's config and a row in your account at **Settings → AI Agents**.
+
+## Option 1 — In the workspace UI (recommended for most users)
+
+Sign into Atlas, open **Settings → AI Agents**, and click **Connect new agent**. The 3-step wizard:
+
+1. Pick your agent — Claude Desktop, Cursor, Continue, ChatGPT, or any generic MCP client
+2. Review what the agent will request (scopes are workspace-read by default)
+3. Copy the JSON config block, paste it into your agent's MCP settings, restart
+
+That's it. When the agent first connects it bootstraps itself via DCR + PKCE, opens your browser to approve, and stores the resulting JWT. The new agent shows up in the same Settings page with a Revoke button.
+
+This is the right path if you're a workspace user who isn't comfortable in a terminal — or if you just want the click path. No admin involvement required.
+
+## Option 2 — The CLI installer (one command, power-user path)
 
 ```bash
 bunx @useatlas/mcp init --hosted --write
@@ -47,8 +61,20 @@ The resulting block looks like:
 
 The `code_verifier` and the registered `client_id` are kept in memory only — never written to disk. The JWT is the single artifact persisted, and only inside your client's config file.
 
+This is the right path if you want the install scripted, you're on a self-hosted deployment, or you're connecting a client the wizard doesn't list.
+
+## Option 3 — Direct from the agent (zero install)
+
+Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor, Gemini, Anthropic agents) can connect directly without the wizard or the CLI — they bootstrap via DCR + PKCE on their own. Just point the agent at the workspace MCP URL:
+
+```
+https://<region>.api.useatlas.dev/mcp/{workspace_id}/sse
+```
+
+The agent does discovery, registration, and the OAuth dance unattended. The protocol details below describe what those clients see end-to-end. This is the right path if your agent vendor publishes "paste an MCP URL" UX.
+
 <Callout type="info">
-Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor, Gemini, Anthropic agents) can also connect directly without the CLI — they bootstrap via DCR + PKCE on their own. The protocol details below describe what those clients see; the CLI installer above is the path for any client that doesn't speak DCR yet.
+Whichever path you pick, your connected agents land in the same **Settings → AI Agents** view in Atlas — list, last-use timestamp, outstanding-token count, per-agent revoke. Workspace admins additionally see *every* agent registered in the workspace at **Admin → OAuth Clients**.
 </Callout>
 
 ## URL pattern
@@ -160,15 +186,43 @@ OAuth client lifecycle (register, rotate, delete) and token lifecycle (issue, re
 
 ## Inspecting and revoking clients
 
-Workspace admins can inspect every OAuth client registered against their workspace at **Admin → Users & Access → OAuth Clients** (`/admin/oauth-clients`). Each row shows the registered name, redirect URIs, registration date, last-use timestamp, and outstanding access-token count.
+Two surfaces, same data. Pick the one that fits the situation.
 
-The **Revoke** action permanently deletes the client and every outstanding access token, refresh token, and consent record for that client (scoped to the active workspace). Standards-compliant clients re-register via DCR on their next authorization attempt — there's no admin step to re-add them. An `oauth_client.revoke` row lands in the admin action log carrying the per-table revocation counts.
+### Settings → AI Agents (per-user)
+
+Any workspace user can see **their own** connected agents at **Settings → AI Agents** (`/settings/ai-agents`). Each row shows the registered name, redirect URIs, registration date, last-use timestamp, and outstanding token count. The per-row **Revoke** invalidates every access token, refresh token, and consent record for that (client, user) pair — the agent will re-register cleanly via DCR on its next authorization attempt.
+
+Use this when you want to manage your own agents without bothering an admin: a laptop you don't use anymore, an agent you're done experimenting with, or a quick "rotate everything" before lending the device.
+
+### Admin → OAuth Clients (workspace-wide)
+
+Workspace admins additionally see **every** OAuth client registered against the workspace at **Admin → Users & Access → OAuth Clients** (`/admin/oauth-clients`). Same per-row Revoke; same atomic revocation semantics. An `oauth_client.revoke` row lands in the admin action log carrying the per-table revocation counts (and identifying whether the actor was a user revoking their own client or an admin revoking someone else's).
 
 Use this when:
 
-- A laptop running an authorized MCP client is lost
-- A teammate offboards and their authorized clients should be invalidated
+- A laptop running an authorized MCP client is lost and the user can't sign in to revoke from their own settings
+- A teammate offboards and every agent they registered should be invalidated
 - A registered client name no longer matches the agent it was issued to (clean it up — DCR will re-register fresh)
+
+### Per-client setup notes
+
+Documentation anchors used by the in-product wizard "How to paste this in {agent}" links:
+
+#### Claude Desktop
+
+Open `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows). Merge the wizard's block into the top-level `mcpServers` object. Restart Claude Desktop.
+
+#### Cursor
+
+Open Cursor → **Settings → Cursor Settings → MCP**, click **Add new MCP server**, and paste the wizard's block. Cursor reloads its MCP servers without a restart.
+
+#### Continue
+
+Open `~/.continue/config.json`. Add the wizard's `mcpServers.atlas` block under the top-level `mcpServers` key. Continue picks up the change on its next reload.
+
+#### ChatGPT
+
+In ChatGPT's **Connectors / MCP servers** UI, click **Add server** and paste the URL from the wizard's config block. ChatGPT performs DCR + PKCE on its own when you first invoke a tool.
 
 ## Operational notes
 

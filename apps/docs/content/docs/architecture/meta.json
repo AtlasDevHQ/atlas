@@ -5,6 +5,7 @@
   "pages": [
     "sandbox",
     "content-mode",
-    "enterprise"
+    "enterprise",
+    "mcp-performance"
   ]
 }

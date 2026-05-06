@@ -594,6 +594,130 @@ describe("hosted MCP — bearer enforcement", () => {
   });
 });
 
+// ── Brand hostname (#2068) ───────────────────────────────────────────
+
+describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
+  // #2068 — `mcp.useatlas.dev` is the canonical hostname for the hosted
+  // MCP endpoint, fronting the same Railway services as the regional
+  // `api.*` siblings. Tokens minted post-cutover bind to the brand
+  // audience; tokens minted pre-cutover bound to the regional host. The
+  // verifier must accept BOTH so the cutover is non-destructive — there
+  // are no production tokens at the moment of the flip (#2024 PR C
+  // dropped `mcp_tokens` and OAuth tokens are <2 days old at cutover),
+  // but the contract still has to hold for any token already in flight.
+  it("passes both regional + brand audiences to verifyAccessToken when ATLAS_PUBLIC_API_URL points at the us-region api host", async () => {
+    const prev = process.env.ATLAS_PUBLIC_API_URL;
+    process.env.ATLAS_PUBLIC_API_URL = "https://api.useatlas.dev";
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    const handle = await startServer();
+    try {
+      await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      const lastCall =
+        mockVerifyAccessToken.mock.calls[
+          mockVerifyAccessToken.mock.calls.length - 1
+        ];
+      const opts = lastCall?.[1] as
+        | { verifyOptions?: { audience?: unknown } }
+        | undefined;
+      const audience = opts?.verifyOptions?.audience;
+      expect(Array.isArray(audience)).toBe(true);
+      expect(audience).toEqual([
+        "https://api.useatlas.dev/mcp",
+        "https://mcp.useatlas.dev/mcp",
+      ]);
+    } finally {
+      handle.close();
+      if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
+      else process.env.ATLAS_PUBLIC_API_URL = prev;
+    }
+  });
+
+  it("symmetrically accepts both audiences when ATLAS_PUBLIC_API_URL is the brand host (operator post-cutover flip)", async () => {
+    // The CLI default writes `https://mcp.useatlas.dev` into client
+    // configs; some operators reasonably re-set ATLAS_PUBLIC_API_URL
+    // to match. The verifier's `mirrorUseatlasHost` is symmetric —
+    // pre-cutover tokens bound to the regional `api.useatlas.dev/mcp`
+    // audience must keep verifying. Asymmetric mirroring here would
+    // silently lock out every in-flight token at the moment the
+    // operator flipped the env var. This test guards against the
+    // verifier-side regex drifting away from the issuer-side
+    // (`oauth-config.test.ts:resolveOAuthValidAudiences`) regex.
+    const prev = process.env.ATLAS_PUBLIC_API_URL;
+    process.env.ATLAS_PUBLIC_API_URL = "https://mcp.useatlas.dev";
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    const handle = await startServer();
+    try {
+      await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      const lastCall =
+        mockVerifyAccessToken.mock.calls[
+          mockVerifyAccessToken.mock.calls.length - 1
+        ];
+      const opts = lastCall?.[1] as
+        | { verifyOptions?: { audience?: unknown } }
+        | undefined;
+      expect(opts?.verifyOptions?.audience).toEqual([
+        "https://mcp.useatlas.dev/mcp",
+        "https://api.useatlas.dev/mcp",
+      ]);
+    } finally {
+      handle.close();
+      if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
+      else process.env.ATLAS_PUBLIC_API_URL = prev;
+    }
+  });
+
+  it("WWW-Authenticate resource_metadata points at the brand hostname when ATLAS_PUBLIC_API_URL is the regional api host", async () => {
+    // Standards-compliant MCP clients read the `resource_metadata` URL
+    // from the 401 challenge to bootstrap discovery. Post-#2068 the
+    // metadata endpoint sits on the brand hostname so a client that
+    // never sees the regional `api.*` URL can still complete DCR + the
+    // PKCE dance.
+    const prev = process.env.ATLAS_PUBLIC_API_URL;
+    process.env.ATLAS_PUBLIC_API_URL = "https://api.useatlas.dev";
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(401);
+      const wwwAuth = res.headers.get("www-authenticate") ?? "";
+      expect(wwwAuth).toContain(
+        `resource_metadata="https://mcp.useatlas.dev/.well-known/oauth-protected-resource/mcp/${ORG_A}"`,
+      );
+    } finally {
+      handle.close();
+      if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
+      else process.env.ATLAS_PUBLIC_API_URL = prev;
+    }
+  });
+});
+
 // ── Path/claim workspace match ───────────────────────────────────────
 
 describe("hosted MCP — path/claim workspace match", () => {
@@ -630,7 +754,13 @@ describe("hosted MCP — path/claim workspace match", () => {
 // ── Cross-region residency ────────────────────────────────────────────
 
 describe("hosted MCP — residency", () => {
-  it("returns 421 with correctApiUrl when workspace region differs from this instance", async () => {
+  it("returns 421 with correctApiUrl mapped to the brand mcp-<region> hostname for SaaS regions (#2068)", async () => {
+    // residency.regions[X].apiUrl is the operator-configured public API
+    // URL for region X. For the MCP misrouting body we want to direct
+    // a client at the brand-mirror surface its config already advertises
+    // — `https://mcp-eu.useatlas.dev` — not the underlying `api-eu.*`
+    // infra. The mapping is a no-op for self-hosted operators whose
+    // apiUrl doesn't match the SaaS regional pattern.
     bindToken(TOKEN_A, {
       sub: SUB_A,
       azp: CLIENT_A,
@@ -660,9 +790,38 @@ describe("hosted MCP — residency", () => {
         actualRegion: string;
       };
       expect(body.error).toBe("misdirected_request");
-      expect(body.correctApiUrl).toBe("https://api-eu.useatlas.dev");
+      expect(body.correctApiUrl).toBe("https://mcp-eu.useatlas.dev");
       expect(body.expectedRegion).toBe("eu-west");
       expect(body.actualRegion).toBe("us-east");
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 421 with correctApiUrl unchanged when the configured region apiUrl is non-SaaS (self-hosted)", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockApiRegion.mockImplementation(() => "us-east");
+    mockWorkspaceRegion.mockImplementation(async () => "eu-west");
+    __mockedConfig.residency = {
+      regions: { "eu-west": { apiUrl: "https://api.example.test" } },
+    };
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      const body = (await res.json()) as { correctApiUrl?: string };
+      expect(body.correctApiUrl).toBe("https://api.example.test");
     } finally {
       handle.close();
     }

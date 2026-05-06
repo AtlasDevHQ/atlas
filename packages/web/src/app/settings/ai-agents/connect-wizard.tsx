@@ -46,6 +46,8 @@ import {
   Sparkles,
 } from "lucide-react";
 
+import { brandedMcpBase } from "./branded-mcp-base";
+
 type WizardStep = 1 | 2 | 3;
 
 interface ClientPreset {
@@ -149,11 +151,19 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
   }, []);
 
   const mcpUrl = useMemo(() => {
+    // #2068 — when the configured API base is one of the canonical SaaS
+    // regional `api*.useatlas.dev` hosts, surface the brand-mirror
+    // `mcp*.useatlas.dev` host to the user instead of the underlying
+    // infra. The hosted MCP route accepts both audiences (issuer-side
+    // backward compat) but the wizard's snippet should always write the
+    // brand URL — that's what every doc, registry entry, and CLI default
+    // already advertises. Self-hosted bases pass through unchanged.
+    const mcpBase = brandedMcpBase(apiBase) ?? apiBase;
     // Workspace id is part of the URL — without it the agent can't bind to
     // a workspace. Fall back to a placeholder so the JSON parses; the user
     // sees the placeholder and knows something's missing.
-    if (!orgId) return `${apiBase}/mcp/<your_workspace_id>/sse`;
-    return `${apiBase}/mcp/${orgId}/sse`;
+    if (!orgId) return `${mcpBase}/mcp/<your_workspace_id>/sse`;
+    return `${mcpBase}/mcp/${orgId}/sse`;
   }, [apiBase, orgId]);
 
   const configJson = useMemo(() => {

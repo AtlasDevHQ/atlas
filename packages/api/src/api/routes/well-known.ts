@@ -74,6 +74,15 @@ const log = createLogger("well-known");
  *      single-region deployments)
  *   3. The request's URL origin — last-resort fallback for local dev
  *      where neither env var is set.
+ *
+ * #2068 — when the resolved base is one of the canonical SaaS regional
+ * `api*.useatlas.dev` hosts, the doc advertises the brand-mirror
+ * `mcp*.useatlas.dev/mcp` instead so clients reading discovery bind
+ * tokens to the brand audience rather than the regional infra. The
+ * issuer keeps accepting BOTH (`resolveOAuthValidAudiences`) so a
+ * pre-cutover token bound to the regional host still verifies; this
+ * function intentionally stops naming the regional surface so new
+ * clients walk forward, not back.
  */
 function buildResourceUri(req: Request): string {
   const base =
@@ -81,7 +90,38 @@ function buildResourceUri(req: Request): string {
     process.env.BETTER_AUTH_URL?.trim() ||
     new URL(req.url).origin;
   const trimmed = base.replace(/\/+$/, "");
-  return `${trimmed}/mcp`;
+  return `${brandedMcpHost(trimmed) ?? trimmed}/mcp`;
+}
+
+/**
+ * Map a SaaS regional API base (`api*.useatlas.dev`) to its
+ * `mcp*.useatlas.dev` brand counterpart. Returns null for any host
+ * outside the regional pattern — including the brand hosts themselves,
+ * which already are the canonical surface and need no rewrite. The
+ * caller falls back to the trimmed base in that case, so an operator
+ * who already runs with `ATLAS_PUBLIC_API_URL=https://mcp.useatlas.dev`
+ * still sees the brand advertised.
+ *
+ * Asymmetric on purpose: this is the "always advertise the brand"
+ * helper. The audience-accept-list helper in
+ * `server.ts:brandMcpAudience` is symmetric because the issuer must
+ * keep accepting BOTH directions for backward compatibility; this
+ * function only ever emits the brand-side URL.
+ */
+function brandedMcpHost(base: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    // intentionally ignored: a non-URL base falls through to the
+    // trimmed-string branch one frame up; logging here would double
+    // up on every well-known request when the env var is misset.
+    return null;
+  }
+  const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);
+  if (!matched) return null;
+  const regionSuffix = matched[1] ?? "";
+  return `https://mcp${regionSuffix}.useatlas.dev`;
 }
 
 /**

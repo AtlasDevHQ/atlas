@@ -24,7 +24,14 @@ import {
 } from "./hosted.js";
 
 const SERVER_NAME = "atlas";
-const DEFAULT_HOSTED_API_URL = "https://api.useatlas.dev";
+// #2068 — `mcp.useatlas.dev` is the brand surface for the hosted MCP
+// endpoint. DNS CNAMEs fan it (and the regional siblings
+// `mcp-eu`/`mcp-apac.useatlas.dev`) into the same Railway services as
+// the underlying `api.*` hosts. Defaulting here means the standard
+// `bunx @useatlas/mcp init --hosted --write` flow lands on the brand
+// surface without operator plumbing; ATLAS_PUBLIC_API_URL still wins
+// for cross-region overrides and self-hosted targets.
+const DEFAULT_HOSTED_API_URL = "https://mcp.useatlas.dev";
 
 export interface LocalInitOptions {
   mode: "local";
@@ -44,7 +51,7 @@ export interface LocalInitOptions {
 
 export interface HostedInitOptions {
   mode: "hosted";
-  /** Override the hosted Atlas API base. Defaults to `https://api.useatlas.dev`. */
+  /** Override the hosted Atlas API base. Defaults to `https://mcp.useatlas.dev`. */
   apiUrl?: string;
   client?: McpClientId;
   write?: boolean;

@@ -171,8 +171,8 @@ describe("well-known — managed auth mode", () => {
   });
 
   it("advertises mcp.useatlas.dev as the resource when ATLAS_PUBLIC_API_URL points at the us-region api host", async () => {
-    // Brand hostname: mcp.useatlas.dev is the canonical hostname for
-    // the hosted MCP endpoint. The protected-resource metadata must
+    // #2068 — mcp.useatlas.dev is the canonical hostname for the
+    // hosted MCP endpoint. The protected-resource metadata must
     // advertise the brand hostname so a standards-compliant MCP client
     // reading this doc binds its token request to the
     // `https://mcp.useatlas.dev/mcp` audience and never sees the
@@ -213,13 +213,13 @@ describe("well-known — managed auth mode", () => {
     }
   });
 
-  it("advertises mcp.useatlas.dev verbatim when ATLAS_PUBLIC_API_URL already is the brand host", async () => {
-    // The asymmetric `brandUseatlasHost` returns null for brand
-    // inputs; the caller falls back to the trimmed base. Pin that
-    // branch so a future regex relaxation that accidentally matched
+  it("advertises mcp.useatlas.dev verbatim when ATLAS_PUBLIC_API_URL already is the brand host (operator post-cutover flip)", async () => {
+    // The asymmetric `brandedMcpHost` returns null for brand inputs;
+    // the caller falls back to the trimmed base. Pin that branch so a
+    // future regex relaxation that accidentally matched
     // `mcp.useatlas.dev` and tried to "flip" it (rendering
-    // `https://api.useatlas.dev/mcp`) silently undoes the brand-
-    // surface invariant — this test catches that.
+    // `https://api.useatlas.dev/mcp`) silently undoes the cutover —
+    // this test catches that.
     const prev = process.env.ATLAS_PUBLIC_API_URL;
     process.env.ATLAS_PUBLIC_API_URL = "https://mcp.useatlas.dev";
     const handle = await startServer();

@@ -35,8 +35,10 @@ describe("resolveOAuthValidAudiences", () => {
     // deploy where BETTER_AUTH_URL points at a global auth host but
     // each region runs a different MCP resource server. The brand
     // `mcp-eu.useatlas.dev` audience is added alongside the regional
-    // `api-eu.useatlas.dev` fallback so tokens bound to either host
-    // verify against the same issuer.
+    // fallback so tokens minted post-cutover verify under either name
+    // (and pre-cutover-issued tokens — there are none in production —
+    // still verify against the regional `<region>.api.useatlas.dev/mcp`
+    // they were bound to).
     expect(
       resolveOAuthValidAudiences({
         ATLAS_PUBLIC_API_URL: "https://api-eu.useatlas.dev",
@@ -57,12 +59,14 @@ describe("resolveOAuthValidAudiences", () => {
   });
 
   it("adds the mcp.useatlas.dev brand audience alongside api.useatlas.dev (us region)", () => {
-    // Brand hostname: `mcp.useatlas.dev` is the canonical hostname for
-    // the hosted MCP endpoint; the regional `api.*` host stays
-    // reachable as the underlying infra. The accept-list keeps both
-    // audiences so a token bound to either name verifies. Ordering:
-    // primary first (whatever the operator's env points at), mirror
-    // second.
+    // #2068 — `mcp.useatlas.dev` becomes the canonical hostname for the
+    // hosted MCP endpoint while the regional `api.*` host stays
+    // reachable as the underlying infra. Tokens minted post-cutover are
+    // bound to the brand audience; the regional fallback is preserved
+    // so the issuer keeps accepting tokens minted just before the flip.
+    // Ordering: regional first (backward compat), brand second
+    // (forward-looking) — keeps the diff against the pre-#2068 list a
+    // pure append.
     expect(
       resolveOAuthValidAudiences({
         ATLAS_PUBLIC_API_URL: "https://api.useatlas.dev",
@@ -101,7 +105,7 @@ describe("resolveOAuthValidAudiences", () => {
     // The brand cutover ships with the CLI default flipping to
     // `mcp.useatlas.dev`; some operators reasonably re-set
     // `ATLAS_PUBLIC_API_URL` to match. The symmetric mirror means
-    // tokens bound to the regional `api.useatlas.dev/mcp`
+    // pre-cutover tokens bound to the regional `api.useatlas.dev/mcp`
     // audience keep verifying regardless of which canonical host the
     // operator chose. Asymmetric mirroring would have made this a
     // deployment footgun.

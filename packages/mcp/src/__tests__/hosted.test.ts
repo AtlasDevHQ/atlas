@@ -594,14 +594,17 @@ describe("hosted MCP — bearer enforcement", () => {
   });
 });
 
-// ── Brand hostname (mcp.useatlas.dev) ────────────────────────────────
+// ── Brand hostname (#2068) ───────────────────────────────────────────
 
 describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
-  // Brand hostname: `mcp.useatlas.dev` is the canonical hostname for
-  // the hosted MCP endpoint, fronting the same Railway services as the
-  // regional `api.*` siblings. The verifier must accept BOTH the brand
-  // and regional audience so a token bound to either name verifies —
-  // any token in flight at the moment of an env-var flip stays valid.
+  // #2068 — `mcp.useatlas.dev` is the canonical hostname for the hosted
+  // MCP endpoint, fronting the same Railway services as the regional
+  // `api.*` siblings. Tokens minted post-cutover bind to the brand
+  // audience; tokens minted pre-cutover bound to the regional host. The
+  // verifier must accept BOTH so the cutover is non-destructive — there
+  // are no production tokens at the moment of the flip (#2024 PR C
+  // dropped `mcp_tokens` and OAuth tokens are <2 days old at cutover),
+  // but the contract still has to hold for any token already in flight.
   it("passes both regional + brand audiences to verifyAccessToken when ATLAS_PUBLIC_API_URL points at the us-region api host", async () => {
     const prev = process.env.ATLAS_PUBLIC_API_URL;
     process.env.ATLAS_PUBLIC_API_URL = "https://api.useatlas.dev";
@@ -641,16 +644,16 @@ describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
     }
   });
 
-  it("symmetrically accepts both audiences when ATLAS_PUBLIC_API_URL is the brand host", async () => {
+  it("symmetrically accepts both audiences when ATLAS_PUBLIC_API_URL is the brand host (operator post-cutover flip)", async () => {
     // The CLI default writes `https://mcp.useatlas.dev` into client
     // configs; some operators reasonably re-set ATLAS_PUBLIC_API_URL
-    // to match. The verifier's `flipUseatlasHost` is symmetric —
-    // tokens bound to the regional `api.useatlas.dev/mcp` audience
-    // must keep verifying. Asymmetric mirroring here would silently
-    // lock out every in-flight token at the moment the operator
-    // flipped the env var. This test guards against the verifier-side
-    // accept-list shape drifting away from the issuer-side
-    // (`oauth-config.test.ts:resolveOAuthValidAudiences`).
+    // to match. The verifier's `mirrorUseatlasHost` is symmetric —
+    // pre-cutover tokens bound to the regional `api.useatlas.dev/mcp`
+    // audience must keep verifying. Asymmetric mirroring here would
+    // silently lock out every in-flight token at the moment the
+    // operator flipped the env var. This test guards against the
+    // verifier-side regex drifting away from the issuer-side
+    // (`oauth-config.test.ts:resolveOAuthValidAudiences`) regex.
     const prev = process.env.ATLAS_PUBLIC_API_URL;
     process.env.ATLAS_PUBLIC_API_URL = "https://mcp.useatlas.dev";
     bindToken(TOKEN_A, {
@@ -689,10 +692,10 @@ describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
 
   it("WWW-Authenticate resource_metadata points at the brand hostname when ATLAS_PUBLIC_API_URL is the regional api host", async () => {
     // Standards-compliant MCP clients read the `resource_metadata` URL
-    // from the 401 challenge to bootstrap discovery. The metadata
-    // endpoint sits on the brand hostname so a client that never sees
-    // the regional `api.*` URL can still complete DCR + the PKCE
-    // dance.
+    // from the 401 challenge to bootstrap discovery. Post-#2068 the
+    // metadata endpoint sits on the brand hostname so a client that
+    // never sees the regional `api.*` URL can still complete DCR + the
+    // PKCE dance.
     const prev = process.env.ATLAS_PUBLIC_API_URL;
     process.env.ATLAS_PUBLIC_API_URL = "https://api.useatlas.dev";
     const handle = await startServer();
@@ -751,7 +754,7 @@ describe("hosted MCP — path/claim workspace match", () => {
 // ── Cross-region residency ────────────────────────────────────────────
 
 describe("hosted MCP — residency", () => {
-  it("returns 421 with correctApiUrl mapped to the brand mcp-<region> hostname for SaaS regions", async () => {
+  it("returns 421 with correctApiUrl mapped to the brand mcp-<region> hostname for SaaS regions (#2068)", async () => {
     // residency.regions[X].apiUrl is the operator-configured public API
     // URL for region X. For the MCP misrouting body we want to direct
     // a client at the brand-mirror surface its config already advertises

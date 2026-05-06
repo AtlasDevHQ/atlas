@@ -2,16 +2,21 @@
  * Shared narrow view onto the Better Auth passkey client surface.
  *
  * `createAuthClient`'s plugin-augmented type doesn't surface
- * `passkey.{addPasskey,listUserPasskeys,deletePasskey,updatePasskey}` through
- * the generic chain under TS6 strictness, so consumers cast through
- * `unknown`. Centralising the cast plus the runtime guard here keeps the
- * three security-page components (`passkey-tile`, `passkey-list`,
- * `security/page.tsx`) honest about which methods they depend on.
+ * `passkey.{addPasskey,listUserPasskeys,deletePasskey,updatePasskey}` or
+ * `signIn.passkey()` through the generic chain under TS6 strictness, so
+ * consumers cast through `unknown`. Centralising the cast plus the runtime
+ * guard here keeps the security-page components and the login flow honest
+ * about which methods they depend on.
  *
- * The guard returns `null` when the plugin isn't loaded; callers decide
+ * The guards return `null` when the plugin isn't loaded; callers decide
  * whether that is a soft "refresh the page" banner or a thrown error.
  * The user-visible message stays in the consumer — never include
  * developer paths in `Error` messages that bubble up to end users.
+ *
+ * `PasskeyClient` and `PasskeySignIn` are intentionally split: Better Auth
+ * mounts enrollment endpoints under `passkey.*` and sign-in under
+ * `signIn.passkey`, and a future namespace shuffle on either side must
+ * not dark-mode the other surface.
  */
 
 import { authClient } from "./client";
@@ -37,10 +42,16 @@ export interface Passkey {
   createdAt: Date | string;
 }
 
-// ---------------------------------------------------------------------------
-// Method surface — segregated into one interface so each consumer can
-// destructure only what it needs (`const { addPasskey } = client`).
-// ---------------------------------------------------------------------------
+/**
+ * The `signIn.passkey()` success envelope. Better Auth populates `data` with
+ * `{ session, user }` once the WebAuthn assertion verifies; we narrow to
+ * `Record<string, unknown>` because the page only needs to know the call
+ * succeeded — routing decisions stay in the page itself.
+ */
+export interface PasskeySignInData {
+  session: Record<string, unknown>;
+  user: Record<string, unknown>;
+}
 
 export interface PasskeyClient {
   addPasskey: (opts?: {
@@ -52,25 +63,34 @@ export interface PasskeyClient {
   deletePasskey: (opts: { id: string }) => Promise<PasskeyApiResult<{ status?: boolean }>>;
 }
 
-// ---------------------------------------------------------------------------
-// Guard
-// ---------------------------------------------------------------------------
+/**
+ * Initiates a passkey-first sign-in. With `autoFill: true` the call
+ * subscribes the page to the OS conditional-UI picker rather than
+ * triggering a modal prompt — pair it with an email input that has
+ * `autocomplete="username webauthn"` so saved passkeys appear in the
+ * autofill dropdown. Without `autoFill`, Better Auth fires the modal
+ * authenticator prompt immediately (the "Sign in with passkey" CTA path).
+ */
+export type PasskeySignIn = (opts?: {
+  autoFill?: boolean;
+}) => Promise<PasskeyApiResult<PasskeySignInData>>;
 
 /**
- * Resolve the `passkey` namespace from authClient. Returns `null` when the
- * plugin isn't loaded — callers translate that into a user-facing surface
- * (banner / disabled tile / etc).
+ * Resolve the `passkey` namespace from authClient. Returns `null` when
+ * enrollment endpoints aren't loaded — the security page translates that
+ * into a "refresh the page" banner. Independent of `getPasskeySignIn` so
+ * a renamed `signIn.passkey` doesn't dark-mode admin enrollment.
  *
- * Runtime method-presence check guards against Better Auth API drift —
- * a renamed method shows up as a precise null here rather than a
+ * The runtime method-presence check catches Better Auth API drift — a
+ * renamed method surfaces as a precise null rather than a
  * `TypeError: addPasskey is not a function` at click time.
  */
 export function getPasskeyClient(): PasskeyClient | null {
   // The cast is the documented workaround for Better Auth's plugin-inference
-  // gap under TS6. Same pattern as `getTwoFactor()` in `two-factor-setup.tsx`
-  // and the `@ts-expect-error` on `apiKeyClient()` in `client.ts`.
-  const namespace = (authClient as unknown as { passkey?: Partial<PasskeyClient> })
-    .passkey;
+  // gap under TS6. Same pattern as `getTwoFactorClient()` in
+  // `lib/auth/two-factor-client.ts` and the `@ts-expect-error` on
+  // `apiKeyClient()` in `client.ts`.
+  const namespace = (authClient as unknown as { passkey?: Partial<PasskeyClient> }).passkey;
   if (
     !namespace ||
     typeof namespace.addPasskey !== "function" ||
@@ -81,4 +101,20 @@ export function getPasskeyClient(): PasskeyClient | null {
     return null;
   }
   return namespace as PasskeyClient;
+}
+
+/**
+ * Resolve the `signIn.passkey()` action. Returns `null` when the plugin
+ * isn't loaded — callers (login page, 2FA challenge page) translate that
+ * into "passkey button hidden" rather than a hard error: a user without
+ * the plugin still has email + password.
+ */
+export function getPasskeySignIn(): PasskeySignIn | null {
+  const signInNamespace = (
+    authClient as unknown as { signIn?: { passkey?: PasskeySignIn } }
+  ).signIn;
+  if (!signInNamespace || typeof signInNamespace.passkey !== "function") {
+    return null;
+  }
+  return signInNamespace.passkey;
 }

@@ -49,6 +49,34 @@ mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
 }));
 
+const signInPasskeyMock = mock(
+  async (_opts?: { autoFill?: boolean }): Promise<{
+    data: unknown;
+    error: { code?: string; message?: string; status?: number } | null;
+  }> => ({ data: { session: {}, user: {} }, error: null }),
+);
+
+const getPasskeySignInMock = mock<() => typeof signInPasskeyMock | null>(
+  () => signInPasskeyMock,
+);
+
+mock.module("@/lib/auth/passkey-client", () => ({
+  // PasskeyTile + PasskeyList consume getPasskeyClient — the 2FA page only
+  // touches the sign-in shim. Keeping both exports stubbed prevents a
+  // partial-mock SyntaxError if a sibling test imports the other.
+  getPasskeyClient: () => null,
+  getPasskeySignIn: () => getPasskeySignInMock(),
+}));
+
+const webAuthnSupportMock = mock<() => { kind: "supported" | "unsupported" | "unknown"; platformAuthenticator?: boolean }>(() => ({
+  kind: "supported",
+  platformAuthenticator: true,
+}));
+
+mock.module("@/ui/hooks/use-webauthn-supported", () => ({
+  useWebAuthnSupported: () => webAuthnSupportMock(),
+}));
+
 import TwoFactorChallengePage from "./page";
 
 beforeEach(() => {
@@ -56,6 +84,9 @@ beforeEach(() => {
   verifyBackupCodeMock.mockReset();
   routerPushMock.mockReset();
   getTwoFactorClientMock.mockReset();
+  signInPasskeyMock.mockReset();
+  getPasskeySignInMock.mockReset();
+  webAuthnSupportMock.mockReset();
 
   verifyTotpMock.mockImplementation(async () => ({
     data: { token: "session-token" },
@@ -71,6 +102,15 @@ beforeEach(() => {
     verifyTotp: verifyTotpMock,
     verifyBackupCode: verifyBackupCodeMock,
     generateBackupCodes: mock(async () => ({ data: null, error: null })),
+  }));
+  signInPasskeyMock.mockImplementation(async () => ({
+    data: { session: {}, user: {} },
+    error: null,
+  }));
+  getPasskeySignInMock.mockImplementation(() => signInPasskeyMock);
+  webAuthnSupportMock.mockImplementation(() => ({
+    kind: "supported",
+    platformAuthenticator: true,
   }));
 });
 
@@ -301,5 +341,132 @@ describe("TwoFactorChallengePage — plugin guard", () => {
     });
     expect(verifyTotpMock).not.toHaveBeenCalled();
     expect(routerPushMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("TwoFactorChallengePage — passkey alternative", () => {
+  function getPasskeyButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: /use a passkey/i }) as HTMLButtonElement;
+  }
+
+  test("rendered when WebAuthn is supported", () => {
+    render(<TwoFactorChallengePage />);
+    expect(getPasskeyButton()).toBeDefined();
+  });
+
+  test("hidden when WebAuthn is unsupported (no banner — keeps the page clean)", () => {
+    webAuthnSupportMock.mockImplementation(() => ({ kind: "unsupported" }));
+    render(<TwoFactorChallengePage />);
+    expect(screen.queryByRole("button", { name: /use a passkey/i })).toBeNull();
+  });
+
+  test("hidden during the pre-effect 'unknown' window to avoid hydration mismatch", () => {
+    webAuthnSupportMock.mockImplementation(() => ({ kind: "unknown" }));
+    render(<TwoFactorChallengePage />);
+    expect(screen.queryByRole("button", { name: /use a passkey/i })).toBeNull();
+  });
+
+  test("success calls signIn.passkey() and navigates to '/'", async () => {
+    render(<TwoFactorChallengePage />);
+    await act(async () => {
+      fireEvent.click(getPasskeyButton());
+    });
+
+    await waitFor(() => {
+      expect(signInPasskeyMock).toHaveBeenCalledTimes(1);
+    });
+    // No autoFill — explicit click fires the modal authenticator prompt.
+    const call = (signInPasskeyMock as unknown as ReturnType<typeof mock>).mock.calls[0] as [
+      ({ autoFill?: boolean } | undefined)?,
+    ];
+    expect(call[0]).toBeUndefined();
+
+    await waitFor(() => {
+      expect(routerPushMock).toHaveBeenCalledWith("/");
+    });
+    // The TOTP path must NOT have fired — passkey is the alternative, not
+    // a parallel verification.
+    expect(verifyTotpMock).not.toHaveBeenCalled();
+  });
+
+  test("user cancellation is silent — no banner, no navigation, TOTP form still usable", async () => {
+    signInPasskeyMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { code: "AUTH_CANCELLED", message: "cancelled", status: 400 },
+    }));
+
+    render(<TwoFactorChallengePage />);
+    await act(async () => {
+      fireEvent.click(getPasskeyButton());
+    });
+
+    await waitFor(() => {
+      expect(signInPasskeyMock).toHaveBeenCalledTimes(1);
+    });
+    expect(routerPushMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("NotAllowedError");
+    // The TOTP input should remain usable after a cancelled passkey attempt.
+    expect(getCodeInput().disabled).toBe(false);
+  });
+
+  test("PASSKEY_NOT_FOUND surfaces the friendly 'no passkey for this device' hint", async () => {
+    signInPasskeyMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { code: "PASSKEY_NOT_FOUND", message: "no passkey", status: 404 },
+    }));
+
+    render(<TwoFactorChallengePage />);
+    await act(async () => {
+      fireEvent.click(getPasskeyButton());
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        "No passkey is registered for this device",
+      );
+    });
+    expect(routerPushMock).not.toHaveBeenCalled();
+  });
+
+  test("missing passkey plugin surfaces actionable banner instead of silent no-op", async () => {
+    getPasskeySignInMock.mockImplementation(() => null);
+
+    render(<TwoFactorChallengePage />);
+    await act(async () => {
+      fireEvent.click(getPasskeyButton());
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        "Passkey sign-in is not available right now",
+      );
+    });
+    expect(signInPasskeyMock).not.toHaveBeenCalled();
+  });
+
+  test("trust-device toggle stays visible alongside the passkey button", () => {
+    render(<TwoFactorChallengePage />);
+    expect(getPasskeyButton()).toBeDefined();
+    expect(screen.getByRole("checkbox", { name: /trust this device/i })).toBeDefined();
+  });
+
+  test("data:null + error:null surfaces the 'refresh the page' banner — does not navigate", async () => {
+    signInPasskeyMock.mockImplementation(async () => ({
+      data: null,
+      error: null,
+    }));
+    render(<TwoFactorChallengePage />);
+    await act(async () => {
+      fireEvent.click(getPasskeyButton());
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        "Passkey signed in but the server didn't return a session",
+      );
+    });
+    expect(routerPushMock).not.toHaveBeenCalled();
+    // The TOTP path remains usable after the failed passkey attempt.
+    expect(getCodeInput().disabled).toBe(false);
   });
 });

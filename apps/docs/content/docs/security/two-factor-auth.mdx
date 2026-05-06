@@ -96,6 +96,30 @@ set:
 so disabling two-factor locks you out of the admin console on the next
 request. Disabling is only useful before changing your account role.
 
+## At Sign-In: TOTP or Passkey
+
+A user with both TOTP and a passkey enrolled lands on the
+`/login/two-factor` challenge page after entering email + password.
+The page renders two paths side by side:
+
+- **Use a passkey** — a button above the code input that calls
+  `signIn.passkey()`. The OS prompt fires; on success the page
+  navigates to the workspace. No code is entered.
+- **Authenticator code** — the existing 6-digit input (with the
+  *Use a backup code instead* fallback link below the form).
+
+Either path completes the second factor. The **Trust this device for
+30 days** checkbox stays visible alongside both, but only takes effect
+on the TOTP path — passkey assertions create a fresh session directly
+and don't need a trust cookie. The button is hidden on browsers that
+don't support WebAuthn, with no banner.
+
+If a user is **passkey-only** (no TOTP enrolled), they don't reach
+this page at all — `signIn.passkey()` from `/login` creates a session
+in one step and routes straight to the workspace. See
+[Passkeys → Signing In With a Passkey](./passkeys#signing-in-with-a-passkey)
+for the login-page surface.
+
 ## Operator Reference
 
 ### What's stored

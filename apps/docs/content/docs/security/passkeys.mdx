@@ -17,11 +17,13 @@ For TOTP authenticator-app enrollment, see
 
 A passkey is a hardware-bound WebAuthn credential — Touch ID, Face ID,
 Windows Hello, a YubiKey, or a passkey synced through iCloud Keychain
-or Google Password Manager. Atlas accepts a passkey as a complete
-second factor: an admin who has enrolled at least one passkey
-satisfies the same gate that TOTP satisfies, with no backup codes
-required. The phishing-resistance, hardware binding, and zero-prompt
-sign-in flow make this the recommended path.
+or Google Password Manager. Atlas accepts a passkey as both a
+**first-factor sign-in** (replacing the email + password form) and a
+**second-factor alternative** (replacing the TOTP challenge). An
+admin who has enrolled at least one passkey can sign in without typing
+a password, and satisfies the same MFA gate that TOTP satisfies with
+no backup codes required. The phishing-resistance, hardware binding,
+and zero-prompt sign-in flow make this the recommended path.
 
 <Callout type="warn">
 Passkeys are bound to the **Relying Party ID** (`rpID`) the credential
@@ -69,14 +71,77 @@ unenrolled — the next admin request returns
 `403 mfa_enrollment_required`. The UI warns you before deletion if
 the row in question is your only second factor.
 
+## Signing In With a Passkey
+
+Once you have a passkey enrolled on a device, the sign-in flow on
+that device drops the password step entirely.
+
+### From the login page
+
+The `/login` page renders a **Sign in with a passkey** button above
+the email/password form whenever the browser supports WebAuthn. Click
+it, complete the OS prompt (Touch ID, Face ID, Windows Hello, or your
+security key), and the page navigates straight to your workspace —
+no password typed.
+
+The same page also opts into **conditional UI autofill**: as soon as
+you focus the email field, the OS surfaces saved passkeys in the same
+dropdown that normally shows saved emails. Picking one completes the
+WebAuthn ceremony silently — there's no separate button click. The
+mechanism is `autocomplete="username webauthn"` on the email input,
+plus a `signIn.passkey({ autoFill: true })` call mounted on page
+load. Browsers that don't support conditional UI ignore the token and
+fall back to the explicit button path.
+
+If WebAuthn isn't supported (very old browsers, locked-down kiosks),
+the passkey button is hidden entirely and the email/password form
+remains. There's no banner — the page stays clean for legacy clients.
+
+### On the 2FA challenge page
+
+A user who already has both a TOTP authenticator and a passkey lands
+on `/login/two-factor` after entering email + password (the legacy
+flow). The challenge page renders a **Use a passkey** button above
+the TOTP code input — clicking it bypasses the code entry entirely
+and completes sign-in via the WebAuthn assertion. The trust-device
+toggle stays visible on either path; choose whichever method is
+convenient on the device you're using.
+
+A user who is passkey-only (no TOTP enrolled) skips the challenge
+page altogether — `signIn.passkey()` from `/login` creates a session
+directly.
+
+### What if the passkey button does nothing?
+
+The most common cause is a misconfigured **Relying Party ID** on a
+self-hosted deployment. The browser raises `NotAllowedError` from
+`navigator.credentials.get`; Better Auth re-surfaces it as a
+`result.error` with code `AUTH_CANCELLED` (which our UI silently
+treats as a user cancellation, since they look identical at the
+WebAuthn layer). The login page logs the failure to the browser
+DevTools console as a `[passkey]` debug breadcrumb so the cause is
+visible without a banner. Open DevTools → Console and look for the
+`autoFill returned error` or `sign-in failed` line; an `rpID`
+mismatch is the leading suspect. See
+[Self-Hosted Configuration](#self-hosted-configuration) below.
+
+Cross-device QR sign-in (the WebAuthn `hybrid` transport) is
+intentionally out of scope — OS-bound passkeys cover the vast
+majority of value at a fraction of the implementation surface. If a
+deployment requires it, file an enhancement request.
+
 ## Trust Device (30 days)
 
 The "Trust this device for 30 days" opt-in is collected on the TOTP
 sign-in challenge page (see
-[Two-Factor Authentication](./two-factor-auth)). There is no
-equivalent checkbox on the passkey sign-in path today — passkeys
-already complete in one OS prompt, so the friction the trust-device
-toggle is meant to relieve doesn't really exist on that path.
+[Two-Factor Authentication](./two-factor-auth)). The toggle stays
+visible alongside the **Use a passkey** alternative button on that
+page — pick whichever flow works on the device — but its effect
+only applies to the TOTP path. Passkeys already complete in one OS
+prompt, so the friction the trust-device toggle is meant to relieve
+doesn't really exist on that path; we render the checkbox there for
+consistency rather than because it does anything if the user chooses
+the passkey button.
 
 Where the trust-device flow does intersect passkeys is the **Trusted
 browsers** list at **Admin → Settings → Security**: any browser the
@@ -177,12 +242,15 @@ gate and works on any browser.
 
 ## Limitations
 
-- Passwordless sign-in (using a passkey as both factors at once) is
-  not yet wired through Atlas's sign-in challenge — the current flow
-  always prompts for a password before the second factor. Tracked
-  separately.
+- Cross-device QR sign-in (WebAuthn `hybrid` transport) is not
+  surfaced. OS-bound passkeys plus iCloud / Google Password Manager
+  cloud sync cover the vast majority of value; a hybrid path adds
+  significant UI surface (the QR rendering, the BLE proximity
+  pairing, the connection-state banner) and is gated on an explicit
+  enterprise contract before we wire it.
 - Recovery for a user with no remaining passkey and no backup codes
-  requires an out-of-band reset by a `platform_admin`.
+  requires an out-of-band reset by a `platform_admin`. A user-
+  triggered recovery flow is tracked in the Wave 2B parallel issue.
 - A single global `rpID` is used for all hosted regions
   (`app.useatlas.dev`). WebAuthn binds credentials to a single
   registrable suffix; per-region frontends would each need a

@@ -16,8 +16,15 @@ export type SignInErrorKind =
 
 /**
  * Discriminated by `kind` so `action` is statically reachable only on the
- * `sso_required` variant. The render layer narrows on `kind` rather than
- * checking a flat optional field.
+ * `sso_required` variant, and `attemptedEmail` only on `email_unverified`.
+ * The render layer narrows on `kind` rather than checking flat optional
+ * fields.
+ *
+ * `attemptedEmail` captures the address that was actually rejected — the
+ * resend-verification button uses it instead of the live form-state
+ * email so a user who edits the field after the alert renders can't
+ * accidentally redirect the verification link to a different address
+ * (which would not match the original sign-in attempt).
  */
 export type SignInErrorState =
   | {
@@ -27,7 +34,13 @@ export type SignInErrorState =
       action?: { label: string; href: string };
     }
   | {
-      kind: "network" | "invalid_credentials" | "rate_limited" | "email_unverified" | "unknown";
+      kind: "email_unverified";
+      title: string;
+      body: string;
+      attemptedEmail: string;
+    }
+  | {
+      kind: "network" | "invalid_credentials" | "rate_limited" | "unknown";
       title: string;
       body: string;
     };
@@ -46,6 +59,13 @@ export interface SignInResponseError {
 export interface SignInErrorInput {
   error?: SignInResponseError;
   thrown?: unknown;
+  /**
+   * The email that was submitted with the rejected sign-in attempt, if
+   * known. Captured at error time so the `email_unverified` branch can
+   * carry a stable address into the resend-verification UI even after
+   * the user edits the form field.
+   */
+  attemptedEmail?: string;
 }
 
 const UNKNOWN_FALLBACK = {
@@ -107,6 +127,10 @@ export function parseSignInError(input: SignInErrorInput): SignInErrorState {
       kind: "email_unverified",
       title: "Verify your email first",
       body: "We sent a verification link to your inbox. Open it to activate your account, then sign in.",
+      // Empty string when the caller didn't supply an email — the resend
+      // button disables itself when the captured address is empty so the
+      // request never fires against a falsy target.
+      attemptedEmail: input.attemptedEmail ?? "",
     };
   }
 

@@ -731,10 +731,22 @@ function warnIfSharedDatabase(): void {
   }
 }
 
-/** Migrations that depend on Better Auth's organization table (#1472). */
-const ORG_DEPENDENT_MIGRATIONS = [
+/**
+ * Migrations that depend on Better Auth tables (`organization`, `user`,
+ * `session`, etc.). Better Auth creates these tables only when managed
+ * auth is enabled — in any other mode Better Auth's `runMigrations` is
+ * never called, so applying these files would fail with `relation
+ * "..." does not exist`. The runner skips them in non-managed mode.
+ *
+ * Original list scoped to the `organization` table only (#1472); now
+ * covers any Better Auth–dependent table including `user` / `session`
+ * (#2117). Renaming follow-up to make the intent explicit.
+ */
+const MANAGED_AUTH_MIGRATIONS = [
   "0027_organization_saas_columns.sql",
   "0042_audit_retention_default.sql",
+  // Backfill against Better Auth's "user" + "session" tables.
+  "0050_backfill_email_verified_grandfathered.sql",
 ];
 
 /**
@@ -748,10 +760,11 @@ const ORG_DEPENDENT_MIGRATIONS = [
  * handle serverless Postgres cold starts on Railway where the DB may take
  * several seconds to wake up.
  *
- * In non-managed auth modes, migrations that depend on Better Auth's
- * `organization` table are skipped — Better Auth never creates it, so
- * applying them would fail. They get picked up automatically if the
- * deployment later switches to managed auth. See #1472.
+ * In non-managed auth modes, migrations that depend on any Better Auth
+ * table (`organization`, `user`, `session`, …) are skipped — Better
+ * Auth never creates them, so applying them would fail. They get picked
+ * up automatically if the deployment later switches to managed auth.
+ * See `MANAGED_AUTH_MIGRATIONS` and #1472 / #2117.
  */
 export async function migrateInternalDB(): Promise<void> {
   // Warn when DATABASE_URL and ATLAS_DATASOURCE_URL resolve to the same
@@ -768,7 +781,7 @@ export async function migrateInternalDB(): Promise<void> {
   // of auth/detect → config triggers a circular evaluation order that breaks
   // module-link in some test runners (mcp test suite). See #1487.
   const { detectAuthMode } = await import("@atlas/api/lib/auth/detect");
-  const skip = detectAuthMode() === "managed" ? [] : ORG_DEPENDENT_MIGRATIONS;
+  const skip = detectAuthMode() === "managed" ? [] : MANAGED_AUTH_MIGRATIONS;
 
   // Retry with backoff for serverless Postgres cold starts (Railway).
   // Set ATLAS_MIGRATION_RETRIES=0 to disable retries (e.g. in tests).

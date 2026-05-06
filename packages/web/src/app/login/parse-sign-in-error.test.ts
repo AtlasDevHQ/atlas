@@ -51,9 +51,29 @@ describe("parseSignInError — response branch", () => {
     expect(out.kind).toBe("rate_limited");
   });
 
-  it("classifies EMAIL_NOT_VERIFIED as email_unverified", () => {
-    const out = parseSignInError({ error: { code: "EMAIL_NOT_VERIFIED" } });
+  it("classifies EMAIL_NOT_VERIFIED as email_unverified and captures attemptedEmail", () => {
+    const out = parseSignInError({
+      error: { code: "EMAIL_NOT_VERIFIED" },
+      attemptedEmail: "alice@example.com",
+    });
     expect(out.kind).toBe("email_unverified");
+    if (out.kind === "email_unverified") {
+      // The captured email is used by the resend-verification button —
+      // a regression that drops it would cause the resend to fire
+      // against the live form-state email (which the user may have
+      // edited since the rejection landed). See login/page.tsx.
+      expect(out.attemptedEmail).toBe("alice@example.com");
+    }
+  });
+
+  it("falls back to empty attemptedEmail when none is supplied", () => {
+    // Resend button disables itself when attemptedEmail is empty so the
+    // request never fires against a falsy target — confirm the empty
+    // string default is preserved in the wire shape.
+    const out = parseSignInError({ error: { code: "EMAIL_NOT_VERIFIED" } });
+    if (out.kind === "email_unverified") {
+      expect(out.attemptedEmail).toBe("");
+    }
   });
 
   it("classifies SSO_REQUIRED with valid redirect as sso_required + action", () => {

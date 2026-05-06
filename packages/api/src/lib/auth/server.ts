@@ -1368,6 +1368,15 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
         });
       },
       autoSignInAfterVerification: true,
+      // Re-issue a verification link whenever an unverified user attempts
+      // sign-in. Without this, Better Auth throws EMAIL_NOT_VERIFIED but
+      // never re-sends the email — leaving any user grandfathered from
+      // before `requireEmailVerification` flipped on (or anyone who lost
+      // their original token) permanently locked out with no self-serve
+      // recovery. The dispatch goes through the same `sendVerification`
+      // path above, so enumeration timing and rate limits apply uniformly
+      // to signup, manual resend, and this branch.
+      sendOnSignIn: true,
     },
     socialProviders: deps.socialProviders,
     // F-07 — cookieCache.maxAge bounds the revocation window. Previously

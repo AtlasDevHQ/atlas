@@ -35,7 +35,7 @@
 -- where `audit_retention_config` is unused but the runner would still
 -- attempt to apply this file.
 --
--- Resolution: this file is registered in `ORG_DEPENDENT_MIGRATIONS` in
+-- Resolution: this file is registered in `MANAGED_AUTH_MIGRATIONS` in
 -- `packages/api/src/lib/db/internal.ts` and skipped on
 -- `detectAuthMode() !== "managed"` boots. It is then applied automatically
 -- on a future boot if the deploy switches to managed auth. This mirrors the

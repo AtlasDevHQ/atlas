@@ -45,8 +45,14 @@ mock.module("@/lib/auth/two-factor-client", () => ({
 }));
 
 const routerPushMock = mock((_path: string) => {});
+const searchParamsGetMock = mock<(_key: string) => string | null>(() => null);
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
+  // Page reads `?callbackURL=...` to bounce the user back to the
+  // surface that triggered the 2FA challenge (e.g. /admin/settings/security
+  // when re-authing for passkey enrollment). Tests assert the safe path
+  // policy is enforced.
+  useSearchParams: () => ({ get: searchParamsGetMock }),
 }));
 
 const signInPasskeyMock = mock(
@@ -83,6 +89,8 @@ beforeEach(() => {
   verifyTotpMock.mockReset();
   verifyBackupCodeMock.mockReset();
   routerPushMock.mockReset();
+  searchParamsGetMock.mockReset();
+  searchParamsGetMock.mockImplementation(() => null);
   getTwoFactorClientMock.mockReset();
   signInPasskeyMock.mockReset();
   getPasskeySignInMock.mockReset();
@@ -171,6 +179,54 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
       { code: string; trustDevice?: boolean },
     ];
     expect(call[0]).toEqual({ code: "123456", trustDevice: false });
+    await waitFor(() => {
+      expect(routerPushMock).toHaveBeenCalledWith("/");
+    });
+  });
+
+  test("?callbackURL=/admin/settings/security routes there after verify (passkey re-auth bounce)", async () => {
+    // The callbackURL hand-off is what makes passkey re-auth feel
+    // continuous: the user clicks "add passkey" → SESSION_NOT_FRESH →
+    // re-auth dialog → twoFactorRedirect → 2FA challenge → bounces
+    // BACK to /admin/settings/security. Without this assertion, a
+    // future refactor that drops the searchParams read would silently
+    // drop every TOTP-enabled user at `/` instead.
+    searchParamsGetMock.mockImplementation((key: string) =>
+      key === "callbackURL" ? "/admin/settings/security" : null,
+    );
+    render(<TwoFactorChallengePage />);
+    fireEvent.change(getCodeInput(), { target: { value: "123456" } });
+
+    await act(async () => {
+      fireEvent.click(getSubmit());
+    });
+
+    await waitFor(() => {
+      expect(routerPushMock).toHaveBeenCalledWith("/admin/settings/security");
+    });
+  });
+
+  test.each([
+    ["protocol-relative open redirect", "//evil.example.com/phish"],
+    ["absolute https URL", "https://evil.example.com/phish"],
+    ["javascript: scheme", "javascript:alert(1)"],
+    ["data: scheme", "data:text/html,<script>alert(1)</script>"],
+    ["backslash smuggle", "/\\evil.example.com"],
+    ["empty string", ""],
+    ["non-leading-slash path", "admin/settings/security"],
+  ])("rejects unsafe ?callbackURL=%s — falls back to '/'", async (_label, raw) => {
+    // Defense-in-depth: an attacker who plants a link to
+    // /login/two-factor?callbackURL=https://evil.example would phish
+    // the post-2FA bounce. The same-origin path allowlist closes that
+    // vector even if Better Auth's two-factor cookie itself is leaked.
+    searchParamsGetMock.mockImplementation((key: string) => (key === "callbackURL" ? raw : null));
+    render(<TwoFactorChallengePage />);
+    fireEvent.change(getCodeInput(), { target: { value: "123456" } });
+
+    await act(async () => {
+      fireEvent.click(getSubmit());
+    });
+
     await waitFor(() => {
       expect(routerPushMock).toHaveBeenCalledWith("/");
     });

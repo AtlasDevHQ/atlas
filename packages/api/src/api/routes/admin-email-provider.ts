@@ -47,7 +47,7 @@ const log = createLogger("admin-email-provider");
  * statement, not a live status readout.
  */
 const BASELINE_PROVIDER: EmailProvider = "resend";
-const BASELINE_FROM_ADDRESS = "Atlas <noreply@useatlas.dev>";
+const BASELINE_FROM_ADDRESS = "Atlas <noreply@ship.useatlas.dev>";
 
 // Provider-specific secret config shapes. Each carries the `provider`
 // discriminator (#1542) — the wire contract now requires it on the

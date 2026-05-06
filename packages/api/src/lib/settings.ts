@@ -444,7 +444,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     label: "From Address",
     description: "Default sender address for platform emails",
     type: "string",
-    default: "Atlas <noreply@useatlas.dev>",
+    default: "Atlas <noreply@ship.useatlas.dev>",
     envVar: "ATLAS_EMAIL_FROM",
     scope: "platform",
     saasVisible: false,

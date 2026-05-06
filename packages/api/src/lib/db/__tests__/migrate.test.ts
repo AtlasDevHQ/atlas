@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(50);
+    expect(count).toBe(51);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -158,6 +158,7 @@ describe("runMigrations", () => {
         "0047_drop_mcp_tokens.sql",
         "0048_trusted_device.sql",
         "0049_audit_log_mcp_columns.sql",
+        "0050_backfill_email_verified_grandfathered.sql",
       ],
     });
 
@@ -697,7 +698,7 @@ describe("0042_audit_retention_default.sql", () => {
     );
   });
 
-  it("is registered in ORG_DEPENDENT_MIGRATIONS so non-managed deploys skip it (#1472)", () => {
+  it("is registered in MANAGED_AUTH_MIGRATIONS so non-managed deploys skip it (#1472)", () => {
     // Postgres parses `INSERT … FROM organization` at plan time, so on
     // a non-managed deploy without Better Auth's organization plugin the
     // migration aborts boot before evaluating row count. The skip list in
@@ -706,7 +707,56 @@ describe("0042_audit_retention_default.sql", () => {
     // future `internal.ts` cleanup can't silently drop it.
     const internalPath = path.join(import.meta.dir, "..", "internal.ts");
     const internalSrc = fs.readFileSync(internalPath, "utf-8");
-    expect(internalSrc).toMatch(/ORG_DEPENDENT_MIGRATIONS\s*=\s*\[[^\]]*"0042_audit_retention_default\.sql"/);
+    expect(internalSrc).toMatch(/MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0042_audit_retention_default\.sql"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0050_backfill_email_verified_grandfathered.sql (#2117)
+// ---------------------------------------------------------------------------
+
+describe("0050_backfill_email_verified_grandfathered.sql", () => {
+  const filePath = path.join(
+    import.meta.dir,
+    "..",
+    "migrations",
+    "0050_backfill_email_verified_grandfathered.sql",
+  );
+
+  it("is idempotent — guards on emailVerified = false", () => {
+    // Without this guard the migration would re-write every verified
+    // user's row on every deploy (no functional change but an I/O storm
+    // and replication chatter the size of the user table). The same
+    // failure mode would mask a future regression that flips the
+    // backfill into "always overwrite" — pin the WHERE clause exactly.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(/"emailVerified"\s*=\s*false/);
+  });
+
+  it("only promotes users with at least one session row", () => {
+    // The "session row implies inbox proof" heuristic is the migration's
+    // entire safety argument (see the file header). A future cleanup
+    // that drops the EXISTS clause would silently flip every unverified
+    // user to verified, including the population the requireEmailVerification
+    // gate exists to block.
+    const sql = fs.readFileSync(filePath, "utf-8");
+    expect(sql).toMatch(/EXISTS\s*\([^)]*FROM\s+"session"/i);
+  });
+
+  it("is registered in MANAGED_AUTH_MIGRATIONS so non-managed deploys skip it (#2117)", () => {
+    // The migration touches Better Auth's "user" + "session" tables,
+    // which only exist when managed auth is enabled. A future cleanup
+    // that drops 0050 from the skip list would abort boot on every
+    // self-hosted deployment with a non-managed backend (relation
+    // "session" does not exist). Pin the registration explicitly —
+    // the file-count assertion at line 82 is necessary but not
+    // sufficient (it confirms the file exists, not that the skip
+    // wiring is correct).
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(
+      /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0050_backfill_email_verified_grandfathered\.sql"/,
+    );
   });
 });
 

@@ -22,6 +22,24 @@ mock.module("@/lib/auth/passkey-client", () => ({
   getPasskeySignIn: () => null,
 }));
 
+const signInEmailMock = mock(
+  async (_opts: { email: string; password: string }) =>
+    ({ data: null, error: null }) as {
+      data: { twoFactorRedirect?: boolean } | null;
+      error: { message?: string; code?: string } | null;
+    },
+);
+const useSessionMock = mock(() => ({
+  data: { user: { email: "admin@useatlas.dev" } },
+}));
+
+mock.module("@/lib/auth/client", () => ({
+  authClient: {
+    useSession: useSessionMock,
+    signIn: { email: signInEmailMock },
+  },
+}));
+
 import { PasskeyTile } from "../components/admin/security/passkey-tile";
 import { deriveDeviceName } from "@/lib/auth/derive-device-name";
 
@@ -49,9 +67,15 @@ function restorePublicKeyCredential(): void {
 beforeEach(() => {
   addPasskeyMock.mockReset();
   updatePasskeyMock.mockReset();
+  signInEmailMock.mockReset();
+  useSessionMock.mockReset();
   // Default no-op resolves so tests don't accidentally see a leaked impl.
   addPasskeyMock.mockImplementation(async () => ({ data: null, error: null }));
   updatePasskeyMock.mockImplementation(async () => ({ data: null, error: null }));
+  signInEmailMock.mockImplementation(async () => ({ data: null, error: null }));
+  useSessionMock.mockImplementation(() => ({
+    data: { user: { email: "admin@useatlas.dev" } },
+  }));
 });
 
 afterEach(() => {
@@ -221,6 +245,118 @@ describe("PasskeyTile", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("Name this passkey");
     });
+  });
+
+  test("SESSION_NOT_FRESH opens the re-auth dialog instead of surfacing a banner", async () => {
+    setPublicKeyCredential({
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+    addPasskeyMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { code: "SESSION_NOT_FRESH", message: "Session is not fresh", status: 403 },
+    }));
+
+    render(<PasskeyTile hasPasskey={false} />);
+
+    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    await act(async () => {
+      fireEvent.click(addBtn);
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Re-enter your password");
+    });
+    // The freshness branch must NOT surface the generic enrollment-failure
+    // banner — that would be a confusing double signal alongside the dialog.
+    expect(document.body.textContent).not.toContain("Could not register that passkey");
+  });
+
+  test("re-auth with correct password retries addPasskey and proceeds to naming", async () => {
+    setPublicKeyCredential({
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+    // First attempt: blocked by freshness. Second attempt (after re-auth):
+    // succeeds and returns the new passkey envelope so the rename modal opens.
+    addPasskeyMock
+      .mockImplementationOnce(async () => ({
+        data: null,
+        error: { code: "SESSION_NOT_FRESH", message: "Session is not fresh", status: 403 },
+      }))
+      .mockImplementationOnce(async () => ({
+        data: { id: "pk_999", createdAt: new Date() },
+        error: null,
+      }));
+    signInEmailMock.mockImplementationOnce(async () => ({ data: { user: {} }, error: null }));
+
+    render(<PasskeyTile hasPasskey={false} />);
+
+    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    await act(async () => {
+      fireEvent.click(addBtn);
+    });
+
+    // Re-auth dialog appears with a password input + confirm button.
+    const passwordInput = await screen.findByPlaceholderText(/your password/i);
+    await act(async () => {
+      fireEvent.change(passwordInput, { target: { value: "correct-horse-battery-staple" } });
+    });
+    const confirmBtn = await screen.findByRole("button", { name: /confirm and add passkey/i });
+    await act(async () => {
+      fireEvent.click(confirmBtn);
+    });
+
+    await waitFor(() => {
+      expect(signInEmailMock).toHaveBeenCalledTimes(1);
+    });
+    // addPasskey is called twice: original (rejected) + retry (successful).
+    await waitFor(() => {
+      expect(addPasskeyMock).toHaveBeenCalledTimes(2);
+    });
+    // Successful retry should open the rename modal.
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Name this passkey");
+    });
+  });
+
+  test("re-auth with wrong password shows OAuth-aware fallback hint", async () => {
+    setPublicKeyCredential({
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+    addPasskeyMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { code: "SESSION_NOT_FRESH", message: "Session is not fresh", status: 403 },
+    }));
+    signInEmailMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { code: "INVALID_EMAIL_OR_PASSWORD", message: "Invalid email or password" },
+    }));
+
+    render(<PasskeyTile hasPasskey={false} />);
+
+    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    await act(async () => {
+      fireEvent.click(addBtn);
+    });
+
+    const passwordInput = await screen.findByPlaceholderText(/your password/i);
+    await act(async () => {
+      fireEvent.change(passwordInput, { target: { value: "wrong" } });
+    });
+    const confirmBtn = await screen.findByRole("button", { name: /confirm and add passkey/i });
+    await act(async () => {
+      fireEvent.click(confirmBtn);
+    });
+
+    await waitFor(() => {
+      // The hint must point OAuth-only users at sign-out / sign-back-in.
+      // INVALID_EMAIL_OR_PASSWORD covers both wrong-password and OAuth-only
+      // users (no `credential` account); we use the same copy for both.
+      expect(document.body.textContent).toContain(
+        "If you signed up with Google, GitHub, or SSO",
+      );
+    });
+    // Ensure addPasskey was NOT retried — re-auth failed.
+    expect(addPasskeyMock).toHaveBeenCalledTimes(1);
   });
 
   test("rename failure after successful enrollment fires onChange and shows recovery hint", async () => {

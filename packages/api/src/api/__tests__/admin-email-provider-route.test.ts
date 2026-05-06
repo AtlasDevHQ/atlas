@@ -429,7 +429,7 @@ describe("admin email-provider route", () => {
       expect(res.status).toBe(200);
       const data = (await res.json()) as { config: { baseline: { provider: string; fromAddress: string }; override: unknown } };
       expect(data.config.baseline.provider).toBe("resend");
-      expect(data.config.baseline.fromAddress).toBe("Atlas <noreply@useatlas.dev>");
+      expect(data.config.baseline.fromAddress).toBe("Atlas <noreply@ship.useatlas.dev>");
       expect(data.config.override).toBeNull();
     });
 

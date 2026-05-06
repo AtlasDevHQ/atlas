@@ -15,8 +15,8 @@
  * a friendly hint via {@link parsePasskeySignInError}.
  */
 
-import { useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -82,8 +82,48 @@ function logFailure(action: string, raw: TwoFactorApiError | null): void {
   console.warn(`[two-factor:sign-in] ${action} failed`, raw);
 }
 
+/**
+ * Validate a `?callbackURL=...` query param to a same-origin path.
+ *
+ * Accepts only relative paths starting with `/` and rejects protocol-
+ * relative URLs (`//evil.example/...`), absolute URLs, and any input
+ * containing the scheme delimiter `:` so an attacker can't smuggle
+ * `javascript:` or `data:` redirects. Falls back to `"/"` for anything
+ * suspicious — the caller never receives an unsafe target.
+ *
+ * The two-factor surface is reachable from any of: login → /login,
+ * passkey-tile re-auth → /admin/settings/security, future sensitive
+ * ops. Without this allowlist, an attacker who can plant a link to
+ * `/login/two-factor?callbackURL=https://evil.example` would phish the
+ * post-2FA bounce. The check is belt-and-suspenders alongside the
+ * Better Auth two-factor cookie itself, which is short-lived.
+ */
+function safeCallbackPath(raw: string | null | undefined): string {
+  if (typeof raw !== "string" || raw.length === 0) return "/";
+  // Must start with `/` and must NOT start with `//` (protocol-relative).
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
+  // Reject any URL-scheme delimiter — covers `:`, `\\`, and assorted
+  // browser quirks where these can prefix a path-looking string.
+  if (raw.includes(":") || raw.includes("\\")) return "/";
+  return raw;
+}
+
 export default function TwoFactorChallengePage() {
+  // useSearchParams needs a Suspense boundary in Next 15+ static
+  // prerender — same pattern as `reset-password/page.tsx`. The challenge
+  // form has no SSR-meaningful UI, so the boundary just hands the work
+  // to the client without flashing fallback content.
+  return (
+    <Suspense fallback={null}>
+      <TwoFactorChallengeForm />
+    </Suspense>
+  );
+}
+
+function TwoFactorChallengeForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const callbackPath = safeCallbackPath(searchParams.get("callbackURL"));
   const webAuthnSupport = useWebAuthnSupported();
   const [mode, setMode] = useState<Mode>("totp");
   const [code, setCode] = useState("");
@@ -137,7 +177,7 @@ export default function TwoFactorChallengePage() {
         );
         return;
       }
-      router.push("/");
+      router.push(callbackPath);
     } catch (err) {
       console.warn(
         "[two-factor:sign-in] passkey sign-in threw:",
@@ -189,7 +229,7 @@ export default function TwoFactorChallengePage() {
         submittingRef.current = false;
         return;
       }
-      router.push("/");
+      router.push(callbackPath);
     } catch (err) {
       console.warn(
         "[two-factor:sign-in] verify threw:",

@@ -16,8 +16,9 @@
  * leaves an orphaned name in flight.
  */
 
-import { useState } from "react";
-import { Fingerprint, KeyRound, Loader2, ShieldX } from "lucide-react";
+import { useRef, useState } from "react";
+import { Fingerprint, KeyRound, Loader2, ShieldCheck, ShieldX } from "lucide-react";
+import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,6 +59,21 @@ function isUserCancellation(error: PasskeyApiError | null): boolean {
   return msg.includes("notallowed") || msg.includes("cancelled") || msg.includes("canceled");
 }
 
+/**
+ * Better Auth's `freshSessionMiddleware` rejects sensitive operations
+ * (passkey enrollment, account deletion) when the session has aged
+ * past `session.freshAge` (default 1 day). Detect the rejection by
+ * `code === "SESSION_NOT_FRESH"`; fall back to a message-substring
+ * match for older Better Auth versions that surfaced only the literal
+ * "Session is not fresh" string with no `code` on the error envelope.
+ */
+function isSessionNotFresh(error: PasskeyApiError | null): boolean {
+  if (!error) return false;
+  if (error.code === "SESSION_NOT_FRESH") return true;
+  const msg = error.message?.toLowerCase() ?? "";
+  return msg.includes("session is not fresh");
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -76,13 +92,18 @@ export interface PasskeyTileProps {
 
 export function PasskeyTile({ hasPasskey, onChange }: PasskeyTileProps) {
   const support = useWebAuthnSupported();
+  const session = authClient.useSession();
+  const userEmail =
+    typeof session.data?.user?.email === "string" ? session.data.user.email : null;
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [namingHint, setNamingHint] = useState<string | null>(null);
   const [pending, setPending] = useState<{ id: string; defaultName: string } | null>(null);
   const [name, setName] = useState("");
+  const [reauthOpen, setReauthOpen] = useState(false);
 
-  async function handleAdd() {
+  async function runAddPasskey(): Promise<void> {
     const client = getPasskeyClient();
     if (!client) {
       setError("Passkey support couldn't be loaded. Refresh the page and try again.");
@@ -111,6 +132,17 @@ export function PasskeyTile({ hasPasskey, onChange }: PasskeyTileProps) {
         console.debug("[passkey] addPasskey cancelled or NotAllowedError", result.error);
         return;
       }
+      if (isSessionNotFresh(result.error)) {
+        // The session is older than `session.freshAge` (default 1 day).
+        // Better Auth requires a fresh session for enrollment so a stolen
+        // long-lived cookie can't silently provision a permanent passkey
+        // on the attacker's authenticator. Open the re-auth dialog —
+        // `runAddPasskey` is re-invoked by the dialog after `signIn.email`
+        // mints a new session.
+        console.debug("[passkey] addPasskey blocked: SESSION_NOT_FRESH — opening re-auth dialog");
+        setReauthOpen(true);
+        return;
+      }
       console.warn("[passkey] addPasskey failed", result.error);
       setError(result.error.message ?? "Could not register that passkey. Please try again.");
       return;
@@ -129,6 +161,16 @@ export function PasskeyTile({ hasPasskey, onChange }: PasskeyTileProps) {
     const defaultName = getDefaultDeviceName();
     setPending({ id, defaultName });
     setName(defaultName);
+  }
+
+  function handleAdd(): void {
+    void runAddPasskey();
+  }
+
+  async function handleReauthSuccess(): Promise<void> {
+    setReauthOpen(false);
+    // Retry enrollment with the fresh session minted by the dialog.
+    await runAddPasskey();
   }
 
   async function handleSaveName() {
@@ -294,6 +336,192 @@ export function PasskeyTile({ hasPasskey, onChange }: PasskeyTileProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <PasskeyReauthDialog
+        open={reauthOpen}
+        email={userEmail}
+        onCancel={() => setReauthOpen(false)}
+        onSuccess={handleReauthSuccess}
+      />
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Re-auth dialog (SESSION_NOT_FRESH recovery)
+// ---------------------------------------------------------------------------
+
+/**
+ * Password-prompt dialog that mints a fresh session and retries the
+ * enrollment. Used only when `addPasskey` is rejected with
+ * SESSION_NOT_FRESH — i.e. the user's session is older than
+ * `session.freshAge` (default 1 day). A fresh `signIn.email` resets
+ * `session.createdAt`, which is what `freshSessionMiddleware` checks.
+ *
+ * Lives in this file (vs. a shared `<ReauthDialog>` module) because
+ * re-auth UX has nuance per surface — the wording, the retry shape,
+ * and the OAuth-only fallback all want to be tuned at the call site.
+ * If we add a second sensitive op (delete passkey, change password
+ * inside admin) we should extract this to `ui/components/admin/security/`
+ * and share — but premature abstraction is worse than a 60-line copy.
+ *
+ * OAuth-only users (no `credential` account) cannot re-auth via password.
+ * `signIn.email` returns INVALID_EMAIL_OR_PASSWORD; we surface a
+ * recoverable hint pointing them at sign-out / sign-back-in.
+ */
+function PasskeyReauthDialog({
+  open,
+  email,
+  onCancel,
+  onSuccess,
+}: {
+  open: boolean;
+  email: string | null;
+  onCancel: () => void;
+  onSuccess: () => Promise<void> | void;
+}) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Mid-flight cancellation: Esc and click-outside route through Radix's
+  // `onOpenChange(false)` even while `signIn.email` is in flight, but the
+  // promise still resolves later. Without this gate the resolved tail
+  // would surface a stale error or — worse — call `onSuccess()` on a
+  // dialog the user has already dismissed, popping the OS biometric
+  // prompt out of nowhere. The ref resets on every open via the JSX
+  // `onOpenChange` (see `handleOpenChange(true)`).
+  const cancelledRef = useRef(false);
+
+  // Reset local state on close so the next open starts clean — a
+  // dismissed-with-error attempt should not show its old banner the
+  // next time the dialog is invoked. `onCancel` propagates the close
+  // up to the parent which owns the `open` prop.
+  function handleOpenChange(next: boolean) {
+    if (next) {
+      cancelledRef.current = false;
+      return;
+    }
+    cancelledRef.current = true;
+    setPassword("");
+    setErrorMsg(null);
+    setBusy(false);
+    onCancel();
+  }
+
+  async function handleSubmit(): Promise<void> {
+    if (!email) {
+      setErrorMsg(
+        "Couldn't read your email from the current session. Please sign out and back in to add a passkey.",
+      );
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    setErrorMsg(null);
+    try {
+      const res = await authClient.signIn.email({ email, password });
+      if (cancelledRef.current) return;
+      if (res.error) {
+        // The most common branch: wrong password OR an OAuth-only user
+        // with no `credential` account. Better Auth folds both into
+        // INVALID_EMAIL_OR_PASSWORD; we treat them the same UX-wise.
+        const code = (res.error as { code?: string }).code;
+        if (code === "INVALID_EMAIL_OR_PASSWORD") {
+          setErrorMsg(
+            "That password didn't work. If you signed up with Google, GitHub, or SSO, sign out and back in to add a passkey.",
+          );
+        } else {
+          setErrorMsg(
+            res.error.message ?? "Could not re-authenticate. Please try again.",
+          );
+        }
+        setBusy(false);
+        return;
+      }
+      // Better Auth returns `twoFactorRedirect: true` when the account has
+      // TOTP enabled. Re-auth via password alone won't refresh the session
+      // in that case — Better Auth issues the new session only after the
+      // 2FA challenge clears. Send the user to /login/two-factor with a
+      // callbackURL so they bounce straight back to /admin/settings/security
+      // after the challenge clears (see `two-factor/page.tsx` for the
+      // same-origin allowlist on the redirect target).
+      //
+      // Reset busy/password BEFORE assigning so a navigation that gets
+      // blocked (popup blocker, CSP, an extension intercepting) doesn't
+      // wedge the dialog with `busy === true` and `disabled` Cancel.
+      if ((res.data as { twoFactorRedirect?: boolean } | null)?.twoFactorRedirect) {
+        setPassword("");
+        setBusy(false);
+        window.location.assign("/login/two-factor?callbackURL=/admin/settings/security");
+        return;
+      }
+      setPassword("");
+      setBusy(false);
+      await onSuccess();
+    } catch (err) {
+      if (cancelledRef.current) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[passkey] re-auth signIn.email threw", msg);
+      setErrorMsg("Could not re-authenticate. Please try again.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={handleOpenChange}>
+      <AlertDialogContent className="sm:max-w-md">
+        <AlertDialogHeader>
+          <div className="mb-1 flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+            <ShieldCheck className="size-4" aria-hidden />
+            <span className="text-xs font-semibold uppercase tracking-wider">
+              Confirm it&apos;s you
+            </span>
+          </div>
+          <AlertDialogTitle>Re-enter your password to add a passkey</AlertDialogTitle>
+          <AlertDialogDescription>
+            For your security, passkey enrollment requires a recent sign-in.
+            Re-enter your password to continue — we&apos;ll add the passkey
+            right after.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="space-y-2 py-2">
+          {email && (
+            <div className="text-xs text-muted-foreground">
+              Signed in as <span className="font-medium text-foreground">{email}</span>
+            </div>
+          )}
+          <Input
+            type="password"
+            autoFocus
+            autoComplete="current-password"
+            placeholder="Your password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void handleSubmit();
+              }
+            }}
+            disabled={busy}
+          />
+          {errorMsg && <p className="text-sm text-destructive">{errorMsg}</p>}
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(e) => {
+              e.preventDefault();
+              void handleSubmit();
+            }}
+            disabled={busy || !password || !email}
+          >
+            {busy ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
+            Confirm and add passkey
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

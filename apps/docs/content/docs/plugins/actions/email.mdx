@@ -16,7 +16,7 @@ bun add @useatlas/email
 ### Prerequisites
 
 - A [Resend API key](https://resend.com/api-keys)
-- A verified sending domain in Resend (or use the default `notifications.useatlas.dev`)
+- A verified sending domain in Resend (or use the default `ship.useatlas.dev`)
 
 ## Configuration
 
@@ -41,7 +41,7 @@ export default defineConfig({
 |--------|------|----------|---------|-------------|
 | `resendApiKey` | `string` | Yes | -- | Resend API key |
 | `allowedDomains` | `string[]` | No | -- | Optional domain allowlist. When set, only recipients with matching domains are permitted |
-| `fromAddress` | `string` | No | `"Atlas <atlas@notifications.useatlas.dev>"` | Sender address for outgoing emails |
+| `fromAddress` | `string` | No | `"Atlas <atlas@ship.useatlas.dev>"` | Sender address for outgoing emails |
 | `approvalMode` | `"auto" \| "manual" \| "admin-only"` | No | `"admin-only"` | Who can approve email sends |
 
 ## Action Details

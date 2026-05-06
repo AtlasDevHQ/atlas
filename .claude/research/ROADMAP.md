@@ -159,7 +159,7 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 
 ### Theme D — Eval + tool quality
 
-- [ ] Eval harness runs through the MCP path ([#2074](https://github.com/AtlasDevHQ/atlas/issues/2074)) — risk item: production hits MCP, eval doesn't. New `--mcp-deterministic` / `--mcp-llm` modes spawn a real MCP client; CI gate on release tags.
+- [x] Eval harness runs through the MCP path — Phase 1 ([#2074](https://github.com/AtlasDevHQ/atlas/issues/2074), [#2120](https://github.com/AtlasDevHQ/atlas/pull/2120)) — `canonical-mcp-eval (deterministic)` CI job dispatches all 20 canonical questions through the real `createHostedMcpRouter()` over `@modelcontextprotocol/sdk` Client + `StreamableHTTPClientTransport`. 7 tests / 36 expect() calls covering tool surface, error envelopes (`unknown_metric`, `unknown_entity`, `ambiguous_term`), tool-description floor (≥40 chars + error-catalog mention), wire-shape pinning on `runMetric` (`columns`/`rows`/`truncated`), `prompts/list` shape, and a session-cap stress test that exercises the `pendingReservations` TOCTOU window. `verifyAccessToken` mocked; SQL execution mocked. Phase 2 — real DCR + PKCE + `--mcp-llm` + release-tag-blocking LLM CI — tracked in [#2119](https://github.com/AtlasDevHQ/atlas/issues/2119) (gated on #2078).
 - [ ] MCP tool description audit ([#2075](https://github.com/AtlasDevHQ/atlas/issues/2075)) — consistency, length, hallucination-bait. Held-out LLM tool-selection accuracy >90% target. Rubric-enforcing test fixture.
 - [ ] MCP prompts library exposes canonical eval questions ([#2076](https://github.com/AtlasDevHQ/atlas/issues/2076)) — the 20 NovaMart canonical questions are the best showcase we have; agents should browse them in the prompts panel alongside `query_patterns`.
 
@@ -171,7 +171,7 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 
 Backlog (post-1.4.1): `runbooks-context` plugin (#2023, next milestone headline), `/agent-mode` chat-first view (#2022), `/ee` decoupling refactor (#2017).
 
-Ordering recommendation: B → D (eval safety net) → C (governance) → E (distribution + foundation). Theme A complete (3/3) and risk items A2 + B2 closed; remaining risk item is D1 (eval through MCP) — frontload it.
+Ordering recommendation: B → D (eval safety net) → C (governance) → E (distribution + foundation). Theme A complete (3/3); risk items A2 + B2 + D1-Phase-1 closed. Next risk-class item is B1 (`mcp.useatlas.dev` brand hostname, [#2068](https://github.com/AtlasDevHQ/atlas/issues/2068)) — every doc + registry + CLI default still points at the regional API hostname while marketing reads `mcp.useatlas.dev`.
 
 ---
 

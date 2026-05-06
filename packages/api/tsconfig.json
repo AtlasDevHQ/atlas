@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
+    "types": ["bun", "node"],
     "paths": {
       "@atlas/api/*": ["./src/*"],
       "@atlas/ee/*": ["../../ee/src/*"]

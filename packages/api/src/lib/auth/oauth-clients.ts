@@ -37,23 +37,30 @@ const log = createLogger("oauth-clients-helper");
  * Token-state classification surfaced to the per-user UI (#2066).
  *
  * - `active`              — the client is enabled and has at least one
- *                           outstanding non-expired access token. The
- *                           agent should be able to make a tools/call
- *                           without re-auth.
+ *                           outstanding non-expired access OR refresh
+ *                           token. The agent should be able to make a
+ *                           tools/call without user-visible re-auth.
  * - `reconnect_required`  — the client is enabled but every access
  *                           token has expired *and* no usable refresh
  *                           token remains (refresh exhausted or never
  *                           issued). The UI surfaces a re-run-wizard CTA.
- * - `revoked`             — the client row is `disabled = true`. Either
- *                           an admin or the user revoked it; the row
- *                           stays for audit retention but the agent will
- *                           always 401 from this point.
+ * - `revoked`             — the client row is `disabled = true`.
+ *                           **As of v1.4.1, no production code path
+ *                           produces this state**: `revokeOAuthClient`
+ *                           performs a hard `DELETE FROM "oauthClient"`,
+ *                           so a revoked client disappears from the
+ *                           list query entirely. The state is reserved
+ *                           for a future soft-revoke flow that flips
+ *                           `disabled` without removing the row (so the
+ *                           audit trail stays intact under whole-row
+ *                           retention policy). The UI rendering and
+ *                           tests exist now to keep the contract
+ *                           pinned for that future flow.
  *
- * The `disabled` flag is authoritative for `revoked` even when tokens
- * are still in the table — admin revoke doesn't necessarily delete
- * children inside the same transaction (Better Auth's revoke endpoint
- * cascades, but a future flow that flips `disabled` without a DELETE
- * needs the UI state to stay correct).
+ * The `disabled` flag is authoritative for `revoked` regardless of
+ * outstanding token counts — when the soft-revoke flow lands, tokens
+ * may not yet be cascaded by the time the list query reads, and the
+ * UI must already say "Revoked" rather than "Active."
  */
 export type OAuthTokenState = "active" | "reconnect_required" | "revoked";
 
@@ -197,20 +204,36 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
         ${tokenUserClause}
        WHERE c."referenceId" = $1
          ${userClause}
-       GROUP BY c."clientId", c."name", c."redirectUris", c."createdAt",
-                c."updatedAt", c."disabled", c."type"
+       GROUP BY c."id", c."clientId", c."name", c."redirectUris", c."createdAt",
+                c."updatedAt", c."disabled", c."type", c."referenceId"
        ORDER BY c."createdAt" DESC`,
     params,
   );
 
   return rows.map((r): OAuthClientRow => {
     const disabled = Boolean(r.disabled);
-    const liveAccess = parseInt(r.liveTokenCount, 10);
-    const liveRefresh = parseInt(r.liveRefreshCount, 10);
+    // pg returns COUNT(*) as a string. NaN from a NULL aggregate would
+    // silently classify a healthy active client as "reconnect_required"
+    // (NaN > 0 → false → falls through to the default branch) — exactly
+    // the false-negative-fallback CLAUDE.md prohibits. A NULL here means
+    // the SQL or the schema drifted; surface a 500 with a `requestId`
+    // rather than render a wrong status badge.
+    const liveAccess = Number.parseInt(r.liveTokenCount ?? "", 10);
+    const liveRefresh = Number.parseInt(r.liveRefreshCount ?? "", 10);
+    if (!Number.isFinite(liveAccess) || !Number.isFinite(liveRefresh)) {
+      throw new Error(
+        `oauth-clients aggregate parse failed for clientId=${r.clientId} `
+        + `(liveTokenCount=${String(r.liveTokenCount)}, `
+        + `liveRefreshCount=${String(r.liveRefreshCount)})`,
+      );
+    }
     // Three-state collapse, in precedence order:
     //   1. disabled  → "revoked" wins regardless of outstanding tokens
-    //                  (admin / self-revoke flips this; tokens may not
-    //                  yet be DELETEd by the cascading endpoint).
+    //                  (reserved for a future soft-revoke flow that
+    //                  flips `disabled` without DELETEing the row;
+    //                  current `revokeOAuthClient` does a hard DELETE
+    //                  so disabled-with-rows never actually surfaces
+    //                  in v1.4.1).
     //   2. liveAccess > 0 → "active": at least one token will verify
     //                  on the next agent frame.
     //   3. liveRefresh > 0 → "active": no live access token, but the

@@ -98,9 +98,14 @@ export const mcpActivations: Counter = meter.createCounter(
  * separate from the noisier `atlas.mcp.tool.calls` series.
  *
  * Attributes:
- *   - `client.id`   — the OAuth client_id presenting the refresh.
- *                     Lets dashboards split refresh volume by agent
- *                     (Claude Desktop vs Cursor vs DCR-issued UUID).
+ *   - `client.id`   — the OAuth client_id presenting the refresh, when
+ *                     the hook can surface it. In v1.4.1 the production
+ *                     hook collapses to `"unknown"` because Better
+ *                     Auth's `customTokenResponseFields` does not pass
+ *                     the `oauthClient.clientId` column to user code.
+ *                     The attribute is in place so a future hook
+ *                     upgrade lights up the per-agent split without
+ *                     a metric-rename migration.
  *   - `deploy.mode` — `self-hosted` / `saas`. SaaS-only growth in this
  *                     series with self-hosted flat is the expected
  *                     shape (hosted MCP is SaaS-only).

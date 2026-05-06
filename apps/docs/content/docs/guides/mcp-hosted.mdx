@@ -214,7 +214,7 @@ Atlas's auth server issues both **access tokens** and **refresh tokens** when a 
 |---|---|---|
 | Access token (JWT) | **1 hour** | `ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS` |
 | Refresh token (opaque) | **30 days** | `ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS` |
-| Authorization code | 10 minutes | not configurable |
+| Authorization code | 10 minutes | inherits Better Auth default; no Atlas env override |
 
 The lifetimes are global per Atlas instance — they do not vary by workspace, scope, or client. The `expires_in` field in every token response carries the absolute remaining seconds for the access token; clients should refresh before that window closes.
 
@@ -254,7 +254,7 @@ Atlas does **not** leak the underlying revocation reason in the response body. A
 |---|---|---|
 | `active` | Enabled client with at least one outstanding non-expired access or refresh token | Status dot, no badge |
 | `reconnect_required` | Enabled client with no usable token left — the next frame will 401 with `WWW-Authenticate` | Amber badge + Reconnect CTA |
-| `revoked` | The client row is `disabled = true` (admin or self revoke) | Dimmed row, deletion is the next step |
+| `revoked` | The client row is `disabled = true`. **Reserved for a future soft-revoke flow** — v1.4.1 revoke performs a hard `DELETE`, so this state is never produced by current code paths. The UI rendering exists so the contract is pinned for the next iteration. | Dimmed row, deletion is the next step |
 
 The Settings → AI Agents page renders these three states verbatim. Ops queries should pivot on `tokenState` rather than re-deriving it from `disabled` + `tokenCount`.
 

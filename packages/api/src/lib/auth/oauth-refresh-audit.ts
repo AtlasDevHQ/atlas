@@ -30,19 +30,35 @@ const log = createLogger("oauth-refresh-audit");
 
 export interface OAuthTokenRefreshAuditInfo {
   /**
-   * The OAuth client_id presenting the refresh token. Pivots forensic
-   * queries on which agent (Claude Desktop, Cursor, …) is rotating.
-   * Best-effort under the production hook — pulled from the client
-   * metadata blob when available, falls back to `"unknown"` otherwise.
+   * The OAuth client_id presenting the refresh token. Under the v1.4.1
+   * production hook this is essentially always `null` because Better
+   * Auth's `customTokenResponseFields` does not surface the
+   * `oauthClient.clientId` column to user code (only the parsed
+   * `metadata` JSONB blob, which Atlas does not write `clientId` into).
+   * The audit row + counter both fall back to `"unknown"` in that case.
+   * The field accepts a real value so a hook upgrade or a follow-up
+   * lookup that joins the issued `oauthAccessToken` row can light up
+   * the per-agent forensic split without changing call sites.
+   *
+   * Convention: `null` means "the hook could not determine it" rather
+   * than "definitely none." There is no M2M path through this helper
+   * (refresh-token grants are always user-bound), so the "definitely
+   * none" semantic does not arise.
    */
   clientId: string | null;
-  /** The user the refreshed token is bound to. */
+  /** The user the refreshed token is bound to. `null` only as defense-in-depth. */
   userId: string | null;
-  /** JTI of the *new* access token, if the JWT plugin is active. */
+  /**
+   * JTI of the *new* access token. NOT populated by the production
+   * hook in v1.4.1 — Better Auth's `customTokenResponseFields` runs
+   * before the JWT is minted. Reserved for direct integration callers
+   * and a future hook that fires post-issuance.
+   */
   tokenJti?: string;
   /**
    * Wall-clock seconds between the previous token's `iat` and the
-   * refresh, when known. Surfaces "rotation cadence" for dashboards.
+   * refresh. Same caveat as `tokenJti` — not populated by the
+   * production hook today; reserved for future upgrade.
    */
   ageAtRefreshSec?: number;
   /** Scopes carried on the refreshed token. */

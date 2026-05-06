@@ -299,6 +299,24 @@ function presentTokenState(tokenState: OAuthClient["tokenState"]): {
         badge: { label: "Revoked", tone: "danger" },
         description: "Revoked — remove from the list to clean up.",
       };
+    default: {
+      // Defense in depth: if the API ever ships a fourth state before
+      // this page is updated, the Zod schema in `me-schemas.ts` will
+      // normally reject the response at the parse boundary. But during
+      // a multi-PR rollout the schema can land first; without this
+      // branch, an unknown enum value crashes the entire page render
+      // with `TypeError: Cannot read properties of undefined`. Fall
+      // back to a neutral status badge + soft warning so the rest of
+      // the table stays usable. `satisfies never` keeps compile-time
+      // exhaustiveness.
+      const _exhaustive: never = tokenState;
+      console.error(`Unknown tokenState received from API: ${String(_exhaustive)}`);
+      return {
+        status: "ready",
+        badge: { label: "Unknown state", tone: "warn" },
+        description: "Status temporarily unavailable — please refresh.",
+      };
+    }
   }
 }
 

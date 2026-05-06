@@ -24,14 +24,62 @@
  * itself (the audit logger has its own dedicated tests).
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import {
   resolveAccessTokenTtlSeconds,
   resolveRefreshTokenTtlSeconds,
 } from "../server";
 import { recordOAuthTokenRefresh } from "../oauth-refresh-audit";
-import { ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
 import { oauthTokenRefresh } from "@atlas/api/lib/metrics";
+
+// Capture audit emissions through a partial-mock of the audit module.
+// CLAUDE.md requires every named export to be present — we re-export the
+// real `ADMIN_ACTIONS` constant so the catalog assertions below see the
+// load-bearing string literal.
+const auditedEntries: AdminActionEntry[] = [];
+const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
+  (entry) => {
+    auditedEntries.push(entry);
+  },
+);
+
+mock.module("@atlas/api/lib/audit", async () => {
+  const actual = await import("@atlas/api/lib/audit/actions");
+  return {
+    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+    logAdminAction: (entry: AdminActionEntry) => mockLogAdminAction(entry),
+    logAdminActionAwait: async (entry: AdminActionEntry) => {
+      mockLogAdminAction(entry);
+    },
+    errorMessage: (err: unknown) =>
+      err instanceof Error ? err.message : String(err),
+    causeToError: (err: unknown) =>
+      err instanceof Error ? err : new Error(String(err)),
+  };
+});
+
+// Counter spy — pre-monkeypatch the `add` method so we can assert the
+// attribute payload. We don't fully mock `@atlas/api/lib/metrics` because
+// other code paths consume the same module in this test process and a
+// partial mock would leak.
+const counterAddSpy: Mock<
+  (value: number, attrs?: Record<string, unknown>) => void
+> = mock(() => {});
+const originalCounterAdd = oauthTokenRefresh.add.bind(oauthTokenRefresh);
+oauthTokenRefresh.add = ((
+  value: number,
+  attrs?: Record<string, unknown>,
+) => {
+  counterAddSpy(value, attrs);
+  return originalCounterAdd(value, attrs);
+}) as typeof oauthTokenRefresh.add;
+
+beforeEach(() => {
+  auditedEntries.length = 0;
+  mockLogAdminAction.mockClear();
+  counterAddSpy.mockClear();
+});
 
 describe("resolveAccessTokenTtlSeconds", () => {
   it("returns the 1-hour default when the env var is unset", () => {
@@ -120,33 +168,96 @@ describe("oauthTokenRefresh counter", () => {
 });
 
 describe("recordOAuthTokenRefresh", () => {
-  it("does not throw on a fully-populated info object", () => {
-    expect(() =>
-      recordOAuthTokenRefresh({
-        clientId: "claude-desktop",
-        userId: "user_abc",
-        tokenJti: "jti_xyz",
-        ageAtRefreshSec: 3600,
-        scopes: ["openid", "profile", "offline_access", "mcp:read"],
-      }),
-    ).not.toThrow();
+  it("emits a single audit row pinning the canonical wire shape", () => {
+    // Forensic queries pivot on `action_type = 'oauth_token.refresh'`,
+    // `target_type = 'oauth_token'`, and the metadata field set. Pin
+    // every load-bearing field — a regression on any one of these
+    // breaks dashboard joins or retention policy.
+    recordOAuthTokenRefresh({
+      clientId: "claude-desktop",
+      userId: "user_abc",
+      tokenJti: "jti_xyz",
+      ageAtRefreshSec: 3600,
+      scopes: ["openid", "profile", "offline_access", "mcp:read"],
+    });
+
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = auditedEntries[0]!;
+    expect(entry.actionType).toBe("oauth_token.refresh");
+    expect(entry.targetType).toBe("oauth_token");
+    expect(entry.targetId).toBe("claude-desktop");
+    expect(entry.metadata).toMatchObject({
+      clientId: "claude-desktop",
+      userId: "user_abc",
+      tokenJti: "jti_xyz",
+      ageAtRefreshSec: 3600,
+      scopes: ["openid", "profile", "offline_access", "mcp:read"],
+    });
   });
 
-  it("does not throw when clientId is null (production hook fallback)", () => {
-    // The production hook can't always pull clientId from
-    // `customTokenResponseFields`'s `metadata` arg — record with
-    // `null` and let the audit row carry whatever we have rather
-    // than dropping the event.
-    expect(() =>
-      recordOAuthTokenRefresh({
-        clientId: null,
-        userId: "user_abc",
-        scopes: ["mcp:read"],
-      }),
-    ).not.toThrow();
+  it("falls back targetId to 'unknown' when clientId is null (production hook reality)", () => {
+    // The production hook is essentially always called with
+    // `clientId: null` because `customTokenResponseFields` does not
+    // surface the `oauthClient.clientId` column to user code. The
+    // audit row's `target_id` must NOT be NULL — forensic queries
+    // pivoting on `target_id IS NULL` would otherwise sweep these
+    // rows up by accident.
+    recordOAuthTokenRefresh({
+      clientId: null,
+      userId: "user_abc",
+      scopes: ["mcp:read"],
+    });
+
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = auditedEntries[0]!;
+    expect(entry.targetId).toBe("unknown");
+    expect(entry.metadata).toMatchObject({
+      clientId: null,
+      userId: "user_abc",
+      scopes: ["mcp:read"],
+    });
+    // tokenJti / ageAtRefreshSec are conditionally spread — must NOT
+    // appear when caller didn't supply them. A regression that always
+    // emits `tokenJti: undefined` would corrupt JSON aggregations.
+    expect(entry.metadata?.tokenJti).toBeUndefined();
+    expect(entry.metadata?.ageAtRefreshSec).toBeUndefined();
   });
 
-  it("does not throw when userId is null", () => {
+  it("emits the OTel counter with client.id + deploy.mode attributes", () => {
+    // The counter's whole reason for existing is the per-agent split.
+    // A regression dropping `client.id` collapses the dashboard view
+    // into a single bucket; a regression on `deploy.mode` mis-attributes
+    // every self-hosted refresh as SaaS or vice versa.
+    recordOAuthTokenRefresh({
+      clientId: "claude-desktop",
+      userId: "user_abc",
+      scopes: ["mcp:read"],
+    });
+
+    expect(counterAddSpy).toHaveBeenCalledTimes(1);
+    const [value, attrs] = counterAddSpy.mock.calls[0]!;
+    expect(value).toBe(1);
+    expect(attrs).toMatchObject({
+      "client.id": "claude-desktop",
+      // getConfig() is null in unit-test default — resolveDeployMode
+      // safe-defaults to self-hosted.
+      "deploy.mode": "self-hosted",
+    });
+  });
+
+  it("counter falls back client.id='unknown' when clientId is null", () => {
+    recordOAuthTokenRefresh({
+      clientId: null,
+      userId: "user_abc",
+      scopes: ["mcp:read"],
+    });
+
+    expect(counterAddSpy).toHaveBeenCalledTimes(1);
+    const [, attrs] = counterAddSpy.mock.calls[0]!;
+    expect(attrs).toMatchObject({ "client.id": "unknown" });
+  });
+
+  it("does not throw when userId is null (defense in depth)", () => {
     // M2M flows have `user?` undefined — but this hook only fires on
     // `refresh_token` grant (always user-bound per Better Auth's
     // own contract). The null path exists as a defense in depth.
@@ -157,5 +268,7 @@ describe("recordOAuthTokenRefresh", () => {
         scopes: ["openid"],
       }),
     ).not.toThrow();
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    expect(auditedEntries[0]!.metadata).toMatchObject({ userId: null });
   });
 });

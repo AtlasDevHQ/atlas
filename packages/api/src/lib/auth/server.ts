@@ -783,21 +783,50 @@ function buildPlugins() {
       // observability-only and never reshapes the wire response.
       //
       // The `metadata` arg is the parsed `oauthClient.metadata` JSONB
-      // (NOT the clientId column). We surface `clientId` as a best-effort
-      // pull from that blob when present; the bun:test integration calls
-      // `recordOAuthTokenRefresh` directly to validate audit + counter
-      // emit when clientId is known.
+      // (NOT the `oauthClient.clientId` column — Better Auth's hook does
+      // not surface that column). Atlas does not write `clientId` into
+      // the JSONB blob today, so under the production wiring this lookup
+      // is essentially always `null` and the audit row + counter
+      // attribute fall back to `"unknown"`. The hook still records the
+      // userId and scopes — useful even without per-client splits — and
+      // the helper signature accepts a populated clientId so a future
+      // upstream Better Auth hook upgrade (or a wrapper that joins
+      // `oauthAccessToken` post-issuance) can light up the per-agent
+      // dashboard split without changing call sites.
+      //
+      // The whole callback body is wrapped in try/catch because Better
+      // Auth `await`s this hook in the token-response code path with no
+      // try/catch on its side — a synchronous throw here would 500 the
+      // user's `/oauth/token` refresh request, breaking the very
+      // contract this telemetry exists to verify. `recordOAuthTokenRefresh`
+      // is documented "never throws" but its guarantee depends on
+      // `logAdminAction`'s fire-and-forget contract holding indefinitely,
+      // and on the `ADMIN_ACTIONS.oauth_token` constant being importable
+      // — both fragile in the face of future refactors. The defensive
+      // catch enforces the contract at the call site rather than relying
+      // on the helper's discipline.
       customTokenResponseFields: ({ grantType, user, scopes, metadata }) => {
         if (grantType !== "refresh_token") return {};
-        const clientId =
-          metadata && typeof metadata.clientId === "string"
-            ? metadata.clientId
-            : null;
-        recordOAuthTokenRefresh({
-          clientId,
-          userId: user?.id ?? null,
-          scopes,
-        });
+        try {
+          const clientId =
+            metadata && typeof metadata.clientId === "string"
+              ? metadata.clientId
+              : null;
+          recordOAuthTokenRefresh({
+            clientId,
+            userId: user?.id ?? null,
+            scopes,
+          });
+        } catch (err: unknown) {
+          // Telemetry must never break user-visible refresh. Log loud
+          // enough that operators can correlate dashboards going flat
+          // with this branch firing; pino warn (not error) reflects
+          // "non-fatal but worth investigating".
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            "oauth refresh telemetry hook threw — refresh response unaffected",
+          );
+        }
         return {};
       },
     }),

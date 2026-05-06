@@ -296,15 +296,29 @@ export const ADMIN_ACTIONS = {
    *
    * Metadata:
    *   - `clientId`         — the OAuth client_id that presented the
-   *                          refresh token. Pivots forensic queries on
-   *                          which agent (Claude Desktop, Cursor, etc.)
-   *                          is rotating tokens.
+   *                          refresh token. Production wiring sets this
+   *                          to `null` because Better Auth's
+   *                          `customTokenResponseFields` hook does not
+   *                          surface the `oauthClient.clientId` column
+   *                          to user code (it only exposes the parsed
+   *                          `metadata` JSONB blob, which Atlas does
+   *                          not write `clientId` into). The audit row
+   *                          falls back to `targetId = "unknown"` in
+   *                          that case. The field is shaped to accept
+   *                          a real value so a future hook upgrade or
+   *                          a follow-up DB lookup can light up the
+   *                          per-agent forensic split without changing
+   *                          the schema.
    *   - `userId`           — the user the token is bound to.
-   *   - `tokenJti`         — JWT id of the *new* access token, when the
-   *                          oauthProvider hook surfaces it. May be
-   *                          undefined for opaque tokens (no JWT plugin).
+   *   - `tokenJti`         — JWT id of the *new* access token. NOT
+   *                          populated by the production hook in
+   *                          v1.4.1; reserved for direct integration
+   *                          callers and a future hook upgrade that
+   *                          surfaces the issued JWT.
    *   - `ageAtRefreshSec`  — wall-clock seconds between the previous
-   *                          token's `iat` and the refresh, when known.
+   *                          token's `iat` and the refresh. Same caveat
+   *                          as `tokenJti` — not populated by the
+   *                          production hook today.
    *
    * Per-token revoke is intentionally NOT in this catalog — the v1.4.1
    * surface only exposes whole-client revoke, which lives under

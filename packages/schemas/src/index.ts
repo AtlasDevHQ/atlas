@@ -10,4 +10,5 @@ export * from "./custom-domain";
 export * from "./integrations";
 export * from "./platform";
 export * from "./residency";
+export * from "./security";
 export * from "./sla";

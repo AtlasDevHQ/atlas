@@ -320,6 +320,18 @@ try {
   );
 }
 
+// Platform security adoption telemetry — cross-tenant MFA + passkey + trust-device counts.
+try {
+  const { platformSecurityMetrics } = await import("./routes/platform-security-metrics");
+  app.route("/api/v1/platform/admin/security", platformSecurityMetrics);
+  log.info("Platform security metrics routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform security metrics routes — adoption dashboard will be unavailable",
+  );
+}
+
 // Platform SLA monitoring routes — enterprise-gated, platform_admin role.
 try {
   const { platformSLA } = await import("./routes/platform-sla");

@@ -76,6 +76,7 @@ import { adminConnections } from "./admin-connections";
 import { adminPlugins } from "./admin-plugins";
 import { adminCache } from "./admin-cache";
 import { adminActions } from "./admin-actions";
+import { adminSecurityMetrics } from "./admin-security-metrics";
 import { adminPublish } from "./admin-publish";
 import { adminArchive, adminRestore } from "./admin-archive";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
@@ -302,6 +303,8 @@ admin.route("/cache", adminCache);
 admin.route("/cache/", adminCache);
 admin.route("/admin-actions", adminActions);
 admin.route("/admin-actions/", adminActions);
+admin.route("/security", adminSecurityMetrics);
+admin.route("/security/", adminSecurityMetrics);
 // Plugin marketplace — dynamic import defers loading the marketplace module
 // (and its dependency graph) until admin routes register. Import failure is a
 // build/test bug, not a runtime-recoverable condition: log then re-throw so it

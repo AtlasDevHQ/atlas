@@ -48426,6 +48426,144 @@
         "operationId": "getAdminAdminActionsExport"
       }
     },
+    "/api/v1/admin/security/metrics": {
+      "get": {
+        "tags": [
+          "Admin — Security"
+        ],
+        "summary": "Workspace MFA + trust-device adoption",
+        "description": "Returns an aggregate count of admin-role users in the active workspace bucketed by enrolled second-factor profile, plus active trust-device grants. Read-only, single SELECT, scoped to the caller's organization.",
+        "responses": {
+          "200": {
+            "description": "Workspace security metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "adminCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "mfaEnrolled": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "twoFactorOnly": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "passkeyOnly": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "bothFactors": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "noFactors": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "activeTrustDevices": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "activeTrustDeviceUsers": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "adminCount",
+                    "mfaEnrolled",
+                    "twoFactorOnly",
+                    "passkeyOnly",
+                    "bothFactors",
+                    "noFactors",
+                    "activeTrustDevices",
+                    "activeTrustDeviceUsers"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not available — internal DB not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminSecurityMetrics"
+      }
+    },
     "/api/v1/admin/plugins/marketplace/available": {
       "get": {
         "tags": [
@@ -57491,6 +57629,218 @@
         "operationId": "getPlatformActionsExport"
       }
     },
+    "/api/v1/platform/admin/security/metrics": {
+      "get": {
+        "tags": [
+          "Platform — Security"
+        ],
+        "summary": "Cross-workspace MFA + trust-device adoption",
+        "description": "Returns the same aggregate buckets as the workspace endpoint, but summed across every workspace, plus a per-workspace breakdown for the platform-admin dashboard. Read-only SELECTs.",
+        "responses": {
+          "200": {
+            "description": "Platform security metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "aggregate": {
+                      "type": "object",
+                      "properties": {
+                        "adminCount": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "mfaEnrolled": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "twoFactorOnly": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "passkeyOnly": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "bothFactors": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "noFactors": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "activeTrustDevices": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "activeTrustDeviceUsers": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "adminCount",
+                        "mfaEnrolled",
+                        "twoFactorOnly",
+                        "passkeyOnly",
+                        "bothFactors",
+                        "noFactors",
+                        "activeTrustDevices",
+                        "activeTrustDeviceUsers"
+                      ]
+                    },
+                    "workspaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "adminCount": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "mfaEnrolled": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "twoFactorOnly": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "passkeyOnly": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "bothFactors": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "noFactors": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "activeTrustDevices": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "activeTrustDeviceUsers": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "workspaceName": {
+                            "type": "string"
+                          },
+                          "workspaceSlug": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "adminCount",
+                          "mfaEnrolled",
+                          "twoFactorOnly",
+                          "passkeyOnly",
+                          "bothFactors",
+                          "noFactors",
+                          "activeTrustDevices",
+                          "activeTrustDeviceUsers",
+                          "workspaceId",
+                          "workspaceName",
+                          "workspaceSlug"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "aggregate",
+                    "workspaces"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not available — internal DB not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformAdminSecurityMetrics"
+      }
+    },
     "/api/v1/platform/sla": {
       "get": {
         "tags": [
@@ -63959,6 +64309,9 @@
       "name": "Admin — Sandbox"
     },
     {
+      "name": "Admin — Security"
+    },
+    {
       "name": "Admin — Semantic"
     },
     {
@@ -64038,6 +64391,9 @@
     },
     {
       "name": "Platform — Plugin Catalog"
+    },
+    {
+      "name": "Platform — Security"
     },
     {
       "name": "Prompts"

@@ -288,3 +288,20 @@ export const PlatformCatalogResponseSchema = z.object({
   entries: z.array(CatalogEntrySchema),
   total: z.number(),
 });
+
+// ── Security adoption telemetry ───────────────────────────────
+// Wire schemas live in `@useatlas/schemas` (single source of truth shared
+// with the API route layer). Re-exported here for `useAdminFetch` call
+// sites that import from this barrel.
+
+export {
+  SecurityBucketsSchema,
+  WorkspaceSecurityMetricsSchema,
+  PlatformSecurityMetricsSchema,
+} from "@useatlas/schemas";
+
+export type {
+  SecurityBuckets,
+  WorkspaceSecurityMetrics,
+  PlatformSecurityMetrics,
+} from "@useatlas/types";

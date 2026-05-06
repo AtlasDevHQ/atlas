@@ -488,6 +488,69 @@ export async function _sendPasswordResetEmail(opts: {
 }
 
 /**
+ * Rewrite a Better Auth verify-email / password-reset URL so its
+ * `callbackURL` query param is absolute against the frontend origin.
+ *
+ * Better Auth links look like `${baseURL}/api/auth/verify-email?token=...&callbackURL=...`
+ * where `baseURL` is the API host (`api.useatlas.dev`). After validating
+ * the token, the handler 302s to whatever `callbackURL` resolves to. Browsers
+ * resolve a relative `callbackURL` (`/login`, `/`) against the response
+ * origin — which is the API — so users land on `https://api.useatlas.dev/login`
+ * and 404. Rewriting to an absolute URL pinned to the frontend origin (taken
+ * from `BETTER_AUTH_TRUSTED_ORIGINS[0]`) makes the redirect bounce to the
+ * web app no matter what the client passed at signup or resend time.
+ *
+ * Safety: only relative paths are rewritten. Absolute URLs pass through
+ * untouched so Better Auth's own `trustedOrigins` host check stays the
+ * authority on cross-origin allowance. Protocol-relative inputs
+ * (`//evil.com/x`) would resolve to an attacker host under `new URL(rel, base)`,
+ * so we re-check the resolved `origin` matches the expected frontend
+ * origin and fall back to the original URL if not — keeping us out of the
+ * open-redirect business while leaving Better Auth to reject the bad
+ * callback at its own layer.
+ *
+ * @internal — exported for testing.
+ */
+export function rewriteVerificationCallbackURL(rawUrl: string, frontendOrigin: string): string {
+  if (!frontendOrigin) return rawUrl;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+  const callbackRaw = parsed.searchParams.get("callbackURL") ?? "/";
+
+  // If callbackURL is already absolute (parseable on its own), leave it.
+  // Better Auth's trustedOrigins check decides whether the host is allowed.
+  try {
+    new URL(callbackRaw);
+    return rawUrl;
+  } catch {
+    // Relative — fall through.
+  }
+
+  let resolved: URL;
+  let expectedOrigin: string;
+  try {
+    resolved = new URL(callbackRaw, frontendOrigin);
+    expectedOrigin = new URL(frontendOrigin).origin;
+  } catch {
+    return rawUrl;
+  }
+  // Protocol-relative or `?callbackURL=//evil.com/x` would resolve to a
+  // different origin under `new URL(rel, base)`. Refuse to propagate it —
+  // the original URL still carries the suspicious value, and Better Auth's
+  // trustedOrigins check will catch it downstream.
+  if (resolved.origin !== expectedOrigin) {
+    return rawUrl;
+  }
+
+  parsed.searchParams.set("callbackURL", resolved.toString());
+  return parsed.toString();
+}
+
+/**
  * Minimal HTML attribute-value escape for the verification URL. Better
  * Auth URLs are well-formed, but a `"` in the token would break the
  * `<a href="...">` attribute and — absent this — could produce a
@@ -1383,6 +1446,10 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
   const rateLimitConfig = resolveAuthRateLimitConfig(deps.env, internalDbAvailable);
   const sendVerification = deps.testOverrides?.sendVerificationEmail ?? _sendVerificationEmail;
   const sendReset = deps.testOverrides?.sendPasswordResetEmail ?? _sendPasswordResetEmail;
+  // Frontend origin for post-verify / post-reset redirects. Without this,
+  // Better Auth's redirect lands on the API host and 404s. First trusted
+  // origin is the canonical web app URL — set via BETTER_AUTH_TRUSTED_ORIGINS.
+  const frontendOrigin = deps.trustedOrigins[0] ?? "";
 
   // Unfold the tagged bootstrap-admin config into the flat args
   // `computeBootstrapRole` expects. Keeping the flat pair confined to
@@ -1422,7 +1489,10 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
         // try/catch must still not be able to crash the request handler
         // (which would reopen an enumeration oracle as a 500 vs 200 side
         // channel) or print to stderr with no correlation.
-        sendReset({ to: data.user.email, url: data.url }).catch((err: unknown) => {
+        sendReset({
+          to: data.user.email,
+          url: rewriteVerificationCallbackURL(data.url, frontendOrigin),
+        }).catch((err: unknown) => {
           log.warn(
             { to: data.user.email, err: errorMessage(err) },
             "Password reset dispatch threw — request response stays 200 to preserve enumeration protection",
@@ -1445,7 +1515,10 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
         // with no correlation or (with --unhandled-rejections=strict)
         // crash the process and reintroduce the enumeration oracle as
         // a 500-vs-200 side channel.
-        sendVerification({ to: user.email, url }).catch((err: unknown) => {
+        sendVerification({
+          to: user.email,
+          url: rewriteVerificationCallbackURL(url, frontendOrigin),
+        }).catch((err: unknown) => {
           log.warn(
             { to: user.email, err: errorMessage(err) },
             "Verification email dispatch threw — signup response is still 200 to preserve enumeration protection",

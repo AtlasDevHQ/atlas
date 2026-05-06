@@ -44686,6 +44686,365 @@
         "operationId": "deleteAdminMeTrustedDevicesByIdentifier"
       }
     },
+    "/api/v1/admin/users/{id}/revoke-auth/preview": {
+      "get": {
+        "tags": [
+          "Admin — Users"
+        ],
+        "summary": "Preview auth artifacts for force-revoke",
+        "description": "Returns the per-artifact counts (sessions, trusted devices, passkeys, OAuth access/refresh tokens) that `POST /users/{id}/revoke-auth` would delete. Used by the danger-zone UI to surface scope before the admin confirms. Workspace admins are scoped to org members; platform admins cross-org.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "example": "user_abc123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Auth artefact counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "targetUserId": {
+                      "type": "string"
+                    },
+                    "targetUserEmail": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sessions": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "trustedDevices": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "passkeys": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "oauthAccessTokens": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "oauthRefreshTokens": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "targetUserId",
+                    "targetUserEmail",
+                    "sessions",
+                    "trustedDevices",
+                    "passkeys",
+                    "oauthAccessTokens",
+                    "oauthRefreshTokens"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found or not in workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminUsersByIdRevokeAuthPreview"
+      }
+    },
+    "/api/v1/admin/users/{id}/revoke-auth": {
+      "post": {
+        "tags": [
+          "Admin — Users"
+        ],
+        "summary": "Force-revoke all auth artifacts for a user",
+        "description": "Atomically deletes every active session, trusted-device cookie (and adjacent verification rows), passkey, and OAuth access/refresh token for the target user inside a single transaction. The user can re-enroll if re-hired; the contractor / compromised-account scenario is the load-bearing case. Workspace admins are scoped to their org members; platform admins cross-org.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "example": "user_abc123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Auth artifacts revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "targetUserId": {
+                      "type": "string"
+                    },
+                    "sessionsRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "trustedDevicesRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "passkeysRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "oauthAccessTokensRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "oauthRefreshTokensRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "verificationRowsRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "targetUserId",
+                    "sessionsRevoked",
+                    "trustedDevicesRevoked",
+                    "passkeysRevoked",
+                    "oauthAccessTokensRevoked",
+                    "oauthRefreshTokensRevoked",
+                    "verificationRowsRevoked"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found or not in workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminUsersByIdRevokeAuth"
+      }
+    },
     "/api/v1/admin/connections": {
       "get": {
         "tags": [

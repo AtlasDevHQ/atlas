@@ -448,4 +448,190 @@ describe("me oauth-clients — POST /me/oauth-clients/:id/revoke", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  it("emits a race audit + 404 when a concurrent revoke wins under the user scope", async () => {
+    // Pre-fetch sees the row, but the transactional final DELETE returns 0
+    // rows — concurrent self-revoke from another tab won between
+    // pre-fetch and BEGIN. The me-route's race branch differs from the
+    // admin one only in actor (auto-resolved as the user) but must emit
+    // the same `found: false, race: true` forensic shape.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT") && sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      return [];
+    });
+    queryHandler = async (sql) => {
+      if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
+        return { rows: [{ id: "tok_1" }] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthRefreshToken")) {
+        return { rows: [] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthConsent")) {
+        return { rows: [] };
+      }
+      if (sql.includes("DELETE") && sql.includes("oauthClient")) {
+        return { rows: [] }; // racing tx already dropped it
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      meRequest("POST", "/api/v1/me/oauth-clients/claude-desktop/revoke"),
+    );
+
+    expect(res.status).toBe(404);
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls[0]).toBe("BEGIN");
+    expect(sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(false);
+
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("oauth_client.revoke");
+    expect(entry.metadata).toMatchObject({
+      clientId: "claude-desktop",
+      clientName: "Claude Desktop",
+      found: false,
+      race: true,
+    });
+  });
+
+  it("releases a poisoned client (release(err)) when ROLLBACK itself throws", async () => {
+    // F-29 / poisoned-pool guard: if BOTH the original DELETE and the
+    // subsequent ROLLBACK throw, pg's pool must destroy the socket
+    // (`release(err)` with truthy arg) so the next borrower doesn't get
+    // a half-transaction. A regression that swaps `release(rollbackErr)`
+    // for `release()` would silently leak the poisoned connection.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT") && sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      return [];
+    });
+    queryHandler = async (sql) => {
+      if (sql.includes("DELETE") && sql.includes("oauthAccessToken")) {
+        throw new Error("statement timeout");
+      }
+      if (sql.trim().toUpperCase() === "ROLLBACK") {
+        throw new Error("connection terminated by administrator");
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      meRequest("POST", "/api/v1/me/oauth-clients/claude-desktop/revoke"),
+    );
+
+    expect(res.status).toBe(500);
+    expect(clientReleased).toBe(true);
+    // Truthy release arg = pg destroys the socket. A regression dropping
+    // the rollback-error capture would call release() with undefined.
+    expect(clientReleaseArg).toBeDefined();
+
+    // Audit row pivots on `rollbackError` so a forensic reviewer can see
+    // the partial child DELETEs may not have been cleanly reverted.
+    const entry = lastAuditCall();
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({
+      clientId: "claude-desktop",
+      phase: "access_tokens",
+    });
+    expect(entry.metadata?.rollbackError).toBeDefined();
+  });
+
+  it("returns an empty list when the user has no active organization (graceful)", async () => {
+    // A user signed in but with no `activeOrganizationId` (newly-created
+    // account, or post-org-leave) has no clients to surface. Returning
+    // 200 with `clients: []` keeps the page render-ready without a
+    // confusing 500. The deployMode still flows through so the connect
+    // CTA gate stays accurate.
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: {
+          id: "user-1",
+          mode: "managed",
+          label: "user@test.com",
+          role: "member",
+          // no activeOrganizationId
+        },
+      }),
+    );
+
+    const res = await app.fetch(
+      meRequest("GET", "/api/v1/me/oauth-clients"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { clients: unknown[]; deployMode: string };
+    expect(body.clients).toEqual([]);
+    expect(body.deployMode).toBe("saas");
+    // No DB query was issued — the helper short-circuited.
+    expect(mocks.mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("revoke returns 404 when the user has no active organization", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: {
+          id: "user-1",
+          mode: "managed",
+          label: "user@test.com",
+          role: "member",
+        },
+      }),
+    );
+
+    const res = await app.fetch(
+      meRequest("POST", "/api/v1/me/oauth-clients/claude-desktop/revoke"),
+    );
+    expect(res.status).toBe(404);
+    // Revoke under no-org is anomalous — same shape as a not-found probe.
+    // No transaction opened; no audit row (the unaudited 404 is acceptable
+    // since this is a programmer-error path rather than a forensic event).
+    expect(clientQueries.length).toBe(0);
+  });
+
+  it("GET drops cross-user rows when the userId filter is correctly applied", async () => {
+    // Inverted gate: the mock returns User B's row only when params[1] is
+    // missing or wrong. A regression that drops `c."userId" = $2` from
+    // the SELECT would either omit params[1] entirely or pass it without
+    // gating, surfacing User B's client to the User A caller. The active
+    // session is User A; the row only appears if the route mis-routes.
+    mocks.mockInternalQuery.mockImplementation(
+      async (sql: string, params?: unknown[]) => {
+        if (sql.includes("oauthClient")) {
+          if (params?.[1] === "user-1") return [];
+          // Unfiltered or wrong-filter request would land here.
+          return [
+            {
+              clientId: "user-b-client",
+              clientName: "User B Client",
+              redirectUris: [],
+              createdAt: "2026-04-01T00:00:00.000Z",
+              updatedAt: null,
+              disabled: false,
+              type: "public",
+              lastUsedAt: null,
+              tokenCount: "0",
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    const res = await app.fetch(
+      meRequest("GET", "/api/v1/me/oauth-clients"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      clients: Array<{ clientId: string }>;
+    };
+    expect(body.clients).toEqual([]);
+  });
 });

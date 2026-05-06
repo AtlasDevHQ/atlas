@@ -62,18 +62,34 @@ export type RevokePhase =
 export type RevokeOutcome =
   | { status: "ok"; access: number; refresh: number; consent: number }
   | { status: "race" }
-  | { status: "rolled_back"; phase: RevokePhase; error: Error };
+  | {
+      status: "rolled_back";
+      phase: RevokePhase;
+      error: Error;
+      /**
+       * Set when ROLLBACK itself threw (TCP reset between BEGIN and
+       * ROLLBACK, statement timeout in the rollback path, etc). The pino
+       * `log.warn` always fires, but surfacing it back to the route lets
+       * the audit row pivot on rollback success — without this, an
+       * `admin_action_log` reviewer can't tell whether the partial
+       * child DELETEs were cleanly reverted or the connection was
+       * destroyed mid-recovery.
+       */
+      rollbackError?: Error;
+    };
 
 /**
  * Discriminated scope: a query is either workspace-wide (admin) or
  * additionally filtered to a single user (the per-user surface in #2065).
  *
- * `orgId` is required even on the user variant — defense-in-depth tenant
- * isolation. A bug that lets a `userId` from workspace A appear inside
- * workspace B's session must NOT be enough on its own to leak that user's
- * other-workspace clients, since DCR-registered clients are scoped to a
- * single workspace at registration time. Both filters together are the
- * load-bearing IDOR check.
+ * `orgId` is always present. On the user variant, `userId` is the
+ * load-bearing IDOR check — the admin variant intentionally has none, since
+ * an admin is entitled to every client in the workspace. `orgId` on the
+ * user variant is defense-in-depth tenant isolation: a bug that lets a
+ * `userId` from workspace A surface inside workspace B's session must not
+ * be enough on its own to leak that user's other-workspace clients
+ * (DCR-registered clients are scoped to a single workspace at
+ * registration time, so the two filters together pin the row uniquely).
  */
 export type OAuthClientScope =
   | { kind: "org"; orgId: string }
@@ -274,7 +290,10 @@ export async function revokeOAuthClient(
     // ROLLBACK can itself fail (TCP reset between BEGIN and ROLLBACK). pg
     // destroys the socket when `release(err)` is called with a truthy
     // arg, so a poisoned client doesn't return to the pool to corrupt
-    // the next borrower's transaction.
+    // the next borrower's transaction. The rollback error also flows
+    // back to the caller via `rollbackError` so the audit row can pivot
+    // on rollback success — without this, a forensic reviewer can't
+    // distinguish a clean revert from a destroyed connection.
     await client.query("ROLLBACK").catch((rbErr: unknown) => {
       rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
       log.warn(
@@ -286,6 +305,7 @@ export async function revokeOAuthClient(
       status: "rolled_back",
       phase,
       error: err instanceof Error ? err : new Error(String(err)),
+      ...(rollbackErr ? { rollbackError: rollbackErr } : {}),
     };
   } finally {
     client.release(rollbackErr ?? undefined);

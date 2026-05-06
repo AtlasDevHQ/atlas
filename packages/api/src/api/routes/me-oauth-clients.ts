@@ -16,10 +16,14 @@
  * is sufficient (DCR clients are workspace-scoped at registration, but a
  * misconfigured row could match on org alone).
  *
- * Audit: emitted via the existing `oauth_client.revoke` action. Because
- * `logAdminAction` reads the actor from the AsyncLocalStorage request
- * context, the per-user flow naturally records `actor=user` while the
- * admin flow records `actor=admin` — no separate action type needed.
+ * Audit: emitted via the existing `oauth_client.revoke` action. The audit
+ * row records `actor_id` / `actor_email` only — the role (member vs
+ * admin) is implicit. Forensic queries that need to distinguish
+ * self-revoke from admin-revoke must join `actor_id` against `member` or
+ * read the metadata `clientName` against the workspace's user list.
+ * Reusing one action type lets a single retention policy and a single
+ * downstream alert apply to both surfaces; differentiating purely by
+ * action type would have required forking those.
  *
  * The `GET` response includes the resolved `deployMode`. The
  * `/settings/ai-agents` page uses it to gate the "Connect new agent" CTA
@@ -153,10 +157,9 @@ meOauthClients.use(standardAuth);
 meOauthClients.use(requestContext);
 
 function resolveDeployMode(): "self-hosted" | "saas" {
-  // Mirrors `lib/settings.ts:resolveDeployModeForSetting` semantics: any
-  // value other than `"saas"` is treated as `"self-hosted"`. Returning the
-  // safe default on a null/missing config matches the same fallback used
-  // by `useDeployMode()` on the web side.
+  // Two-state collapse: anything other than `"saas"` (including a null /
+  // missing config) maps to `"self-hosted"`. Same safe-default the web
+  // `useDeployMode()` hook applies on its 403 fallback path.
   return getConfig()?.deployMode === "saas" ? "saas" : "self-hosted";
 }
 
@@ -259,6 +262,10 @@ meOauthClients.openapi(revokeMyClientRoute, async (c) => {
     }
 
     if (outcome.status === "rolled_back") {
+      // `rollbackError` is surfaced only when ROLLBACK itself threw — its
+      // presence pivots the audit row from "cleanly reverted" to "child
+      // DELETEs may have leaked", which the pino warn line alone
+      // wouldn't make queryable from `admin_action_log`.
       logAdminAction({
         actionType: ADMIN_ACTIONS.oauth_client.revoke,
         targetType: "oauth_client",
@@ -270,11 +277,19 @@ meOauthClients.openapi(revokeMyClientRoute, async (c) => {
           clientName,
           phase: outcome.phase,
           error: errorMessage(outcome.error),
+          ...(outcome.rollbackError
+            ? { rollbackError: errorMessage(outcome.rollbackError) }
+            : {}),
         },
       });
       auditedInline = true;
       return yield* Effect.fail(outcome.error);
     }
+
+    // Exhaustiveness: a future `RevokeOutcome` variant must be handled
+    // explicitly; this `satisfies` makes TS reject silent fall-through
+    // into the success-branch reads below.
+    outcome satisfies { status: "ok"; access: number; refresh: number; consent: number };
 
     log.info(
       {

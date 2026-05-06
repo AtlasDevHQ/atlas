@@ -21,9 +21,10 @@ import { z } from "zod";
 export const OAuthClientSchema = z.object({
   clientId: z.string().min(1),
   clientName: z.string().nullable(),
-  // OAuth 2.1 / RFC 7591 require absolute URIs; rejecting malformed values
-  // at the parse boundary catches an adapter regression at the API edge
-  // before it renders as a broken row.
+  // Reject malformed values at the parse boundary so an adapter
+  // regression at the API edge fails loudly here instead of rendering
+  // as a broken row. WHATWG URL parsing accepts custom schemes
+  // (`claude://`, `cursor://`) which DCR-registered native agents use.
   redirectUris: z.array(z.string().url()),
   createdAt: z.string(),
   updatedAt: z.string().nullable(),

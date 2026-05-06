@@ -16,12 +16,6 @@
  *   3. Deliver config — pre-filled JSON, copy-to-clipboard, link to
  *      paste-instructions in the docs.
  *
- * Deep links: only Claude Desktop has a stable custom-protocol handler for
- * MCP setup (`claude://mcp/install?...`). Other clients get clipboard JSON
- * with per-client paste instructions. We don't fabricate deep links for
- * agents that don't expose them — silent failures here would leave the
- * user staring at a "Done" screen with no actual install.
- *
  * Deploy gating: the `/settings/ai-agents` page only renders this wizard
  * when `deployMode === "saas"`. Self-hosted operators continue using the
  * CLI installer or the admin surface. No second SaaS check inside the
@@ -64,8 +58,6 @@ interface ClientPreset {
    * reorganizes their site — anchors are owned by Atlas's docs team.
    */
   pasteHelpHref: string;
-  /** Custom-protocol deep link template, when the client publishes one. */
-  deepLink?: (mcpUrl: string) => string;
 }
 
 const CLIENT_PRESETS: readonly ClientPreset[] = [
@@ -101,8 +93,13 @@ const CLIENT_PRESETS: readonly ClientPreset[] = [
   },
 ];
 
+// Mirror the four most user-relevant scopes the consent screen will
+// surface (see `ATLAS_OAUTH_SCOPES` in lib/auth/server.ts). `profile`
+// is included because spec-compliant agents commonly request it; the
+// consent screen remains the authoritative list.
 const SCOPE_DESCRIPTIONS: Array<{ scope: string; meaning: string }> = [
   { scope: "openid", meaning: "Your Atlas user identity" },
+  { scope: "profile", meaning: "Your name and avatar" },
   { scope: "email", meaning: "Your email address" },
   { scope: "offline_access", meaning: "A refresh token so the agent doesn't have to send you back through the browser" },
   { scope: "mcp:read", meaning: "Query workspace data through the MCP endpoint" },
@@ -117,6 +114,7 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
   const [step, setStep] = useState<WizardStep>(1);
   const [chosen, setChosen] = useState<ClientPreset["id"] | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const session = authClient.useSession();
   // Better Auth's public session type doesn't expose `activeOrganizationId`
@@ -132,10 +130,24 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
       setStep(1);
       setChosen(null);
       setCopied(false);
+      setCopyFailed(false);
     }
   }, [open]);
 
-  const apiBase = getApiUrl();
+  const apiBase = useMemo(() => {
+    // `getApiUrl()` returns "" in same-origin Next.js rewrite mode (no
+    // `NEXT_PUBLIC_ATLAS_API_URL` set). Pasting `/mcp/<id>/sse` (a relative
+    // path) into Claude Desktop / Cursor / ChatGPT silently fails — the
+    // agents require an absolute URL. `window.location.origin` is the
+    // browser-side absolute base for same-origin deployments. SSR has no
+    // window, so fall back to "" there; the wizard re-renders client-side
+    // before the user clicks Copy.
+    const configured = getApiUrl();
+    if (configured) return configured;
+    if (typeof window !== "undefined") return window.location.origin;
+    return "";
+  }, []);
+
   const mcpUrl = useMemo(() => {
     // Workspace id is part of the URL — without it the agent can't bind to
     // a workspace. Fall back to a placeholder so the JSON parses; the user
@@ -175,12 +187,15 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
     try {
       await navigator.clipboard.writeText(configJson);
       setCopied(true);
+      setCopyFailed(false);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       // Clipboard API can fail on insecure contexts or denied permissions.
-      // Surface the error to the console so the user can debug; the
-      // textarea remains selectable as a manual-copy fallback.
+      // Log for debugging and flip a state flag so the UI tells the user
+      // to select-and-copy manually — the `<pre>` block below is text-
+      // selectable, so the manual path always works.
       console.error("Clipboard copy failed:", err instanceof Error ? err.message : err);
+      setCopyFailed(true);
     }
   }
 
@@ -212,6 +227,7 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
             configJson={configJson}
             onCopy={handleCopy}
             copied={copied}
+            copyFailed={copyFailed}
           />
         )}
 
@@ -365,11 +381,13 @@ function Step3Deliver({
   configJson,
   onCopy,
   copied,
+  copyFailed,
 }: {
   preset: ClientPreset;
   configJson: string;
   onCopy: () => void;
   copied: boolean;
+  copyFailed: boolean;
 }) {
   return (
     <div className="space-y-4 py-2 text-sm">
@@ -401,6 +419,11 @@ function Step3Deliver({
           )}
         </Button>
       </div>
+      {copyFailed && (
+        <p className="text-xs text-destructive">
+          Couldn't access your clipboard — select the block above and copy manually.
+        </p>
+      )}
       <div className="flex items-center justify-between rounded-md border border-dashed border-border p-3">
         <span className="flex items-start gap-2 text-xs text-muted-foreground">
           <Code className="mt-0.5 size-3.5" aria-hidden />

@@ -207,7 +207,10 @@ adminOauthClients.openapi(revokeClientRoute, async (c) => {
       // scrubbed error message (errorMessage strips pg userinfo and caps
       // length), then re-fail the Effect so runHandler classifies it to a
       // 500 with requestId. The `auditedInline` flag suppresses the
-      // tapErrorCause duplicate.
+      // tapErrorCause duplicate. `rollbackError` is included only when
+      // ROLLBACK itself threw — its presence in the audit row signals
+      // "the partial child DELETEs may not have been cleanly reverted",
+      // which the pino warn line alone wouldn't make queryable.
       logAdminAction({
         actionType: ADMIN_ACTIONS.oauth_client.revoke,
         targetType: "oauth_client",
@@ -219,11 +222,19 @@ adminOauthClients.openapi(revokeClientRoute, async (c) => {
           clientName,
           phase: outcome.phase,
           error: errorMessage(outcome.error),
+          ...(outcome.rollbackError
+            ? { rollbackError: errorMessage(outcome.rollbackError) }
+            : {}),
         },
       });
       auditedInline = true;
       return yield* Effect.fail(outcome.error);
     }
+
+    // Exhaustiveness: a future `RevokeOutcome` variant must be handled
+    // explicitly; this `satisfies` makes TS reject silent fall-through
+    // into the success-branch reads below.
+    outcome satisfies { status: "ok"; access: number; refresh: number; consent: number };
 
     log.info(
       {

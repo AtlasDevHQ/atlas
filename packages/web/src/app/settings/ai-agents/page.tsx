@@ -179,9 +179,6 @@ export default function AIAgentsPage() {
       </ErrorBoundary>
 
       {!isSaas && showStat && clients.length === 0 && (
-        // Self-hosted operators continue using the admin surface for connect
-        // — their auth model differs (no DCR via the workspace UI). The note
-        // routes them there so the page isn't a dead end.
         <p className="mt-6 text-xs text-muted-foreground">
           Self-hosted Atlas: install agents via the{" "}
           <a

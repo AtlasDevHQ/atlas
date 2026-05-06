@@ -596,6 +596,147 @@ describe("me oauth-clients — POST /me/oauth-clients/:id/revoke", () => {
     expect(clientQueries.length).toBe(0);
   });
 
+  // -------------------------------------------------------------------------
+  // tokenState (#2066) — derived in SQL from disabled + liveTokenCount +
+  // liveRefreshCount. The route relays the helper's classification verbatim;
+  // these tests pin the wire shape so the Settings → AI Agents page can
+  // depend on `active` / `reconnect_required` / `revoked` without re-deriving.
+  // -------------------------------------------------------------------------
+
+  it("GET surfaces tokenState='active' when at least one access token is live", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("oauthClient")) {
+        if (params?.[0] !== "org-alpha") return [];
+        if (params?.[1] !== "user-1") return [];
+        return [
+          {
+            clientId: "claude-desktop",
+            clientName: "Claude Desktop",
+            redirectUris: ["http://127.0.0.1:6274/callback"],
+            createdAt: "2026-04-12T10:00:00.000Z",
+            updatedAt: "2026-04-12T10:00:00.000Z",
+            disabled: false,
+            type: "public",
+            lastUsedAt: "2026-05-01T15:30:00.000Z",
+            tokenCount: "5",
+            liveTokenCount: "2",
+            liveRefreshCount: "1",
+          },
+        ];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(meRequest("GET", "/api/v1/me/oauth-clients"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      clients: Array<{ clientId: string; tokenState: string }>;
+    };
+    expect(body.clients[0]!.tokenState).toBe("active");
+  });
+
+  it("GET surfaces tokenState='active' when only the refresh token is live (access expired)", async () => {
+    // The agent's MCP SDK can transparently exchange the refresh — there's
+    // no user-visible interruption — so the row stays "active" even with
+    // zero live access tokens. Without this branch the UI would over-report
+    // "reconnect required" and surface false-positive CTAs.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("oauthClient")) {
+        return [
+          {
+            clientId: "cursor",
+            clientName: "Cursor",
+            redirectUris: ["cursor://callback"],
+            createdAt: "2026-04-12T10:00:00.000Z",
+            updatedAt: null,
+            disabled: false,
+            type: "public",
+            lastUsedAt: "2026-05-01T15:30:00.000Z",
+            tokenCount: "1",
+            liveTokenCount: "0",
+            liveRefreshCount: "1",
+          },
+        ];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(meRequest("GET", "/api/v1/me/oauth-clients"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      clients: Array<{ tokenState: string }>;
+    };
+    expect(body.clients[0]!.tokenState).toBe("active");
+  });
+
+  it("GET surfaces tokenState='reconnect_required' when no live tokens remain", async () => {
+    // The next agent frame will 401 with WWW-Authenticate; the page renders
+    // an amber CTA so the user re-runs the connect wizard.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("oauthClient")) {
+        return [
+          {
+            clientId: "claude-desktop",
+            clientName: "Claude Desktop",
+            redirectUris: ["http://127.0.0.1:6274/callback"],
+            createdAt: "2026-04-12T10:00:00.000Z",
+            updatedAt: null,
+            disabled: false,
+            type: "public",
+            lastUsedAt: "2026-05-01T15:30:00.000Z",
+            tokenCount: "3",
+            liveTokenCount: "0",
+            liveRefreshCount: "0",
+          },
+        ];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(meRequest("GET", "/api/v1/me/oauth-clients"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      clients: Array<{ tokenState: string }>;
+    };
+    expect(body.clients[0]!.tokenState).toBe("reconnect_required");
+  });
+
+  it("GET surfaces tokenState='revoked' regardless of live token counts when disabled=true", async () => {
+    // Precedence rule: `disabled` wins. An admin revoke flow that flipped
+    // `disabled = true` but hasn't yet cascaded the access-token DELETE
+    // must surface `revoked` so the UI dims the row and stops promising
+    // the agent will work — even if a stale access token would still
+    // technically verify until its expiry.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("oauthClient")) {
+        return [
+          {
+            clientId: "stale-cursor",
+            clientName: "Old Cursor (revoked)",
+            redirectUris: ["cursor://callback"],
+            createdAt: "2026-04-12T10:00:00.000Z",
+            updatedAt: "2026-04-13T10:00:00.000Z",
+            disabled: true,
+            type: "public",
+            lastUsedAt: "2026-04-15T15:30:00.000Z",
+            tokenCount: "2",
+            liveTokenCount: "1",
+            liveRefreshCount: "1",
+          },
+        ];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(meRequest("GET", "/api/v1/me/oauth-clients"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      clients: Array<{ tokenState: string; disabled: boolean }>;
+    };
+    expect(body.clients[0]!.tokenState).toBe("revoked");
+    expect(body.clients[0]!.disabled).toBe(true);
+  });
+
   it("GET drops cross-user rows when the userId filter is correctly applied", async () => {
     // Inverted gate: the mock returns User B's row only when params[1] is
     // missing or wrong. A regression that drops `c."userId" = $2` from

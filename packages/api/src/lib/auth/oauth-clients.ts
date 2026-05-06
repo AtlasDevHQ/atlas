@@ -34,11 +34,49 @@ const log = createLogger("oauth-clients-helper");
 // ---------------------------------------------------------------------------
 
 /**
+ * Token-state classification surfaced to the per-user UI (#2066).
+ *
+ * - `active`              — the client is enabled and has at least one
+ *                           outstanding non-expired access OR refresh
+ *                           token. The agent should be able to make a
+ *                           tools/call without user-visible re-auth.
+ * - `reconnect_required`  — the client is enabled but every access
+ *                           token has expired *and* no usable refresh
+ *                           token remains (refresh exhausted or never
+ *                           issued). The UI surfaces a re-run-wizard CTA.
+ * - `revoked`             — the client row is `disabled = true`.
+ *                           **As of v1.4.1, no production code path
+ *                           produces this state**: `revokeOAuthClient`
+ *                           performs a hard `DELETE FROM "oauthClient"`,
+ *                           so a revoked client disappears from the
+ *                           list query entirely. The state is reserved
+ *                           for a future soft-revoke flow that flips
+ *                           `disabled` without removing the row (so the
+ *                           audit trail stays intact under whole-row
+ *                           retention policy). The UI rendering and
+ *                           tests exist now to keep the contract
+ *                           pinned for that future flow.
+ *
+ * The `disabled` flag is authoritative for `revoked` regardless of
+ * outstanding token counts — when the soft-revoke flow lands, tokens
+ * may not yet be cascaded by the time the list query reads, and the
+ * UI must already say "Revoked" rather than "Active."
+ */
+export type OAuthTokenState = "active" | "reconnect_required" | "revoked";
+
+/**
  * One row of the per-client list query. Wire shape — kept aligned with the
  * Zod `OAuthClientSchema` in `me-schemas.ts` so the API edge and the web
  * page agree without a third translation layer. `tokenCount` is normalised
  * to `number` here (Postgres `COUNT(*)` returns string) so callers receive
  * a consistent shape.
+ *
+ * `tokenState` is derived in SQL (see `listOAuthClients`) so the UI
+ * can render Active / Reconnect required / Revoked without needing a
+ * second roundtrip per client. `tokenCount` continues to count *all*
+ * outstanding rows including expired ones — the legacy "active tokens"
+ * UI string is informational; the new state badge is the load-bearing
+ * health signal.
  */
 export interface OAuthClientRow {
   clientId: string;
@@ -50,6 +88,7 @@ export interface OAuthClientRow {
   type: string | null;
   lastUsedAt: string | null;
   tokenCount: number;
+  tokenState: OAuthTokenState;
 }
 
 export type RevokePhase =
@@ -118,6 +157,14 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
     tokenUserClause = `AND t."userId" = $2`;
   }
 
+  // The `liveTokenCount` and `liveRefreshCount` aggregates feed the
+  // tokenState derivation below. We intentionally count "live" (non-
+  // expired) rows separately from the legacy `tokenCount` (every row,
+  // expired or not) so the UI can keep displaying "tokens issued" while
+  // gaining a precise health signal. NOW() is preferred over a JS-side
+  // Date.now() so the read is consistent with whatever transaction
+  // isolation the connection runs at — and so unit tests against a
+  // fixed-clock fixture don't drift.
   const rows = await internalQuery<{
     clientId: string;
     clientName: string | null;
@@ -128,6 +175,8 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
     type: string | null;
     lastUsedAt: string | null;
     tokenCount: string;
+    liveTokenCount: string;
+    liveRefreshCount: string;
   }>(
     `SELECT c."clientId" AS "clientId",
             c."name" AS "clientName",
@@ -137,7 +186,17 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
             c."disabled" AS "disabled",
             c."type" AS "type",
             MAX(t."createdAt") AS "lastUsedAt",
-            COUNT(t."id") AS "tokenCount"
+            COUNT(t."id") AS "tokenCount",
+            COUNT(t."id") FILTER (WHERE t."expiresAt" > NOW()) AS "liveTokenCount",
+            (
+              SELECT COUNT(*)
+                FROM "oauthRefreshToken" r
+               WHERE r."clientId" = c."clientId"
+                 AND r."referenceId" = c."referenceId"
+                 ${scope.kind === "user" ? `AND r."userId" = $2` : ""}
+                 AND (r."revoked" IS NULL)
+                 AND (r."expiresAt" IS NULL OR r."expiresAt" > NOW())
+            ) AS "liveRefreshCount"
        FROM "oauthClient" c
        LEFT JOIN "oauthAccessToken" t
          ON t."clientId" = c."clientId"
@@ -145,23 +204,61 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
         ${tokenUserClause}
        WHERE c."referenceId" = $1
          ${userClause}
-       GROUP BY c."clientId", c."name", c."redirectUris", c."createdAt",
-                c."updatedAt", c."disabled", c."type"
+       GROUP BY c."id", c."clientId", c."name", c."redirectUris", c."createdAt",
+                c."updatedAt", c."disabled", c."type", c."referenceId"
        ORDER BY c."createdAt" DESC`,
     params,
   );
 
-  return rows.map((r) => ({
-    clientId: r.clientId,
-    clientName: r.clientName,
-    redirectUris: r.redirectUris ?? [],
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-    disabled: Boolean(r.disabled),
-    type: r.type,
-    lastUsedAt: r.lastUsedAt,
-    tokenCount: parseInt(r.tokenCount, 10),
-  }));
+  return rows.map((r): OAuthClientRow => {
+    const disabled = Boolean(r.disabled);
+    // pg returns COUNT(*) as a string. NaN from a NULL aggregate would
+    // silently classify a healthy active client as "reconnect_required"
+    // (NaN > 0 → false → falls through to the default branch) — exactly
+    // the false-negative-fallback CLAUDE.md prohibits. A NULL here means
+    // the SQL or the schema drifted; surface a 500 with a `requestId`
+    // rather than render a wrong status badge.
+    const liveAccess = Number.parseInt(r.liveTokenCount ?? "", 10);
+    const liveRefresh = Number.parseInt(r.liveRefreshCount ?? "", 10);
+    if (!Number.isFinite(liveAccess) || !Number.isFinite(liveRefresh)) {
+      throw new Error(
+        `oauth-clients aggregate parse failed for clientId=${r.clientId} `
+        + `(liveTokenCount=${String(r.liveTokenCount)}, `
+        + `liveRefreshCount=${String(r.liveRefreshCount)})`,
+      );
+    }
+    // Three-state collapse, in precedence order:
+    //   1. disabled  → "revoked" wins regardless of outstanding tokens
+    //                  (reserved for a future soft-revoke flow that
+    //                  flips `disabled` without DELETEing the row;
+    //                  current `revokeOAuthClient` does a hard DELETE
+    //                  so disabled-with-rows never actually surfaces
+    //                  in v1.4.1).
+    //   2. liveAccess > 0 → "active": at least one token will verify
+    //                  on the next agent frame.
+    //   3. liveRefresh > 0 → "active": no live access token, but the
+    //                  refresh path will mint one transparently.
+    //   4. otherwise → "reconnect_required": agent's MCP SDK will 401
+    //                  on next frame and cannot recover without re-DCR.
+    const tokenState: OAuthTokenState = disabled
+      ? "revoked"
+      : liveAccess > 0 || liveRefresh > 0
+        ? "active"
+        : "reconnect_required";
+
+    return {
+      clientId: r.clientId,
+      clientName: r.clientName,
+      redirectUris: r.redirectUris ?? [],
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      disabled,
+      type: r.type,
+      lastUsedAt: r.lastUsedAt,
+      tokenCount: parseInt(r.tokenCount, 10),
+      tokenState,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,9 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
         type: "public",
         lastUsedAt: "2026-05-01T15:30:00.000Z",
         tokenCount: 3,
+        // tokenState (#2066) — required wire field. Active row has at
+        // least one outstanding non-expired access or refresh token.
+        tokenState: "active" as const,
       },
       {
         clientId: "dcr-uuid-abc",
@@ -31,6 +34,10 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
         type: null,
         lastUsedAt: null,
         tokenCount: 0,
+        // Registered but never used — no live tokens yet, but the row
+        // is fresh; UI presents the same "registered, awaiting first
+        // use" affordance whichever leg of the enum lands here.
+        tokenState: "reconnect_required" as const,
       },
     ],
   };

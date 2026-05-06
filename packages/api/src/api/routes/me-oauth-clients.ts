@@ -75,6 +75,11 @@ const OAuthClientSchema = z.object({
   type: z.string().nullable(),
   lastUsedAt: z.string().nullable(),
   tokenCount: z.number().int().nonnegative(),
+  // tokenState (#2066) — derived in SQL from disabled flag + outstanding
+  // non-expired access/refresh tokens. The /settings/ai-agents table
+  // renders three badges (Active / Reconnect required / Revoked); the
+  // legacy `tokenCount` field stays informational for "tokens issued".
+  tokenState: z.enum(["active", "reconnect_required", "revoked"]),
 });
 
 const ListMyClientsResponseSchema = z.object({

@@ -287,6 +287,47 @@ export const ADMIN_ACTIONS = {
     revoke: "oauth_client.revoke",
   },
   /**
+   * OAuth 2.1 token lifecycle audit (#2066). Emitted when Better Auth's
+   * `oauthProvider` issues a fresh access token via the `refresh_token`
+   * grant — the load-bearing event for "the agent stayed connected past
+   * the original JWT's expiry". The hosted MCP path's only Atlas-side
+   * trace of a refresh otherwise lives in pino (which retention rotates
+   * out); this row is the queryable, retention-policy-aligned record.
+   *
+   * Metadata:
+   *   - `clientId`         — the OAuth client_id that presented the
+   *                          refresh token. Production wiring sets this
+   *                          to `null` because Better Auth's
+   *                          `customTokenResponseFields` hook does not
+   *                          surface the `oauthClient.clientId` column
+   *                          to user code (it only exposes the parsed
+   *                          `metadata` JSONB blob, which Atlas does
+   *                          not write `clientId` into). The audit row
+   *                          falls back to `targetId = "unknown"` in
+   *                          that case. The field is shaped to accept
+   *                          a real value so a future hook upgrade or
+   *                          a follow-up DB lookup can light up the
+   *                          per-agent forensic split without changing
+   *                          the schema.
+   *   - `userId`           — the user the token is bound to.
+   *   - `tokenJti`         — JWT id of the *new* access token. NOT
+   *                          populated by the production hook in
+   *                          v1.4.1; reserved for direct integration
+   *                          callers and a future hook upgrade that
+   *                          surfaces the issued JWT.
+   *   - `ageAtRefreshSec`  — wall-clock seconds between the previous
+   *                          token's `iat` and the refresh. Same caveat
+   *                          as `tokenJti` — not populated by the
+   *                          production hook today.
+   *
+   * Per-token revoke is intentionally NOT in this catalog — the v1.4.1
+   * surface only exposes whole-client revoke, which lives under
+   * `oauth_client.revoke`. See #2066 "out of scope".
+   */
+  oauth_token: {
+    refresh: "oauth_token.refresh",
+  },
+  /**
    * Hosted MCP session lifecycle (#2024 PR C). Emitted on every new
    * session-init at `/mcp/{workspace_id}/sse` — sampled per session,
    * not per JSON-RPC frame, since a single agent connection can issue

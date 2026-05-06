@@ -182,6 +182,12 @@ describe("admin oauth-clients — GET /oauth-clients", () => {
               type: "public",
               lastUsedAt: "2026-05-01T15:30:00.000Z",
               tokenCount: "3",
+              // #2066: live counts drive the tokenState derivation. An
+              // active row (the assertion below relies on it) needs at
+              // least one of these positive — pick `liveTokenCount` so
+              // the row exercises the access-token-live branch.
+              liveTokenCount: "2",
+              liveRefreshCount: "1",
             },
           ];
         }
@@ -203,6 +209,7 @@ describe("admin oauth-clients — GET /oauth-clients", () => {
         lastUsedAt: string | null;
         disabled: boolean;
         tokenCount: number;
+        tokenState: "active" | "reconnect_required" | "revoked";
       }>;
     };
     expect(body.clients).toHaveLength(1);
@@ -212,6 +219,10 @@ describe("admin oauth-clients — GET /oauth-clients", () => {
     expect(body.clients[0]!.disabled).toBe(false);
     expect(body.clients[0]!.tokenCount).toBe(3);
     expect(body.clients[0]!.lastUsedAt).toBe("2026-05-01T15:30:00.000Z");
+    // #2066: tokenState rides the same wire as the per-user surface;
+    // pin its presence on the admin schema so a future drift between
+    // the two routes' Zod schemas fails this assertion first.
+    expect(body.clients[0]!.tokenState).toBe("active");
   });
 
   it("returns an empty list when the workspace has registered no clients", async () => {

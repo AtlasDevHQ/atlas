@@ -61,6 +61,10 @@ const OAuthClientSchema = z.object({
   type: z.string().nullable(),
   lastUsedAt: z.string().nullable(),
   tokenCount: z.number().int().nonnegative(),
+  // tokenState (#2066) — same field surfaced on /me/oauth-clients.
+  // Admin surface includes it so the wire shape stays in lockstep
+  // with the per-user one and OpenAPI consumers see one schema.
+  tokenState: z.enum(["active", "reconnect_required", "revoked"]),
 });
 
 const ListClientsResponseSchema = z.object({

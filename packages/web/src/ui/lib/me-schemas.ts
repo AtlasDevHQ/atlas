@@ -39,6 +39,17 @@ export const OAuthClientSchema = z.object({
   // the route. `int().nonnegative()` rejects NaN (parseInt of garbage),
   // negatives, and fractions — defense-in-depth for the route's coercion.
   tokenCount: z.number().int().nonnegative(),
+  // tokenState (#2066) — derived in SQL from disabled flag + outstanding
+  // non-expired access/refresh tokens. The Settings → AI Agents table
+  // renders this as a status badge:
+  //   - "active"             → green "Active"
+  //   - "reconnect_required" → amber CTA prompting the user to re-run
+  //                            the connect wizard
+  //   - "revoked"            → dimmed row, deletion is the only sensible
+  //                            next step
+  // Legacy `tokenCount` stays as the informational "tokens issued"
+  // signal; `tokenState` is the load-bearing health field.
+  tokenState: z.enum(["active", "reconnect_required", "revoked"]),
 });
 
 export const ListOAuthClientsResponseSchema = z.object({

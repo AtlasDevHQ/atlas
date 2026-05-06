@@ -91,6 +91,8 @@ export interface RegisterSemanticToolsOptions {
   workspaceId: string;
   /** Resolved `deployMode` for OTel attribution (`self-hosted` / `saas`). */
   deployMode: McpDeployMode;
+  /** Hosted-MCP OAuth client_id, surfaced into `audit_log.client_id` (#2067). */
+  clientId?: string;
 }
 
 function dispatchId(prefix: string): string {
@@ -128,7 +130,15 @@ export function registerSemanticTools(
   server: McpServer,
   opts: RegisterSemanticToolsOptions,
 ): void {
-  const { actor, transport, workspaceId, deployMode } = opts;
+  const { actor, transport, workspaceId, deployMode, clientId } = opts;
+  // #2067 — wrap each dispatch with the same actor shape as tools.ts. The
+  // `mcp` actor_kind / clientId / toolName trail through `logQueryAudit`
+  // so admins can scope `audit_log` rows to a specific MCP tool/client.
+  const mcpActor = (toolName: string) => ({
+    kind: "mcp" as const,
+    ...(clientId ? { clientId } : {}),
+    toolName,
+  });
 
   // --- listEntities ---
   server.registerTool(
@@ -151,7 +161,7 @@ export function registerSemanticTools(
         { toolName: "listEntities", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-listEntities");
-          return withRequestContext({ requestId, user: actor }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities") }, async () => {
             try {
               const entities = listEntities({ filter });
               return toJsonContent({ count: entities.length, entities });
@@ -189,7 +199,7 @@ export function registerSemanticTools(
         { toolName: "describeEntity", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-describeEntity");
-          return withRequestContext({ requestId, user: actor }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity") }, async () => {
             try {
               const entity = getEntityByName(name);
               if (!entity) {
@@ -240,7 +250,7 @@ export function registerSemanticTools(
         { toolName: "searchGlossary", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-searchGlossary");
-          return withRequestContext({ requestId, user: actor }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary") }, async () => {
             try {
               const matches = searchGlossary(term);
 
@@ -346,7 +356,7 @@ export function registerSemanticTools(
         },
         () => {
           const requestId = dispatchId("mcp-runMetric");
-          return withRequestContext({ requestId, user: actor }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric") }, async () => {
             try {
               if (filters && Object.keys(filters).length > 0) {
                 return toEnvelopeResult(

@@ -619,6 +619,10 @@ async function createBoundMcpServer(
     actor: ctx.user,
     transport: "sse",
     skipConfig: true,
+    // #2067 — surface the registered OAuth client_id into
+    // `audit_log.client_id` so the admin filter can scope to "rows from
+    // claude-desktop" without joining on token tables.
+    clientId: ctx.clientId,
   });
 }
 

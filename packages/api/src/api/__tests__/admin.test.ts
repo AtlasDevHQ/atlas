@@ -1180,6 +1180,111 @@ describe("GET /api/v1/admin/audit", () => {
     expect(body.error).toBe("invalid_request");
   });
 
+  // #2067 — MCP filter shape
+  it("supports actorKind=mcp filter", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
+        capturedSql = sql;
+        capturedParams = params ?? [];
+      }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit?actorKind=mcp"));
+
+    expect(capturedSql).toContain("a.actor_kind = $2");
+    expect(capturedParams).toEqual(["org-test", "mcp"]);
+  });
+
+  it("supports clientId filter", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
+        capturedSql = sql;
+        capturedParams = params ?? [];
+      }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit?clientId=claude-desktop"));
+
+    expect(capturedSql).toContain("a.client_id = $2");
+    expect(capturedParams).toEqual(["org-test", "claude-desktop"]);
+  });
+
+  it("supports tool filter", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
+        capturedSql = sql;
+        capturedParams = params ?? [];
+      }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit?tool=runMetric"));
+
+    expect(capturedSql).toContain("a.tool_name = $2");
+    expect(capturedParams).toEqual(["org-test", "runMetric"]);
+  });
+
+  it("AND-combines actorKind + clientId + tool with existing filters", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
+        capturedSql = sql;
+        capturedParams = params ?? [];
+      }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest(
+      "/api/v1/admin/audit?actorKind=mcp&clientId=claude-desktop&tool=runMetric&success=true",
+    ));
+
+    // Org always $1; success applied first (existing param), then the
+    // three #2067 filters in declaration order (actorKind → clientId → tool).
+    expect(capturedSql).toContain("a.org_id = $1");
+    expect(capturedSql).toContain("a.success = $2");
+    expect(capturedSql).toContain("a.actor_kind = $3");
+    expect(capturedSql).toContain("a.client_id = $4");
+    expect(capturedSql).toContain("a.tool_name = $5");
+    expect(capturedParams).toEqual(["org-test", true, "mcp", "claude-desktop", "runMetric"]);
+  });
+
+  it("preserves cross-workspace isolation when MCP filters are present", async () => {
+    // Org-scoped predicate must remain $1 — a malicious caller adding
+    // ?actorKind=mcp must not be able to see another org's MCP rows.
+    setOrgAdmin("org-other");
+    let capturedParams: unknown[] = [];
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedParams.length && sql.includes("audit_log")) {
+        capturedParams = params ?? [];
+      }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit?actorKind=mcp"));
+
+    expect(capturedParams[0]).toBe("org-other");
+    expect(capturedParams).toContain("mcp");
+  });
+
   it("returns 500 when internalQuery throws", async () => {
     mockInternalQuery.mockRejectedValue(new Error("DB connection lost"));
 

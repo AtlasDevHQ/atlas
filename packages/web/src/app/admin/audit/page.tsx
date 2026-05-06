@@ -29,7 +29,13 @@ import { AdminActionRetentionPanel } from "./admin-action-retention-panel";
 import { Separator } from "@/components/ui/separator";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { extractFetchError } from "@/ui/lib/fetch-error";
-import { AuditStatsSchema, AuditFacetsSchema, AuditConnectionMetaSchema } from "@/ui/lib/admin-schemas";
+import {
+  AuditStatsSchema,
+  AuditFacetsSchema,
+  AuditConnectionMetaSchema,
+  AuditOAuthClientsSchema,
+} from "@/ui/lib/admin-schemas";
+import { AuditFilterBar, type ActorKindFilter } from "@/ui/components/admin/audit/filter-bar";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -45,6 +51,9 @@ interface AuditQueryParams {
   status: string;
   from: string;
   to: string;
+  actorKind: string;
+  clientId: string;
+  tool: string;
   sortId?: string;
   sortDesc?: boolean;
 }
@@ -63,6 +72,9 @@ function buildQueryString(p: AuditQueryParams, opts?: { noPagination?: boolean }
   if (p.status === "error") qs.set("success", "false");
   if (p.from) qs.set("from", p.from);
   if (p.to) qs.set("to", p.to);
+  if (p.actorKind) qs.set("actorKind", p.actorKind);
+  if (p.clientId) qs.set("clientId", p.clientId);
+  if (p.tool) qs.set("tool", p.tool);
   if (p.sortId) {
     qs.set("sort", p.sortId);
     qs.set("order", p.sortDesc ? "desc" : "asc");
@@ -82,7 +94,19 @@ export default function AuditPage() {
   const [exporting, setExporting] = useState(false);
 
   const [params, setParams] = useQueryStates(auditSearchParams);
-  const { tab, search, connection, table: tableFilter, column: columnFilter, status, from, to } = params;
+  const {
+    tab,
+    search,
+    connection,
+    table: tableFilter,
+    column: columnFilter,
+    status,
+    from,
+    to,
+    actorKind,
+    clientId,
+    tool,
+  } = params;
 
   // Analytics date range (separate from log tab filters)
   const [analyticsFrom, setAnalyticsFrom] = useState("");
@@ -100,6 +124,16 @@ export default function AuditPage() {
     "/api/v1/admin/audit/facets",
     { schema: AuditFacetsSchema },
   );
+
+  // OAuth clients for the MCP actor's clientId dropdown (#2067).
+  // Fetched lazily — useAdminFetch streams in parallel with the audit
+  // list. If this fails the filter bar falls back to a free-text input
+  // so an admin pasting a known client_id is never blocked.
+  const { data: oauthClientsData } = useAdminFetch(
+    "/api/v1/admin/oauth-clients",
+    { schema: AuditOAuthClientsSchema },
+  );
+  const oauthClients = oauthClientsData?.clients ?? [];
   if (facetsError && !facetsError.status) {
     // Log client-side so devs can diagnose why dropdowns fell back to text inputs
     console.warn("Audit facets fetch failed:", facetsError.message);
@@ -145,7 +179,7 @@ export default function AuditPage() {
   const sortDesc = sorting[0]?.desc;
 
   const queryParams: AuditQueryParams = {
-    pageSize, offset, search, connection, tableFilter, columnFilter, status, from, to, sortId, sortDesc,
+    pageSize, offset, search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool, sortId, sortDesc,
   };
 
   // Fetch rows on mount and when table state changes (only for log tab)
@@ -181,7 +215,7 @@ export default function AuditPage() {
     }
     fetchRows();
     return () => { cancelled = true; };
-  }, [apiUrl, offset, pageSize, search, connection, tableFilter, columnFilter, status, from, to, sortId, sortDesc, tab, credentials]);
+  }, [apiUrl, offset, pageSize, search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool, sortId, sortDesc, tab, credentials]);
 
   async function handleExport() {
     setExporting(true);
@@ -220,10 +254,24 @@ export default function AuditPage() {
     }
   }
 
-  const hasFilters = !!(search || connection || tableFilter || columnFilter || status || from || to);
+  const hasFilters = !!(
+    search || connection || tableFilter || columnFilter || status || from || to ||
+    actorKind || clientId || tool
+  );
 
   function clearFilters() {
-    setParams({ search: "", connection: "", table: "", column: "", status: "", from: "", to: "" });
+    setParams({
+      search: "",
+      connection: "",
+      table: "",
+      column: "",
+      status: "",
+      from: "",
+      to: "",
+      actorKind: "",
+      clientId: "",
+      tool: "",
+    });
   }
 
   return (
@@ -438,6 +486,14 @@ export default function AuditPage() {
                 <SelectItem value="error">Error</SelectItem>
               </SelectContent>
             </Select>
+
+            <AuditFilterBar
+              actorKind={actorKind as ActorKindFilter}
+              clientId={clientId}
+              tool={tool}
+              clientOptions={oauthClients}
+              onChange={(next) => setParams(next)}
+            />
 
             <div className="space-y-0">
               <Input

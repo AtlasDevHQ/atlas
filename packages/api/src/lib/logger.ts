@@ -15,6 +15,23 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 // --- Request context ---
 
+/**
+ * Discriminator on who initiated the request, threaded through audit_log
+ * via #2067. Only `mcp` is wired today — `human` / `agent` / `scheduler`
+ * are reserved values that future writer paths can opt into without a
+ * schema change. The audit-log filter UI surfaces all four; rows that
+ * never set `actor` write NULL and stay invisible to actor-scoped filters.
+ */
+export type ActorKind = "human" | "agent" | "mcp" | "scheduler";
+
+export interface RequestActor {
+  kind: ActorKind;
+  /** Hosted-MCP OAuth client_id (e.g. `claude-desktop`, a DCR UUID). Stdio MCP leaves this undefined. */
+  clientId?: string;
+  /** MCP tool dispatched (`executeSQL`, `runMetric`, etc). Only meaningful when `kind === "mcp"`. */
+  toolName?: string;
+}
+
 interface RequestContext {
   requestId: string;
   user?: AtlasUser;
@@ -22,6 +39,8 @@ interface RequestContext {
   atlasMode?: import("@useatlas/types/auth").AtlasMode;
   /** See `lib/auth/trust-device-cookie.ts`. Surfaced into `admin_action_log` metadata via `logAdminAction`. */
   trustDeviceIdentifier?: string;
+  /** #2067 — request-shape discriminator persisted to `audit_log.{actor_kind, client_id, tool_name}`. */
+  actor?: RequestActor;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

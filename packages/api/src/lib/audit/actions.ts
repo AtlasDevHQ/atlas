@@ -140,6 +140,27 @@ export const ADMIN_ACTIONS = {
      */
     authRevoke: "user.auth_revoke",
     /**
+     * Admin-mediated MFA reset for a target user (#2092). Sibling to
+     * `auth_revoke` — narrower scope: clears only the second-factor
+     * artifacts (passkey enrollments, TOTP secrets, backup-code batches)
+     * so a locked-out passkey-only user can re-enroll on next sign-in.
+     * Sessions, OAuth grants, and trust-device cookies are deliberately
+     * left in place; the goal is "let them recover their MFA", not "kick
+     * them out of every surface".
+     *
+     * Re-enrollment is forced by removing every credential the
+     * `mfaRequired` middleware accepts (passkey + `user.twoFactorEnabled`).
+     * No new column is needed — emptying both rows trips the existing
+     * `mfa_enrollment_required` 403 on the next admin-router request.
+     *
+     * Success metadata: `{ targetUserId, targetUserEmail, passkeysRevoked,
+     * totpSecretsRevoked, backupCodeBatchesRevoked, reason? }`.
+     * Failure metadata adds `{ phase, error }`. The phase enum is listed
+     * in execution order in `admin-mfa-reset.ts` so a `phase: "two_factor"`
+     * reads as "passkeys deleted, then bail".
+     */
+    mfaReset: "user.mfa_reset",
+    /**
      * Self-service password change via `POST /me/password`. The actor IS
      * the target — audit row carries `targetType: "user"` and
      * `targetId: actorId` so forensic queries can distinguish a user

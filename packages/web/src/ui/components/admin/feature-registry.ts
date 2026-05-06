@@ -70,6 +70,7 @@ export const FEATURE_NAMES = [
   "Usage Dashboard",
   "User Auth Revoke",
   "User Erasure",
+  "User MFA Reset",
   "Users",
 ] as const;
 

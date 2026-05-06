@@ -15,7 +15,7 @@
  * haven't enrolled any factor can always reach it to complete enrollment.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
 import { getPasskeyClient, type Passkey } from "@/lib/auth/passkey-client";
@@ -25,6 +25,7 @@ import { PasskeyList, type PasskeyRow } from "@/ui/components/admin/security/pas
 import { BackupCodesStatus } from "@/ui/components/admin/security/backup-codes-status";
 import { TrustedDevicesList } from "@/ui/components/admin/security/trusted-devices-list";
 import { SecurityPosturePanel } from "@/ui/components/admin/security/security-posture-panel";
+import { BackupMethodBanner } from "@/ui/components/admin/security/backup-method-banner";
 
 interface SessionUser {
   email: string;
@@ -43,6 +44,16 @@ export default function SecurityPage() {
 
   const [passkeys, setPasskeys] = useState<PasskeyRow[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  // Hop the banner's "Enroll a second passkey" CTA down to the existing
+  // `PasskeyTile` enrollment flow. Scrolling — instead of programmatically
+  // clicking the tile's button — keeps the WebAuthn ceremony scoped to a
+  // single source of truth (the tile owns the OS prompt, naming dialog,
+  // and post-enroll refetch). The banner's job is to nudge, the tile's
+  // job is to enroll.
+  const passkeyTileRef = useRef<HTMLDivElement | null>(null);
+  const handleEnrollSecondPasskey = useCallback(() => {
+    passkeyTileRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
 
   const refreshPasskeys = useCallback(async () => {
     const client = getPasskeyClient();
@@ -106,9 +117,13 @@ export default function SecurityPage() {
       </div>
 
       <div className="mx-auto max-w-2xl space-y-4">
+        <BackupMethodBanner onAddPasskey={handleEnrollSecondPasskey} />
+
         <SecurityPosturePanel />
 
-        <PasskeyTile hasPasskey={hasPasskey} onChange={handlePasskeyChange} />
+        <div ref={passkeyTileRef}>
+          <PasskeyTile hasPasskey={hasPasskey} onChange={handlePasskeyChange} />
+        </div>
 
         <TwoFactorSetup enabled={totpEnabled} onChange={handleTotpChange} />
 

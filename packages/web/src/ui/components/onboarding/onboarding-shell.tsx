@@ -53,14 +53,9 @@ export function OnboardingShell({
     <div className="flex min-h-dvh flex-col bg-background">
       <header className="border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         {/*
-         * Three-column grid: logo | indicator | skip. Equal-flex side
-         * columns keep the indicator centered in the container regardless
-         * of logo or skip-link width — `flex` + `ml-auto` previously
-         * anchored the indicator right of the logo's flow position, which
-         * read as visibly skewed when no skip slot was rendered.
-         * `minmax(0,1fr)` on the side columns lets them shrink below
-         * intrinsic content size on narrow viewports instead of forcing
-         * horizontal overflow.
+         * Equal-flex side columns keep the indicator centered regardless
+         * of logo or skip-link width. `minmax(0,1fr)` lets columns shrink
+         * below intrinsic content size on narrow viewports.
          */}
         <div className="mx-auto grid w-full max-w-5xl grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-4 py-3 sm:px-6 sm:py-4">
           <Link

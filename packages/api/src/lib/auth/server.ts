@@ -512,22 +512,35 @@ export async function _sendPasswordResetEmail(opts: {
  * @internal — exported for testing.
  */
 export function rewriteVerificationCallbackURL(rawUrl: string, frontendOrigin: string): string {
-  if (!frontendOrigin) return rawUrl;
+  if (!frontendOrigin) {
+    // BETTER_AUTH_TRUSTED_ORIGINS is unset or empty. Loud warn here would
+    // fire per email; the boot-time warn in `buildAuthOptions` is the
+    // single-source signal — silent here is intentional.
+    return rawUrl;
+  }
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
-  } catch {
+  } catch (err) {
+    // Better Auth constructed `rawUrl` itself — an unparseable value is a
+    // real bug (baseURL misconfig, upstream API change). Surface it so
+    // operators can see why links silently break, but still fall back to
+    // the original to preserve the auth response (enumeration-safe).
+    log.warn(
+      { rawUrl, err: errorMessage(err) },
+      "Better Auth verification URL was unparseable — passing through unchanged",
+    );
     return rawUrl;
   }
   const callbackRaw = parsed.searchParams.get("callbackURL") ?? "/";
 
-  // If callbackURL is already absolute (parseable on its own), leave it.
-  // Better Auth's trustedOrigins check decides whether the host is allowed.
   try {
+    // intentionally ignored: a throw here means callbackRaw is relative,
+    // which is exactly the path we want to rewrite — fall through.
     new URL(callbackRaw);
     return rawUrl;
   } catch {
-    // Relative — fall through.
+    // relative path — continue to the resolve+origin-check step below
   }
 
   let resolved: URL;
@@ -535,7 +548,14 @@ export function rewriteVerificationCallbackURL(rawUrl: string, frontendOrigin: s
   try {
     resolved = new URL(callbackRaw, frontendOrigin);
     expectedOrigin = new URL(frontendOrigin).origin;
-  } catch {
+  } catch (err) {
+    // `frontendOrigin` came from BETTER_AUTH_TRUSTED_ORIGINS[0]; if it
+    // doesn't parse, that's a deployment-config bug. Warn so the operator
+    // sees it across every email send instead of silently 404ing users.
+    log.warn(
+      { frontendOrigin, callbackRaw, err: errorMessage(err) },
+      "BETTER_AUTH_TRUSTED_ORIGINS[0] is not a parseable URL — verification link callback rewrite skipped",
+    );
     return rawUrl;
   }
   // Protocol-relative or `?callbackURL=//evil.com/x` would resolve to a
@@ -1449,7 +1469,16 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
   // Frontend origin for post-verify / post-reset redirects. Without this,
   // Better Auth's redirect lands on the API host and 404s. First trusted
   // origin is the canonical web app URL — set via BETTER_AUTH_TRUSTED_ORIGINS.
+  // An empty/missing value silently re-creates the original 404 bug, so warn
+  // once at config-resolution time rather than per-email-send. Operators
+  // running tests with empty trustedOrigins shouldn't be spammed though, so
+  // we suppress the warn when the env signal explicitly disables verification.
   const frontendOrigin = deps.trustedOrigins[0] ?? "";
+  if (!frontendOrigin && requireEmailVerification) {
+    log.warn(
+      "BETTER_AUTH_TRUSTED_ORIGINS is empty — verification + password-reset links will redirect to the API host and 404. Set BETTER_AUTH_TRUSTED_ORIGINS to the web app URL (e.g. https://app.useatlas.dev).",
+    );
+  }
 
   // Unfold the tagged bootstrap-admin config into the flat args
   // `computeBootstrapRole` expects. Keeping the flat pair confined to

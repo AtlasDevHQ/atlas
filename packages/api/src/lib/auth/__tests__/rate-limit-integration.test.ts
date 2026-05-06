@@ -315,6 +315,78 @@ describe("config wiring snapshot — buildAuthOptions", () => {
     expect(unhandled).toBeNull();
   });
 
+  it("wires `rewriteVerificationCallbackURL` into the verification dispatch path", async () => {
+    // Pins the post-verify-redirect bug fix: a relative `callbackURL` in
+    // the URL Better Auth hands the dispatcher must be rewritten to an
+    // absolute URL on the first trusted origin BEFORE the dispatcher is
+    // called. Without this assertion, a refactor that drops the
+    // `rewriteVerificationCallbackURL(...)` wrapping at the call site
+    // would silently restore the original 404-on-verify regression and no
+    // existing test would go red — the unit tests for the helper itself
+    // pass, the dispatch wiring's `.catch()` test passes, but the wiring
+    // between the two would be broken.
+    let captured: { to: string; url: string } | null = null;
+    const options = buildAuthOptions(
+      makeDeps({
+        trustedOrigins: ["https://app.useatlas.dev", "https://api.useatlas.dev"],
+        testOverrides: {
+          sendVerificationEmail: async (opts) => {
+            captured = opts;
+          },
+        },
+      }),
+    );
+
+    const callback = options.emailVerification?.sendVerificationEmail;
+    expect(typeof callback).toBe("function");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
+    await (callback as any)({
+      user: { email: "verify@example.com" },
+      url: "https://api.useatlas.dev/api/auth/verify-email?token=t&callbackURL=%2Flogin",
+      token: "t",
+    });
+    // Allow the fire-and-forget dispatch to settle.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(captured).not.toBeNull();
+    const cb = new URL(captured!.url).searchParams.get("callbackURL");
+    expect(cb).toBe("https://app.useatlas.dev/login");
+  });
+
+  it("wires `rewriteVerificationCallbackURL` into the password-reset dispatch path", async () => {
+    // Symmetric pin for the reset path. `sendResetPassword` and
+    // `sendVerificationEmail` share the same rewrite helper but live on
+    // separate callback fields — both wires must be tested independently
+    // or a one-sided regression would survive merge.
+    let captured: { to: string; url: string } | null = null;
+    const options = buildAuthOptions(
+      makeDeps({
+        trustedOrigins: ["https://app.useatlas.dev"],
+        testOverrides: {
+          sendPasswordResetEmail: async (opts) => {
+            captured = opts;
+          },
+        },
+      }),
+    );
+
+    const callback = options.emailAndPassword?.sendResetPassword;
+    expect(typeof callback).toBe("function");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
+    await (callback as any)({
+      user: { email: "reset@example.com" },
+      url: "https://api.useatlas.dev/api/auth/reset-password?token=r&callbackURL=%2Freset",
+      token: "r",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(captured).not.toBeNull();
+    const cb = new URL(captured!.url).searchParams.get("callbackURL");
+    expect(cb).toBe("https://app.useatlas.dev/reset");
+  });
+
   it("wires `emailVerification.sendOnSignIn = true` so unverified users self-recover", () => {
     // Without this, Better Auth's /sign-in/email path throws
     // EMAIL_NOT_VERIFIED but never re-dispatches the verification link

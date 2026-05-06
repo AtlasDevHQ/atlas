@@ -9,6 +9,7 @@ import {
   buildEmailAndPasswordConfig,
   buildAdvancedConfig,
   _sendVerificationEmail,
+  _sendVerificationOTP,
 } from "../server";
 
 /**
@@ -372,6 +373,68 @@ describe("_sendVerificationEmail", () => {
         to: "verify@example.com",
         url: "https://example.com/verify?token=abc123",
       }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("_sendVerificationOTP", () => {
+  // Same pattern as the magic-link sibling above — full delivery-module
+  // mock so partial-mock SyntaxErrors in unrelated test files don't
+  // surface, plus the same fire-and-forget contract assertions.
+  const installDeliveryMock = (
+    sendEmail: (msg: { to: string; subject: string; html: string }) => Promise<{
+      success: boolean;
+      provider: string;
+      error?: string;
+    }>,
+  ): void => {
+    mock.module("@atlas/api/lib/email/delivery", () => ({
+      sendEmail,
+      sendEmailWithTransport: async () => ({ success: true, provider: "resend" as const }),
+      getEmailTransport: async () => null,
+    }));
+  };
+
+  it("renders the OTP into the email body", async () => {
+    const calls: Array<{ to: string; subject: string; html: string }> = [];
+    installDeliveryMock(async (msg) => {
+      calls.push(msg);
+      return { success: true, provider: "resend" };
+    });
+
+    await _sendVerificationOTP({ to: "otp@example.com", otp: "ABCD1234" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].to).toBe("otp@example.com");
+    expect(calls[0].subject.toLowerCase()).toContain("verification");
+    // Surface the literal OTP — `<a href>` parsing is intentionally
+    // absent here since OTP emails should NEVER carry a clickable
+    // verification link (that's the magic-link path we're moving away
+    // from). Future regression that adds an `<a href>` would be a UX
+    // smell worth catching.
+    expect(calls[0].html).toContain("ABCD1234");
+    expect(calls[0].html).not.toMatch(/<a\s+href=/i);
+  });
+
+  it("does not throw when delivery returns success: false (preserves enumeration protection)", async () => {
+    installDeliveryMock(async () => ({
+      success: false,
+      provider: "log" as const,
+      error: "No email delivery backend configured",
+    }));
+
+    await expect(
+      _sendVerificationOTP({ to: "otp@example.com", otp: "ABCD1234" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not throw when sendEmail itself throws", async () => {
+    installDeliveryMock(async () => {
+      throw new Error("Simulated provider crash");
+    });
+
+    await expect(
+      _sendVerificationOTP({ to: "otp@example.com", otp: "ABCD1234" }),
     ).resolves.toBeUndefined();
   });
 });

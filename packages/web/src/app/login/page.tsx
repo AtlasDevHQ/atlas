@@ -31,7 +31,7 @@ import { getPostSignInRoute } from "./post-sign-in-route";
 import { getPasskeySignIn } from "@/lib/auth/passkey-client";
 import { parsePasskeySignInError } from "@/lib/auth/parse-passkey-sign-in-error";
 import { useWebAuthnSupported } from "@/ui/hooks/use-webauthn-supported";
-import { ResendVerificationButton } from "@/ui/components/auth/resend-verification-button";
+import { VerifyEmailOTPForm } from "@/ui/components/auth/verify-email-otp-form";
 
 type SocialProvider = "google" | "github" | "microsoft";
 
@@ -280,6 +280,45 @@ export default function LoginPage() {
     socialProviders.includes(p.id),
   );
 
+  // Email-not-verified is a recoverable signin failure: the server has
+  // already auto-sent a verification OTP via `sendOnSignIn: true`, so the
+  // user needs to enter that code, not retry the password. Swap to a
+  // dedicated OTP-entry view rather than cramming the form into the
+  // existing error tile — same component used by the post-signup flow.
+  if (error?.kind === "email_unverified") {
+    return (
+      <div className="flex flex-col items-center">
+        <div className="mb-6 flex flex-col items-center text-center">
+          <div className="mb-3 flex size-12 items-center justify-center rounded-lg bg-primary/10">
+            <Database className="size-6 text-primary" aria-hidden />
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight">Verify your email</h1>
+          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+            We sent an 8-character code to{" "}
+            <span className="font-medium text-foreground">{error.attemptedEmail}</span>.
+          </p>
+        </div>
+        <Card className="w-full">
+          <CardContent className="space-y-4 pt-6">
+            <VerifyEmailOTPForm
+              email={error.attemptedEmail}
+              onVerified={() => router.push("/")}
+            />
+            <p className="text-center text-xs text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => setError(null)}
+                className="font-medium text-primary hover:underline"
+              >
+                Use a different account
+              </button>
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col items-center">
       <div className="mb-6 flex flex-col items-center text-center">
@@ -489,9 +528,6 @@ function SignInErrorAlert({ error }: { error: SignInErrorState }) {
             {error.action.label}
             <ArrowRight className="size-3" aria-hidden />
           </a>
-        )}
-        {error.kind === "email_unverified" && (
-          <ResendVerificationButton email={error.attemptedEmail} callbackURL="/login" />
         )}
       </div>
     </div>

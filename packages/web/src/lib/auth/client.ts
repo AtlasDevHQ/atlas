@@ -30,6 +30,7 @@ import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { passkeyClient } from "@better-auth/passkey/client";
 import {
   adminClient,
+  emailOTPClient,
   organizationClient,
   twoFactorClient,
 } from "better-auth/client/plugins";
@@ -71,6 +72,11 @@ const _authClient = createAuthClient({
     twoFactorClient(),
     // Passkey (WebAuthn). Server plugin lives next to twoFactor().
     passkeyClient(),
+    // Email OTP — replaces magic-link verification with an 8-character
+    // code. Adds `authClient.emailOtp.sendVerificationOtp({ email, type })`
+    // and `authClient.emailOtp.verifyEmail({ email, otp })` to the
+    // client surface. Server plugin is configured in buildPlugins().
+    emailOTPClient(),
     stripeClient({ subscription: true }),
     oauthProviderClient(),
   ],

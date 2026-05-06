@@ -14,6 +14,7 @@
 import { betterAuth, type Session, type User } from "better-auth";
 import { bearer, admin, organization, jwt } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
+import { emailOTP } from "better-auth/plugins/email-otp";
 // @better-auth/* plugins must match the better-auth core version line.
 // All pinned to ^1.6.x in package.json — update together (the peer-dep
 // constraint is exact-version per minor on the @better-auth/* side).
@@ -443,6 +444,54 @@ export async function _sendVerificationEmail(opts: { to: string; url: string }):
 }
 
 /**
+ * Send a verification OTP email via Atlas's email delivery layer.
+ *
+ * Mirrors {@link _sendVerificationEmail}'s fire-and-forget contract: the
+ * Better Auth `emailOTP` plugin invokes this with `waitUntil`-style
+ * fire-and-forget semantics, so a thrown rejection here would either
+ * spam stderr with no correlation or — under
+ * `--unhandled-rejections=strict` — crash the process mid-signup. Wrap
+ * everything so the auth response stays 200 regardless of provider
+ * health.
+ *
+ * The OTP itself is generated and validated by Better Auth's plugin —
+ * we never see the value before this callback fires, and we never store
+ * it (the plugin handles persistence with `storeOTP: "hashed"`). All we
+ * do is render the email and dispatch.
+ *
+ * @internal — exported for testing.
+ */
+export async function _sendVerificationOTP(opts: { to: string; otp: string }): Promise<void> {
+  try {
+    const { sendEmail } = await import("@atlas/api/lib/email/delivery");
+    const result = await sendEmail({
+      to: opts.to,
+      subject: "Your Atlas verification code",
+      html: `<!doctype html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #222;">
+    <p>Welcome to Atlas. Your verification code is:</p>
+    <p style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; font-size: 28px; font-weight: 600; letter-spacing: 0.2em; padding: 16px 24px; background: #f4f4f5; border-radius: 8px; display: inline-block;">${opts.otp}</p>
+    <p style="color:#666; font-size:13px;">This code expires in 10 minutes. If you did not try to create an account, you can safely ignore this message.</p>
+    <p>— Atlas</p>
+  </body>
+</html>`,
+    });
+    if (!result.success) {
+      log.warn(
+        { to: opts.to, provider: result.provider, error: result.error },
+        "Verification OTP delivery did not complete — user may need to retry via /api/auth/email-otp/send-verification-otp",
+      );
+    }
+  } catch (err) {
+    log.warn(
+      { to: opts.to, err: errorMessage(err) },
+      "Verification OTP dispatch crashed — signup response is still 200 to preserve enumeration protection; user may need to retry the resend control",
+    );
+  }
+}
+
+/**
  * Send the password reset email via Atlas's email delivery layer.
  *
  * Symmetric with {@link _sendVerificationEmail} — same fire-and-forget
@@ -825,6 +874,41 @@ function buildPlugins() {
       },
     }),
   ];
+
+  // Email OTP — replaces the default magic-link verification with an
+  // 8-character one-time code. `overrideDefaultEmailVerification: true`
+  // makes the plugin's OTP send win over Better Auth's built-in
+  // `emailVerification.sendVerificationEmail` (the magic-link path),
+  // including for the `sendOnSignIn: true` re-issue flow on blocked
+  // sign-ins. `sendVerificationOnSignUp: true` triggers the OTP send
+  // automatically as part of the signup pipeline so the frontend doesn't
+  // have to fire a follow-up call. `storeOTP: "hashed"` keeps the
+  // plaintext code out of the verification table — only the hash is
+  // persisted, the user-supplied code is hashed and compared at verify
+  // time. 10-minute expiry balances "long enough for a slow inbox" with
+  // "short enough that a leaked screenshot stops being usable fast."
+  plugins.push(
+    emailOTP({
+      otpLength: 8,
+      expiresIn: 600,
+      sendVerificationOnSignUp: true,
+      overrideDefaultEmailVerification: true,
+      storeOTP: "hashed",
+      sendVerificationOTP: async (data) => {
+        // Fire-and-forget — see `_sendVerificationOTP`'s contract.
+        // `.catch` is belt-and-suspenders: the dispatcher already wraps
+        // every failure path internally, but a future refactor that
+        // drops that try/catch must still not be able to crash the auth
+        // response or surface a 500 vs 200 enumeration oracle.
+        _sendVerificationOTP({ to: data.email, otp: data.otp }).catch((err: unknown) => {
+          log.warn(
+            { to: data.email, err: errorMessage(err) },
+            "Verification OTP dispatch threw — auth response stays 200 to preserve enumeration protection",
+          );
+        });
+      },
+    }),
+  );
 
   // Two-factor (TOTP + recovery codes) — required for admin / owner /
   // platform_admin sessions via the `mfaRequired` middleware in

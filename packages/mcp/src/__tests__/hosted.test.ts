@@ -644,6 +644,52 @@ describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
     }
   });
 
+  it("symmetrically accepts both audiences when ATLAS_PUBLIC_API_URL is the brand host (operator post-cutover flip)", async () => {
+    // The CLI default writes `https://mcp.useatlas.dev` into client
+    // configs; some operators reasonably re-set ATLAS_PUBLIC_API_URL
+    // to match. The verifier's `mirrorUseatlasHost` is symmetric —
+    // pre-cutover tokens bound to the regional `api.useatlas.dev/mcp`
+    // audience must keep verifying. Asymmetric mirroring here would
+    // silently lock out every in-flight token at the moment the
+    // operator flipped the env var. This test guards against the
+    // verifier-side regex drifting away from the issuer-side
+    // (`oauth-config.test.ts:resolveOAuthValidAudiences`) regex.
+    const prev = process.env.ATLAS_PUBLIC_API_URL;
+    process.env.ATLAS_PUBLIC_API_URL = "https://mcp.useatlas.dev";
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    const handle = await startServer();
+    try {
+      await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      const lastCall =
+        mockVerifyAccessToken.mock.calls[
+          mockVerifyAccessToken.mock.calls.length - 1
+        ];
+      const opts = lastCall?.[1] as
+        | { verifyOptions?: { audience?: unknown } }
+        | undefined;
+      expect(opts?.verifyOptions?.audience).toEqual([
+        "https://mcp.useatlas.dev/mcp",
+        "https://api.useatlas.dev/mcp",
+      ]);
+    } finally {
+      handle.close();
+      if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
+      else process.env.ATLAS_PUBLIC_API_URL = prev;
+    }
+  });
+
   it("WWW-Authenticate resource_metadata points at the brand hostname when ATLAS_PUBLIC_API_URL is the regional api host", async () => {
     // Standards-compliant MCP clients read the `resource_metadata` URL
     // from the 401 challenge to bootstrap discovery. Post-#2068 the

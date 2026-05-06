@@ -115,7 +115,7 @@ function getPlatformEmailConfig(): EmailTransport | null {
   }
   const provider = raw;
 
-  const fromAddress = getSetting("ATLAS_EMAIL_FROM") ?? "Atlas <noreply@useatlas.dev>";
+  const fromAddress = getSetting("ATLAS_EMAIL_FROM") ?? "Atlas <noreply@ship.useatlas.dev>";
 
   switch (provider) {
     case "resend": {
@@ -185,7 +185,7 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
     return deliverViaTransport(message, platformConfig);
   }
 
-  const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
+  const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@ship.useatlas.dev>";
 
   // 3. Webhook delivery (generic email API)
   if (process.env.ATLAS_SMTP_URL) {

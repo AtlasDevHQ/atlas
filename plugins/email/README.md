@@ -31,7 +31,7 @@ export default defineConfig({
 |-------|------|---------|-------------|
 | `resendApiKey` | `string` | — | Resend API key |
 | `allowedDomains` | `string[]?` | — | Only these recipient domains are permitted |
-| `fromAddress` | `string?` | `Atlas <atlas@notifications.useatlas.dev>` | Sender address |
+| `fromAddress` | `string?` | `Atlas <atlas@ship.useatlas.dev>` | Sender address |
 | `approvalMode` | `"auto" \| "manual" \| "admin-only"` | `admin-only` | Approval mode for email sends |
 
 ## Reference

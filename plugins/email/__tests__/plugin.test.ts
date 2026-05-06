@@ -281,7 +281,7 @@ describe("emailPlugin — tool execution", () => {
     expect(body.to).toEqual(["user@test.com"]);
     expect(body.subject).toBe("Report");
     expect(body.html).toBe("<h1>Results</h1>");
-    expect(body.from).toBe("Atlas <atlas@notifications.useatlas.dev>");
+    expect(body.from).toBe("Atlas <atlas@ship.useatlas.dev>");
 
     // Verify Bearer auth header
     expect((capturedFetchInit?.headers as Record<string, string>)?.Authorization).toBe(
@@ -442,7 +442,7 @@ describe("executeEmailSend", () => {
     });
 
     const body = JSON.parse(capturedFetchInit?.body as string);
-    expect(body.from).toBe("Atlas <atlas@notifications.useatlas.dev>");
+    expect(body.from).toBe("Atlas <atlas@ship.useatlas.dev>");
   });
 
   test("uses custom from address when configured", async () => {

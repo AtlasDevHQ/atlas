@@ -296,7 +296,7 @@ Atlas caches JWKS keys but needs to reach the endpoint on startup. If your JWKS 
 
 #### Delivery Failures (Operator)
 
-- **Email**: Verify `RESEND_API_KEY` is set and valid. Check `ATLAS_EMAIL_FROM` format (default: `Atlas <noreply@useatlas.dev>`)
+- **Email**: Verify `RESEND_API_KEY` is set and valid. Check `ATLAS_EMAIL_FROM` format (default: `Atlas <noreply@ship.useatlas.dev>`)
 - **Slack**: Ensure `SLACK_BOT_TOKEN` (or OAuth) is configured and the bot has `chat:write` scope for the target channel
 - **Webhook**: Check the endpoint URL is reachable. Webhook delivery includes a timeout -- check debug logs for the response status
 

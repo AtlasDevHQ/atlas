@@ -39,7 +39,7 @@ const emailConfigSchema = z.object({
   resendApiKey: z.string().min(1, "Resend API key must not be empty"),
   /** Optional domain allowlist — only these recipient domains are permitted. */
   allowedDomains: z.array(z.string().min(1, "domain must not be empty")).optional(),
-  /** Sender address. Defaults to "Atlas <atlas@notifications.useatlas.dev>". */
+  /** Sender address. Defaults to "Atlas <atlas@ship.useatlas.dev>". */
   fromAddress: z.string().min(1, "fromAddress must not be empty").optional(),
   /** Approval mode for email sends. Defaults to "admin-only". */
   approvalMode: z.enum(["auto", "manual", "admin-only"]).optional(),

@@ -72,7 +72,7 @@ export async function executeEmailSend(
   config: EmailPluginConfig,
   params: EmailSendParams,
 ): Promise<EmailSendResult> {
-  const fromAddress = config.fromAddress ?? "Atlas <atlas@notifications.useatlas.dev>";
+  const fromAddress = config.fromAddress ?? "Atlas <atlas@ship.useatlas.dev>";
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
 
   const response = await fetch("https://api.resend.com/emails", {

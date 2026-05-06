@@ -55,13 +55,27 @@ Optional:
 
 The hosted MCP route requires a Better-Auth-issued OAuth 2.1 access
 token bound to the workspace, with audience `{api-host}/mcp` and scope
-`mcp:read`. The full DCR + PKCE flow lives in `@useatlas/mcp/init`; for
-load testing you'll typically lift a token from a connected MCP client
-(Claude Desktop, Cursor) or mint one directly via the Better Auth
-admin API. See [`packages/mcp/src/eval/auth.ts`](../../../packages/mcp/src/eval/auth.ts)
-for the in-process flow that the canonical-question eval uses — the
-same helper can be lifted into a one-off script that prints a token
-suitable for `BEARER`.
+`mcp:read`. The full DCR + PKCE flow lives in `@useatlas/mcp/init`.
+
+There is no drop-in token-printer script in the repo today — tracked
+in [#2129](https://github.com/AtlasDevHQ/atlas/issues/2129). For now,
+the two practical options are:
+
+1. **Lift a token from a connected MCP client.** Claude Desktop /
+   Cursor / ChatGPT cache the access token after completing OAuth;
+   inspect the client's connection state for the `Authorization` value
+   it sends to `{api-host}/mcp/{workspace_id}/sse`. This is the
+   fastest path for ad-hoc load tests.
+2. **Adapt the canonical eval's auth helper.** The in-process Better
+   Auth + DCR + PKCE round-trip used by the canonical-question MCP
+   eval is at [`packages/mcp/src/eval/auth.ts`](../../../packages/mcp/src/eval/auth.ts).
+   It is **not** a drop-in token printer — it boots a self-contained
+   Better Auth instance with an in-memory adapter to exercise the auth
+   path during testing. Adapting it to print a token against your
+   running server is a 1–2 hour task; expect to (a) point its
+   `fetchImpl` at your real API, (b) drop the in-memory adapter, (c)
+   echo the resolved bearer to stdout. Worth doing once and committing
+   as a `scripts/print-bearer.ts` if you'll run load tests repeatedly.
 
 The token MUST carry the `https://atlas.useatlas.dev/workspace_id`
 custom claim matching the path segment, or every frame returns 403 (
@@ -160,7 +174,7 @@ export BEARER="eyJhbGciOi..."
 # Terminal 3 — point at localhost
 k6 run \
   -e BASE_URL=http://localhost:3001 \
-  -e WORKSPACE_ID=$(echo "$BEARER" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.["https://atlas.useatlas.dev/workspace_id"]') \
+  -e WORKSPACE_ID=$(bun -e 'const p = process.env.BEARER.split(".")[1]; process.stdout.write(JSON.parse(Buffer.from(p, "base64url").toString())["https://atlas.useatlas.dev/workspace_id"])') \
   -e BEARER="$BEARER" \
   -e STAGES=1,5,10 \
   -e STAGE_SECONDS=30 \

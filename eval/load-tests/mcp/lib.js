@@ -29,12 +29,14 @@
 // header. The server tears down the in-process `McpServer` and reduces
 // the in-memory session count back toward `ATLAS_MCP_MAX_SESSIONS`.
 //
-// MCP protocol version: pinned to `2025-03-26`. That is the version this
-// repo's hosted server negotiates by default; bumping the SDK in
-// packages/mcp may shift this — see `LATEST_PROTOCOL_VERSION` in
-// `node_modules/@modelcontextprotocol/sdk/.../types.js`. We pin the
-// older/widely-deployed version so the load test isn't sensitive to a
-// version-negotiation regression unrelated to performance.
+// MCP protocol version: pinned to `2025-03-26`. That matches
+// `DEFAULT_NEGOTIATED_PROTOCOL_VERSION` in
+// `node_modules/@modelcontextprotocol/sdk/.../types.js` — NOT
+// `LATEST_PROTOCOL_VERSION`, which advances ahead of the negotiation
+// default. We pin the negotiated default so the load test isn't
+// sensitive to a version-negotiation regression unrelated to
+// performance; override via `MCP_PROTOCOL_VERSION` env to test a
+// specific version.
 
 import http from 'k6/http';
 import { check, fail } from 'k6';
@@ -69,6 +71,11 @@ function buildHeaders(sessionId) {
 // Servers may return a single JSON body OR a one-event SSE stream. Both
 // are valid per the Streamable HTTP transport spec; load-test code only
 // needs the JSON-RPC payload, not the framing.
+//
+// On parse failure we `console.warn` then return `null` so a malformed
+// body surfaces in k6's stderr while still allowing callers to detect
+// the failure via a `parsed !== null` check. Empty catches without that
+// signal would let garbage 200s show up as success in latency stats.
 function parseFrame(body) {
   if (!body) return null;
   const trimmed = body.trim();
@@ -76,7 +83,8 @@ function parseFrame(body) {
   if (trimmed.startsWith('{')) {
     try {
       return JSON.parse(trimmed);
-    } catch {
+    } catch (err) {
+      console.warn(`parseFrame: JSON body parse failed: ${err && err.message ? err.message : err}`);
       return null;
     }
   }
@@ -88,7 +96,8 @@ function parseFrame(body) {
       if (!data) continue;
       try {
         return JSON.parse(data);
-      } catch {
+      } catch (err) {
+        console.warn(`parseFrame: SSE data parse failed: ${err && err.message ? err.message : err}`);
         return null;
       }
     }
@@ -133,7 +142,12 @@ export function initializeSession(tag) {
   // initialized` after a successful init. Servers buffer state until they
   // see it, so a client that skips it can hit subtly different code paths
   // — the load test models a real client.
-  http.post(
+  //
+  // Capture and check the response: a 4xx here (e.g. revoked bearer
+  // between init and notify) would otherwise turn the rest of the run
+  // into "init succeeded, every tool call 401" with no signal that the
+  // notify itself was the regression.
+  const notifyRes = http.post(
     ENDPOINT,
     JSON.stringify({
       jsonrpc: '2.0',
@@ -145,6 +159,9 @@ export function initializeSession(tag) {
       tags: { rpc: 'notifications/initialized' },
     },
   );
+  check(notifyRes, {
+    'notifications/initialized: 2xx': (r) => r.status >= 200 && r.status < 300,
+  });
 
   return { sessionId, res };
 }
@@ -176,19 +193,37 @@ export function callTool(sessionId, name, args) {
     timeout: `${REQUEST_TIMEOUT_MS}ms`,
     tags: { rpc: 'tools/call', tool: name },
   });
+  const parsed = parseFrame(res.body);
+  // MCP error envelopes (`{ result: { isError: true, content: [...] } }`)
+  // ride on HTTP 200. Without the `isError` check below, a workspace
+  // where every executeSQL hits a permissions error would post a clean
+  // P95 curve while every iteration was a no-op error envelope. The
+  // `tool-call-mix.js` script's 60% executeSQL share makes this
+  // particularly load-bearing.
   check(res, {
     [`tools/call ${name}: 200`]: (r) => r.status === 200,
   });
-  return { res, parsed: parseFrame(res.body) };
+  check(parsed, {
+    [`tools/call ${name}: parseable JSON-RPC body`]: (p) => p !== null,
+    [`tools/call ${name}: not an error envelope`]: (p) =>
+      Boolean(p && p.result && p.result.isError !== true),
+  });
+  return { res, parsed };
 }
 
 export function closeSession(sessionId) {
   if (!sessionId) return;
   // Best-effort teardown — a slow DELETE shouldn't fail the iteration.
-  http.del(ENDPOINT, null, {
+  // Still surface the status as a check so a header-schema regression
+  // that 404s every DELETE doesn't pass silently — we'd see the rate
+  // drop in the summary even if no threshold trips.
+  const res = http.del(ENDPOINT, null, {
     headers: buildHeaders(sessionId),
     timeout: `${REQUEST_TIMEOUT_MS}ms`,
     tags: { rpc: 'delete' },
+  });
+  check(res, {
+    'delete: 200|204': (r) => r.status === 200 || r.status === 204,
   });
 }
 

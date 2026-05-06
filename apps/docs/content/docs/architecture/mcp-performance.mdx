@@ -73,25 +73,29 @@ Note: cold-start does **not** include DCR + PKCE + token exchange — those are 
 
 For each scenario, the bottleneck order is:
 
-1. **`ATLAS_MCP_MAX_SESSIONS` cap** — concrete and visible. At 200 concurrent sessions on a 100-session cap, half the inits get `503 too_many_sessions` from `pendingReservations + sessions.size >= max` ([`hosted.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/hosted.ts)). This is by design — the cap is what stops a single replica from OOM'ing. Lifting it is [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109)'s work, not a tuning recommendation.
+1. **`ATLAS_MCP_MAX_SESSIONS` cap** — concrete and visible. At 200 concurrent sessions on a 100-session cap, half the inits get `503 too_many_sessions` from the `sessions.size + pendingReservations >= cap` check ([`hosted.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/hosted.ts)). This is by design — the cap is what stops a single replica from OOM'ing. Lifting it is [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109)'s work, not a tuning recommendation.
 
-2. **Datasource pool saturation** — under the realistic mix, 60% of frames are `executeSQL`. Atlas's analytics-DB pool size is governed by the datasource driver's defaults (Postgres pool default 10, configurable via `ATLAS_DB_POOL_MAX`). At ~50 concurrent SQL frames against a single datasource, pool saturation is the next ceiling. Tuning recipe: raise `ATLAS_DB_POOL_MAX` proportional to `ATLAS_MCP_MAX_SESSIONS` × the executeSQL share, with headroom for the chat surface.
+2. **Datasource pool saturation** — under the realistic mix, 60% of frames are `executeSQL`. Atlas's analytics-DB pool size is governed by `pool.perOrg.maxConnections` (org-isolated pools, default `5`) or `datasources.<name>.maxConnections` (legacy single-pool path, default `10`) in [`atlas.config.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/db/connection.ts). At ~50 concurrent SQL frames against a single datasource on default org-pool sizing, pool saturation is the next ceiling. Tuning recipe: raise `pool.perOrg.maxConnections` proportional to expected concurrent SQL frames per org, with headroom for the chat surface; the related `ATLAS_POOL_WARMUP` / `ATLAS_POOL_DRAIN_THRESHOLD` env vars control startup probes and auto-drain, not the cap.
 
-3. **API CPU on a single replica** — JSON-RPC dispatch + JWT verify + Effect context propagation + OTel span emission per frame. CPU dominates above ~500 frames/s on the Hobby tier; Railway's vertical scaling lifts this without architectural change.
+3. **API CPU on a single replica** — JSON-RPC dispatch + JWT verify + Effect context propagation + OTel span emission per frame. CPU dominates above ~500 frames/s on the smallest Railway tier; vertical scaling lifts this without architectural change.
 
-4. **OAuth verify (`verifyAccessToken`)** — local JWT signature check against a cached JWKS. Confirmed ~negligible — even at 1k frames/s, this is well under 1% of CPU. The audit attribution `azp` claim ([#2067](https://github.com/AtlasDevHQ/atlas/pull/2067)) lives here; an extra `O(1)` map read.
+4. **OAuth verify (`verifyAccessToken`)** — local JWT signature check against a cached JWKS. Confirmed ~negligible — even at 1k frames/s, this is well under 1% of CPU. The audit attribution `azp` claim (issue [#2067](https://github.com/AtlasDevHQ/atlas/issues/2067), shipped in [#2101](https://github.com/AtlasDevHQ/atlas/pull/2101)) lives here; an extra `O(1)` map read.
 
-5. **SQL validation** — the four-layer guard in `packages/api/src/lib/sql/validation.ts` (regex → AST parse → table whitelist → injection). Per-call cost is sub-millisecond on typical queries; even at 1k frames/s with 60% SQL share this is under 5% of CPU.
+5. **SQL validation** — the four-layer guard in [`packages/api/src/lib/tools/sql.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/sql.ts) (`validateSQL`: regex mutation guard → AST parse → semantic-layer table whitelist → connection-id binding). Per-call cost is sub-millisecond on typical queries; even at 1k frames/s with 60% SQL share this is under 5% of CPU.
 
 6. **LLM provider latency (when in the loop)** — not exercised by these scripts. Hosted MCP is dispatch-only; the model lives in the calling agent (Claude Desktop, Cursor, etc.). Provider latency contributes to the **agent's** time-to-answer, not the hosted endpoint's tool-dispatch latency. Observe via OTel spans from [#2029](https://github.com/AtlasDevHQ/atlas/issues/2029).
 
 ## Recommended deploy shape
 
-| Use case | Plan | Replicas | `ATLAS_MCP_MAX_SESSIONS` | `ATLAS_DB_POOL_MAX` | Notes |
-|----------|------|----------|---------------------------|---------------------|-------|
-| Single team (1–10 agents) | Hobby | 1 | `100` (default) | `10` (default) | The default config. No tuning needed |
-| Larger team / agency (10–50 agents) | Pro | 1 | `200` | `25` | Vertical scale; one replica still — sessions are in-memory |
-| Enterprise (50+ agents) | Pro+ | 1 | `500` | `50` | Pending [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for multi-replica session sharing |
+| Use case | Replicas | `ATLAS_MCP_MAX_SESSIONS` | `pool.perOrg.maxConnections` | Notes |
+|----------|----------|---------------------------|-------------------------------|-------|
+| Single team (1–10 agents) | 1 | `100` (default) | `5` (default) | The default config. No tuning needed |
+| Larger team / agency (10–50 agents) | 1 | `200` | `15` | Vertical scale; one replica still — sessions are in-memory |
+| Enterprise (50+ agents) | 1 | `500` | `25` | Pending [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for multi-replica session sharing |
+
+<Callout title="Plan-tier names omitted intentionally">
+The right Railway / hosting plan to pair with each row depends on workload mix and observed CPU — the load-test scripts surface that, but mapping it to a specific tier is out of scope for this doc. The `numReplicas: 1` constraint is the load-bearing claim; everything else is a starting point you adjust against your own measurements.
+</Callout>
 
 Why `numReplicas: 1`: Railway's load balancer is randomly assigned per request (no sticky sessions). MCP sessions are in-memory in `packages/mcp/src/hosted.ts` — a session created on replica A is unreachable from replica B. Until [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) ships a durable session store, single-replica is the only correct shape. See [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069) for the routing analysis.
 

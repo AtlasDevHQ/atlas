@@ -32,6 +32,7 @@ import {
 } from "../server";
 import { recordOAuthTokenRefresh } from "../oauth-refresh-audit";
 import { ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
+import { ADMIN_ACTIONS as ACTUAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 import { oauthTokenRefresh } from "@atlas/api/lib/metrics";
 
 // Capture audit emissions through a partial-mock of the audit module.
@@ -45,20 +46,24 @@ const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
   },
 );
 
-mock.module("@atlas/api/lib/audit", async () => {
-  const actual = await import("@atlas/api/lib/audit/actions");
-  return {
-    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
-    logAdminAction: (entry: AdminActionEntry) => mockLogAdminAction(entry),
-    logAdminActionAwait: async (entry: AdminActionEntry) => {
-      mockLogAdminAction(entry);
-    },
-    errorMessage: (err: unknown) =>
-      err instanceof Error ? err.message : String(err),
-    causeToError: (err: unknown) =>
-      err instanceof Error ? err : new Error(String(err)),
-  };
-});
+// `mock.module` factory must be sync. An async factory that itself
+// `await`s another module load deadlocks Bun 1.3.11's loader when the
+// test file is the entrypoint — bun:test waits for the module graph
+// to settle, and the factory's pending promise never resolves before
+// that wait kicks in. Pulling the actual `ADMIN_ACTIONS` via a static
+// import above sidesteps the deadlock and keeps the spy semantics
+// identical. See #2121.
+mock.module("@atlas/api/lib/audit", () => ({
+  ADMIN_ACTIONS: ACTUAL_ADMIN_ACTIONS,
+  logAdminAction: (entry: AdminActionEntry) => mockLogAdminAction(entry),
+  logAdminActionAwait: async (entry: AdminActionEntry) => {
+    mockLogAdminAction(entry);
+  },
+  errorMessage: (err: unknown) =>
+    err instanceof Error ? err.message : String(err),
+  causeToError: (err: unknown) =>
+    err instanceof Error ? err : new Error(String(err)),
+}));
 
 // Counter spy — pre-monkeypatch the `add` method so we can assert the
 // attribute payload. We don't fully mock `@atlas/api/lib/metrics` because

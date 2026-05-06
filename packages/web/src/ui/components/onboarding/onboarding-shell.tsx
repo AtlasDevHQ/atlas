@@ -53,21 +53,25 @@ export function OnboardingShell({
     <div className="flex min-h-dvh flex-col bg-background">
       <header className="border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         {/*
-         * Equal-flex side columns keep the indicator centered regardless
-         * of logo or skip-link width. `minmax(0,1fr)` lets columns shrink
-         * below intrinsic content size on narrow viewports.
+         * Three flex slots: the side wrappers grow equally (`flex-1`)
+         * around a fixed-width middle slot, keeping the indicator's center
+         * pinned to the container's center regardless of logo or skip-link
+         * width. `min-w-0` on the sides lets them compress before squeezing
+         * the indicator on narrow viewports.
          */}
-        <div className="mx-auto grid w-full max-w-5xl grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-4 py-3 sm:px-6 sm:py-4">
-          <Link
-            href="/"
-            className="flex shrink-0 items-center gap-2 justify-self-start rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Atlas home"
-          >
-            {AtlasMark}
-            <span className="text-sm font-semibold tracking-tight">Atlas</span>
-          </Link>
-          <div className="flex w-full max-w-xl justify-self-center">{indicator}</div>
-          <div className="flex justify-self-end">
+        <div className="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-3 sm:px-6 sm:py-4">
+          <div className="flex min-w-0 flex-1 justify-start">
+            <Link
+              href="/"
+              className="flex shrink-0 items-center gap-2 rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Atlas home"
+            >
+              {AtlasMark}
+              <span className="text-sm font-semibold tracking-tight">Atlas</span>
+            </Link>
+          </div>
+          <div className="w-full max-w-xl">{indicator}</div>
+          <div className="flex min-w-0 flex-1 justify-end">
             {skip && (
               <Link
                 href={skip.href}

@@ -175,6 +175,19 @@ Ordering recommendation: A → B (prod-credibility floor) → D (eval safety net
 
 ---
 
+## Parallel: Multi-method MFA hardening
+
+Post-1.3.x TOTP MFA. WebAuthn passkeys + TOTP + trusted-device 30d shipped via [#2082](https://github.com/AtlasDevHQ/atlas/issues/2082) (PRs A–D); follow-ups close the remaining install / governance / sign-in / recovery surface. Tracked in parallel with 1.4.1 — not milestoned, but real work in flight.
+
+- [x] Multi-method MFA — passkeys + TOTP + trusted-device 30d ([#2082](https://github.com/AtlasDevHQ/atlas/issues/2082), PRs A–D #2085–#2089) — passkey plugin, MFA gate, sign-in 2FA challenge UI, trusted-browsers list + revoke, audit-log identifier capture.
+- [x] Closeout — passkey browser e2e + docs ([#2090](https://github.com/AtlasDevHQ/atlas/issues/2090), [#2095](https://github.com/AtlasDevHQ/atlas/pull/2095)) — `@llm`-tagged virtual-authenticator e2e + new `security/passkeys.mdx`; drops the stale "passkeys out of scope" line.
+- [x] Platform-admin force-revoke ([#2093](https://github.com/AtlasDevHQ/atlas/issues/2093), [#2097](https://github.com/AtlasDevHQ/atlas/pull/2097)) — atomic `POST /admin/users/{id}/revoke-auth` revokes sessions + trust-devices + passkeys + OAuth tokens in one transaction.
+- [x] Adoption telemetry ([#2094](https://github.com/AtlasDevHQ/atlas/issues/2094), [#2096](https://github.com/AtlasDevHQ/atlas/pull/2096)) — per-workspace + cross-workspace security metrics endpoints with admin / platform-admin posture panels.
+- [ ] Passkey-first sign-in ([#2091](https://github.com/AtlasDevHQ/atlas/issues/2091)) — `signIn.passkey({ autoFill: true })` conditional UI on `/login` + "Use a passkey" alternative on the 2FA challenge screen. Cross-device QR explicitly out of scope.
+- [ ] Passkey-only recovery ([#2092](https://github.com/AtlasDevHQ/atlas/issues/2092)) — recovery codes (Option B, decoupled from TOTP) + recovery login path + admin-mediated MFA reset. Confirm Better Auth `twoFactor.generateBackupCodes` works without an active TOTP factor before coding.
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

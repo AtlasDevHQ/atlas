@@ -81,6 +81,9 @@ describe("logQueryAudit()", () => {
       null, // tables_accessed
       null, // columns_accessed
       null, // org_id
+      null, // actor_kind (#2067)
+      null, // client_id (#2067)
+      null, // tool_name (#2067)
     ]);
   });
 
@@ -102,6 +105,33 @@ describe("logQueryAudit()", () => {
     expect(params[8]).toBe("warehouse");   // source_id
     expect(params[9]).toBe("postgres");    // source_type
     expect(params[10]).toBe("db.example.com"); // target_host
+  });
+
+  it("persists actor_kind / client_id / tool_name from RequestContext (#2067)", () => {
+    enableInternalDB();
+    const user: AtlasUser = { id: "u-mcp", label: "mcp@test.com", mode: "managed" };
+
+    withRequestContext(
+      {
+        requestId: "req-mcp",
+        user,
+        actor: { kind: "mcp", clientId: "claude-desktop", toolName: "executeSQL" },
+      },
+      () => {
+        logQueryAudit({
+          sql: "SELECT 1",
+          durationMs: 12,
+          rowCount: 1,
+          success: true,
+        });
+      },
+    );
+
+    expect(queryCalls).toHaveLength(1);
+    const params = queryCalls[0].params!;
+    expect(params[14]).toBe("mcp");            // actor_kind
+    expect(params[15]).toBe("claude-desktop"); // client_id
+    expect(params[16]).toBe("executeSQL");     // tool_name
   });
 
   it("does not insert when internal DB is not available", () => {

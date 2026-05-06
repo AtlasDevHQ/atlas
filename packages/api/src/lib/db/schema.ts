@@ -56,6 +56,11 @@ export const auditLog = pgTable(
     orgId: text("org_id"),
     // Soft-delete (retention purge)
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    // #2067 — MCP filter discriminators. NULL for non-MCP rows; today
+    // only the MCP transport populates these. See migration 0049.
+    actorKind: text("actor_kind"),
+    clientId: text("client_id"),
+    toolName: text("tool_name"),
   },
   (t) => [
     index("idx_audit_log_timestamp").on(t.timestamp),
@@ -65,6 +70,10 @@ export const auditLog = pgTable(
     index("idx_audit_log_columns_accessed").using("gin", t.columnsAccessed),
     index("idx_audit_log_org").on(t.orgId),
     index("idx_audit_log_deleted_at").on(t.deletedAt).where(sql`deleted_at IS NOT NULL`),
+    index("idx_audit_log_org_actor_ts").on(t.orgId, t.actorKind, t.timestamp.desc())
+      .where(sql`actor_kind IS NOT NULL`),
+    index("idx_audit_log_client_id").on(t.clientId).where(sql`client_id IS NOT NULL`),
+    check("chk_audit_log_actor_kind", sql`actor_kind IS NULL OR actor_kind IN ('human', 'agent', 'mcp', 'scheduler')`),
   ],
 );
 

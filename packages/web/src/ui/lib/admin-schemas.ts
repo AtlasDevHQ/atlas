@@ -135,6 +135,21 @@ export const AuditConnectionMetaSchema = z.object({
   })),
 });
 
+/**
+ * Subset of `/api/v1/admin/oauth-clients` consumed by the audit-log
+ * filter bar (#2067). The dropdown only needs `clientId` + the
+ * display label; pulling the full row would force the schema to
+ * track every column the OAuth Clients admin page surfaces.
+ */
+export const AuditOAuthClientsSchema = z.object({
+  clients: z.array(
+    z.object({
+      clientId: z.string(),
+      clientName: z.string().nullable(),
+    }),
+  ),
+});
+
 // ── Sessions ─────────────────────────────────────────────────────
 
 export const SessionStatsSchema = z.object({

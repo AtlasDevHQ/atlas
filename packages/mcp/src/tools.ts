@@ -60,6 +60,12 @@ export interface RegisterToolsOptions {
    * to `stdio`. See #2029.
    */
   transport?: McpTransport;
+  /**
+   * Hosted-MCP OAuth client_id, surfaced into `audit_log.client_id` via
+   * `RequestContext.actor.clientId` so the admin audit filter can scope
+   * by registered OAuth client (#2067). Stdio MCP leaves this undefined.
+   */
+  clientId?: string;
 }
 
 function dispatchId(prefix: string): string {
@@ -103,9 +109,17 @@ const EXECUTE_SQL_ERROR_CODES = [
 ] as const;
 
 export function registerTools(server: McpServer, opts: RegisterToolsOptions): void {
-  const { actor, transport = "stdio" } = opts;
+  const { actor, transport = "stdio", clientId } = opts;
   const workspaceId = workspaceIdOf(actor);
   const deployMode = deployModeOf();
+  // #2067 — every MCP tool dispatch wraps in the same `actor` shape so
+  // `audit_log.{actor_kind, client_id, tool_name}` is populated regardless
+  // of which tool the caller picks. `clientId` stays undefined for stdio.
+  const mcpActor = (toolName: string) => ({
+    kind: "mcp" as const,
+    ...(clientId ? { clientId } : {}),
+    toolName,
+  });
 
   // --- explore ---
   server.registerTool(
@@ -126,7 +140,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         { toolName: "explore", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-explore");
-          return withRequestContext({ requestId, user: actor }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("explore") }, async () => {
             try {
               const result = await explore.execute!(
                 { command },
@@ -190,7 +204,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         { toolName: "executeSQL", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-executeSQL");
-          return withRequestContext({ requestId, user: actor }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL") }, async () => {
             try {
               const result = await executeSQL.execute!(
                 { sql, explanation, connectionId },
@@ -280,5 +294,5 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
   );
 
   // --- typed semantic-layer tools ---
-  registerSemanticTools(server, { actor, transport, workspaceId, deployMode });
+  registerSemanticTools(server, { actor, transport, workspaceId, deployMode, clientId });
 }

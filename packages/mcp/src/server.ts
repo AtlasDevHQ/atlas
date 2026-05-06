@@ -40,6 +40,11 @@ interface CreateMcpServerOptions {
    * dispatch. Defaults to `stdio`.
    */
   transport?: McpTransport;
+  /**
+   * Hosted-MCP OAuth client_id, threaded into `audit_log.client_id` via
+   * `RequestContext.actor.clientId` (#2067). Stdio MCP leaves this unset.
+   */
+  clientId?: string;
 }
 
 /**
@@ -71,13 +76,14 @@ export async function createAtlasMcpServer(
 
   const actor = opts?.actor ?? (await resolveMcpActor());
   const transport: McpTransport = opts?.transport ?? "stdio";
+  const clientId = opts?.clientId;
 
   const server = new McpServer({
     name: "atlas",
     version: VERSION,
   });
 
-  registerTools(server, { actor, transport });
+  registerTools(server, { actor, transport, clientId });
   registerResources(server);
   await registerPrompts(server);
 

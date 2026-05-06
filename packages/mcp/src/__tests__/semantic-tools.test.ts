@@ -103,13 +103,14 @@ function getContentText(content: unknown): string {
   return arr[0]?.text ?? "";
 }
 
-async function createTestClient(actor = TEST_ACTOR) {
+async function createTestClient(actor = TEST_ACTOR, clientId?: string) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
   registerSemanticTools(server, {
     actor,
     transport: "stdio",
     workspaceId: actor.activeOrganizationId ?? actor.id,
     deployMode: "self-hosted",
+    ...(clientId ? { clientId } : {}),
   });
 
   const client = new Client({ name: "test-client", version: "0.0.1" });
@@ -685,5 +686,78 @@ describe("MCP semantic tools", () => {
 
     expect(observed).toBeDefined();
     expect(observed!.user?.id).toBe(TEST_ACTOR.id);
+  });
+
+  // #2067 — every semantic-tool dispatch must stamp `actor: { kind: "mcp",
+  // toolName }` so audit_log.{actor_kind, tool_name} populates regardless of
+  // which tool the caller picks. Pinning each tool individually catches a
+  // regression where one dispatch loses the wrap during a refactor.
+  it("runMetric stamps actor: mcp + toolName", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExecuteSQLExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return { success: true, explanation: "ok", row_count: 0, columns: [], rows: [] };
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({ name: "runMetric", arguments: { id: "orders_count" } });
+
+    expect(observed!.actor).toEqual({ kind: "mcp", toolName: "runMetric" });
+  });
+
+  it("listEntities stamps actor: mcp + toolName", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockListEntities.mockImplementationOnce(() => {
+      observed = getRequestContext();
+      return [];
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({ name: "listEntities", arguments: {} });
+
+    expect(observed!.actor).toEqual({ kind: "mcp", toolName: "listEntities" });
+  });
+
+  it("describeEntity stamps actor: mcp + toolName", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockGetEntityByName.mockImplementationOnce(() => {
+      observed = getRequestContext();
+      return null;
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({ name: "describeEntity", arguments: { name: "orders" } });
+
+    expect(observed!.actor).toEqual({ kind: "mcp", toolName: "describeEntity" });
+  });
+
+  it("searchGlossary stamps actor: mcp + toolName", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockSearchGlossary.mockImplementationOnce(() => {
+      observed = getRequestContext();
+      return [];
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({ name: "searchGlossary", arguments: { term: "ARR" } });
+
+    expect(observed!.actor).toEqual({ kind: "mcp", toolName: "searchGlossary" });
+  });
+
+  it("threads clientId through registerSemanticTools into RequestContext.actor", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExecuteSQLExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return { success: true, explanation: "ok", row_count: 0, columns: [], rows: [] };
+    });
+
+    const { client } = await createTestClient(TEST_ACTOR, "claude-desktop");
+    await client.callTool({ name: "runMetric", arguments: { id: "orders_count" } });
+
+    expect(observed!.actor).toEqual({
+      kind: "mcp",
+      clientId: "claude-desktop",
+      toolName: "runMetric",
+    });
   });
 });

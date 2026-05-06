@@ -14,7 +14,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
-import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
+import { buildAuditFilters } from "@atlas/api/lib/audit/query";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-audit");
@@ -30,81 +31,6 @@ function csvField(val: string | null | undefined): string {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
-}
-
-type AuditFilterResult =
-  | { ok: true; conditions: string[]; params: unknown[]; paramIdx: number }
-  | { ok: false; error: string; message: string; status: 400 };
-
-/**
- * Build WHERE conditions for audit list + export endpoints.
- * The orgId condition is always first ($1).
- */
-function buildAuditFilters(
-  orgId: string,
-  query: (key: string) => string | undefined,
-): AuditFilterResult {
-  const conditions: string[] = ["a.deleted_at IS NULL", "a.org_id = $1"];
-  const params: unknown[] = [orgId];
-  let paramIdx = 2;
-
-  const user = query("user");
-  if (user) {
-    conditions.push(`a.user_id = $${paramIdx++}`);
-    params.push(user);
-  }
-
-  const success = query("success");
-  if (success === "true" || success === "false") {
-    conditions.push(`a.success = $${paramIdx++}`);
-    params.push(success === "true");
-  }
-
-  const from = query("from");
-  if (from) {
-    if (isNaN(Date.parse(from))) {
-      return { ok: false, error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).`, status: 400 };
-    }
-    conditions.push(`a.timestamp >= $${paramIdx++}`);
-    params.push(from);
-  }
-
-  const to = query("to");
-  if (to) {
-    if (isNaN(Date.parse(to))) {
-      return { ok: false, error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).`, status: 400 };
-    }
-    conditions.push(`a.timestamp <= $${paramIdx++}`);
-    params.push(to);
-  }
-
-  const connection = query("connection");
-  if (connection) {
-    conditions.push(`a.source_id = $${paramIdx++}`);
-    params.push(connection);
-  }
-
-  const table = query("table");
-  if (table) {
-    conditions.push(`a.tables_accessed ? $${paramIdx++}`);
-    params.push(table.toLowerCase());
-  }
-
-  const column = query("column");
-  if (column) {
-    conditions.push(`a.columns_accessed ? $${paramIdx++}`);
-    params.push(column.toLowerCase());
-  }
-
-  const search = query("search");
-  if (search) {
-    const term = `%${escapeIlike(search)}%`;
-    conditions.push(`(a.sql ILIKE $${paramIdx} OR u.email ILIKE $${paramIdx} OR a.error ILIKE $${paramIdx})`);
-    params.push(term);
-    paramIdx++;
-  }
-
-  return { ok: true, conditions, params, paramIdx };
 }
 
 /** Build org-scoped WHERE clause from optional date range query params. */

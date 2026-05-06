@@ -15,6 +15,32 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 // --- Request context ---
 
+/**
+ * Discriminator on who initiated the request, threaded through audit_log
+ * via #2067. Only `mcp` is wired today; `human` / `agent` / `scheduler`
+ * are reserved for future writer paths to opt into without a schema
+ * change. Rows that never set `actor` write NULL and stay invisible to
+ * actor-scoped filters.
+ *
+ * Modeled as a discriminated union so `clientId` / `toolName` are only
+ * reachable on the `mcp` branch — the type system enforces the
+ * "client_id only for mcp" invariant the migration's column shape
+ * implies, and `audit.ts` can stamp the columns without per-field
+ * truthy guards.
+ */
+export const ACTOR_KINDS = ["human", "agent", "mcp", "scheduler"] as const;
+export type ActorKind = (typeof ACTOR_KINDS)[number];
+
+export type RequestActor =
+  | { kind: "human" | "agent" | "scheduler" }
+  | {
+      kind: "mcp";
+      /** Hosted-MCP OAuth client_id (e.g. `claude-desktop`, a DCR UUID). Stdio MCP leaves this undefined. */
+      clientId?: string;
+      /** MCP tool dispatched (`executeSQL`, `runMetric`, etc). Required because every dispatch site is named. */
+      toolName: string;
+    };
+
 interface RequestContext {
   requestId: string;
   user?: AtlasUser;
@@ -22,6 +48,8 @@ interface RequestContext {
   atlasMode?: import("@useatlas/types/auth").AtlasMode;
   /** See `lib/auth/trust-device-cookie.ts`. Surfaced into `admin_action_log` metadata via `logAdminAction`. */
   trustDeviceIdentifier?: string;
+  /** #2067 — request-shape discriminator persisted to `audit_log.{actor_kind, client_id, tool_name}`. */
+  actor?: RequestActor;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

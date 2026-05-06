@@ -52,24 +52,31 @@ export function OnboardingShell({
   return (
     <div className="flex min-h-dvh flex-col bg-background">
       <header className="border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-3 sm:px-6 sm:py-4">
+        {/*
+         * Equal-flex side columns keep the indicator centered regardless
+         * of logo or skip-link width. `minmax(0,1fr)` lets columns shrink
+         * below intrinsic content size on narrow viewports.
+         */}
+        <div className="mx-auto grid w-full max-w-5xl grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-4 py-3 sm:px-6 sm:py-4">
           <Link
             href="/"
-            className="flex shrink-0 items-center gap-2 rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex shrink-0 items-center gap-2 justify-self-start rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Atlas home"
           >
             {AtlasMark}
             <span className="text-sm font-semibold tracking-tight">Atlas</span>
           </Link>
-          <div className="ml-auto flex w-full max-w-xl flex-1">{indicator}</div>
-          {skip && (
-            <Link
-              href={skip.href}
-              className="hidden shrink-0 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex"
-            >
-              {skip.label}
-            </Link>
-          )}
+          <div className="flex w-full max-w-xl justify-self-center">{indicator}</div>
+          <div className="flex justify-self-end">
+            {skip && (
+              <Link
+                href={skip.href}
+                className="hidden shrink-0 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex"
+              >
+                {skip.label}
+              </Link>
+            )}
+          </div>
         </div>
       </header>
 

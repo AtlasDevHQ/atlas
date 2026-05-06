@@ -13,11 +13,17 @@ name: Canonical Eval
 #     should never ship in a tagged release. Tag pushes drop the
 #     `continue-on-error` and a single fail trips the workflow red.
 #
-# Mode:
-#   Deterministic only (no LLM). The harness calls the typed semantic-layer
-#   reads (`findMetricById`, `searchGlossary`) and executes the resolved SQL
-#   directly against the seeded Postgres. The optional `--llm` mode exists
-#   for local exploration; we don't run it in CI to keep the gate stable.
+# Modes:
+#   - canonical-eval (existing): typed semantic-layer reads + direct SQL
+#     execution against seeded Postgres. Validates SQL correctness.
+#   - canonical-mcp-eval (new, #2074): every canonical question dispatched
+#     through the real `createHostedMcpRouter()` mounted on `Bun.serve`.
+#     Validates the MCP **protocol** layer end-to-end — transport, tool
+#     dispatch, error envelopes, prompts/list shape, concurrent sessions.
+#     `verifyAccessToken` is mocked (Phase 1); a follow-up issue replaces
+#     the mock with a real DCR + PKCE flow for full JWT-path coverage.
+#   The optional `--llm` mode for canonical-eval exists for local
+#   exploration; we don't run it in CI to keep the gate stable.
 #
 # Workflow-injection notes:
 #   - No untrusted PR/issue/commit fields are spliced into `run:` strings.
@@ -34,6 +40,18 @@ on:
       - "packages/cli/lib/help.ts"
       - "packages/cli/data/seeds/ecommerce/**"
       - "packages/api/src/lib/semantic/**"
+      # MCP-path eval (#2074): trigger on changes to the MCP route, the
+      # auth surface that issues / verifies bearers, and the eval helpers
+      # themselves.
+      - "packages/mcp/src/__tests__/canonical-mcp-*.ts"
+      - "packages/mcp/src/__tests__/canonical-mcp-*.evalspec.ts"
+      - "packages/mcp/src/hosted.ts"
+      - "packages/mcp/src/server.ts"
+      - "packages/mcp/src/tools.ts"
+      - "packages/mcp/src/semantic-tools.ts"
+      - "packages/mcp/src/error-envelope.ts"
+      - "packages/api/src/lib/auth/server.ts"
+      - "packages/api/src/lib/auth/oauth-claims.ts"
       - ".github/workflows/eval.yml"
   push:
     tags:
@@ -95,3 +113,35 @@ jobs:
           ATLAS_DATASOURCE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas_demo
           DATABASE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas
         run: bun packages/cli/bin/atlas.ts canonical-eval
+
+  # MCP-path eval (#2074, Phase 1). Runs every canonical question through
+  # the real `createHostedMcpRouter` mounted on `Bun.serve`, exercising
+  # transport / dispatch / envelope / prompts shape / concurrent sessions.
+  # `verifyAccessToken` is mocked — Phase 2 (follow-up) lands the full
+  # DCR + PKCE flow + LLM-on-client mode.
+  #
+  # No Postgres needed: the eval mocks `executeSQL` so SQL correctness is
+  # owned by the deterministic job above. This job is purely the MCP
+  # **protocol** gate.
+  canonical-mcp-eval-deterministic:
+    name: canonical-mcp-eval (deterministic)
+    runs-on: ubuntu-latest
+    # Same policy as the deterministic job: PRs informational, tag pushes
+    # blocking. A protocol-shape regression must not ship in a tag.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build @useatlas/types (resolves api imports)
+        run: bun run --filter '@useatlas/types' build
+
+      - name: Run MCP-path canonical eval
+        run: bun test ./packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts

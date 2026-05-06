@@ -5,6 +5,8 @@ description: Proves the consolidated NovaMart demo dataset returns correct answe
 
 > Why this is separate from `atlas eval`: that suite is the LLM SQL-quality benchmark (gold SQL, single shot, LLM nondeterminism). This harness is the *semantic-layer correctness* gate — it calls metric SQL exactly as the typed MCP `runMetric` tool does, asserts ambiguous glossary terms still trigger disambiguation, and proves `query_patterns:` and `virtual:` dimensions compile against the seed.
 
+A sibling harness — the **MCP-path canonical eval** ([`canonical-mcp-eval.evalspec.ts`](#mcp-path-eval-2074)) — dispatches the same canonical questions through the real hosted MCP route so a regression in transport, tool dispatch, error envelopes, or the prompts/list shape doesn't ship green.
+
 ## What it covers
 
 A curated set of ~20 canonical questions in `eval/canonical-questions/questions.yml`, exercising:
@@ -86,9 +88,37 @@ Atlas canonical-question eval
 
 The LLM mode (`--llm`) is **not** run in CI. We keep the gate stable and deterministic; the LLM mode exists for local exploration when debugging an agent regression.
 
+## MCP-path eval (#2074)
+
+The deterministic harness above proves the semantic layer answers each canonical question correctly. It cannot catch a regression in the MCP layer itself — a bad tool description, malformed `AtlasMcpToolError` envelope, `prompts/list` shape change, or session-cap break would all ship green.
+
+The MCP-path eval closes that gap. Every canonical question is dispatched through the real `createHostedMcpRouter()` mounted on `Bun.serve`, exercising:
+
+- `@modelcontextprotocol/sdk` Client → `StreamableHTTPClientTransport`
+- The Hono `/mcp/{workspace}/sse` route (full bearer + residency middleware path)
+- `tools/list`, `tools/call`, `prompts/list`
+- Real semantic-layer reads (`findMetricById`, `searchGlossary`, `getEntityByName`)
+- Recovery contracts: `unknown_metric`, `unknown_entity`, `ambiguous_term`
+- Concurrent sessions (a small stress test ships alongside)
+
+The eval lives at [`packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts). The `.evalspec.ts` extension keeps it out of `bun test`'s default discovery — invoke it explicitly:
+
+```bash
+bun test ./packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts
+```
+
+**Phase split:**
+
+- **Phase 1 (shipped):** mocks `verifyAccessToken` and `executeSQL.execute`. Validates the MCP **protocol** layer end-to-end. SQL correctness is owned by the deterministic eval above; this eval owns the MCP path.
+- **Phase 2 (follow-up issue):** real DCR + PKCE flow against an in-process Better Auth instance — closes the JWT-signature gap. Adds `--mcp-llm` mode where an LLM picks tools through MCP and validates tool-selection accuracy + recovery contract under prose drift.
+
+**Failure artifacts.** Every failed dispatch produces a structured artifact (`packages/mcp/src/__tests__/canonical-mcp-failure-artifact.ts`) carrying the wire frame sent, the response received, the response expected, and a regression category — `protocol` / `tool_selection` / `recovery` / `latency` / `assertion`. The artifact bundle prints to the eval log so a CI failure carries enough context to act on without re-running.
+
+**CI gate.** A separate job — `canonical-mcp-eval (deterministic)` — runs alongside the deterministic SQL eval. Same policy: PRs are informational, tag pushes are blocking. Trigger paths cover the MCP route, the auth surface that issues / verifies bearers, and the eval helpers themselves.
+
 ## Out of scope
 
 - Eval coverage beyond the demo dataset (real customer data is separate).
 - LLM-as-judge scoring (we use deterministic SQL substring + value comparison).
-- Latency / throughput benchmarks.
+- Latency / throughput benchmarks — the MCP eval includes a small protocol-layer stress test, but the full k6 perf profile lives in [#2070](https://github.com/AtlasDevHQ/atlas/issues/2070).
 - Multi-LLM eval — the existing `atlas eval` LLM benchmark covers single-model correctness.

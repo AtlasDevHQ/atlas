@@ -65,6 +65,7 @@ export const FEATURE_NAMES = [
   "Suspend workspace",
   "Token Usage",
   "Usage Dashboard",
+  "User Auth Revoke",
   "User Erasure",
   "Users",
 ] as const;

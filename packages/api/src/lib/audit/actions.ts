@@ -127,6 +127,19 @@ export const ADMIN_ACTIONS = {
     sessionRevoke: "user.session_revoke",
     sessionRevokeAll: "user.session_revoke_all",
     /**
+     * Force-revoke every auth artifact for a target user. Distinct from
+     * `session_revoke_all` — the per-artifact counts in metadata are the
+     * audit signal that every credential class (sessions, trust-devices,
+     * passkeys, OAuth tokens) was reset, not just web sessions.
+     *
+     * Success metadata: `{ targetUserId, targetUserEmail, sessionsRevoked,
+     * trustedDevicesRevoked, verificationRowsRevoked, passkeysRevoked,
+     * oauthAccessTokensRevoked, oauthRefreshTokensRevoked, reason? }`.
+     * Failure metadata adds `{ phase, error }` so triage can answer
+     * "did anything actually delete?" from the audit log alone.
+     */
+    authRevoke: "user.auth_revoke",
+    /**
      * Self-service password change via `POST /me/password`. The actor IS
      * the target — audit row carries `targetType: "user"` and
      * `targetId: actorId` so forensic queries can distinguish a user

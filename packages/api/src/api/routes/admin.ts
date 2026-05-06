@@ -15,7 +15,7 @@ import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
 import { withRequestId, resolveMode, parseModeFromCookie } from "./middleware";
-import type { AuthResult } from "@atlas/api/lib/auth/types";
+import type { AuthResult, AuthenticatedResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -118,7 +118,7 @@ const getAtlasMode = (c: { get(key: string): unknown }): import("@useatlas/types
 async function adminAuthAndContext(
   c: { req: { raw: Request }; get(key: string): unknown; set?: (key: string, value: unknown) => void },
   permission?: Permission,
-): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
+): Promise<{ authResult: AuthenticatedResult; requestId: string }> {
   const requestId = reqId(c);
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   requireAdminAuth(preamble);
@@ -185,7 +185,7 @@ async function adminAuthAndContext(
  * in the caller's org (caller should return 404 to avoid revealing existence).
  */
 async function verifyOrgMembership(
-  authResult: AuthResult & { authenticated: true },
+  authResult: AuthenticatedResult,
   targetUserId: string,
 ): Promise<boolean> {
   const orgId = authResult.user?.activeOrganizationId;
@@ -284,6 +284,10 @@ registerInvitationRoutes(admin, adminAuthAndContext);
 // Per-user trusted-browsers — see me-trusted-devices.ts header.
 import { registerTrustedDeviceRoutes } from "./me-trusted-devices";
 registerTrustedDeviceRoutes(admin, reqId);
+// Force-revoke every auth artifact for a target user (#2093). Registered
+// directly so the existing /users/* routes share the same middleware chain.
+import { registerRevokeRoutes } from "./admin-revoke";
+registerRevokeRoutes(admin, adminAuthAndContext, verifyOrgMembership);
 admin.route("/connections", adminConnections);
 admin.route("/connections/", adminConnections);
 admin.route("/publish", adminPublish);

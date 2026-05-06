@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { usersSearchParams } from "./search-params";
@@ -79,6 +80,7 @@ import {
   Users,
   Search,
   Shield,
+  ShieldAlert,
   ShieldCheck,
   Eye,
   MoreHorizontal,
@@ -112,6 +114,7 @@ const inviteSchema = z.object({
 });
 
 export default function UsersPage() {
+  const router = useRouter();
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const userRole = useUserRole();
@@ -216,6 +219,12 @@ export default function UsersPage() {
               >
                 <LogOut className="mr-2 size-4" />
                 Sign out all sessions
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => router.push(`/admin/users/${user.id}`)}
+              >
+                <ShieldAlert className="mr-2 size-4" />
+                Manage authentication…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

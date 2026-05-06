@@ -16,6 +16,17 @@ export type AuthResult =
   | { authenticated: true; mode: "none"; user: undefined }
   | { authenticated: false; mode: AuthMode; status: 401 | 403 | 500; error: string; ssoRedirectUrl?: string };
 
+/**
+ * Authenticated narrowing of `AuthResult`. Used by admin handlers that
+ * have already passed `requireAdminAuth(preamble)` and need a type that
+ * guarantees the failure arm is gone — so downstream helpers like
+ * `verifyOrgMembership` can safely read `user`. `Extract` over the
+ * discriminator beats an intersection because it filters arms instead
+ * of additively narrowing, so a future arm added to `AuthResult`
+ * propagates here automatically.
+ */
+export type AuthenticatedResult = Extract<AuthResult, { authenticated: true }>;
+
 export interface CreateAtlasUserOptions {
   role?: AtlasRole;
   activeOrganizationId?: string;

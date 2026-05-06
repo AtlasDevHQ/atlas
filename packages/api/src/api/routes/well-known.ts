@@ -94,21 +94,28 @@ function buildResourceUri(req: Request): string {
 }
 
 /**
- * Map a SaaS regional API base to its `mcp*.useatlas.dev` brand
- * counterpart. Returns null for any host outside the documented
- * regional pattern so self-hosted bases pass through unchanged.
+ * Map a SaaS regional API base (`api*.useatlas.dev`) to its
+ * `mcp*.useatlas.dev` brand counterpart. Returns null for any host
+ * outside the regional pattern — including the brand hosts themselves,
+ * which already are the canonical surface and need no rewrite. The
+ * caller falls back to the trimmed base in that case, so an operator
+ * who already runs with `ATLAS_PUBLIC_API_URL=https://mcp.useatlas.dev`
+ * still sees the brand advertised.
  *
- * The match here mirrors the one in `server.ts:brandMcpAudience()`
- * intentionally — the protected-resource doc must advertise exactly
- * what `resolveOAuthValidAudiences()` would synthesise as the brand
- * audience or RFC-8707 token-endpoint resource binding fails. Keep the
- * two regexes in lockstep.
+ * Asymmetric on purpose: this is the "always advertise the brand"
+ * helper. The audience-accept-list helper in
+ * `server.ts:brandMcpAudience` is symmetric because the issuer must
+ * keep accepting BOTH directions for backward compatibility; this
+ * function only ever emits the brand-side URL.
  */
 function brandedMcpHost(base: string): string | null {
   let url: URL;
   try {
     url = new URL(base);
   } catch {
+    // intentionally ignored: a non-URL base falls through to the
+    // trimmed-string branch one frame up; logging here would double
+    // up on every well-known request when the env var is misset.
     return null;
   }
   const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);

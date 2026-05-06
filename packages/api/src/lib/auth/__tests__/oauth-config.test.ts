@@ -101,6 +101,45 @@ describe("resolveOAuthValidAudiences", () => {
     ).toEqual(["https://api.example.test/mcp"]);
   });
 
+  it("symmetrically mirrors brand → regional when the operator points ATLAS_PUBLIC_API_URL at the brand host", () => {
+    // The brand cutover ships with the CLI default flipping to
+    // `mcp.useatlas.dev`; some operators reasonably re-set
+    // `ATLAS_PUBLIC_API_URL` to match. The symmetric mirror means
+    // pre-cutover tokens bound to the regional `api.useatlas.dev/mcp`
+    // audience keep verifying regardless of which canonical host the
+    // operator chose. Asymmetric mirroring would have made this a
+    // deployment footgun.
+    expect(
+      resolveOAuthValidAudiences({
+        ATLAS_PUBLIC_API_URL: "https://mcp.useatlas.dev",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([
+      "https://mcp.useatlas.dev/mcp",
+      "https://api.useatlas.dev/mcp",
+    ]);
+  });
+
+  it("rejects useatlas.dev anti-patterns (apiv2, api.eu, multi-label) — mirror only the documented regional surfaces", () => {
+    // The regex is anchored on a single label so a hostile or
+    // typo'd host can't accidentally pick up a brand audience. Pin
+    // each anti-pattern explicitly so a future regex relaxation
+    // (e.g. accidental `[a-z]+` instead of `[a-z0-9]+`, or losing
+    // the `^/$` anchors) trips this test.
+    for (const host of [
+      "https://apiv2.useatlas.dev",
+      "https://api.eu.useatlas.dev",
+      "https://api.useatlas.dev.evil.test",
+      "https://api-.useatlas.dev",
+      "https://mcpv2.useatlas.dev",
+    ]) {
+      expect(
+        resolveOAuthValidAudiences({
+          ATLAS_PUBLIC_API_URL: host,
+        } as NodeJS.ProcessEnv),
+      ).toEqual([`${host}/mcp`]);
+    }
+  });
+
   it("returns an empty list when neither env var is set", () => {
     expect(resolveOAuthValidAudiences({} as NodeJS.ProcessEnv)).toEqual([]);
   });

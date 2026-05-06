@@ -4,32 +4,42 @@ import { test, expect, type Page, type Route } from "@playwright/test";
  * Hosted-MCP brand-hostname cutover (#2068) @llm
  *
  * The hosted MCP endpoint moves from `<region>.api.useatlas.dev/mcp/...`
- * to the canonical `mcp*.useatlas.dev/mcp/...` family. Three contracts
- * drive the cutover; each has unit-test coverage at the call-site level
- * (audience verification, `/.well-known/oauth-protected-resource/...`,
- * the `WWW-Authenticate` resource_metadata pointer, the `bunx
- * @useatlas/mcp init --hosted` default URL). What the unit tests can't
- * pin is the user-visible surface — the connect-new-agent wizard's
- * generated config block, which is what every Settings → AI Agents user
- * pastes into Claude Desktop / Cursor / ChatGPT.
+ * to the canonical `mcp*.useatlas.dev/mcp/...` family. The audience-
+ * verification, protected-resource doc, `WWW-Authenticate`
+ * resource_metadata pointer, and `bunx @useatlas/mcp init --hosted`
+ * default URL all flip in one branch and are pinned at the unit level:
  *
- * If this spec fails the user pastes a stale `api.useatlas.dev/...`
- * URL that still resolves and still works (issuer accepts both
- * audiences for backward compat) but never picks up the brand surface
- * the docs and registry advertise. That's the regression mode #2068
- * is closing.
+ *   - `packages/api/src/lib/auth/__tests__/oauth-config.test.ts` —
+ *     `resolveOAuthValidAudiences` synthesises the brand mirror and
+ *     keeps the regional fallback (symmetric in either direction).
+ *   - `packages/api/src/api/__tests__/well-known.test.ts` —
+ *     protected-resource doc advertises the brand surface.
+ *   - `packages/mcp/src/__tests__/hosted.test.ts` — verifier accepts
+ *     both audiences, WWW-Authenticate points at the brand,
+ *     cross-region 421 body returns the brand URL.
+ *   - `plugins/mcp/__tests__/init/hosted.test.ts` — CLI default flipped
+ *     to `mcp.useatlas.dev`, ATLAS_PUBLIC_API_URL override path intact.
  *
- * The full DCR + PKCE + `tools/call` cycle through `mcp.useatlas.dev`
- * is exercised at the verifier level by
- * `packages/mcp/src/__tests__/hosted.test.ts` — running it through a
- * browser would require driving Claude Desktop headlessly, which is
- * out of reach here. The cross-region 421 body shape is pinned by the
- * same hosted.test suite. This spec covers the surface the user sees.
+ * The browser-visible surface that those unit tests can't reach is the
+ * connect-new-agent wizard's docs link — every "how do I paste this
+ * in Claude Desktop / Cursor / Continue / ChatGPT" anchor must keep
+ * resolving to the canonical hosted-MCP guide (which leads with the
+ * brand surface post-#2068). A wizard that links to a 404'd anchor
+ * silently breaks every onboarding click without a unit-test signal.
+ *
+ * What is NOT testable from a Playwright run: the snippet's URL string
+ * itself, because Next.js inlines `process.env.NEXT_PUBLIC_*` at bundle
+ * time. Under Playwright `apiBase` always falls back to
+ * `window.location.origin` (`http://localhost:3000`) and the brand-
+ * mapping pure function returns null for that host. Asserting on the
+ * snippet body would be a tautology — the function under test never
+ * runs in the SaaS code path during Playwright. Unit tests at
+ * `connect-wizard.tsx`'s call site cover that path.
  *
  * The `@llm` tag opts this spec into the serial worker
- * (`bun run test:browser:llm`, workers=1). Even though no model calls
- * happen here, the wizard mocks rely on the global storage state being
- * a clean signed-in admin — running concurrently with other specs that
+ * (`bun run test:browser:llm`, workers=1). No model calls, but the
+ * wizard mocks rely on the global storage state being a clean
+ * signed-in admin — running concurrently with other specs that
  * mutate `/me/oauth-clients` would race.
  */
 
@@ -63,22 +73,13 @@ async function mockOAuthClientsList(page: Page, clients: MockOAuthClient[]) {
 test.describe("Hosted MCP — brand hostname cutover (#2068)", () => {
   test.describe.configure({ timeout: 45_000 });
 
-  test("Settings → AI Agents wizard never advertises the legacy api.useatlas.dev/mcp regional shape", async ({ page }) => {
-    // The wizard's Step 3 displays the agent-config snippet inline.
-    // Per #2068, when the resolved API base is one of the canonical
-    // SaaS regional `api*.useatlas.dev` hosts, the snippet must point
-    // at the brand-mirror `mcp*.useatlas.dev` — not the underlying
-    // regional `api.*` infra. The hosted route accepts both audiences
-    // (backward compat) but new client configs walk forward only.
-    //
-    // Driving the SaaS code path from a Playwright run requires
-    // bundle-time env injection, which Next.js doesn't expose; the
-    // brand-mapping pure function is unit-tested at the call site
-    // (`brandedMcpBase` / `brandMcpAudience` / `brandedMcpHost`).
-    // What this assertion pins is the no-regression invariant: a
-    // future change that re-introduces the legacy
-    // `api.useatlas.dev/mcp/...` shape into the user-facing snippet
-    // — for any base — fails this spec.
+  test("Settings → AI Agents wizard's docs link resolves to the canonical hosted-MCP guide", async ({ page }) => {
+    // Every "How do I paste this in Claude Desktop?" / Cursor / etc.
+    // link the wizard renders should walk the user to the canonical
+    // hosted-MCP guide (which leads with mcp.useatlas.dev post-#2068).
+    // A regression here — the wizard sending users to a deleted anchor,
+    // a stale guide, or an unrelated doc — silently breaks onboarding
+    // without a unit-test signal.
     await mockOAuthClientsList(page, []);
     await page.goto("/settings/ai-agents");
 
@@ -98,45 +99,6 @@ test.describe("Hosted MCP — brand hostname cutover (#2068)", () => {
     // Step 2 → Step 3
     await dialog.getByRole("button", { name: /Next/ }).click();
 
-    // The wizard renders the URL inline next to the snippet block.
-    // Even when the runtime-injected base falls back to the page
-    // origin (Playwright's localhost), the brand-mapping code path is
-    // a pure function: we assert the snippet body never contains the
-    // legacy regional `api.useatlas.dev/mcp/` substring as the
-    // primary URL the user pastes. A regression that stops mapping
-    // would re-introduce that substring in the snippet block.
-    const snippetBlock = dialog.locator("pre, code").first();
-    const snippetText = (await snippetBlock.textContent()) ?? "";
-    // The snippet must not advertise the legacy `api.useatlas.dev/mcp/...`
-    // regional pattern — that's the pre-#2068 URL shape every doc and
-    // CLI default has now flipped away from. (`localhost` is allowed
-    // because Playwright runs against a local Next.js server; we're
-    // pinning the no-regression-to-`api.useatlas.dev` invariant.)
-    expect(snippetText).not.toContain("api.useatlas.dev/mcp");
-    expect(snippetText).not.toContain("api-eu.useatlas.dev/mcp");
-    expect(snippetText).not.toContain("api-apac.useatlas.dev/mcp");
-  });
-
-  test("docs link from the wizard points at the brand-hostname guide", async ({ page }) => {
-    // Every "How do I paste this in Claude Desktop?" / Cursor / etc.
-    // link the wizard renders should walk the user to the canonical
-    // hosted-MCP guide (which now leads with mcp.useatlas.dev). A
-    // regression here would mean the wizard sends users to a deleted
-    // anchor or a stale guide.
-    await mockOAuthClientsList(page, []);
-    await page.goto("/settings/ai-agents");
-
-    const connectButton = page
-      .getByRole("button", { name: /Connect new agent/i })
-      .first();
-    await connectButton.click();
-
-    const dialog = page.getByRole("dialog");
-    await dialog.getByRole("button", { name: /Claude Desktop/ }).click();
-    await dialog.getByRole("button", { name: /Next/ }).click();
-    await dialog.getByRole("button", { name: /Next/ }).click();
-
-    // The doc link is rendered as a regular anchor — assert href.
     const docsAnchor = dialog
       .getByRole("link", { name: /paste|guide|doc/i })
       .first();

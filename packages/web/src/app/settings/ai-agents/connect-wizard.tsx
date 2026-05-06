@@ -67,6 +67,9 @@ function brandedMcpBase(base: string): string | null {
   try {
     url = new URL(base);
   } catch {
+    // intentionally ignored: a non-URL `apiBase` (window.location
+    // origin in dev / Playwright) falls through to as-is — the
+    // wizard renders the same string the user is already on.
     return null;
   }
   const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);

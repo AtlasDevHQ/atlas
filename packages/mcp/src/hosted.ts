@@ -170,27 +170,59 @@ function resourceAudience(req: Request): string[] {
     new URL(req.url).origin;
   const trimmed = base.replace(/\/+$/, "");
   const audiences = [`${trimmed}/mcp`];
-  const brand = brandedMcpHost(trimmed);
-  if (brand) audiences.push(`${brand}/mcp`);
+  const mirror = mirrorUseatlasHost(trimmed);
+  if (mirror) audiences.push(`${mirror}/mcp`);
   return audiences;
 }
 
 /**
- * Map a SaaS regional API base to its `mcp*.useatlas.dev` brand
- * counterpart. Returns null for any host outside the documented
- * regional pattern so self-hosted bases pass through unchanged.
+ * Symmetric mirror between regional `api*.useatlas.dev` and brand
+ * `mcp*.useatlas.dev` hosts. `api.useatlas.dev` ↔ `mcp.useatlas.dev`,
+ * `api-eu.useatlas.dev` ↔ `mcp-eu.useatlas.dev`, etc. Returns null for
+ * anything outside the documented regional surfaces — self-hosted,
+ * dev, custom-domain SaaS — so those bases pass through unchanged.
  *
- * The match here mirrors the one in `server.ts:brandMcpAudience()` and
- * `well-known.ts:brandedMcpHost()` intentionally — the issuer's
- * accepted audiences, the protected-resource doc, and this verifier
- * must all agree on the brand-vs-regional mapping or RFC-8707 token
- * binding fails. Keep the three regexes in lockstep.
+ * Used by the audience-accept-list helper above so the verifier
+ * accepts BOTH the brand and regional audience regardless of which
+ * the operator chose for `ATLAS_PUBLIC_API_URL`. Pre-cutover tokens
+ * bound to the regional surface and post-cutover tokens bound to the
+ * brand both verify here. Mirrors `server.ts:brandMcpAudience` —
+ * keep the regex in lockstep.
+ */
+function mirrorUseatlasHost(base: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    // intentionally ignored: a non-URL base falls back to a single-
+    // audience accept list (the trimmed base + /mcp) which still
+    // covers self-hosted operators on arbitrary hostnames.
+    return null;
+  }
+  const matched = url.hostname.match(/^(api|mcp)(-[a-z0-9]+)?\.useatlas\.dev$/);
+  if (!matched) return null;
+  const flipped = matched[1] === "api" ? "mcp" : "api";
+  const regionSuffix = matched[2] ?? "";
+  return `https://${flipped}${regionSuffix}.useatlas.dev`;
+}
+
+/**
+ * Map a SaaS regional API base (`api*.useatlas.dev`) to its
+ * `mcp*.useatlas.dev` brand counterpart. Returns null for any host
+ * outside the regional pattern — including brand hosts, which the
+ * caller falls back to as-is. Asymmetric: this is the "always emit
+ * the brand surface" helper used by `wwwAuthenticateHeader` and the
+ * 421 misrouting body so a redirected client never picks up the
+ * underlying regional infra.
+ *
+ * Mirrors `well-known.ts:brandedMcpHost`. Keep the regex in lockstep.
  */
 function brandedMcpHost(base: string): string | null {
   let url: URL;
   try {
     url = new URL(base);
   } catch {
+    // intentionally ignored: caller falls back to the trimmed base.
     return null;
   }
   const matched = url.hostname.match(/^api(-[a-z0-9]+)?\.useatlas\.dev$/);

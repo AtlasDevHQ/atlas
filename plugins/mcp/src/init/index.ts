@@ -23,6 +23,26 @@ import {
   type ServeImpl,
 } from "./hosted.js";
 
+// Re-exported so downstream packages (the canonical MCP eval in
+// `packages/mcp/src/__tests__/canonical-mcp-auth.ts`) can drive the
+// real OAuth 2.1 loopback flow against an in-process server. The flow's
+// implementation lives in `./hosted.ts` but we keep the import surface
+// flat so a single `import { runHostedAuthFlow, ... } from
+// "@useatlas/mcp/init"` covers everything callers need.
+export {
+  HostedFlowError,
+  runHostedAuthFlow,
+  type Bearer,
+  type HostedFlowErrorCode,
+  type HostedFlowOptions,
+  type HostedFlowResult,
+  type LoopbackHandler,
+  type LoopbackServer,
+  type OpenBrowserImpl,
+  type OpenBrowserResult,
+  type ServeImpl,
+} from "./hosted.js";
+
 const SERVER_NAME = "atlas";
 // #2068 — `mcp.useatlas.dev` is the brand surface for the hosted MCP
 // endpoint. DNS CNAMEs fan it (and the regional siblings

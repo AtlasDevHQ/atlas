@@ -58,6 +58,12 @@ on:
       - "packages/mcp/package.json"
       - "packages/api/src/lib/auth/server.ts"
       - "packages/api/src/lib/auth/oauth-claims.ts"
+      # Phase 2 (#2119) — the in-process OAuth helper + the published
+      # @useatlas/mcp/init flow it drives. A drift in either trips the
+      # auth-helper smoke test in the same job, so the trigger paths
+      # cover both even though only the eval job depends on them.
+      - "plugins/mcp/src/init/hosted.ts"
+      - "plugins/mcp/src/init/index.ts"
       - ".github/workflows/eval.yml"
   push:
     tags:
@@ -120,15 +126,20 @@ jobs:
           DATABASE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas
         run: bun packages/cli/bin/atlas.ts canonical-eval
 
-  # MCP-path eval (#2074, Phase 1). Runs every canonical question through
-  # the real `createHostedMcpRouter` mounted on `Bun.serve`, exercising
-  # transport / dispatch / envelope / prompts shape / concurrent sessions
-  # / session-cap enforcement. `verifyAccessToken` is mocked — #2119
-  # lands the full DCR + PKCE flow + LLM-on-client mode.
+  # MCP-path eval (#2074, Phase 1; #2119, Phase 2 part A). Runs every
+  # canonical question through the real `createHostedMcpRouter` mounted
+  # on `Bun.serve`, exercising transport / dispatch / envelope / prompts
+  # shape / concurrent sessions / session-cap enforcement. Phase 2 part A
+  # (#2119) replaces the `verifyAccessToken` mock with a real OAuth 2.1
+  # round-trip against an in-process Better Auth instance — the issued
+  # JWT goes through real signature verification + JWKS resolution, so a
+  # regression in the JWT-path now fails this gate. The auth-helper
+  # smoke test (`canonical-mcp-auth.test.ts`) runs first so a regression
+  # in the helper trips before the full evalspec.
   #
   # No Postgres needed: the eval mocks `executeSQL` so SQL correctness is
   # owned by the deterministic job above. This job is purely the MCP
-  # **protocol** gate.
+  # **protocol + JWT** gate.
   canonical-mcp-eval-deterministic:
     name: canonical-mcp-eval (deterministic)
     runs-on: ubuntu-latest
@@ -148,6 +159,9 @@ jobs:
 
       - name: Build @useatlas/types (resolves api imports)
         run: bun run --filter '@useatlas/types' build
+
+      - name: Run MCP auth helper smoke test (#2119)
+        run: bun test ./packages/mcp/src/__tests__/canonical-mcp-auth.test.ts
 
       - name: Run MCP-path canonical eval
         run: bun test ./packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts

@@ -25,6 +25,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import type { Attributes } from "@opentelemetry/api";
 import {
   resolveAccessTokenTtlSeconds,
   resolveRefreshTokenTtlSeconds,
@@ -62,15 +63,15 @@ mock.module("@atlas/api/lib/audit", async () => {
 // Counter spy — pre-monkeypatch the `add` method so we can assert the
 // attribute payload. We don't fully mock `@atlas/api/lib/metrics` because
 // other code paths consume the same module in this test process and a
-// partial mock would leak.
-const counterAddSpy: Mock<
-  (value: number, attrs?: Record<string, unknown>) => void
-> = mock(() => {});
+// partial mock would leak. The `attrs` arg is typed as
+// `@opentelemetry/api`'s `Attributes` so the wrapper round-trips the
+// real Counter signature — `Record<string, unknown>` would lose the
+// AttributeValue narrowing and break the call to `originalCounterAdd`.
+const counterAddSpy: Mock<(value: number, attrs?: Attributes) => void> = mock(
+  () => {},
+);
 const originalCounterAdd = oauthTokenRefresh.add.bind(oauthTokenRefresh);
-oauthTokenRefresh.add = ((
-  value: number,
-  attrs?: Record<string, unknown>,
-) => {
+oauthTokenRefresh.add = ((value: number, attrs?: Attributes) => {
   counterAddSpy(value, attrs);
   return originalCounterAdd(value, attrs);
 }) as typeof oauthTokenRefresh.add;

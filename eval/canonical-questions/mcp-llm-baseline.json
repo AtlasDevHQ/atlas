@@ -1,4 +1,1 @@
-{
-  "_comment": "Per-question latency baseline (ms) for the --mcp-llm mode (#2119 Part B). Empty by default; the grader treats missing entries as 'no baseline yet' and skips the latency check. Regenerate after a deliberate dispatch-shape shift via: bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm --write-baseline",
-  "_regenerated": null
-}
+{}

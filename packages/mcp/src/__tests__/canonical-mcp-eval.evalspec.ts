@@ -15,8 +15,8 @@
  *   bun runtime → @modelcontextprotocol/sdk Client
  *               → StreamableHTTPClientTransport
  *               → Hono route /mcp/{workspace}/sse
- *               → verifyAccessToken (REAL — Phase 2 wires up an
- *                  in-process Better Auth instance + JWKS, so the
+ *               → verifyAccessToken (REAL — Phase 2 part A wires
+ *                  an in-process Better Auth instance + JWKS, so the
  *                  bearer goes through real signature verification)
  *               → tools/list, tools/call, prompts/list
  *               → semantic-layer reads (REAL — `findMetricById`,
@@ -32,20 +32,24 @@
  *     server. Asserted on protocol shape, tool dispatch, envelope codes,
  *     prompts list shape, and concurrent-session behavior.
  *
- * Phase 2 (#2119, this file's update):
+ * Phase 2 part A (#2119, shipped via PR #2125):
  *   - Drops the `verifyAccessToken` mock. Boots an in-process Better
- *     Auth instance (`canonical-mcp-auth.ts`) with the same `jwt()` +
- *     `oauthProvider()` plugins production uses, drives the real OAuth
- *     2.1 loopback flow via `runHostedAuthFlow` test seams, and uses
- *     the issued bearer JWT for every dispatch. The JWKS path is
- *     exercised end-to-end so a regression in signature verification,
- *     audience matching, or issuer matching now fails this eval.
+ *     Auth instance (`packages/mcp/src/eval/auth.ts`) with the same
+ *     `jwt()` + `oauthProvider()` plugins production uses, drives the
+ *     real OAuth 2.1 loopback flow via `runHostedAuthFlow` test
+ *     seams, and uses the issued bearer JWT for every dispatch. The
+ *     JWKS path is exercised end-to-end so a regression in signature
+ *     verification, audience matching, or issuer matching now fails
+ *     this eval.
  *   - Mocks `executeSQL.execute` (unchanged). SQL correctness is owned
  *     by the existing deterministic eval; this eval validates the MCP
  *     envelope wrapping.
- *   - The next phase (#2119 Part B / a follow-up issue) lands the
- *     `--mcp-llm` mode where an LLM picks tools through MCP — validates
- *     tool-selection accuracy under prose drift.
+ *
+ * Phase 2 part B (#2119 Part B, shipped alongside this file's update):
+ *   - Lands `--mcp-llm` mode in `packages/cli/bin/canonical-eval-mcp-llm.ts`
+ *     where an LLM picks tools through MCP — validates tool-selection
+ *     accuracy and recovery contract under prose drift. CI gate at
+ *     `eval-mcp-llm` in `.github/workflows/eval.yml`.
  *
  * ── Stress mode ─────────────────────────────────────────────────────
  *

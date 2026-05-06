@@ -20,8 +20,10 @@ name: Canonical Eval
 #     through the real `createHostedMcpRouter()` mounted on `Bun.serve`.
 #     Validates the MCP **protocol** layer end-to-end — transport, tool
 #     dispatch, error envelopes, prompts/list shape, concurrent sessions.
-#     `verifyAccessToken` is mocked (Phase 1); #2119 replaces the mock
-#     with a real DCR + PKCE flow for full JWT-path coverage.
+#     `verifyAccessToken` was mocked in Phase 1 (#2074); Phase 2 part A
+#     (#2119, eb7efe18) replaced the mock with a real OAuth 2.1 loopback
+#     round-trip against an in-process Better Auth instance for full
+#     JWT/JWKS-path coverage.
 #   The optional `--llm` mode for canonical-eval exists for local
 #   exploration; we don't run it in CI to keep the gate stable.
 #
@@ -193,8 +195,12 @@ jobs:
   # Cheap model + small question set keeps a typical run under $0.05.
   #
   # ANTHROPIC_API_KEY must be added as a repo secret by an org owner.
-  # Until then the job no-ops on PRs (continue-on-error: true) and
-  # surfaces a "skipped" message in the log on tag pushes.
+  # Until the secret is wired the job emits a `::warning::` line and the
+  # eval is skipped — green on PRs and tag pushes alike. Once the secret
+  # lands the gate becomes blocking on tag pushes (continue-on-error
+  # already differentiates by event). The preflight step distinguishes
+  # an unset secret from an invalid/expired one so a credential rotation
+  # doesn't masquerade as a "0/20 regression" on a tag push.
   eval-mcp-llm:
     name: eval-mcp-llm (#2119 Part B)
     runs-on: ubuntu-latest
@@ -249,6 +255,35 @@ jobs:
           echo "::warning::ANTHROPIC_API_KEY not configured — skipping LLM eval. Add the repo secret to enable."
           echo "ATLAS_LLM_EVAL_SKIPPED=1" >> "$GITHUB_ENV"
 
+      - name: Verify ANTHROPIC_API_KEY is valid
+        # Pre-flight catches the case the empty-string skip above
+        # cannot: a secret IS set but rejected (expired, malformed,
+        # billing suspended, rate-limited). Without this check the
+        # eval runs end-to-end, every LLM call fails as a
+        # `tool_selection` regression, and the run trips the
+        # acceptance floor for the wrong reason — masquerading as a
+        # real semantic-layer regression. A 30-second curl preflight
+        # makes the failure mode unambiguous.
+        if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ATLAS_MODEL: claude-haiku-4-5-20251001
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /tmp/anthropic.json -w "%{http_code}" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "{\"model\":\"$ATLAS_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+            https://api.anthropic.com/v1/messages)
+          if [ "$code" != "200" ]; then
+            echo "::error::ANTHROPIC_API_KEY rejected by Anthropic (HTTP $code). Body:"
+            cat /tmp/anthropic.json
+            echo "::error::Rotate the repo secret before re-running."
+            exit 1
+          fi
+          echo "ANTHROPIC_API_KEY preflight OK"
+
       - name: Run LLM-driven MCP canonical eval
         if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
         env:
@@ -261,4 +296,22 @@ jobs:
           ATLAS_DATASOURCE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas_demo
           # DATABASE_URL deliberately unset — the in-process auth fixture
           # short-circuits audit writes via `hasInternalDB() === false`.
-        run: bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm
+        # JSON output captures full per-question artifacts (toolCalls,
+        # finalText, response payloads) for the upload-artifact step
+        # below — the human-readable summary truncates `finalText` and
+        # would lose the recovery-class diagnostic data.
+        run: bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json
+
+      - name: Upload eval artifacts on failure
+        # Captured regardless of pass/fail so a baseline drift on a
+        # green run is still inspectable; the retention budget is small
+        # enough that this is cheap. Without this step the failure
+        # bundle is stuck in the workflow run's stdout and lost the
+        # moment a maintainer closes the tab.
+        if: ${{ always() && env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-mcp-llm-output
+          path: eval-mcp-llm-output.json
+          retention-days: 14
+          if-no-files-found: warn

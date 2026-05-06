@@ -513,6 +513,27 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
  * summary printer — the LLM-mode outcomes carry per-call latency +
  * artifact metadata the deterministic shape doesn't model.
  */
+/**
+ * Map a provider type to the env var that holds its API key. Returns
+ * `null` when the key is set OR when the provider doesn't need one
+ * (`ollama`, `openai-compatible` running locally). Lives at module
+ * scope so the test surface can pin the mapping if a future provider
+ * lands here.
+ */
+function providerKeyMissing(providerType: string): string | null {
+  const required: Record<string, string | null> = {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    "bedrock-anthropic": "AWS_ACCESS_KEY_ID",
+    google: "GOOGLE_GENERATIVE_AI_API_KEY",
+    ollama: null,
+    "openai-compatible": null,
+  };
+  const envVar = required[providerType];
+  if (!envVar) return null;
+  return process.env[envVar] ? null : envVar;
+}
+
 async function runMcpLlmMode(
   options: CanonicalEvalOptions,
 ): Promise<number> {
@@ -524,7 +545,39 @@ async function runMcpLlmMode(
   );
   const { getModelForConfig } = await import("@atlas/api/lib/providers");
 
-  const { model, providerType, modelId } = getModelForConfig();
+  // Resolve provider + model from env. Wrap getModelForConfig errors
+  // with eval-context framing so a CI maintainer hitting "ATLAS_MODEL
+  // is required" sees the connection to --mcp-llm rather than a bare
+  // provider-layer error. Mirrors the seedDemoPostgres wrap pattern
+  // higher up in this file.
+  let model;
+  let providerType;
+  let modelId;
+  try {
+    ({ model, providerType, modelId } = getModelForConfig());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `\nError: --mcp-llm requires a configured LLM provider: ${msg}\n` +
+        `Tip: export ATLAS_PROVIDER=anthropic ATLAS_MODEL=claude-haiku-4-5-20251001 ANTHROPIC_API_KEY=sk-ant-...\n`,
+    );
+    return 1;
+  }
+
+  // Pre-flight the API key for the resolved provider. The provider
+  // SDKs (Anthropic, OpenAI, etc.) lazily read the env var at call
+  // time, so without this guard the eval can run end-to-end with no
+  // key, classify everything as `tool_selection` failure, and trip
+  // the acceptance floor for the wrong reason.
+  const keyMissing = providerKeyMissing(providerType);
+  if (keyMissing) {
+    process.stderr.write(
+      `\nError: --mcp-llm requires ${keyMissing} for provider "${providerType}".\n` +
+        `Tip: export ${keyMissing}=... and re-run.\n`,
+    );
+    return 1;
+  }
+
   process.stdout.write(
     `  using LLM provider=${providerType} model=${modelId}\n`,
   );
@@ -549,6 +602,11 @@ async function runMcpLlmMode(
   const passing = result.outcomes.filter((o) => o.status === "pass").length;
   const failing = result.outcomes.length - passing;
 
+  // Run the baseline write BEFORE the summary so a write failure (EACCES
+  // on a CI runner, ENOSPC, parent-dir missing) aborts cleanly with the
+  // wrapped error from writeBaseline rather than printing "all green"
+  // and then crashing on the FS error after the user has already moved
+  // on to read the next CI step.
   if (options.writeBaseline) {
     writeBaseline(options.baselinePath, result.outcomes);
     process.stdout.write(

@@ -24,9 +24,12 @@
  *     by >25% (early-warning for a serialization regression).
  *
  * The CLI driver in `canonical-eval-run.ts` exposes this via the
- * `--mcp-llm` flag. The exported `runMcpLlmEval` function is also reused
- * by `canonical-eval-mcp-llm.test.ts` with a `MockLanguageModelV3` so the
- * dispatch + grading logic itself is unit-tested without burning tokens.
+ * `--mcp-llm` flag. The per-mode graders + the tool binder are exposed
+ * via `__forTesting__` and unit-tested in `canonical-eval-mcp-llm.test.ts`
+ * against synthetic tool-call sequences (no real LLM tokens, no real
+ * MCP connection). The end-to-end `runMcpLlmEval` integration path is
+ * exercised in CI by the `eval-mcp-llm` job, which wires a real LLM
+ * gated on `ANTHROPIC_API_KEY`.
  *
  * ── Real-DB SQL execution ────────────────────────────────────────────
  *
@@ -61,6 +64,8 @@ import {
 import {
   EvalMcpClient,
   extractToolJson,
+  type ExtractedToolJson,
+  type ToolErrorEnvelope,
   type ToolListEntry,
 } from "@atlas/mcp/eval/client";
 import {
@@ -85,10 +90,28 @@ export interface RecordedToolCall {
   readonly name: string;
   readonly args: Readonly<Record<string, unknown>>;
   readonly latencyMs: number;
-  readonly result:
-    | { readonly kind: "ok"; readonly data: unknown }
-    | { readonly kind: "error"; readonly envelope: unknown }
-    | { readonly kind: "unparseable"; readonly raw: string };
+  /**
+   * Either the parsed MCP tool result (via {@link extractToolJson}) or
+   * a synthesized error envelope when the dispatch itself threw before
+   * MCP returned a frame. Synthesized envelopes carry `__transport: true`
+   * + an `error`/`errorName`/`stack` triple so artifact bundles can
+   * distinguish a transport hang-up from a typed `AtlasMcpToolError`.
+   */
+  readonly result: ExtractedToolJson;
+}
+
+/**
+ * Synthesized error envelope used by {@link bindMcpToolsForLlm} when
+ * `client.callTool` rejects (transport hang-up, abort, malformed
+ * response). The `__transport: true` flag distinguishes it from a real
+ * `AtlasMcpToolError` envelope so the grader doesn't classify a
+ * transport regression as an MCP-tool-error regression.
+ */
+interface TransportErrorEnvelope extends ToolErrorEnvelope {
+  readonly __transport: true;
+  readonly error: string;
+  readonly errorName: string;
+  readonly stack?: string;
 }
 
 /**
@@ -187,7 +210,29 @@ export async function runMcpLlmEval(
       bearer: fixture.bearer,
       clientName: "atlas-canonical-mcp-llm-eval",
     });
-    await client.connect();
+
+    // Defensive teardown: if `client.connect()` rejects, the transport
+    // already allocated by the constructor (abort controller + fetch
+    // state) leaks because `client.close()` short-circuits on
+    // `!connected`. Wrap connect specifically so the transport gets
+    // torn down on connect failure too. Anything thrown by close()
+    // here is ignored — we're already on the failure path and want
+    // the original connect error to propagate.
+    try {
+      await client.connect();
+    } catch (err) {
+      try {
+        await client.close();
+      } catch (closeErr) {
+        // intentionally ignored: surfacing the close error would mask
+        // the original connect failure, which is the actionable signal.
+        process.stderr.write(
+          `[mcp-llm-eval] client.close after failed connect threw: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}\n`,
+        );
+      }
+      throw err;
+    }
+
     try {
       const tools = await client.listTools();
       const recorded: RecordedToolCall[] = [];
@@ -246,16 +291,14 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
  * and self-correct — which is the recovery contract the eval is grading.
  */
 function bindMcpToolsForLlm(
-  client: EvalMcpClient,
+  client: { callTool: EvalMcpClient["callTool"] },
   tools: readonly ToolListEntry[],
   recorder: RecordedToolCall[],
 ): ToolSet {
   // `dynamicTool` (rather than `tool`) is the right shape here: the
   // input schema comes from the MCP server at runtime, so we cannot
-  // statically infer the input type the way `tool({ inputSchema: z.object(...) })`
-  // does. `dynamicTool` accepts the schema as `FlexibleSchema<unknown>`
-  // and skips the input-typing inference, which matches how the
-  // production agent loop binds MCP-discovered tools.
+  // statically infer the input type. The production agent loop binds
+  // MCP-discovered tools the same way.
   const set: Record<string, Tool> = {};
   for (const t of tools) {
     // Fall back to a permissive object schema if the server didn't
@@ -290,18 +333,28 @@ function bindMcpToolsForLlm(
           return parsed.data;
         } catch (err) {
           const latencyMs = Date.now() - start;
-          const message = err instanceof Error ? err.message : String(err);
+          // Capture the error class name + stack so an artifact bundle
+          // can distinguish AbortError from TypeError from a generic
+          // socket hang-up. The `__transport: true` flag is the
+          // grader's signal to classify this as `protocol`, not the
+          // typed `AtlasMcpToolError` recovery case.
+          const transportEnvelope: TransportErrorEnvelope = {
+            __transport: true,
+            error: err instanceof Error ? err.message : String(err),
+            errorName: err instanceof Error ? err.name : "Unknown",
+            stack: err instanceof Error ? err.stack : undefined,
+          };
           recorder.push({
             name: t.name,
             args,
             latencyMs,
-            result: { kind: "error", envelope: { error: message } },
+            result: { kind: "error", envelope: transportEnvelope },
           });
           // Re-throw so a transport-level failure surfaces in the
-          // caller's `streamText` rather than getting silently buried as
-          // a tool-result. Recovery-class regressions live at the
-          // envelope layer; transport regressions deserve their own loud
-          // failure path.
+          // caller's `streamText` (via `onError`) rather than silently
+          // becoming a tool-result. Recovery-class regressions live at
+          // the envelope layer; transport regressions deserve their own
+          // loud failure path.
           throw err;
         }
       },
@@ -325,6 +378,16 @@ async function runOneQuestion(
   const { question, recorded, baseline } = input;
   const start = Date.now();
   let finalText = "";
+  // Capture stream-level errors via the AI SDK `onError` callback. The
+  // SDK does NOT reject `result.text` on tool-execute failures or
+  // provider-side errors — those surface here. Without this hook a
+  // transport regression bound through `bindMcpToolsForLlm` re-throws
+  // into a tool-call step, the SDK swallows it as a tool-error part,
+  // `result.text` resolves with whatever text the model produced, and
+  // the grader silently classifies the question by partial state. The
+  // production agent loop in `@atlas/api/lib/agent` wires the same
+  // hook for the same reason.
+  let streamErr: unknown = null;
   try {
     const result = streamText({
       model: input.model,
@@ -332,14 +395,20 @@ async function runOneQuestion(
       system: input.systemPrompt,
       messages: [{ role: "user", content: question.question }],
       stopWhen: stepCountIs(getAgentMaxSteps()),
+      onError: ({ error }: { error: unknown }) => {
+        streamErr = error;
+      },
     });
     // Awaiting `.text` drains the stream — every `tool-call` step has
     // executed by the time the promise resolves, so `recorded` is the
     // complete dispatch sequence the grader walks below.
     finalText = await result.text;
+    if (streamErr !== null) throw streamErr;
   } catch (err) {
     const latencyMs = Date.now() - start;
     const message = err instanceof Error ? err.message : String(err);
+    const errorName = err instanceof Error ? err.name : "Unknown";
+    const stack = err instanceof Error ? err.stack : undefined;
     return failOutcome({
       question,
       latencyMs,
@@ -348,9 +417,13 @@ async function runOneQuestion(
       category: "protocol",
       tool: null,
       args: {},
-      response: { error: message },
+      // Stack + errorName matter for CI debugging — without them an
+      // AbortError, a TypeError from a bad schema, and a socket
+      // hang-up all render as "streamText threw: <message>" in the
+      // artifact bundle.
+      response: { error: message, errorName, stack },
       expected: "successful streamText round-trip",
-      summary: `streamText threw: ${message}`,
+      summary: `streamText threw (${errorName}): ${message}`,
     });
   }
   const latencyMs = Date.now() - start;
@@ -386,9 +459,10 @@ function grade(input: GradeInput): McpLlmOutcome {
 
   // Surface unparseable tool results immediately — those are MCP-layer
   // protocol regressions and would mask any per-mode grading the call
-  // sequence implies.
-  const unparseable = toolCalls.find((c) => c.result.kind === "unparseable");
-  if (unparseable && unparseable.result.kind === "unparseable") {
+  // sequence implies. Type predicate narrows the union arm so the
+  // closure-broken `result` access doesn't need a re-check.
+  const unparseable = toolCalls.find(isUnparseable);
+  if (unparseable) {
     return failOutcome({
       question: q,
       latencyMs,
@@ -400,6 +474,27 @@ function grade(input: GradeInput): McpLlmOutcome {
       response: { raw: unparseable.result.raw },
       expected: "JSON envelope from MCP tool",
       summary: `MCP tool ${unparseable.name} returned non-JSON content`,
+    });
+  }
+
+  // Surface transport-class regressions before per-mode grading. A
+  // recorded `__transport: true` envelope means `bindMcpToolsForLlm`
+  // re-threw a transport hang-up; without this branch the per-mode
+  // grader would classify it as `recovery`, masking the real signal.
+  const transportFail = toolCalls.find(isTransportFail);
+  if (transportFail && transportFail.result.kind === "error") {
+    const env = transportFail.result.envelope as TransportErrorEnvelope;
+    return failOutcome({
+      question: q,
+      latencyMs,
+      finalText,
+      toolCalls,
+      category: "protocol",
+      tool: transportFail.name,
+      args: transportFail.args,
+      response: { error: env.error, errorName: env.errorName, stack: env.stack },
+      expected: "successful MCP transport round-trip",
+      summary: `MCP transport threw on ${transportFail.name} (${env.errorName}): ${env.error}`,
     });
   }
 
@@ -483,16 +578,15 @@ function gradeMetric(
   if (metricSuccess) return passOutcome(q, toolCalls, finalText, latencyMs);
 
   const sqlPatterns = q.expect.sql_pattern ?? [];
-  const sqlSuccess = sqlCalls.find((c) => {
-    if (c.result.kind !== "ok") return false;
-    if (sqlPatterns.length === 0) return true;
-    const sql = ((c.args.sql as string | undefined) ?? "").toLowerCase();
-    return sqlPatterns.every((p) => sql.includes(p.toLowerCase()));
-  });
+  const sqlSuccess = findSqlMatch(sqlCalls, sqlPatterns);
   if (sqlSuccess) return passOutcome(q, toolCalls, finalText, latencyMs);
 
-  // Got error envelopes back — recovery class. Otherwise tool_selection.
-  const errorCalls = toolCalls.filter((c) => c.result.kind === "error");
+  // Recovery vs tool_selection: scope to mode-relevant tools so a
+  // bystander `searchGlossary` returning `ambiguous_term` doesn't get
+  // blamed on a metric question. Mirrors `gradeVirtual`'s scoped
+  // filter — `gradeMetric` previously caught any error envelope from
+  // any tool which made the artifact actively misleading.
+  const errorCalls = [...metricCalls, ...sqlCalls].filter(isErrorResult);
   if (errorCalls.length > 0) {
     const last = errorCalls[errorCalls.length - 1]!;
     return failOutcome({
@@ -503,10 +597,9 @@ function gradeMetric(
       category: "recovery",
       tool: last.name,
       args: last.args,
-      response:
-        last.result.kind === "error" ? last.result.envelope : last.result,
+      response: last.result.envelope,
       expected: { metric_id: q.metric_id, success: true },
-      summary: `LLM saw ${errorCalls.length} error envelope(s) for metric ${q.metric_id} and did not produce a successful answer`,
+      summary: `LLM saw ${errorCalls.length} error envelope(s) on runMetric/executeSQL for metric ${q.metric_id} and did not produce a successful answer`,
     });
   }
 
@@ -546,9 +639,10 @@ function gradeGlossary(
     });
   }
 
-  const matchingCall = glossaryCalls.find(
-    (c) => typeof c.args.term === "string" && (c.args.term as string).toLowerCase() === q.term.toLowerCase(),
-  );
+  const matchingCall = glossaryCalls.find((c) => {
+    const term = c.args.term;
+    return typeof term === "string" && term.toLowerCase() === q.term.toLowerCase();
+  });
   if (!matchingCall) {
     const got = glossaryCalls.map((c) => c.args.term);
     return failOutcome({
@@ -574,11 +668,9 @@ function gradeGlossary(
   //      the dispatch sequence stopped, OR the final text mentions the
   //      ambiguity / a synonym from `possible_mappings`.
   if (q.expect.status === "ambiguous") {
-    const ambiguousEnvelope = matchingCall.result.kind === "error"
-      ? matchingCall.result.envelope
-      : null;
-    const code = (ambiguousEnvelope as { code?: unknown } | null)?.code;
-    if (code !== "ambiguous_term") {
+    const ambiguousEnvelope: ToolErrorEnvelope | null =
+      matchingCall.result.kind === "error" ? matchingCall.result.envelope : null;
+    if (ambiguousEnvelope?.code !== "ambiguous_term") {
       return failOutcome({
         question: q,
         latencyMs,
@@ -622,7 +714,7 @@ function gradeGlossary(
 function surfacedAmbiguity(
   text: string,
   term: string,
-  envelope: unknown,
+  envelope: ToolErrorEnvelope | null,
 ): boolean {
   const haystack = text.toLowerCase();
   if (!haystack.includes(term.toLowerCase())) return false;
@@ -630,8 +722,7 @@ function surfacedAmbiguity(
   // Mention of any `possible_mappings` entry is also acceptable — the
   // LLM may have surfaced "did you mean GMV or net_revenue?" without
   // using the word "ambiguous".
-  const mappings = (envelope as { possible_mappings?: unknown[] } | null)
-    ?.possible_mappings;
+  const mappings = envelope?.possible_mappings;
   if (Array.isArray(mappings)) {
     return mappings.some(
       (m) => typeof m === "string" && haystack.includes(m.toLowerCase()),
@@ -671,13 +762,16 @@ function gradePattern(
     });
   }
 
+  // Empty `sql_pattern` falls back to a structural check that the
+  // dispatched SQL at least references `q.entity` — the deterministic
+  // eval grades these by row-count bounds, but the LLM-mode grader
+  // can't see rows directly without an entity-aware adapter, so an
+  // entity-name reference is the cheapest meaningful check that
+  // prevents `SELECT 1` from passing as "answered the pattern question".
   const sqlPatterns = q.expect.sql_pattern ?? [];
-  const sqlSuccess = sqlCalls.find((c) => {
-    if (c.result.kind !== "ok") return false;
-    if (sqlPatterns.length === 0) return true;
-    const sql = ((c.args.sql as string | undefined) ?? "").toLowerCase();
-    return sqlPatterns.every((p) => sql.includes(p.toLowerCase()));
-  });
+  const fallbackPatterns =
+    sqlPatterns.length === 0 ? [q.entity] : sqlPatterns;
+  const sqlSuccess = findSqlMatch(sqlCalls, fallbackPatterns);
   if (sqlSuccess) return passOutcome(q, toolCalls, finalText, latencyMs);
 
   // Accept describeEntity that returned an entity carrying the pattern
@@ -729,16 +823,19 @@ function gradeVirtual(
     });
   }
 
+  // Empty `sql_pattern` falls back to checking that the dispatched
+  // SQL at least references `q.dimension` (or `q.entity`) — without
+  // this fallback an LLM that returned `SELECT 1` would pass virtual-
+  // dimension questions, hiding a real semantic-layer regression. The
+  // deterministic eval gates on row-count bounds but the LLM grader
+  // can't reach into the result rows without entity-shape knowledge.
   const sqlPatterns = q.expect.sql_pattern ?? [];
-  const success = sqlCalls.find((c) => {
-    if (c.result.kind !== "ok") return false;
-    if (sqlPatterns.length === 0) return true;
-    const sql = ((c.args.sql as string | undefined) ?? "").toLowerCase();
-    return sqlPatterns.every((p) => sql.includes(p.toLowerCase()));
-  });
+  const fallbackPatterns =
+    sqlPatterns.length === 0 ? [q.dimension] : sqlPatterns;
+  const success = findSqlMatch(sqlCalls, fallbackPatterns);
   if (success) return passOutcome(q, toolCalls, finalText, latencyMs);
 
-  const errorCalls = sqlCalls.filter((c) => c.result.kind === "error");
+  const errorCalls = sqlCalls.filter(isErrorResult);
   if (errorCalls.length > 0) {
     const last = errorCalls[errorCalls.length - 1]!;
     return failOutcome({
@@ -749,9 +846,8 @@ function gradeVirtual(
       category: "recovery",
       tool: "executeSQL",
       args: last.args,
-      response:
-        last.result.kind === "error" ? last.result.envelope : last.result,
-      expected: { sql_pattern: sqlPatterns },
+      response: last.result.envelope,
+      expected: { sql_pattern: fallbackPatterns },
       summary: `executeSQL returned error envelope(s) for virtual ${q.entity}.${q.dimension} and LLM did not recover`,
     });
   }
@@ -772,6 +868,14 @@ function gradeVirtual(
 
 // ── Outcome constructors ─────────────────────────────────────────────
 
+/**
+ * Inputs for {@link failOutcome}. `question` and `latencyMs` are the
+ * only invariants both the outcome wrapper AND the inner artifact
+ * need to share — taking the artifact as `Omit<…, "questionId" | "latencyMs">`
+ * eliminates the per-site duplication that previously made it possible
+ * to construct an outcome whose `questionId` disagreed with its
+ * `artifact.questionId`.
+ */
 interface FailOutcomeInput {
   readonly question: Question;
   readonly latencyMs: number;
@@ -786,14 +890,15 @@ interface FailOutcomeInput {
 }
 
 function failOutcome(input: FailOutcomeInput): McpLlmOutcome {
+  const questionId = input.question.id;
   return {
-    questionId: input.question.id,
+    questionId,
     status: "fail",
     latencyMs: input.latencyMs,
     toolCalls: input.toolCalls,
     finalText: input.finalText,
     artifact: {
-      questionId: input.question.id,
+      questionId,
       category: input.category,
       tool: input.tool,
       args: input.args,
@@ -818,6 +923,47 @@ function passOutcome(
     toolCalls,
     finalText,
   };
+}
+
+// ── Type predicates / shared helpers ─────────────────────────────────
+
+/**
+ * Find an `executeSQL` call whose result is `ok` AND whose SQL contains
+ * every required substring (case-insensitive). Extracted because the
+ * exact body was duplicated in `gradeMetric`, `gradePattern`, and
+ * `gradeVirtual`. Empty `patterns` accepts any successful SQL — the
+ * per-mode graders pass a structural fallback (entity / dimension name)
+ * when the question's `expect.sql_pattern` is empty so an LLM can't
+ * pass a metric question with `SELECT 1`.
+ */
+function findSqlMatch(
+  sqlCalls: readonly RecordedToolCall[],
+  patterns: readonly string[],
+): RecordedToolCall | undefined {
+  return sqlCalls.find((c) => {
+    if (c.result.kind !== "ok") return false;
+    if (patterns.length === 0) return true;
+    const sql = ((c.args.sql as string | undefined) ?? "").toLowerCase();
+    return patterns.every((p) => sql.includes(p.toLowerCase()));
+  });
+}
+
+type UnparseableCall = RecordedToolCall & {
+  readonly result: { readonly kind: "unparseable"; readonly raw: string };
+};
+function isUnparseable(c: RecordedToolCall): c is UnparseableCall {
+  return c.result.kind === "unparseable";
+}
+
+type ErrorCall = RecordedToolCall & {
+  readonly result: { readonly kind: "error"; readonly envelope: ToolErrorEnvelope };
+};
+function isErrorResult(c: RecordedToolCall): c is ErrorCall {
+  return c.result.kind === "error";
+}
+function isTransportFail(c: RecordedToolCall): c is ErrorCall {
+  if (c.result.kind !== "error") return false;
+  return (c.result.envelope as TransportErrorEnvelope).__transport === true;
 }
 
 // ── Test surface ─────────────────────────────────────────────────────
@@ -847,15 +993,32 @@ export const __forTesting__ = {
 /**
  * Read a per-question latency baseline from disk. Returns `undefined`
  * when the file is missing — the grader treats that as "no baseline
- * yet" and skips the latency check. Malformed JSON throws so a
+ * yet" and skips the latency check. Malformed / empty JSON throws so a
  * corrupted baseline doesn't silently degrade to no-check.
+ *
+ * Every error path includes the file path so a contributor with a
+ * mangled baseline (typically a merge-conflict casualty) can act on
+ * the message without having to diff against `git`.
  */
 export function readBaseline(
   filePath: string,
 ): Readonly<Record<string, number>> | undefined {
   if (!fs.existsSync(filePath)) return undefined;
   const raw = fs.readFileSync(filePath, "utf-8");
-  const parsed = JSON.parse(raw) as unknown;
+  if (raw.trim() === "") {
+    throw new Error(
+      `baseline file ${filePath} is empty. Either delete it or regenerate via --write-baseline.`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse baseline file ${filePath}: ${msg}`, {
+      cause: err,
+    });
+  }
   if (!parsed || typeof parsed !== "object") {
     throw new Error(`baseline file ${filePath} is not a JSON object`);
   }
@@ -872,6 +1035,12 @@ export function readBaseline(
  * Write a per-question baseline derived from a successful eval run.
  * The CLI surfaces this via `--write-baseline`; the docs describe how
  * to regenerate when the dispatch shape legitimately shifts.
+ *
+ * Permission / quota / parent-dir errors are wrapped with a "Tip:"
+ * hint so a CI runner with a read-only filesystem leaves an actionable
+ * trail rather than the bare `EACCES` / `EROFS` / `ENOSPC` Node FS
+ * errors. Mirrors the wrap pattern in `seedDemoPostgres` at
+ * `canonical-eval-run.ts:428-438`.
  */
 export function writeBaseline(
   filePath: string,
@@ -879,5 +1048,14 @@ export function writeBaseline(
 ): void {
   const out: Record<string, number> = {};
   for (const o of outcomes) out[o.questionId] = o.latencyMs;
-  fs.writeFileSync(filePath, `${JSON.stringify(out, null, 2)}\n`, "utf-8");
+  try {
+    fs.writeFileSync(filePath, `${JSON.stringify(out, null, 2)}\n`, "utf-8");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Failed to write baseline to ${filePath}: ${msg}. ` +
+        `Tip: ensure the parent directory exists and the file is writable.`,
+      { cause: err },
+    );
+  }
 }

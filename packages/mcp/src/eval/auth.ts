@@ -38,11 +38,14 @@
  * `@better-auth/oauth-provider` only issues JWT-formatted access tokens
  * when the token request carries a `resource` parameter (RFC 8707). The
  * upstream `runHostedAuthFlow` in `@useatlas/mcp/init` does not include
- * `resource` today (tracked separately as #2124 — Gap 1). For the eval
- * we wrap the test seam's `fetchImpl` to inject `resource=${apiUrl}/mcp`
+ * `resource` today — #2124 is closed (Gap 2 fixed in commit 70e262c1)
+ * but Gap 1 (the resource-indicator parameter on `runHostedAuthFlow`)
+ * is still open at the time of writing; verify by grepping
+ * `plugins/mcp/src/init/hosted.ts` for `resource`. For the eval we
+ * wrap the test seam's `fetchImpl` to inject `resource=${apiUrl}/mcp`
  * into the token-exchange POST body so the issued token is JWT-formatted
- * and carries the `aud` claim the MCP route's verifier requires. Once
- * #2124 lands the `fetchImpl` body-patch can be removed.
+ * and carries the `aud` claim the MCP route's verifier requires. When
+ * Gap 1 lands the `fetchImpl` body-patch can be removed.
  */
 
 import { betterAuth } from "better-auth";
@@ -529,7 +532,7 @@ async function runEvalAuthFlow(input: RunFlowInput): Promise<HostedFlowResult> {
       // Without this Better Auth issues an opaque token and the MCP
       // route's verifier (which expects JWT) rejects with
       // invalid_bearer. See the module docstring's resource-indicator
-      // workaround note for #2124.
+      // workaround note (#2124 Gap 1, still open).
       const body = await req.text();
       const params = new URLSearchParams(body);
       if (!params.has("resource")) params.set("resource", resourceIndicator);

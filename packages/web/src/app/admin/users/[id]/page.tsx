@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * Per-user danger-zone surface (#2093).
- *
- * Reachable from the /admin/users list via the "Manage user" dropdown
- * action. Today this page hosts the "Revoke all authentication" lever
- * and a read-only summary of the user's live auth artifacts; it
- * deliberately does NOT duplicate the role / ban surface that lives
- * in the list-page dropdowns. Future per-user controls (transfer
- * ownership, force password reset, etc.) belong here when they land.
- *
- * The danger-zone surface is its own page rather than a list-row
- * dropdown for two reasons:
- *
- *   1. Force-revoke is the load-bearing off-boarding action — making
- *      the operator navigate to a dedicated page builds in a "are you
- *      sure you're on the right user" pause that a list-row click
- *      doesn't.
- *   2. The artifact-count summary is a precondition for an informed
- *      confirmation. Surfacing "5 sessions · 2 trusted browsers · 1
- *      passkey" inline lets the operator see what they're about to
- *      destroy before the dialog opens.
- */
-
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,10 +12,8 @@ import { ReasonDialog } from "@/ui/components/admin/queue";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { z } from "zod";
 
-// Mirrors the API response schema in admin-revoke.ts. Kept in sync via the
-// generated OpenAPI types in CI; the local declaration here is for the
-// useAdminFetch consumer and is the source of truth for what the page
-// actually reads.
+// Hand-mirrored from the API's PreviewResponseSchema in
+// admin-revoke.ts. Update both when the response shape changes.
 const PreviewSchema = z.object({
   targetUserId: z.string(),
   targetUserEmail: z.string().nullable(),
@@ -69,29 +44,19 @@ export default function UserDetailPage() {
     invalidates: refetch,
   });
 
-  // Derive the "anything to revoke" boolean from the live counts so the
-  // button shows a disabled state when there are no artifacts to clear —
-  // a zero-count revoke still emits an audit row, but the UX should
-  // reflect that the lever is a no-op before the operator pulls it.
   const totalArtifacts = preview
     ? preview.sessions + preview.trustedDevices + preview.passkeys +
       preview.oauthAccessTokens + preview.oauthRefreshTokens
     : 0;
 
+  // No error branch — `onSuccess` only fires on 2xx, so a failure leaves
+  // the dialog open with `revokeAuth.error` rendered through
+  // ReasonDialog's `mutationError`.
   async function handleRevoke(reason: string) {
-    const result = await revokeAuth.mutate({
+    await revokeAuth.mutate({
       body: reason ? { reason } : {},
-      onSuccess: () => {
-        setConfirmOpen(false);
-      },
+      onSuccess: () => setConfirmOpen(false),
     });
-    // Keep the dialog open on failure so the operator can see the error
-    // alongside the artifact-count context they were about to destroy.
-    // useAdminMutation surfaces FetchError through `revokeAuth.error`,
-    // which ReasonDialog renders via mutationError + feature routing.
-    if (!result.ok) {
-      return;
-    }
   }
 
   return (
@@ -127,7 +92,6 @@ export default function UserDetailPage() {
       >
         {preview && (
           <div className="space-y-6">
-            {/* Identity card */}
             <Card>
               <CardHeader>
                 <CardTitle>{preview.targetUserEmail ?? "(no email on record)"}</CardTitle>
@@ -150,7 +114,6 @@ export default function UserDetailPage() {
               </CardContent>
             </Card>
 
-            {/* Authentication artefacts summary */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Authentication artifacts</CardTitle>
@@ -195,7 +158,6 @@ export default function UserDetailPage() {
               </CardContent>
             </Card>
 
-            {/* Danger zone */}
             <Card className="border-destructive/40">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-destructive">

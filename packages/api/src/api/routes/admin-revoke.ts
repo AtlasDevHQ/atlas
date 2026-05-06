@@ -1,51 +1,22 @@
 /**
- * Admin force-revoke for user auth artifacts (#2093).
+ * Admin force-revoke for user auth artifacts.
  *
- * `POST /api/v1/admin/users/{id}/revoke-auth` is the single atomic
- * primitive for fired-contractor / compromised-account cleanup. Today
- * the workspace admin has to revoke each auth class independently —
- * `/admin/sessions` covers active web sessions, `/admin/users/:id/ban`
- * blocks future sign-ins, but neither cleans up trusted-device cookies
- * or enrolled passkeys. Without this surface, "off-board the
- * contractor" is a multi-tab forensic exercise where it's easy to
- * leave a passkey behind that can re-authenticate them on a returned
- * device the next time SSO/SAML is used as the first factor.
- *
- * `GET /api/v1/admin/users/{id}/revoke-auth/preview` returns the
- * per-artifact counts so the danger-zone UI can render
- * "5 sessions · 2 trusted browsers · 1 passkey" before the operator
- * confirms. The preview shares the same org-scoping and pre-checks as
- * the POST so a probe against a foreign-workspace user can never leak
- * counts that the revoke itself would refuse.
- *
- * Atomicity matches `admin-oauth-clients.ts:revoke`. The six DELETEs
- * (verification → trusted_device → session → passkey → oauthAccessToken
- * → oauthRefreshToken) run inside a single transaction so a transient
- * pool failure mid-sequence cannot leave a user partially revoked —
+ * Atomic primitive for off-boarding cleanup: deletes sessions,
+ * trusted-device cookies (and adjacent verification rows), passkeys,
+ * and OAuth access/refresh tokens for a target user inside one
+ * transaction. The forensic invariant is "no half-revoked state" —
  * sessions gone but passkeys still admitting on the next SSO redirect
- * is exactly the failure mode this surface exists to prevent.
+ * is the failure mode this surface exists to prevent. Per-class delete
+ * order is enforced by `revokeAtomically`.
  *
- * Order rationale: `verification` rows are FK-reachable from
- * `trusted_device.identifier`, so deleting them first prevents an FK
- * violation if the verification adapter ever upgrades to RESTRICT.
- * Children (per-class artefacts) are independent of each other —
- * order between them is forensic preference, not correctness.
+ * Workspace admins are scoped to org members via `verifyOrgMembership`;
+ * platform admins cross-org. The non-member branch returns 404 (not
+ * 403) so probing a foreign-workspace user surfaces the same response
+ * as a missing user.
  *
- * Audit metadata carries every per-class count even on a zero-row
- * revoke. A "no-op" revoke is a forensic signal in itself: the admin
- * confirmed the action against a user who had no live credentials.
- *
- * Authorization: workspace admins are scoped to their org members via
- * `verifyOrgMembership`; platform admins cross-org. The non-member
- * branch returns 404 (not 403) so probing a foreign-workspace user
- * surfaces the same response as a missing user — same precedent as
- * the rest of /users/* in admin.ts.
- *
- * Registered directly on the admin router (not as a sub-router) so
- * the existing /users/* routes in admin.ts and the
- * /users/invitations/* routes in admin-invitations.ts share the same
- * middleware chain without sub-router-attached middleware leaking
- * across them. Same rationale as `registerInvitationRoutes`.
+ * Registered directly on the admin router (not a sub-router) — same
+ * rationale as `registerInvitationRoutes`: avoids sub-router middleware
+ * leaking onto the other /users/* routes already mounted on `admin`.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -56,7 +27,7 @@ import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/i
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import type { AuthResult } from "@atlas/api/lib/auth/types";
+import type { AuthenticatedResult } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-revoke");
@@ -66,11 +37,9 @@ const log = createLogger("admin-revoke");
 // bloating `admin_action_log.metadata` on the not-found audit branch.
 const ID_MAX_LEN = 255;
 
-// Cap on the operator-supplied audit reason. Long enough to record a real
-// off-boarding rationale ("Contractor terminated 2026-05-05, badge revoked,
-// HR ticket #1234"); short enough to keep `metadata.reason` from balloon-
-// ing the JSONB column on a malicious paste. Mirrors the bound used by
-// `ReasonDialog` callers elsewhere in the admin surface.
+// Cap on the operator-supplied audit reason. Long enough for a real
+// off-boarding rationale; short enough that a malicious paste can't
+// balloon `admin_action_log.metadata`'s JSONB column.
 const REASON_MAX_LEN = 500;
 
 /**
@@ -203,11 +172,6 @@ const revokeAuthArtifactsRoute = createRoute({
  * user never ends up with a deleted session but a live passkey that
  * still admits on the next SSO redirect.
  *
- * `verification` is deleted first so the trusted-device → verification
- * FK can never block the trust-device DELETE — Better Auth's
- * verification table doesn't define a CASCADE on this relationship and
- * the foreign key is the cookie identifier, not a column we control.
- *
  * Returns a discriminated outcome so the caller can branch on success /
  * rolled-back without exception handling. Mirrors
  * `admin-oauth-clients.ts:revokeAtomically` for the BEGIN/COMMIT/ROLLBACK
@@ -222,10 +186,11 @@ async function revokeAtomically(userId: string): Promise<RevokeOutcome> {
   try {
     await client.query("BEGIN");
 
-    // Better Auth pairs each trusted-device row with a verification row
-    // keyed on the same `identifier`. Deleting the verification rows
-    // first means the trust-device DELETE cannot be blocked by an FK
-    // upgrade in a future Better Auth release.
+    // Each trusted-device row pairs 1:1 with a Better Auth `verification`
+    // row keyed on the same `identifier` value (no enforced FK today —
+    // see migration 0048). Deleting the verification rows first via
+    // subquery means the order stays safe if Better Auth ever adds a
+    // RESTRICT/NO-ACTION FK between the two tables.
     const verification = await client.query(
       `DELETE FROM verification
         WHERE identifier IN (
@@ -352,15 +317,6 @@ async function loadArtifactCounts(userId: string): Promise<{
 // ---------------------------------------------------------------------------
 
 /**
- * Auth result the registered helpers receive. Matches the return shape of
- * admin.ts' `adminAuthAndContext` (the `requireAdminAuth` precondition has
- * already pinned `authenticated: true` by the time the handler body runs)
- * so the caller can pass admin.ts' module-private `verifyOrgMembership`
- * straight through without an unsafe cast.
- */
-type AuthenticatedResult = AuthResult & { authenticated: true };
-
-/**
  * Register the force-revoke routes directly on the admin router.
  * Same dependency-injection pattern as `registerInvitationRoutes` —
  * `adminAuthAndContext` and `verifyOrgMembership` live inside admin.ts'
@@ -405,11 +361,7 @@ export function registerRevokeRoutes(
       {
         targetUserId: userId,
         targetUserEmail: userRows[0]?.email ?? null,
-        sessions: counts.sessions,
-        trustedDevices: counts.trustedDevices,
-        passkeys: counts.passkeys,
-        oauthAccessTokens: counts.oauthAccessTokens,
-        oauthRefreshTokens: counts.oauthRefreshTokens,
+        ...counts,
       },
       200,
     );
@@ -448,12 +400,16 @@ export function registerRevokeRoutes(
     // optional, so parse manually with a safe default. Untrusted-shape
     // bodies are rejected (400) rather than silently dropping the
     // reason and continuing.
-    const rawBody = await c.req.json().catch(() => ({}));
+    const rawBody = await c.req.json().catch(() => {
+      // intentionally ignored: optional body — the safeParse below
+      // re-validates the shape and 400s on anything malformed.
+      return {};
+    });
     const parsed = RevokeRequestSchema.safeParse(rawBody ?? {});
     if (!parsed.success) {
       return c.json({ error: "invalid_request", message: "Invalid request body.", requestId }, 400);
     }
-    const reason = parsed.data.reason?.trim() ? parsed.data.reason.trim() : undefined;
+    const reason = parsed.data.reason?.trim() || undefined;
 
     // Pre-fetch the email for the audit row before the DELETEs strip
     // every artifact pointer. The session table already JOINs `user`

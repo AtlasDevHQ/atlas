@@ -220,7 +220,6 @@ export default function UsersPage() {
                 <LogOut className="mr-2 size-4" />
                 Sign out all sessions
               </DropdownMenuItem>
-              {/* Per-user danger zone — force-revoke every auth artifact (#2093). */}
               <DropdownMenuItem
                 onClick={() => router.push(`/admin/users/${user.id}`)}
               >

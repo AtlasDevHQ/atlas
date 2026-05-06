@@ -1,25 +1,11 @@
 /**
- * Admin force-revoke route tests (#2093).
+ * Admin force-revoke route tests.
  *
- * Atomicity contract: every auth artefact for a target user must be
- * deleted in a single transaction. A partial revoke — sessions gone but
- * passkeys still admitting on the next SSO redirect — is the exact
- * failure mode this route exists to prevent. The MockClient below
- * captures every BEGIN / COMMIT / ROLLBACK so the tests can pin both the
- * happy path (BEGIN + 6 DELETEs + COMMIT) and the rollback (BEGIN + 1+
- * DELETEs + ROLLBACK) lifecycles.
- *
- * Authorization: workspace admins are scoped to their org members via
- * `verifyOrgMembership`; platform admins cross-org. Tests pin both
- * branches plus the 404-on-foreign-org probe (and verify the probe
- * still emits an audit row — a workspace admin reaching across orgs is
- * a forensic signal).
- *
- * Audit: the success row must carry per-class counts so triage can
- * reconstruct what was revoked even after the artefacts themselves are
- * gone. The failure row carries `phase` + scrubbed error so the
- * reviewer can answer "did anything actually delete?" from the audit
- * log alone.
+ * The MockClient below captures every BEGIN / COMMIT / ROLLBACK so the
+ * tests can pin both the happy-path (BEGIN + 6 DELETEs + COMMIT) and
+ * rollback (BEGIN + 1+ DELETEs + ROLLBACK) lifecycles, the per-class
+ * audit counts, the org-scope vs platform-admin authz split, and the
+ * pg-userinfo scrub on the failure-audit error message.
  */
 
 import {
@@ -107,12 +93,18 @@ const { app } = await import("../index");
 
 afterAll(() => mocks.cleanup());
 
-function adminRequest(method: string, path: string, body?: unknown): Request {
+function adminRequest(
+  method: string,
+  path: string,
+  body?: unknown,
+  extraHeaders: Record<string, string> = {},
+): Request {
   const init: RequestInit = {
     method,
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer test-token",
+      ...extraHeaders,
     },
   };
   if (body !== undefined) {
@@ -279,9 +271,12 @@ describe("admin revoke-auth — POST /users/:id/revoke-auth", () => {
     };
 
     const res = await app.fetch(
-      adminRequest("POST", "/api/v1/admin/users/user-target/revoke-auth", {
-        reason: "Contractor terminated 2026-05-05",
-      }),
+      adminRequest(
+        "POST",
+        "/api/v1/admin/users/user-target/revoke-auth",
+        { reason: "Contractor terminated 2026-05-05" },
+        { "x-forwarded-for": "203.0.113.42" },
+      ),
     );
 
     expect(res.status).toBe(200);
@@ -304,17 +299,19 @@ describe("admin revoke-auth — POST /users/:id/revoke-auth", () => {
     expect(body.oauthRefreshTokensRevoked).toBe(4);
     expect(body.verificationRowsRevoked).toBe(2);
 
-    // Transaction lifecycle: BEGIN first, COMMIT runs, ROLLBACK does not.
+    // Transaction lifecycle: BEGIN first, COMMIT must be the LAST query
+    // (a stray DELETE after COMMIT would land outside the transaction
+    // and leak across-user state), ROLLBACK must not run.
     const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
     expect(sqls[0]).toBe("BEGIN");
-    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls[sqls.length - 1]).toBe("COMMIT");
     expect(sqls.includes("ROLLBACK")).toBe(false);
     expect(clientReleased).toBe(true);
     expect(clientReleaseArg).toBeUndefined();
 
-    // Verification rows are deleted FIRST so the trusted-device DELETE
-    // can never be FK-blocked. Children-after-parents on this surface
-    // would be a regression.
+    // verification → trusted_device order is the only ordering with
+    // correctness implications (see route header). Other DELETEs are
+    // independent — assert membership, not order.
     const deleteOrder = clientQueries
       .filter((q) => /^\s*DELETE\s+FROM/i.test(q.sql))
       .map((q) => {
@@ -345,6 +342,10 @@ describe("admin revoke-auth — POST /users/:id/revoke-auth", () => {
       verificationRowsRevoked: 2,
       reason: "Contractor terminated 2026-05-05",
     });
+    // Audit IP comes from x-forwarded-for header (proxied deploys). A
+    // regression that swapped the priority or dropped the header read
+    // would land `null` here.
+    expect(entry.ipAddress).toBe("203.0.113.42");
   });
 
   it("succeeds with zero counts when the user has no live credentials (forensic signal)", async () => {
@@ -521,6 +522,53 @@ describe("admin revoke-auth — POST /users/:id/revoke-auth", () => {
     expect(err).not.toContain("supersecret");
   });
 
+  it("destroys the client when ROLLBACK itself fails — pool-poison defence", async () => {
+    // Both the primary DELETE and the recovery ROLLBACK throw. pg's
+    // contract is that `release(err)` with a truthy arg destroys the
+    // socket, so a poisoned client can never return to the pool to
+    // corrupt the next borrower's transaction. A regression that called
+    // `release()` (no arg) on the catch path would silently re-pool a
+    // client stuck mid-transaction — manifesting as cross-user state
+    // leak in the next request, not as a failure here.
+    queryHandler = async (sql) => {
+      if (sql.includes("DELETE FROM verification")) {
+        throw new Error("primary delete failed");
+      }
+      if (sql.trim().toUpperCase() === "ROLLBACK") {
+        throw new Error("rollback also failed: TCP reset");
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/users/user-target/revoke-auth", {}),
+    );
+
+    expect(res.status).toBe(500);
+
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls[0]).toBe("BEGIN");
+    expect(sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(false);
+
+    // The load-bearing assertion: client.release() received the
+    // rollback error so pg destroys the underlying socket.
+    expect(clientReleased).toBe(true);
+    expect(clientReleaseArg).toBeInstanceOf(Error);
+    expect(String((clientReleaseArg as Error).message)).toContain("rollback also failed");
+
+    // The original failure (not the rollback failure) is what the
+    // failure audit + 500 surface to the caller.
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({
+      targetUserId: "user-target",
+      phase: "verification",
+    });
+    expect(String(entry.metadata?.error ?? "")).toContain("primary delete failed");
+  });
+
   it("returns 404 when the target user does not exist before any DELETE runs", async () => {
     mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
       if (sql.includes(`FROM member`)) return [{ userId: params?.[0] }];
@@ -578,11 +626,9 @@ describe("admin revoke-auth — POST /users/:id/revoke-auth", () => {
   });
 
   it("rejects an oversized reason rather than landing it in audit metadata", async () => {
-    // OpenAPIHono's defaultHook returns 422 with `error: validation_error`
-    // for body schema failures — the 400 path in the route handler covers
-    // a different shape (untrusted JSON that parses but fails the manual
-    // `safeParse` fallback). Either way, the contract is "reject before
-    // BEGIN" so the over-length reason never lands in audit metadata.
+    // The contract is "reject before BEGIN" — wherever in the validator
+    // chain the reject lands (currently OpenAPIHono's defaultHook → 422),
+    // the over-length reason must never reach `admin_action_log`.
     const huge = "x".repeat(501);
     const res = await app.fetch(
       adminRequest("POST", "/api/v1/admin/users/user-target/revoke-auth", {

@@ -209,6 +209,14 @@ jobs:
     # not ship in a tag.
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 20
+    # Bind the Anthropic key at the job level so step-level `if:`
+    # expressions can read it via `env.ANTHROPIC_API_KEY`. GitHub
+    # Actions does NOT allow the `secrets` context inside step-level
+    # `if:` expressions — that restriction is what trips the workflow
+    # parser ("This run likely failed because of a workflow file
+    # issue."). The job-level env binding is the canonical workaround.
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -244,13 +252,11 @@ jobs:
           psql -h 127.0.0.1 -U atlas -d atlas -c "CREATE DATABASE atlas_demo;"
 
       - name: Skip when ANTHROPIC_API_KEY is not set
-        # `secrets.<name>` evaluates to the empty string when unset, so
-        # this gate works for both forks (which never see secrets) and
-        # repos where the org owner has not yet wired the key. The skip
-        # keeps the job from going red on tag pushes just because the
-        # secret is missing — once the secret lands the gate flips to
-        # blocking automatically.
-        if: ${{ secrets.ANTHROPIC_API_KEY == '' }}
+        # `env.ANTHROPIC_API_KEY` is the job-level binding above; that
+        # surface IS allowed in step-level `if:` (the `secrets` context
+        # itself is not). When the secret is unset the binding evaluates
+        # to the empty string — same skip behavior, valid expression.
+        if: ${{ env.ANTHROPIC_API_KEY == '' }}
         run: |
           echo "::warning::ANTHROPIC_API_KEY not configured — skipping LLM eval. Add the repo secret to enable."
           echo "ATLAS_LLM_EVAL_SKIPPED=1" >> "$GITHUB_ENV"
@@ -266,7 +272,6 @@ jobs:
         # makes the failure mode unambiguous.
         if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ATLAS_MODEL: claude-haiku-4-5-20251001
         run: |
           set -euo pipefail
@@ -287,10 +292,10 @@ jobs:
       - name: Run LLM-driven MCP canonical eval
         if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Cheap-and-fast default: Haiku for the eval. Operators can
           # override at the workflow-dispatch level by setting these
-          # at the job env: layer above.
+          # at the job env: layer above. ANTHROPIC_API_KEY is bound at
+          # the job level so it's already in scope here.
           ATLAS_PROVIDER: anthropic
           ATLAS_MODEL: claude-haiku-4-5-20251001
           ATLAS_DATASOURCE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas_demo

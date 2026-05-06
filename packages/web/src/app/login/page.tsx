@@ -31,6 +31,7 @@ import { getPostSignInRoute } from "./post-sign-in-route";
 import { getPasskeySignIn } from "@/lib/auth/passkey-client";
 import { parsePasskeySignInError } from "@/lib/auth/parse-passkey-sign-in-error";
 import { useWebAuthnSupported } from "@/ui/hooks/use-webauthn-supported";
+import { ResendVerificationButton } from "@/ui/components/auth/resend-verification-button";
 
 type SocialProvider = "google" | "github" | "microsoft";
 
@@ -490,96 +491,10 @@ function SignInErrorAlert({ error }: { error: SignInErrorState }) {
           </a>
         )}
         {error.kind === "email_unverified" && (
-          <ResendVerificationButton email={error.attemptedEmail} />
+          <ResendVerificationButton email={error.attemptedEmail} callbackURL="/login" />
         )}
       </div>
     </div>
   );
 }
 
-/**
- * Manual resend control rendered next to the EMAIL_NOT_VERIFIED alert.
- *
- * `sendOnSignIn: true` on the server already re-issues a verification link
- * on every blocked sign-in attempt — so the most common cause of being stuck
- * (the original signup token expired) self-recovers without this button.
- * The button is for the cases the auto-resend can't cover: a user who hit
- * the page from a stale tab without re-submitting the form, or who needs
- * to re-trigger after checking spam.
- *
- * Better Auth's `/send-verification-email` endpoint is rate-limited
- * server-side; the local 30s cooldown is UX, not a security control —
- * it just stops impatient double-clicks from racing the network round-trip.
- */
-function ResendVerificationButton({ email }: { email: string }) {
-  const [state, setState] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  async function handleClick() {
-    if (state === "sending") return;
-    setState("sending");
-    setErrorMsg(null);
-    try {
-      // The cast is the documented workaround for Better Auth's
-      // plugin-augmented client type — `sendVerificationEmail` is a base
-      // action but TS6 strictness loses it through the plugin chain. Same
-      // pattern as `getPasskeyClient()` in `lib/auth/passkey-client.ts`.
-      const send = (
-        authClient as unknown as {
-          sendVerificationEmail?: (opts: { email: string; callbackURL?: string }) => Promise<{
-            data: unknown;
-            error: { message?: string } | null;
-          }>;
-        }
-      ).sendVerificationEmail;
-      if (typeof send !== "function") {
-        throw new Error("sendVerificationEmail action not available on this client");
-      }
-      const result = await send({ email, callbackURL: "/login" });
-      if (result.error) {
-        setErrorMsg(result.error.message ?? "Could not send the email. Please try again.");
-        setState("error");
-        return;
-      }
-      setState("sent");
-    } catch (err) {
-      console.warn(
-        "[login] sendVerificationEmail threw",
-        err instanceof Error ? err.message : String(err),
-      );
-      setErrorMsg("Could not send the email. Please try again.");
-      setState("error");
-    }
-  }
-
-  if (state === "sent") {
-    return (
-      <p className="mt-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-        Sent — check your inbox (and spam folder).
-      </p>
-    );
-  }
-
-  return (
-    <div className="mt-1 space-y-1">
-      <button
-        type="button"
-        onClick={handleClick}
-        disabled={state === "sending" || !email}
-        className="inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {state === "sending" ? (
-          <>
-            <Loader2 className="size-3 animate-spin" aria-hidden />
-            Sending…
-          </>
-        ) : (
-          "Resend verification email"
-        )}
-      </button>
-      {state === "error" && errorMsg && (
-        <p className="text-xs text-red-800/90 dark:text-red-200/90">{errorMsg}</p>
-      )}
-    </div>
-  );
-}

@@ -1986,3 +1986,20 @@ Closed 2026-05-02. Tracking issue #1719, milestone #38 (1 + 28 issues). Revamped
 - [x] Refactor — `<AssistantTurn>` primitive extracted (#1888, PR #1952) — gutter rail consolidated across chat (`page.tsx`) + notebook (`notebook-cell-output.tsx`) at canonical `border-primary/40`; chat surface picked up the `/30` → `/40` opacity bump. Component takes `React.ComponentProps<"div">` so chat can keep `role="article"` + `aria-label` on the same DOM node. Architecture win **#44** recorded.
 
 ---
+
+## Parallel: Multi-method MFA hardening — CLOSED
+
+Closed 2026-05-05. Parallel track to 1.4.1 (not milestoned). Post-1.3.x TOTP MFA. WebAuthn passkeys + TOTP + trusted-device 30d shipped via #2082 (PRs A–D); follow-ups closed the remaining install / governance / sign-in / recovery surface end-to-end.
+
+- [x] Multi-method MFA — passkeys + TOTP + trusted-device 30d ([#2082](https://github.com/AtlasDevHQ/atlas/issues/2082), PRs A–D #2085–#2089) — passkey plugin, MFA gate, sign-in 2FA challenge UI, trusted-browsers list + revoke, audit-log identifier capture.
+- [x] Closeout — passkey browser e2e + docs ([#2090](https://github.com/AtlasDevHQ/atlas/issues/2090), [#2095](https://github.com/AtlasDevHQ/atlas/pull/2095)) — `@llm`-tagged virtual-authenticator e2e + new `security/passkeys.mdx`; drops the stale "passkeys out of scope" line.
+- [x] Platform-admin force-revoke ([#2093](https://github.com/AtlasDevHQ/atlas/issues/2093), [#2097](https://github.com/AtlasDevHQ/atlas/pull/2097)) — atomic `POST /admin/users/{id}/revoke-auth` revokes sessions + trust-devices + passkeys + OAuth tokens in one transaction.
+- [x] Adoption telemetry ([#2094](https://github.com/AtlasDevHQ/atlas/issues/2094), [#2096](https://github.com/AtlasDevHQ/atlas/pull/2096)) — per-workspace + cross-workspace security metrics endpoints with admin / platform-admin posture panels.
+- [x] Passkey-first sign-in ([#2091](https://github.com/AtlasDevHQ/atlas/issues/2091), [#2099](https://github.com/AtlasDevHQ/atlas/pull/2099)) — `signIn.passkey({ autoFill: true })` conditional UI on `/login` + "Use a passkey" alternative on the 2FA challenge screen. Cross-device QR explicitly out of scope.
+- [x] Passkey-only recovery ([#2092](https://github.com/AtlasDevHQ/atlas/issues/2092), [#2108](https://github.com/AtlasDevHQ/atlas/pull/2108)) — second-passkey nudge banner driven by #2094 telemetry buckets + admin-mediated MFA reset (`POST /api/v1/admin/users/{id}/reset-mfa`, mirrors #2093 force-revoke pattern). Recovery codes dropped: Better Auth's `twoFactor` plugin bundles backup codes with TOTP and they can't be cleanly decoupled (Context7-verified). A single passkey is already multi-factor by WebAuthn UV; recovery model is "≥2 passkeys OR password+passkey, with admin reset as the lockout escape hatch."
+
+Decisions documented during the track:
+- Recovery scope flipped from Option B (recovery codes decoupled from TOTP) to Option A (second-passkey nudge + admin reset) after Context7 verified Better Auth's plugin contract — Option B would have required hacking the plugin or building a parallel recovery-codes table, neither acceptable.
+- Cross-device QR sign-in (`hybrid` transport) explicitly out of scope; ≥95% of value comes from OS-bound passkeys.
+
+---

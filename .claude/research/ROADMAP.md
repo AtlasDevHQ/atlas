@@ -142,13 +142,13 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 ### Theme A — Workspace-native UX
 
 - [x] Settings → AI Agents — per-user MCP connect + manage flow ([#2065](https://github.com/AtlasDevHQ/atlas/issues/2065), [#2100](https://github.com/AtlasDevHQ/atlas/pull/2100)) — `/settings/ai-agents` page + 3-step connect wizard + per-user OAuth-client endpoints. Closes the install-path gap for non-CLI users.
-- [ ] Hosted-MCP token refresh + expiry UX, end-to-end tested ([#2066](https://github.com/AtlasDevHQ/atlas/issues/2066)) — refresh-token lifecycle untested; first user across expiry surfaces silently. Adds e2e coverage + UI states for expired/revoked clients.
+- [x] Hosted-MCP token refresh + expiry UX, end-to-end tested ([#2066](https://github.com/AtlasDevHQ/atlas/issues/2066), [#2106](https://github.com/AtlasDevHQ/atlas/pull/2106)) — Playwright + bun-test refresh path coverage, `tokenState` on `/me/oauth-clients`, `oauth_token.refresh` audit + OTel counter, state-aware Settings → AI Agents rendering.
 - [x] Admin audit-log filter view for MCP tool calls ([#2067](https://github.com/AtlasDevHQ/atlas/issues/2067), [#2101](https://github.com/AtlasDevHQ/atlas/pull/2101)) — `actorKind=mcp` / `clientId` / `tool` query filters with nuqs URL-state UI; new `0049_audit_log_mcp_columns` migration.
 
 ### Theme B — Brand + production hygiene
 
 - [ ] `mcp.useatlas.dev` first-class hostname ([#2068](https://github.com/AtlasDevHQ/atlas/issues/2068)) — DNS + audience switch + protected-resource metadata + CLI defaults + docs. Not cosmetic — tokens audience-bound to the brand surface.
-- [ ] Verify sticky routing for `/mcp/*` in production ([#2069](https://github.com/AtlasDevHQ/atlas/issues/2069)) — risk item: docs say required, nobody's confirmed Railway honors it. Multi-replica integration test + OpenStatus synthetic.
+- [x] Verify sticky routing for `/mcp/*` ([#2069](https://github.com/AtlasDevHQ/atlas/issues/2069), [#2107](https://github.com/AtlasDevHQ/atlas/pull/2107)) — Railway confirmed random LB (Context7-verified, no sticky available). Phase 0 boot guard + OpenStatus monitor + doc correction; spawned MCP session-store ADR + Phase 1 issue [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) (deferred until trigger).
 - [ ] Load-test hosted MCP, document perf profile ([#2070](https://github.com/AtlasDevHQ/atlas/issues/2070)) — `ATLAS_MCP_MAX_SESSIONS=100` is somebody's gut, not a measurement. k6 profile + bottleneck identification + perf-architecture doc.
 
 ### Theme C — Governance
@@ -171,20 +171,13 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 
 Backlog (post-1.4.1): `runbooks-context` plugin (#2023, next milestone headline), `/agent-mode` chat-first view (#2022), `/ee` decoupling refactor (#2017).
 
-Ordering recommendation: A → B (prod-credibility floor) → D (eval safety net) → C (governance) → E (distribution + foundation). Risk items (B2 sticky routing, A2 token refresh, D1 eval through MCP) frontload — silently broken today, you just don't know yet.
+Ordering recommendation: B → D (eval safety net) → C (governance) → E (distribution + foundation). Theme A complete (3/3) and risk items A2 + B2 closed; remaining risk item is D1 (eval through MCP) — frontload it.
 
 ---
 
-## Parallel: Multi-method MFA hardening
+## Closed parallel tracks
 
-Post-1.3.x TOTP MFA. WebAuthn passkeys + TOTP + trusted-device 30d shipped via [#2082](https://github.com/AtlasDevHQ/atlas/issues/2082) (PRs A–D); follow-ups close the remaining install / governance / sign-in / recovery surface. Tracked in parallel with 1.4.1 — not milestoned, but real work in flight.
-
-- [x] Multi-method MFA — passkeys + TOTP + trusted-device 30d ([#2082](https://github.com/AtlasDevHQ/atlas/issues/2082), PRs A–D #2085–#2089) — passkey plugin, MFA gate, sign-in 2FA challenge UI, trusted-browsers list + revoke, audit-log identifier capture.
-- [x] Closeout — passkey browser e2e + docs ([#2090](https://github.com/AtlasDevHQ/atlas/issues/2090), [#2095](https://github.com/AtlasDevHQ/atlas/pull/2095)) — `@llm`-tagged virtual-authenticator e2e + new `security/passkeys.mdx`; drops the stale "passkeys out of scope" line.
-- [x] Platform-admin force-revoke ([#2093](https://github.com/AtlasDevHQ/atlas/issues/2093), [#2097](https://github.com/AtlasDevHQ/atlas/pull/2097)) — atomic `POST /admin/users/{id}/revoke-auth` revokes sessions + trust-devices + passkeys + OAuth tokens in one transaction.
-- [x] Adoption telemetry ([#2094](https://github.com/AtlasDevHQ/atlas/issues/2094), [#2096](https://github.com/AtlasDevHQ/atlas/pull/2096)) — per-workspace + cross-workspace security metrics endpoints with admin / platform-admin posture panels.
-- [x] Passkey-first sign-in ([#2091](https://github.com/AtlasDevHQ/atlas/issues/2091), [#2099](https://github.com/AtlasDevHQ/atlas/pull/2099)) — `signIn.passkey({ autoFill: true })` conditional UI on `/login` + "Use a passkey" alternative on the 2FA challenge screen. Cross-device QR explicitly out of scope.
-- [ ] Passkey-only recovery ([#2092](https://github.com/AtlasDevHQ/atlas/issues/2092)) — second-passkey nudge + admin-mediated MFA reset. Recovery codes dropped: Better Auth's `twoFactor` plugin bundles backup codes with TOTP and they can't be cleanly decoupled (Context7-verified). A single passkey is already multi-factor by WebAuthn UV.
+- [x] **Multi-method MFA hardening** (6 issues #2082/#2090/#2091/#2092/#2093/#2094) — WebAuthn passkeys + TOTP + trusted-device 30d shipped end-to-end across enrollment, sign-in, governance, telemetry, and recovery. Full detail in `ROADMAP-archive.md`.
 
 ---
 

@@ -38,10 +38,11 @@
  * `@better-auth/oauth-provider` only issues JWT-formatted access tokens
  * when the token request carries a `resource` parameter (RFC 8707). The
  * upstream `runHostedAuthFlow` in `@useatlas/mcp/init` does not include
- * `resource` today (tracked separately as #2124). For the eval we wrap
- * the test seam's `fetchImpl` to inject `resource=${apiUrl}/mcp` into the
- * token-exchange POST body so the issued token is JWT-formatted and
- * carries the `aud` claim the MCP route's verifier requires.
+ * `resource` today (tracked separately as #2124 — Gap 1). For the eval
+ * we wrap the test seam's `fetchImpl` to inject `resource=${apiUrl}/mcp`
+ * into the token-exchange POST body so the issued token is JWT-formatted
+ * and carries the `aud` claim the MCP route's verifier requires. Once
+ * #2124 lands the `fetchImpl` body-patch can be removed.
  */
 
 import { betterAuth } from "better-auth";
@@ -347,15 +348,12 @@ function buildEvalAuth(opts: BuildEvalAuthOptions): EvalAuth {
             ?.activeOrganizationId;
           return typeof orgId === "string" && orgId.length > 0 ? orgId : undefined;
         },
-        // The `referenceId` parameter that `customAccessTokenClaims`
-        // receives is whatever `postLogin.consentReferenceId` returned
-        // at authorize-time. `clientReference` only governs which user
-        // owns a registered DCR client — it doesn't propagate onto the
-        // access token. This is a Better Auth invariant the production
-        // config in `packages/api/src/lib/auth/server.ts` should mirror;
-        // the gap is filed as #2124. For the eval we return the same
-        // orgId so the issued token carries the URN-shaped workspace
-        // claim the MCP route's verifier reads.
+        // `postLogin.consentReferenceId` is the hook that propagates
+        // the workspace id onto issued tokens — `clientReference`
+        // above only governs DCR client ownership. Mirrors the
+        // production config in `packages/api/src/lib/auth/server.ts`;
+        // the parity is what makes the eval a valid regression test
+        // for the production OAuth path.
         postLogin: {
           page: "/oauth2/post-login",
           consentReferenceId: async ({ session }) => {

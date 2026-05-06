@@ -50,7 +50,7 @@ let handle: ServerHandle | undefined;
 
 beforeAll(async () => {
   const { createHostedMcpRouter } = await import("@atlas/mcp/hosted");
-  const { startEvalAuthServer } = await import("./canonical-mcp-auth");
+  const { startEvalAuthServer } = await import("../eval/auth");
   const mcpRouter = new Hono();
   mcpRouter.route("/", createHostedMcpRouter());
   handle = await startEvalAuthServer({ mcpRouter });

@@ -148,6 +148,16 @@ questions:
       GROUP BY order_size_bucket
       ORDER BY order_count DESC
     expect:
+      # `sql_pattern` substrings the LLM-mode grader (#2119 Part B) uses
+      # to confirm the dispatched SQL actually computes the virtual
+      # dimension. The deterministic eval gates on min_rows/max_rows and
+      # `column` (which it sees on the result), but the LLM grader can
+      # only see the dispatched SQL — without these substrings it would
+      # accept any successful executeSQL as the answer. Each needle is
+      # an independent case-insensitive `String.includes` check, so we
+      # don't write multi-word phrases (`CASE` and `WHEN` may sit on
+      # separate lines).
+      sql_pattern: ["case", "when", "order_size_bucket"]
       min_rows: 1
       max_rows: 4
       column: order_size_bucket
@@ -172,6 +182,8 @@ questions:
       GROUP BY price_tier
       ORDER BY product_count DESC
     expect:
+      # See cq-011 — `sql_pattern` covers the LLM-mode grader (#2119 Part B).
+      sql_pattern: ["case", "when", "price_tier"]
       min_rows: 1
       max_rows: 4
       column: price_tier

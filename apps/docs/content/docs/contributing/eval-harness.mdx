@@ -33,6 +33,21 @@ bun run eval:canonical
 # Optional LLM mode — runs the full agent loop and asserts on the SQL
 # pattern of the last executeSQL call. Slower, nondeterministic.
 bun run eval:canonical -- --llm
+
+# LLM-driven MCP dispatch (#2119 Part B). Boots the in-process MCP
+# route + Better Auth, hands the LLM the discovered MCP tool surface,
+# and grades per-question tool-call sequences. Mutually exclusive with
+# --llm. Requires ATLAS_PROVIDER + ATLAS_MODEL + the matching API key:
+#
+#   export ATLAS_PROVIDER=anthropic
+#   export ATLAS_MODEL=claude-haiku-4-5-20251001
+#   export ANTHROPIC_API_KEY=sk-ant-...
+bun run eval:canonical -- --mcp-llm
+
+# Re-baseline the per-question latency budgets after a deliberate
+# dispatch-shape shift (e.g. tool description churn, recovery contract
+# tightening). Writes back to eval/canonical-questions/mcp-llm-baseline.json.
+bun run eval:canonical -- --mcp-llm --write-baseline
 ```
 
 The output is human-readable, with a `X/N passing` summary line and a per-category breakdown:
@@ -111,11 +126,21 @@ bun test ./packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts
 
 - **Phase 1 (shipped, [#2074](https://github.com/AtlasDevHQ/atlas/issues/2074)):** mocked `verifyAccessToken` and `executeSQL.execute`. Validated the MCP **protocol** layer end-to-end. SQL correctness is owned by the deterministic eval above; this eval owns the MCP path.
 - **Phase 2 part A (shipped, [#2119](https://github.com/AtlasDevHQ/atlas/issues/2119)):** dropped the `verifyAccessToken` mock. The eval now boots an in-process Better Auth instance with the same `jwt()` + `oauthProvider()` plugins production uses, drives the real OAuth 2.1 loopback flow via `runHostedAuthFlow`'s test seams, and dispatches every canonical question with a JWT signed by the in-process JWKS. The auth-helper smoke test (`canonical-mcp-auth.test.ts`) runs first in the same CI job so a regression in the helper trips before the full evalspec.
-- **Phase 2 part B (planned, follow-up to #2119):** `--mcp-llm` mode where an LLM picks tools through MCP and validates tool-selection accuracy + recovery contract under prose drift.
+- **Phase 2 part B (shipped, [#2119](https://github.com/AtlasDevHQ/atlas/issues/2119) Part B):** `--mcp-llm` mode where an LLM picks tools through MCP. The dispatch loop boots the same in-process Better Auth + MCP server Phase 2 part A introduced, hands the LLM the discovered MCP tool surface as Vercel AI SDK `tool()` definitions whose `execute` round-trips through `tools/call`, and grades the per-question tool-call sequence (`tool_selection` / `recovery` / `latency` artifacts) against the canonical question's expectation. Acceptance floor is ≥18/20 questions resolved; baseline at `eval/canonical-questions/mcp-llm-baseline.json` is regenerated via `--write-baseline` after a deliberate dispatch-shape shift. The `eval-mcp-llm` CI job needs `ANTHROPIC_API_KEY` (or override via `ATLAS_PROVIDER` / `ATLAS_MODEL`) — defaults to Claude Haiku for cost, ~$0.05/run.
 
-**Failure artifacts.** Every failed dispatch produces a structured artifact (`packages/mcp/src/__tests__/canonical-mcp-failure-artifact.ts`) carrying the wire frame sent, the response received, the response expected, and a regression category — `protocol` / `tool_selection` / `recovery` / `latency` / `assertion`. The artifact bundle prints to the eval log so a CI failure carries enough context to act on without re-running.
+**Failure artifacts.** Every failed dispatch produces a structured artifact (`packages/mcp/src/eval/failure-artifact.ts`) carrying the wire frame sent, the response received, the response expected, and a regression category — `protocol` / `tool_selection` / `recovery` / `latency` / `assertion`. The artifact bundle prints to the eval log so a CI failure carries enough context to act on without re-running.
 
 **CI gate.** A separate job — `canonical-mcp-eval (deterministic)` — runs alongside the deterministic SQL eval; the [CI policy](#ci-policy) table above governs both. Trigger paths cover the MCP route, the auth surface that issues / verifies bearers, the eval helpers themselves, and the upstream `runHostedAuthFlow` in `plugins/mcp/src/init/` that Phase 2 drives.
+
+The Phase 2 part B `eval-mcp-llm` job runs alongside it under the same CI policy. It needs `ANTHROPIC_API_KEY` configured as a repo secret — the job auto-skips with a workflow warning when the secret is absent so a fork PR or a fresh repo doesn't go red, and flips to blocking automatically once the secret lands. Override the model with `ATLAS_PROVIDER` / `ATLAS_MODEL` at the workflow `env:` layer if a future cost target shifts.
+
+**Latency baseline.** The `--mcp-llm` grader emits a `latency` artifact when a question's dispatch exceeds `baseline * 1.25`. The committed baseline at `eval/canonical-questions/mcp-llm-baseline.json` starts empty (every question passes through). Regenerate after a deliberate dispatch-shape shift:
+
+```bash
+bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm --write-baseline
+```
+
+Commit the resulting JSON with the change that justified the shift — the next eval run uses it as the new ceiling.
 
 ## Out of scope
 

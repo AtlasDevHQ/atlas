@@ -43,6 +43,15 @@ export interface EvalMcpClientOptions {
 export interface ToolListEntry {
   readonly name: string;
   readonly description?: string;
+  /**
+   * JSON Schema for the tool's input. Surfaced verbatim from the MCP
+   * `tools/list` response so callers binding these tools as Vercel AI
+   * SDK `tool({ inputSchema: jsonSchema(...) })` definitions (the
+   * `--mcp-llm` eval mode in #2119) get the exact shape the server
+   * advertises. Keep optional in case a tool registers without one;
+   * `jsonSchema({})` accepts an empty object.
+   */
+  readonly inputSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface PromptListEntry {
@@ -94,7 +103,19 @@ export class EvalMcpClient {
   async listTools(): Promise<readonly ToolListEntry[]> {
     this.ensureConnected("listTools");
     const res = await this.client.listTools();
-    return res.tools.map((t) => ({ name: t.name, description: t.description }));
+    return res.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      // The SDK types `inputSchema` as `unknown`; pass it through as a
+      // readonly record so callers can hand it to AI SDK's `jsonSchema()`
+      // helper without re-asserting. A missing schema (older SDK build /
+      // mis-registered tool) surfaces as `undefined` rather than `{}` so
+      // the LLM-mode binder can pick a sensible fallback.
+      inputSchema:
+        t.inputSchema && typeof t.inputSchema === "object"
+          ? (t.inputSchema as Readonly<Record<string, unknown>>)
+          : undefined,
+    }));
   }
 
   async listPrompts(): Promise<readonly PromptListEntry[]> {
@@ -162,15 +183,45 @@ export class EvalMcpClient {
 }
 
 /**
+ * Shape of the typed error envelope emitted by the MCP semantic tools
+ * (`AtlasMcpToolError`). The error arm of {@link ExtractedToolJson}
+ * carries one of these — exposed as a named type so consumers (the
+ * `--mcp-llm` grader, the deterministic eval) don't each re-narrow
+ * `unknown` with `as { code?: unknown }` casts at every read site.
+ *
+ * Fields are optional because we don't trust upstream invariants at
+ * the boundary: a malformed envelope should still be a well-typed
+ * value the consumer can reason about.
+ */
+export interface ToolErrorEnvelope {
+  readonly code?: string;
+  readonly hint?: string;
+  readonly possible_mappings?: readonly string[];
+  /** Pass-through for envelope fields the consumer doesn't pin (e.g. `details`). */
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Discriminated return type of {@link extractToolJson}. Promoted to a
+ * named export so consumers (notably the `--mcp-llm` recorder type
+ * `RecordedToolCall.result`) reference the shape by name rather than
+ * structurally duplicating it. A future fourth arm added here surfaces
+ * as a TS error in every consumer's switch / branch — not a silent
+ * fall-through.
+ */
+export type ExtractedToolJson =
+  | { readonly kind: "ok"; readonly data: unknown }
+  | { readonly kind: "error"; readonly envelope: ToolErrorEnvelope }
+  | { readonly kind: "unparseable"; readonly raw: string };
+
+/**
  * MCP `tools/call` returns content as an array of items (text / image /
  * resource). The semantic-layer tools always return a single text item
  * containing JSON (success path) or the `AtlasMcpToolError` envelope
  * (failure path). Extract that JSON so callers compare structured data
  * instead of pattern-matching on prose.
  */
-export function extractToolJson(
-  result: CallToolResult,
-): { kind: "ok"; data: unknown } | { kind: "error"; envelope: unknown } | { kind: "unparseable"; raw: string } {
+export function extractToolJson(result: CallToolResult): ExtractedToolJson {
   const text = result.content
     .filter((c): c is { type: "text"; text: string } => c.type === "text")
     .map((c) => c.text)
@@ -185,7 +236,18 @@ export function extractToolJson(
     // a `protocol` regression artifact rather than throwing.
     return { kind: "unparseable", raw: text };
   }
-  if (result.isError === true) return { kind: "error", envelope: parsed };
+  if (result.isError === true) {
+    // Boundary narrow: the MCP server may emit a primitive error body
+    // (string / number) rather than an object. Wrap any non-object
+    // payload as `{ code: "<stringified>" }` so the typed envelope
+    // contract holds — consumers can trust `envelope.code` is at least
+    // a string when present.
+    const envelope: ToolErrorEnvelope =
+      parsed && typeof parsed === "object"
+        ? (parsed as ToolErrorEnvelope)
+        : { code: String(parsed) };
+    return { kind: "error", envelope };
+  }
   return { kind: "ok", data: parsed };
 }
 

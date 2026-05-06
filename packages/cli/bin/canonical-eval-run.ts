@@ -4,6 +4,7 @@
  * Usage:
  *   bun run atlas -- canonical-eval                 # deterministic mode (default)
  *   bun run atlas -- canonical-eval --llm           # full agent loop, snapshot SQL
+ *   bun run atlas -- canonical-eval --mcp-llm       # LLM-driven dispatch through MCP (#2119 Part B)
  *   bun run atlas -- canonical-eval --schema ecommerce
  *
  * Wires the pure runner core (`canonical-eval.ts`) up to:
@@ -16,6 +17,12 @@
  * The optional `--llm` path runs the full agent loop and asserts on the
  * SQL pattern of the last `executeSQL` call. This is the "snapshot" path
  * called out in the issue acceptance.
+ *
+ * The `--mcp-llm` path (#2119 Part B) hands an LLM the same MCP tool
+ * surface a real client (Claude Desktop, Cursor) sees and grades the
+ * tool-call sequence against the canonical question's expectation.
+ * Mutually exclusive with `--llm`. See `canonical-eval-mcp-llm.ts` for
+ * the dispatch loop and per-mode grader.
  */
 
 import * as fs from "fs";
@@ -57,11 +64,33 @@ const BACKUP_DIR = path.resolve(".semantic-backup-canonical-eval");
 interface CanonicalEvalOptions {
   schema: ValidSchema;
   questionsPath: string;
-  llm: boolean;
+  /**
+   * Mutually exclusive: `deterministic` is the default typed-dispatch
+   * path; `llm` runs the full agent loop and asserts on the snapshot
+   * SQL; `mcp-llm` is the #2119 Part B path that dispatches through
+   * the real MCP route via an LLM. Modeling as a discriminated string
+   * (rather than two booleans) makes the mutual exclusion enforceable
+   * at parse time.
+   */
+  mode: "deterministic" | "llm" | "mcp-llm";
   json: boolean;
+  /**
+   * Path to the `--mcp-llm` latency baseline JSON. Defaults to
+   * `eval/canonical-questions/mcp-llm-baseline.json`. Missing entries
+   * are treated as "no baseline yet" by the grader.
+   */
+  baselinePath: string;
+  /** When true and `mode === "mcp-llm"`, write the run's per-question latencies back to `baselinePath`. */
+  writeBaseline: boolean;
 }
 
-function parseOptions(args: string[]): CanonicalEvalOptions {
+const DEFAULT_BASELINE_PATH = path.resolve(
+  "eval",
+  "canonical-questions",
+  "mcp-llm-baseline.json",
+);
+
+export function parseCanonicalEvalOptions(args: string[]): CanonicalEvalOptions {
   const schemaArg = getFlag(args, "--schema") ?? "ecommerce";
   if (!(VALID_SCHEMAS as readonly string[]).includes(schemaArg)) {
     throw new Error(
@@ -76,12 +105,32 @@ function parseOptions(args: string[]): CanonicalEvalOptions {
     throw new Error(`--questions file not found: ${questionsPath}`);
   }
   const llm = args.includes("--llm");
+  const mcpLlm = args.includes("--mcp-llm");
+  if (llm && mcpLlm) {
+    throw new Error(
+      "--llm and --mcp-llm are mutually exclusive. Pick one: " +
+        "--llm runs the agent loop and snapshots SQL; --mcp-llm dispatches " +
+        "through the real MCP route via an LLM (#2119 Part B).",
+    );
+  }
+  const mode: CanonicalEvalOptions["mode"] = mcpLlm
+    ? "mcp-llm"
+    : llm
+      ? "llm"
+      : "deterministic";
   const json = args.includes("--json");
+  const baselinePath = getFlag(args, "--baseline") ?? DEFAULT_BASELINE_PATH;
+  const writeBaseline = args.includes("--write-baseline");
+  if (writeBaseline && !mcpLlm) {
+    throw new Error("--write-baseline only applies to --mcp-llm mode");
+  }
   return {
     schema: schemaArg as ValidSchema,
     questionsPath,
-    llm,
+    mode,
     json,
+    baselinePath,
+    writeBaseline,
   };
 }
 
@@ -352,7 +401,7 @@ async function runWithAgent(
 // ── Entrypoint ───────────────────────────────────────────────────────────
 
 export async function handleCanonicalEval(args: string[]): Promise<void> {
-  const options = parseOptions(args);
+  const options = parseCanonicalEvalOptions(args);
 
   const connStr = process.env.ATLAS_DATASOURCE_URL;
   if (!connStr) {
@@ -364,7 +413,7 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
   }
 
   process.stdout.write(
-    `Atlas canonical-question eval — schema=${options.schema} mode=${options.llm ? "llm" : "deterministic"}\n`,
+    `Atlas canonical-question eval — schema=${options.schema} mode=${options.mode}\n`,
   );
 
   // Stage the semantic layer for the chosen schema, identical to bin/eval.ts.
@@ -401,16 +450,23 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     _resetWhitelists();
     invalidateExploreBackend();
 
-    const results = options.llm
-      ? await runWithAgent(options)
-      : await runDeterministic(options);
+    if (options.mode === "mcp-llm") {
+      const mcpExitCode = await runMcpLlmMode(options);
+      exitCode = mcpExitCode;
+      return;
+    }
+
+    const results =
+      options.mode === "llm"
+        ? await runWithAgent(options)
+        : await runDeterministic(options);
 
     if (options.json) {
       process.stdout.write(
         `${JSON.stringify(
           {
             schema: options.schema,
-            mode: options.llm ? "llm" : "deterministic",
+            mode: options.mode,
             total: results.length,
             passing: results.filter((r) => r.status === "pass").length,
             warning: results.filter((r) => r.status === "warn").length,
@@ -442,4 +498,167 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     if (!restored) exitCode = Math.max(exitCode, 2);
   }
   process.exit(exitCode);
+}
+
+// ── Wiring (--mcp-llm mode, #2119 Part B) ───────────────────────────────
+
+/**
+ * LLM-driven dispatch through the real MCP route. Boots the in-process
+ * Better Auth + MCP server, hands the LLM the discovered MCP tool set
+ * via the Vercel AI SDK, and grades each canonical question's tool-call
+ * sequence. See `canonical-eval-mcp-llm.ts` for the dispatch loop.
+ *
+ * This branch lives here (rather than alongside `runWithAgent`) so it
+ * can short-circuit the deterministic JSON formatting and own its own
+ * summary printer — the LLM-mode outcomes carry per-call latency +
+ * artifact metadata the deterministic shape doesn't model.
+ */
+/**
+ * Map a provider type to the env var that holds its API key. Returns
+ * `null` when the key is set OR when the provider doesn't need one
+ * (`ollama`, `openai-compatible` running locally). Lives at module
+ * scope so the test surface can pin the mapping if a future provider
+ * lands here.
+ */
+function providerKeyMissing(providerType: string): string | null {
+  const required: Record<string, string | null> = {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    "bedrock-anthropic": "AWS_ACCESS_KEY_ID",
+    google: "GOOGLE_GENERATIVE_AI_API_KEY",
+    ollama: null,
+    "openai-compatible": null,
+  };
+  const envVar = required[providerType];
+  if (!envVar) return null;
+  return process.env[envVar] ? null : envVar;
+}
+
+async function runMcpLlmMode(
+  options: CanonicalEvalOptions,
+): Promise<number> {
+  const { runMcpLlmEval, readBaseline, writeBaseline } = await import(
+    "./canonical-eval-mcp-llm"
+  );
+  const { formatArtifactBundle } = await import(
+    "@atlas/mcp/eval/failure-artifact"
+  );
+  const { getModelForConfig } = await import("@atlas/api/lib/providers");
+
+  // Resolve provider + model from env. Wrap getModelForConfig errors
+  // with eval-context framing so a CI maintainer hitting "ATLAS_MODEL
+  // is required" sees the connection to --mcp-llm rather than a bare
+  // provider-layer error. Mirrors the seedDemoPostgres wrap pattern
+  // higher up in this file.
+  let model;
+  let providerType;
+  let modelId;
+  try {
+    ({ model, providerType, modelId } = getModelForConfig());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `\nError: --mcp-llm requires a configured LLM provider: ${msg}\n` +
+        `Tip: export ATLAS_PROVIDER=anthropic ATLAS_MODEL=claude-haiku-4-5-20251001 ANTHROPIC_API_KEY=sk-ant-...\n`,
+    );
+    return 1;
+  }
+
+  // Pre-flight the API key for the resolved provider. The provider
+  // SDKs (Anthropic, OpenAI, etc.) lazily read the env var at call
+  // time, so without this guard the eval can run end-to-end with no
+  // key, classify everything as `tool_selection` failure, and trip
+  // the acceptance floor for the wrong reason.
+  const keyMissing = providerKeyMissing(providerType);
+  if (keyMissing) {
+    process.stderr.write(
+      `\nError: --mcp-llm requires ${keyMissing} for provider "${providerType}".\n` +
+        `Tip: export ${keyMissing}=... and re-run.\n`,
+    );
+    return 1;
+  }
+
+  process.stdout.write(
+    `  using LLM provider=${providerType} model=${modelId}\n`,
+  );
+
+  const baseline = readBaseline(options.baselinePath);
+  if (baseline) {
+    process.stdout.write(
+      `  loaded baseline from ${options.baselinePath} (${Object.keys(baseline).length} entries)\n`,
+    );
+  } else {
+    process.stdout.write(
+      `  no baseline file at ${options.baselinePath} — latency check skipped (run with --write-baseline to seed)\n`,
+    );
+  }
+
+  const result = await runMcpLlmEval({
+    questionsPath: options.questionsPath,
+    model,
+    baseline,
+  });
+
+  const passing = result.outcomes.filter((o) => o.status === "pass").length;
+  const failing = result.outcomes.length - passing;
+
+  // Run the baseline write BEFORE the summary so a write failure (EACCES
+  // on a CI runner, ENOSPC, parent-dir missing) aborts cleanly with the
+  // wrapped error from writeBaseline rather than printing "all green"
+  // and then crashing on the FS error after the user has already moved
+  // on to read the next CI step.
+  if (options.writeBaseline) {
+    writeBaseline(options.baselinePath, result.outcomes);
+    process.stdout.write(
+      `  wrote per-question latency baseline to ${options.baselinePath}\n`,
+    );
+  }
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          schema: options.schema,
+          mode: options.mode,
+          total: result.outcomes.length,
+          passing,
+          failing,
+          outcomes: result.outcomes.map((o) => ({
+            id: o.questionId,
+            status: o.status,
+            latencyMs: o.latencyMs,
+            tools: o.toolCalls.map((c) => c.name),
+            artifact: o.status === "fail" ? o.artifact : undefined,
+          })),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else {
+    process.stdout.write(
+      `\nMCP LLM canonical eval — ${passing}/${result.outcomes.length} passing (${failing} failing)\n`,
+    );
+    for (const o of result.outcomes) {
+      const tag = o.status === "pass" ? "[PASS]" : "[FAIL]";
+      process.stdout.write(
+        `  ${tag} ${o.questionId.padEnd(7)} ${String(o.latencyMs).padStart(5)}ms tools=${o.toolCalls.map((c) => c.name).join(",") || "<none>"}\n`,
+      );
+    }
+    if (result.artifacts.length > 0) {
+      process.stdout.write(formatArtifactBundle(result.artifacts));
+    }
+  }
+
+  // Acceptance criterion (#2119 Part B): ≥18/20 canonical questions
+  // resolved correctly. We exit 1 below the bar so a regression trips
+  // the workflow red on tag pushes (`continue-on-error: false` in CI).
+  const ACCEPTANCE_FLOOR = Math.ceil(result.outcomes.length * 0.9);
+  if (passing < ACCEPTANCE_FLOOR) {
+    process.stderr.write(
+      `\nFAIL: ${passing}/${result.outcomes.length} below acceptance floor ${ACCEPTANCE_FLOOR}\n`,
+    );
+    return 1;
+  }
+  return 0;
 }

@@ -9,9 +9,10 @@
  * Categories:
  *   - `protocol`        wire shape changed (missing fields, wrong content[]
  *                       layout, isError on a success path, etc.)
- *   - `tool_selection`  reserved for the Phase 2 `--mcp-llm` mode (#2119)
- *                       where an LLM picks tools through MCP and a wrong
- *                       pick is the regression — Phase 1 never emits this
+ *   - `tool_selection`  emitted by the `--mcp-llm` mode (#2119 Part B)
+ *                       when the LLM dispatches the wrong MCP tool for a
+ *                       known question. The Phase 1 deterministic eval
+ *                       never emits this.
  *   - `recovery`        an `ambiguous_term` envelope came back without
  *                       possible_mappings, an `unknown_metric` came back
  *                       without a `hint`, etc.

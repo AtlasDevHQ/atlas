@@ -75,6 +75,14 @@ export class EvalMcpClient {
       },
       { capabilities: {} },
     );
+    // Server-initiated close (session cap, server shutdown, route 503)
+    // would otherwise leave `connected = true` with a dead transport.
+    // The next `callTool` would reject from inside the SDK rather than
+    // tripping `ensureConnected` — losing the typed precondition error.
+    // Listening here flips the flag so callers see the right surface.
+    this.transport.onclose = () => {
+      this.connected = false;
+    };
   }
 
   async connect(): Promise<void> {

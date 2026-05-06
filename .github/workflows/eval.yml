@@ -20,8 +20,8 @@ name: Canonical Eval
 #     through the real `createHostedMcpRouter()` mounted on `Bun.serve`.
 #     Validates the MCP **protocol** layer end-to-end — transport, tool
 #     dispatch, error envelopes, prompts/list shape, concurrent sessions.
-#     `verifyAccessToken` is mocked (Phase 1); a follow-up issue replaces
-#     the mock with a real DCR + PKCE flow for full JWT-path coverage.
+#     `verifyAccessToken` is mocked (Phase 1); #2119 replaces the mock
+#     with a real DCR + PKCE flow for full JWT-path coverage.
 #   The optional `--llm` mode for canonical-eval exists for local
 #   exploration; we don't run it in CI to keep the gate stable.
 #
@@ -41,15 +41,21 @@ on:
       - "packages/cli/data/seeds/ecommerce/**"
       - "packages/api/src/lib/semantic/**"
       # MCP-path eval (#2074): trigger on changes to the MCP route, the
-      # auth surface that issues / verifies bearers, and the eval helpers
-      # themselves.
+      # tools the eval dispatches, the prompts/resources surfaces it
+      # asserts shape on, the auth surface that issues / verifies
+      # bearers, and the eval helpers themselves. `canonical-mcp-*.ts`
+      # already matches `canonical-mcp-eval.evalspec.ts` since the
+      # extension still ends in `.ts`.
       - "packages/mcp/src/__tests__/canonical-mcp-*.ts"
-      - "packages/mcp/src/__tests__/canonical-mcp-*.evalspec.ts"
       - "packages/mcp/src/hosted.ts"
       - "packages/mcp/src/server.ts"
+      - "packages/mcp/src/actor.ts"
       - "packages/mcp/src/tools.ts"
       - "packages/mcp/src/semantic-tools.ts"
+      - "packages/mcp/src/prompts.ts"
+      - "packages/mcp/src/resources.ts"
       - "packages/mcp/src/error-envelope.ts"
+      - "packages/mcp/package.json"
       - "packages/api/src/lib/auth/server.ts"
       - "packages/api/src/lib/auth/oauth-claims.ts"
       - ".github/workflows/eval.yml"
@@ -116,9 +122,9 @@ jobs:
 
   # MCP-path eval (#2074, Phase 1). Runs every canonical question through
   # the real `createHostedMcpRouter` mounted on `Bun.serve`, exercising
-  # transport / dispatch / envelope / prompts shape / concurrent sessions.
-  # `verifyAccessToken` is mocked — Phase 2 (follow-up) lands the full
-  # DCR + PKCE flow + LLM-on-client mode.
+  # transport / dispatch / envelope / prompts shape / concurrent sessions
+  # / session-cap enforcement. `verifyAccessToken` is mocked — #2119
+  # lands the full DCR + PKCE flow + LLM-on-client mode.
   #
   # No Postgres needed: the eval mocks `executeSQL` so SQL correctness is
   # owned by the deterministic job above. This job is purely the MCP

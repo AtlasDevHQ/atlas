@@ -80,9 +80,8 @@ import {
 
 // ── Module mocks ───────────────────────────────────────────────────
 //
-// CLAUDE.md requires every named export of a mocked module to be
-// stubbed; partial mocks leak across the in-process test runner. The
-// shapes mirror `packages/mcp/src/__tests__/hosted.test.ts`.
+// Shapes mirror `packages/mcp/src/__tests__/hosted.test.ts`. Every
+// named export is stubbed (CLAUDE.md rule — partial mocks leak).
 
 interface FakeJwtPayload {
   sub: string;
@@ -319,9 +318,24 @@ beforeAll(async () => {
   fs.cpSync(SEED_SEMANTIC_DIR, SEMANTIC_DIR, { recursive: true });
 
   // Reset semantic-layer caches so the freshly installed YAMLs are
-  // re-resolved by the in-process MCP server.
-  const { _resetWhitelists } = await import("@atlas/api/lib/semantic");
-  _resetWhitelists();
+  // re-resolved by the in-process MCP server. If the reset itself
+  // throws, `semantic/` is already swapped — point the contributor at
+  // the recovery commands rather than letting bun:test surface a
+  // generic error with no working-tree context.
+  try {
+    const { _resetWhitelists } = await import("@atlas/api/lib/semantic");
+    _resetWhitelists();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `\nMCP eval beforeAll failed after staging semantic/. Working tree is now seeded with the demo layer; backup at ${SEMANTIC_BACKUP_DIR}.\n` +
+        `Recover manually:\n` +
+        `  rm -rf ${SEMANTIC_DIR}\n` +
+        `  ${fs.existsSync(SEMANTIC_BACKUP_DIR) ? `mv ${SEMANTIC_BACKUP_DIR} ${SEMANTIC_DIR}` : "# no backup — semantic/ was empty before"}\n` +
+        `Underlying error: ${message}\n`,
+    );
+    throw err;
+  }
 
   // Bind the test bearer to a workspace-scoped JWT payload.
   mockVerifyAccessToken.mockImplementation(async (token: string) => {
@@ -563,7 +577,9 @@ async function runOneQuestion(
           }
           return { questionId: q.id, status: "pass", latencyMs: Date.now() - start };
         }
-        // Defined / no-status path — success envelope expected.
+        // Defined / no-status path — success envelope expected with a
+        // `matches[]` array. A regression that returns `{}` or
+        // stringifies the matches must trip here, not silently pass.
         if (parsed.kind === "error") {
           return fail("recovery", `searchGlossary returned error envelope on a defined term`, {
             tool,
@@ -572,13 +588,23 @@ async function runOneQuestion(
             expected: "success matches[]",
           });
         }
+        const glossaryData = parsed.data as { matches?: unknown };
+        if (!Array.isArray(glossaryData.matches)) {
+          return fail("protocol", `searchGlossary success envelope must carry matches[]`, {
+            tool,
+            args,
+            response: glossaryData,
+            expected: { matches: "Array<{term, status, possible_mappings}>" },
+          });
+        }
         return { questionId: q.id, status: "pass", latencyMs: Date.now() - start };
       }
       case "pattern": {
-        // The MCP semantic toolset doesn't expose query_patterns directly
-        // — `describeEntity` returns the entity, callers extract the
-        // pattern, then dispatch via `executeSQL`. Validate the
-        // describeEntity round-trip surfaces the expected pattern name.
+        // `describeEntity` is the round-trip under test — the MCP
+        // semantic toolset surfaces `query_patterns[*]` through the
+        // entity envelope. Asserting the named pattern is present in
+        // the response catches a regression in the entity loader's
+        // shape without coupling the eval to executeSQL semantics.
         const tool = "describeEntity";
         const args = { name: q.entity };
         const result = await client.callTool(tool, args);
@@ -674,10 +700,43 @@ describe("MCP path canonical eval (#2074)", () => {
         "runMetric",
         "searchGlossary",
       ]);
-      // Every tool must carry a description — the agent's tool-selection
-      // accuracy is gated by description quality.
+      // Description-quality floor — agent tool-selection accuracy is
+      // gated by description quality (full audit owned by #2075). Pin
+      // the cheap things now: descriptions exist, are long enough to
+      // carry intent + one usage hint, and the tools that surface a
+      // typed error envelope mention their error catalog so the agent
+      // can branch on `code`. A tool that drops to "Run a metric." or
+      // forgets to surface its error contract slips through #2075's
+      // backlog window otherwise.
+      const MIN_DESC_LEN = 40;
       for (const t of tools) {
-        expect(t.description, `tool ${t.name} missing description`).toBeTruthy();
+        const desc = t.description ?? "";
+        expect(desc.length, `tool ${t.name} description too short (${desc.length} < ${MIN_DESC_LEN}): ${JSON.stringify(desc)}`)
+          .toBeGreaterThanOrEqual(MIN_DESC_LEN);
+      }
+      // Every tool description should mention the error-envelope
+      // contract — `withErrorContract` (semantic-tools.ts) appends
+      // "Error contract:" to each description. A regression that drops
+      // the wrapper would degrade agent recovery silently.
+      for (const t of tools) {
+        const desc = t.description ?? "";
+        expect(desc, `tool ${t.name} missing 'Error contract:' line`).toContain("Error contract:");
+      }
+      // Tools that emit envelopes for `unknown_*` or `ambiguous_term`
+      // must mention those codes by name — pinning the recovery surface
+      // the agent reads.
+      const expectMentions: ReadonlyArray<readonly [string, readonly string[]]> = [
+        ["runMetric", ["unknown_metric", "validation_failed"]],
+        ["describeEntity", ["unknown_entity"]],
+        ["searchGlossary", ["ambiguous_term"]],
+      ];
+      for (const [name, codes] of expectMentions) {
+        const t = tools.find((x) => x.name === name);
+        expect(t, `tool ${name} missing from listTools()`).toBeTruthy();
+        for (const code of codes) {
+          expect(t!.description ?? "", `tool ${name} description does not mention error code "${code}"`)
+            .toContain(`\`${code}\``);
+        }
       }
     } finally {
       await client.close();

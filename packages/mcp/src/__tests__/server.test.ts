@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import { getRequestContext } from "@atlas/api/lib/logger";
 import pkg from "../../package.json" with { type: "json" };
 
 // Server tests inject the actor directly so they don't depend on
@@ -149,5 +150,39 @@ describe("MCP server integration", () => {
 
     await createAtlasMcpServer({ skipConfig: true, actor: TEST_ACTOR });
     expect(mockFn).not.toHaveBeenCalled();
+  });
+
+  // #2067 — hosted MCP threads `bindFactoryContext.clientId` →
+  // `createAtlasMcpServer({ clientId })` → `RequestContext.actor.clientId`
+  // → `audit_log.client_id`. The hosted-route plumbing is exercised in
+  // hosted.test.ts; this test pins the server-factory leg so a regression
+  // that drops the `clientId` field on `CreateMcpServerOptions` is caught
+  // even if hosted.ts continues to set `mcp_session.start.metadata.clientId`.
+  it("threads clientId from createAtlasMcpServer into RequestContext.actor", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    const { explore } = await import("@atlas/api/lib/tools/explore");
+    const exploreExecuteMock = explore.execute as ReturnType<typeof mock>;
+    exploreExecuteMock.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return "ok";
+    });
+
+    const server = await createAtlasMcpServer({
+      actor: TEST_ACTOR,
+      skipConfig: true,
+      clientId: "claude-desktop",
+    });
+    const client = new Client({ name: "test-client", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    await client.callTool({ name: "explore", arguments: { command: "ls" } });
+
+    expect(observed!.actor).toEqual({
+      kind: "mcp",
+      clientId: "claude-desktop",
+      toolName: "explore",
+    });
   });
 });

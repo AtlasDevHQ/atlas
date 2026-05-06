@@ -2,12 +2,10 @@ import { parseAsString, parseAsStringLiteral } from "nuqs"
 
 const auditTabs = ["log", "analytics", "retention"] as const
 
-// #2067 — `actorKind` matches the audit_log column shape. The empty
-// literal `""` represents the "All actors" default and is not a stored
-// row value. Keeping the parser as a string-literal union (rather than
-// a free `parseAsString`) keeps the URL bookmarkable + drift-safe: an
-// invalid `?actorKind=robot` reverts to "" instead of poisoning a SQL
-// `WHERE actor_kind = 'robot'` that would silently return 0 rows.
+// `actorKind` is parsed as a string-literal union so an invalid
+// `?actorKind=robot` reverts to "" — the route also rejects invalid
+// values with a 400, but the parser keeps a stale URL from issuing a
+// pointless round-trip. The empty literal represents "All actors".
 const actorKinds = ["", "human", "agent", "mcp", "scheduler"] as const
 
 export const auditSearchParams = {

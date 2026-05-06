@@ -49,9 +49,9 @@ function getContentText(content: unknown): string {
   return arr[0]?.text ?? "";
 }
 
-async function createTestClient(actor = TEST_ACTOR) {
+async function createTestClient(actor = TEST_ACTOR, clientId?: string) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
-  registerTools(server, { actor });
+  registerTools(server, { actor, ...(clientId ? { clientId } : {}) });
 
   const client = new Client({ name: "test-client", version: "0.0.1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -514,6 +514,60 @@ describe("MCP tools", () => {
 
     expect(observed).toBeDefined();
     expect(observed!.user?.id).toBe(TEST_ACTOR.id);
+  });
+
+  // #2067 — every tool dispatch must stamp `actor: { kind: "mcp", toolName }`
+  // on the request context so `audit_log.{actor_kind, tool_name}` is populated.
+  // A regression that drops the third arg from any single `withRequestContext`
+  // call would invisibly NULL out those columns for that tool — these tests
+  // pin the wrap shape per dispatch site.
+  it("executeSQL stamps actor: mcp + toolName on RequestContext", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExecuteSQLExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return { success: true, explanation: "noop", row_count: 0, columns: [], rows: [] };
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "actor probe" },
+    });
+
+    expect(observed!.actor).toEqual({ kind: "mcp", toolName: "executeSQL" });
+  });
+
+  it("explore stamps actor: mcp + toolName on RequestContext", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExploreExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return "ls output";
+    });
+
+    const { client } = await createTestClient();
+    await client.callTool({ name: "explore", arguments: { command: "ls" } });
+
+    expect(observed!.actor).toEqual({ kind: "mcp", toolName: "explore" });
+  });
+
+  it("threads clientId through registerTools into RequestContext.actor", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExecuteSQLExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return { success: true, explanation: "noop", row_count: 0, columns: [], rows: [] };
+    });
+
+    const { client } = await createTestClient(TEST_ACTOR, "claude-desktop");
+    await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "clientId probe" },
+    });
+
+    expect(observed!.actor).toEqual({
+      kind: "mcp",
+      clientId: "claude-desktop",
+      toolName: "executeSQL",
+    });
   });
 
 });

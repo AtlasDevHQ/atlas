@@ -1,28 +1,18 @@
 "use client";
 
 /**
- * Audit-log filter bar (#2067).
+ * Audit-log filter bar — actor discriminator + MCP-only follow-ups.
  *
- * Renders the `actorKind` discriminator dropdown + the MCP-only
- * `clientId` and `tool` follow-up fields. Lifted out of `audit/page.tsx`
- * so the discriminated-union UI is independently testable — the page
- * is too dense (600 LOC of stat cards, tabs, retention panel) to mount
- * end-to-end just to verify "Actor=MCP reveals two extra fields".
+ * Pure controlled component. URL state lives in the parent's
+ * `useQueryStates(auditSearchParams)`; we never read or write `nuqs`
+ * directly so the filter bar can be reused under a different state
+ * container if the audit page ever splits.
  *
- * Contract:
- *   - Pure controlled component. URL state lives in the parent's
- *     `useQueryStates(auditSearchParams)`; we never read or write
- *     `nuqs` directly so the filter bar can be reused under a
- *     different state container if the audit page ever splits.
- *   - The MCP follow-ups (`clientId`, `tool`) are revealed only when
- *     `actorKind === "mcp"`. Switching away clears both fields so the
- *     URL doesn't carry stale `?clientId=` after the user picks
- *     "Human" — that drift was the source of #2067's "filter says
- *     MCP-only but rows look like web traffic" confusion.
- *   - `clientOptions` may be empty (no DCR clients yet, or fetch
- *     failed). When empty we fall back to a free-text input so an
- *     admin can paste a known client_id manually rather than be
- *     blocked.
+ * Switching `actorKind` away from `mcp` clears the follow-ups so a
+ * stale `?clientId=` doesn't keep filtering after the dropdown shows
+ * a non-MCP actor. `clientOptions` may be empty (no DCR clients yet,
+ * or fetch failed) — the component falls back to a free-text input
+ * so an admin pasting a known client_id is never blocked.
  */
 
 import type { ReactElement } from "react";
@@ -73,6 +63,23 @@ export interface AuditFilterBarProps {
 
 const ALL_SENTINEL = "__all__";
 
+/**
+ * Compute the next URL-state patch when the actor dropdown changes.
+ * Pulled out as a pure function so the load-bearing "switch away from
+ * MCP clears the follow-ups" branch is unit-testable without driving
+ * Radix Select internals through jsdom.
+ */
+export function actorKindUpdate(
+  next: ActorKindFilter,
+  currentClientId: string,
+  currentTool: string,
+): { actorKind?: ActorKindFilter; clientId?: string; tool?: string } {
+  if (next !== "mcp" && (currentClientId || currentTool)) {
+    return { actorKind: next, clientId: "", tool: "" };
+  }
+  return { actorKind: next };
+}
+
 export function AuditFilterBar({
   actorKind,
   clientId,
@@ -86,15 +93,7 @@ export function AuditFilterBar({
         value={actorKind || ALL_SENTINEL}
         onValueChange={(v) => {
           const next = v === ALL_SENTINEL ? "" : (v as ActorKindFilter);
-          // Switching away from MCP clears the follow-ups so a stale
-          // `?clientId=claude-desktop` doesn't keep filtering when the
-          // dropdown reads "Human". Mirrors the audit page's existing
-          // clearFilters affordance — surgical, not a full reset.
-          if (next !== "mcp" && (clientId || tool)) {
-            onChange({ actorKind: next, clientId: "", tool: "" });
-          } else {
-            onChange({ actorKind: next });
-          }
+          onChange(actorKindUpdate(next, clientId, tool));
         }}
       >
         <SelectTrigger className="h-9 w-32" aria-label="Filter by actor">

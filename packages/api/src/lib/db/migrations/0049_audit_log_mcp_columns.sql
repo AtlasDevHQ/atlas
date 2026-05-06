@@ -28,15 +28,22 @@
 -- without bloating writes for the NULL-actor_kind majority. Partial
 -- WHERE clause keeps the index from indexing every legacy row.
 --
--- We deliberately do NOT add a CHECK constraint on actor_kind. The
--- value set evolves (Slack/Teams writers landing in later milestones
--- will append more discriminators); a CHECK constraint would force
--- a migration on every addition with no governance benefit.
+-- CHECK constraint pins actor_kind to the canonical four values (plus
+-- NULL for legacy / non-attributed rows). When a future writer needs a
+-- new kind, the migration is a one-line ALTER — the cost of a CHECK
+-- here (catching typos like 'mpc' before they pollute the table) beats
+-- silent-zero-rows in the admin filter when nobody notices.
 
 ALTER TABLE audit_log
   ADD COLUMN IF NOT EXISTS actor_kind TEXT,
   ADD COLUMN IF NOT EXISTS client_id  TEXT,
   ADD COLUMN IF NOT EXISTS tool_name  TEXT;
+
+DO $$ BEGIN
+  ALTER TABLE audit_log
+    ADD CONSTRAINT chk_audit_log_actor_kind
+    CHECK (actor_kind IS NULL OR actor_kind IN ('human', 'agent', 'mcp', 'scheduler'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_org_actor_ts
   ON audit_log (org_id, actor_kind, timestamp DESC)

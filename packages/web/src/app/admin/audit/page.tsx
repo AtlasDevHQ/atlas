@@ -125,14 +125,17 @@ export default function AuditPage() {
     { schema: AuditFacetsSchema },
   );
 
-  // OAuth clients for the MCP actor's clientId dropdown (#2067).
-  // Fetched lazily — useAdminFetch streams in parallel with the audit
-  // list. If this fails the filter bar falls back to a free-text input
-  // so an admin pasting a known client_id is never blocked.
-  const { data: oauthClientsData } = useAdminFetch(
+  // OAuth clients for the MCP `clientId` dropdown; the filter bar
+  // falls back to free text if the fetch fails.
+  const { data: oauthClientsData, error: oauthClientsError } = useAdminFetch(
     "/api/v1/admin/oauth-clients",
     { schema: AuditOAuthClientsSchema },
   );
+  if (oauthClientsError && !oauthClientsError.status) {
+    // Mirror the facetsError pattern: log transient failures so devs
+    // can diagnose why the dropdown collapsed to a text input.
+    console.warn("Audit OAuth-clients fetch failed:", oauthClientsError.message);
+  }
   const oauthClients = oauthClientsData?.clients ?? [];
   if (facetsError && !facetsError.status) {
     // Log client-side so devs can diagnose why dropdowns fell back to text inputs

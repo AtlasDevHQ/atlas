@@ -1269,10 +1269,12 @@ describe("GET /api/v1/admin/audit", () => {
     // Org-scoped predicate must remain $1 — a malicious caller adding
     // ?actorKind=mcp must not be able to see another org's MCP rows.
     setOrgAdmin("org-other");
+    let capturedSql = "";
     let capturedParams: unknown[] = [];
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
       if (sql.includes("ip_allowlist")) return Promise.resolve([]);
-      if (!capturedParams.length && sql.includes("audit_log")) {
+      if (!capturedSql && sql.includes("audit_log") && sql.includes("actor_kind")) {
+        capturedSql = sql;
         capturedParams = params ?? [];
       }
       if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
@@ -1283,6 +1285,18 @@ describe("GET /api/v1/admin/audit", () => {
 
     expect(capturedParams[0]).toBe("org-other");
     expect(capturedParams).toContain("mcp");
+    // Pin the AND-junction between org_id and the MCP filter so a
+    // future regression that uses OR (or drops the AND entirely) is
+    // caught at compile-of-SQL time, not at "why is data leaking?"
+    expect(capturedSql).toMatch(/a\.org_id = \$1\s+AND\s+/);
+  });
+
+  it("returns 400 for an actorKind value outside the canonical set", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/audit?actorKind=robot"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("invalid_request");
+    expect(body.message).toContain("actorKind");
   });
 
   it("returns 500 when internalQuery throws", async () => {

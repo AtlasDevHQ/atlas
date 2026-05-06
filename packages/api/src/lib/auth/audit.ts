@@ -42,9 +42,13 @@ export function logQueryAudit(entry: AuditEntry): void {
   const userId = ctx?.user?.id ?? null;
   const userLabel = ctx?.user?.label ?? null;
   const authMode = ctx?.user?.mode ?? "none";
-  const actorKind = ctx?.actor?.kind ?? null;
-  const clientId = ctx?.actor?.clientId ?? null;
-  const toolName = ctx?.actor?.toolName ?? null;
+  const actor = ctx?.actor;
+  const actorKind = actor?.kind ?? null;
+  // The mcp branch is the only one carrying clientId / toolName — the
+  // discriminated union in `lib/logger.ts` makes this guard a type
+  // narrow rather than an ad-hoc truthy check.
+  const clientId = actor?.kind === "mcp" ? actor.clientId ?? null : null;
+  const toolName = actor?.kind === "mcp" ? actor.toolName : null;
   const scrubbedError = scrubError(entry.success ? undefined : entry.error);
 
   // Always log to pino (SQL truncated to 500 chars)

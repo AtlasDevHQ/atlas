@@ -15,7 +15,7 @@
 
 import { describe, expect, test, mock } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
-import { AuditFilterBar } from "../components/admin/audit/filter-bar";
+import { AuditFilterBar, actorKindUpdate } from "../components/admin/audit/filter-bar";
 
 function noop() {}
 
@@ -118,5 +118,38 @@ describe("AuditFilterBar", () => {
     fireEvent.change(input, { target: { value: "custom-dcr-uuid" } });
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange.mock.calls[0]![0]).toEqual({ clientId: "custom-dcr-uuid" });
+  });
+});
+
+// `actorKindUpdate` is the pure decision function the Select trigger calls.
+// Driving Radix Select through jsdom is fragile, so the load-bearing
+// "switch away from MCP clears the follow-ups" branch is exercised via
+// the helper directly. A regression that flattens the branch (e.g.
+// always emitting `{ actorKind: next }`) fails these tests.
+describe("actorKindUpdate", () => {
+  test("clears clientId + tool when switching away from MCP with stale follow-ups", () => {
+    expect(actorKindUpdate("human", "claude-desktop", "runMetric")).toEqual({
+      actorKind: "human",
+      clientId: "",
+      tool: "",
+    });
+  });
+
+  test("emits only actorKind when follow-ups are already empty", () => {
+    expect(actorKindUpdate("human", "", "")).toEqual({ actorKind: "human" });
+  });
+
+  test("does NOT clear when staying on MCP (e.g. MCP→MCP no-op)", () => {
+    expect(actorKindUpdate("mcp", "claude-desktop", "runMetric")).toEqual({
+      actorKind: "mcp",
+    });
+  });
+
+  test("clears when switching to the empty 'All actors' value", () => {
+    expect(actorKindUpdate("", "claude-desktop", "")).toEqual({
+      actorKind: "",
+      clientId: "",
+      tool: "",
+    });
   });
 });

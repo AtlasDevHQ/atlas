@@ -126,4 +126,24 @@ describe("buildAuditFilters", () => {
     expect(result.status).toBe(400);
     expect(result.error).toBe("invalid_request");
   });
+
+  it("rejects actorKind values outside the canonical set with a 400", () => {
+    // Whitelist enforcement — typo'd values like 'mpc' must not silently
+    // produce a `WHERE actor_kind = 'mpc'` zero-row match.
+    const result = buildAuditFilters("org-1", reader({ actorKind: "robot" }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(400);
+    expect(result.error).toBe("invalid_request");
+    expect(result.message).toContain("actorKind");
+  });
+
+  it("accepts every canonical actorKind value", () => {
+    for (const kind of ["human", "agent", "mcp", "scheduler"] as const) {
+      const result = buildAuditFilters("org-1", reader({ actorKind: kind }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.params).toContain(kind);
+    }
+  });
 });

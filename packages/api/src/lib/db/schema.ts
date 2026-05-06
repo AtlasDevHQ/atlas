@@ -73,6 +73,7 @@ export const auditLog = pgTable(
     index("idx_audit_log_org_actor_ts").on(t.orgId, t.actorKind, t.timestamp.desc())
       .where(sql`actor_kind IS NOT NULL`),
     index("idx_audit_log_client_id").on(t.clientId).where(sql`client_id IS NOT NULL`),
+    check("chk_audit_log_actor_kind", sql`actor_kind IS NULL OR actor_kind IN ('human', 'agent', 'mcp', 'scheduler')`),
   ],
 );
 

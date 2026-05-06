@@ -25,3 +25,29 @@
  */
 export const ATLAS_OAUTH_WORKSPACE_CLAIM =
   "https://atlas.useatlas.dev/workspace_id";
+
+/**
+ * Read the active workspace id off a Better Auth session. The
+ * `activeOrganizationId` field is contributed by the organization
+ * plugin and is not part of the base session type the `oauthProvider`
+ * hooks see — every consumer either casts inline or calls this helper.
+ *
+ * Returns `undefined` when the session has no active workspace OR the
+ * field is empty: a token issued without a real workspace binding must
+ * not carry the URN claim, and the empty string is never a valid
+ * workspace identifier downstream.
+ *
+ * Three sites read this:
+ *   1. `oauthProvider.clientReference` — DCR client ownership.
+ *   2. `oauthProvider.postLogin.consentReferenceId` — the value
+ *      stamped onto issued JWTs as the workspace claim.
+ *   3. The canonical MCP eval's parallel `oauthProvider` config — so
+ *      the eval and production share one source of truth and a
+ *      regression in one site shows up in the other.
+ */
+export function readActiveOrgId(
+  session: { activeOrganizationId?: string | null } | null | undefined,
+): string | undefined {
+  const orgId = session?.activeOrganizationId;
+  return typeof orgId === "string" && orgId.length > 0 ? orgId : undefined;
+}

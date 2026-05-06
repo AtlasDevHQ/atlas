@@ -22,7 +22,7 @@ import { passkey } from "@better-auth/passkey";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import { oauthProvider } from "@better-auth/oauth-provider";
-import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
+import { ATLAS_OAUTH_WORKSPACE_CLAIM, readActiveOrgId } from "@atlas/api/lib/auth/oauth-claims";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
@@ -814,16 +814,36 @@ function buildPlugins() {
       // that doc in lockstep with the defaults above.
       accessTokenExpiresIn: resolveAccessTokenTtlSeconds(process.env),
       refreshTokenExpiresIn: resolveRefreshTokenTtlSeconds(process.env),
-      // Bind issued tokens to the authenticating user's active workspace
-      // so a token issued under workspace A cannot query workspace B's
-      // data through the hosted MCP endpoint. The cast is required
-      // because Better Auth's session-organization extension is
-      // contributed by the organization plugin and isn't part of the
-      // base session type the oauthProvider sees.
-      clientReference: ({ session }) => {
-        const orgId = (session as { activeOrganizationId?: string | null } | null | undefined)
-          ?.activeOrganizationId;
-        return typeof orgId === "string" ? orgId : undefined;
+      // Tag the registered DCR client with the workspace it belongs to.
+      // `clientReference` controls *ownership* of the OAuth client row
+      // (used by /list, /delete, /update endpoints to filter "rows for
+      // this workspace") — it does NOT propagate onto issued tokens.
+      // `readActiveOrgId` (oauth-claims.ts) is the shared reader so
+      // production and the canonical MCP eval can't drift on what
+      // counts as a valid workspace binding (e.g. empty-string
+      // handling).
+      clientReference: ({ session }) =>
+        readActiveOrgId(session as Parameters<typeof readActiveOrgId>[0]),
+      // The `referenceId` parameter that `customAccessTokenClaims`
+      // receives is whatever `postLogin.consentReferenceId` returned
+      // at authorize time — `clientReference` only governs DCR client
+      // ownership, not token claims. Without this hook, `referenceId`
+      // is always undefined, `customAccessTokenClaims` short-circuits
+      // to `{}`, and every issued JWT is rejected at the MCP edge with
+      // `missing_workspace_claim`. See #2124 for the gap this closes
+      // and `customAccessTokenClaims` below for the consuming half.
+      //
+      // `shouldRedirect: () => false` is what skips the post-login
+      // interstitial — Atlas binds tokens to the session's already-
+      // active workspace (organization plugin tracks one active org
+      // per session) so the user has no further selection to make.
+      // The `page` field is required by Better Auth's options shape
+      // but is never navigated to under this `shouldRedirect` value.
+      postLogin: {
+        page: "/oauth2/post-login",
+        consentReferenceId: async ({ session }) =>
+          readActiveOrgId(session as Parameters<typeof readActiveOrgId>[0]),
+        shouldRedirect: () => false,
       },
       // Stamp the workspace id onto access tokens issued under a
       // session that carries an active workspace. Tokens issued without
@@ -834,6 +854,8 @@ function buildPlugins() {
       // Claim key is sourced from `oauth-claims.ts` so production
       // issuance, MCP verification, and the test fixture share one
       // literal — drift between sites silently breaks every token.
+      // The `referenceId` argument here is sourced from `postLogin.
+      // consentReferenceId` above — see that hook for why.
       customAccessTokenClaims: ({ referenceId }) => {
         return referenceId
           ? { [ATLAS_OAUTH_WORKSPACE_CLAIM]: referenceId }

@@ -15,7 +15,9 @@
  *   bun runtime → @modelcontextprotocol/sdk Client
  *               → StreamableHTTPClientTransport
  *               → Hono route /mcp/{workspace}/sse
- *               → verifyAccessToken (mocked — see Phase 2 below)
+ *               → verifyAccessToken (REAL — Phase 2 wires up an
+ *                  in-process Better Auth instance + JWKS, so the
+ *                  bearer goes through real signature verification)
  *               → tools/list, tools/call, prompts/list
  *               → semantic-layer reads (REAL — `findMetricById`,
  *                  `searchGlossary`, `getEntityByName`)
@@ -25,20 +27,25 @@
  *
  * ── Phase split ─────────────────────────────────────────────────────
  *
- * Phase 1 (this file):
- *   - Mocks `verifyAccessToken` so we don't need a real OAuth server.
- *   - Mocks `executeSQL.execute` so we don't need a real Postgres pool +
- *     migrated internal DB. Real SQL execution is covered by the
- *     existing deterministic eval.
- *   - Real semantic-layer reads.
- *   - Asserts on protocol shape, tool dispatch, envelope codes, prompts
- *     list shape, and concurrent-session behavior.
+ * Phase 1 (#2074, PR #2120):
+ *   - Mocked `verifyAccessToken` so the eval did not need a real OAuth
+ *     server. Asserted on protocol shape, tool dispatch, envelope codes,
+ *     prompts list shape, and concurrent-session behavior.
  *
- * Phase 2 (#2119):
- *   - Real DCR + PKCE flow against an in-process Better Auth instance —
- *     covers the JWT signature path the verifier mock currently hides.
- *   - `--mcp-llm` mode where an LLM picks tools through MCP — validates
- *     tool-selection accuracy and recovery contract under prose drift.
+ * Phase 2 (#2119, this file's update):
+ *   - Drops the `verifyAccessToken` mock. Boots an in-process Better
+ *     Auth instance (`canonical-mcp-auth.ts`) with the same `jwt()` +
+ *     `oauthProvider()` plugins production uses, drives the real OAuth
+ *     2.1 loopback flow via `runHostedAuthFlow` test seams, and uses
+ *     the issued bearer JWT for every dispatch. The JWKS path is
+ *     exercised end-to-end so a regression in signature verification,
+ *     audience matching, or issuer matching now fails this eval.
+ *   - Mocks `executeSQL.execute` (unchanged). SQL correctness is owned
+ *     by the existing deterministic eval; this eval validates the MCP
+ *     envelope wrapping.
+ *   - The next phase (#2119 Part B / a follow-up issue) lands the
+ *     `--mcp-llm` mode where an LLM picks tools through MCP — validates
+ *     tool-selection accuracy under prose drift.
  *
  * ── Stress mode ─────────────────────────────────────────────────────
  *
@@ -57,12 +64,10 @@ import {
   afterAll,
   afterEach,
   mock,
-  type Mock,
 } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import type { AdminActionEntry } from "@atlas/api/lib/audit";
-import { ATLAS_OAUTH_WORKSPACE_CLAIM as WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 // Pure runner core lives in @atlas/cli — relative path because the cli
 // package doesn't ship an `exports` map. The functions we need
 // (`loadQuestions`, `DEFAULT_QUESTIONS_PATH`) are pure and DB-free.
@@ -77,111 +82,16 @@ import {
   type FailureCategory,
   type McpFailureArtifact,
 } from "./canonical-mcp-failure-artifact";
+import { startEvalAuthServer, type EvalAuthFixture } from "./canonical-mcp-auth";
 
 // ── Module mocks ───────────────────────────────────────────────────
 //
-// Shapes mirror `packages/mcp/src/__tests__/hosted.test.ts`. Every
-// named export is stubbed (CLAUDE.md rule — partial mocks leak).
-
-interface FakeJwtPayload {
-  sub: string;
-  jti?: string;
-  azp?: string;
-  scope?: string;
-  aud?: string | string[];
-  iss?: string;
-  exp?: number;
-  iat?: number;
-  [WORKSPACE_CLAIM]?: string;
-}
-
-const mockVerifyAccessToken: Mock<
-  (token: string, opts: unknown) => Promise<FakeJwtPayload>
-> = mock(async () => {
-  throw new Error("verifyAccessToken called without a stub");
-});
-
-mock.module("better-auth/oauth2", () => ({
-  verifyAccessToken: (token: string, opts: unknown) =>
-    mockVerifyAccessToken(token, opts),
-  authorizationCodeRequest: () => {
-    throw new Error("authorizationCodeRequest called from mcp-eval");
-  },
-  clientCredentialsToken: () => {
-    throw new Error("clientCredentialsToken called from mcp-eval");
-  },
-  clientCredentialsTokenRequest: () => {
-    throw new Error("clientCredentialsTokenRequest called from mcp-eval");
-  },
-  createAuthorizationCodeRequest: () => {
-    throw new Error("createAuthorizationCodeRequest called from mcp-eval");
-  },
-  createAuthorizationURL: () => {
-    throw new Error("createAuthorizationURL called from mcp-eval");
-  },
-  createClientCredentialsTokenRequest: () => {
-    throw new Error("createClientCredentialsTokenRequest called from mcp-eval");
-  },
-  createRefreshAccessTokenRequest: () => {
-    throw new Error("createRefreshAccessTokenRequest called from mcp-eval");
-  },
-  decryptOAuthToken: () => {
-    throw new Error("decryptOAuthToken called from mcp-eval");
-  },
-  generateCodeChallenge: () => {
-    throw new Error("generateCodeChallenge called from mcp-eval");
-  },
-  generateState: () => {
-    throw new Error("generateState called from mcp-eval");
-  },
-  getJwks: () => {
-    throw new Error("getJwks called from mcp-eval");
-  },
-  getOAuth2Tokens: () => {
-    throw new Error("getOAuth2Tokens called from mcp-eval");
-  },
-  handleOAuthUserInfo: () => {
-    throw new Error("handleOAuthUserInfo called from mcp-eval");
-  },
-  parseState: () => {
-    throw new Error("parseState called from mcp-eval");
-  },
-  refreshAccessToken: () => {
-    throw new Error("refreshAccessToken called from mcp-eval");
-  },
-  refreshAccessTokenRequest: () => {
-    throw new Error("refreshAccessTokenRequest called from mcp-eval");
-  },
-  setTokenUtil: () => {
-    throw new Error("setTokenUtil called from mcp-eval");
-  },
-  validateAuthorizationCode: () => {
-    throw new Error("validateAuthorizationCode called from mcp-eval");
-  },
-  validateToken: () => {
-    throw new Error("validateToken called from mcp-eval");
-  },
-  verifyJwsAccessToken: () => {
-    throw new Error("verifyJwsAccessToken called from mcp-eval");
-  },
-}));
-
-// `db/internal` is touched by the route (residency check) and by audit.
-mock.module("@atlas/api/lib/db/internal", () => {
-  const notUsed = (name: string) => () => {
-    throw new Error(`db/internal.${name} called from mcp-eval — add a mock`);
-  };
-  return {
-    getWorkspaceRegion: async () => null,
-    hasInternalDB: () => false,
-    internalQuery: notUsed("internalQuery"),
-    internalExecute: notUsed("internalExecute"),
-    getInternalDB: notUsed("getInternalDB"),
-    assignWorkspaceRegion: notUsed("assignWorkspaceRegion"),
-    isWorkspaceMigrating: async () => false,
-    closeInternalDB: async () => undefined,
-  };
-});
+// Phase 2 dropped the `verifyAccessToken` mock — the bearer is real.
+// `db/internal` is also no longer mocked: with `DATABASE_URL` unset,
+// the real module's `hasInternalDB()` returns false and every query
+// short-circuits to a benign default. CLAUDE.md's "mock every named
+// export" rule made the prior partial mock fragile (it leaked
+// `insertLearnedPattern` etc. into sibling files).
 
 // Audit emission is observability-only for the eval. Drop to in-memory.
 const auditEntries: AdminActionEntry[] = [];
@@ -285,17 +195,13 @@ const SEED_SEMANTIC_DIR = path.join(
 );
 const SEMANTIC_BACKUP_DIR = path.join(REPO_ROOT, ".semantic-backup-mcp-eval");
 
-const ORG_ID = "org_canonical_eval";
-const SUB_ID = "user_canonical_eval";
-const CLIENT_ID = "atlas-canonical-mcp-eval";
-const TOKEN = "fake.canonical.eval.token";
+// Phase 2 — workspace id, user id, and bearer all come from the real
+// OAuth flow. These constants are populated in `beforeAll` after the
+// auth fixture boots; the `let` on the fixture itself stays nullable
+// so tests fail fast (with the assertion message) rather than silently
+// dispatching with stale values.
 
-interface ServerHandle {
-  url: string;
-  close: () => void;
-}
-
-let server: ServerHandle | undefined;
+let authFixture: EvalAuthFixture | undefined;
 
 beforeAll(async () => {
   // Stage the demo semantic layer — same dance the deterministic eval
@@ -337,45 +243,22 @@ beforeAll(async () => {
     throw err;
   }
 
-  // Bind the test bearer to a workspace-scoped JWT payload.
-  mockVerifyAccessToken.mockImplementation(async (token: string) => {
-    if (token === TOKEN) {
-      return {
-        sub: SUB_ID,
-        jti: "jti_canonical",
-        azp: CLIENT_ID,
-        scope: "openid mcp:read",
-        [WORKSPACE_CLAIM]: ORG_ID,
-      } satisfies FakeJwtPayload;
-    }
-    throw new Error(`Unknown token in mcp-eval: ${token}`);
-  });
-
-  // Boot the real router on a random port. We do this once and share
-  // the address across every `it` so the prompts/list, tools/list, and
-  // per-question dispatches all hit the same in-process server.
+  // Boot the real router AND the in-process Better Auth instance on the
+  // same `Bun.serve` port. The MCP route's bearer middleware reads the
+  // request origin to resolve issuer/audience/JWKS — so auth and MCP
+  // MUST share a port (we cannot mount auth on a different host or the
+  // route's `tokenIssuer(req)` would resolve a different origin and
+  // every dispatch would 401 with `invalid_bearer`).
   const { Hono } = await import("hono");
   const { createHostedMcpRouter } = await import("@atlas/mcp/hosted");
-  const app = new Hono();
-  app.route("/mcp", createHostedMcpRouter());
-  const handle = Bun.serve({
-    port: 0,
-    idleTimeout: 0,
-    fetch: app.fetch,
-  });
-  if (typeof handle.port !== "number") {
-    handle.stop(true);
-    throw new Error("Bun.serve did not bind a TCP port for the MCP eval");
-  }
-  server = {
-    url: `http://localhost:${handle.port}`,
-    close: () => handle.stop(true),
-  };
+  const mcpRouter = new Hono();
+  mcpRouter.route("/", createHostedMcpRouter());
+  authFixture = await startEvalAuthServer({ mcpRouter });
 });
 
 afterAll(async () => {
-  server?.close();
-  server = undefined;
+  authFixture?.close();
+  authFixture = undefined;
   const { _resetHostedSessions } = await import("@atlas/mcp/hosted");
   await _resetHostedSessions();
 
@@ -414,11 +297,11 @@ afterEach(async () => {
 });
 
 function newClient(): EvalMcpClient {
-  if (!server) throw new Error("MCP eval server not started");
+  if (!authFixture) throw new Error("MCP eval server not started");
   return new EvalMcpClient({
-    baseUrl: server.url,
-    workspaceId: ORG_ID,
-    bearer: TOKEN,
+    baseUrl: authFixture.baseUrl,
+    workspaceId: authFixture.workspaceId,
+    bearer: authFixture.bearer,
   });
 }
 

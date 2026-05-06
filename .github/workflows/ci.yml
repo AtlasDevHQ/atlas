@@ -86,6 +86,13 @@ jobs:
       - name: Test (non-api packages)
         run: bun run test:others
 
+      # E2E integration tier — contract tests that pin protocol-level
+      # invariants across packages (e.g. MCP multi-replica session
+      # locality, #2069). Runs in-process via mock.module(), no Docker
+      # services needed.
+      - name: Test (e2e integration tier)
+        run: bun run test:e2e:integration
+
   api-tests:
     name: api-tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest

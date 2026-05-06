@@ -271,6 +271,19 @@ try {
   );
 }
 
+// Per-user OAuth-clients management (#2065). Workspace users (non-admin)
+// list and self-revoke clients THEY personally registered through the
+// hosted MCP install path. Admin variant lives under /api/v1/admin/oauth-clients.
+try {
+  const { meOauthClients } = await import("./routes/me-oauth-clients");
+  app.route("/api/v1/me/oauth-clients", meOauthClients);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load me-oauth-clients routes — Settings → AI Agents will be unavailable",
+  );
+}
+
 // Admin routes — always available (auth-gated to admin role).
 // Wrapped in try/catch so a missing dependency (e.g. js-yaml) doesn't crash the entire server.
 try {

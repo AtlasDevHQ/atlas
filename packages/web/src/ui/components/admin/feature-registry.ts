@@ -21,6 +21,7 @@ export const FEATURE_NAMES = [
   "Activate workspace",
   "Admin Action Log",
   "Admin Action Retention",
+  "AI Agents",
   "AI Model",
   "AI Provider",
   "API Keys",

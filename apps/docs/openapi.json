@@ -14476,6 +14476,297 @@
         "operationId": "deleteSessionsById"
       }
     },
+    "/api/v1/me/oauth-clients": {
+      "get": {
+        "tags": [
+          "Me — OAuth Clients"
+        ],
+        "summary": "List your connected AI agents",
+        "description": "Returns OAuth 2.1 clients (e.g. Claude Desktop, ChatGPT, Cursor) that the calling user personally registered against the active workspace, with last-use timestamp and outstanding token count. The admin variant (`/api/v1/admin/oauth-clients`) surfaces the workspace-wide set. Includes the resolved `deployMode` so the UI can gate the connect-new-agent flow to SaaS.",
+        "responses": {
+          "200": {
+            "description": "OAuth client list + deploy mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "clients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "clientId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "clientName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "redirectUris": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "uri"
+                            }
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "disabled": {
+                            "type": "boolean"
+                          },
+                          "type": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "lastUsedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "tokenCount": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "clientId",
+                          "clientName",
+                          "redirectUris",
+                          "createdAt",
+                          "updatedAt",
+                          "disabled",
+                          "type",
+                          "lastUsedAt",
+                          "tokenCount"
+                        ]
+                      }
+                    },
+                    "deployMode": {
+                      "type": "string",
+                      "enum": [
+                        "self-hosted",
+                        "saas"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "clients",
+                    "deployMode"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getMeOauthClients"
+      }
+    },
+    "/api/v1/me/oauth-clients/{id}/revoke": {
+      "post": {
+        "tags": [
+          "Me — OAuth Clients"
+        ],
+        "summary": "Revoke one of your connected AI agents",
+        "description": "Atomically deletes the OAuth client and every outstanding access token, refresh token, and consent record for that (client, user) pair. Cross-user isolation: a foreign client returns 404 — the caller cannot revoke another user's client.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "example": "claude-desktop"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "tokensRevoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "tokensRevoked"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Client not found for this user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postMeOauthClientsByIdRevoke"
+      }
+    },
     "/api/v1/admin/organizations": {
       "get": {
         "tags": [
@@ -64364,6 +64655,9 @@
     },
     {
       "name": "Health"
+    },
+    {
+      "name": "Me — OAuth Clients"
     },
     {
       "name": "Mode"

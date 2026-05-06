@@ -17,7 +17,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { GoogleIcon, GitHubIcon, MicrosoftIcon } from "@/ui/components/social-icons";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
-import { ResendVerificationButton } from "@/ui/components/auth/resend-verification-button";
+import { VerifyEmailOTPForm } from "@/ui/components/auth/verify-email-otp-form";
 import { MailCheck } from "lucide-react";
 
 function getApiBase(): string {
@@ -72,21 +72,18 @@ export default function SignupPage() {
         email,
         password,
         name: name || email.split("@")[0],
-        // After verification, Better Auth's `autoSignInAfterVerification`
-        // sets the session and 302s here — landing the user on the next
-        // step of the wizard with auth in place.
-        callbackURL: "/signup/workspace",
       });
       if (res.error) {
         setError(res.error.message ?? "Sign up failed");
         return;
       }
-      // If verification is required server-side (`requireEmailVerification:
-      // true`), Better Auth omits the session token from the signup
-      // response. Detect that via `data.token` rather than environment
-      // probes — the response is the source of truth and works in both
-      // managed-SaaS (verification on) and self-hosted-dev (verification
-      // off, autoSignIn on) deployments without a config branch.
+      // When verification is required server-side, Better Auth omits the
+      // session token from the signup response and the emailOTP plugin's
+      // `sendVerificationOnSignUp: true` has already dispatched the OTP.
+      // Switch to the OTP entry view; the form will land the user back on
+      // /signup/workspace once the code is verified (session is established
+      // as part of the verify call). When verification is off (self-hosted
+      // dev), the response carries a token and we can push directly.
       const token = (res.data as { token?: string | null } | undefined)?.token;
       if (token) {
         router.push("/signup/workspace");
@@ -131,24 +128,19 @@ export default function SignupPage() {
             <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
               <MailCheck className="size-6" aria-hidden="true" />
             </div>
-            <CardTitle className="text-2xl tracking-tight">Check your inbox</CardTitle>
+            <CardTitle className="text-2xl tracking-tight">Enter your code</CardTitle>
             <CardDescription>
-              We sent a verification link to{" "}
+              We sent an 8-character code to{" "}
               <span className="font-medium text-foreground">{pendingEmail}</span>.
-              Open it to activate your account — we&apos;ll bring you straight to the next step.
+              It&apos;s good for the next 10 minutes.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3 text-center">
-            <p className="text-xs text-muted-foreground">
-              Wrong email or didn&apos;t see it?
-            </p>
-            <div className="flex items-center justify-center">
-              <ResendVerificationButton
-                email={pendingEmail}
-                callbackURL="/signup/workspace"
-              />
-            </div>
-            <p className="text-xs text-muted-foreground">
+          <CardContent className="space-y-4">
+            <VerifyEmailOTPForm
+              email={pendingEmail}
+              onVerified={() => router.push("/signup/workspace")}
+            />
+            <p className="text-center text-xs text-muted-foreground">
               <button
                 type="button"
                 onClick={() => setPendingEmail(null)}

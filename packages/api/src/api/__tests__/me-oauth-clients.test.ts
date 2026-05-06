@@ -190,6 +190,8 @@ describe("me oauth-clients — GET /me/oauth-clients", () => {
               type: "public",
               lastUsedAt: "2026-05-01T15:30:00.000Z",
               tokenCount: "3",
+              liveTokenCount: "3",
+              liveRefreshCount: "1",
             },
           ];
         }

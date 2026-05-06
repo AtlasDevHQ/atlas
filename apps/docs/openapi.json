@@ -14540,6 +14540,14 @@
                           "tokenCount": {
                             "type": "integer",
                             "minimum": 0
+                          },
+                          "tokenState": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "reconnect_required",
+                              "revoked"
+                            ]
                           }
                         },
                         "required": [
@@ -14551,7 +14559,8 @@
                           "disabled",
                           "type",
                           "lastUsedAt",
-                          "tokenCount"
+                          "tokenCount",
+                          "tokenState"
                         ]
                       }
                     },
@@ -44026,6 +44035,14 @@
                           "tokenCount": {
                             "type": "integer",
                             "minimum": 0
+                          },
+                          "tokenState": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "reconnect_required",
+                              "revoked"
+                            ]
                           }
                         },
                         "required": [
@@ -44037,7 +44054,8 @@
                           "disabled",
                           "type",
                           "lastUsedAt",
-                          "tokenCount"
+                          "tokenCount",
+                          "tokenState"
                         ]
                       }
                     }

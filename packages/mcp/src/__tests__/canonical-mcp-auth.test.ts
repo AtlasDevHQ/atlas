@@ -11,20 +11,17 @@
  * BEFORE the evalspec in alphabetical order (auth.test < eval.evalspec)
  * so a regression in the helper trips here first with a precise message.
  *
- * Mocks `@atlas/api/lib/db/internal` and `@atlas/api/lib/audit` because
- * the MCP route's residency check + audit emission would otherwise pull
- * the real internal DB into scope (which has no Postgres in this test).
+ * Mocks `@atlas/api/lib/audit` so audit emissions don't require an
+ * `audit_log` table. `@atlas/api/lib/db/internal` is intentionally NOT
+ * mocked — its `hasInternalDB()` returns `false` when `DATABASE_URL`
+ * is unset, which short-circuits every internal query without forcing
+ * us to enumerate every export of that large module (CLAUDE.md rule:
+ * partial mocks break sibling files via SyntaxError).
  */
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import { Hono } from "hono";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
-
-// `@atlas/api/lib/db/internal` is NOT mocked — the real module's
-// `hasInternalDB()` returns false when `DATABASE_URL` is unset, which
-// matches the eval environment. Mocking it here would have to enumerate
-// every export (CLAUDE.md rule: partial mocks break sibling files via
-// SyntaxError) and the real shape covers our needs naturally.
 
 mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
@@ -77,7 +74,16 @@ describe("Phase 2 OAuth round-trip helper (#2119)", () => {
   it("stamps the workspace claim with the activated organization id", () => {
     if (!handle) throw new Error("server not started");
     const payload = decodeJwtPayloadUnsafe(handle.bearer);
-    expect(payload[ATLAS_OAUTH_WORKSPACE_CLAIM]).toBe(handle.workspaceId);
+    // Assert the claim is non-empty BEFORE the equality check —
+    // without this, a regression that drops both the JWT claim and
+    // `handle.workspaceId` to `undefined` (or `""`) would pass via
+    // both-sides-equal-each-other rather than fail loudly. The
+    // workspace id Better Auth returns from `createOrganization` is
+    // a 24+ char base62 string, so the length floor is generous.
+    const claim = payload[ATLAS_OAUTH_WORKSPACE_CLAIM];
+    expect(typeof claim).toBe("string");
+    expect((claim as string).length).toBeGreaterThan(0);
+    expect(claim).toBe(handle.workspaceId);
   });
 
   it("issues with the in-process baseUrl as the issuer", () => {
@@ -120,14 +126,10 @@ describe("Phase 2 OAuth round-trip helper (#2119)", () => {
     });
     // The contract is "not 401"; the SDK may negotiate via SSE so we
     // don't pin a specific success status. A 401 here means the JWKS
-    // path or audience matching broke; that's the regression class
-    // this test exists to catch.
-    // The contract is "not 401"; the SDK may negotiate via SSE so we
-    // don't pin a specific success status. A 401 here means the JWKS
-    // path or audience / issuer matching broke; that is the regression
-    // class this test exists to catch. Surface the response body on
-    // failure so a future regression names the underlying mismatch
-    // (audience / issuer / expiry) without requiring a re-run.
+    // path or audience / issuer matching broke — the regression class
+    // this test exists to catch. The body slice on failure names the
+    // underlying mismatch (audience / issuer / expiry) without
+    // requiring a re-run.
     if (res.status === 401) {
       const body = await res.text();
       throw new Error(

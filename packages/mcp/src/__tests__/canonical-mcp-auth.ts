@@ -90,7 +90,7 @@ import {
   type ServeImpl,
   type OpenBrowserImpl,
 } from "@useatlas/mcp/init";
-import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
+import { ATLAS_OAUTH_WORKSPACE_CLAIM, readActiveOrgId } from "@atlas/api/lib/auth/oauth-claims";
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -232,6 +232,7 @@ export async function startEvalAuthServer(
       );
     }
 
+    let closed = false;
     return {
       server,
       baseUrl,
@@ -239,7 +240,14 @@ export async function startEvalAuthServer(
       workspaceId: flow.workspaceId,
       mcpUrl: flow.mcpUrl,
       userId: provisioned.userId,
+      // Idempotent — `restoreEnv` reads the captured "previous" env
+      // values, so calling it twice would treat the first restoration
+      // as the new baseline and silently shift the env state on the
+      // second call. The `closed` flag bounds both `server.stop` and
+      // `restoreEnv` to a single execution.
       close: () => {
+        if (closed) return;
+        closed = true;
         server.stop(true);
         restoreEnv();
       },
@@ -339,15 +347,11 @@ function buildEvalAuth(opts: BuildEvalAuthOptions): EvalAuth {
         validAudiences: [`${opts.baseUrl}/mcp`],
         accessTokenExpiresIn: 3600,
         refreshTokenExpiresIn: 60 * 60 * 24,
-        clientReference: ({ session }) => {
-          // The cast mirrors `packages/api/src/lib/auth/server.ts` —
-          // Better Auth's session-organization extension is contributed
-          // by the organization plugin and is not part of the base
-          // session type the oauthProvider sees.
-          const orgId = (session as { activeOrganizationId?: string | null } | null | undefined)
-            ?.activeOrganizationId;
-          return typeof orgId === "string" && orgId.length > 0 ? orgId : undefined;
-        },
+        // Shared reader from `oauth-claims.ts` — production reads the
+        // same helper, so a regression in either site (empty-string
+        // handling, plugin-shape drift) shows up identically here.
+        clientReference: ({ session }) =>
+          readActiveOrgId(session as Parameters<typeof readActiveOrgId>[0]),
         // `postLogin.consentReferenceId` is the hook that propagates
         // the workspace id onto issued tokens — `clientReference`
         // above only governs DCR client ownership. Mirrors the
@@ -356,11 +360,8 @@ function buildEvalAuth(opts: BuildEvalAuthOptions): EvalAuth {
         // for the production OAuth path.
         postLogin: {
           page: "/oauth2/post-login",
-          consentReferenceId: async ({ session }) => {
-            const orgId = (session as { activeOrganizationId?: string | null } | null | undefined)
-              ?.activeOrganizationId;
-            return typeof orgId === "string" && orgId.length > 0 ? orgId : undefined;
-          },
+          consentReferenceId: async ({ session }) =>
+            readActiveOrgId(session as Parameters<typeof readActiveOrgId>[0]),
           // No interstitial — the eval has a single-org fixture so
           // workspace selection is deterministic.
           shouldRedirect: () => false,
@@ -457,13 +458,23 @@ async function provisionTestUser(input: ProvisionInput): Promise<ProvisionResult
 }
 
 /**
- * Extract the cookie name=value pair from a `Set-Cookie` header,
- * dropping attributes the client doesn't echo back (Path / HttpOnly /
- * SameSite / Max-Age / Expires). We only need the cookie itself for
- * subsequent in-process calls — nothing reads the attributes here.
+ * Extract the `name=value` pair from a `Set-Cookie` header, dropping
+ * attributes (Path / HttpOnly / SameSite / Max-Age / Expires) the client
+ * never echoes back. Better Auth currently uses `Max-Age` for session
+ * cookies — if a future bump switches to `Expires=Wed, 09 Jun ...`,
+ * naïve splitting on `,` would fragment that date into a phantom cookie
+ * entry, so we deliberately take only the prefix before the first `;`.
+ * Empty result throws so the caller doesn't thread an empty Cookie
+ * header through downstream `auth.api.*` calls and run anonymously.
  */
 function parseSetCookie(setCookie: string): string {
-  return setCookie.split(",").map((entry) => entry.split(";")[0]?.trim() ?? "").filter(Boolean).join("; ");
+  const cookie = setCookie.split(";")[0]?.trim() ?? "";
+  if (!cookie || !cookie.includes("=")) {
+    throw new Error(
+      `parseSetCookie: malformed Set-Cookie header (no name=value pair): ${setCookie.slice(0, 120)}`,
+    );
+  }
+  return cookie;
 }
 
 // ── Loopback OAuth driver ───────────────────────────────────────────
@@ -499,17 +510,16 @@ async function runEvalAuthFlow(input: RunFlowInput): Promise<HostedFlowResult> {
     init?: RequestInit,
   ) => {
     const req = new Request(typeof rawInput === "string" || rawInput instanceof URL ? new URL(rawInput).toString() : rawInput.url, init);
-    // Thread the test session cookie onto every auth-server request the
-    // flow makes. DCR specifically needs it: `oauthProvider.clientReference`
-    // only fires when DCR sees a session, which is what stamps the
-    // `referenceId` (workspace id) onto the registered client. Without
-    // it, the issued token carries no workspace claim and the MCP edge
-    // 401s with `missing_workspace_claim`. Production MCP clients
-    // (Claude Desktop / Cursor) get this for free because DCR runs
-    // inside the user's authenticated browser session; the upstream
-    // CLI flow at `@useatlas/mcp/init` does not pass cookies, which is
-    // why production tokens issued via the CLI alone wouldn't carry
-    // the claim either (tracked separately as #2124).
+    // Thread the test session cookie onto every auth-server request
+    // the flow makes. The session cookie is what makes the authorize
+    // endpoint resolve a real signed-in user (vs redirecting to the
+    // login page) and what `postLogin.consentReferenceId` reads to
+    // stamp the workspace id onto the issued JWT. Production MCP
+    // clients (Claude Desktop / Cursor) get this for free because the
+    // OAuth flow runs inside the user's authenticated browser; the
+    // CLI loopback flow does not currently thread cookies, but the
+    // eval needs to so the issued token actually exercises the
+    // workspace-claim path the MCP edge verifies.
     const headersWithCookie = new Headers(req.headers);
     if (!headersWithCookie.has("Cookie")) {
       headersWithCookie.set("Cookie", input.sessionCookie);
@@ -676,7 +686,16 @@ async function runEvalAuthFlow(input: RunFlowInput): Promise<HostedFlowResult> {
     serveImpl,
     openBrowserImpl,
     callbackTimeoutMs: 10_000,
-    consoleImpl: { log: () => {}, error: () => {} },
+    // Route the flow's progress/error output to stderr with a stable
+    // prefix. Phase 1 used a no-op console here; CI failures lost every
+    // breadcrumb the upstream `runHostedAuthFlow` emits before throwing
+    // (DCR rejection details, token-exchange failure body, JWKS errors,
+    // audience mismatches). The stderr prefix lets the eval log filter
+    // these without conflating them with MCP-route logs.
+    consoleImpl: {
+      log: (m) => process.stderr.write(`[mcp-eval-auth] ${m}\n`),
+      error: (m) => process.stderr.write(`[mcp-eval-auth] ${m}\n`),
+    },
   };
 
   const result = await runHostedAuthFlow(flowOptions);

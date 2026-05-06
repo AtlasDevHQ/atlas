@@ -22,7 +22,7 @@ import { passkey } from "@better-auth/passkey";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import { oauthProvider } from "@better-auth/oauth-provider";
-import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
+import { ATLAS_OAUTH_WORKSPACE_CLAIM, readActiveOrgId } from "@atlas/api/lib/auth/oauth-claims";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
@@ -818,14 +818,12 @@ function buildPlugins() {
       // `clientReference` controls *ownership* of the OAuth client row
       // (used by /list, /delete, /update endpoints to filter "rows for
       // this workspace") — it does NOT propagate onto issued tokens.
-      // The cast is required because Better Auth's session-organization
-      // extension is contributed by the organization plugin and isn't
-      // part of the base session type the oauthProvider sees.
-      clientReference: ({ session }) => {
-        const orgId = (session as { activeOrganizationId?: string | null } | null | undefined)
-          ?.activeOrganizationId;
-        return typeof orgId === "string" ? orgId : undefined;
-      },
+      // `readActiveOrgId` (oauth-claims.ts) is the shared reader so
+      // production and the canonical MCP eval can't drift on what
+      // counts as a valid workspace binding (e.g. empty-string
+      // handling).
+      clientReference: ({ session }) =>
+        readActiveOrgId(session as Parameters<typeof readActiveOrgId>[0]),
       // The `referenceId` parameter that `customAccessTokenClaims`
       // receives is whatever `postLogin.consentReferenceId` returned
       // at authorize time — `clientReference` only governs DCR client
@@ -843,11 +841,8 @@ function buildPlugins() {
       // but is never navigated to under this `shouldRedirect` value.
       postLogin: {
         page: "/oauth2/post-login",
-        consentReferenceId: async ({ session }) => {
-          const orgId = (session as { activeOrganizationId?: string | null } | null | undefined)
-            ?.activeOrganizationId;
-          return typeof orgId === "string" && orgId.length > 0 ? orgId : undefined;
-        },
+        consentReferenceId: async ({ session }) =>
+          readActiveOrgId(session as Parameters<typeof readActiveOrgId>[0]),
         shouldRedirect: () => false,
       },
       // Stamp the workspace id onto access tokens issued under a

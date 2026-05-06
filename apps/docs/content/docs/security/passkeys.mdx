@@ -201,6 +201,106 @@ for the rationale on always logging this branch (silent in the UI,
 but visible in DevTools, so a misconfigured RP doesn't disappear
 without trace).
 
+## Recovery
+
+Atlas treats account recovery as an **explicit, audited admin
+action** rather than a self-service primitive. The recovery model
+has two halves: a recommended posture that keeps any single user
+out of lockout territory, and a documented escape hatch for the
+narrow case where someone still ends up locked out.
+
+### Recommended posture
+
+Pick **one** of the following — any of them keeps you out of the
+lockout edge case:
+
+- **Two passkeys on different devices.** A laptop passkey plus a
+  phone passkey is the most resilient setup: each device has its own
+  hardware-bound credential, and losing one doesn't take the other
+  out.
+- **A password kept on the account, paired with a passkey.** A
+  password is itself a separate factor and an automatic recovery
+  path — the sign-in page will still accept it, and an admin who
+  signed up via email/password can always fall back to it.
+- **TOTP enrolled alongside the passkey.** TOTP plus a passkey
+  satisfies the MFA gate from either side; losing one still leaves
+  the other.
+
+The security page nudges users toward the first option. Whenever a
+user matches the **lockout-risk profile** — exactly one passkey, no
+password set, no TOTP — a yellow banner appears at the top of
+**Admin → Settings → Security** asking them to enroll a second
+passkey or add a password. The banner is dismissable for the current
+session but re-renders on the next sign-in until the predicate
+clears (≥2 passkeys, OR a password, OR TOTP). The same predicate is
+visible in the workspace **Security posture** panel: passkey-only
+admins fall in the *passkey-only* bucket, distinct from *both
+factors*.
+
+### What happens if you're locked out
+
+If a passkey-only user loses their only authenticator (lost device,
+no cloud sync, no second passkey, no password), an admin **resets
+their MFA** from the user detail page:
+
+1. Workspace admin (or platform admin, cross-org) opens
+   **Admin → Users → \<user\>**.
+2. In the **Danger zone** card, click **Reset MFA enrollment**.
+3. A reason dialog records what triggered the reset (e.g. *"User
+   reports stolen laptop, cross-checked with HR ticket TKT-1234"*).
+   The reason is recorded in the audit log alongside the action.
+4. On confirm, the API atomically clears the user's passkey
+   enrollments, TOTP secret, and bundled backup-code batch in a
+   single transaction. Sessions and OAuth grants are deliberately
+   **left in place** — this is recovery, not off-boarding (off-
+   boarding is the separate **Revoke all authentication** path).
+5. The user is forced to re-enroll a second factor on the next
+   admin-router request via the existing
+   `mfa_enrollment_required` 403 — see
+   [Two-Factor Authentication](./two-factor-auth#how-the-gate-works).
+
+The audit row carries per-artifact counts (passkeys, TOTP secrets,
+backup-code batches), the actor, the target, and the reason — so
+forensic queries can answer "who was reset, by whom, when, and why"
+without joining other tables. The action type is `user.mfa_reset`,
+distinct from `user.auth_revoke` (the off-boarding sibling) so
+compliance queries can split recovery from off-boarding.
+
+Workspace admins can only reset users in their own org. Cross-org
+resets require a platform admin and emit the same audit row.
+
+### What we don't ship — and why
+
+Atlas deliberately does **not** offer the following recovery
+mechanisms:
+
+- **Recovery codes decoupled from TOTP.** Better Auth's `twoFactor`
+  plugin bundles backup codes with TOTP enrollment as a single
+  primitive — `POST /two-factor/enable` issues the secret and the
+  codes together; `POST /two-factor/generate-backup-codes` is a
+  regenerate endpoint that assumes TOTP is already enabled. Shipping
+  passkey-only users a *separate* recovery-code primitive would mean
+  either hacking the plugin contract (fragile, breaks on every
+  Better Auth update) or building a parallel recovery-codes table
+  outside the plugin (duplicates a primitive, requires our own
+  verification + invalidation). Both bad. The principled answer is
+  to widen the lockout bottleneck (the recommended posture above)
+  rather than add a parallel recovery primitive.
+- **Email-based recovery / OTP.** Email is not a strong enough
+  factor for an admin role: an attacker who compromises the inbox
+  compromises the recovery channel. Worse, it leaks who has Atlas
+  access to anyone who can read the inbox (a privacy regression for
+  shared accounts). Admin-mediated reset by another human is a
+  stronger trust anchor for the same recovery scenario.
+- **Forcing TOTP as the recovery factor.** The whole point of
+  passkey-first sign-in is treating passkeys as a first-class
+  factor, not a TOTP UX layer. Mandating TOTP for "recovery" would
+  undo that.
+
+If you have a deployment that needs one of the above, file an
+enhancement request — but expect the bar to be high: the recovery
+model above is a deliberate design decision, not an oversight.
+
 ## Operator Reference
 
 ### What's stored
@@ -248,9 +348,11 @@ gate and works on any browser.
   significant UI surface (the QR rendering, the BLE proximity
   pairing, the connection-state banner) and is gated on an explicit
   enterprise contract before we wire it.
-- Recovery for a user with no remaining passkey and no backup codes
-  requires an out-of-band reset by a `platform_admin`. A user-
-  triggered recovery flow is tracked in the Wave 2B parallel issue.
+- Recovery for a user with no remaining passkey and no other factor
+  requires an admin-mediated MFA reset (Wave 2B closeout — see
+  [Recovery](#recovery) above). A user-triggered self-service
+  recovery flow is intentionally not provided; the rationale is
+  documented in the same section.
 - A single global `rpID` is used for all hosted regions
   (`app.useatlas.dev`). WebAuthn binds credentials to a single
   registrable suffix; per-region frontends would each need a

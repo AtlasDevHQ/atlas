@@ -289,6 +289,12 @@ registerTrustedDeviceRoutes(admin, reqId);
 // directly so the existing /users/* routes share the same middleware chain.
 import { registerRevokeRoutes } from "./admin-revoke";
 registerRevokeRoutes(admin, adminAuthAndContext, verifyOrgMembership);
+// Admin-mediated MFA reset for a locked-out user (#2092 — Wave 2B closeout).
+// Sibling to admin-revoke; registered the same way for the same reason.
+// `reqId` is also passed through for the per-user /me/mfa-factors route in
+// the same module — that route uses light auth (no adminAuthAndContext gate).
+import { registerMfaResetRoutes } from "./admin-mfa-reset";
+registerMfaResetRoutes(admin, adminAuthAndContext, verifyOrgMembership, reqId);
 admin.route("/connections", adminConnections);
 admin.route("/connections/", adminConnections);
 admin.route("/publish", adminPublish);

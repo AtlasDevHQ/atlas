@@ -1625,7 +1625,7 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
   }
 
-  let body: { connectionId?: string } = {};
+  let body: { connectionId?: string; source?: "org-disk" | "demo-seed" } = {};
   const contentType = c.req.header("content-type") ?? "";
   if (contentType.includes("application/json")) {
     try {
@@ -1636,21 +1636,75 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
   }
 
   const { importFromDisk } = await import("@atlas/api/lib/semantic/sync");
-  const result = await importFromDisk(orgId, {
-    connectionId: body.connectionId,
-  });
+
+  // Two paths:
+  //   1. Explicit `source: "demo-seed"` — caller asks for the bundled
+  //      NovaMart seed (used by recovery flows or future tools).
+  //   2. Default — try the org-scoped disk first. If that yields zero
+  //      entities AND the org owns a `__demo__` connection, retry from the
+  //      bundled demo seed automatically. This is the self-heal for
+  //      partial-demo orgs (the dharma class of incident pre-#2153): one
+  //      button click in /admin/semantic recovers the state.
+  let result: Awaited<ReturnType<typeof importFromDisk>>;
+  let resolvedSource: string;
+  if (body.source === "demo-seed") {
+    const { getDemoSemanticDir } = await import("./onboarding-helpers");
+    let semanticDir: string;
+    try {
+      semanticDir = getDemoSemanticDir().dir;
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), requestId, orgId }, "Demo seed not found on this server");
+      return c.json({
+        error: "demo_not_available",
+        message: "The canonical demo semantic layer is not installed on this server.",
+        requestId,
+      }, 500);
+    }
+    result = await importFromDisk(orgId, { connectionId: "__demo__", sourceDir: semanticDir });
+    resolvedSource = "demo-seed";
+  } else {
+    result = await importFromDisk(orgId, { connectionId: body.connectionId });
+    resolvedSource = body.connectionId ? `disk:${body.connectionId}` : "disk:all";
+
+    if (result.imported === 0 && result.total === 0) {
+      // Org-scoped disk had nothing. If the org has a __demo__ connection
+      // we recover from the bundled seed transparently — saves the admin
+      // from a second click and the cognitive load of figuring out why
+      // the org-scoped disk is empty.
+      const demoRows = await internalQuery<{ id: string }>(
+        `SELECT id FROM connections WHERE org_id = $1 AND id = '__demo__' AND status IN ('published', 'draft')`,
+        [orgId],
+      );
+      if (demoRows.length > 0) {
+        const { getDemoSemanticDir } = await import("./onboarding-helpers");
+        try {
+          const semanticDir = getDemoSemanticDir().dir;
+          result = await importFromDisk(orgId, { connectionId: "__demo__", sourceDir: semanticDir });
+          resolvedSource = "demo-seed:auto-recover";
+          log.info(
+            { requestId, orgId, imported: result.imported, total: result.total },
+            "Auto-recovered partial-demo state via bundled seed fallback",
+          );
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+            "Auto-recovery skipped — bundled demo seed not available",
+          );
+        }
+      }
+    }
+  }
 
   log.info(
-    { requestId, orgId, imported: result.imported, skipped: result.skipped, total: result.total },
+    { requestId, orgId, imported: result.imported, skipped: result.skipped, total: result.total, source: resolvedSource },
     "Org semantic import completed",
   );
 
   // Bulk disk → DB sync: one row per import call instead of per entity
   // so the audit trail scales with admin intent, not entity count. The
   // per-entity trail (if ever needed) can be reconstructed from the
-  // sync log lines. `sourceRef` falls back to "disk:all" when the
-  // caller didn't narrow to a single connection — forensic queries can
-  // filter on the per-connection variant. See F-29.
+  // sync log lines. `sourceRef` distinguishes the auto-recovery path so
+  // forensic queries can identify partial-state self-heals.
   logAdminAction({
     actionType: ADMIN_ACTIONS.semantic.bulkImport,
     targetType: "semantic",
@@ -1658,7 +1712,7 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     metadata: {
       importedCount: result.imported,
-      sourceRef: body.connectionId ? `disk:${body.connectionId}` : "disk:all",
+      sourceRef: resolvedSource,
     },
   });
 

@@ -26,65 +26,22 @@ import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
-import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 import { setSetting } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
-import path from "path";
-import { existsSync } from "fs";
+import {
+  DEMO_CONNECTION_ID,
+  DEMO_INDUSTRY,
+  DEMO_LABEL,
+  getDemoSemanticDir,
+} from "./onboarding-helpers";
 
 const log = createLogger("onboarding");
 
-// ---------------------------------------------------------------------------
-// Canonical demo dataset (NovaMart e-commerce)
-//
 // Atlas ships a single canonical demo seed since 1.4.0 (#2021). Earlier
 // releases supported a `demoType` picker covering `demo` (SaaS CRM, 3 tables),
 // `cybersec` (Sentinel Security, 62 tables), and `ecommerce` (NovaMart, 52
 // tables). The body field is gone; the route always provisions ecommerce.
-// ---------------------------------------------------------------------------
-
-const DEMO_LABEL = "NovaMart (E-commerce)";
-const DEMO_INDUSTRY = "ecommerce";
-
-/** Reserved connection ID for demo workspaces. */
-const DEMO_CONNECTION_ID = "__demo__";
-
-/**
- * Resolve the canonical demo semantic-layer directory.
- *
- * Prefers the configured semantic root from `getSemanticRoot()` (the path the
- * runtime mounts as `semantic/` — Docker images bundle the ecommerce layer
- * here at build time; dev workspaces have the repo-root `semantic/` dir).
- * Falls back to the bundled ecommerce seed under
- * `packages/cli/data/seeds/ecommerce/semantic` for dev workspaces that
- * haven't run `atlas init` yet.
- */
-function getDemoSemanticDir(): { dir: string; source: "semantic-root" | "bundled-seed" } {
-  const root = getSemanticRoot();
-  if (existsSync(path.join(root, "entities"))) {
-    return { dir: root, source: "semantic-root" };
-  }
-
-  // Dev fallback when the working directory hasn't been initialized yet
-  const seedsPath = path.resolve(
-    process.cwd(),
-    "packages",
-    "cli",
-    "data",
-    "seeds",
-    "ecommerce",
-    "semantic",
-  );
-  if (existsSync(path.join(seedsPath, "entities"))) {
-    return { dir: seedsPath, source: "bundled-seed" };
-  }
-
-  throw new Error(
-    `Canonical demo semantic layer not found. ` +
-      `Expected entities/ in ${root} or ${seedsPath}.`,
-  );
-}
 
 /**
  * Seed org-scoped prompt collections matching the demo industry.
@@ -712,6 +669,16 @@ onboarding.openapi(
         );
       }
 
+      // ---------------------------------------------------------------
+      // Phase 1 — fail-fast pre-validation. Resolve and check everything
+      // we'll need before touching the DB so a misconfigured deploy 500s
+      // without leaving a half-installed workspace behind. The previous
+      // ordering committed the connection row before attempting the
+      // entity import; if the import then failed (or the bundled YAML
+      // wasn't on disk), the user ended up with a `__demo__` connection
+      // and zero `semantic_entities` — Schema Diff and the agent both
+      // saw a broken setup.
+      // ---------------------------------------------------------------
       const url = resolveDatasourceUrl();
       if (!url) {
         return c.json({ error: "no_demo_datasource", message: "No demo datasource configured. Set ATLAS_DATASOURCE_URL." }, 400);
@@ -727,7 +694,25 @@ onboarding.openapi(
         return c.json({ error: "invalid_datasource", message: "Demo datasource URL has an unsupported scheme.", requestId }, 500);
       }
 
-      // Encrypt and persist with status='published'
+      let semanticDir: string;
+      try {
+        const resolved = getDemoSemanticDir();
+        semanticDir = resolved.dir;
+        if (resolved.source === "bundled-seed") {
+          log.info(
+            { requestId, semanticDir },
+            "Demo semantic layer resolved via bundled-seed dev fallback (semantic/ not initialized at the configured root)",
+          );
+        }
+      } catch (err) {
+        log.error({ err: errorMessage(err), requestId }, "Canonical demo semantic layer not found");
+        return c.json({
+          error: "demo_not_available",
+          message: "The canonical demo semantic layer is not installed on this server. Contact the platform administrator.",
+          requestId,
+        }, 500);
+      }
+
       let encryptedUrl: string;
       try {
         encryptedUrl = encryptUrl(url);
@@ -736,6 +721,58 @@ onboarding.openapi(
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
+      // ---------------------------------------------------------------
+      // Phase 2 — import entities FIRST. Orphan rows (entities whose
+      // `connection_id` matches a connection that doesn't yet exist for
+      // this org) are filtered out by `listEntitiesWithOverlay`'s
+      // archived-connection check, so a failure here leaves nothing
+      // visible to the user. On retry, `bulkUpsertEntities` upserts
+      // safely; once the connection commits in phase 3 the existing
+      // entity rows become visible. This is the inversion that makes
+      // /use-demo bulletproof.
+      // ---------------------------------------------------------------
+      const importResult = yield* Effect.tryPromise({
+        try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err: err.message, requestId, semanticDir }, "Demo semantic layer import failed");
+        return Effect.succeed(null);
+      }));
+
+      if (importResult === null) {
+        return c.json({
+          error: "import_failed",
+          message: "Failed to import the demo semantic layer. No partial state was committed — retry in a moment.",
+          requestId,
+        }, 500);
+      }
+      if (importResult.imported === 0 && importResult.total > 0) {
+        // Bundled YAML was scanned but every row failed the upsert. Treat
+        // as a hard failure — a connection without entities is the exact
+        // partial state we're trying to prevent.
+        log.error(
+          { orgId, requestId, total: importResult.total, errors: importResult.errors },
+          "Demo semantic import found entities but persisted zero",
+        );
+        return c.json({
+          error: "import_failed",
+          message: "Failed to import the demo semantic layer. Retry in a moment.",
+          requestId,
+        }, 500);
+      }
+
+      const entitiesImported = importResult.imported;
+      log.info(
+        { orgId, imported: importResult.imported, skipped: importResult.skipped, requestId },
+        "Imported demo semantic layer",
+      );
+
+      // ---------------------------------------------------------------
+      // Phase 3 — commit point. Once this row lands, the entities
+      // imported in phase 2 become visible to the agent and Schema Diff.
+      // Failure here leaves orphan entity rows (filtered out by
+      // visibility), so the user sees nothing partial — they can retry.
+      // ---------------------------------------------------------------
       const demoLabel = DEMO_LABEL;
       const urlKeyVersion = activeKeyVersion();
       const upsertResult = yield* Effect.tryPromise({
@@ -766,47 +803,6 @@ onboarding.openapi(
         connections.register(id, { url, description: `${demoLabel} — demo ${dbType} datasource` });
       } catch (err) {
         log.warn({ err: errorMessage(err), requestId }, "Demo connection saved but runtime registration failed");
-      }
-
-      // Resolve and import the canonical demo semantic layer
-      let semanticDir: string;
-      try {
-        const resolved = getDemoSemanticDir();
-        semanticDir = resolved.dir;
-        if (resolved.source === "bundled-seed") {
-          log.info(
-            { requestId, semanticDir },
-            "Demo semantic layer resolved via bundled-seed dev fallback (semantic/ not initialized at the configured root)",
-          );
-        }
-      } catch (err) {
-        log.error({ err: errorMessage(err), requestId }, "Canonical demo semantic layer not found");
-        return c.json({
-          error: "demo_not_available",
-          message: "The canonical demo semantic layer is not installed on this server. Contact the platform administrator.",
-          requestId,
-        }, 500);
-      }
-
-      const importResult = yield* Effect.tryPromise({
-        try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(Effect.catchAll((err) => {
-        log.error({ err: err.message, requestId, semanticDir }, "Demo semantic layer import failed");
-        return Effect.succeed(null);
-      }));
-
-      if (importResult === null) {
-        return c.json({
-          error: "import_failed",
-          message: "Failed to import the demo semantic layer. The connection was saved but the workspace needs manual setup.",
-          requestId,
-        }, 500);
-      }
-
-      const entitiesImported = importResult.imported;
-      if (entitiesImported > 0) {
-        log.info({ orgId, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported demo semantic layer");
       }
 
       // Write demo_industry setting + seed prompt collections concurrently (independent, non-fatal)

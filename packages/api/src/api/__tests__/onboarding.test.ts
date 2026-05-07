@@ -981,6 +981,105 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
   });
 
+  it("ATOMICITY: import failure leaves no connection row committed", async () => {
+    // Reproduces the dharma symptom — connection had been committed BEFORE
+    // the import attempt, so a failed import left a half-state. Phase order
+    // is now: import first, connection last. A throwing import must mean
+    // zero `INSERT INTO connections` calls.
+    mockImportFromDisk.mockImplementation(async () => {
+      throw new Error("simulated disk failure");
+    });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("import_failed");
+
+    const connectionInsert = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+    );
+    expect(connectionInsert).toBeUndefined();
+    expect(mockRegister).not.toHaveBeenCalled();
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+  });
+
+  it("ATOMICITY: import returning zero imports out of N total fails before writing connection", async () => {
+    // bulkUpsertEntities swallows per-row errors and returns a count. If
+    // every row fails (imported=0, total>0) we'd have a connection without
+    // entities — the exact partial state we're preventing. Treat as fatal.
+    mockImportFromDisk.mockImplementation(async () => ({
+      imported: 0,
+      skipped: 13,
+      errors: [{ file: "users.yml", reason: "broken yaml" }],
+      total: 13,
+    }));
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("import_failed");
+
+    const connectionInsert = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+    );
+    expect(connectionInsert).toBeUndefined();
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+  });
+
+  it("ATOMICITY: missing bundled YAML fails before writing connection", async () => {
+    // getDemoSemanticDir() throws when neither the configured root nor the
+    // bundled-seed dir has an entities/ subdir. The pre-validation phase
+    // must catch this before any DB write.
+    existsSyncImpl = () => false;
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("demo_not_available");
+
+    const connectionInsert = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+    );
+    expect(connectionInsert).toBeUndefined();
+    expect(mockImportFromDisk).not.toHaveBeenCalled();
+  });
+
+  it("ATOMICITY: idempotent retry — a successful retry after a failure persists everything", async () => {
+    // First call fails on import (no connection committed). Second call
+    // succeeds (import is upsert-safe; connection upsert is idempotent).
+    // The user can self-recover without admin intervention — that's the
+    // recovery story for the dharma-class incident.
+    mockImportFromDisk.mockImplementationOnce(async () => {
+      throw new Error("transient disk error");
+    });
+    const firstRes = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(firstRes.status).toBe(500);
+
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 13, skipped: 0, errors: [], total: 13 }));
+    const secondRes = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(secondRes.status).toBe(201);
+    const data = await json(secondRes);
+    expect(data.connectionId).toBe("__demo__");
+    expect(data.entitiesImported).toBe(13);
+  });
+
   it("returns 500 with requestId when encryption fails", async () => {
     mockEncryptUrl.mockImplementation(() => { throw new Error("bad key"); });
     const res = await request("/api/v1/onboarding/use-demo", {

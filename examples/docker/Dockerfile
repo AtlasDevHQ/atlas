@@ -83,6 +83,11 @@ COPY --from=nsjail-builder /nsjail-out/ /usr/local/bin/
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies
 COPY --from=builder --chown=atlas:atlas /app/packages/api ./packages/api
+# packages/mcp is the hosted-MCP edge — see deploy/api/Dockerfile
+# for the full rationale. Without this COPY, every request to
+# /mcp/{workspace_id}/sse 404s because the workspace symlink
+# `node_modules/@atlas/mcp` resolves to a missing path.
+COPY --from=builder --chown=atlas:atlas /app/packages/mcp ./packages/mcp
 COPY --from=builder --chown=atlas:atlas /app/node_modules ./node_modules
 COPY --from=builder --chown=atlas:atlas /app/semantic ./semantic
 COPY --from=builder --chown=atlas:atlas /app/package.json ./package.json

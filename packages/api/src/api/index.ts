@@ -486,9 +486,20 @@ try {
   app.route("/mcp", createHostedMcpRouter());
   log.info("Hosted MCP endpoint mounted at /mcp/{workspace_id}/sse");
 } catch (err) {
-  log.debug(
+  // Promoted from log.debug — debug-level messages are filtered by
+  // production Pino, which silently hid a P1 service-unavailable
+  // (every /mcp/{workspace_id}/sse request 404'd). The catch was
+  // originally written for the standalone Vercel template
+  // (`examples/nextjs-standalone`) where the heavy `@atlas/mcp` graph
+  // is intentionally not bundled — but in any deploy that DOES intend
+  // to serve hosted MCP (Railway / Docker), an ENOENT here means the
+  // build pipeline didn't ship `packages/mcp` and operators need to
+  // page on it. Logging at error makes the breakage visible without
+  // changing behaviour for the no-MCP-build case (the message text
+  // still says "agent connections will be unavailable").
+  log.error(
     { err: err instanceof Error ? err.message : String(err) },
-    "Hosted MCP endpoint not available in this build — agent connections via mcp.useatlas.dev will be unavailable",
+    "Hosted MCP endpoint not available in this build — agent connections via mcp.useatlas.dev will be unavailable. If you intended to serve hosted MCP, verify packages/mcp is shipped in the runtime container.",
   );
 }
 

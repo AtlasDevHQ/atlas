@@ -10606,6 +10606,31 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "disk_sync_failed"
+                            ]
+                          },
+                          "tableName": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "tableName",
+                          "reason"
+                        ]
+                      }
                     }
                   },
                   "required": [

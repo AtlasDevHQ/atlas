@@ -93,17 +93,51 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const mockResetWhitelists: Mock<() => void> = mock(() => {});
+const mockInvalidateOrgWhitelist: Mock<(orgId: string) => void> = mock(() => {});
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(),
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
+  invalidateOrgWhitelist: mockInvalidateOrgWhitelist,
   getOrgSemanticIndex: async () => "",
   invalidateOrgSemanticIndex: () => {},
   _resetOrgWhitelists: () => {},
   _resetOrgSemanticIndexes: () => {},
   _resetWhitelists: mockResetWhitelists,
+}));
+
+const mockBulkUpsertEntities: Mock<(
+  orgId: string,
+  entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string }>,
+) => Promise<number>> = mock(async (_orgId, entities) => entities.length);
+
+mock.module("@atlas/api/lib/semantic/entities", () => ({
+  // Constants the wizard route imports statically
+  DEMO_CONNECTION_ID: "__demo__",
+  SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
+  // Function under test in this suite
+  bulkUpsertEntities: mockBulkUpsertEntities,
+  // Other named exports — the mock.module() loader requires every export
+  // from the real module to be present, otherwise other test files in the
+  // same isolated process throw `Export named 'X' not found`.
+  upsertEntity: async () => {},
+  upsertDraftEntity: async () => {},
+  upsertTombstone: async () => {},
+  deleteDraftEntity: async () => false,
+  listEntities: async () => [],
+  listEntitiesWithOverlay: async () => [],
+  getEntity: async () => null,
+  deleteEntity: async () => false,
+  countEntities: async () => 0,
+  createVersion: async () => "",
+  listVersions: async () => [],
+  getVersion: async () => null,
+  generateChangeSummary: async () => "",
+  applyTombstones: async () => 0,
+  promoteDraftEntities: async () => 0,
+  archiveSingleConnection: async () => ({ ok: true as const, archived: 0 }),
+  restoreSingleConnection: async () => ({ ok: true as const, restored: 0 }),
 }));
 
 const mockSyncEntityToDisk: Mock<(orgId: string, name: string, type: string, yaml: string) => Promise<void>> = mock(
@@ -614,6 +648,140 @@ describe("POST /api/v1/wizard/save", () => {
       ],
     });
     expect(mockSyncEntityToDisk).toHaveBeenCalledTimes(2);
+  });
+
+  it("populates the per-org semantic_entities table via bulkUpsertEntities (#2142)", async () => {
+    // Pre-fix the wizard wrote YAMLs to disk only — the DB-backed
+    // per-org whitelist consumed by the MCP edge stayed empty, so every
+    // executeSQL call against wizard-onboarded workspaces hit
+    // `unknown_entity`.
+    mockBulkUpsertEntities.mockClear();
+    mockInvalidateOrgWhitelist.mockClear();
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "warehouse",
+      entities: [
+        { tableName: "users", yaml: "table: users\n" },
+        { tableName: "orders", yaml: "table: orders\n" },
+      ],
+    });
+    expect(res.status).toBe(201);
+
+    expect(mockBulkUpsertEntities).toHaveBeenCalledTimes(1);
+    const [orgIdArg, entitiesArg] = mockBulkUpsertEntities.mock.calls[0];
+    expect(orgIdArg).toBe("org-1");
+    expect(entitiesArg).toHaveLength(2);
+    expect(entitiesArg[0]).toMatchObject({
+      entityType: "entity",
+      name: "users",
+      yamlContent: "table: users\n",
+      connectionId: "warehouse",
+    });
+    expect(entitiesArg[1]).toMatchObject({
+      entityType: "entity",
+      name: "orders",
+      connectionId: "warehouse",
+    });
+
+    expect(mockInvalidateOrgWhitelist).toHaveBeenCalledWith("org-1");
+  });
+
+  it("returns 500 db_persist_failed when bulkUpsertEntities throws", async () => {
+    // DB write failure must NOT silently succeed — the disk YAMLs alone
+    // leave wizard-onboarded workspaces broken on MCP. Surface the
+    // failure so the operator notices instead of discovering it via a
+    // customer report.
+    mockBulkUpsertEntities.mockClear();
+    mockWriteFileSync.mockClear();
+    mockBulkUpsertEntities.mockImplementationOnce(() => Promise.reject(new Error("internal DB unreachable")));
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("db_persist_failed");
+    // DB-first ordering: on DB failure, no disk writes should have happened.
+    // Otherwise a 500 leaves orphan YAMLs on disk for the operator to clean up.
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 db_partial_persist when bulkUpsertEntities reports a partial count", async () => {
+    // bulkUpsertEntities swallows per-entity errors and returns the count
+    // that succeeded. Returning 201 in that case would silently recreate
+    // the #2142 unknown_entity failure for the rows that didn't land —
+    // the half-broken state is worse than a clear failure the operator
+    // can retry.
+    mockBulkUpsertEntities.mockClear();
+    mockBulkUpsertEntities.mockImplementationOnce(async (_orgId, entitiesArg) =>
+      Math.max(0, entitiesArg.length - 1),
+    );
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [
+        { tableName: "users", yaml: "table: users\n" },
+        { tableName: "orders", yaml: "table: orders\n" },
+      ],
+    });
+
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("db_partial_persist");
+    expect(data.attempted).toBe(2);
+    expect(data.succeeded).toBe(1);
+  });
+
+  it("surfaces syncEntityToDisk failures in the response warnings array", async () => {
+    // The org-scoped semantic dir feeds the explore tool. A silent .catch
+    // here recreates the same split-state failure mode #2142 was filed to
+    // fix, just on the file path instead of the DB path. Make per-entity
+    // disk-sync failures visible so the operator can act on them.
+    mockBulkUpsertEntities.mockClear();
+    mockSyncEntityToDisk.mockReset();
+    // First entity syncs cleanly; second entity's disk sync throws.
+    mockSyncEntityToDisk.mockImplementationOnce(async () => {});
+    mockSyncEntityToDisk.mockImplementationOnce(async () => {
+      throw new Error("EACCES: permission denied");
+    });
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [
+        { tableName: "users", yaml: "table: users\n" },
+        { tableName: "orders", yaml: "table: orders\n" },
+      ],
+    });
+
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.saved).toBe(true);
+    const warnings = data.warnings as Array<{ kind: string; tableName: string; reason: string }>;
+    expect(Array.isArray(warnings)).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      kind: "disk_sync_failed",
+      tableName: "orders",
+    });
+    expect(typeof warnings[0].reason).toBe("string");
+  });
+
+  it("omits the warnings field on a clean save (no disk-sync failures)", async () => {
+    mockBulkUpsertEntities.mockClear();
+    mockSyncEntityToDisk.mockReset();
+    mockSyncEntityToDisk.mockImplementation(async () => {});
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.saved).toBe(true);
+    expect("warnings" in data).toBe(false);
   });
 
   it("returns 400 for invalid entity objects (missing tableName/yaml)", async () => {

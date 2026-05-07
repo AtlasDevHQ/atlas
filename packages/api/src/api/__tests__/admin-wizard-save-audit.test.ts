@@ -130,6 +130,37 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
   importFromDisk: mock(async () => ({ imported: 0, skipped: 0, total: 0 })),
 }));
 
+// Mock the entity store: this test exercises the wizard /save audit
+// emission, not the DB write. Returning a full success count keeps
+// the route on the 201 path so the audit assertions can run.
+const mockBulkUpsertEntities: Mock<(
+  orgId: string,
+  entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string }>,
+) => Promise<number>> = mock(async (_orgId, entities) => entities.length);
+
+mock.module("@atlas/api/lib/semantic/entities", () => ({
+  DEMO_CONNECTION_ID: "__demo__",
+  SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
+  bulkUpsertEntities: mockBulkUpsertEntities,
+  upsertEntity: async () => {},
+  upsertDraftEntity: async () => {},
+  upsertTombstone: async () => {},
+  deleteDraftEntity: async () => false,
+  listEntities: async () => [],
+  listEntitiesWithOverlay: async () => [],
+  getEntity: async () => null,
+  deleteEntity: async () => false,
+  countEntities: async () => 0,
+  createVersion: async () => "",
+  listVersions: async () => [],
+  getVersion: async () => null,
+  generateChangeSummary: async () => "",
+  applyTombstones: async () => 0,
+  promoteDraftEntities: async () => 0,
+  archiveSingleConnection: async () => ({ ok: true as const, archived: 0 }),
+  restoreSingleConnection: async () => ({ ok: true as const, restored: 0 }),
+}));
+
 // Profiler module — wizard.ts imports the full set (OBJECT_TYPES,
 // outputDirForDatasource, generate* helpers). Only a handful are used in
 // /save; the rest are stubbed to satisfy the import graph. Keep list of

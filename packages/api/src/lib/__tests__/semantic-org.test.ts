@@ -21,6 +21,7 @@ import { resolve } from "path";
 import type { SemanticEntityRow } from "../semantic/entities";
 
 const mockListEntities = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
+const mockListEntitiesWithOverlay = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
 const mockGetEntity = mock((): Promise<SemanticEntityRow | null> => Promise.resolve(null));
 const mockUpsertEntity = mock((): Promise<void> => Promise.resolve());
 const mockDeleteEntity = mock((): Promise<boolean> => Promise.resolve(false));
@@ -29,6 +30,7 @@ const mockBulkUpsertEntities = mock((): Promise<number> => Promise.resolve(0));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
+  listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,
   deleteEntity: mockDeleteEntity,
@@ -42,8 +44,10 @@ const mod = await import(`${modPath}?t=${Date.now()}`);
 const loadOrgWhitelist = mod.loadOrgWhitelist as typeof import("../semantic/whitelist").loadOrgWhitelist;
 const getOrgWhitelistedTables = mod.getOrgWhitelistedTables as typeof import("../semantic/whitelist").getOrgWhitelistedTables;
 const invalidateOrgWhitelist = mod.invalidateOrgWhitelist as typeof import("../semantic/whitelist").invalidateOrgWhitelist;
+const registerPluginEntities = mod.registerPluginEntities as typeof import("../semantic/whitelist").registerPluginEntities;
 const _resetOrgWhitelists = mod._resetOrgWhitelists as typeof import("../semantic/whitelist")._resetOrgWhitelists;
 const _resetOrgSemanticIndexes = mod._resetOrgSemanticIndexes as typeof import("../semantic/whitelist")._resetOrgSemanticIndexes;
+const _resetPluginEntities = mod._resetPluginEntities as typeof import("../semantic/whitelist")._resetPluginEntities;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,6 +168,111 @@ describe("getOrgWhitelistedTables", () => {
   it("returns empty set for unloaded org", () => {
     const tables = getOrgWhitelistedTables("org-not-loaded");
     expect(tables.size).toBe(0);
+  });
+
+  it("falls back to the only connection when 'default' is requested on a single-connection org (#2142 demo + wizard)", async () => {
+    // Demo workspaces store entities under connection_id="__demo__";
+    // wizard-onboarded workspaces may use any user-chosen id. Without
+    // this fallback, executeSQL calls without an explicit connectionId
+    // (which default to "default") reject every table on those orgs.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow("customers", "customers", "__demo__"),
+        makeEntityRow("orders", "orders", "__demo__"),
+      ]),
+    );
+
+    await loadOrgWhitelist("org-demo");
+    const tables = getOrgWhitelistedTables("org-demo", "default");
+    expect(tables.has("customers")).toBe(true);
+    expect(tables.has("orders")).toBe(true);
+  });
+
+  it("does NOT fall back when requesting non-'default' connectionId — strict isolation", async () => {
+    // The fallback is intentionally narrow: only fires for connectionId="default".
+    // Asking for a specific non-existent connectionId must still return empty,
+    // so multi-source orgs can't accidentally cross-route queries.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+
+    await loadOrgWhitelist("org-demo");
+    const tables = getOrgWhitelistedTables("org-demo", "warehouse");
+    expect(tables.size).toBe(0);
+  });
+
+  it("does NOT fall back when the org has multiple connections", async () => {
+    // Multi-source orgs require explicit connectionId; a "default" lookup
+    // with no matching key returns empty rather than picking one
+    // arbitrarily.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow("customers", "customers", "warehouse"),
+        makeEntityRow("events", "events", "ops"),
+      ]),
+    );
+
+    await loadOrgWhitelist("org-multi");
+    const tables = getOrgWhitelistedTables("org-multi", "default");
+    expect(tables.size).toBe(0);
+  });
+
+  it("prefers a real 'default' entry over the fallback path", async () => {
+    // If the org genuinely has a "default" connection, the direct hit must
+    // win — the fallback only fires when "default" yields an empty set.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow("users", "users"), // connection_id null → keys under "default"
+        makeEntityRow("events", "events", "warehouse"),
+      ]),
+    );
+
+    await loadOrgWhitelist("org-mixed");
+    const tables = getOrgWhitelistedTables("org-mixed", "default");
+    expect(tables.has("users")).toBe(true);
+    expect(tables.has("events")).toBe(false);
+  });
+
+  it("fallback fires identically for published and developer mode caches", async () => {
+    // Each mode keeps a separate cache key. The fallback heuristic must not
+    // depend on which mode loaded the cache — otherwise demo/wizard MCP
+    // works in published mode but breaks for developer-mode SaaS, or vice
+    // versa.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+    mockListEntitiesWithOverlay.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+
+    await loadOrgWhitelist("org-demo", "published");
+    const publishedTables = getOrgWhitelistedTables("org-demo", "default", "published");
+    expect(publishedTables.has("customers")).toBe(true);
+
+    await loadOrgWhitelist("org-demo", "developer");
+    const developerTables = getOrgWhitelistedTables("org-demo", "default", "developer");
+    expect(developerTables.has("customers")).toBe(true);
+  });
+
+  it("merges plugin-registered tables on the fallback path", async () => {
+    // Plugin tables register against connectionId="default" (the requested
+    // id, not the stored key). On the demo fallback path, plugin tables
+    // for "default" must still merge into the result.
+    _resetPluginEntities();
+
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+    registerPluginEntities("default", [
+      { name: "audit_log", yaml: "table: audit_log\n" },
+    ]);
+
+    await loadOrgWhitelist("org-demo");
+    const tables = getOrgWhitelistedTables("org-demo", "default");
+    expect(tables.has("customers")).toBe(true); // via fallback
+    expect(tables.has("audit_log")).toBe(true); // via plugin merge
+
+    _resetPluginEntities();
   });
 });
 

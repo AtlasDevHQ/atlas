@@ -483,12 +483,22 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
     return new Set();
   }
 
-  const hasNonDefault = Array.from(byConnection.keys()).some((k) => k !== "default");
-  let tables: Set<string>;
-  if (!hasNonDefault) {
-    tables = new Set(byConnection.get("default") ?? []);
-  } else {
-    tables = new Set(byConnection.get(connectionId) ?? []);
+  // Single-connection orgs: callers default to "default", but demo stores
+  // under "__demo__" and wizard orgs under user-chosen ids (#2142).
+  let tables = new Set(byConnection.get(connectionId) ?? []);
+  if (
+    tables.size === 0 &&
+    connectionId === "default" &&
+    byConnection.size === 1 &&
+    !byConnection.has("default")
+  ) {
+    const [storedKey] = byConnection.keys();
+    const [onlyTables] = byConnection.values();
+    tables = new Set(onlyTables);
+    log.debug(
+      { orgId, requestedConnectionId: connectionId, resolvedConnectionId: storedKey, mode: mode ?? "developer" },
+      "getOrgWhitelistedTables: single-connection fallback",
+    );
   }
 
   // Merge plugin-provided entities (same behavior as file-based getWhitelistedTables)

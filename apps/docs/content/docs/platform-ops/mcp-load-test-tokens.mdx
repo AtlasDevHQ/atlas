@@ -21,6 +21,18 @@ for ceremony — every run gets a fresh, bounded-lifetime bearer.
 
 ## Auth + access
 
+- **Operator-only surface.** This endpoint is intentionally not
+  documented in the public API reference (`hide: true` on the route
+  definition excludes it from the OpenAPI spec). Customers should not
+  discover or use it; the supported customer-facing path for
+  programmatic MCP access is the OAuth 2.1 ceremony via Claude
+  Desktop, Cursor, or any MCP client that supports DCR + PKCE.
+- **Org allowlist (SaaS).** Set `ATLAS_LOADTEST_ALLOWED_ORGS` to a
+  comma-separated list of workspace ids. Only listed workspaces can
+  mint; others get a bare 404 (the same shape Hono emits for an
+  unmounted route, so probing customers cannot confirm the endpoint
+  exists). When unset, every authenticated workspace member can mint
+  — the self-hosted-friendly default.
 - Caller must be **authenticated** (any workspace member — `member`,
   `admin`, `owner`) and have an **active workspace** on the session.
   No `platform_admin` tier required.
@@ -143,6 +155,7 @@ profile, mint one bearer per region.
 | 401 | `bearer_required` | Request carried a session cookie but no `Authorization: Bearer ...` header. Use Better Auth's bearer-token flow — `POST /api/auth/sign-in/email` returns the token in the response body. |
 | 401 | — | Caller is not authenticated. |
 | 404 | `not_configured` | The internal database (`DATABASE_URL`) is not set; there is no JWKS table to mint against. |
+| 404 | _(bare body, no JSON)_ | Caller's workspace is not in `ATLAS_LOADTEST_ALLOWED_ORGS`. The body shape mimics an unmounted route on purpose — operators see the warn line `Rejected /me/load-test mint — workspace not in ATLAS_LOADTEST_ALLOWED_ORGS` in the API logs to triage. |
 | 429 | `rate_limited` | Per-caller mint cap exceeded. Includes `Retry-After` header. |
 | 500 | `mint_failed` | Unexpected mint failure (decryption error, malformed JWK row, jose import error). The underlying cause is in the API logs at `requestId`; an `audit_log` row with `status: failure` is also written. |
 | 503 | `jwks_not_initialized` | The Better Auth `jwks` table is empty. Hit any `/api/auth/*` endpoint on this region once to seed the keypair, then retry. |

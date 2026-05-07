@@ -27,6 +27,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -105,6 +106,41 @@ export function _setLoadTestClockForTests(fn: (() => number) | null): void {
 
 function clock(): number {
   return _loadTestClockOverride ? _loadTestClockOverride() : Date.now();
+}
+
+// ── Org allowlist ──────────────────────────────────────────────────
+//
+// SaaS hardening: even though /me self-mint is functionally
+// equivalent to a workspace member completing the OAuth ceremony
+// against their own workspace, we don't want to advertise an "easy
+// scripted-MCP path" to every customer org. Most should keep using
+// the OAuth flow (Claude Desktop, Cursor) which forces consent +
+// rotation discipline. The allowlist gate keeps this endpoint
+// reserved for the workspace(s) WE have explicitly designated for
+// load testing or programmatic use.
+//
+// Behavior matrix:
+//   - `ATLAS_LOADTEST_ALLOWED_ORGS` unset / empty → no restriction
+//     (preserves self-hosted behavior — operators load-test their
+//     own single instance without configuring an allowlist).
+//   - Set with values → ONLY those workspace ids pass; everyone
+//     else gets 404. We use 404 (not 403) so the endpoint is
+//     invisible to customers — a 403 would confirm the route
+//     exists and invite probing.
+//
+// Read on every request (no cache): `process.env.X` is a cheap
+// hash lookup, and matching the rate-limiter pattern in this file
+// keeps the surface uniform. An operator can edit the allowlist on
+// Railway and the next request picks it up without a redeploy.
+
+function loadTestAllowlist(): ReadonlySet<string> | null {
+  const raw = process.env.ATLAS_LOADTEST_ALLOWED_ORGS?.trim();
+  if (!raw) return null;
+  const ids = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ids.length === 0 ? null : new Set(ids);
 }
 
 // ── Schemas ─────────────────────────────────────────────────────────
@@ -191,6 +227,15 @@ const mintTokenRoute = createRoute({
   method: "post",
   path: "/mcp-token",
   tags: ["Me — Load Test"],
+  // `hide: true` excludes this route from the OpenAPI spec emitted by
+  // `bun run --filter @atlas/api openapi:extract`. The auto-generated
+  // api-reference MDX in apps/docs/content/docs/api-reference/ skips
+  // it too, so docs.useatlas.dev never lists it. Operators with the
+  // allowlist set discover the endpoint via internal runbooks
+  // (apps/docs/content/docs/platform-ops/mcp-load-test-tokens.mdx),
+  // not via the public API reference. Self-hosted operators with no
+  // allowlist still hit it the same way; it just isn't broadcast.
+  hide: true,
   summary: "Mint a short-lived MCP-scoped JWT for the caller's own workspace",
   description: [
     "Mints a JWT signed by the regional Better Auth JWKS, scoped to `mcp:read` and bound to the caller's active workspace. ",
@@ -275,6 +320,34 @@ meLoadTest.openapi(
           },
           400,
         );
+      }
+
+      // Allowlist check (SaaS hardening). When unset, every authenticated
+      // workspace member can mint — the self-hosted-friendly default.
+      // When set, ONLY listed workspace ids pass. Non-listed orgs see a
+      // bare 404 with no JSON body — the same shape Hono emits for an
+      // unmounted route — so probing customers can't even confirm the
+      // endpoint exists. Don't audit on this rejection: the would-be
+      // attacker should have no signal that the route is real.
+      const allowlist = loadTestAllowlist();
+      if (allowlist !== null && !allowlist.has(workspaceId)) {
+        log.warn(
+          { requestId, workspaceId, actorId: user.id },
+          "Rejected /me/load-test mint — workspace not in ATLAS_LOADTEST_ALLOWED_ORGS",
+        );
+        // Bare-text 404 mimics Hono's default unmounted-route response
+        // exactly — no JSON `error` field that would confirm "this
+        // route exists, you're just not allowed." HTTPException is the
+        // documented escape hatch from the OpenAPI handler's typed
+        // return contract; the API's `app.onError` forwards it
+        // verbatim (with CORS/security headers patched in). See
+        // `packages/api/src/api/index.ts:506`.
+        throw new HTTPException(404, {
+          res: new Response("404 Not Found", {
+            status: 404,
+            headers: { "Content-Type": "text/plain; charset=UTF-8" },
+          }),
+        });
       }
 
       const actorId = user.id;

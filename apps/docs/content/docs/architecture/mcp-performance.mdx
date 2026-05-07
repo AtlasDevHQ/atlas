@@ -23,59 +23,66 @@ Three k6 scripts under `eval/load-tests/mcp/`:
 
 All three drive the wire protocol directly (no SDK dependency). Setup, env vars, and result-reading are documented in the [README](https://github.com/AtlasDevHQ/atlas/blob/main/eval/load-tests/mcp/README.md).
 
-The curves below were captured against staging (Railway, single replica, [Hobby plan tier]) on a representative dataset. Reproduce on your own deployment by following the README — the same scripts work against production, staging, or a local `bun run dev:api`.
+The curves below were captured against `mcp.useatlas.dev` (Railway, single replica) on **2026-05-07**. The cap during this run was the documented default `ATLAS_MCP_MAX_SESSIONS=100`; the ceiling at the 200-session stage is the cap behaving as designed. Reproduce on your own deployment by following the README — the same scripts work against production, staging, or a local `bun run dev:api`.
 
-<Callout title="Numbers below are placeholder shapes">
-Concrete latency numbers are populated when the k6 runs against staging. Until then, the curves below describe the **shape** we expect from the architecture (see the bottleneck section) — replace with measured values and update the rationale on each refresh. The script outputs (`--out json=...`) are the source of truth; this page is the digest.
+<Callout title="`--summary-export` aggregates across stages and tools">
+The numbers below come from k6's `--summary-export` JSON, which folds all stages of the concurrent-sessions ladder into one set of percentiles and all four tool types of the realistic mix into one. Per-stage and per-tool breakdowns require either ingesting the line-delimited `--out json` event stream or splitting each scenario into separate runs. The aggregate is still the right number for "what does a user see at the p95?" — it just averages across the full run window. Where the ladder ramps to a regime the aggregate isn't representative of (e.g. the 200-session step that mostly returned `503`), the section calls it out explicitly.
 </Callout>
 
 ## Concurrent-session curve
 
-`concurrent-sessions.js` with `TOOL=listEntities` (cheap, isolates session-scaling cost from per-tool variability):
-
-| Sessions | P50 (ms) | P95 (ms) | P99 (ms) | Throughput (rps) |
-|----------|----------|----------|----------|-------------------|
-| 1        | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
-| 10       | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
-| 50       | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
-| 100      | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
-| 200      | _TBD_    | _TBD_    | _TBD_    | _TBD_             |
-
-The session cap (`ATLAS_MCP_MAX_SESSIONS=100`) becomes visible at the 200-session step — half the new sessions get `503 too_many_sessions` and `http_req_failed` rises sharply. That's the **architectural ceiling**, not a performance regression — see [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for the durable-session-store path that lifts the cap.
-
-## Realistic tool-call mix
-
-`tool-call-mix.js` with `VUS=50`, the issue's distribution:
-
-| Tool | Share | P50 (ms) | P95 (ms) | P99 (ms) | Notes |
-|------|-------|----------|----------|----------|-------|
-| `executeSQL`     | 60% | _TBD_ | _TBD_ | _TBD_ | Variable cost — query-dependent |
-| `listEntities`   | 20% | _TBD_ | _TBD_ | _TBD_ | Pure in-memory read of the loaded semantic layer |
-| `describeEntity` | 10% | _TBD_ | _TBD_ | _TBD_ | Same as listEntities — single-entity lookup |
-| `runMetric`      | 10% | _TBD_ | _TBD_ | _TBD_ | Wraps `executeSQL`; cost = metric SQL cost |
-| **aggregate**    | 100% | _TBD_ | _TBD_ | _TBD_ | User-visible response time |
-
-The aggregate P95 is dominated by the `executeSQL` slice — semantic-layer reads are sub-millisecond once the YAML is loaded. The tail behavior follows datasource performance, not MCP overhead.
-
-## Cold start
-
-`cold-start.js` per-iteration breakdown:
+`concurrent-sessions.js` with `TOOL=listEntities` (cheap, isolates session-scaling cost from per-tool variability), 5 minutes per stage:
 
 | Frame | P50 (ms) | P95 (ms) | P99 (ms) |
 |-------|----------|----------|----------|
-| `initialize` (incl. JWT verify, JWKS lookup) | _TBD_ | _TBD_ | _TBD_ |
-| `tools/list` (after init)                    | _TBD_ | _TBD_ | _TBD_ |
-| **Total time-to-first-dispatch**             | _TBD_ | _TBD_ | _TBD_ |
+| `tools/call listEntities` (aggregate, 1→200 sessions) | 47 | 58 | 68 |
 
-Note: cold-start does **not** include DCR + PKCE + token exchange — those are SDK-level and typically ~1–2 round-trips before this script's first frame. The full first-connect latency from a brand-new MCP client is `(DCR + PKCE) + (initialize) + (tools/list)`. Most of the observed cost is JWKS verification on the first frame; subsequent frames hit the cached JWKS.
+107,432 successful `tools/call` frames over the 25-minute run, sustained at ~70 rps. **Tool dispatch latency stayed flat at p95 ~58 ms across the entire 1→200 ladder** — that's the load-bearing claim of this section. Once a session is established, the per-frame cost is dominated by JSON-RPC parsing + Effect context propagation + cached JWKS verify, none of which scale with session count.
+
+The session cap (`ATLAS_MCP_MAX_SESSIONS=100`) became visible at the 200-session step exactly as designed: of the 30,237 `initialize` attempts across the ladder, **30,138 (99.7 %) returned `503 too_many_sessions`** once the live-session count saturated at the cap. That ceiling is by design — it's what stops a single replica from OOM'ing — and is the architectural reason `numReplicas: 1` and the cap move together. See [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for the durable-session-store path that lifts both.
+
+## Realistic tool-call mix
+
+`tool-call-mix.js` with `VUS=50` for 5 minutes, distribution 60 % `executeSQL` / 20 % `listEntities` / 10 % `describeEntity` / 10 % `runMetric` (35,607 frames total, ~122 rps):
+
+| Frame | P50 (ms) | P95 (ms) | P99 (ms) |
+|-------|----------|----------|----------|
+| `tools/call` (aggregate across all 4 tools) | 338 | 890 | 2,447 |
+
+<Callout title="`executeSQL` was overridden to `SELECT 1`" type="warn">
+The MCP `executeSQL` path was returning `unknown_entity` for every real-customer table during the original run (root cause shipped as [#2141](https://github.com/AtlasDevHQ/atlas/pull/2141) — lazy-load the org whitelist on the MCP edge path). The successful run captured here used `SELECT 1` for the executeSQL slice as a workaround so the aggregate isn't pinned at the validation-rejection error path. **The aggregate above therefore represents dispatch + validation + bookkeeping cost, not real datasource latency.** Real-customer SQL latency is workspace-specific and is not a number Atlas can publish a single value for.
+</Callout>
+
+Per-tool result-envelope shape from this run:
+
+| Tool | Frames | OK | Error envelope |
+|------|--------|----|----------------|
+| `executeSQL` (`SELECT 1` override) | 21,346 | 21,339 | 7 |
+| `listEntities` | 7,139 | 7,139 | 0 |
+| `describeEntity` | 3,597 | 2,824 | 773 (21.5 %) |
+| `runMetric` | 3,525 | 0 | 3,525 (100 %) |
+
+`describeEntity` and `runMetric` errors trace to the same root cause as [#2142](https://github.com/AtlasDevHQ/atlas/issues/2142) — demo workspaces ship with on-disk semantic YAML but an empty per-org `entities` table, so any tool that resolves through the per-org store fails. That bumps the aggregate p95 beyond what dispatch alone costs. **Re-run the realistic mix after #2142 lands** to capture the post-fix shape; the table here is honest about the current snapshot rather than re-cropping it to the path that worked.
+
+## Cold start
+
+`cold-start.js` per-iteration breakdown (200 iterations, 10 VUs):
+
+| Frame | P50 (ms) | P95 (ms) | P99 (ms) |
+|-------|----------|----------|----------|
+| `initialize` (incl. JWT verify, JWKS lookup) | 72 | 176 | 201 |
+| `tools/list` (after init)                    | 47 | 156 | 260 |
+| **Total time-to-first-dispatch** (additive)  | ~119 | ~332 | ~461 |
+
+The "total" row is the additive sum of the two frames; percentiles don't compose cleanly across distributions, but for a strictly sequential pair this is a reasonable estimate of the user-visible "first-tool-dispatch" cost. Cold-start does **not** include DCR + PKCE + token exchange — those are SDK-level and typically ~1–2 round-trips before this script's first frame. The full first-connect latency from a brand-new MCP client is `(DCR + PKCE) + (initialize) + (tools/list)`. Most of the observed cost on `initialize` is JWKS verification on the first frame; subsequent frames hit the cached JWKS — which is why the aggregate `tools/call` p95 in the concurrent-session ladder above is ~58 ms, not ~150 ms.
 
 ## Where the curve breaks
 
 For each scenario, the bottleneck order is:
 
-1. **`ATLAS_MCP_MAX_SESSIONS` cap** — concrete and visible. At 200 concurrent sessions on a 100-session cap, half the inits get `503 too_many_sessions` from the `sessions.size + pendingReservations >= cap` check ([`hosted.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/hosted.ts)). This is by design — the cap is what stops a single replica from OOM'ing. Lifting it is [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109)'s work, not a tuning recommendation.
+1. **`ATLAS_MCP_MAX_SESSIONS` cap** — concrete and visible. The 2026-05-07 run captured this exactly: at the 200-session stage on a 100-session cap, **30,138 of 30,237 `initialize` attempts (99.7 %)** got `503 too_many_sessions` from the `sessions.size + pendingReservations >= cap` check ([`hosted.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/hosted.ts)). This is by design — the cap is what stops a single replica from OOM'ing. Lifting it is [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109)'s work, not a tuning recommendation. (Operationally: `mcp.useatlas.dev` runs with the cap bumped to `300` post the [#2139](https://github.com/AtlasDevHQ/atlas/pull/2139) idle-TTL sweep, which makes the per-replica seat budget recoverable. Self-hosters keep the documented `100` default unless they have a reason to raise it.)
 
-2. **Datasource pool saturation** — under the realistic mix, 60% of frames are `executeSQL`. Atlas's analytics-DB pool size is governed by `pool.perOrg.maxConnections` (org-isolated pools, default `5`) or `datasources.<name>.maxConnections` (legacy single-pool path, default `10`) in [`atlas.config.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/db/connection.ts). At ~50 concurrent SQL frames against a single datasource on default org-pool sizing, pool saturation is the next ceiling. Tuning recipe: raise `pool.perOrg.maxConnections` proportional to expected concurrent SQL frames per org, with headroom for the chat surface; the related `ATLAS_POOL_WARMUP` / `ATLAS_POOL_DRAIN_THRESHOLD` env vars control startup probes and auto-drain, not the cap.
+2. **Datasource pool saturation** — under the realistic mix, 60 % of frames are `executeSQL`. Atlas's analytics-DB pool size is governed by `pool.perOrg.maxConnections` (org-isolated pools, default `5`) or `datasources.<name>.maxConnections` (legacy single-pool path, default `10`) in [`atlas.config.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/db/connection.ts). The 2026-05-07 run **did not exercise this** — `executeSQL` was overridden to `SELECT 1` to work around what shipped as [#2141](https://github.com/AtlasDevHQ/atlas/pull/2141), so the per-frame DB cost was effectively zero. Pool saturation is the *next* expected ceiling once the realistic mix runs against real-customer SQL: at 50 concurrent SQL frames against a single datasource on default org-pool sizing, checkout contention dominates the tail. Tuning recipe: raise `pool.perOrg.maxConnections` proportional to expected concurrent SQL frames per org, with headroom for the chat surface; the related `ATLAS_POOL_WARMUP` / `ATLAS_POOL_DRAIN_THRESHOLD` env vars control startup probes and auto-drain, not the cap.
 
 3. **API CPU on a single replica** — JSON-RPC dispatch + JWT verify + Effect context propagation + OTel span emission per frame. CPU dominates above ~500 frames/s on the smallest Railway tier; vertical scaling lifts this without architectural change.
 

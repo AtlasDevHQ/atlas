@@ -91,19 +91,26 @@ export default function SchemaDiffPage() {
 
   // Recover-demo flow: detect a partial-state demo workspace and offer a
   // one-click fix. The condition triggers when the diff returned with zero
-  // entities AND the visible picker is `__demo__` — that's the dharma-class
-  // signature (connection committed by /use-demo, entities never imported).
-  // The button fires the admin import endpoint with `source: "demo-seed"`
-  // which the backend wires to the bundled NovaMart YAML.
+  // entities, the visible picker is `__demo__`, AND the org actually owns
+  // `__demo__` (cross-checked against /admin/connections so a stale URL
+  // can't trick a non-demo workspace into pulling the bundled YAML).
+  // The signature catches workspaces where /use-demo committed the
+  // connection but never imported entity rows.
   const isDemoConnection = connectionId === "__demo__";
   const isEmptyDb = diff !== null && diff.summary.total === 0;
-  const showDemoRecover = isDemoConnection && isEmptyDb;
+  const orgOwnsDemo = connectionsData?.some((c) => c.id === "__demo__") ?? false;
+  const showDemoRecover = isDemoConnection && isEmptyDb && orgOwnsDemo;
 
-  const { mutate: recoverDemo, saving: recovering, error: recoverError } = useAdminMutation<{ imported: number }>({
+  const { mutate: recoverDemo, saving: recovering, error: recoverError } = useAdminMutation<{ imported: number; total?: number }>({
     path: "/api/v1/admin/semantic/org/import",
     method: "POST",
     invalidates: refetch,
   });
+  // Last-result feedback so a successful recovery shows what happened even
+  // after the diff refetches (without this the success banner would flash
+  // and disappear). On `imported === 0` we leave the recovery card up so
+  // the user knows the call ran but didn't help — that's actionable signal.
+  const [recoverResult, setRecoverResult] = useState<{ imported: number } | null>(null);
 
   return (
     <PageShell connectionSelector={multipleConnections ? (
@@ -184,7 +191,12 @@ export default function SchemaDiffPage() {
                   size="sm"
                   className="shrink-0 gap-1.5"
                   disabled={recovering}
-                  onClick={() => recoverDemo({ body: { source: "demo-seed" } })}
+                  onClick={async () => {
+                    const result = await recoverDemo({ body: { source: "demo-seed" } });
+                    if (result.ok && result.data) {
+                      setRecoverResult({ imported: result.data.imported });
+                    }
+                  }}
                 >
                   <RefreshCw className={`size-3.5 ${recovering ? "animate-spin" : ""}`} />
                   {recovering ? "Recovering..." : "Recover demo data"}
@@ -193,6 +205,19 @@ export default function SchemaDiffPage() {
               {recoverError && (
                 <div className="border-t border-amber-500/20 px-5 pb-3 pt-2 text-xs text-red-700 dark:text-red-400">
                   Recovery failed: {recoverError.message}
+                </div>
+              )}
+              {recoverResult !== null && !recoverError && (
+                <div className="border-t border-amber-500/20 px-5 pb-3 pt-2 text-xs">
+                  {recoverResult.imported > 0 ? (
+                    <span className="text-green-700 dark:text-green-400">
+                      Imported {recoverResult.imported} entities. Re-running the diff…
+                    </span>
+                  ) : (
+                    <span className="text-red-700 dark:text-red-400">
+                      Recovery ran but imported 0 entities. The bundled demo seed may be missing on this server — contact support.
+                    </span>
+                  )}
                 </div>
               )}
             </Card>

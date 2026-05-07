@@ -1203,10 +1203,49 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(res.status).toBe(201);
     const data = await json(res);
     expect(data.connectionId).toBe("__demo__");
-    // Phase-4 failures (settings, prompt seeding) used to be silent. Now the
-    // 201 carries a `partialFailures` array so the frontend can render a
-    // degraded-state warning instead of pretending all features work.
+    // Phase-4 failures used to be silent. Now the 201 carries a stable
+    // `partialFailures` array so the frontend can render a degraded-state
+    // warning. The shape is always-array (never optional) and the enum
+    // boundary is enforced — only known phase-4 step names appear.
+    expect(Array.isArray(data.partialFailures)).toBe(true);
     expect(data.partialFailures).toContain("demo_industry_setting");
+    expect(data.partialFailures).not.toContain("demo_prompt_collections");
+  });
+
+  it("partialFailures is always an empty array when both phase-4 decorations succeed", async () => {
+    // Pinning the always-emit shape: a frontend that does
+    // `result.partialFailures.includes(...)` shouldn't have to optional-
+    // chain on success. Empty array > missing key.
+    mockSetSetting.mockImplementation(async () => { /* succeed */ });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.partialFailures).toEqual([]);
+  });
+
+  it("partialFailures lists BOTH steps when both phase-4 decorations fail", async () => {
+    mockSetSetting.mockImplementation(async () => { throw new Error("settings down"); });
+    const originalImpl = mockInternalQuery.getMockImplementation();
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("is_builtin = true")) {
+        throw new Error("prompt collections table missing");
+      }
+      return [{ id: "__demo__" }];
+    });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.partialFailures).toContain("demo_industry_setting");
+    expect(data.partialFailures).toContain("demo_prompt_collections");
+    if (originalImpl) mockInternalQuery.mockImplementation(originalImpl);
   });
 
   it("succeeds even when prompt collection seeding fails (non-fatal)", async () => {

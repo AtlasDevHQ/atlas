@@ -463,6 +463,16 @@ export default function SemanticPage() {
           description: typeof e.description === "string" ? e.description : "",
           columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
         })).filter((e) => e.table.length > 0);
+        const dropped = rawEntities.length - normalized.length;
+        if (dropped > 0) {
+          // Silent shape-drops on this page would recreate the conflation
+          // bug we just fixed — surface it so a server-side schema regression
+          // (e.g., a renamed `name` column) is visible in dev tools instead
+          // of looking like an empty workspace.
+          console.debug(
+            `admin/semantic: dropped ${dropped} entities with unrecognized shape from ${entitiesPath}`,
+          );
+        }
         setEntities(normalized);
       } else {
         const err = entitiesRes.reason;

@@ -279,11 +279,11 @@ const UseDemoResponseSchema = z.object({
   entitiesImported: z.number(),
   /**
    * Names of post-commit decoration steps that failed (industry setting,
-   * prompt collection seed). The workspace is queryable, but features
-   * keyed off these may be degraded — the frontend shows a degraded-state
-   * banner so users aren't silently in a half-installed state.
+   * prompt collection seed). Always present as an array — empty when the
+   * full install succeeded — so consumers can call `.includes()` or
+   * `.length` without optional-chaining gymnastics.
    */
-  partialFailures: z.array(z.enum(["demo_industry_setting", "demo_prompt_collections"])).optional(),
+  partialFailures: z.array(z.enum(["demo_industry_setting", "demo_prompt_collections"])),
 });
 
 // Strict-but-empty: validation parses to {} and silently strips unknown keys
@@ -757,14 +757,13 @@ onboarding.openapi(
         }, 500);
       }
       if (importResult.total === 0) {
-        // Scan returned zero candidates — the bundled NovaMart YAML isn't
-        // on the API container even though `getDemoSemanticDir()` resolved
-        // a path (e.g., the directory exists but is empty). This is a
-        // deploy-time misconfiguration, not user error. Failing here is
-        // what would have stopped dharma's class of incident: pre-#2154
-        // /use-demo silently absorbed `total === 0`, set
-        // `ATLAS_DEMO_INDUSTRY`, committed the connection, and left the
-        // workspace with no queryable semantic layer.
+        // Scan returned zero candidates — the bundled YAML isn't on the
+        // API container even though `getDemoSemanticDir()` resolved a path
+        // (e.g., the directory exists but is empty). This is a deploy-time
+        // misconfiguration, not user error. Older /use-demo absorbed this
+        // case silently: it set `ATLAS_DEMO_INDUSTRY`, committed the
+        // connection, and 201'd a workspace with no queryable semantic
+        // layer. Fail loudly so the install is all-or-nothing.
         log.error(
           { orgId, requestId, semanticDir },
           "Demo semantic import scan returned zero entities — bundled YAML missing on this server",
@@ -877,7 +876,7 @@ onboarding.openapi(
         dbType,
         maskedUrl: maskConnectionUrl(url),
         entitiesImported,
-        ...(partialFailures.length > 0 ? { partialFailures } : {}),
+        partialFailures,
       }, 201);
     }), { label: "use demo data" });
   },

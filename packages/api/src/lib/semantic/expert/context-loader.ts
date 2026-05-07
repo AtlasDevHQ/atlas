@@ -21,22 +21,39 @@ function getSemanticRoot(): string {
   return process.env.ATLAS_SEMANTIC_ROOT ?? path.resolve(process.cwd(), "semantic");
 }
 
+/** Outcome of {@link loadEntitiesFromDB} — a discriminator so callers can tell
+ * "no entities" from "every entity row failed to parse" (the latter signals
+ * data corruption and should drive a different UI signal than "0% coverage"). */
+export interface LoadEntitiesFromDBResult {
+  entities: ParsedEntity[];
+  totalRows: number;
+  parseFailures: number;
+}
+
 /**
  * Load entities for an org from the internal DB.
  *
- * Preferred for SaaS surfaces (e.g. the Health widget on /admin/semantic).
- * The disk loader returns the bundled NovaMart YAML on every API container,
- * which on SaaS shows up as "13 entities, 100% coverage" even for orgs that
- * have nothing in `semantic_entities` — the exact conflation that masked the
- * dharma incident. Reading from the DB returns the org's actual queryable
- * semantic layer.
+ * Preferred whenever the caller has both an org context and an internal DB
+ * (SaaS, or self-hosted with `DATABASE_URL` set). The disk loader returns the
+ * bundled YAML present on every API container, which would otherwise make
+ * empty-DB workspaces look fully populated.
+ *
+ * Returns a discriminated result so callers can distinguish:
+ *   - `totalRows === 0` — org has no entity rows (legitimate empty state)
+ *   - `parseFailures === totalRows && totalRows > 0` — every row failed YAML
+ *     parse; the workspace is corrupt, not empty
+ *   - `parseFailures > 0` — partial corruption; surface warning
+ *
+ * Without this discriminator the Health widget shows "0% coverage" for both
+ * "no entities" and "all entities corrupt" — two states that need different
+ * operator actions.
  */
 export async function loadEntitiesFromDB(
   orgId: string,
   mode?: "published" | "developer",
-): Promise<ParsedEntity[]> {
+): Promise<LoadEntitiesFromDBResult> {
   const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
-  if (!hasInternalDB()) return [];
+  if (!hasInternalDB()) return { entities: [], totalRows: 0, parseFailures: 0 };
 
   const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
   const rows = mode === "developer"
@@ -44,10 +61,14 @@ export async function loadEntitiesFromDB(
     : await listEntities(orgId, "entity", "published");
 
   const entities: ParsedEntity[] = [];
+  let parseFailures = 0;
   for (const row of rows) {
     try {
       const parsed = yaml.load(row.yaml_content) as Record<string, unknown> | null;
-      if (!parsed || typeof parsed !== "object") continue;
+      if (!parsed || typeof parsed !== "object") {
+        parseFailures++;
+        continue;
+      }
       entities.push({
         name: String(parsed.table ?? row.name),
         table: String(parsed.table ?? row.name),
@@ -59,13 +80,22 @@ export async function loadEntitiesFromDB(
         connection: typeof parsed.connection === "string" ? parsed.connection : (row.connection_id ?? undefined),
       });
     } catch (err) {
+      parseFailures++;
       log.warn(
         { err: err instanceof Error ? err.message : String(err), entity: row.name, orgId },
         "Failed to parse entity YAML from DB",
       );
     }
   }
-  return entities;
+
+  if (parseFailures > 0 && parseFailures === rows.length) {
+    log.error(
+      { orgId, totalRows: rows.length, parseFailures },
+      "All org entity rows failed YAML parse — semantic layer is corrupt",
+    );
+  }
+
+  return { entities, totalRows: rows.length, parseFailures };
 }
 
 /**

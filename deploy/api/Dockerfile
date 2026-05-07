@@ -100,6 +100,16 @@ COPY --from=builder --chown=atlas:atlas /app/packages/schemas ./packages/schemas
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies
 COPY --from=builder --chown=atlas:atlas /app/packages/api ./packages/api
+# packages/mcp is the hosted-MCP edge — `api/index.ts` does
+# `import("@atlas/mcp/hosted")` at boot, and the workspace symlink
+# in node_modules/@atlas/mcp resolves to /app/packages/mcp at
+# runtime. Without this COPY, the dynamic import ENOENTs and every
+# request to /mcp/{workspace_id}/sse 404s with the Hono default
+# (no route registered). The pre-fix catch logged at debug level,
+# which prod Pino filters — so the breakage was invisible. See
+# packages/api/src/api/index.ts:482 for the mount + the (now
+# error-level) catch.
+COPY --from=builder --chown=atlas:atlas /app/packages/mcp ./packages/mcp
 COPY --from=builder --chown=atlas:atlas /app/node_modules ./node_modules
 COPY --from=builder --chown=atlas:atlas /app/semantic ./semantic
 COPY --from=builder --chown=atlas:atlas /app/package.json ./package.json

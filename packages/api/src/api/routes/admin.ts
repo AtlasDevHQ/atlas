@@ -72,7 +72,7 @@ import { adminResidency } from "./admin-residency";
 import { adminMigrate } from "./admin-migrate";
 import { adminTokens } from "./admin-tokens";
 import { adminOauthClients } from "./admin-oauth-clients";
-import { adminConnections } from "./admin-connections";
+import { adminConnections, getVisibleConnectionIds } from "./admin-connections";
 import { adminPlugins } from "./admin-plugins";
 import { adminCache } from "./admin-cache";
 import { adminActions } from "./admin-actions";
@@ -1371,19 +1371,30 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
 
 admin.openapi(getSemanticDiffRoute, async (c) => {
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
-  const connectionId = c.req.query("connection") ?? "default";
+  const orgId = authResult.user?.activeOrganizationId;
+  const atlasMode = getAtlasMode(c);
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+
+  // Resolve the connection: an explicit `?connection=` wins, otherwise pick
+  // the org's first visible connection. SaaS workspaces own `__demo__` or a
+  // wizard-created id (not `default`), so falling back to literal "default"
+  // would 404 or diff the wrong DB.
+  let connectionId = c.req.query("connection")?.trim() ?? "";
+  if (!connectionId) {
+    if (orgId) {
+      const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, atlasMode);
+      const candidate = visible ? [...visible][0] : connections.list()[0];
+      connectionId = candidate ?? "default";
+    } else {
+      connectionId = "default";
+    }
+  }
 
   // Validate connection exists
   const registered = connections.list();
   if (!registered.includes(connectionId)) {
     return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
   }
-
-  // Scope the diff to the caller's org + mode so demo orgs sharing a DB don't
-  // see phantom tables from other tenants. `adminAuthAndContext` has already
-  // resolved the mode and bound the user onto the request context.
-  const orgId = authResult.user?.activeOrganizationId;
-  const atlasMode = getAtlasMode(c);
 
   try {
     const result = await runDiff(connectionId, { orgId, atlasMode });

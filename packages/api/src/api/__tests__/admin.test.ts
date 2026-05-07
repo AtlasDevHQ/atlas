@@ -874,7 +874,15 @@ describe("GET /api/v1/admin/connections/:id", () => {
   });
 
   it("returns connection detail for registered connection", async () => {
-    mockInternalQuery.mockResolvedValue([{ url: "postgresql://localhost/db", schema_name: "public" }]);
+    // Visibility lookup must return no org-owned rows so the runtime-registered
+    // `default` falls through to the visible set; detail SELECT returns the
+    // URL row.
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (typeof sql === "string" && sql.includes("SELECT c.id FROM connections")) {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([{ url: "postgresql://localhost/db", schema_name: "public" }]);
+    });
     const res = await app.fetch(adminRequest("/api/v1/admin/connections/default"));
     expect(res.status).toBe(200);
 

@@ -2,8 +2,10 @@
  * Admin connection management routes.
  *
  * Mounted under /api/v1/admin/connections via admin.route().
- * Org-scoped: workspace admins see only connections belonging to their org
- * (plus the "default" config-managed connection). Platform admins see all.
+ * Org-scoped: workspace admins see only connections belonging to their org.
+ * The config-managed `default` connection is surfaced as a fallback when the
+ * org has no `connections` rows of its own (self-hosted single-tenant).
+ * Platform admins see all.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -59,19 +61,27 @@ function demoReadonly(requestId: string): { error: string; message: string; requ
  * Get the set of connection IDs visible to a workspace admin.
  * Returns null for platform admins (they see all connections).
  *
+ * The runtime-registered `default` connection (sourced from
+ * `ATLAS_DATASOURCE_URL`) is only surfaced when the org has zero rows of its
+ * own in `connections`. On SaaS every onboarded org owns either `__demo__` or
+ * a wizard-created connection that aliases the same physical DB as `default`,
+ * so seeding `default` unconditionally produced a phantom duplicate in the
+ * Connections list, the Semantic page, and the Schema Diff picker. Self-
+ * hosted single-tenant deployments still see `default` because they have no
+ * `connections` rows at all.
+ *
  * @param mode - Atlas mode. Published mode sees only published connections;
  *   developer mode additionally sees drafts. Archived connections are hidden
  *   in both modes.
  */
-async function getVisibleConnectionIds(
+export async function getVisibleConnectionIds(
   orgId: string,
   isPlatformAdmin: boolean,
   mode?: import("@useatlas/types/auth").AtlasMode,
 ): Promise<Set<string> | null> {
   if (isPlatformAdmin) return null; // null = no filter
 
-  // "default" connection from config is always visible
-  const visible = new Set<string>(["default"]);
+  const visible = new Set<string>();
 
   if (hasInternalDB()) {
     const statusClause = Effect.runSync(
@@ -84,6 +94,10 @@ async function getVisibleConnectionIds(
     for (const row of rows) {
       visible.add(row.id);
     }
+  }
+
+  if (visible.size === 0 && connections.has("default")) {
+    visible.add("default");
   }
 
   return visible;

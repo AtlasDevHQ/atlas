@@ -389,6 +389,14 @@ export async function validateSQL(sql: string, connectionId?: string): Promise<S
         ? getOrgWhitelistedTables(orgId, connectionId, sqlReqCtx?.atlasMode)
         : getWhitelistedTables(connectionId);
 
+      // Self-hosted reads its whitelist from on-disk `catalog.yml` / entity
+      // YAML files; SaaS workspaces read from the per-org `entities` table
+      // managed via the admin UI. Pointing a SaaS user at `catalog.yml` is
+      // a dead end — there is no such file in the deployed image.
+      const guidance = orgId
+        ? "Open admin → Semantic to add this table."
+        : "Check catalog.yml for available tables.";
+
       for (const ref of tables) {
         // tableList returns "select::schema::table" format
         const parts = ref.split("::");
@@ -404,7 +412,7 @@ export async function validateSQL(sql: string, connectionId?: string): Promise<S
           if (!(qualifiedName && allowed.has(qualifiedName))) {
             return {
               valid: false,
-              error: `Table "${qualifiedName}" is not in the allowed list. Check catalog.yml for available tables.`,
+              error: `Table "${qualifiedName}" is not in the allowed list. ${guidance}`,
             };
           }
         } else {
@@ -412,7 +420,7 @@ export async function validateSQL(sql: string, connectionId?: string): Promise<S
           if (!allowed.has(tableName)) {
             return {
               valid: false,
-              error: `Table "${tableName}" is not in the allowed list. Check catalog.yml for available tables.`,
+              error: `Table "${tableName}" is not in the allowed list. ${guidance}`,
             };
           }
         }

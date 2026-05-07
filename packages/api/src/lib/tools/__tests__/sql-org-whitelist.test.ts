@@ -138,6 +138,28 @@ describe("org-scoped SQL whitelist enforcement", () => {
     expect(result.error).toContain("not in the allowed list");
   });
 
+  it("SaaS rejection points at the admin UI, NOT catalog.yml (#2143)", async () => {
+    // On a hosted SaaS workspace there is no catalog.yml in the image —
+    // the whitelist is sourced from the per-org `entities` table managed
+    // through admin → Semantic. The pre-fix error tail told users to
+    // "Check catalog.yml" which is a dead end on SaaS.
+    mockOrgId = "org-123";
+    const result = await validateSQL("SELECT * FROM file_companies");
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("admin → Semantic");
+    expect(result.error).not.toContain("catalog.yml");
+  });
+
+  it("self-hosted rejection still points at catalog.yml", async () => {
+    // The on-disk YAML guidance must remain for self-hosters who edit
+    // `semantic/entities/*.yml` directly.
+    mockOrgId = undefined;
+    const result = await validateSQL("SELECT * FROM org_orders");
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("catalog.yml");
+    expect(result.error).not.toContain("admin → Semantic");
+  });
+
   it("uses file whitelist when no orgId (self-hosted)", async () => {
     mockOrgId = undefined;
     // file_companies is in the file whitelist

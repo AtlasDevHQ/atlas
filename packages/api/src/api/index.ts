@@ -309,6 +309,21 @@ try {
   );
 }
 
+// Platform-admin MCP load-test token mint (#2135). Lives at
+// /api/v1/admin/load-test even though the gate is platform_admin: the
+// surface is operator-facing tooling, not workspace-admin functionality,
+// and the path mirrors the issue spec so CI workflows are stable.
+try {
+  const { adminLoadTest } = await import("./routes/admin-load-test");
+  app.route("/api/v1/admin/load-test", adminLoadTest);
+  log.info("Admin load-test routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load admin load-test routes",
+  );
+}
+
 // Platform admin routes — cross-tenant management (gated to platform_admin role).
 try {
   const { platformAdmin } = await import("./routes/platform-admin");

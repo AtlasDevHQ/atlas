@@ -16,7 +16,74 @@
     }
   ],
   "components": {
-    "schemas": {},
+    "schemas": {
+      "MintMcpTokenResponse": {
+        "type": "object",
+        "properties": {
+          "bearer": {
+            "type": "string",
+            "description": "The signed JWT. Carry verbatim in `Authorization: Bearer <bearer>`. Must NEVER be embedded in logs or stored to disk."
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string",
+            "description": "The audience claim burned into the token; matches the regional `/mcp` URL the verifier accepts."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The issuer claim — `${regional-api}/api/auth`."
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "ISO 8601 wall-clock expiry."
+          },
+          "sub": {
+            "type": "string",
+            "description": "Synthetic subject — `loadtest:<workspaceId>:<random>`. Safe to log; appears in every audit row downstream."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Scope granted on the token. Always `mcp:read`."
+          }
+        },
+        "required": [
+          "bearer",
+          "workspaceId",
+          "audience",
+          "issuer",
+          "expiresAt",
+          "sub",
+          "scope"
+        ]
+      },
+      "MintMcpTokenRequest": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The Atlas organization id the minted token will be scoped to. The MCP path must match (`/mcp/{workspaceId}/sse`)."
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "default": 300,
+            "description": "Token TTL in seconds. Server-side ceiling is 3600s; default 300s. Requests for larger values are rejected with 400 — the cap is not silently clamped."
+          },
+          "region": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Region key (e.g. `us`, `eu`, `apac`) matching `residency.regions[*]` in atlas.config.ts. Defaults to this API instance's region when omitted. The token's audience is bound to the resolved region's API URL — verifying against a different regional MCP edge will fail closed."
+          }
+        },
+        "required": [
+          "workspaceId"
+        ]
+      }
+    },
     "parameters": {},
     "securitySchemes": {
       "bearerAuth": {
@@ -56224,6 +56291,185 @@
         "operationId": "deleteAdminSettingsByKey"
       }
     },
+    "/api/v1/admin/load-test/mcp-token": {
+      "post": {
+        "tags": [
+          "Platform Admin — Load Test"
+        ],
+        "summary": "Mint a short-lived MCP-scoped JWT for load testing",
+        "description": "Mints a JWT signed by the regional Better Auth JWKS, scoped to `mcp:read` and bound to the requested workspace. Intended for the CI load-test workflow (#2129) — k6 calls this once per run, then carries the bearer in `Authorization: Bearer <token>` against `/mcp/{workspaceId}/sse`. TTL is capped at 3600s server-side; requests above the cap are rejected with 400. The bearer must NEVER be logged or persisted; the audit row carries only `jti` for forensic correlation. Region constraint: the token's audience is bound to one regional API. Calling this against `api.useatlas.dev` and using the bearer against `api-eu.useatlas.dev` will fail with 401 (audience mismatch).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MintMcpTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token minted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MintMcpTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, ttl out of range, or unknown region",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not platform_admin (or MFA not enrolled)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured (no JWKS table to read)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-endpoint mint rate exceeded (10/min/admin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error during minting (e.g. JWK decryption failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS table empty — hit any /api/auth/* endpoint on this region once to seed and retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminLoadTestMcpToken"
+      }
+    },
     "/api/v1/platform/workspaces": {
       "get": {
         "tags": [
@@ -64966,6 +65212,9 @@
     },
     {
       "name": "Platform Admin — Custom Domains"
+    },
+    {
+      "name": "Platform Admin — Load Test"
     },
     {
       "name": "Platform Admin — Residency"

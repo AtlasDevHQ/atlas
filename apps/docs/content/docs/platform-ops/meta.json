@@ -12,6 +12,7 @@
     "abuse-prevention",
     "plugin-catalog",
     "encryption-key-rotation",
-    "plugin-config-residue-audit"
+    "plugin-config-residue-audit",
+    "mcp-load-test-tokens"
   ]
 }

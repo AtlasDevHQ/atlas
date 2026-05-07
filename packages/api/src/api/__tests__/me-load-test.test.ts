@@ -237,6 +237,55 @@ describe("POST /api/v1/me/load-test/mcp-token — auth", () => {
   });
 });
 
+describe("POST /api/v1/me/load-test/mcp-token — org allowlist (SaaS hardening)", () => {
+  // Each test resets ATLAS_LOADTEST_ALLOWED_ORGS so the env state
+  // doesn't bleed across cases.
+  afterEach(() => {
+    delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+  });
+
+  it("allowlist unset → unrestricted (preserves self-hosted default)", async () => {
+    delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+    const res = await app.fetch(mintRequest());
+    expect(res.status).toBe(200);
+  });
+
+  it("allowlist set, caller's workspace IS listed → 200", async () => {
+    process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-other,org-test,ws-third";
+    const res = await app.fetch(mintRequest());
+    expect(res.status).toBe(200);
+  });
+
+  it("allowlist set, caller's workspace NOT listed → 404 with no audit row", async () => {
+    process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-other,ws-third";
+    const res = await app.fetch(mintRequest());
+    // 404 (not 403) so the rejection looks indistinguishable from
+    // an unmounted route — no signal that the endpoint exists.
+    expect(res.status).toBe(404);
+    // Audit must NOT fire — otherwise a probing attacker could fill
+    // the audit log even without obtaining a token.
+    expect(logAdminActionAwait).not.toHaveBeenCalled();
+  });
+
+  it("allowlist with whitespace + empty entries is parsed defensively", async () => {
+    process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "  org-test  , ,  ws-other,";
+    const res = await app.fetch(mintRequest());
+    expect(res.status).toBe(200);
+  });
+
+  it("allowlist set to empty string → unrestricted (treated as unset)", async () => {
+    process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "";
+    const res = await app.fetch(mintRequest());
+    expect(res.status).toBe(200);
+  });
+
+  it("allowlist set to only commas/whitespace → unrestricted", async () => {
+    process.env.ATLAS_LOADTEST_ALLOWED_ORGS = " , , , ";
+    const res = await app.fetch(mintRequest());
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("POST /api/v1/me/load-test/mcp-token — body validation", () => {
   it("returns 400 when ttlSeconds exceeds the server-side cap (3600)", async () => {
     const res = await app.fetch(mintRequest({ ttlSeconds: 86400 }));

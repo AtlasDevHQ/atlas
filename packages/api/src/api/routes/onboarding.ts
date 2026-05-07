@@ -646,10 +646,11 @@ onboarding.openapi(
       // not expected to parse it. Hono caches the raw request body, so this
       // telemetry peek doesn't consume the stream the validated body
       // downstream relies on.
-      const rawBody = (yield* Effect.tryPromise({
-        try: () => c.req.json() as Promise<unknown>,
-        catch: () => null,
-      }).pipe(Effect.catchAll(() => Effect.succeed(null)))) as unknown;
+      // Telemetry-only peek; failures stay silent because the validated
+      // body downstream is the load-bearing read.
+      const rawBody = (yield* Effect.promise(() =>
+        c.req.json().catch(() => null) as Promise<unknown>,
+      )) as unknown;
       if (
         rawBody &&
         typeof rawBody === "object" &&
@@ -723,13 +724,15 @@ onboarding.openapi(
 
       // ---------------------------------------------------------------
       // Phase 2 — import entities FIRST. Orphan rows (entities whose
-      // `connection_id` matches a connection that doesn't yet exist for
-      // this org) are filtered out by `listEntitiesWithOverlay`'s
-      // archived-connection check, so a failure here leaves nothing
-      // visible to the user. On retry, `bulkUpsertEntities` upserts
-      // safely; once the connection commits in phase 3 the existing
-      // entity rows become visible. This is the inversion that makes
-      // /use-demo bulletproof.
+      // `connection_id` references a connection row that doesn't exist
+      // for this org, or whose connection isn't `published` / `draft`)
+      // are filtered out by `listEntitiesWithOverlay`'s connection-
+      // visibility join — so a failure between phase 2 and phase 3
+      // leaves nothing visible to the user. On retry,
+      // `bulkUpsertEntities` upserts on `(org_id, name, connection_id)`,
+      // so prior partial state is reabsorbed cleanly; once phase 3
+      // commits the connection, the existing entity rows become
+      // visible.
       // ---------------------------------------------------------------
       const importResult = yield* Effect.tryPromise({
         try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),

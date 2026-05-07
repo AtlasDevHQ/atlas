@@ -1641,10 +1641,15 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
   //   1. Explicit `source: "demo-seed"` — caller asks for the bundled
   //      NovaMart seed (used by recovery flows or future tools).
   //   2. Default — try the org-scoped disk first. If that yields zero
-  //      entities AND the org owns a `__demo__` connection, retry from the
-  //      bundled demo seed automatically. This is the self-heal for
-  //      partial-demo orgs (the dharma class of incident pre-#2153): one
-  //      button click in /admin/semantic recovers the state.
+  //      entities AND the org owns a `__demo__` connection AND the caller
+  //      didn't ask about a specific connection, retry from the bundled
+  //      demo seed automatically. This recovers orgs whose `__demo__`
+  //      connection committed without entity rows (the partial-state bug
+  //      fixed in /use-demo by ordering import-before-connection-write).
+  //      The `!body.connectionId` gate is critical: a caller asking
+  //      explicitly about `warehouse` should NOT have NovaMart silently
+  //      written to its semantic layer even if the org also owns
+  //      `__demo__`.
   let result: Awaited<ReturnType<typeof importFromDisk>>;
   let resolvedSource: string;
   if (body.source === "demo-seed") {
@@ -1666,30 +1671,67 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     result = await importFromDisk(orgId, { connectionId: body.connectionId });
     resolvedSource = body.connectionId ? `disk:${body.connectionId}` : "disk:all";
 
-    if (result.imported === 0 && result.total === 0) {
-      // Org-scoped disk had nothing. If the org has a __demo__ connection
-      // we recover from the bundled seed transparently — saves the admin
-      // from a second click and the cognitive load of figuring out why
-      // the org-scoped disk is empty.
-      const demoRows = await internalQuery<{ id: string }>(
-        `SELECT id FROM connections WHERE org_id = $1 AND id = '__demo__' AND status IN ('published', 'draft')`,
-        [orgId],
-      );
-      if (demoRows.length > 0) {
+    if (result.imported === 0 && result.total === 0 && !body.connectionId) {
+      // Org-scoped disk had nothing AND the caller didn't narrow to a
+      // specific connection. If the org has a `__demo__` connection we
+      // recover from the bundled seed transparently.
+      let ownsDemo = false;
+      try {
+        const demoRows = await internalQuery<{ id: string }>(
+          `SELECT id FROM connections WHERE org_id = $1 AND id = '__demo__' AND status IN ('published', 'draft')`,
+          [orgId],
+        );
+        ownsDemo = demoRows.length > 0;
+      } catch (err) {
+        // A transient DB blip during the recovery probe shouldn't mask the
+        // legitimate "nothing to import" outcome the caller already got.
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+          "Auto-recovery probe failed — skipping recovery",
+        );
+      }
+
+      if (ownsDemo) {
+        // Resolve and import in separate try blocks so a thrown
+        // `importFromDisk` (DB pool, FS perms, etc.) isn't logged as
+        // "bundled demo seed not available" — that was the old conflated
+        // error path.
         const { getDemoSemanticDir } = await import("./onboarding-helpers");
+        let semanticDir: string | null = null;
         try {
-          const semanticDir = getDemoSemanticDir().dir;
-          result = await importFromDisk(orgId, { connectionId: "__demo__", sourceDir: semanticDir });
-          resolvedSource = "demo-seed:auto-recover";
-          log.info(
-            { requestId, orgId, imported: result.imported, total: result.total },
-            "Auto-recovered partial-demo state via bundled seed fallback",
-          );
+          semanticDir = getDemoSemanticDir().dir;
         } catch (err) {
           log.warn(
             { err: err instanceof Error ? err.message : String(err), requestId, orgId },
             "Auto-recovery skipped — bundled demo seed not available",
           );
+        }
+
+        if (semanticDir) {
+          try {
+            const recovered = await importFromDisk(orgId, { connectionId: "__demo__", sourceDir: semanticDir });
+            // Only claim recovery if it actually produced rows — a
+            // `recovered.imported === 0` from a present-but-empty seed
+            // tree shouldn't mislead the audit trail.
+            if (recovered.imported > 0) {
+              result = recovered;
+              resolvedSource = "demo-seed:auto-recover";
+              log.info(
+                { requestId, orgId, imported: result.imported, total: result.total },
+                "Auto-recovered partial-demo state via bundled seed fallback",
+              );
+            } else {
+              log.warn(
+                { requestId, orgId, total: recovered.total },
+                "Auto-recovery attempted but bundled seed yielded zero imports",
+              );
+            }
+          } catch (err) {
+            log.error(
+              { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+              "Auto-recovery import threw — leaving caller with original empty result",
+            );
+          }
         }
       }
     }

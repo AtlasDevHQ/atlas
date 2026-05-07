@@ -1053,6 +1053,66 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(mockImportFromDisk).not.toHaveBeenCalled();
   });
 
+  it("ATOMICITY: import is invoked BEFORE the connection insert in the happy path", async () => {
+    // The phase-reorder is the load-bearing invariant. Asserting the
+    // call order pins it directly so a future refactor that flips
+    // phases 2 and 3 (both succeeding) is caught.
+    let importInvocationOrder = -1;
+    let connectionInsertOrder = -1;
+    let counter = 0;
+    mockImportFromDisk.mockImplementation(async () => {
+      importInvocationOrder = ++counter;
+      return { imported: 13, skipped: 0, errors: [], total: 13 };
+    });
+    const baseImpl = mockInternalQuery.getMockImplementation();
+    mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (typeof sql === "string" && sql.includes("INSERT INTO connections")) {
+        connectionInsertOrder = ++counter;
+        return [{ id: "__demo__" }];
+      }
+      return baseImpl ? baseImpl(sql, params) : [];
+    });
+
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    expect(importInvocationOrder).toBeGreaterThan(0);
+    expect(connectionInsertOrder).toBeGreaterThan(0);
+    expect(importInvocationOrder).toBeLessThan(connectionInsertOrder);
+
+    if (baseImpl) mockInternalQuery.mockImplementation(baseImpl);
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+  });
+
+  it("PARTIAL: imported > 0 && imported < total still commits the connection (lenient contract)", async () => {
+    // Pinning the lenient behavior so a future tightening to all-or-
+    // nothing would have to update this test deliberately. The 0-of-N
+    // case is handled separately as a hard fail.
+    mockImportFromDisk.mockImplementation(async () => ({
+      imported: 8,
+      skipped: 5,
+      errors: [{ file: "broken.yml", reason: "yaml parse" }],
+      total: 13,
+    }));
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.entitiesImported).toBe(8);
+
+    const connectionInsert = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+    );
+    expect(connectionInsert).toBeDefined();
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+  });
+
   it("ATOMICITY: idempotent retry — a successful retry after a failure persists everything", async () => {
     // First call fails on import (no connection committed). Second call
     // succeeds (import is upsert-safe; connection upsert is idempotent).

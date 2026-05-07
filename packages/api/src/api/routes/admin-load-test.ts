@@ -27,7 +27,7 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getConfig } from "@atlas/api/lib/config";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
-import { logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { logAdminActionAwait, ADMIN_ACTIONS, errorMessage } from "@atlas/api/lib/audit";
 import {
   mintLoadTestToken,
   JwksNotInitializedError,
@@ -91,6 +91,23 @@ function checkLoadTestRateLimit(actorId: string, now: number): RateLimitDecision
 /** @internal — test-only. Reset the per-route bucket between cases. */
 export function _resetLoadTestRateLimit(): void {
   loadTestRateBuckets.clear();
+  _loadTestClockOverride = null;
+}
+
+/**
+ * Test-only clock seam. The rate limiter reads `clock()` instead of
+ * `Date.now()` directly so tests can fast-forward past the 60s window
+ * without `setTimeout`-style flakiness. Production never sets this.
+ */
+let _loadTestClockOverride: (() => number) | null = null;
+
+/** @internal — test-only. Pin the rate-limiter clock; pass `null` to release. */
+export function _setLoadTestClockForTests(fn: (() => number) | null): void {
+  _loadTestClockOverride = fn;
+}
+
+function clock(): number {
+  return _loadTestClockOverride ? _loadTestClockOverride() : Date.now();
 }
 
 // ── Schemas ─────────────────────────────────────────────────────────
@@ -280,7 +297,7 @@ adminLoadTest.openapi(
       // limit bucket is consistent across requests.
       const actorId = authResult.user?.id ?? "no-auth-mode";
 
-      const rate = checkLoadTestRateLimit(actorId, Date.now());
+      const rate = checkLoadTestRateLimit(actorId, clock());
       if (!rate.allowed) {
         const retryAfterSeconds = Math.ceil(rate.retryAfterMs / 1000);
         return c.json(
@@ -323,12 +340,24 @@ adminLoadTest.openapi(
           return c.json({ error: err.code, message: err.message, requestId }, 503);
         }
         // Anything else is an unexpected mint failure (decryption,
-        // bad-row data, jose import). Log loudly with the requestId so
-        // operators can correlate to the audit failure row below — and
-        // still return a structured 500 with retry guidance.
-        const message = err instanceof Error ? err.message : String(err);
+        // bad-row data, jose import, internal-DB outage on the JWKS
+        // read). Pass through `errorMessage()` to scrub `scheme://user:
+        // pass@host` userinfo from pg / better-auth errors before any
+        // of this lands in pino or the audit metadata column — the JWKS
+        // read goes through internalQuery, so a connection-string in
+        // the error string is a real hazard. The minter itself sanitizes
+        // the JSON.parse-on-decrypted-content path (see unwrapPrivateJwk
+        // in load-test-tokens.ts), so by the time we reach this catch
+        // the error message no longer carries decrypted key fragments.
+        const message = errorMessage(err);
         log.error(
-          { err: message, requestId, workspaceId: body.workspaceId, region: region.result.region },
+          {
+            err: message,
+            requestId,
+            workspaceId: body.workspaceId,
+            region: region.result.region,
+            actorId,
+          },
           "Load-test mint failed unexpectedly",
         );
         // Best-effort failure audit so the attempt is still on record.
@@ -349,9 +378,23 @@ adminLoadTest.openapi(
             },
           });
         } catch (auditErr) {
+          // Inner-catch enrichment: if the failure-path audit ALSO
+          // throws (DB down mid-incident), the operator still needs
+          // every pivot they would have had on the audit row —
+          // workspaceId, region, actorId, plus the original mint error
+          // — without the structured row to query. Without these
+          // fields the line is groupable only by `requestId`, which is
+          // the slowest possible search path on a hot incident page.
           log.error(
-            { err: auditErr instanceof Error ? auditErr.message : String(auditErr), requestId },
-            "Failed to write failure audit row for mint exception",
+            {
+              err: errorMessage(auditErr),
+              requestId,
+              workspaceId: body.workspaceId,
+              region: region.result.region,
+              actorId,
+              originalMintError: message,
+            },
+            "Failed to write failure audit row for mint exception — manual audit reconciliation required",
           );
         }
         return c.json(

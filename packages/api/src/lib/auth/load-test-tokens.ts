@@ -119,18 +119,24 @@ export interface MintedLoadTestToken {
  *      envelope shape is whatever Better Auth wrote — `JSON.stringify(...)`
  *      around either an encrypted blob (default) or a plain JWK string
  *      (when the operator opted out of encryption). We mirror Better
- *      Auth's own `signJWT` implementation so a future encryption-format
- *      bump on their side surfaces here as a `BetterAuthError` we
- *      propagate, not as a silently-broken signature.
+ *      Auth's own `signJWT` (in `better-auth/plugins/jwt/sign.mjs`) so a
+ *      future encryption-format bump on their side surfaces here as a
+ *      `BetterAuthError` we propagate, not as a silently-broken signature.
  *   3. Build the claim set verbatim against the MCP verifier's contract
  *      in `packages/mcp/src/hosted.ts`. Drift between this claim shape
  *      and the verifier is what would cause every minted token to 401 —
  *      both modules import `ATLAS_OAUTH_WORKSPACE_CLAIM` from the shared
  *      `oauth-claims.ts` so the workspace key cannot drift.
- *   4. Sign with `jose.SignJWT`. Algorithm comes from the JWK's own `alg`
- *      (newer rows) or falls back to `EdDSA` to match Better Auth's own
- *      default. The kid is the row's `id` so the verifier's JWKS resolver
- *      finds the matching public key by exact match.
+ *   4. Sign with `jose.SignJWT`. Algorithm comes from the JWK's embedded
+ *      `alg` field (after JSON-parsing the column value) or falls back
+ *      to `EdDSA` to match Better Auth's own default. The kid is the
+ *      row's `id` so the verifier's JWKS resolver finds the matching
+ *      public key by exact match.
+ *
+ * Tested against `better-auth@^1.6.9`. Envelope-shape changes upstream
+ * (the JSON.stringify wrapping convention, `symmetricEncrypt`'s output,
+ * the JWKS schema's column names) require revisiting `unwrapPrivateJwk`
+ * + `readActiveJwk`.
  */
 export async function mintLoadTestToken(
   input: MintLoadTestTokenInput,
@@ -196,8 +202,6 @@ interface JwkRow {
    * — fewer cross-module assumptions.
    */
   readonly privateKey: string;
-  /** Optional algorithm override. Newer rows may set this; we default to EdDSA otherwise. */
-  readonly alg: string | null;
   readonly createdAt: Date;
   readonly expiresAt: Date | null;
 }
@@ -209,18 +213,19 @@ interface JwkRow {
  *
  * Column names are quoted because Better Auth writes camelCase identifiers
  * (`"publicKey"` etc.) — unquoted Postgres would fold them to lowercase
- * and the SELECT would return `null` for every row.
+ * and the SELECT would return `null` for every row. Algorithm is NOT
+ * read here — it lives inside the JWK after `JSON.parse`, not as a
+ * separate column.
  */
 async function readActiveJwk(): Promise<JwkRow | null> {
   const rows = await internalQuery<{
     id: string;
     publicKey: string;
     privateKey: string;
-    alg: string | null;
     createdAt: Date;
     expiresAt: Date | null;
   }>(
-    `SELECT id, "publicKey", "privateKey", NULL::text AS alg, "createdAt", "expiresAt"
+    `SELECT id, "publicKey", "privateKey", "createdAt", "expiresAt"
        FROM jwks
    ORDER BY "createdAt" DESC
       LIMIT 1`,
@@ -231,7 +236,6 @@ async function readActiveJwk(): Promise<JwkRow | null> {
     id: row.id,
     publicKey: row.publicKey,
     privateKey: row.privateKey,
-    alg: row.alg,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
   };
@@ -290,14 +294,32 @@ async function unwrapPrivateJwk(
   let inner: unknown;
   try {
     inner = JSON.parse(decrypted);
-  } catch (err) {
+  } catch {
+    // CRITICAL: do NOT propagate the underlying JSON.parse error.
+    // JSC/V8's parser embeds a fragment of the failing input in
+    // err.message (verified empirically: `JSON.parse("secret-foo")` →
+    // `JSON Parse error: Unexpected identifier "secret"`). The input
+    // here is the *decrypted* signing key — leaking even a fragment of
+    // it into the failure-path log/audit row would expose more material
+    // than the bearer it protects. The route's failure-path catch
+    // forwards `.message` into pino + `admin_action_log.metadata.error`,
+    // so the message must carry no attacker-recoverable content. The
+    // `cause` option is also intentionally omitted — pino's err
+    // serializer walks the cause chain and would surface the original
+    // JSON.parse message identically. The bare `catch` (no binding) is
+    // the explicit "we deliberately do not propagate the caught error"
+    // signal to project conventions.
     throw new Error(
-      `Failed to JSON.parse decrypted jwks.privateKey: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err },
+      "Decrypted jwks.privateKey is not valid JSON. The envelope may be corrupted, the row may have been written under a different secret, or the encryption format may have changed.",
     );
   }
   if (!isJwkObject(inner)) {
-    throw new Error("Decrypted jwks.privateKey is not a JWK object");
+    // Same hazard as above: do not include the parsed value (or any
+    // derivative of it) in the message. `inner` could be anything from
+    // a partially-corrupt JWK to an attacker-supplied plaintext.
+    throw new Error(
+      "Decrypted jwks.privateKey did not parse to a JWK object (missing or empty `kty` field).",
+    );
   }
   return inner as jose.JWK;
 }
@@ -318,11 +340,12 @@ function isJwkObject(value: unknown): value is jose.JWK {
 }
 
 /**
- * Resolve the JWS algorithm. Mirrors Better Auth's own `signJWT`:
- * prefer the JWK's embedded `alg`, then the row's `alg` column (not
- * present in v1.5.1's schema but reserved here so a future column add
- * doesn't silently shift to the EdDSA fallback), then the documented
- * default.
+ * Resolve the JWS algorithm. Mirrors Better Auth's own `signJWT` in
+ * `better-auth/plugins/jwt/sign.mjs`: prefer the JWK's embedded `alg`
+ * (`JSON.parse(privateKey).alg` after decryption), fall back to the
+ * documented default. There is no `alg` column on the `jwks` table in
+ * v1.6.9 — algorithm provenance lives entirely inside the serialized
+ * JWK.
  */
 function resolveAlg(jwk: jose.JWK): string {
   if (typeof jwk.alg === "string" && jwk.alg.length > 0) return jwk.alg;
@@ -330,10 +353,15 @@ function resolveAlg(jwk: jose.JWK): string {
 }
 
 function synthesizeSubject(workspaceId: string): string {
-  // 16 hex chars = 64 random bits. Enough to make collisions across a
-  // single workspace's load-test history vanishingly unlikely without
-  // bloating the audit row's `actor_id`. The workspace prefix keeps
-  // forensic queries pivoting cleanly on `actor_id LIKE 'loadtest:%'`.
-  const random = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  // 8 random bytes → 16 hex chars = 64 bits of CSPRNG entropy. Enough
+  // to make collisions across a single workspace's load-test history
+  // vanishingly unlikely without bloating the audit row's `actor_id`.
+  // (Slicing UUIDv4 hex would only yield ~58 effective bits because of
+  // the version + variant bits that sit at fixed positions in the
+  // first 16 hex chars.) The workspace prefix keeps forensic queries
+  // pivoting cleanly on `actor_id LIKE 'loadtest:%'`.
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  const random = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   return `${LOAD_TEST_SUBJECT_PREFIX}${workspaceId}:${random}`;
 }

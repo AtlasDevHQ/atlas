@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { schemaDiffSearchParams } from "./search-params";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -88,6 +89,29 @@ export default function SchemaDiffPage() {
 
   const hasDrift = diff ? diff.summary.new > 0 || diff.summary.removed > 0 || diff.summary.changed > 0 : false;
 
+  // Recover-demo flow: detect a partial-state demo workspace and offer a
+  // one-click fix. The condition triggers when the diff returned with zero
+  // entities, the visible picker is `__demo__`, AND the org actually owns
+  // `__demo__` (cross-checked against /admin/connections so a stale URL
+  // can't trick a non-demo workspace into pulling the bundled YAML).
+  // The signature catches workspaces where /use-demo committed the
+  // connection but never imported entity rows.
+  const isDemoConnection = connectionId === "__demo__";
+  const isEmptyDb = diff !== null && diff.summary.total === 0;
+  const orgOwnsDemo = connectionsData?.some((c) => c.id === "__demo__") ?? false;
+  const showDemoRecover = isDemoConnection && isEmptyDb && orgOwnsDemo;
+
+  const { mutate: recoverDemo, saving: recovering, error: recoverError } = useAdminMutation<{ imported: number; total?: number }>({
+    path: "/api/v1/admin/semantic/org/import",
+    method: "POST",
+    invalidates: refetch,
+  });
+  // Last-result feedback so a successful recovery shows what happened even
+  // after the diff refetches (without this the success banner would flash
+  // and disappear). On `imported === 0` we leave the recovery card up so
+  // the user knows the call ran but didn't help — that's actionable signal.
+  const [recoverResult, setRecoverResult] = useState<{ imported: number } | null>(null);
+
   return (
     <PageShell connectionSelector={multipleConnections ? (
       <ConnectionSelector
@@ -147,8 +171,57 @@ export default function SchemaDiffPage() {
             />
           </div>
 
-          {/* No drift — success message */}
-          {!hasDrift && (
+          {/* Demo recovery: empty DB on __demo__ → offer one-click recovery */}
+          {showDemoRecover ? (
+            <Card className="border-amber-500/50 bg-amber-50/50 shadow-none dark:bg-amber-950/20">
+              <CardContent className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                      Demo connection has no semantic entities
+                    </p>
+                    <p className="mt-0.5 text-xs text-amber-700/80 dark:text-amber-400/80">
+                      The <code className="rounded bg-amber-500/10 px-1 py-0.5 font-mono">__demo__</code> connection exists but no entities are registered for queries. Re-import the NovaMart demo data to fix this.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  disabled={recovering}
+                  onClick={async () => {
+                    const result = await recoverDemo({ body: { source: "demo-seed" } });
+                    if (result.ok && result.data) {
+                      setRecoverResult({ imported: result.data.imported });
+                    }
+                  }}
+                >
+                  <RefreshCw className={`size-3.5 ${recovering ? "animate-spin" : ""}`} />
+                  {recovering ? "Recovering..." : "Recover demo data"}
+                </Button>
+              </CardContent>
+              {recoverError && (
+                <div className="border-t border-amber-500/20 px-5 pb-3 pt-2 text-xs text-red-700 dark:text-red-400">
+                  Recovery failed: {recoverError.message}
+                </div>
+              )}
+              {recoverResult !== null && !recoverError && (
+                <div className="border-t border-amber-500/20 px-5 pb-3 pt-2 text-xs">
+                  {recoverResult.imported > 0 ? (
+                    <span className="text-green-700 dark:text-green-400">
+                      Imported {recoverResult.imported} entities. Re-running the diff…
+                    </span>
+                  ) : (
+                    <span className="text-red-700 dark:text-red-400">
+                      Recovery ran but imported 0 entities. The bundled demo seed may be missing on this server — contact support.
+                    </span>
+                  )}
+                </div>
+              )}
+            </Card>
+          ) : !hasDrift && (
             <Card className="border-green-500/50 bg-green-50/50 shadow-none dark:bg-green-950/20">
               <CardContent className="flex items-center gap-3 py-6">
                 <CheckCircle2 className="size-5 text-green-600 dark:text-green-400" />

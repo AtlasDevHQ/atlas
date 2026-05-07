@@ -908,11 +908,28 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
 // GET /health — let runHandler handle errors (no manual try/catch)
 adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
   runHandler(c, "semantic-health-score", async () => {
-    const { loadEntitiesFromDisk, loadGlossaryFromDisk } =
+    const { orgId } = c.get("orgContext");
+    const { loadEntitiesFromDB, loadEntitiesFromDisk, loadGlossaryFromDisk } =
       await import("@atlas/api/lib/semantic/expert/context-loader");
+    const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
     const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
 
-    const entities = await loadEntitiesFromDisk();
+    // Prefer DB-backed entities when we have an org context + internal DB.
+    // Reading bundled YAML for every workspace would show "13 entities,
+    // 100% coverage" for orgs whose `semantic_entities` is empty — a
+    // misleading score that hides broken workspaces from operators.
+    let entities: Awaited<ReturnType<typeof loadEntitiesFromDisk>>;
+    let parseFailures = 0;
+    let totalRows: number;
+    if (orgId && hasInternalDB()) {
+      const dbResult = await loadEntitiesFromDB(orgId, "published");
+      entities = dbResult.entities;
+      parseFailures = dbResult.parseFailures;
+      totalRows = dbResult.totalRows;
+    } else {
+      entities = await loadEntitiesFromDisk();
+      totalRows = entities.length;
+    }
     const glossary = await loadGlossaryFromDisk();
 
     const score = computeSemanticHealth({
@@ -923,6 +940,16 @@ adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
       rejectedKeys: new Set(),
     });
 
-    return c.json(score, 200);
+    // Surface a status discriminator so the widget can distinguish the
+    // empty case (`no_entities`) from the corruption case (`corrupt` —
+    // every entity row failed parse) instead of conflating both with a
+    // 0% score that gives no actionable signal.
+    const status = parseFailures > 0 && parseFailures === totalRows && totalRows > 0
+      ? ("corrupt" as const)
+      : totalRows === 0
+        ? ("no_entities" as const)
+        : ("ok" as const);
+
+    return c.json({ ...score, status, parseFailures, totalRows }, 200);
   }),
 );

@@ -486,6 +486,43 @@ describe("runDiff — org+mode scoping (#1431)", () => {
     expect(omitted.summary).toBeDefined();
   });
 
+  it("whitelist cache expires after TTL — wall-clock advance triggers re-query", async () => {
+    // Without a TTL, the whitelist cache held forever (only entity CRUD
+    // invalidated it). Manual SQL or external recovery scripts left the
+    // API serving stale "no entities" until restart. The TTL must be
+    // wall-clock driven — pinning that here with a Date.now mock so the
+    // test fails if the TTL is ever set to Infinity or removed.
+    const { _resetOrgWhitelists, loadOrgWhitelist } = await import("../semantic/whitelist");
+    _resetOrgWhitelists();
+
+    const realNow = Date.now;
+    let nowMs = 1_000_000;
+    Date.now = () => nowMs;
+
+    try {
+      entityRows = []; // first load: empty
+      const first = await loadOrgWhitelist("ttl-org", "published");
+      expect(first.size).toBe(0);
+
+      // Add rows out-of-band, simulating a recovery SQL insert.
+      entityRows = [
+        { name: "users", table: "users", status: "published", org_id: "ttl-org", connection_id: "__demo__" },
+      ];
+
+      // Within TTL window (advance < 60s): cache hit, still empty.
+      nowMs += 30_000;
+      const cached = await loadOrgWhitelist("ttl-org", "published");
+      expect(cached.size).toBe(0);
+
+      // Cross the TTL boundary: cache evicts, re-queries, sees the new row.
+      nowMs += 31_000;
+      const fresh = await loadOrgWhitelist("ttl-org", "published");
+      expect(fresh.get("__demo__")?.has("users")).toBe(true);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   it("falls back to disk YAML when the org has zero DB entries for the connection", async () => {
     // Self-hosted-with-internal-DB-and-disk-edited YAML: an admin hand-edits
     // `semantic/entities/*.yml` without importing to the DB. The DB loader

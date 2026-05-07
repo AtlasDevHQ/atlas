@@ -277,6 +277,13 @@ const UseDemoResponseSchema = z.object({
   dbType: z.string(),
   maskedUrl: z.string(),
   entitiesImported: z.number(),
+  /**
+   * Names of post-commit decoration steps that failed (industry setting,
+   * prompt collection seed). Always present as an array — empty when the
+   * full install succeeded — so consumers can call `.includes()` or
+   * `.length` without optional-chaining gymnastics.
+   */
+  partialFailures: z.array(z.enum(["demo_industry_setting", "demo_prompt_collections"])),
 });
 
 // Strict-but-empty: validation parses to {} and silently strips unknown keys
@@ -749,9 +756,27 @@ onboarding.openapi(
           requestId,
         }, 500);
       }
-      if (importResult.imported === 0 && importResult.total > 0) {
-        // Bundled YAML was scanned but every row failed the upsert. Treat
-        // as a hard failure — a connection without entities is the exact
+      if (importResult.total === 0) {
+        // Scan returned zero candidates — the bundled YAML isn't on the
+        // API container even though `getDemoSemanticDir()` resolved a path
+        // (e.g., the directory exists but is empty). This is a deploy-time
+        // misconfiguration, not user error. Older /use-demo absorbed this
+        // case silently: it set `ATLAS_DEMO_INDUSTRY`, committed the
+        // connection, and 201'd a workspace with no queryable semantic
+        // layer. Fail loudly so the install is all-or-nothing.
+        log.error(
+          { orgId, requestId, semanticDir },
+          "Demo semantic import scan returned zero entities — bundled YAML missing on this server",
+        );
+        return c.json({
+          error: "demo_not_available",
+          message: "The canonical demo semantic layer is missing on this server. Contact the platform administrator.",
+          requestId,
+        }, 500);
+      }
+      if (importResult.imported === 0) {
+        // Scan found entities but every row failed the upsert. Treat as
+        // a hard failure — a connection without entities is the exact
         // partial state we're trying to prevent.
         log.error(
           { orgId, requestId, total: importResult.total, errors: importResult.errors },
@@ -808,33 +833,50 @@ onboarding.openapi(
         log.warn({ err: errorMessage(err), requestId }, "Demo connection saved but runtime registration failed");
       }
 
-      // Write demo_industry setting + seed prompt collections concurrently (independent, non-fatal)
-      yield* Effect.all([
+      // Write demo_industry setting + seed prompt collections concurrently.
+      // Both are independent post-commit decorations — failure leaves the
+      // workspace queryable but with reduced features (no demoIndustry-aware
+      // banners, no pre-seeded prompts). We surface that through a
+      // `partialFailures` array on the 201 response so the frontend can show
+      // a degraded-state notice instead of pretending everything worked.
+      const phase4Results = yield* Effect.all([
         Effect.tryPromise({
           try: () => setSetting("ATLAS_DEMO_INDUSTRY", industry, user?.id, orgId),
           catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(Effect.catchAll((err) => {
-          log.warn({ err: err.message, requestId, orgId, industry }, "Failed to write demo_industry setting — non-fatal");
-          return Effect.void;
-        })),
+        }).pipe(
+          Effect.map(() => ({ ok: true as const, step: "demo_industry_setting" as const })),
+          Effect.catchAll((err) => {
+            log.warn({ err: err.message, requestId, orgId, industry }, "Failed to write demo_industry setting — non-fatal");
+            return Effect.succeed({ ok: false as const, step: "demo_industry_setting" as const });
+          }),
+        ),
         Effect.tryPromise({
           try: () => seedDemoPromptCollections(orgId, industry),
           catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(Effect.catchAll((err) => {
-          log.warn({ err: err.message, requestId, orgId, industry }, "Failed to seed demo prompt collections — non-fatal");
-          return Effect.void;
-        })),
+        }).pipe(
+          Effect.map(() => ({ ok: true as const, step: "demo_prompt_collections" as const })),
+          Effect.catchAll((err) => {
+            log.warn({ err: err.message, requestId, orgId, industry }, "Failed to seed demo prompt collections — non-fatal");
+            return Effect.succeed({ ok: false as const, step: "demo_prompt_collections" as const });
+          }),
+        ),
       ], { concurrency: "unbounded" });
+
+      const partialFailures = phase4Results.filter((r) => !r.ok).map((r) => r.step);
 
       _resetWhitelists();
 
-      log.info({ requestId, orgId, dbType, userId: user?.id, entitiesImported, industry }, "Demo onboarding complete");
+      log.info(
+        { requestId, orgId, dbType, userId: user?.id, entitiesImported, industry, partialFailures },
+        "Demo onboarding complete",
+      );
 
       return c.json({
         connectionId: id,
         dbType,
         maskedUrl: maskConnectionUrl(url),
         entitiesImported,
+        partialFailures,
       }, 201);
     }), { label: "use demo data" });
   },

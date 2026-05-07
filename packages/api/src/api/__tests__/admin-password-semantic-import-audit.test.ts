@@ -420,11 +420,18 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
     expect(entry.metadata).toMatchObject({ sourceRef: "disk:all" });
   });
 
-  it("explicit source=demo-seed forces the bundled seed path", async () => {
+  it("explicit source=demo-seed forces the bundled seed path when org owns __demo__", async () => {
     let importedFromSeed = false;
     mockImportFromDisk.mockImplementation(async (_orgId: string, opts?: { connectionId?: string; sourceDir?: string }) => {
       if (opts?.sourceDir) importedFromSeed = true;
       return { imported: 13, skipped: 0, total: 13, errors: [] };
+    });
+    // Ownership check: caller must already have a __demo__ connection.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("__demo__")) {
+        return [{ id: "__demo__" }];
+      }
+      return [];
     });
 
     const res = await app.fetch(
@@ -435,5 +442,27 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
     expect(importedFromSeed).toBe(true);
     const entry = lastAuditCall();
     expect(entry.metadata).toMatchObject({ sourceRef: "demo-seed" });
+  });
+
+  it("explicit source=demo-seed is REJECTED when org doesn't own __demo__", async () => {
+    // Ownership safety: a stale URL or programmatic caller can't write
+    // NovaMart entities into a workspace that was never demo-provisioned.
+    mocks.mockInternalQuery.mockResolvedValue([]); // org has no __demo__
+    let importCalls = 0;
+    mockImportFromDisk.mockImplementation(async () => {
+      importCalls++;
+      return { imported: 0, skipped: 0, total: 0, errors: [] };
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/semantic/org/import", { source: "demo-seed" }),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("demo_not_owned");
+    // Critical: no import ran, no audit row, no DB writes attempted.
+    expect(importCalls).toBe(0);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });

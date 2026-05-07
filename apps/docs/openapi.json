@@ -8832,13 +8832,24 @@
                     },
                     "entitiesImported": {
                       "type": "number"
+                    },
+                    "partialFailures": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "demo_industry_setting",
+                          "demo_prompt_collections"
+                        ]
+                      }
                     }
                   },
                   "required": [
                     "connectionId",
                     "dbType",
                     "maskedUrl",
-                    "entitiesImported"
+                    "entitiesImported",
+                    "partialFailures"
                   ]
                 }
               }
@@ -54173,6 +54184,31 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace doesn't own the requested source connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }

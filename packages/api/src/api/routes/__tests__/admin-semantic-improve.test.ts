@@ -162,4 +162,72 @@ describe("admin-semantic-improve", () => {
       expect(body.error).toBe("invalid_id");
     });
   });
+
+  describe("GET /health — DB vs disk source selection", () => {
+    // Pin the load-bearing branch: when there's an org context + internal
+    // DB the endpoint must read from `loadEntitiesFromDB`. A refactor that
+    // flips back to disk would silently restore the conflation that made
+    // empty-DB SaaS workspaces show "13 entities, 100% coverage".
+    let dbCalls = 0;
+    let diskCalls = 0;
+    beforeEach(() => {
+      dbCalls = 0;
+      diskCalls = 0;
+      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+        loadEntitiesFromDB: async () => {
+          dbCalls++;
+          return { entities: [], totalRows: 0, parseFailures: 0 };
+        },
+        loadEntitiesFromDisk: async () => {
+          diskCalls++;
+          return [];
+        },
+        loadGlossaryFromDisk: async () => [],
+      }));
+      mock.module("@atlas/api/lib/semantic/expert/health", () => ({
+        computeSemanticHealth: () => ({
+          overall: 0,
+          coverage: 0,
+          descriptionQuality: 0,
+          measureCoverage: 0,
+          joinCoverage: 0,
+          entityCount: 0,
+          dimensionCount: 0,
+          measureCount: 0,
+          glossaryTermCount: 0,
+        }),
+      }));
+    });
+
+    it("prefers loadEntitiesFromDB when org context + internal DB present", async () => {
+      mockHasInternalDB = true;
+      const res = await adminSemanticImprove.request("/health");
+      expect(res.status).toBe(200);
+      expect(dbCalls).toBe(1);
+      expect(diskCalls).toBe(0);
+    });
+
+    // Note: the disk-fallback branch (`!orgId || !hasInternalDB()`) requires
+    // routing past requireOrgContext which itself depends on the internal
+    // DB — exercising that path needs deeper middleware mocking than this
+    // suite carries. The branch is small enough that the type system + the
+    // single conditional in admin-semantic-improve.ts:923 keeps it honest;
+    // the load-bearing assertion is "DB wins when both are present", above.
+
+    it("response includes a status discriminator distinguishing empty from corrupt", async () => {
+      mockHasInternalDB = true;
+      // Override loader to return totalRows=2, parseFailures=2 (full corruption)
+      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+        loadEntitiesFromDB: async () => ({ entities: [], totalRows: 2, parseFailures: 2 }),
+        loadEntitiesFromDisk: async () => [],
+        loadGlossaryFromDisk: async () => [],
+      }));
+      const res = await adminSemanticImprove.request("/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; parseFailures: number; totalRows: number };
+      expect(body.status).toBe("corrupt");
+      expect(body.parseFailures).toBe(2);
+      expect(body.totalRows).toBe(2);
+    });
+  });
 });

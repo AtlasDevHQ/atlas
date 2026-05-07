@@ -385,16 +385,31 @@ export function _resetPluginEntities(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-org whitelist cache: Map<cacheKey, Map<connectionId, Set<tableName>>>.
+ * Per-org whitelist cache: Map<cacheKey, { tables, expiresAt }>.
  * Each mode gets a distinct cache key so the three result shapes (published
  * filter, developer overlay, no-mode legacy) can never be confused:
  *   - `${orgId}:published` — status = 'published'
  *   - `${orgId}:developer` — CTE overlay
  *   - `${orgId}` — legacy path, no mode supplied (all rows incl. tombstones)
- * Populated by `loadOrgWhitelist()` before the agent loop starts.
- * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD (clears all modes).
+ *
+ * Cache entries expire after `_ORG_WHITELIST_TTL_MS`. Without a TTL,
+ * out-of-band changes (manual SQL, cross-region replication, recovery
+ * scripts) leave the API serving stale data forever — entity CRUD
+ * invalidates only when it goes through our handlers. The TTL makes the
+ * cache eventually consistent with the DB.
  */
-const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
+interface CachedWhitelist {
+  tables: Map<string, Set<string>>;
+  expiresAt: number;
+}
+const _orgWhitelists = new Map<string, CachedWhitelist>();
+
+const _ORG_WHITELIST_TTL_MS = (() => {
+  const raw = process.env.ATLAS_ORG_WHITELIST_TTL_MS;
+  if (!raw) return 60_000; // 60s default
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 60_000;
+})();
 
 function whitelistCacheKey(orgId: string, mode?: "published" | "developer"): string {
   if (mode === "published") return `${orgId}:published`;
@@ -419,7 +434,12 @@ function whitelistCacheKey(orgId: string, mode?: "published" | "developer"): str
 export async function loadOrgWhitelist(orgId: string, mode?: "published" | "developer"): Promise<Map<string, Set<string>>> {
   const cacheKey = whitelistCacheKey(orgId, mode);
   const cached = _orgWhitelists.get(cacheKey);
-  if (cached) return cached;
+  if (cached && cached.expiresAt > Date.now()) return cached.tables;
+  if (cached) {
+    // Expired entry — drop it so the load below repopulates with a fresh
+    // expiresAt instead of mutating a stale entry's window.
+    _orgWhitelists.delete(cacheKey);
+  }
 
   const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
   const rows = mode === "developer"
@@ -456,7 +476,7 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
     log.error({ orgId, entityCount: rows.length, parseFailures }, "All org entities failed to parse — whitelist is empty");
   }
 
-  _orgWhitelists.set(cacheKey, byConnection);
+  _orgWhitelists.set(cacheKey, { tables: byConnection, expiresAt: Date.now() + _ORG_WHITELIST_TTL_MS });
   const totalTables = Array.from(byConnection.values()).reduce((s, set) => s + set.size, 0);
   log.info({ orgId, mode: mode ?? "developer", entityCount: rows.length, parsedCount: rows.length - parseFailures, tableCount: totalTables, connections: Array.from(byConnection.keys()) }, "Loaded org whitelist from DB");
   return byConnection;
@@ -477,11 +497,12 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
  */
 export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default", mode?: "published" | "developer"): Set<string> {
   const cacheKey = whitelistCacheKey(orgId, mode);
-  const byConnection = _orgWhitelists.get(cacheKey);
-  if (!byConnection) {
+  const cached = _orgWhitelists.get(cacheKey);
+  if (!cached) {
     log.warn({ orgId, connectionId, mode: mode ?? "developer" }, "Org whitelist not loaded — all tables will be rejected");
     return new Set();
   }
+  const byConnection = cached.tables;
 
   // Single-connection orgs: callers default to "default", but demo stores
   // under "__demo__" and wizard orgs under user-chosen ids (#2142).

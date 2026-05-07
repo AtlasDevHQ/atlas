@@ -412,13 +412,27 @@ export default function SemanticPage() {
 
   const refetchAll = () => setFetchKey((k) => k + 1);
 
-  // Fetch all semantic data
+  // Fetch all semantic data.
+  //
+  // On SaaS we read entities from the DB-scoped org endpoint so the file
+  // tree reflects what's actually queryable for this workspace. The disk-
+  // baked /api/v1/admin/semantic/entities returns the bundled NovaMart YAML
+  // present on every API container — for SaaS orgs that's misleading
+  // (empty-DB workspaces looked "fully populated"). Self-hosted with no
+  // internal DB still uses the disk endpoint as the authoritative source.
+  //
+  // Glossary / metrics / catalog stay disk-based for now: those are not yet
+  // org-scoped in the DB schema, so until the broader migration they're
+  // shared per-deployment content. Tracked separately.
   useEffect(() => {
     let cancelled = false;
 
     async function fetchAll() {
+      const entitiesPath = isSaas
+        ? `/api/v1/admin/semantic/org/entities?type=entity`
+        : `/api/v1/admin/semantic/entities`;
       const [entitiesRes, glossaryRes, metricsRes, catalogRes] = await Promise.allSettled([
-        fetch(`${apiUrl}/api/v1/admin/semantic/entities`, fetchOpts).then((r) => {
+        fetch(`${apiUrl}${entitiesPath}`, fetchOpts).then((r) => {
           if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
           return r.json();
         }),
@@ -440,7 +454,26 @@ export default function SemanticPage() {
 
       if (entitiesRes.status === "fulfilled") {
         const data = entitiesRes.value;
-        setEntities(Array.isArray(data?.entities) ? data.entities : Array.isArray(data) ? data : []);
+        const rawEntities = Array.isArray(data?.entities) ? data.entities : Array.isArray(data) ? data : [];
+        // Org endpoint returns rows with { name, entityType, status, connectionId, updatedAt }.
+        // File endpoint returns rows with { table, description, columnCount }.
+        // Normalize to the shared EntitySummary shape regardless of source.
+        const normalized: EntitySummary[] = (rawEntities as Record<string, unknown>[]).map((e) => ({
+          table: typeof e.table === "string" ? e.table : (typeof e.name === "string" ? e.name : ""),
+          description: typeof e.description === "string" ? e.description : "",
+          columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
+        })).filter((e) => e.table.length > 0);
+        const dropped = rawEntities.length - normalized.length;
+        if (dropped > 0) {
+          // Silent shape-drops on this page would recreate the conflation
+          // bug we just fixed — surface it so a server-side schema regression
+          // (e.g., a renamed `name` column) is visible in dev tools instead
+          // of looking like an empty workspace.
+          console.debug(
+            `admin/semantic: dropped ${dropped} entities with unrecognized shape from ${entitiesPath}`,
+          );
+        }
+        setEntities(normalized);
       } else {
         const err = entitiesRes.reason;
         setError({ message: err.message, status: err.status });
@@ -657,7 +690,7 @@ export default function SemanticPage() {
                 Improve
               </Button>
             </Link>
-            {isSaas && !demoReadOnly && (
+            {isSaas && (
               <Button
                 variant="outline"
                 className="gap-1.5"

@@ -868,6 +868,7 @@ const importOrgEntitiesRoute = createRoute({
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    409: { description: "Workspace doesn't own the requested source connection", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
@@ -1653,6 +1654,24 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
   let result: Awaited<ReturnType<typeof importFromDisk>>;
   let resolvedSource: string;
   if (body.source === "demo-seed") {
+    // Caller must already own a `__demo__` connection — otherwise a stale
+    // URL or programmatic caller could write NovaMart entities into an
+    // unrelated workspace under a phantom connection id.
+    const ownsDemo = await internalQuery<{ id: string }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id = '__demo__' AND status IN ('published', 'draft')`,
+      [orgId],
+    ).then((rows) => rows.length > 0).catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId, orgId }, "Demo-ownership probe failed during recovery");
+      return false;
+    });
+    if (!ownsDemo) {
+      return c.json({
+        error: "demo_not_owned",
+        message: "This workspace does not own a __demo__ connection. Re-run onboarding to provision the canonical demo first.",
+        requestId,
+      }, 409);
+    }
+
     const { getDemoSemanticDir } = await import("./onboarding-helpers");
     let semanticDir: string;
     try {

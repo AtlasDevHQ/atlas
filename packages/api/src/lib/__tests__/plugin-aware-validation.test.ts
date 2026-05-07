@@ -166,7 +166,7 @@ describe("validateSQL with plugin forbidden patterns", () => {
     });
 
     // UNION is not forbidden for regular postgres, but our plugin says it is
-    const result = validateSQL("SELECT 1 UNION SELECT 2", "strict-ds");
+    const result = await validateSQL("SELECT 1 UNION SELECT 2", "strict-ds");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("UNION");
   });
@@ -182,12 +182,12 @@ describe("validateSQL with plugin forbidden patterns", () => {
     connections.registerDirect("plain", mockConn(), "postgres");
 
     // Blocked on strict
-    expect(validateSQL("SELECT 1 UNION SELECT 2", "strict").valid).toBe(false);
+    expect((await validateSQL("SELECT 1 UNION SELECT 2", "strict")).valid).toBe(false);
 
     // Allowed on plain (postgres has no UNION restriction)
     // Note: this requires the semantic layer whitelist to be off
     process.env.ATLAS_TABLE_WHITELIST = "false";
-    expect(validateSQL("SELECT 1 UNION SELECT 2", "plain").valid).toBe(true);
+    expect((await validateSQL("SELECT 1 UNION SELECT 2", "plain")).valid).toBe(true);
     delete process.env.ATLAS_TABLE_WHITELIST;
   });
 });

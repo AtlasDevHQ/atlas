@@ -772,7 +772,7 @@ authed.openapi(refreshCardRoute, async (c) => {
 
     // Validate SQL before execution — card SQL could have been stored before whitelist changes
     const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
-    const validation = validateSQL(cardResult.data.sql, cardResult.data.connectionId ?? undefined);
+    const validation = yield* Effect.promise(() => validateSQL(cardResult.data.sql, cardResult.data.connectionId ?? undefined));
     if (!validation.valid) {
       return c.json({ error: "invalid_sql", message: `Card SQL failed validation: ${validation.error}`, requestId }, 400);
     }
@@ -848,7 +848,7 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
       yield* Effect.tryPromise({
         try: async () => {
           // Validate SQL before execution
-          const validation = validateSQL(card.sql, card.connectionId ?? undefined);
+          const validation = await validateSQL(card.sql, card.connectionId ?? undefined);
           if (!validation.valid) {
             log.warn({ cardId: card.id, error: validation.error }, "Bulk refresh: card SQL failed validation");
             failed++;
@@ -1104,9 +1104,12 @@ authed.openapi(suggestCardsRoute, async (c) => {
     const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const validChartTypes = new Set(CHART_TYPES);
 
-    const suggestions = rawSuggestions
-      .map((s) => {
-        const validation = validateSQL(s.sql, undefined);
+    // validateSQL is now async (lazy-loads the per-org whitelist).
+    // Run validations concurrently — map → Promise.all → filter, same
+    // shape as the prior sync map, with the per-call await contained.
+    const suggestionsResolved = yield* Effect.promise(() =>
+      Promise.all(rawSuggestions.map(async (s) => {
+        const validation = await validateSQL(s.sql, undefined);
         if (!validation.valid) return null;
         const chartType = validChartTypes.has(s.chartType as typeof CHART_TYPES[number]) ? s.chartType : "table";
         return {
@@ -1119,7 +1122,9 @@ authed.openapi(suggestCardsRoute, async (c) => {
           },
           reason: s.reason.slice(0, 500),
         };
-      })
+      }))
+    );
+    const suggestions = suggestionsResolved
       .filter((s): s is NonNullable<typeof s> => s !== null);
 
     return c.json({ suggestions }, 200);

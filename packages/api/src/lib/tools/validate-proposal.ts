@@ -158,7 +158,7 @@ export const validateProposal = tool({
 
       if (payload.testQuery) {
         // Validate test query through SQL pipeline before execution
-        const sqlValidation = validateSQL(payload.testQuery);
+        const sqlValidation = await validateSQL(payload.testQuery);
         if (!sqlValidation.valid) {
           testQueryResult = {
             success: false,

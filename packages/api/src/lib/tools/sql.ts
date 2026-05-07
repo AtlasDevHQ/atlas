@@ -19,7 +19,7 @@ import { Effect } from "effect";
 import { Parser } from "node-sql-parser";
 import { connections, detectDBType, getRegionAwareConnection, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
-import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
+import { getWhitelistedTables, getOrgWhitelistedTables, loadOrgWhitelist } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { withSpan } from "@atlas/api/lib/tracing";
@@ -241,7 +241,7 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegEx
   }
 }
 
-export function validateSQL(sql: string, connectionId?: string): SQLValidationResult {
+export async function validateSQL(sql: string, connectionId?: string): Promise<SQLValidationResult> {
   // Resolve DB type for this connection.
   // When an explicit connectionId is given but not found, return a validation
   // error instead of silently falling back — wrong parser mode is a security risk.
@@ -371,6 +371,20 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
       const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
       const sqlReqCtx = getRequestContext();
       const orgId = sqlReqCtx?.user?.activeOrganizationId;
+      // Lazy-load the per-org whitelist into the in-process cache.
+      // The chat path (`agent.ts:570`) explicitly preloads this before
+      // dispatching the agent loop. The MCP edge does NOT — every
+      // executeSQL call from Claude Desktop / Cursor was hitting an
+      // empty whitelist and rejecting every table with `unknown_entity`
+      // regardless of what `listEntities` reported. The fix is to
+      // ensure the whitelist is loaded HERE so every code path that
+      // reaches SQL validation gets the same answer, instead of
+      // relying on each entry-point caller to remember the preload.
+      // `loadOrgWhitelist` is cache-guarded — the second call onward
+      // is O(1).
+      if (orgId) {
+        await loadOrgWhitelist(orgId, sqlReqCtx?.atlasMode);
+      }
       const allowed = orgId
         ? getOrgWhitelistedTables(orgId, connectionId, sqlReqCtx?.atlasMode)
         : getWhitelistedTables(connectionId);
@@ -581,11 +595,13 @@ function runQueryValidationEffect(
   customValidator: CustomValidator | undefined,
 ): Effect.Effect<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
   if (!customValidator) {
-    const validation = validateSQL(sql, connId);
-    if (!validation.valid) {
-      return Effect.succeed({ ok: false as const, error: validation.error, auditError: `Validation rejected: ${validation.error}` });
-    }
-    return Effect.succeed({ ok: true as const, classification: validation.classification });
+    return Effect.promise(async () => {
+      const validation = await validateSQL(sql, connId);
+      if (!validation.valid) {
+        return { ok: false as const, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
+      }
+      return { ok: true as const, classification: validation.classification };
+    });
   }
 
   // Custom validator (async) — errors are caught and returned as result values, not thrown

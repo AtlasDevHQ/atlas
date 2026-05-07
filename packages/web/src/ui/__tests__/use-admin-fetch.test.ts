@@ -606,6 +606,49 @@ describe("useAdminFetch", () => {
 
     console.warn = originalWarn;
   });
+
+  test("enabled: false skips the request and reports loading=false", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch<{ value: number }>("/api/test", { enabled: false }),
+      { wrapper },
+    );
+
+    // Disabled queries should not fire fetch and should not stick in loading.
+    // Without this contract, callers gating on `loading` (e.g., the schema-
+    // diff page when connectionId is empty) would render an infinite spinner.
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.data).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("enabled flips from false to true to fire the request", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 7 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useAdminFetch<{ value: number }>("/api/test", { enabled }),
+      { wrapper, initialProps: { enabled: false } },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    rerender({ enabled: true });
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual({ value: 7 });
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 /* ------------------------------------------------------------------ */

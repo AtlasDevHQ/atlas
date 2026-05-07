@@ -162,7 +162,7 @@ describe("admin connections — org scoping", () => {
   // ─── 2. List filters by org ─────────────────────────────────────────
 
   describe("GET /connections — list filters by org", () => {
-    it("workspace admin only sees connections belonging to their org", async () => {
+    it("workspace admin sees only their org's connections — default is suppressed when org owns rows", async () => {
       // getVisibleConnectionIds queries internal DB for org's connections
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
@@ -180,15 +180,19 @@ describe("admin connections — org scoping", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
-      // Should see "default" (always visible) + "warehouse" (owned by org-alpha)
-      expect(ids).toContain("default");
+      // Should see "warehouse" (owned by org-alpha)
       expect(ids).toContain("warehouse");
+      // Should NOT see "default" — the org owns its own connection, so the
+      // runtime-registered fallback is suppressed (avoids the SaaS phantom-
+      // duplicate where every org saw both `default` and `__demo__`).
+      expect(ids).not.toContain("default");
       // Should NOT see "other-org-conn" (belongs to a different org)
       expect(ids).not.toContain("other-org-conn");
     });
 
-    it("workspace admin with no DB connections only sees default", async () => {
-      // No connections in internal DB for this org
+    it("workspace admin with no DB connections falls back to default", async () => {
+      // No connections in internal DB for this org — self-hosted single-tenant
+      // path keeps working because `default` is the only registered connection.
       mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
@@ -506,8 +510,9 @@ describe("admin connections — org scoping", () => {
   // ─── 5. getVisibleConnectionIds correctness ─────────────────────────
 
   describe("getVisibleConnectionIds — via list endpoint behavior", () => {
-    it("always includes 'default' for workspace admins", async () => {
-      // Even if internal DB returns no connections for this org
+    it("falls back to 'default' for workspace admins when the org owns no connections", async () => {
+      // Self-hosted single-tenant: no connections rows → seed `default` from
+      // the runtime registry so the admin still sees the config-managed DB.
       mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
@@ -521,7 +526,9 @@ describe("admin connections — org scoping", () => {
       expect(ids).toContain("default");
     });
 
-    it("includes org-owned connections from internal DB", async () => {
+    it("suppresses 'default' once the org has its own connections", async () => {
+      // SaaS path: dhamra owns __demo__ (or wizard-created), so the runtime-
+      // registered `default` should not surface alongside it.
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
@@ -537,9 +544,7 @@ describe("admin connections — org scoping", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
-      expect(ids).toContain("default");
-      expect(ids).toContain("warehouse");
-      expect(ids).toHaveLength(2);
+      expect(ids).toEqual(["warehouse"]);
     });
 
     it("returns null (no filter) for platform admins — all connections visible", async () => {

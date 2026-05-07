@@ -18,6 +18,7 @@ import {
   getWhitelistedTables,
   loadOrgWhitelist,
 } from "./whitelist";
+import { listEntities, listEntitiesWithOverlay } from "./entities";
 
 const log = createLogger("semantic-diff");
 
@@ -296,6 +297,75 @@ export function getYAMLSnapshots(
 }
 
 // ---------------------------------------------------------------------------
+// getYAMLSnapshotsFromDB — read entity YAMLs from the internal DB
+// ---------------------------------------------------------------------------
+
+/**
+ * Build YAML snapshots from `semantic_entities` rows for an org+connection.
+ *
+ * SaaS workspaces store their semantic layer in the internal DB (the wizard
+ * and `/use-demo` both write rows with `connection_id` set, never to disk).
+ * The on-disk loader (`getYAMLSnapshots`) returns empty for those orgs, which
+ * is why Schema Diff was rendering "all DB tables are new" or "no entities
+ * match" — the diff was comparing a real DB schema against an empty YAML
+ * side. This loader is the DB-backed counterpart.
+ *
+ * Mode semantics mirror the whitelist:
+ *   - `developer` — overlay (draft + published; `draft_delete` tombstones
+ *     drop the published row; entities under archived connections are
+ *     excluded by `listEntitiesWithOverlay`) so the diff reflects what the
+ *     developer is editing.
+ *   - `published` or omitted — only `status = 'published'` entity rows are
+ *     read. We never include `archived` rows in a diff because archived
+ *     state represents removed semantic-layer state, not part of the
+ *     comparison surface.
+ *
+ * Connection scoping matches what `executeSQL` and the whitelist do:
+ *   - rows with `connection_id = connectionId` belong to that connection
+ *   - rows with `connection_id IS NULL` belong to the "default" connection
+ *     only — they're hidden when the caller asks about a non-default
+ *     connection so an org with both `default` and `__demo__` doesn't double-
+ *     count entities written before connection scoping existed.
+ */
+export async function getYAMLSnapshotsFromDB(
+  orgId: string,
+  connectionId: string,
+  atlasMode: AtlasMode | undefined,
+): Promise<{ snapshots: Map<string, EntitySnapshot>; warnings: string[] }> {
+  const snapshots = new Map<string, EntitySnapshot>();
+  const warnings: string[] = [];
+
+  // Lazy import to avoid pulling js-yaml into the CLI's bundle of this module.
+  const yaml = await import("js-yaml");
+
+  // Always filter to non-archived rows. `listEntities(..., undefined)` would
+  // include `archived` (verified at entities.ts) — undesirable for a diff.
+  const rows = atlasMode === "developer"
+    ? await listEntitiesWithOverlay(orgId, "entity")
+    : await listEntities(orgId, "entity", "published");
+
+  for (const row of rows) {
+    const rowConnection = row.connection_id ?? "default";
+    if (rowConnection !== connectionId) continue;
+    try {
+      const doc = yaml.load(row.yaml_content) as Record<string, unknown> | null;
+      if (!doc || typeof doc.table !== "string") continue;
+      const snapshot = parseEntityYAML(doc);
+      snapshots.set(snapshot.table, snapshot);
+    } catch (err) {
+      const msg = `Failed to parse entity row ${row.name}: ${err instanceof Error ? err.message : String(err)}`;
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)), entityName: row.name, orgId },
+        msg,
+      );
+      warnings.push(msg);
+    }
+  }
+
+  return { snapshots, warnings };
+}
+
+// ---------------------------------------------------------------------------
 // runDiff — orchestrates the full diff for a connection
 // ---------------------------------------------------------------------------
 
@@ -351,7 +421,29 @@ export async function runDiff(
   }
 
   const dbSnapshots = await getDBSchema(connectionId, allowedTables);
-  const { snapshots: yamlSnapshots, warnings } = getYAMLSnapshots(connectionId);
+  // SaaS orgs persist their semantic layer in the internal DB, not on disk.
+  // Prefer the DB-backed loader when we have an org context; fall back to
+  // the disk loader for self-hosted (no internal DB) or legacy CLI callers.
+  // Self-hosted-with-internal-DB-and-disk-only-YAML: when the DB query yields
+  // zero entries we re-try the disk loader so an admin who hand-edits files
+  // still gets a meaningful diff. Disk warnings are merged in.
+  let yamlSnapshots: Map<string, EntitySnapshot>;
+  let warnings: string[];
+  if (orgId && hasInternalDB()) {
+    const dbResult = await getYAMLSnapshotsFromDB(orgId, connectionId, atlasMode);
+    if (dbResult.snapshots.size === 0) {
+      const diskResult = getYAMLSnapshots(connectionId);
+      yamlSnapshots = diskResult.snapshots;
+      warnings = [...dbResult.warnings, ...diskResult.warnings];
+    } else {
+      yamlSnapshots = dbResult.snapshots;
+      warnings = dbResult.warnings;
+    }
+  } else {
+    const diskResult = getYAMLSnapshots(connectionId);
+    yamlSnapshots = diskResult.snapshots;
+    warnings = diskResult.warnings;
+  }
 
   const diff = computeDiff(dbSnapshots, yamlSnapshots);
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { schemaDiffSearchParams } from "./search-params";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -57,9 +57,26 @@ export default function SchemaDiffPage() {
     { schema: ConnectionsResponseSchema },
   );
 
+  // Auto-select the org's first connection once the list loads. The URL state
+  // defaults to "" so SaaS workspaces (which own `__demo__` or a wizard-named
+  // id, not `default`) don't get pinned to a phantom alias before the data
+  // arrives. The backend tolerates `?connection=` and resolves the same way,
+  // but writing the picked id back to the URL keeps the dropdown coherent.
+  useEffect(() => {
+    if (!connectionId && connectionsData && connectionsData.length > 0) {
+      setConnectionId(connectionsData[0].id);
+    }
+  }, [connectionId, connectionsData]);
+
   const { data: diff, loading, error, refetch } = useAdminFetch(
     `/api/v1/admin/semantic/diff?connection=${encodeURIComponent(connectionId)}`,
-    { schema: SemanticDiffResponseSchema, deps: [connectionId] },
+    {
+      schema: SemanticDiffResponseSchema,
+      deps: [connectionId],
+      // Skip the request until the auto-pick effect populates the URL,
+      // otherwise we fire a redundant `?connection=` request on first render.
+      enabled: connectionId.length > 0,
+    },
   );
 
   // Schema diff is meaningful only against a developer-mode (draft)

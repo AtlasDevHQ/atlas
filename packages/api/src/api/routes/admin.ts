@@ -72,7 +72,7 @@ import { adminResidency } from "./admin-residency";
 import { adminMigrate } from "./admin-migrate";
 import { adminTokens } from "./admin-tokens";
 import { adminOauthClients } from "./admin-oauth-clients";
-import { adminConnections } from "./admin-connections";
+import { adminConnections, getVisibleConnectionIds } from "./admin-connections";
 import { adminPlugins } from "./admin-plugins";
 import { adminCache } from "./admin-cache";
 import { adminActions } from "./admin-actions";
@@ -1371,30 +1371,64 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
 
 admin.openapi(getSemanticDiffRoute, async (c) => {
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
-  const connectionId = c.req.query("connection") ?? "default";
-
-  // Validate connection exists
-  const registered = connections.list();
-  if (!registered.includes(connectionId)) {
-    return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
-  }
-
-  // Scope the diff to the caller's org + mode so demo orgs sharing a DB don't
-  // see phantom tables from other tenants. `adminAuthAndContext` has already
-  // resolved the mode and bound the user onto the request context.
   const orgId = authResult.user?.activeOrganizationId;
   const atlasMode = getAtlasMode(c);
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+
+  // Resolve and validate the connection.
+  //
+  // The org's visible set is the source of truth for SaaS — a connection that
+  // exists in `connections` for this org is queryable even if the runtime
+  // registry hasn't lazy-loaded it yet. Platform admins (visible === null)
+  // still validate against the runtime registry. SaaS workspaces own
+  // `__demo__` or a wizard-created id (not `default`), so the auto-pick
+  // chooses from the org's visible set rather than falling back to literal
+  // "default" — which would 404 or diff the wrong DB.
+  const requestedId = c.req.query("connection")?.trim() ?? "";
+  const visible = orgId ? await getVisibleConnectionIds(orgId, isPlatformAdmin, atlasMode) : null;
+
+  // Empty workspace gets a useful error pointing at /admin/connections rather
+  // than the misleading phantom-`default` 404.
+  if (visible && visible.size === 0 && !connections.has("default")) {
+    return c.json({
+      error: "no_connections",
+      message: "This workspace has no connections yet. Create one in Admin → Connections to run a schema diff.",
+      requestId,
+    }, 404);
+  }
+
+  let connectionId: string;
+  if (requestedId) {
+    // Explicit picker — validate against visible (org isolation) OR registry
+    // (platform admin / self-hosted). Either source can OK the id.
+    const inVisible = visible ? visible.has(requestedId) : false;
+    const inRegistry = connections.list().includes(requestedId);
+    if (!inVisible && !inRegistry) {
+      return c.json({ error: "not_found", message: `Connection "${requestedId}" not found.` }, 404);
+    }
+    connectionId = requestedId;
+  } else {
+    // Auto-pick from the org's visible set (preferred), then registry, then
+    // literal "default" as a final fallback for self-hosted CLI/no-org paths.
+    const candidate = (visible ? [...visible][0] : undefined) ?? connections.list()[0] ?? "default";
+    connectionId = candidate;
+  }
 
   try {
     const result = await runDiff(connectionId, { orgId, atlasMode });
     return c.json(result, 200);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), connectionId, orgId, atlasMode, requestId },
       "Schema diff failed",
     );
-    return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` , requestId}, 500);
+    // Sanitized response — raw `err.message` can carry pg detail (column /
+    // constraint names). Operators correlate via `requestId` in the log.
+    return c.json({
+      error: "internal_error",
+      message: "Schema diff failed. Try again, and if the error persists, share the request ID with support.",
+      requestId,
+    }, 500);
   }
 });
 

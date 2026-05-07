@@ -19,7 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2, History, Sparkles } from "lucide-react";
+import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2, History, Sparkles, Download } from "lucide-react";
 import Link from "next/link";
 import { EntityDetail, type EntityData } from "@/ui/components/admin/entity-detail";
 import {
@@ -393,6 +393,23 @@ export default function SemanticPage() {
     method: "DELETE",
   });
 
+  // Import from disk: bulk-syncs the workspace's per-org disk dir into the
+  // entities DB. Recovery tool for legacy workspaces (#2144) — after #2142
+  // the wizard + demo flows populate the DB themselves, but operators still
+  // need a manual sync surface for orgs created pre-fix.
+  type ImportResult = {
+    imported: number;
+    skipped: number;
+    total: number;
+    errors?: Array<{ file: string; reason: string }>;
+  };
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const { mutate: mutateImport, saving: importing, error: importError } = useAdminMutation<ImportResult>({
+    path: "/api/v1/admin/semantic/org/import",
+    method: "POST",
+    invalidates: () => setFetchKey((k) => k + 1),
+  });
+
   const refetchAll = () => setFetchKey((k) => k + 1);
 
   // Fetch all semantic data
@@ -640,6 +657,22 @@ export default function SemanticPage() {
                 Improve
               </Button>
             </Link>
+            {isSaas && !demoReadOnly && (
+              <Button
+                variant="outline"
+                className="gap-1.5"
+                disabled={importing}
+                onClick={async () => {
+                  const result = await mutateImport();
+                  if (result.ok && result.data) {
+                    setImportResult(result.data);
+                  }
+                }}
+              >
+                <Download className="size-4" />
+                {importing ? "Importing..." : "Import from disk"}
+              </Button>
+            )}
             {isSaas && (demoReadOnly ? (
               <TooltipProvider>
                 <Tooltip>
@@ -845,6 +878,48 @@ export default function SemanticPage() {
         onSave={handleSaveEntity}
         isSaas={isSaas}
       />
+
+      {/* Import-from-disk error banner: surfaced inline below the header
+          so operators can see what went wrong without dismissing a modal.
+          The success path opens the result dialog further below. */}
+      {importError && (
+        <div className="px-6 pb-4">
+          <MutationErrorSurface error={importError} feature="Semantic Layer" variant="inline" />
+        </div>
+      )}
+
+      {/* Import result dialog — counts + per-file errors when any */}
+      <AlertDialog open={importResult !== null} onOpenChange={(open) => { if (!open) setImportResult(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Imported semantic layer</AlertDialogTitle>
+            <AlertDialogDescription>
+              {importResult ? (
+                <>
+                  Imported <strong>{importResult.imported}</strong> of{" "}
+                  <strong>{importResult.total}</strong> entries
+                  {importResult.skipped > 0 ? <>, skipped <strong>{importResult.skipped}</strong></> : null}.
+                </>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {importResult?.errors && importResult.errors.length > 0 && (
+            <ScrollArea className="max-h-48 rounded border bg-muted/30 p-3 text-xs">
+              <ul className="space-y-1.5">
+                {importResult.errors.map((e, i) => (
+                  <li key={`${e.file}-${i}`}>
+                    <code className="rounded bg-background px-1 py-0.5">{e.file}</code>
+                    <span className="ml-2 text-muted-foreground">{e.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </ScrollArea>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setImportResult(null)}>Done</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirmation */}
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>

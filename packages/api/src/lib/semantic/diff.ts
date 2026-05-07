@@ -56,7 +56,12 @@ export function mapSQLType(sqlType: string): string {
     t.includes("double") ||
     t === "currency" ||
     t === "percent" ||
-    t === "long"
+    t === "long" ||
+    // YAML semantic-layer aliases — `parseEntityYAML` runs every dimension
+    // type through this same normalizer so the diff comparison stays in
+    // one target space. Without these, canonical YAML types like "number"
+    // fall through to the "string" default and produce phantom drift rows.
+    t === "number"
   )
     return "number";
   if (t.startsWith("bool")) return "boolean";
@@ -82,7 +87,14 @@ export function parseEntityYAML(doc: Record<string, unknown>): EntitySnapshot {
   for (const dim of dimensions) {
     if (dim.virtual) continue;
     if (typeof dim.name !== "string" || typeof dim.type !== "string") continue;
-    columns.set(dim.name, dim.type);
+    // Normalize YAML dimension types into the same target space as
+    // `mapSQLType` so the diff compares apples to apples. Without this,
+    // YAML "timestamp" was being compared against DB-normalized "date"
+    // (because `mapSQLType` collapses every date-class SQL type into
+    // "date"), producing 13 false-positive "drift" rows for every
+    // workspace whose YAML used the canonical semantic-layer type names
+    // ("timestamp", "number", "boolean", etc).
+    columns.set(dim.name, mapSQLType(dim.type));
   }
 
   const rawJoins = doc.joins ?? [];

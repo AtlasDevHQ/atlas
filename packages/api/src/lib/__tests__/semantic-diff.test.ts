@@ -151,6 +151,35 @@ describe("parseEntityYAML", () => {
     });
     expect(snap.columns.size).toBe(1);
   });
+
+  it("normalizes YAML semantic types into mapSQLType's target space", () => {
+    // The DB side runs every column through `mapSQLType` (which collapses
+    // every date-class SQL type into "date"). The YAML side must use the
+    // same normalization or canonical YAML types like "timestamp" produce
+    // false-positive drift against DB columns of type "timestamp with time
+    // zone" (which `mapSQLType` reports as "date"). Repro: dharma's
+    // post-recovery diff showed 13 phantom "Changed Tables" rows where
+    // every `created_at`/`updated_at` claimed `YAML: timestamp → DB: date`.
+    const snap = parseEntityYAML({
+      table: "users",
+      dimensions: [
+        { name: "id", type: "number" },
+        { name: "name", type: "string" },
+        // Three date-class aliases that all collapse to "date":
+        { name: "created_at", type: "timestamp" },
+        { name: "updated_at", type: "datetime" },
+        { name: "due", type: "date" },
+        { name: "active", type: "boolean" },
+      ],
+    });
+
+    expect(snap.columns.get("id")).toBe("number");
+    expect(snap.columns.get("name")).toBe("string");
+    expect(snap.columns.get("created_at")).toBe("date");
+    expect(snap.columns.get("updated_at")).toBe("date");
+    expect(snap.columns.get("due")).toBe("date");
+    expect(snap.columns.get("active")).toBe("boolean");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import { resolve } from "path";
 import type { SemanticEntityRow } from "../semantic/entities";
 
 const mockListEntities = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
+const mockListEntitiesWithOverlay = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
 const mockGetEntity = mock((): Promise<SemanticEntityRow | null> => Promise.resolve(null));
 const mockUpsertEntity = mock((): Promise<void> => Promise.resolve());
 const mockDeleteEntity = mock((): Promise<boolean> => Promise.resolve(false));
@@ -29,6 +30,7 @@ const mockBulkUpsertEntities = mock((): Promise<number> => Promise.resolve(0));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
+  listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,
   deleteEntity: mockDeleteEntity,
@@ -42,8 +44,10 @@ const mod = await import(`${modPath}?t=${Date.now()}`);
 const loadOrgWhitelist = mod.loadOrgWhitelist as typeof import("../semantic/whitelist").loadOrgWhitelist;
 const getOrgWhitelistedTables = mod.getOrgWhitelistedTables as typeof import("../semantic/whitelist").getOrgWhitelistedTables;
 const invalidateOrgWhitelist = mod.invalidateOrgWhitelist as typeof import("../semantic/whitelist").invalidateOrgWhitelist;
+const registerPluginEntities = mod.registerPluginEntities as typeof import("../semantic/whitelist").registerPluginEntities;
 const _resetOrgWhitelists = mod._resetOrgWhitelists as typeof import("../semantic/whitelist")._resetOrgWhitelists;
 const _resetOrgSemanticIndexes = mod._resetOrgSemanticIndexes as typeof import("../semantic/whitelist")._resetOrgSemanticIndexes;
+const _resetPluginEntities = mod._resetPluginEntities as typeof import("../semantic/whitelist")._resetPluginEntities;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -227,6 +231,48 @@ describe("getOrgWhitelistedTables", () => {
     const tables = getOrgWhitelistedTables("org-mixed", "default");
     expect(tables.has("users")).toBe(true);
     expect(tables.has("events")).toBe(false);
+  });
+
+  it("fallback fires identically for published and developer mode caches", async () => {
+    // Each mode keeps a separate cache key. The fallback heuristic must not
+    // depend on which mode loaded the cache — otherwise demo/wizard MCP
+    // works in published mode but breaks for developer-mode SaaS, or vice
+    // versa.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+    mockListEntitiesWithOverlay.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+
+    await loadOrgWhitelist("org-demo", "published");
+    const publishedTables = getOrgWhitelistedTables("org-demo", "default", "published");
+    expect(publishedTables.has("customers")).toBe(true);
+
+    await loadOrgWhitelist("org-demo", "developer");
+    const developerTables = getOrgWhitelistedTables("org-demo", "default", "developer");
+    expect(developerTables.has("customers")).toBe(true);
+  });
+
+  it("merges plugin-registered tables on the fallback path", async () => {
+    // Plugin tables register against connectionId="default" (the requested
+    // id, not the stored key). On the demo fallback path, plugin tables
+    // for "default" must still merge into the result.
+    _resetPluginEntities();
+
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+    registerPluginEntities("default", [
+      { name: "audit_log", yaml: "table: audit_log\n" },
+    ]);
+
+    await loadOrgWhitelist("org-demo");
+    const tables = getOrgWhitelistedTables("org-demo", "default");
+    expect(tables.has("customers")).toBe(true); // via fallback
+    expect(tables.has("audit_log")).toBe(true); // via plugin merge
+
+    _resetPluginEntities();
   });
 });
 

@@ -202,6 +202,15 @@ const SaveResponseSchema = z.object({
   connectionId: z.string(),
   entityCount: z.number(),
   files: z.array(z.string()),
+  warnings: z
+    .array(
+      z.object({
+        kind: z.enum(["disk_sync_failed"]),
+        tableName: z.string(),
+        reason: z.string(),
+      }),
+    )
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -695,54 +704,112 @@ wizard.openapi(saveRoute, async (c) => {
     }
   
     try {
-      // Write entities to disk (org-scoped)
+      // Disk + DB are not transactional. Run DB first so a failure leaves
+      // the disk untouched — disk-orphan recovery is harder than DB-only
+      // retry. (#2141 + #2142.)
+      const dbEntities = entities.map((e) => ({
+        entityType: "entity" as const,
+        name: path.basename(e.tableName),
+        yamlContent: e.yaml,
+        connectionId,
+      }));
+      if (hasInternalDB()) {
+        const upserted = yield* Effect.tryPromise({
+          try: () => bulkUpsertEntities(orgId, dbEntities),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.error(
+            { err: err.message, requestId, orgId, connectionId },
+            "Wizard save: bulkUpsertEntities threw — no rows persisted",
+          );
+          return Effect.succeed(null as number | null);
+        }));
+        if (upserted === null) {
+          return c.json({
+            error: "db_persist_failed",
+            message:
+              "Failed to register entities for queries. SQL execution will reject these tables until this is resolved. Retry the wizard.",
+            requestId,
+          }, 500);
+        }
+        if (upserted < dbEntities.length) {
+          // bulkUpsertEntities swallows per-entity errors and returns a
+          // success count. Returning 201 here would silently recreate the
+          // exact #2142 failure mode for the rows that didn't land.
+          log.error(
+            { requestId, orgId, attempted: dbEntities.length, upserted },
+            "Wizard save: partial entity upsert — failing loud rather than 201ing a half-persisted state",
+          );
+          invalidateOrgWhitelist(orgId);
+          return c.json({
+            error: "db_partial_persist",
+            message: `Registered ${upserted} of ${dbEntities.length} entities. Retry the wizard.`,
+            requestId,
+            attempted: dbEntities.length,
+            succeeded: upserted,
+          }, 500);
+        }
+        invalidateOrgWhitelist(orgId);
+      }
+
+      // Disk writes happen after DB success. Output dir is org-scoped.
       const sourceId = connectionId === "default" ? "default" : connectionId;
       const outputBase = outputDirForDatasource(sourceId, orgId);
       const entitiesDir = path.join(outputBase, "entities");
       const metricsDir = path.join(outputBase, "metrics");
-  
+
       fs.mkdirSync(entitiesDir, { recursive: true });
       fs.mkdirSync(metricsDir, { recursive: true });
-  
+
       const savedFiles: string[] = [];
-  
-      // Write entity YAMLs (table names already validated above)
+      const warnings: Array<{ kind: "disk_sync_failed"; tableName: string; reason: string }> = [];
+
       for (const entity of entities) {
         const safeName = path.basename(entity.tableName);
         const filePath = path.join(entitiesDir, `${safeName}.yml`);
         fs.writeFileSync(filePath, entity.yaml, "utf-8");
         savedFiles.push(`entities/${safeName}.yml`);
-  
-        // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
-        // so the explore tool can discover this entity.
+
+        // Org-scoped semantic dir feeds the explore tool. Failures here
+        // mean the agent can't read the entity even though the DB has it
+        // — surface the specific tableName so the operator can see which
+        // entities are split rather than just a log line.
         if (hasInternalDB()) {
-          yield* Effect.promise(() => syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
-            log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
+          const syncResult = yield* Effect.tryPromise({
+            try: () => syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml),
+            catch: (err) => err instanceof Error ? err : new Error(String(err)),
+          }).pipe(Effect.catchAll((err) => {
+            log.warn(
+              { err: err.message, requestId, orgId, tableName: entity.tableName },
+              "Disk sync after wizard save failed",
+            );
+            return Effect.succeed({ tableName: entity.tableName, reason: err.message });
           }));
+          if (syncResult && typeof syncResult === "object" && "tableName" in syncResult) {
+            warnings.push({ kind: "disk_sync_failed", ...syncResult });
+          }
         }
       }
-  
-      // Generate catalog, glossary, and metric files from raw profile data.
-      // The wizard frontend does not send raw profile data — it sends
-      // pre-generated entity YAML via { connectionId, entities } instead.
-      // This branch handles callers (e.g. future CLI integrations) that
-      // provide raw TableProfile[] data for server-side generation.
+
+      // Catalog/glossary/metrics from raw profile data. The wizard frontend
+      // sends pre-generated entity YAML via { connectionId, entities }; this
+      // branch is for callers (e.g. future CLI integrations) that submit
+      // raw TableProfile[] for server-side generation.
       const { schema: bodySchema, profiles: profileData } = body;
       if (profileData && profileData.length > 0) {
         const profiles = profileData;
         const resolvedSchema = bodySchema ?? "public";
-  
+
         const catalogYaml = generateCatalogYAML(profiles);
         const catalogPath = path.join(outputBase, "catalog.yml");
         fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
         savedFiles.push("catalog.yml");
-  
+
         const glossaryYaml = generateGlossaryYAML(profiles);
         const glossaryPath = path.join(outputBase, "glossary.yml");
         fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
         savedFiles.push("glossary.yml");
-  
-        // Generate metric files (sanitize table_name from profiles)
+
         for (const profile of profiles) {
           if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
           const metricYaml = generateMetricYAML(profile, resolvedSchema);
@@ -754,50 +821,7 @@ wizard.openapi(saveRoute, async (c) => {
           }
         }
       }
-  
-      // Persist to the org-scoped semantic_entities table. The disk write
-      // above feeds the file-based whitelist (used by the chat agent's
-      // file-walking code paths and the explore tool) but NOT the DB-backed
-      // per-org whitelist consumed by `loadOrgWhitelist` — which is what the
-      // MCP edge and the post-#2141 SQL validation read. Without this,
-      // wizard-onboarded workspaces have a silent split: chat works, MCP
-      // rejects every table with `unknown_entity` (#2142).
-      if (hasInternalDB()) {
-        const dbEntities = entities.map((e) => ({
-          entityType: "entity" as const,
-          name: path.basename(e.tableName),
-          yamlContent: e.yaml,
-          connectionId,
-        }));
-        const upserted = yield* Effect.tryPromise({
-          try: () => bulkUpsertEntities(orgId, dbEntities),
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(Effect.catchAll((err) => {
-          log.error(
-            { err: err.message, requestId, orgId, connectionId },
-            "Wizard save: bulkUpsertEntities failed — disk YAMLs written but per-org whitelist will be empty",
-          );
-          return Effect.succeed(null as number | null);
-        }));
-        if (upserted === null) {
-          return c.json({
-            error: "db_persist_failed",
-            message:
-              "Saved YAML files to disk, but failed to populate the per-org entity store. " +
-              "MCP / executeSQL will reject these tables until this is resolved. Retry the wizard or contact the operator.",
-            requestId,
-          }, 500);
-        }
-        invalidateOrgWhitelist(orgId);
-        if (upserted < dbEntities.length) {
-          log.warn(
-            { requestId, orgId, attempted: dbEntities.length, upserted },
-            "Wizard entity upsert: some rows failed — disk write succeeded but DB partially populated",
-          );
-        }
-      }
 
-      // Reset semantic whitelist cache so new entities are queryable
       _resetWhitelists();
 
       log.info({
@@ -806,6 +830,7 @@ wizard.openapi(saveRoute, async (c) => {
         connectionId,
         entityCount: entities.length,
         fileCount: savedFiles.length,
+        warningCount: warnings.length,
       }, "Wizard save complete");
 
       // F-34 (#1789): the wizard is the primary UI onboarding flow for a
@@ -834,6 +859,7 @@ wizard.openapi(saveRoute, async (c) => {
         connectionId,
         entityCount: entities.length,
         files: savedFiles,
+        ...(warnings.length > 0 ? { warnings } : {}),
       }, 201);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Wizard save failed");

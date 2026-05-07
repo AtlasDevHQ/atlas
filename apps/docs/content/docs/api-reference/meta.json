@@ -64,6 +64,7 @@
     "platform-admin",
     "platform-admin-backups",
     "platform-admin-custom-domains",
+    "platform-admin-load-test",
     "platform-admin-residency",
     "platform-admin-sla",
     "platform-plugin-catalog",

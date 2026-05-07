@@ -1032,6 +1032,45 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
   });
 
+  it("ATOMICITY: bundled YAML scan returning zero entities fails before writing connection (dharma-class)", async () => {
+    // The actual cause of dharma's state: pre-#2154 the bundled YAML was
+    // missing on the API image, so `importFromDisk` returned
+    // `{ imported: 0, total: 0 }` (scan found nothing). The old code only
+    // failed on `total > 0`, so it silently absorbed the no-op, set
+    // ATLAS_DEMO_INDUSTRY, and committed the __demo__ connection. dharma
+    // got a half-installed workspace with `connection but no entities` —
+    // exactly the state Schema Diff exposed today.
+    //
+    // The fix: any scan returning `total === 0` is a deploy-time
+    // misconfiguration (the bundled seed isn't on the server) and must
+    // fail loudly with `demo_not_available` so no connection commits and
+    // the user sees a clear error instead of a silent half-success.
+    mockImportFromDisk.mockImplementation(async () => ({
+      imported: 0,
+      skipped: 0,
+      errors: [],
+      total: 0,
+    }));
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("demo_not_available");
+
+    const connectionInsert = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+    );
+    expect(connectionInsert).toBeUndefined();
+
+    // Settings/prompt seeding must NOT have run either — those are
+    // post-commit decorations and shouldn't fire on a failed install.
+    expect(mockSetSetting).not.toHaveBeenCalled();
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+  });
+
   it("ATOMICITY: missing bundled YAML fails before writing connection", async () => {
     // getDemoSemanticDir() throws when neither the configured root nor the
     // bundled-seed dir has an entities/ subdir. The pre-validation phase
@@ -1154,7 +1193,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
   });
 
-  it("succeeds even when setSetting fails (non-fatal)", async () => {
+  it("succeeds even when setSetting fails — but surfaces partialFailures", async () => {
     mockSetSetting.mockImplementation(async () => { throw new Error("settings db down"); });
     const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
@@ -1164,6 +1203,10 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(res.status).toBe(201);
     const data = await json(res);
     expect(data.connectionId).toBe("__demo__");
+    // Phase-4 failures (settings, prompt seeding) used to be silent. Now the
+    // 201 carries a `partialFailures` array so the frontend can render a
+    // degraded-state warning instead of pretending all features work.
+    expect(data.partialFailures).toContain("demo_industry_setting");
   });
 
   it("succeeds even when prompt collection seeding fails (non-fatal)", async () => {

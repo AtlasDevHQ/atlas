@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { schemaDiffSearchParams } from "./search-params";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -88,6 +89,22 @@ export default function SchemaDiffPage() {
 
   const hasDrift = diff ? diff.summary.new > 0 || diff.summary.removed > 0 || diff.summary.changed > 0 : false;
 
+  // Recover-demo flow: detect a partial-state demo workspace and offer a
+  // one-click fix. The condition triggers when the diff returned with zero
+  // entities AND the visible picker is `__demo__` — that's the dharma-class
+  // signature (connection committed by /use-demo, entities never imported).
+  // The button fires the admin import endpoint with `source: "demo-seed"`
+  // which the backend wires to the bundled NovaMart YAML.
+  const isDemoConnection = connectionId === "__demo__";
+  const isEmptyDb = diff !== null && diff.summary.total === 0;
+  const showDemoRecover = isDemoConnection && isEmptyDb;
+
+  const { mutate: recoverDemo, saving: recovering, error: recoverError } = useAdminMutation<{ imported: number }>({
+    path: "/api/v1/admin/semantic/org/import",
+    method: "POST",
+    invalidates: refetch,
+  });
+
   return (
     <PageShell connectionSelector={multipleConnections ? (
       <ConnectionSelector
@@ -147,8 +164,39 @@ export default function SchemaDiffPage() {
             />
           </div>
 
-          {/* No drift — success message */}
-          {!hasDrift && (
+          {/* Demo recovery: empty DB on __demo__ → offer one-click recovery */}
+          {showDemoRecover ? (
+            <Card className="border-amber-500/50 bg-amber-50/50 shadow-none dark:bg-amber-950/20">
+              <CardContent className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                      Demo connection has no semantic entities
+                    </p>
+                    <p className="mt-0.5 text-xs text-amber-700/80 dark:text-amber-400/80">
+                      The <code className="rounded bg-amber-500/10 px-1 py-0.5 font-mono">__demo__</code> connection exists but no entities are registered for queries. Re-import the NovaMart demo data to fix this.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  disabled={recovering}
+                  onClick={() => recoverDemo({ body: { source: "demo-seed" } })}
+                >
+                  <RefreshCw className={`size-3.5 ${recovering ? "animate-spin" : ""}`} />
+                  {recovering ? "Recovering..." : "Recover demo data"}
+                </Button>
+              </CardContent>
+              {recoverError && (
+                <div className="border-t border-amber-500/20 px-5 pb-3 pt-2 text-xs text-red-700 dark:text-red-400">
+                  Recovery failed: {recoverError.message}
+                </div>
+              )}
+            </Card>
+          ) : !hasDrift && (
             <Card className="border-green-500/50 bg-green-50/50 shadow-none dark:bg-green-950/20">
               <CardContent className="flex items-center gap-3 py-6">
                 <CheckCircle2 className="size-5 text-green-600 dark:text-green-400" />

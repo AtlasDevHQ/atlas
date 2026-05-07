@@ -908,11 +908,20 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
 // GET /health — let runHandler handle errors (no manual try/catch)
 adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
   runHandler(c, "semantic-health-score", async () => {
-    const { loadEntitiesFromDisk, loadGlossaryFromDisk } =
+    const { orgId } = c.get("orgContext");
+    const { loadEntitiesFromDB, loadEntitiesFromDisk, loadGlossaryFromDisk } =
       await import("@atlas/api/lib/semantic/expert/context-loader");
+    const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
     const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
 
-    const entities = await loadEntitiesFromDisk();
+    // Prefer DB-backed entities when we have an org context. Disk-only is
+    // for self-hosted with no internal DB. The conflation pre-#2155 had this
+    // endpoint reading bundled YAML for every workspace, so SaaS orgs with
+    // empty `semantic_entities` showed "13 entities, 100% coverage" — the
+    // misleading score that hid dharma's broken state from operators.
+    const entities = orgId && hasInternalDB()
+      ? await loadEntitiesFromDB(orgId, "published")
+      : await loadEntitiesFromDisk();
     const glossary = await loadGlossaryFromDisk();
 
     const score = computeSemanticHealth({

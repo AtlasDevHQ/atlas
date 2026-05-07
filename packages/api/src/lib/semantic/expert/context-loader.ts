@@ -22,6 +22,53 @@ function getSemanticRoot(): string {
 }
 
 /**
+ * Load entities for an org from the internal DB.
+ *
+ * Preferred for SaaS surfaces (e.g. the Health widget on /admin/semantic).
+ * The disk loader returns the bundled NovaMart YAML on every API container,
+ * which on SaaS shows up as "13 entities, 100% coverage" even for orgs that
+ * have nothing in `semantic_entities` — the exact conflation that masked the
+ * dharma incident. Reading from the DB returns the org's actual queryable
+ * semantic layer.
+ */
+export async function loadEntitiesFromDB(
+  orgId: string,
+  mode?: "published" | "developer",
+): Promise<ParsedEntity[]> {
+  const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
+  if (!hasInternalDB()) return [];
+
+  const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+  const rows = mode === "developer"
+    ? await listEntitiesWithOverlay(orgId, "entity")
+    : await listEntities(orgId, "entity", "published");
+
+  const entities: ParsedEntity[] = [];
+  for (const row of rows) {
+    try {
+      const parsed = yaml.load(row.yaml_content) as Record<string, unknown> | null;
+      if (!parsed || typeof parsed !== "object") continue;
+      entities.push({
+        name: String(parsed.table ?? row.name),
+        table: String(parsed.table ?? row.name),
+        description: typeof parsed.description === "string" ? parsed.description : undefined,
+        dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
+        measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
+        joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
+        query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
+        connection: typeof parsed.connection === "string" ? parsed.connection : (row.connection_id ?? undefined),
+      });
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), entity: row.name, orgId },
+        "Failed to parse entity YAML from DB",
+      );
+    }
+  }
+  return entities;
+}
+
+/**
  * Load all entity YAML files from disk.
  */
 export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {

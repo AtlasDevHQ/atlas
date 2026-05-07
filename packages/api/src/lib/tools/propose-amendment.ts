@@ -176,7 +176,7 @@ The amendment object should match the YAML structure for that type (e.g., { name
       if (testQuery) {
         try {
           // Validate test query through the same SQL pipeline as executeSQL
-          const validation = validateSQL(testQuery);
+          const validation = await validateSQL(testQuery);
           if (!validation.valid) {
             testResult = {
               success: false,

@@ -45,10 +45,21 @@ mock.module("@atlas/api/lib/logger", () => ({
 const orgTables = new Set(["org_orders", "org_users"]);
 const fileTables = new Set(["file_orders", "file_users", "file_companies"]);
 
+// Track loadOrgWhitelist invocations so the regression test can
+// assert validateSQL preloads the cache. Pre-fix, the MCP edge skipped
+// this preload and getOrgWhitelistedTables returned an empty Set,
+// rejecting every table with `unknown_entity`.
+let loadOrgWhitelistCallCount = 0;
+const loadOrgWhitelistCalls: Array<{ orgId: string; mode: string | undefined }> = [];
+
 mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => fileTables,
   getOrgWhitelistedTables: (_orgId: string) => orgTables,
-  loadOrgWhitelist: async () => new Map(),
+  loadOrgWhitelist: async (orgId: string, mode: string | undefined) => {
+    loadOrgWhitelistCallCount++;
+    loadOrgWhitelistCalls.push({ orgId, mode });
+    return new Map();
+  },
   invalidateOrgWhitelist: () => {},
   getOrgSemanticIndex: async () => "",
   invalidateOrgSemanticIndex: () => {},
@@ -108,52 +119,77 @@ const { validateSQL } = await import("../sql");
 describe("org-scoped SQL whitelist enforcement", () => {
   beforeEach(() => {
     mockOrgId = undefined;
+    loadOrgWhitelistCallCount = 0;
+    loadOrgWhitelistCalls.length = 0;
   });
 
-  it("uses org whitelist when activeOrganizationId is present", () => {
+  it("uses org whitelist when activeOrganizationId is present", async () => {
     mockOrgId = "org-123";
     // org_orders is in the org whitelist
-    const result = validateSQL("SELECT * FROM org_orders");
+    const result = await validateSQL("SELECT * FROM org_orders");
     expect(result.valid).toBe(true);
   });
 
-  it("rejects tables not in org whitelist even if in file whitelist", () => {
+  it("rejects tables not in org whitelist even if in file whitelist", async () => {
     mockOrgId = "org-123";
     // file_companies is in file whitelist but NOT in org whitelist
-    const result = validateSQL("SELECT * FROM file_companies");
+    const result = await validateSQL("SELECT * FROM file_companies");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("not in the allowed list");
   });
 
-  it("uses file whitelist when no orgId (self-hosted)", () => {
+  it("uses file whitelist when no orgId (self-hosted)", async () => {
     mockOrgId = undefined;
     // file_companies is in the file whitelist
-    const result = validateSQL("SELECT * FROM file_companies");
+    const result = await validateSQL("SELECT * FROM file_companies");
     expect(result.valid).toBe(true);
   });
 
-  it("rejects tables not in file whitelist when no orgId", () => {
+  it("rejects tables not in file whitelist when no orgId", async () => {
     mockOrgId = undefined;
     // org_orders is only in the org whitelist, not file
-    const result = validateSQL("SELECT * FROM org_orders");
+    const result = await validateSQL("SELECT * FROM org_orders");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("not in the allowed list");
   });
 
-  it("org isolation: different orgs see different whitelists", () => {
+  it("preloads the org whitelist on every validateSQL call (regression: MCP edge bug)", async () => {
+    // Pre-fix, the MCP edge tool handler called validateSQL without
+    // first calling loadOrgWhitelist(orgId). getOrgWhitelistedTables
+    // then returned an empty Set (no cache entry for this orgId in
+    // the MCP process), so every table was rejected as unknown_entity.
+    // The chat path (agent.ts:570) preloaded explicitly; the MCP path
+    // didn't. Fixed by lazy-loading inside validateSQL itself —
+    // belt-and-suspenders against any future code path that forgets.
+    mockOrgId = "org-mcp-edge";
+    await validateSQL("SELECT * FROM org_orders");
+    expect(loadOrgWhitelistCallCount).toBe(1);
+    expect(loadOrgWhitelistCalls[0]).toEqual({ orgId: "org-mcp-edge", mode: undefined });
+  });
+
+  it("does NOT preload when no orgId is set (self-hosted no-auth path)", async () => {
+    // Self-hosted with no active org → uses the file whitelist
+    // (loaded once at startup). loadOrgWhitelist must not be called
+    // because there's no org to load for.
+    mockOrgId = undefined;
+    await validateSQL("SELECT * FROM file_companies");
+    expect(loadOrgWhitelistCallCount).toBe(0);
+  });
+
+  it("org isolation: different orgs see different whitelists", async () => {
     // This validates the code path — the mock returns the same set for any orgId,
     // but the important thing is that it calls getOrgWhitelistedTables, not getWhitelistedTables
     mockOrgId = "org-A";
-    const resultA = validateSQL("SELECT * FROM org_users");
+    const resultA = await validateSQL("SELECT * FROM org_users");
     expect(resultA.valid).toBe(true);
 
     mockOrgId = "org-B";
-    const resultB = validateSQL("SELECT * FROM org_users");
+    const resultB = await validateSQL("SELECT * FROM org_users");
     expect(resultB.valid).toBe(true);
 
     // File-only table rejected for both orgs
     mockOrgId = "org-A";
-    const resultFile = validateSQL("SELECT * FROM file_companies");
+    const resultFile = await validateSQL("SELECT * FROM file_companies");
     expect(resultFile.valid).toBe(false);
   });
 });

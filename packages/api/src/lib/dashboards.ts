@@ -774,7 +774,7 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
 
   for (const card of cards) {
     try {
-      const validation = validateSQL(card.sql, card.connectionId ?? undefined);
+      const validation = await validateSQL(card.sql, card.connectionId ?? undefined);
       if (!validation.valid) {
         log.warn({ cardId: card.id, error: validation.error }, "Auto-refresh: card SQL failed validation");
         failed++;

@@ -255,7 +255,7 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
 }));
 
 mock.module("@atlas/api/lib/tools/sql", () => ({
-  validateSQL: mock(() => ({ valid: true, classification: { type: "select" } })),
+  validateSQL: mock(async () => ({ valid: true, classification: { type: "select" } })),
   extractClassification: mock(() => ({ type: "select" })),
   parserDatabase: mock(() => "PostgreSQL"),
   executeSQL: {},

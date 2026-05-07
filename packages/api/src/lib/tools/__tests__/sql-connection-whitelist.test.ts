@@ -51,42 +51,42 @@ mock.module("@atlas/api/lib/db/connection", () =>
 const { validateSQL } = await import("../sql");
 
 describe("per-connection whitelist enforcement", () => {
-  it("allows table in default connection whitelist", () => {
-    const result = validateSQL("SELECT * FROM orders");
+  it("allows table in default connection whitelist", async () => {
+    const result = await validateSQL("SELECT * FROM orders");
     expect(result.valid).toBe(true);
   });
 
-  it("allows table in warehouse connection whitelist", () => {
-    const result = validateSQL("SELECT * FROM events", "warehouse");
+  it("allows table in warehouse connection whitelist", async () => {
+    const result = await validateSQL("SELECT * FROM events", "warehouse");
     expect(result.valid).toBe(true);
   });
 
-  it("rejects table not in target connection whitelist", () => {
-    const result = validateSQL("SELECT * FROM orders", "warehouse");
+  it("rejects table not in target connection whitelist", async () => {
+    const result = await validateSQL("SELECT * FROM orders", "warehouse");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("not in the allowed list");
   });
 
-  it("rejects all tables for unknown connection", () => {
+  it("rejects all tables for unknown connection", async () => {
     // getDBType throws for "nonexistent", so validateSQL returns an error
-    const result = validateSQL("SELECT * FROM orders", "nonexistent");
+    const result = await validateSQL("SELECT * FROM orders", "nonexistent");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("not registered");
   });
 
-  it("default connection cannot access warehouse-only tables", () => {
-    const result = validateSQL("SELECT * FROM events");
+  it("default connection cannot access warehouse-only tables", async () => {
+    const result = await validateSQL("SELECT * FROM events");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("not in the allowed list");
   });
 
-  it("allows schema-qualified table in warehouse whitelist", () => {
-    const result = validateSQL("SELECT * FROM analytics.events", "warehouse");
+  it("allows schema-qualified table in warehouse whitelist", async () => {
+    const result = await validateSQL("SELECT * FROM analytics.events", "warehouse");
     expect(result.valid).toBe(true);
   });
 
-  it("rejects schema-qualified table not in warehouse whitelist", () => {
-    const result = validateSQL("SELECT * FROM public.orders", "warehouse");
+  it("rejects schema-qualified table not in warehouse whitelist", async () => {
+    const result = await validateSQL("SELECT * FROM public.orders", "warehouse");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("not in the allowed list");
   });

@@ -129,7 +129,7 @@ validateSqlRoute.openapi(
   async (c) => {
     const { sql, connectionId } = c.req.valid("json");
 
-    const result = validateSQL(sql, connectionId);
+    const result = await validateSQL(sql, connectionId);
 
     if (!result.valid) {
       return c.json({

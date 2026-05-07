@@ -73,8 +73,8 @@ const { validateSQL } = await import("@atlas/api/lib/tools/sql");
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-function expectInvalid(sql: string, reasonFragment?: string): void {
-  const r = validateSQL(sql);
+async function expectInvalid(sql: string, reasonFragment?: string): Promise<void> {
+  const r = await validateSQL(sql);
   if (r.valid) {
     throw new Error(`Expected validateSQL to reject but it accepted: ${sql}`);
   }
@@ -85,8 +85,8 @@ function expectInvalid(sql: string, reasonFragment?: string): void {
   }
 }
 
-function expectValid(sql: string): void {
-  const r = validateSQL(sql);
+async function expectValid(sql: string): Promise<void> {
+  const r = await validateSQL(sql);
   if (!r.valid) {
     throw new Error(`Expected validateSQL to accept but it rejected: ${sql} (error: ${r.error})`);
   }
@@ -141,31 +141,31 @@ describe("fuzz: mutation keyword obfuscation", () => {
     });
   }
 
-  it("rejects DML after block comment (stripped before regex)", () => {
+  it("rejects DML after block comment (stripped before regex)", async () => {
     expectInvalid("/* pretend */ DROP TABLE companies", "forbidden");
   });
 
-  it("rejects DML after line comment (stripped before regex)", () => {
+  it("rejects DML after line comment (stripped before regex)", async () => {
     expectInvalid("-- harmless\nDROP TABLE companies", "forbidden");
   });
 
-  it("rejects DML after hash comment (stripped before regex)", () => {
+  it("rejects DML after hash comment (stripped before regex)", async () => {
     expectInvalid("# harmless\nDELETE FROM companies", "forbidden");
   });
 
-  it("rejects DML separated by block comment inside the keyword region", () => {
+  it("rejects DML separated by block comment inside the keyword region", async () => {
     expectInvalid("DROP /* split */ TABLE companies", "forbidden");
   });
 
-  it("rejects DML with internal whitespace variants", () => {
+  it("rejects DML with internal whitespace variants", async () => {
     expectInvalid("DROP\t\nTABLE\tcompanies", "forbidden");
   });
 
-  it("rejects forbidden keyword even with unusual whitespace before it", () => {
+  it("rejects forbidden keyword even with unusual whitespace before it", async () => {
     expectInvalid("\r\n\t  DROP TABLE companies", "forbidden");
   });
 
-  it("does NOT treat Unicode homoglyphs as keywords (both validator and DB reject)", () => {
+  it("does NOT treat Unicode homoglyphs as keywords (both validator and DB reject)", async () => {
     // Cyrillic Е is U+0415, Latin E is U+0045. Neither MySQL nor PG recognize
     // Cyrillic keywords, so no bypass — but the validator should also reject
     // (AST parser fails), giving a uniform reject verdict.
@@ -180,79 +180,79 @@ describe("fuzz: mutation keyword obfuscation", () => {
 describe("fuzz: CTE + real-table collisions", () => {
   useDialect(PG_URL);
 
-  it("accepts CTE that shadows a whitelisted table (no DB-table access)", () => {
+  it("accepts CTE that shadows a whitelisted table (no DB-table access)", async () => {
     expectValid("WITH orders AS (SELECT 42 AS id) SELECT * FROM orders");
   });
 
-  it("rejects CTE that reads from a non-whitelisted real table", () => {
+  it("rejects CTE that reads from a non-whitelisted real table", async () => {
     expectInvalid(
       "WITH x AS (SELECT name FROM secret_data) SELECT * FROM x",
       "not in the allowed list",
     );
   });
 
-  it("rejects outer reference to non-whitelisted table even with valid CTE", () => {
+  it("rejects outer reference to non-whitelisted table even with valid CTE", async () => {
     expectInvalid(
       "WITH x AS (SELECT 1 AS id) SELECT * FROM x JOIN secret_data ON x.id = secret_data.id",
       "not in the allowed list",
     );
   });
 
-  it("rejects CTE that only lives in the WITH block but is never selected", () => {
+  it("rejects CTE that only lives in the WITH block but is never selected", async () => {
     expectInvalid(
       "WITH x AS (SELECT name FROM secret_data) SELECT 1",
       "not in the allowed list",
     );
   });
 
-  it("accepts nested CTEs that only reference whitelisted tables", () => {
+  it("accepts nested CTEs that only reference whitelisted tables", async () => {
     expectValid(
       "WITH a AS (SELECT id FROM companies), b AS (SELECT id FROM a) SELECT * FROM b",
     );
   });
 
-  it("rejects nested CTE where the inner CTE reads a non-whitelisted table", () => {
+  it("rejects nested CTE where the inner CTE reads a non-whitelisted table", async () => {
     expectInvalid(
       "WITH a AS (SELECT id FROM secret_data), b AS (SELECT id FROM a) SELECT * FROM b",
       "not in the allowed list",
     );
   });
 
-  it("accepts WITH RECURSIVE over whitelisted tables", () => {
+  it("accepts WITH RECURSIVE over whitelisted tables", async () => {
     expectValid(
       "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 5) SELECT * FROM t",
     );
   });
 
-  it("rejects WITH RECURSIVE with a non-whitelisted anchor", () => {
+  it("rejects WITH RECURSIVE with a non-whitelisted anchor", async () => {
     expectInvalid(
       "WITH RECURSIVE t(n) AS (SELECT id FROM secret_data UNION ALL SELECT n+1 FROM t WHERE n<5) SELECT * FROM t",
       "not in the allowed list",
     );
   });
 
-  it("rejects CTE that UNIONs with a non-whitelisted table", () => {
+  it("rejects CTE that UNIONs with a non-whitelisted table", async () => {
     expectInvalid(
       "WITH x AS (SELECT id FROM companies UNION SELECT id FROM secret_data) SELECT * FROM x",
       "not in the allowed list",
     );
   });
 
-  it("rejects cross-CTE reference to non-whitelisted table", () => {
+  it("rejects cross-CTE reference to non-whitelisted table", async () => {
     expectInvalid(
       "WITH a AS (SELECT id FROM companies), b AS (SELECT id FROM secret_data) SELECT * FROM a, b",
       "not in the allowed list",
     );
   });
 
-  it("accepts CTE named the same as a whitelisted table without leaking real access", () => {
+  it("accepts CTE named the same as a whitelisted table without leaking real access", async () => {
     // The CTE named `companies` shadows the real table. Since the outer query
     // only refers to the CTE name, no real table is accessed. This is valid
     // and expected behavior.
     expectValid("WITH companies AS (SELECT 1 AS id) SELECT * FROM companies");
   });
 
-  it("rejects query that uses same name as both CTE and real non-whitelisted table", () => {
+  it("rejects query that uses same name as both CTE and real non-whitelisted table", async () => {
     // CTE `secret_data` shadows a real table. But the outer SELECT references
     // `other_secret`, which is not whitelisted. Reject.
     expectInvalid(
@@ -269,77 +269,77 @@ describe("fuzz: CTE + real-table collisions", () => {
 describe("fuzz: UNION + subquery + lateral + array-subquery", () => {
   useDialect(PG_URL);
 
-  it("rejects UNION against non-whitelisted table", () => {
+  it("rejects UNION against non-whitelisted table", async () => {
     expectInvalid(
       "SELECT id FROM companies UNION SELECT id FROM secret_data",
       "not in the allowed list",
     );
   });
 
-  it("rejects UNION ALL against non-whitelisted table", () => {
+  it("rejects UNION ALL against non-whitelisted table", async () => {
     expectInvalid(
       "SELECT id FROM companies UNION ALL SELECT id FROM secret_data",
       "not in the allowed list",
     );
   });
 
-  it("rejects INTERSECT against non-whitelisted table", () => {
+  it("rejects INTERSECT against non-whitelisted table", async () => {
     expectInvalid(
       "SELECT id FROM companies INTERSECT SELECT id FROM secret_data",
       "not in the allowed list",
     );
   });
 
-  it("rejects EXCEPT against non-whitelisted table", () => {
+  it("rejects EXCEPT against non-whitelisted table", async () => {
     expectInvalid(
       "SELECT id FROM companies EXCEPT SELECT id FROM secret_data",
       "not in the allowed list",
     );
   });
 
-  it("rejects scalar subquery reading non-whitelisted table", () => {
+  it("rejects scalar subquery reading non-whitelisted table", async () => {
     expectInvalid(
       "SELECT * FROM companies WHERE id = (SELECT max(id) FROM secret_data)",
       "not in the allowed list",
     );
   });
 
-  it("rejects IN-subquery reading non-whitelisted table", () => {
+  it("rejects IN-subquery reading non-whitelisted table", async () => {
     expectInvalid(
       "SELECT * FROM companies WHERE id IN (SELECT id FROM secret_data)",
       "not in the allowed list",
     );
   });
 
-  it("rejects EXISTS-subquery reading non-whitelisted table", () => {
+  it("rejects EXISTS-subquery reading non-whitelisted table", async () => {
     expectInvalid(
       "SELECT * FROM companies c WHERE EXISTS (SELECT 1 FROM secret_data s WHERE s.id = c.id)",
       "not in the allowed list",
     );
   });
 
-  it("rejects FROM-subquery over non-whitelisted table", () => {
+  it("rejects FROM-subquery over non-whitelisted table", async () => {
     expectInvalid(
       "SELECT * FROM (SELECT id FROM secret_data) s",
       "not in the allowed list",
     );
   });
 
-  it("rejects LATERAL join against non-whitelisted table", () => {
+  it("rejects LATERAL join against non-whitelisted table", async () => {
     expectInvalid(
       "SELECT * FROM companies c, LATERAL (SELECT id FROM secret_data WHERE id = c.id) s",
       "not in the allowed list",
     );
   });
 
-  it("rejects CROSS JOIN LATERAL over non-whitelisted table", () => {
+  it("rejects CROSS JOIN LATERAL over non-whitelisted table", async () => {
     expectInvalid(
       "SELECT * FROM companies c CROSS JOIN LATERAL (SELECT id FROM secret_data WHERE id = c.id) s",
       "not in the allowed list",
     );
   });
 
-  it("rejects ARRAY(subquery) over non-whitelisted table", () => {
+  it("rejects ARRAY(subquery) over non-whitelisted table", async () => {
     expectInvalid(
       "SELECT ARRAY(SELECT id FROM secret_data) FROM companies",
       "not in the allowed list",
@@ -355,13 +355,13 @@ describe("fuzz: UNION + subquery + lateral + array-subquery", () => {
     );
   });
 
-  it("accepts deeply nested subqueries over whitelisted tables", () => {
+  it("accepts deeply nested subqueries over whitelisted tables", async () => {
     expectValid(
       "SELECT id FROM companies WHERE id IN (SELECT id FROM people WHERE id IN (SELECT id FROM accounts))",
     );
   });
 
-  it("rejects one non-whitelisted table deep inside otherwise valid nesting", () => {
+  it("rejects one non-whitelisted table deep inside otherwise valid nesting", async () => {
     expectInvalid(
       "SELECT id FROM companies WHERE id IN (SELECT id FROM people WHERE id IN (SELECT id FROM secret_data))",
       "not in the allowed list",
@@ -376,26 +376,26 @@ describe("fuzz: UNION + subquery + lateral + array-subquery", () => {
 describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
   useDialect(PG_URL);
 
-  it("accepts whitelisted table in the default schema", () => {
+  it("accepts whitelisted table in the default schema", async () => {
     expectValid("SELECT * FROM companies");
   });
 
-  it("accepts schema-qualified whitelisted variant", () => {
+  it("accepts schema-qualified whitelisted variant", async () => {
     expectValid("SELECT * FROM public.companies");
   });
 
-  it("accepts non-default schema-qualified variant when whitelisted", () => {
+  it("accepts non-default schema-qualified variant when whitelisted", async () => {
     expectValid("SELECT * FROM analytics.companies");
   });
 
-  it("rejects schema-qualified name whose qualified form is NOT in whitelist", () => {
+  it("rejects schema-qualified name whose qualified form is NOT in whitelist", async () => {
     expectInvalid(
       "SELECT * FROM other_schema.companies",
       "not in the allowed list",
     );
   });
 
-  it("rejects schema-qualified target where only unqualified is whitelisted (cross-schema)", () => {
+  it("rejects schema-qualified target where only unqualified is whitelisted (cross-schema)", async () => {
     // `orders` is whitelisted unqualified but `wicked.orders` is not — reject.
     expectInvalid(
       "SELECT * FROM wicked.orders",
@@ -403,29 +403,29 @@ describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
     );
   });
 
-  it("rejects information_schema.tables (catalog probe)", () => {
+  it("rejects information_schema.tables (catalog probe)", async () => {
     expectInvalid(
       "SELECT table_name FROM information_schema.tables",
       "not in the allowed list",
     );
   });
 
-  it("rejects pg_catalog.pg_tables (catalog probe)", () => {
+  it("rejects pg_catalog.pg_tables (catalog probe)", async () => {
     expectInvalid(
       "SELECT tablename FROM pg_catalog.pg_tables",
       "not in the allowed list",
     );
   });
 
-  it("rejects unqualified pg_tables even though pg_catalog is on search_path", () => {
+  it("rejects unqualified pg_tables even though pg_catalog is on search_path", async () => {
     expectInvalid("SELECT tablename FROM pg_tables", "not in the allowed list");
   });
 
-  it("accepts quoted whitelisted identifier", () => {
+  it("accepts quoted whitelisted identifier", async () => {
     expectValid('SELECT * FROM "companies"');
   });
 
-  it("accepts uppercase quoted identifier that normalizes to whitelist", () => {
+  it("accepts uppercase quoted identifier that normalizes to whitelist", async () => {
     // See F-20 (case-fold collision) in the phase-3 audit. Current validator
     // treats `"COMPANIES"` and `companies` as equivalent, which is the
     // expected current behavior for self-hosted deployments that use
@@ -435,15 +435,15 @@ describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
     expectValid('SELECT * FROM "COMPANIES"');
   });
 
-  it("rejects quoted identifier that is not in the whitelist", () => {
+  it("rejects quoted identifier that is not in the whitelist", async () => {
     expectInvalid('SELECT * FROM "secret_data"', "not in the allowed list");
   });
 
-  it("accepts quoted schema-qualified whitelisted", () => {
+  it("accepts quoted schema-qualified whitelisted", async () => {
     expectValid('SELECT * FROM "public"."companies"');
   });
 
-  it("rejects quoted cross-schema variant", () => {
+  it("rejects quoted cross-schema variant", async () => {
     expectInvalid(
       'SELECT * FROM "other_schema"."companies"',
       "not in the allowed list",
@@ -463,19 +463,19 @@ describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
 describe("fuzz: LIMIT handling at the validator layer", () => {
   useDialect(PG_URL);
 
-  it("accepts a bare SELECT with no LIMIT (auto-appended downstream)", () => {
+  it("accepts a bare SELECT with no LIMIT (auto-appended downstream)", async () => {
     expectValid("SELECT * FROM companies");
   });
 
-  it("accepts SELECT with an explicit LIMIT", () => {
+  it("accepts SELECT with an explicit LIMIT", async () => {
     expectValid("SELECT * FROM companies LIMIT 10");
   });
 
-  it("accepts SELECT with LIMIT and OFFSET", () => {
+  it("accepts SELECT with LIMIT and OFFSET", async () => {
     expectValid("SELECT * FROM companies LIMIT 10 OFFSET 100");
   });
 
-  it("rejects SQL:2008 FETCH FIRST form (node-sql-parser PG grammar gap, documented)", () => {
+  it("rejects SQL:2008 FETCH FIRST form (node-sql-parser PG grammar gap, documented)", async () => {
     // node-sql-parser 5.4 does not recognise the SQL:2008 `FETCH FIRST n ROWS
     // ONLY` construct in PostgreSQL mode. Since the validator rejects on
     // parse failure (by design), queries using this form must be rewritten
@@ -487,13 +487,13 @@ describe("fuzz: LIMIT handling at the validator layer", () => {
     );
   });
 
-  it("accepts UNION with LIMIT on each side", () => {
+  it("accepts UNION with LIMIT on each side", async () => {
     expectValid(
       "(SELECT id FROM companies LIMIT 10) UNION (SELECT id FROM people LIMIT 10)",
     );
   });
 
-  it("accepts nested subquery with inner LIMIT 0 (does not bypass outer count)", () => {
+  it("accepts nested subquery with inner LIMIT 0 (does not bypass outer count)", async () => {
     // A subquery with LIMIT 0 still must pass validation; the outer query has
     // no rows to return from the subquery, but the query is well-formed.
     expectValid(
@@ -501,11 +501,11 @@ describe("fuzz: LIMIT handling at the validator layer", () => {
     );
   });
 
-  it("accepts LIMIT 1 with ORDER BY", () => {
+  it("accepts LIMIT 1 with ORDER BY", async () => {
     expectValid("SELECT * FROM companies ORDER BY id DESC LIMIT 1");
   });
 
-  it("accepts CTE with LIMIT inside the WITH clause", () => {
+  it("accepts CTE with LIMIT inside the WITH clause", async () => {
     expectValid(
       "WITH top AS (SELECT id FROM companies LIMIT 10) SELECT * FROM top",
     );
@@ -519,123 +519,123 @@ describe("fuzz: LIMIT handling at the validator layer", () => {
 describe("fuzz: PostgreSQL dialect escape hatches", () => {
   useDialect(PG_URL);
 
-  it("rejects LOCK TABLE (non-select AST)", () => {
+  it("rejects LOCK TABLE (non-select AST)", async () => {
     expectInvalid("LOCK TABLE companies IN ACCESS SHARE MODE");
   });
 
-  it("rejects SET session var", () => {
+  it("rejects SET session var", async () => {
     expectInvalid("SET search_path TO public");
   });
 
-  it("rejects BEGIN transaction control", () => {
+  it("rejects BEGIN transaction control", async () => {
     // Regex guard passes (no DML); AST parser rejects as non-select type
     expectInvalid("BEGIN");
   });
 
-  it("rejects COMMIT transaction control", () => {
+  it("rejects COMMIT transaction control", async () => {
     expectInvalid("COMMIT");
   });
 
-  it("rejects ROLLBACK transaction control", () => {
+  it("rejects ROLLBACK transaction control", async () => {
     expectInvalid("ROLLBACK");
   });
 
-  it("rejects NOTIFY", () => {
+  it("rejects NOTIFY", async () => {
     expectInvalid("NOTIFY foo, 'payload'");
   });
 
-  it("rejects LISTEN", () => {
+  it("rejects LISTEN", async () => {
     expectInvalid("LISTEN foo");
   });
 
-  it("rejects UNLISTEN", () => {
+  it("rejects UNLISTEN", async () => {
     expectInvalid("UNLISTEN foo");
   });
 
-  it("rejects DEALLOCATE", () => {
+  it("rejects DEALLOCATE", async () => {
     expectInvalid("DEALLOCATE plan1");
   });
 
-  it("rejects DO anonymous block", () => {
+  it("rejects DO anonymous block", async () => {
     expectInvalid("DO $$BEGIN PERFORM 1; END$$");
   });
 
-  it("rejects RAISE plpgsql", () => {
+  it("rejects RAISE plpgsql", async () => {
     expectInvalid("RAISE NOTICE 'hi'");
   });
 
-  it("rejects PREPARE statement", () => {
+  it("rejects PREPARE statement", async () => {
     expectInvalid("PREPARE plan1 AS SELECT 1");
   });
 
-  it("rejects CLUSTER (table maintenance)", () => {
+  it("rejects CLUSTER (table maintenance)", async () => {
     expectInvalid("CLUSTER companies");
   });
 
-  it("rejects DISCARD ALL (session reset)", () => {
+  it("rejects DISCARD ALL (session reset)", async () => {
     expectInvalid("DISCARD ALL");
   });
 
-  it("rejects DECLARE CURSOR", () => {
+  it("rejects DECLARE CURSOR", async () => {
     expectInvalid("DECLARE cur1 CURSOR FOR SELECT * FROM companies");
   });
 
-  it("rejects FETCH from cursor", () => {
+  it("rejects FETCH from cursor", async () => {
     expectInvalid("FETCH NEXT FROM cur1");
   });
 
-  it("rejects CLOSE cursor", () => {
+  it("rejects CLOSE cursor", async () => {
     expectInvalid("CLOSE cur1");
   });
 
-  it("rejects COMMENT ON statement (DDL)", () => {
+  it("rejects COMMENT ON statement (DDL)", async () => {
     expectInvalid("COMMENT ON TABLE companies IS 'annotated'");
   });
 
-  it("rejects dollar-quoted string that contains a forbidden keyword (conservative)", () => {
+  it("rejects dollar-quoted string that contains a forbidden keyword (conservative)", async () => {
     // `$$DROP TABLE$$` is a STRING LITERAL in PG; it does not execute DROP.
     // The regex guard is conservative and rejects — this is a deliberate
     // known false-positive, documented in the main sql.test.ts as well.
     expectInvalid("SELECT $$DROP TABLE$$ FROM companies", "forbidden");
   });
 
-  it("accepts dollar-quoted string with benign content", () => {
+  it("accepts dollar-quoted string with benign content", async () => {
     expectValid("SELECT $$hello$$ AS x FROM companies");
   });
 
-  it("accepts dollar-tagged string with benign content", () => {
+  it("accepts dollar-tagged string with benign content", async () => {
     expectValid("SELECT $tag$ hi $tag$ AS x FROM companies");
   });
 
-  it("does not block pg_read_file (known limitation — DB perms mitigate)", () => {
+  it("does not block pg_read_file (known limitation — DB perms mitigate)", async () => {
     // See F-21. Relies on the DB user lacking superuser privileges.
     expectValid("SELECT pg_read_file('/etc/passwd')");
   });
 
-  it("does not block pg_sleep (mitigated by statement_timeout)", () => {
+  it("does not block pg_sleep (mitigated by statement_timeout)", async () => {
     expectValid("SELECT pg_sleep(29)");
   });
 
-  it("does not block pg_terminate_backend (known limitation)", () => {
+  it("does not block pg_terminate_backend (known limitation)", async () => {
     expectValid("SELECT pg_terminate_backend(12345)");
   });
 
-  it("does not block generate_series set-returning function", () => {
+  it("does not block generate_series set-returning function", async () => {
     expectValid("SELECT * FROM generate_series(1,10)");
   });
 
-  it("does not block current_setting(session var reader)", () => {
+  it("does not block current_setting(session var reader)", async () => {
     expectValid("SELECT * FROM current_setting('search_path')");
   });
 
-  it("rejects CREATE MATERIALIZED VIEW (DDL)", () => {
+  it("rejects CREATE MATERIALIZED VIEW (DDL)", async () => {
     expectInvalid(
       "CREATE MATERIALIZED VIEW foo AS SELECT * FROM companies",
       "forbidden",
     );
   });
 
-  it("rejects REFRESH MATERIALIZED VIEW (DDL-ish)", () => {
+  it("rejects REFRESH MATERIALIZED VIEW (DDL-ish)", async () => {
     expectInvalid("REFRESH MATERIALIZED VIEW foo");
   });
 });
@@ -647,89 +647,89 @@ describe("fuzz: PostgreSQL dialect escape hatches", () => {
 describe("fuzz: MySQL dialect escape hatches", () => {
   useDialect(MYSQL_URL);
 
-  it("rejects SHOW TABLES", () => {
+  it("rejects SHOW TABLES", async () => {
     expectInvalid("SHOW TABLES", "forbidden");
   });
 
-  it("rejects SHOW DATABASES", () => {
+  it("rejects SHOW DATABASES", async () => {
     expectInvalid("SHOW DATABASES", "forbidden");
   });
 
-  it("rejects SHOW GRANTS", () => {
+  it("rejects SHOW GRANTS", async () => {
     expectInvalid("SHOW GRANTS FOR 'root'@'%'", "forbidden");
   });
 
-  it("rejects DESCRIBE", () => {
+  it("rejects DESCRIBE", async () => {
     expectInvalid("DESCRIBE companies", "forbidden");
   });
 
-  it("rejects EXPLAIN SELECT", () => {
+  it("rejects EXPLAIN SELECT", async () => {
     expectInvalid("EXPLAIN SELECT * FROM companies", "forbidden");
   });
 
-  it("rejects USE database", () => {
+  it("rejects USE database", async () => {
     expectInvalid("USE other_database", "forbidden");
   });
 
-  it("rejects HANDLER open", () => {
+  it("rejects HANDLER open", async () => {
     expectInvalid("HANDLER companies OPEN", "forbidden");
   });
 
-  it("rejects LOAD DATA", () => {
+  it("rejects LOAD DATA", async () => {
     expectInvalid(
       "LOAD DATA INFILE '/tmp/x.csv' INTO TABLE companies",
       "forbidden",
     );
   });
 
-  it("rejects LOAD XML", () => {
+  it("rejects LOAD XML", async () => {
     expectInvalid(
       "LOAD XML INFILE '/tmp/x.xml' INTO TABLE companies",
       "forbidden",
     );
   });
 
-  it("rejects SELECT INTO OUTFILE", () => {
+  it("rejects SELECT INTO OUTFILE", async () => {
     expectInvalid(
       "SELECT * FROM companies INTO OUTFILE '/tmp/x'",
       "forbidden",
     );
   });
 
-  it("accepts backtick-quoted whitelisted identifier", () => {
+  it("accepts backtick-quoted whitelisted identifier", async () => {
     expectValid("SELECT `id` FROM `companies`");
   });
 
-  it("rejects backtick-quoted non-whitelisted table", () => {
+  it("rejects backtick-quoted non-whitelisted table", async () => {
     expectInvalid("SELECT `id` FROM `secret_data`", "not in the allowed list");
   });
 
-  it("rejects UNION reaching into mysql.user (schema-qualified)", () => {
+  it("rejects UNION reaching into mysql.user (schema-qualified)", async () => {
     expectInvalid(
       "SELECT id FROM companies UNION SELECT user FROM mysql.user",
       "not in the allowed list",
     );
   });
 
-  it("does not block BENCHMARK (DoS, mitigated by statement_timeout)", () => {
+  it("does not block BENCHMARK (DoS, mitigated by statement_timeout)", async () => {
     expectValid("SELECT BENCHMARK(1000000, MD5('a'))");
   });
 
-  it("does not block SLEEP (mitigated by statement_timeout)", () => {
+  it("does not block SLEEP (mitigated by statement_timeout)", async () => {
     expectValid("SELECT SLEEP(29)");
   });
 
-  it("does not block GET_LOCK (known limitation — mitigated by connection lifecycle)", () => {
+  it("does not block GET_LOCK (known limitation — mitigated by connection lifecycle)", async () => {
     expectValid("SELECT GET_LOCK('x', 30)");
   });
 
-  it("does not block LOAD_FILE (known limitation — FILE privilege required)", () => {
+  it("does not block LOAD_FILE (known limitation — FILE privilege required)", async () => {
     // Blocked at the DB permission layer; file reads need FILE priv which
     // should not be granted to the Atlas user.
     expectValid("SELECT LOAD_FILE('/etc/passwd')");
   });
 
-  it("accepts SELECT INTO @user_variable (session-local, no persistence)", () => {
+  it("accepts SELECT INTO @user_variable (session-local, no persistence)", async () => {
     // MySQL variable assignment. Session-only, not a write to a durable
     // location. Documented as accepted behavior.
     expectValid("SELECT id INTO @my_var FROM companies LIMIT 1");
@@ -743,44 +743,44 @@ describe("fuzz: MySQL dialect escape hatches", () => {
 describe("fuzz: comment smuggling + multi-statement", () => {
   useDialect(PG_URL);
 
-  it("rejects `SELECT 1; DROP TABLE` via regex guard before AST", () => {
+  it("rejects `SELECT 1; DROP TABLE` via regex guard before AST", async () => {
     expectInvalid("SELECT 1; DROP TABLE companies", "forbidden");
   });
 
-  it("rejects two SELECTs separated by semicolon", () => {
+  it("rejects two SELECTs separated by semicolon", async () => {
     expectInvalid("SELECT 1; SELECT 2", "multiple statements");
   });
 
-  it("rejects two SELECTs separated by newline + semicolon", () => {
+  it("rejects two SELECTs separated by newline + semicolon", async () => {
     expectInvalid("SELECT 1\n;SELECT 2", "multiple statements");
   });
 
-  it("rejects multi-statement with leading whitespace", () => {
+  it("rejects multi-statement with leading whitespace", async () => {
     expectInvalid("   SELECT 1;   SELECT 2   ", "multiple statements");
   });
 
-  it("strips block comment and then evaluates stripped content", () => {
+  it("strips block comment and then evaluates stripped content", async () => {
     expectValid("/* banner */ SELECT * FROM companies");
   });
 
-  it("strips line comment and then evaluates stripped content", () => {
+  it("strips line comment and then evaluates stripped content", async () => {
     expectValid("-- banner\nSELECT * FROM companies");
   });
 
-  it("rejects `#` in PostgreSQL mode — AST parser does not accept it", () => {
+  it("rejects `#` in PostgreSQL mode — AST parser does not accept it", async () => {
     // Property: if stripSqlComments normalises something away for regex
     // purposes, the AST parser must still see the original; if it fails
     // there, the query is safely rejected. No bypass.
     expectInvalid("SELECT 1 # trailing comment\nFROM companies", "could not be parsed");
   });
 
-  it("preserves keywords inside string literals (known conservative false positive)", () => {
+  it("preserves keywords inside string literals (known conservative false positive)", async () => {
     // The regex guard rejects even if the keyword is strictly inside a quoted
     // string. This is documented in sql.test.ts and we pin it here too.
     expectInvalid("SELECT 'DELETE' FROM companies", "forbidden");
   });
 
-  it("allows literal semicolon inside a string", () => {
+  it("allows literal semicolon inside a string", async () => {
     expectValid("SELECT ';' FROM companies");
   });
 });
@@ -792,7 +792,7 @@ describe("fuzz: comment smuggling — MySQL dialect slice", () => {
   // per-test `beforeEach` reset but fragile for future tests added between.
   useDialect(MYSQL_URL);
 
-  it("strips hash comment from regex guard (MySQL dialect where # is a valid comment)", () => {
+  it("strips hash comment from regex guard (MySQL dialect where # is a valid comment)", async () => {
     // `#` is a MySQL comment, not PG. stripSqlComments uses a single regex
     // that removes `#` lines unconditionally — safe because the AST parser
     // then sees the original SQL and will reject in PG mode (parser does
@@ -890,8 +890,8 @@ describe("fuzz: generator — whitelisted table × shape must pass", () => {
   for (const table of WHITELISTED_TABLES) {
     for (const shape of SHAPES) {
       const sql = shape(table).replace(/\bsecret_data\b|\bpasswords\b|\bmysql\.user\b|\bpg_catalog\.pg_authid\b|\bother\.companies\b/g, table);
-      it(`accepts ${table} via shape — ${sql.slice(0, 60)}…`, () => {
-        const r = validateSQL(sql);
+      it(`accepts ${table} via shape — ${sql.slice(0, 60)}…`, async () => {
+        const r = await validateSQL(sql);
         expect(r.valid).toBe(true);
       });
     }
@@ -920,7 +920,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     });
 
-    it("F-17.a: bare /*!50000 UNION ... */ against mysql.user is rejected", () => {
+    it("F-17.a: bare /*!50000 UNION ... */ against mysql.user is rejected", async () => {
       // Unwrap (Option A): `/*!50000 ... */` becomes live SQL so the
       // whitelist sees the mysql.user reference and rejects it.
       expectInvalid(
@@ -929,14 +929,14 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       );
     });
 
-    it("F-17.b: boundary version /*!00000 */ is rejected", () => {
+    it("F-17.b: boundary version /*!00000 */ is rejected", async () => {
       expectInvalid(
         "SELECT 1 /*!00000 UNION SELECT id FROM secret_data */",
         "not in the allowed list",
       );
     });
 
-    it("F-17.c: high-version /*!99999 */ is rejected", () => {
+    it("F-17.c: high-version /*!99999 */ is rejected", async () => {
       // Defense in depth: the validator must not rely on the server version
       // check to decline execution — the unwrap normalizes digits away.
       expectInvalid(
@@ -945,7 +945,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       );
     });
 
-    it("F-17.d: /*! (no digits) is rejected", () => {
+    it("F-17.d: /*! (no digits) is rejected", async () => {
       // MariaDB-style conditional comment with no version gate. Regex
       // tolerates `\d{0,5}` so the unwrap still fires.
       expectInvalid(
@@ -954,21 +954,21 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       );
     });
 
-    it("F-17.e: /*! inside a CTE body is rejected", () => {
+    it("F-17.e: /*! inside a CTE body is rejected", async () => {
       expectInvalid(
         "WITH x AS (SELECT 1 /*!50000 UNION SELECT id FROM secret_data */) SELECT * FROM x",
         "not in the allowed list",
       );
     });
 
-    it("F-17.f: /*! smuggling a column into the SELECT list is rejected", () => {
+    it("F-17.f: /*! smuggling a column into the SELECT list is rejected", async () => {
       expectInvalid(
         "SELECT 1 /*!50000 , (SELECT id FROM secret_data LIMIT 1) AS leaked */ FROM companies",
         "not in the allowed list",
       );
     });
 
-    it("F-17.g: nested /*!50000 /*!80000 ... */ */ unwrap exposes the DML keyword", () => {
+    it("F-17.g: nested /*!50000 /*!80000 ... */ */ unwrap exposes the DML keyword", async () => {
       // Loop-until-stable unwrap peels both levels. Inner content `DROP`
       // reaches the regex guard as live SQL and fires a mutation match.
       expectInvalid(
@@ -977,14 +977,14 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       );
     });
 
-    it("F-17.h: unclosed /*!NNNNN ... (EOF, no closing */) still rejected", () => {
+    it("F-17.h: unclosed /*!NNNNN ... (EOF, no closing */) still rejected", async () => {
       // No `*/` means the unwrap regex doesn't fire. The unclosed comment
       // stays intact so the regex guard sees the literal `DROP` inside the
       // prefix and rejects it as a mutation keyword.
       expectInvalid("SELECT 1 /*!50000 DROP", "forbidden");
     });
 
-    it("F-17.i: /*! with whitespace before digits still rejects (MariaDB zero-digit form)", () => {
+    it("F-17.i: /*! with whitespace before digits still rejects (MariaDB zero-digit form)", async () => {
       // Pin the `\d{0,5}` tolerance. MySQL's grammar requires digits to
       // immediately follow `/*!` — a space means this is the MariaDB no-digit
       // form with body ` 50000 UNION ...`, which unwraps to live SQL whose
@@ -997,7 +997,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       );
     });
 
-    it("F-17.j: /*!NNNNNN (over-spec six digits) still rejects", () => {
+    it("F-17.j: /*!NNNNNN (over-spec six digits) still rejects", async () => {
       // `\d{0,5}` consumes five digits and leaves the trailing `0` in the
       // body, producing `SELECT 1 0 UNION SELECT ...` which fails parse.
       // If the regex were relaxed to `\d+`, MySQL would simply treat this
@@ -1009,7 +1009,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       );
     });
 
-    it("F-17.k: nested /*! /*! ... */ */ (no digits at either level) still rejects", () => {
+    it("F-17.k: nested /*! /*! ... */ */ (no digits at either level) still rejects", async () => {
       // Stacked MariaDB-form wrappers — separate branch through the regex's
       // `\d{0,5}` alternation from the digits+digits nest covered by F-17.g.
       expectInvalid(
@@ -1018,13 +1018,13 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       );
     });
 
-    it("F-17 positive regression: unwrapped /*! against a whitelisted table is accepted", () => {
+    it("F-17 positive regression: unwrapped /*! against a whitelisted table is accepted", async () => {
       // Option A must not over-reject — a `/*!` wrapper around a UNION that
       // only references whitelisted tables unwraps to valid SQL and passes.
       expectValid("SELECT 1 /*!50000 UNION SELECT id FROM companies */");
     });
 
-    it("F-17 string-literal protection: /*! inside a string must not be unwrapped", () => {
+    it("F-17 string-literal protection: /*! inside a string must not be unwrapped", async () => {
       // The unwrap regex alternates with a string-literal arm so a literal
       // `'/*!50000 ...'` stays as a plain string and the query validates
       // against the outer whitelisted table.
@@ -1037,7 +1037,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
       process.env.ATLAS_DATASOURCE_URL = PG_URL;
     });
 
-    it("PG treats /*!...*/ as a plain comment — payload that WOULD reject if unwrapped stays valid", () => {
+    it("PG treats /*!...*/ as a plain comment — payload that WOULD reject if unwrapped stays valid", async () => {
       // Strong property: the comment body references `mysql.user` (not in the
       // whitelist). If unwrap fired in PG mode, the whitelist would see
       // `mysql.user` and reject. It stays valid because PG skips the unwrap
@@ -1048,7 +1048,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
     });
   });
 
-  it("F-18 (P2, PostgreSQL, #1773): SELECT INTO new_table is blocked", () => {
+  it("F-18 (P2, PostgreSQL, #1773): SELECT INTO new_table is blocked", async () => {
     process.env.ATLAS_DATASOURCE_URL = PG_URL;
     // PG's `SELECT ... INTO new_table FROM source` creates a table (DDL
     // equivalent). AST-layer guard rejects on `stmt.into.type === "into"`
@@ -1056,26 +1056,26 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
     expectInvalid("SELECT * INTO new_table FROM companies", "forbidden");
   });
 
-  it("F-18 regression: plain SELECT still accepted", () => {
+  it("F-18 regression: plain SELECT still accepted", async () => {
     process.env.ATLAS_DATASOURCE_URL = PG_URL;
     expectValid("SELECT * FROM companies");
   });
 
-  it("F-18 regression: MySQL SELECT INTO @var (session variable) still accepted", () => {
+  it("F-18 regression: MySQL SELECT INTO @var (session variable) still accepted", async () => {
     // `INTO @var` is session-local variable assignment — not a table write.
     // AST keyword is "var" so the guard skips it.
     process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     expectValid("SELECT id INTO @my_var FROM companies LIMIT 1");
   });
 
-  it("F-18 regression: MySQL multi-variable INTO @a, @b still accepted", () => {
+  it("F-18 regression: MySQL multi-variable INTO @a, @b still accepted", async () => {
     // Multiple variable targets share the same `keyword === "var"` shape.
     // Pin exercises the `var`-carve-out against a richer AST payload.
     process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     expectValid("SELECT id, id INTO @a, @b FROM companies LIMIT 1");
   });
 
-  it("F-18 regression: PG SELECT INTO TEMP ... is rejected (parser-layer today, AST-guard if parser adds support)", () => {
+  it("F-18 regression: PG SELECT INTO TEMP ... is rejected (parser-layer today, AST-guard if parser adds support)", async () => {
     // node-sql-parser 5.4 does not recognise PG's `SELECT INTO TEMP t` form,
     // so today this rejects at parse layer. If a future parser release adds
     // support, the AST guard would catch it via `keyword === "temp"` (not
@@ -1084,7 +1084,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
     expectInvalid("SELECT * INTO TEMP t FROM companies", "could not be parsed");
   });
 
-  it("F-19 (P2, MySQL, #1774): INTO DUMPFILE is blocked", () => {
+  it("F-19 (P2, MySQL, #1774): INTO DUMPFILE is blocked", async () => {
     process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     // Regex `INTO\s+(?:OUTFILE|DUMPFILE)` now enumerates both filesystem
     // writing variants. Requires FILE privilege at runtime but the
@@ -1092,7 +1092,7 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
     expectInvalid("SELECT * FROM companies INTO DUMPFILE '/tmp/x'", "forbidden");
   });
 
-  it("F-19 regression: INTO OUTFILE still rejected after DUMPFILE extension", () => {
+  it("F-19 regression: INTO OUTFILE still rejected after DUMPFILE extension", async () => {
     process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     expectInvalid("SELECT * FROM companies INTO OUTFILE '/tmp/x'", "forbidden");
   });
@@ -1105,17 +1105,17 @@ describe("fuzz: regression pins — phase-3 validator bypass fixes", () => {
     expectValid("SELECT dumpfile FROM companies");
   });
 
-  it("F-19 regression: INTO<TAB>DUMPFILE still rejected (whitespace class, not literal space)", () => {
+  it("F-19 regression: INTO<TAB>DUMPFILE still rejected (whitespace class, not literal space)", async () => {
     process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     expectInvalid("SELECT * FROM companies INTO\tDUMPFILE '/tmp/x'", "forbidden");
   });
 
-  it("F-19 regression: INTO<NEWLINE>DUMPFILE still rejected", () => {
+  it("F-19 regression: INTO<NEWLINE>DUMPFILE still rejected", async () => {
     process.env.ATLAS_DATASOURCE_URL = MYSQL_URL;
     expectInvalid("SELECT * FROM companies INTO\nDUMPFILE '/tmp/x'", "forbidden");
   });
 
-  it("F-19 regression: backtick-quoted `DUMPFILE` still rejected by parse layer", () => {
+  it("F-19 regression: backtick-quoted `DUMPFILE` still rejected by parse layer", async () => {
     // MySQL does not accept `` INTO `DUMPFILE` `` as filesystem-write syntax
     // (the keyword must be a bare identifier), so node-sql-parser rejects.
     // Pin documents the layered defence — regex deliberately does NOT match

@@ -88,7 +88,7 @@ export async function getVisibleConnectionIds(
       contentModeRegistry.readFilter("connections", mode ?? "published", "c"),
     );
     const rows = await internalQuery<{ id: string }>(
-      `SELECT c.id FROM connections c WHERE c.org_id = $1 AND ${statusClause}`,
+      `SELECT c.id FROM connections c WHERE c.org_id = $1 AND ${statusClause} ORDER BY c.id`,
       [orgId],
     );
     for (const row of rows) {

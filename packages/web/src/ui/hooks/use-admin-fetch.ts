@@ -34,6 +34,13 @@ export function useAdminFetch<T>(
     deps?: unknown[];
     transform?: (json: unknown) => T;
     schema?: z.ZodType<T>;
+    /**
+     * Skip the request entirely when false. Useful when a required URL
+     * parameter is still being resolved (e.g., picker hasn't auto-selected
+     * yet) so the page doesn't fire a request that the backend would have
+     * to coerce. Mirrors React Query's `enabled` option.
+     */
+    enabled?: boolean;
   },
 ) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -54,6 +61,7 @@ export function useAdminFetch<T>(
 
   const query = useQuery<T, FetchError>({
     queryKey: [ADMIN_FETCH_QUERY_KEY, path, ...(opts?.deps ?? [])],
+    enabled: opts?.enabled ?? true,
     queryFn: async ({ signal }) => {
       // Clear any manual error override when a real fetch starts.
       setErrorOverride(null);
@@ -117,14 +125,18 @@ export function useAdminFetch<T>(
 
   // Derive the return value to match the original interface exactly.
   const error = errorOverride ?? query.error ?? null;
+  // When `enabled: false`, react-query keeps `isPending` true even though no
+  // fetch is in flight — that would render an infinite spinner in callers
+  // that gate on `loading`. Treat the disabled query as idle so the caller
+  // can render its own empty / placeholder state.
+  const enabledOption = opts?.enabled ?? true;
+  const loading = enabledOption ? query.isPending : false;
 
   return {
     // Override TanStack Query's default (keep stale data on error) to match
     // the original hook contract where errors always clear data.
     data: error ? null : (query.data ?? null),
-    // isPending = no cached data + fetch in flight. Unlike the old hook, this
-    // is NOT true during background refetches when cached data exists.
-    loading: query.isPending,
+    loading,
     error,
     setError: setErrorOverride,
     refetch: query.refetch,

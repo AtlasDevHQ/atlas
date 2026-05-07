@@ -70,7 +70,13 @@ export default function SchemaDiffPage() {
 
   const { data: diff, loading, error, refetch } = useAdminFetch(
     `/api/v1/admin/semantic/diff?connection=${encodeURIComponent(connectionId)}`,
-    { schema: SemanticDiffResponseSchema, deps: [connectionId] },
+    {
+      schema: SemanticDiffResponseSchema,
+      deps: [connectionId],
+      // Skip the request until the auto-pick effect populates the URL,
+      // otherwise we fire a redundant `?connection=` request on first render.
+      enabled: connectionId.length > 0,
+    },
   );
 
   // Schema diff is meaningful only against a developer-mode (draft)

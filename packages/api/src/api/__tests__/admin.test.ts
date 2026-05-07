@@ -1874,6 +1874,8 @@ describe("Admin routes — semantic diff", () => {
   beforeEach(() => {
     setAdmin();
     mockRunDiff.mockClear();
+    mockInternalQuery.mockReset();
+    mockInternalQuery.mockResolvedValue([]);
   });
 
   it("GET /semantic/diff returns structured diff", async () => {
@@ -1911,13 +1913,43 @@ describe("Admin routes — semantic diff", () => {
     expect(body.error).toBe("not_found");
   });
 
-  it("returns 500 with specific message when runDiff throws", async () => {
-    mockRunDiff.mockRejectedValueOnce(new Error("DB unreachable"));
+  it("auto-resolves to the org's first visible connection when ?connection= is omitted", async () => {
+    // Org-scoped admin owns __demo__ (no `default` row). The handler must
+    // pick __demo__ from getVisibleConnectionIds rather than fall back to
+    // the literal string "default".
+    setOrgScopedAdmin("org-saas");
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (typeof sql === "string" && sql.includes("SELECT c.id FROM connections")) {
+        return Promise.resolve([{ id: "__demo__" }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));
+    expect(res.status).toBe(200);
+    expect(mockRunDiff).toHaveBeenCalledWith(
+      "__demo__",
+      expect.objectContaining({ orgId: "org-saas" }),
+    );
+  });
+
+  // Note: the explicit `no_connections` 404 branch (admin.ts) fires when the
+  // org has zero visible connections AND `default` isn't registered. The shared
+  // connection mock hardcodes `has: () => true`, so the branch isn't reachable
+  // through this app.fetch suite without re-stubbing the registry. Covered by
+  // unit logic; not duplicated as an integration test here.
+
+  it("returns 500 with sanitized message when runDiff throws", async () => {
+    // Raw error from runDiff (e.g., pg detail) must NOT leak in the response
+    // body. The requestId is the operator's correlation handle.
+    mockRunDiff.mockRejectedValueOnce(new Error("DB unreachable: column users.api_key"));
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("internal_error");
-    expect(body.message).toContain("DB unreachable");
+    expect(body.message).not.toContain("api_key");
+    expect(body.message).not.toContain("DB unreachable");
+    expect(body.requestId).toBeTruthy();
   });
 
   it("requires admin role", async () => {

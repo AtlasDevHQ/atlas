@@ -165,6 +165,69 @@ describe("getOrgWhitelistedTables", () => {
     const tables = getOrgWhitelistedTables("org-not-loaded");
     expect(tables.size).toBe(0);
   });
+
+  it("falls back to the only connection when 'default' is requested on a single-connection org (#2142 demo + wizard)", async () => {
+    // Demo workspaces store entities under connection_id="__demo__";
+    // wizard-onboarded workspaces may use any user-chosen id. Without
+    // this fallback, executeSQL calls without an explicit connectionId
+    // (which default to "default") reject every table on those orgs.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow("customers", "customers", "__demo__"),
+        makeEntityRow("orders", "orders", "__demo__"),
+      ]),
+    );
+
+    await loadOrgWhitelist("org-demo");
+    const tables = getOrgWhitelistedTables("org-demo", "default");
+    expect(tables.has("customers")).toBe(true);
+    expect(tables.has("orders")).toBe(true);
+  });
+
+  it("does NOT fall back when requesting non-'default' connectionId — strict isolation", async () => {
+    // The fallback is intentionally narrow: only fires for connectionId="default".
+    // Asking for a specific non-existent connectionId must still return empty,
+    // so multi-source orgs can't accidentally cross-route queries.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow("customers", "customers", "__demo__")]),
+    );
+
+    await loadOrgWhitelist("org-demo");
+    const tables = getOrgWhitelistedTables("org-demo", "warehouse");
+    expect(tables.size).toBe(0);
+  });
+
+  it("does NOT fall back when the org has multiple connections", async () => {
+    // Multi-source orgs require explicit connectionId; a "default" lookup
+    // with no matching key returns empty rather than picking one
+    // arbitrarily.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow("customers", "customers", "warehouse"),
+        makeEntityRow("events", "events", "ops"),
+      ]),
+    );
+
+    await loadOrgWhitelist("org-multi");
+    const tables = getOrgWhitelistedTables("org-multi", "default");
+    expect(tables.size).toBe(0);
+  });
+
+  it("prefers a real 'default' entry over the fallback path", async () => {
+    // If the org genuinely has a "default" connection, the direct hit must
+    // win — the fallback only fires when "default" yields an empty set.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow("users", "users"), // connection_id null → keys under "default"
+        makeEntityRow("events", "events", "warehouse"),
+      ]),
+    );
+
+    await loadOrgWhitelist("org-mixed");
+    const tables = getOrgWhitelistedTables("org-mixed", "default");
+    expect(tables.has("users")).toBe(true);
+    expect(tables.has("events")).toBe(false);
+  });
 });
 
 describe("invalidateOrgWhitelist", () => {

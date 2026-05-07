@@ -483,12 +483,23 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
     return new Set();
   }
 
-  const hasNonDefault = Array.from(byConnection.keys()).some((k) => k !== "default");
-  let tables: Set<string>;
-  if (!hasNonDefault) {
-    tables = new Set(byConnection.get("default") ?? []);
-  } else {
-    tables = new Set(byConnection.get(connectionId) ?? []);
+  // Direct hit on the requested connectionId is the primary lookup. The
+  // fallback below makes single-connection orgs work when callers default
+  // to "default" — which is the common case for the chat agent and MCP
+  // clients that don't bind a specific connectionId. Demo workspaces store
+  // entities under `__demo__`, and wizard-onboarded orgs may store under any
+  // user-chosen id (e.g. "warehouse"); without the fallback every executeSQL
+  // call without an explicit connectionId would reject every table on those
+  // orgs (#2142).
+  let tables = new Set(byConnection.get(connectionId) ?? []);
+  if (
+    tables.size === 0 &&
+    connectionId === "default" &&
+    byConnection.size === 1 &&
+    !byConnection.has("default")
+  ) {
+    const [onlyTables] = byConnection.values();
+    tables = new Set(onlyTables);
   }
 
   // Merge plugin-provided entities (same behavior as file-based getWhitelistedTables)

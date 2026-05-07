@@ -23,8 +23,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
-import { _resetWhitelists } from "@atlas/api/lib/semantic";
-import { DEMO_CONNECTION_ID } from "@atlas/api/lib/semantic/entities";
+import { _resetWhitelists, invalidateOrgWhitelist } from "@atlas/api/lib/semantic";
+import { DEMO_CONNECTION_ID, bulkUpsertEntities } from "@atlas/api/lib/semantic/entities";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic/sync";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
@@ -755,6 +755,48 @@ wizard.openapi(saveRoute, async (c) => {
         }
       }
   
+      // Persist to the org-scoped semantic_entities table. The disk write
+      // above feeds the file-based whitelist (used by the chat agent's
+      // file-walking code paths and the explore tool) but NOT the DB-backed
+      // per-org whitelist consumed by `loadOrgWhitelist` — which is what the
+      // MCP edge and the post-#2141 SQL validation read. Without this,
+      // wizard-onboarded workspaces have a silent split: chat works, MCP
+      // rejects every table with `unknown_entity` (#2142).
+      if (hasInternalDB()) {
+        const dbEntities = entities.map((e) => ({
+          entityType: "entity" as const,
+          name: path.basename(e.tableName),
+          yamlContent: e.yaml,
+          connectionId,
+        }));
+        const upserted = yield* Effect.tryPromise({
+          try: () => bulkUpsertEntities(orgId, dbEntities),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.error(
+            { err: err.message, requestId, orgId, connectionId },
+            "Wizard save: bulkUpsertEntities failed — disk YAMLs written but per-org whitelist will be empty",
+          );
+          return Effect.succeed(null as number | null);
+        }));
+        if (upserted === null) {
+          return c.json({
+            error: "db_persist_failed",
+            message:
+              "Saved YAML files to disk, but failed to populate the per-org entity store. " +
+              "MCP / executeSQL will reject these tables until this is resolved. Retry the wizard or contact the operator.",
+            requestId,
+          }, 500);
+        }
+        invalidateOrgWhitelist(orgId);
+        if (upserted < dbEntities.length) {
+          log.warn(
+            { requestId, orgId, attempted: dbEntities.length, upserted },
+            "Wizard entity upsert: some rows failed — disk write succeeded but DB partially populated",
+          );
+        }
+      }
+
       // Reset semantic whitelist cache so new entities are queryable
       _resetWhitelists();
 

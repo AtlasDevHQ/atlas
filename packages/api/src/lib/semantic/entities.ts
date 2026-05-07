@@ -54,7 +54,7 @@ export async function upsertEntity(
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, $4, $5, 'published')
-     ON CONFLICT (org_id, name, COALESCE(connection_id, '__default__')) WHERE status = 'published'
+     ON CONFLICT (org_id, entity_type, name, COALESCE(connection_id, '__default__')) WHERE status = 'published'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
                    connection_id = EXCLUDED.connection_id,
@@ -83,7 +83,7 @@ export async function upsertDraftEntity(
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, $4, $5, 'draft')
-     ON CONFLICT (org_id, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft'
+     ON CONFLICT (org_id, entity_type, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
                    connection_id = EXCLUDED.connection_id,
@@ -112,7 +112,7 @@ export async function upsertTombstone(
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, '', $4, 'draft_delete')
-     ON CONFLICT (org_id, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft_delete'
+     ON CONFLICT (org_id, entity_type, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft_delete'
      DO UPDATE SET updated_at = now()`,
     [orgId, entityType, name, connectionId ?? null],
   );
@@ -810,8 +810,14 @@ export async function bulkUpsertEntities(
       await upsertEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId);
       upserted++;
     } catch (err) {
-      log.warn(
-        { orgId, entityType: e.entityType, name: e.name, err: err instanceof Error ? err.message : String(err) },
+      // log.error (not log.warn) because a row-level upsert failure means
+      // the YAML parsed cleanly but the DB rejected it — usually a schema
+      // drift between the ON CONFLICT clause and the unique index. Silent
+      // warns let migration 0028 ship the index change without anyone
+      // noticing every upsert started failing. Loud error makes the next
+      // such drift visible in any log aggregator.
+      log.error(
+        { orgId, entityType: e.entityType, name: e.name, err: err instanceof Error ? err.message : String(err), cause: err instanceof Error ? err.cause : undefined },
         "Failed to upsert semantic entity — skipping",
       );
     }

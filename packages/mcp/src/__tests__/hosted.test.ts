@@ -235,7 +235,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 }));
 
 const { Hono } = await import("hono");
-const { createHostedMcpRouter, _resetHostedSessions, _hostedSessionCount } =
+const { createHostedMcpRouter, _resetHostedSessions, _hostedSessionCount, _sweepIdleSessionsForTests, _setIdleTimeoutForTests } =
   await import("../hosted.js");
 
 // ── Test fixtures ─────────────────────────────────────────────────────
@@ -1166,6 +1166,151 @@ describe("hosted MCP — capacity", () => {
 
       await client.close();
     } finally {
+      handle.close();
+    }
+  });
+
+  it("evicts idle sessions on cap-pressure so a new connection can land", async () => {
+    // Reproduces the prod incident: prior runs leaked sessions
+    // (Streamable HTTP has no transport-disconnect event for clients
+    // that vanish), pinning the cap until container restart. With the
+    // sweep, a cap-hit triggers eviction of stale entries first.
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS = "60000"; // 1 min — at the floor
+    const handle = await startServer();
+    try {
+      // Open one session — fills the cap.
+      const first = new Client({ name: "client-stale", version: "0.0.1" });
+      const firstTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await first.connect(firstTransport);
+      expect(_hostedSessionCount()).toBe(1);
+
+      // Without the sweep this would 503. The sweep with a clock far
+      // enough in the future evicts the stale entry, freeing a slot.
+      // The test drives the sweep directly (not via cap-hit) so the
+      // assertion is unambiguous: sweep evicts, count drops, cap clears.
+      const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
+      const evicted = _sweepIdleSessionsForTests(farFuture, 60_000);
+      expect(evicted).toBe(1);
+      expect(_hostedSessionCount()).toBe(0);
+
+      // The originally-leaked client object is now orphaned; the
+      // server-side transport+server were closed by the sweep. A new
+      // connection can land cleanly because the cap is no longer
+      // saturated.
+      const second = new Client({ name: "client-fresh", version: "0.0.1" });
+      const secondTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await second.connect(secondTransport);
+      expect(_hostedSessionCount()).toBe(1);
+
+      await second.close();
+    } finally {
+      delete process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
+      handle.close();
+    }
+  });
+
+  it("preserves recently-active sessions across a sweep", async () => {
+    // The sweep must NOT touch sessions whose lastSeenAt is within
+    // the idle window — a busy region with hundreds of healthy
+    // sessions cannot have one stray sweep wipe legitimate users.
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    process.env.ATLAS_MCP_MAX_SESSIONS = "5";
+    process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS = "60000";
+    const handle = await startServer();
+    try {
+      const client = new Client({ name: "client-active", version: "0.0.1" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await client.connect(transport);
+      expect(_hostedSessionCount()).toBe(1);
+
+      // Sweep with a clock that is JUST under the idle threshold —
+      // session was created moments ago, so lastSeenAt is fresh.
+      // Eviction count must be 0; session must still be usable.
+      const evicted = _sweepIdleSessionsForTests(Date.now(), 60_000);
+      expect(evicted).toBe(0);
+      expect(_hostedSessionCount()).toBe(1);
+
+      // Verify the preserved session still functions — listTools is
+      // the cheapest dispatch that hits the existing-session path.
+      const tools = await client.listTools();
+      expect(tools.tools.length).toBeGreaterThan(0);
+
+      await client.close();
+    } finally {
+      delete process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
+      handle.close();
+    }
+  });
+
+  it("on cap-pressure triggers the sweep automatically (regression for the prod incident)", async () => {
+    // End-to-end check: cap=1, open one session, IMMEDIATELY hand-pin
+    // its lastSeenAt to a past value to simulate a leaked client, then
+    // attempt a new init. The route's lazy sweep should evict the
+    // stale entry and accept the new connection without 503.
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    // Bypass the production 1-min floor so the test can drive the
+    // age-out path with a sub-second sleep instead of a 60s wait.
+    // _setIdleTimeoutForTests is the documented test seam; the
+    // floor stays in place for production callers.
+    _setIdleTimeoutForTests(50); // 50 ms
+    const handle = await startServer();
+    try {
+      // Step 1 — open the session that occupies the cap.
+      const leaker = new Client({ name: "client-leaker", version: "0.0.1" });
+      const leakerTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await leaker.connect(leakerTransport);
+      expect(_hostedSessionCount()).toBe(1);
+
+      // Step 2 — wait past the idle window so the leaker is sweepable.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Step 3 — a fresh init should now succeed because the route's
+      // cap-check sweep evicts the stale leaker.
+      const fresh = new Client({ name: "client-fresh", version: "0.0.1" });
+      const freshTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await fresh.connect(freshTransport);
+
+      // Final state: only the fresh session remains; the leaker was
+      // swept. The assertion is on count so a future bug that
+      // double-counts during the eviction transition would fail it.
+      expect(_hostedSessionCount()).toBe(1);
+
+      await fresh.close();
+    } finally {
+      _setIdleTimeoutForTests(null);
       handle.close();
     }
   });

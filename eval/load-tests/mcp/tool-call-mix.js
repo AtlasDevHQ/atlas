@@ -94,11 +94,12 @@ export default function () {
   // happens via TARGET_RPS / constant-arrival-rate when set.
 }
 
-export function handleSummary(data) {
+// `loadtest.sh` passes `--summary-export=results/<scenario>-<UTC>.json`.
+// Don't double-emit `summary.json` to cwd.
+export function handleSummary() {
   return {
     'stdout':
       '\nMCP tool-call-mix load test complete.\n' +
       'Per-tool latencies are exported as `http_req_duration{tool:<name>}` — slice the summary or the time-series export by that tag.\n',
-    'summary.json': JSON.stringify(data, null, 2),
   };
 }

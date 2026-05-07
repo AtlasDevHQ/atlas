@@ -37,7 +37,7 @@ The numbers below come from k6's `--summary-export` JSON, which folds all stages
 |-------|----------|----------|----------|
 | `tools/call listEntities` (aggregate, 1→200 sessions) | 47 | 58 | 68 |
 
-107,432 successful `tools/call` frames over the 25-minute run, sustained at ~70 rps. **Tool dispatch latency stayed flat at p95 ~58 ms across the entire 1→200 ladder** — that's the load-bearing claim of this section. Once a session is established, the per-frame cost is dominated by JSON-RPC parsing + Effect context propagation + cached JWKS verify, none of which scale with session count.
+77,432 successful `tools/call` frames over the 25-minute run, against 107,768 total HTTP requests at ~70 rps end-to-end (the gap is the 30,138 inits that 503'd at the cap on the 200-session stage). **Tool dispatch latency stayed flat at p95 ~58 ms across the entire 1→200 ladder** — that's the load-bearing claim of this section. Once a session is established, the per-frame cost is dominated by JSON-RPC parsing + Effect context propagation + cached JWKS verify, none of which scale with session count.
 
 The session cap (`ATLAS_MCP_MAX_SESSIONS=100`) became visible at the 200-session step exactly as designed: of the 30,237 `initialize` attempts across the ladder, **30,138 (99.7 %) returned `503 too_many_sessions`** once the live-session count saturated at the cap. That ceiling is by design — it's what stops a single replica from OOM'ing — and is the architectural reason `numReplicas: 1` and the cap move together. See [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for the durable-session-store path that lifts both.
 

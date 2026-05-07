@@ -53,7 +53,7 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 }));
 
 // importFromDisk — the bulk-import handler dynamically imports it.
-const mockImportFromDisk: Mock<(orgId: string, opts?: { connectionId?: string }) => Promise<unknown>> = mock(
+const mockImportFromDisk: Mock<(orgId: string, opts?: { connectionId?: string; sourceDir?: string }) => Promise<unknown>> = mock(
   async () => ({ imported: 12, skipped: 3, total: 15, entries: [] }),
 );
 mock.module("@atlas/api/lib/semantic/sync", () => ({
@@ -286,5 +286,154 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
 
     expect(res.status).toBe(400);
     expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("auto-recovers a partial-demo org from the bundled seed", async () => {
+    // Reproduces the dharma class of incident: the org has a `__demo__`
+    // connection but the org-scoped disk has zero entities (because the
+    // pre-#2153 /use-demo flow committed the connection before the import
+    // attempt). Clicking "Import from disk" should now silently fall
+    // through to the bundled NovaMart seed and recover the workspace —
+    // the user gets a coherent state in one click.
+    let importCallCount = 0;
+    mockImportFromDisk.mockImplementation(async (orgId: string, opts?: { connectionId?: string; sourceDir?: string }) => {
+      importCallCount++;
+      if (importCallCount === 1) {
+        // First call — org-scoped disk yields nothing
+        expect(opts?.sourceDir).toBeUndefined();
+        return { imported: 0, skipped: 0, total: 0, errors: [] };
+      }
+      // Second call — bundled-seed fallback
+      expect(opts?.connectionId).toBe("__demo__");
+      expect(opts?.sourceDir).toBeDefined();
+      return { imported: 13, skipped: 0, total: 13, errors: [] };
+    });
+    // Org owns __demo__ — triggers the auto-recovery branch.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("FROM connections") && sql.includes("__demo__")) {
+        return [{ id: "__demo__" }];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/semantic/org/import", {}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(importCallCount).toBe(2);
+    const data = (await res.json()) as { imported: number };
+    expect(data.imported).toBe(13);
+
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({
+      importedCount: 13,
+      sourceRef: "demo-seed:auto-recover",
+    });
+  });
+
+  it("does not auto-recover when the org has no __demo__ connection", async () => {
+    // Wizard org with empty disk — no auto-fallthrough. The user sees the
+    // honest 0-imported result rather than a surprise NovaMart import.
+    let importCallCount = 0;
+    mockImportFromDisk.mockImplementation(async () => {
+      importCallCount++;
+      return { imported: 0, skipped: 0, total: 0, errors: [] };
+    });
+    mocks.mockInternalQuery.mockImplementation(async () => []); // no __demo__ row
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/semantic/org/import", {}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(importCallCount).toBe(1);
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({ sourceRef: "disk:all" });
+  });
+
+  it("does not auto-recover when the caller passes an explicit connectionId", async () => {
+    // Critical safety: an org might own BOTH `warehouse` and `__demo__`. If
+    // the caller asks specifically about `warehouse` and its disk happens
+    // to be empty, we MUST NOT silently overwrite/import NovaMart entities
+    // — that would corrupt the warehouse semantic layer.
+    let importCallCount = 0;
+    let lastImportOpts: unknown = null;
+    mockImportFromDisk.mockImplementation(async (_orgId: string, opts?: { connectionId?: string; sourceDir?: string }) => {
+      importCallCount++;
+      lastImportOpts = opts;
+      return { imported: 0, skipped: 0, total: 0, errors: [] };
+    });
+    // Org owns __demo__ — but caller asked about warehouse.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("__demo__")) {
+        return [{ id: "__demo__" }];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/semantic/org/import", { connectionId: "warehouse" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(importCallCount).toBe(1);
+    expect(lastImportOpts).toMatchObject({ connectionId: "warehouse" });
+    const data = (await res.json()) as { imported: number };
+    expect(data.imported).toBe(0);
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({ sourceRef: "disk:warehouse" });
+  });
+
+  it("auto-recovery reports honestly when the bundled seed itself yields zero imports", async () => {
+    // A degenerate case: seed dir present but every YAML row fails the
+    // upsert. The auto-recovery branch must NOT mis-claim recovery — the
+    // sourceRef stays as the original disk:all, no auto-recover audit
+    // trail, and the user sees the truthful 0-imported result.
+    let importCallCount = 0;
+    mockImportFromDisk.mockImplementation(async (_orgId: string, opts?: { sourceDir?: string }) => {
+      importCallCount++;
+      // First call (org-scoped disk, no sourceDir) → empty.
+      // Second call (recovery, sourceDir set) → seed yielded zero.
+      if (opts?.sourceDir) {
+        return { imported: 0, skipped: 13, total: 13, errors: [] };
+      }
+      return { imported: 0, skipped: 0, total: 0, errors: [] };
+    });
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("__demo__")) {
+        return [{ id: "__demo__" }];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/semantic/org/import", {}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(importCallCount).toBeGreaterThanOrEqual(2);
+    const entry = lastAuditCall();
+    // The recovery call happened, but it didn't produce rows — so we
+    // must NOT mark this as `demo-seed:auto-recover`.
+    expect(entry.metadata).not.toMatchObject({ sourceRef: "demo-seed:auto-recover" });
+    expect(entry.metadata).toMatchObject({ sourceRef: "disk:all" });
+  });
+
+  it("explicit source=demo-seed forces the bundled seed path", async () => {
+    let importedFromSeed = false;
+    mockImportFromDisk.mockImplementation(async (_orgId: string, opts?: { connectionId?: string; sourceDir?: string }) => {
+      if (opts?.sourceDir) importedFromSeed = true;
+      return { imported: 13, skipped: 0, total: 13, errors: [] };
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/semantic/org/import", { source: "demo-seed" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(importedFromSeed).toBe(true);
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({ sourceRef: "demo-seed" });
   });
 });

@@ -33,6 +33,55 @@ sudo gpg -k && \
 
 Or use the official Docker image: `grafana/k6:latest`.
 
+## Quick start
+
+`./loadtest.sh <scenario>` handles sign-in, mints a fresh MCP-scoped
+bearer via the self-mint endpoint (`POST /api/v1/me/load-test/mcp-token`),
+runs k6, and writes the post-run summary to `results/`. The bearer
+never appears in argv, stdout, or any persisted file.
+
+```bash
+# .env carries:
+#   LOADTEST_ADMIN_EMAIL=loadtest@yourcompany.com
+#   LOADTEST_ADMIN_PASSWORD=<password>
+# (the email must belong to a workspace member — any role — whose
+#  active workspace has the NovaMart demo dataset attached. No
+#  platform_admin tier required. The `ADMIN_` prefix on the env var
+#  is a historical artifact from PR #2136's earlier platform-admin
+#  design; we kept the name to avoid breaking existing .env files.)
+
+./eval/load-tests/mcp/loadtest.sh concurrent-sessions
+./eval/load-tests/mcp/loadtest.sh tool-call-mix
+./eval/load-tests/mcp/loadtest.sh cold-start
+
+# Pass-through k6 flags after `--`:
+./eval/load-tests/mcp/loadtest.sh tool-call-mix -- -e VUS=20 -e DURATION=2m
+```
+
+Outputs land at `eval/load-tests/mcp/results/<scenario>-<UTC>.json`
+(k6's `--summary-export` aggregate — counts, rates, P50/P95/P99) and
+`<scenario>-<UTC>.txt` (k6's streaming output). The `results/` dir is
+gitignored — pre-launch we keep run history local; once
+[#2129](https://github.com/AtlasDevHQ/atlas/issues/2129) lands the CI
+workflow will push to a tracking issue.
+
+`BASE_URL` defaults to `https://mcp.useatlas.dev` — the brand
+hostname for the customer-facing MCP surface. Hitting this URL means
+k6 exercises exactly what real MCP clients hit. Override for a
+non-default region or local validation:
+
+```bash
+BASE_URL=https://mcp-eu.useatlas.dev ./eval/load-tests/mcp/loadtest.sh concurrent-sessions
+BASE_URL=http://localhost:3001 ./eval/load-tests/mcp/loadtest.sh concurrent-sessions \
+  -- -e STAGES=1,5 -e STAGE_SECONDS=30
+```
+
+The script reads `LOADTEST_ADMIN_EMAIL` / `LOADTEST_ADMIN_PASSWORD`
+from `.env` (or the environment if `.env` is absent). It also accepts
+`TTL_SECONDS` (default `1800` — covers 5-minute stages × multi-stage
+runs). Region binding is implicit in `BASE_URL`: the minted token's
+audience is the regional `/mcp` URL of the host you called.
+
 ## Required environment variables
 
 | Variable | Required | Description |
@@ -53,34 +102,28 @@ Optional:
 
 ## Acquiring a bearer token
 
-The hosted MCP route requires a Better-Auth-issued OAuth 2.1 access
-token bound to the workspace, with audience `{api-host}/mcp` and scope
-`mcp:read`. The full DCR + PKCE flow lives in `@useatlas/mcp/init`.
+`./loadtest.sh` is the supported path — see [Quick start](#quick-start).
+It does sign-in → mint → k6 in one pass and never lets the bearer
+escape the process.
 
-There is no drop-in token-printer script in the repo today — tracked
-in [#2129](https://github.com/AtlasDevHQ/atlas/issues/2129). For now,
-the two practical options are:
+If you need a bearer outside the load-test driver (debugging, ad-hoc
+curl), the [docs page for the mint endpoint](../../../apps/docs/content/docs/guides/mcp-load-test-tokens.mdx)
+walks through the curl form. Two non-negotiables apply equally to
+manual use:
 
-1. **Lift a token from a connected MCP client.** Claude Desktop /
-   Cursor / ChatGPT cache the access token after completing OAuth;
-   inspect the client's connection state for the `Authorization` value
-   it sends to `{api-host}/mcp/{workspace_id}/sse`. This is the
-   fastest path for ad-hoc load tests.
-2. **Adapt the canonical eval's auth helper.** The in-process Better
-   Auth + DCR + PKCE round-trip used by the canonical-question MCP
-   eval is at [`packages/mcp/src/eval/auth.ts`](../../../packages/mcp/src/eval/auth.ts).
-   It is **not** a drop-in token printer — it boots a self-contained
-   Better Auth instance with an in-memory adapter to exercise the auth
-   path during testing. Adapting it to print a token against your
-   running server is a 1–2 hour task; expect to (a) point its
-   `fetchImpl` at your real API, (b) drop the in-memory adapter, (c)
-   echo the resolved bearer to stdout. Worth doing once and committing
-   as a `scripts/print-bearer.ts` if you'll run load tests repeatedly.
+1. **The token must NEVER be logged.** The bearer signs every MCP
+   tool call against your workspace; treat it like an API key. The
+   audit row carries `jti` only.
+2. **Audience is region-bound.** A bearer minted against
+   `api.useatlas.dev` will fail (401) against `api-eu.useatlas.dev`.
+   Mint per region.
 
-The token MUST carry the `https://atlas.useatlas.dev/workspace_id`
-custom claim matching the path segment, or every frame returns 403 (
-[`hosted.ts`](../../../packages/mcp/src/hosted.ts) — `MCP path/bearer
-workspace mismatch`).
+Lifting a bearer from a connected MCP client (Claude Desktop / Cursor)
+also works for one-off ad-hoc tests, but tokens issued through the
+real OAuth flow are bound to a real user — load-test traffic ends up
+in that user's audit history. The mint endpoint's synthetic
+`loadtest:<workspaceId>:<random>` subject keeps load traffic
+trivially distinguishable in `actor_id LIKE 'loadtest:%'` queries.
 
 ## Scenarios
 
@@ -161,29 +204,24 @@ iteration body.
 ## Running locally
 
 The scripts work against a local API so you can validate them without
-burning staging quota:
+burning prod quota:
 
 ```bash
 # Terminal 1
 bun run db:up
 bun run dev:api
 
-# Terminal 2 — issue a token (one-off; see Acquiring a bearer token above)
-export BEARER="eyJhbGciOi..."
-
-# Terminal 3 — point at localhost
-k6 run \
-  -e BASE_URL=http://localhost:3001 \
-  -e WORKSPACE_ID=$(bun -e 'const p = process.env.BEARER.split(".")[1]; process.stdout.write(JSON.parse(Buffer.from(p, "base64url").toString())["https://atlas.useatlas.dev/workspace_id"])') \
-  -e BEARER="$BEARER" \
-  -e STAGES=1,5,10 \
-  -e STAGE_SECONDS=30 \
-  eval/load-tests/mcp/concurrent-sessions.js
+# Terminal 2 — drive against localhost with reduced stages
+BASE_URL=http://localhost:3001 \
+  ./eval/load-tests/mcp/loadtest.sh concurrent-sessions \
+  -- -e STAGES=1,5 -e STAGE_SECONDS=30
 ```
 
-A local validation run with reduced stages is the fastest way to catch
-script bugs (typos, missing env vars, wire-format drift) before
-spending staging time.
+A local run with reduced stages is the fastest way to catch script
+bugs (typos, missing env vars, wire-format drift) before spending
+real-API time. Local dev requires the same `LOADTEST_ADMIN_*` creds in
+`.env` to authenticate against your local Better Auth — seed an admin
+user via the standard signup flow if you don't have one.
 
 ## Reading the output
 

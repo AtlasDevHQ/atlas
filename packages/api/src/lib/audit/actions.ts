@@ -583,17 +583,19 @@ export const ADMIN_ACTIONS = {
   },
   /**
    * Load-testing surface (#2135). `mintMcpToken` fires once per call to
-   * the platform-admin endpoint that issues short-lived MCP-scoped JWTs
-   * for k6-driven load runs. Distinct domain from `oauth_token.refresh`
-   * because the threat model differs — these are minted directly by a
-   * platform admin (not exchanged through the OAuth flow), so the audit
-   * row is the only forensic trace that one was issued. Awaited write
-   * via `logAdminActionAwait` (NOT fire-and-forget): a credential-
-   * issuance surface where the audit row is the security control means
-   * a DB hiccup mid-mint must surface to the caller as a 500, not leave
-   * a silent token in the wild. Metadata: `{ workspaceId, region,
-   * ttlSeconds, sub, jti, expiresAt }`. The bearer is NEVER logged —
-   * the `jti` is the audit's correlation handle.
+   * the self-mint endpoint at `POST /api/v1/me/load-test/mcp-token` that
+   * issues short-lived MCP-scoped JWTs for k6-driven load runs. Scope
+   * is `workspace` — the caller mints for their own active workspace
+   * only, so the audit row pivots cleanly on `org_id`. Distinct domain
+   * from `oauth_token.refresh` because the threat model differs: these
+   * are minted directly (no OAuth ceremony), so the audit row is the
+   * only forensic trace that one was issued. Awaited write via
+   * `logAdminActionAwait` (NOT fire-and-forget): credential issuance
+   * where the audit row IS the security control means a DB hiccup
+   * mid-mint must surface to the caller as a 500, not leave a silent
+   * token in the wild. Metadata: `{ workspaceId, region, ttlSeconds,
+   * sub, jti, expiresAt }`. The bearer is NEVER logged — the `jti` is
+   * the audit's correlation handle.
    */
   load_test: {
     mintMcpToken: "load_test.mint_mcp_token",

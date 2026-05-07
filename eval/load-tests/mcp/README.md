@@ -36,15 +36,17 @@ Or use the official Docker image: `grafana/k6:latest`.
 ## Quick start
 
 `./loadtest.sh <scenario>` handles sign-in, mints a fresh MCP-scoped
-bearer via [#2135](https://github.com/AtlasDevHQ/atlas/pull/2136), runs
-k6, and writes the post-run summary to `results/`. The bearer never
-appears in argv, stdout, or any persisted file.
+bearer via the self-mint endpoint (`POST /api/v1/me/load-test/mcp-token`),
+runs k6, and writes the post-run summary to `results/`. The bearer
+never appears in argv, stdout, or any persisted file.
 
 ```bash
 # .env carries:
 #   LOADTEST_ADMIN_EMAIL=loadtest@yourcompany.com
 #   LOADTEST_ADMIN_PASSWORD=<password>
-# (the email must belong to a platform_admin user with a NovaMart-attached workspace as its active org)
+# (the email must belong to a workspace member — any role — whose
+#  active workspace has the NovaMart demo dataset attached. No
+#  platform_admin tier required.)
 
 ./eval/load-tests/mcp/loadtest.sh concurrent-sessions
 ./eval/load-tests/mcp/loadtest.sh tool-call-mix
@@ -61,10 +63,13 @@ gitignored — pre-launch we keep run history local; once
 [#2129](https://github.com/AtlasDevHQ/atlas/issues/2129) lands the CI
 workflow will push to a tracking issue.
 
-`BASE_URL` defaults to `https://api.useatlas.dev`. Override for a
-different region or local validation:
+`BASE_URL` defaults to `https://mcp.useatlas.dev` — the brand
+hostname for the customer-facing MCP surface. Hitting this URL means
+k6 exercises exactly what real MCP clients hit. Override for a
+non-default region or local validation:
 
 ```bash
+BASE_URL=https://mcp-eu.useatlas.dev ./eval/load-tests/mcp/loadtest.sh concurrent-sessions
 BASE_URL=http://localhost:3001 ./eval/load-tests/mcp/loadtest.sh concurrent-sessions \
   -- -e STAGES=1,5 -e STAGE_SECONDS=30
 ```
@@ -72,8 +77,8 @@ BASE_URL=http://localhost:3001 ./eval/load-tests/mcp/loadtest.sh concurrent-sess
 The script reads `LOADTEST_ADMIN_EMAIL` / `LOADTEST_ADMIN_PASSWORD`
 from `.env` (or the environment if `.env` is absent). It also accepts
 `TTL_SECONDS` (default `1800` — covers 5-minute stages × multi-stage
-runs) and `REGION` (forwarded to the mint endpoint when set;
-otherwise defaults to the API instance's own region).
+runs). Region binding is implicit in `BASE_URL`: the minted token's
+audience is the regional `/mcp` URL of the host you called.
 
 ## Required environment variables
 

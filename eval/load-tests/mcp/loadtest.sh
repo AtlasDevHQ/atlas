@@ -5,15 +5,17 @@
 #   1. Read LOADTEST_ADMIN_EMAIL + LOADTEST_ADMIN_PASSWORD from .env (or env).
 #   2. POST /api/auth/sign-in/email — Better Auth issues a session token via
 #      the `bearer()` plugin (returned as `token` in the JSON body).
-#   3. POST /api/v1/admin/load-test/mcp-token with that session as Bearer —
-#      the mint endpoint (#2135) returns a short-lived MCP-scoped JWT plus
-#      the workspaceId it was scoped to.
+#   3. POST /api/v1/me/load-test/mcp-token with that session as Bearer —
+#      the self-mint endpoint (#2135 follow-up) reads the session's
+#      activeOrganizationId and returns a short-lived MCP-scoped JWT
+#      bound to the caller's own workspace. Workspace-member gated; no
+#      cross-tenant capability.
 #   4. Run k6 against the chosen scenario, writing summary.json into
 #      eval/load-tests/mcp/results/.
 #
 # Bearer never enters argv, never lands in stdout. The session token from
-# step 2 stays in `local` shell variables; the mint bearer is piped through
-# an env var into k6 and discarded after the run.
+# step 2 stays in shell variables; the mint bearer is piped through an env
+# var into k6 and discarded after the run.
 #
 # Usage:
 #   ./loadtest.sh concurrent-sessions [-- <extra k6 args>]
@@ -21,12 +23,17 @@
 #   ./loadtest.sh cold-start
 #
 # Required:
-#   LOADTEST_ADMIN_EMAIL, LOADTEST_ADMIN_PASSWORD (sourced from .env or env)
+#   LOADTEST_ADMIN_EMAIL, LOADTEST_ADMIN_PASSWORD (sourced from .env or env).
+#   The user must be a workspace member with an active workspace set on the
+#   session (any role — `member` is enough).
 #
 # Optional:
-#   BASE_URL              — defaults to https://api.useatlas.dev
+#   BASE_URL              — defaults to https://mcp.useatlas.dev (the brand
+#                           hostname for the customer-facing MCP surface).
+#                           Override with the regional API host (e.g.
+#                           https://mcp-eu.useatlas.dev) for non-default
+#                           regions, or http://localhost:3001 for local dev.
 #   TTL_SECONDS           — bearer TTL, default 1800 (covers 5-min stages × multi-stage runs)
-#   REGION                — passed to mint endpoint when set; defaults to API's own region
 #   STAGES, STAGE_SECONDS, RAMP_SECONDS, VUS, DURATION, TARGET_RPS, TOOL — forwarded to k6 per scenario
 set -euo pipefail
 
@@ -45,7 +52,7 @@ if [ -f "$REPO_ROOT/.env" ]; then
   set +a
 fi
 
-BASE_URL="${BASE_URL:-https://api.useatlas.dev}"
+BASE_URL="${BASE_URL:-https://mcp.useatlas.dev}"
 TTL_SECONDS="${TTL_SECONDS:-1800}"
 
 # ── Validate args + creds up-front so the script fails fast ──────────
@@ -109,17 +116,17 @@ if [ -z "$SESSION_TOKEN" ]; then
 fi
 
 # ── Step 2: mint MCP bearer ──────────────────────────────────────────
+# The /me endpoint reads the session's activeOrganizationId — there is
+# no body workspaceId. Region binding is implicit in the BASE_URL we
+# called (the audience is the regional /mcp URL).
 echo ":: minting MCP-scoped bearer (ttl=${TTL_SECONDS}s)"
-MINT_BODY=$(jq -n \
-  --arg ttl "$TTL_SECONDS" \
-  --arg region "${REGION:-}" \
-  '{ttlSeconds: ($ttl | tonumber)} + (if $region == "" then {} else {region: $region} end)')
+MINT_BODY=$(jq -n --arg ttl "$TTL_SECONDS" '{ttlSeconds: ($ttl | tonumber)}')
 
 MINT_RESPONSE=$(curl -fsS -X POST \
   -H "Authorization: Bearer $SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$MINT_BODY" \
-  "$BASE_URL/api/v1/admin/load-test/mcp-token")
+  "$BASE_URL/api/v1/me/load-test/mcp-token")
 
 WORKSPACE_ID=$(printf '%s' "$MINT_RESPONSE" | jq -r '.workspaceId // empty')
 BEARER_JWT=$(printf '%s' "$MINT_RESPONSE" | jq -r '.bearer // empty')

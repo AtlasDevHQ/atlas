@@ -1,0 +1,182 @@
+---
+title: MCP Load-Test Tokens
+description: Mint short-lived bearer JWTs for k6-driven MCP load testing
+---
+
+`POST /api/v1/me/load-test/mcp-token` mints a short-lived,
+MCP-scoped JWT bearer for the caller's own active workspace. k6 (or
+any HTTP client) can then carry it against `/mcp/{workspace_id}/sse`
+to exercise the hosted MCP surface under load. The token is signed by
+the same regional Better Auth JWKS the OAuth 2.1 path uses — the MCP
+edge verifier (`verifyAccessToken`) resolves the matching public key
+through `/api/auth/jwks` and verifies identically to a real
+OAuth-issued token. There is no "load-test only" verifier path.
+
+This endpoint exists because the OAuth 2.1 ceremony (DCR + auth-code +
+PKCE + token exchange) is the right shape for an actual MCP client
+(Claude Desktop, Cursor) but the wrong shape for CI: every re-run
+either pollutes the workspace with a permanent client or wedges in
+the 5-step flow at 2 AM. A bespoke mint endpoint trades token expiry
+for ceremony — every run gets a fresh, bounded-lifetime bearer.
+
+## Auth + access
+
+- Caller must be **authenticated** (any workspace member — `member`,
+  `admin`, `owner`) and have an **active workspace** on the session.
+  No `platform_admin` tier required.
+- The minted token is bound to the caller's `activeOrganizationId`.
+  There's no body field that can redirect this — by construction, you
+  cannot mint a token for a workspace you don't own.
+- Per-endpoint **rate limit**: 10 mints/minute per caller, in-memory
+  per region. Bursts above this return 429 with a `Retry-After`
+  header.
+
+## Request
+
+```http
+POST /api/v1/me/load-test/mcp-token
+Authorization: Bearer <session-token-from-better-auth>
+Content-Type: application/json
+
+{
+  "ttlSeconds": 300
+}
+```
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `ttlSeconds` | no | 300 | Server-side ceiling is **3600s (1 hour)**. Requests above the cap return **400, not silently clamped** — caps cannot be widened by accident. Floor is 60s. |
+
+The session bearer in `Authorization` comes from `POST /api/auth/sign-in/email`
+(Better Auth's `bearer()` plugin returns the session token in the
+response body's `token` field).
+
+## Response
+
+```json
+{
+  "bearer": "eyJhbGciOiJFZERTQSI...",
+  "workspaceId": "ws-abc",
+  "audience": "https://mcp.useatlas.dev/mcp",
+  "issuer": "https://api.useatlas.dev/api/auth",
+  "expiresAt": "2026-05-07T01:00:00.000Z",
+  "sub": "loadtest:ws-abc:9f3c1a8b04e25d61",
+  "scope": "mcp:read"
+}
+```
+
+The `bearer` is what you carry in `Authorization: Bearer <token>`. The
+`sub` is a synthetic identifier — every load-test bearer's subject
+starts with `loadtest:`, which makes load traffic trivially filterable
+in audit log queries (`actor_id LIKE 'loadtest:%'`). The `scope` is
+always `mcp:read` — write capability is gated at the tool layer and
+this endpoint never grants it.
+
+## Recommended client usage
+
+The supported path is `eval/load-tests/mcp/loadtest.sh` in the repo —
+it does sign-in → mint → k6 → outfile in one pass and never lets the
+bearer escape the process. See
+[`eval/load-tests/mcp/README.md`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/load-tests/mcp/README.md).
+
+For ad-hoc curl use (debugging, smoke tests):
+
+```bash
+# Step 1: sign in, capture the session token
+SESSION=$(curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"email":"'"$EMAIL"'","password":"'"$PASSWORD"'"}' \
+  https://mcp.useatlas.dev/api/auth/sign-in/email \
+  | jq -r .token)
+
+# Step 2: mint the bearer (no body fields needed for defaults)
+TOKEN=$(curl -s -X POST \
+  -H "Authorization: Bearer $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"ttlSeconds":600}' \
+  https://mcp.useatlas.dev/api/v1/me/load-test/mcp-token \
+  | jq -r .bearer)
+
+# Step 3: drive k6 with the bearer as an env var so it never lands in stdout
+MCP_BEARER="$TOKEN" k6 run loadtest/mcp-profile.js
+```
+
+Two anti-patterns to avoid:
+
+1. **Do not embed bearers in logs, command echoes, or test fixtures.**
+   The audit row carries `jti` only; the bearer must not appear
+   anywhere your retention policy could leak. Treat it like any other
+   short-lived credential — pass via env var or stdin, never
+   command-line argument.
+2. **Do not reuse a bearer across CI runs.** Mint per-run with an
+   appropriate TTL (5–10 minutes is enough for most load profiles).
+   Long-lived tokens defeat the bounded-blast-radius property the
+   short TTL exists to provide.
+
+## Region constraint
+
+The token's `aud` claim is bound to the resolved region's `/mcp` URL.
+The MCP edge verifies `aud` exactly — a token minted against
+`mcp.useatlas.dev` and used against `mcp-eu.useatlas.dev` will fail
+with **401 invalid_bearer** (audience mismatch). A second guard fires
+before the verifier: `checkResidency` on the MCP route returns
+**421 misdirected_request** if the workspace's region doesn't match
+the API instance, with a `correctApiUrl` hint.
+
+In practice: call the mint endpoint against the same regional MCP
+host you intend to load-test against. For a multi-region load
+profile, mint one bearer per region.
+
+## Errors
+
+| Status | Code | Cause / Remediation |
+|---|---|---|
+| 400 | `invalid_body` | `ttlSeconds` outside `[60, 3600]`, or malformed JSON. The error message is the underlying Zod issue — actionable as-is. |
+| 400 | `no_active_workspace` | The session has no active workspace. Set one (sign in via the web UI, or `POST /api/auth/organization/set-active`). |
+| 401 | — | Caller is not authenticated. |
+| 404 | `not_configured` | The internal database (`DATABASE_URL`) is not set; there is no JWKS table to mint against. |
+| 429 | `rate_limited` | Per-caller mint cap exceeded. Includes `Retry-After` header. |
+| 500 | `mint_failed` | Unexpected mint failure (decryption error, malformed JWK row, jose import error). The underlying cause is in the API logs at `requestId`; an `audit_log` row with `status: failure` is also written. |
+| 503 | `jwks_not_initialized` | The Better Auth `jwks` table is empty. Hit any `/api/auth/*` endpoint on this region once to seed the keypair, then retry. |
+
+## Audit trail
+
+Every successful mint writes an `admin_action_log` row with
+`action_type: "load_test.mint_mcp_token"` via the **awaited**
+`logAdminActionAwait` helper (not fire-and-forget). The audit row is
+the security control on this credential issuance surface — a DB hiccup
+mid-mint surfaces to the caller as a 500 rather than leaving a silent
+token in the wild. Scope is `workspace`, so audit queries filtering by
+`org_id` see these rows alongside other workspace-scoped events.
+
+Metadata fields:
+
+| Field | Notes |
+|---|---|
+| `workspaceId` | Always equals the caller's active workspace. |
+| `region` | Resolved region (or null on self-hosted). |
+| `ttlSeconds` | TTL granted. |
+| `sub` | Synthetic actor id stamped on the token. Pivot column for forensic queries. |
+| `jti` | JWT id. The MCP `mcp_session.start` audit row carries the same `jti`, so a reviewer can pivot from a suspicious session row back to the mint that authorized it. |
+| `expiresAt` | ISO 8601 expiry. |
+
+The `bearer` is **never** in metadata. If you find a bearer in any
+audit row, treat that as a P1 incident — the contract is that
+issuance and use are correlated only via the `jti`.
+
+## Self-hosted
+
+The endpoint works on self-hosted deployments too — operators load-test
+their single instance the same way. Standard auth applies; nothing here
+is SaaS-specific.
+
+When `residency.regions` isn't configured (the typical self-hosted
+case), the audience and issuer fall back to the request origin
+(matching the same shape `hosted.ts:resourceAudience` reads at the
+verifier boundary). Set `ATLAS_PUBLIC_API_URL` if your verifier
+audience differs from the request `Host`.
+
+## Related
+
+- [Hosted MCP guide](/docs/guides/mcp-hosted) — DCR + PKCE flow for
+  real MCP clients.

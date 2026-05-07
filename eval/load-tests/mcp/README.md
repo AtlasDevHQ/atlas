@@ -46,7 +46,9 @@ never appears in argv, stdout, or any persisted file.
 #   LOADTEST_ADMIN_PASSWORD=<password>
 # (the email must belong to a workspace member — any role — whose
 #  active workspace has the NovaMart demo dataset attached. No
-#  platform_admin tier required.)
+#  platform_admin tier required. The `ADMIN_` prefix on the env var
+#  is a historical artifact from PR #2136's earlier platform-admin
+#  design; we kept the name to avoid breaking existing .env files.)
 
 ./eval/load-tests/mcp/loadtest.sh concurrent-sessions
 ./eval/load-tests/mcp/loadtest.sh tool-call-mix
@@ -105,7 +107,7 @@ It does sign-in → mint → k6 in one pass and never lets the bearer
 escape the process.
 
 If you need a bearer outside the load-test driver (debugging, ad-hoc
-curl), the [docs page for the mint endpoint](../../../apps/docs/content/docs/platform-ops/mcp-load-test-tokens.mdx)
+curl), the [docs page for the mint endpoint](../../../apps/docs/content/docs/guides/mcp-load-test-tokens.mdx)
 walks through the curl form. Two non-negotiables apply equally to
 manual use:
 

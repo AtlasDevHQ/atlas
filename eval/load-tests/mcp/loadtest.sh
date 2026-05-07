@@ -13,9 +13,23 @@
 #   4. Run k6 against the chosen scenario, writing summary.json into
 #      eval/load-tests/mcp/results/.
 #
-# Bearer never enters argv, never lands in stdout. The session token from
-# step 2 stays in shell variables; the mint bearer is piped through an env
-# var into k6 and discarded after the run.
+# Bearer-handling posture:
+#   - The mint bearer is exported into k6's process env (NOT passed via
+#     k6's `-e` flag) — `-e BEARER=<jwt>` would land the JWT in k6's
+#     argv, visible to `ps -ef` and `/proc/<pid>/cmdline` for the
+#     duration of the run. We set `K6_INCLUDE_SYSTEM_ENV_VARS=true` so
+#     the script can still read it via `__ENV.BEARER` inside the JS.
+#   - k6's stdout is redirected to a file under `results/` (gitignored)
+#     and to the terminal via `tee` of stderr only — k6 errors and the
+#     `--summary-export` JSON are visible; no bearer-bearing line ever
+#     appears unless k6 itself logs it (which it doesn't today, but the
+#     env-var-only path keeps the surface small).
+#   - On non-200 mint responses, the response body is jq-filtered to
+#     `{error,message,requestId}` before being echoed — guards against
+#     a future API shape that returns the bearer on a different field
+#     while still carrying it in an error envelope.
+#   - The session token + mint bearer are local shell vars; they exist
+#     only in this script process's memory.
 #
 # Usage:
 #   ./loadtest.sh concurrent-sessions [-- <extra k6 args>]
@@ -133,11 +147,16 @@ BEARER_JWT=$(printf '%s' "$MINT_RESPONSE" | jq -r '.bearer // empty')
 EXPIRES_AT=$(printf '%s' "$MINT_RESPONSE" | jq -r '.expiresAt // empty')
 
 if [ -z "$WORKSPACE_ID" ] || [ -z "$BEARER_JWT" ]; then
-  # Surface the API's structured error verbatim (it carries `requestId`
-  # for forensic correlation). Echoing a 400/403 body is fine — the
-  # response shape never includes credentials.
+  # Filter the response down to the structured error fields BEFORE
+  # echoing — never dump the raw body. The 200 path always carries
+  # the bearer in `.bearer`, but a future API shape that puts the
+  # bearer on a different field could leak it via this guard if we
+  # printed the whole body. jq's `.error // empty` returns "" rather
+  # than "null" for missing keys so the operator sees the meaningful
+  # subset only.
   echo "error: mint endpoint did not return a bearer:" >&2
-  printf '%s\n' "$MINT_RESPONSE" >&2
+  printf '%s' "$MINT_RESPONSE" \
+    | jq -r '{error: (.error // "unknown"), message: (.message // "(no message)"), requestId: (.requestId // "(no requestId)")}' >&2
   exit 1
 fi
 
@@ -146,35 +165,43 @@ echo ":: bearer minted for workspace $WORKSPACE_ID — expires $EXPIRES_AT"
 # ── Step 3: run k6 ───────────────────────────────────────────────────
 TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 SUMMARY_PATH="$RESULTS_DIR/${SCENARIO}-${TIMESTAMP}.json"
-SUMMARY_TXT="$RESULTS_DIR/${SCENARIO}-${TIMESTAMP}.txt"
+SUMMARY_LOG="$RESULTS_DIR/${SCENARIO}-${TIMESTAMP}.log"
 
 echo ":: running k6 scenario '$SCENARIO' → $SUMMARY_PATH"
 
 # `--summary-export` writes the post-run aggregate (counts, rates,
 # percentiles) to a single JSON file — far smaller than `--out json=...`
 # (which streams every metric sample) and the right shape for trend
-# tracking across runs. Streaming output goes to <name>.txt so a
-# failure leaves a tail-able log next to the summary.
+# tracking across runs.
 #
-# `BEARER` and `WORKSPACE_ID` are passed to k6 via -e, which sets them
-# in the script env without ever appearing in argv after k6's own
-# argv-rewrite. The values stay in this process's env until the
-# subprocess exits.
+# Bearer-passthrough: `K6_INCLUDE_SYSTEM_ENV_VARS=true` exposes the
+# parent process env to `__ENV` inside the k6 script, so the JS reads
+# `__ENV.BEARER` without us ever putting the JWT in k6's argv. (The
+# `-e BEARER=...` flag would, and that's visible to other same-uid
+# processes via /proc/<pid>/cmdline for the run's lifetime.)
+# Non-secret vars (BASE_URL, WORKSPACE_ID) stay on `-e` for clarity in
+# `ps -ef` and to make the env contract explicit.
+#
+# Output: k6 stdout (the human-readable summary table) goes to a
+# .log file next to the JSON summary. We don't `tee` to the terminal
+# because k6's own writes can include resolved-env diagnostics on
+# failure paths in some versions; keeping stdout out of the live
+# terminal keeps the bearer surface as small as the env-var path.
 BEARER="$BEARER_JWT" \
-WORKSPACE_ID="$WORKSPACE_ID" \
+K6_INCLUDE_SYSTEM_ENV_VARS=true \
 k6 run \
   -e "BASE_URL=$BASE_URL" \
   -e "WORKSPACE_ID=$WORKSPACE_ID" \
-  -e "BEARER=$BEARER_JWT" \
   --summary-export="$SUMMARY_PATH" \
   "${K6_EXTRA[@]}" \
   "$SCRIPT_DIR/${SCENARIO}.js" \
-  | tee "$SUMMARY_TXT"
+  >"$SUMMARY_LOG" 2>&1
 
-# Drop the bearer from this shell's env right after the subprocess
-# returns so a `set` / `env` invocation post-run can't surface it.
+# `unset` here is bookkeeping, not a security guarantee: the JWT only
+# ever lived in this script process's env, never the parent shell, so
+# this clear is for any *future* env/set call within this process.
 unset BEARER BEARER_JWT SESSION_TOKEN
 
 echo ":: done. results at:"
 echo "   summary: $SUMMARY_PATH"
-echo "   stdout:  $SUMMARY_TXT"
+echo "   log:     $SUMMARY_LOG"

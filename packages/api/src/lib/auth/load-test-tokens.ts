@@ -4,9 +4,10 @@
  * The MCP load-test profile in CI (#2129) drives `/mcp/{workspace_id}/sse`
  * with a Bearer token. We do NOT walk the full OAuth 2.1 DCR + auth-code +
  * PKCE ceremony to obtain that bearer — every re-run would either pollute
- * prod with a permanent client/user or get stuck in a 5-step ceremony at
- * 2 AM. Instead, the platform-admin route in `admin-load-test.ts` mints
- * tokens directly here, bounded by:
+ * the workspace with a permanent client or get stuck in a 5-step ceremony
+ * at 2 AM. Instead, the self-mint route in `api/routes/me-load-test.ts`
+ * mints tokens directly here, scoped to the caller's own active workspace
+ * and bounded by:
  *
  *   - **TTL ceiling** — caller may request up to 3600s (1h). The endpoint
  *     refuses larger asks at the route layer (400) so caps cannot be
@@ -19,10 +20,9 @@
  *     string with no FK to the `user` table (see issue body's research
  *     note). The `loadtest:` prefix makes load-test traffic trivially
  *     filterable in audit log queries.
- *   - **Per-region issuer + audience** — derived from a region map so a
- *     token for `eu` carries `aud=https://api-eu.useatlas.dev/mcp` and
- *     verifies on the eu MCP edge but fails on us. Cross-region misuse
- *     fails closed.
+ *   - **Per-region issuer + audience** — the route resolves these from
+ *     the API instance the caller is talking to, so the audience is
+ *     bound to one regional `/mcp` URL. Cross-region misuse fails closed.
  *
  * The signing keypair comes from Better Auth's `jwks` table — same JWK
  * the OAuth 2.1 path uses, same kid, same algorithm. The MCP verifier

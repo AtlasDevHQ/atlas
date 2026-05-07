@@ -48,11 +48,12 @@ const log = createLogger("me-load-test");
 
 // ── Per-endpoint rate limiter ───────────────────────────────────────
 //
-// 10 mints/min per caller. Tight enough that a runaway loop in CI
-// can't drain credentials before tripping; loose enough that
-// retries + reasonable test cadence work. In-memory state is fine —
-// the rate limit is per-process, blast radius if a region restarts
-// is one extra ten-token burst per caller per minute.
+// 10 mints/min per user id (`actorId = user.id`). Tight enough that a
+// runaway loop in CI can't drain credentials before tripping; loose
+// enough that retries + reasonable test cadence work. State is in
+// memory and per process — concurrent CI jobs signed in as the same
+// user share one bucket, and a region restart resets all buckets
+// (worst case: one extra ten-token burst per caller per minute).
 
 const LOAD_TEST_RATE_LIMIT_MAX = 10;
 const LOAD_TEST_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -238,6 +239,28 @@ meLoadTest.openapi(
             requestId,
           },
           404,
+        );
+      }
+
+      // CSRF mitigation: this route is called only by scripts/CI that
+      // hold a Bearer-format session token (Better Auth's `bearer()`
+      // plugin returns one from `/api/auth/sign-in/email`). The web UI
+      // never calls this endpoint. Rejecting cookie-only requests
+      // closes the cross-site-form-POST class of CSRF outright — even
+      // though SameSite=Lax cookies + a JSON Content-Type already
+      // preflight-block the typical attack, defense-in-depth is cheap
+      // here and the surface stays simple. A scripted caller without
+      // an `Authorization` header is operating outside the documented
+      // contract anyway.
+      const authHeader = c.req.raw.headers.get("authorization");
+      if (!authHeader || !authHeader.toLowerCase().startsWith("bearer ")) {
+        return c.json(
+          {
+            error: "bearer_required",
+            message: "This endpoint requires `Authorization: Bearer <session-token>` (cookie-only auth is not accepted). Sign in via POST /api/auth/sign-in/email and use the returned token.",
+            requestId,
+          },
+          401,
         );
       }
 

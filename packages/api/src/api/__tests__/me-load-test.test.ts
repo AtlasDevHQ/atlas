@@ -204,6 +204,37 @@ describe("POST /api/v1/me/load-test/mcp-token — auth", () => {
     const body = (await res.json()) as ErrorResponseBody;
     expect(body.error).toBe("no_active_workspace");
   });
+
+  it("rejects cookie-only auth with 401 bearer_required (CSRF mitigation)", async () => {
+    // Drive a request that would pass the `authenticateRequest` mock
+    // (so the auth middleware succeeds) but carries a Cookie header
+    // INSTEAD of Authorization. This shape is what a cross-site
+    // form-POST CSRF attack would look like — the user's session
+    // cookie rides along, no Authorization header is set.
+    //
+    // The route's bearer-only check fires regardless of whether the
+    // auth middleware would have accepted the cookie, so the mock
+    // staying as-is correctly models "user is signed in via cookie".
+    const req = new Request(
+      "http://api.test.useatlas.dev/api/v1/me/load-test/mcp-token",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: "atlas_session=opaque-cookie-token",
+        },
+        body: JSON.stringify({}),
+      },
+    );
+    const res = await app.fetch(req);
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as ErrorResponseBody;
+    expect(body.error).toBe("bearer_required");
+    // Audit must NOT fire on the CSRF-rejected path — otherwise an
+    // attacker could pump the audit log and rate-limit budget without
+    // ever obtaining a token.
+    expect(logAdminActionAwait).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/v1/me/load-test/mcp-token — body validation", () => {

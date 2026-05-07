@@ -24,12 +24,19 @@ for ceremony — every run gets a fresh, bounded-lifetime bearer.
 - Caller must be **authenticated** (any workspace member — `member`,
   `admin`, `owner`) and have an **active workspace** on the session.
   No `platform_admin` tier required.
+- **`Authorization: Bearer <session-token>` is required** — cookie-only
+  auth is rejected with 401. CSRF mitigation: a cross-site form-POST
+  cannot mint a token even if the user's browser holds a session
+  cookie. Get a session token via `POST /api/auth/sign-in/email`
+  (Better Auth's `bearer()` plugin returns it in the response body's
+  `token` field).
 - The minted token is bound to the caller's `activeOrganizationId`.
   There's no body field that can redirect this — by construction, you
   cannot mint a token for a workspace you don't own.
-- Per-endpoint **rate limit**: 10 mints/minute per caller, in-memory
-  per region. Bursts above this return 429 with a `Retry-After`
-  header.
+- Per-endpoint **rate limit**: 10 mints/minute per user id, in-memory
+  per process. Bursts above this return 429 with a `Retry-After`
+  header. Concurrent CI jobs signed in as the same user share one
+  bucket.
 
 ## Request
 
@@ -133,6 +140,7 @@ profile, mint one bearer per region.
 |---|---|---|
 | 400 | `invalid_body` | `ttlSeconds` outside `[60, 3600]`, or malformed JSON. The error message is the underlying Zod issue — actionable as-is. |
 | 400 | `no_active_workspace` | The session has no active workspace. Set one (sign in via the web UI, or `POST /api/auth/organization/set-active`). |
+| 401 | `bearer_required` | Request carried a session cookie but no `Authorization: Bearer ...` header. Use Better Auth's bearer-token flow — `POST /api/auth/sign-in/email` returns the token in the response body. |
 | 401 | — | Caller is not authenticated. |
 | 404 | `not_configured` | The internal database (`DATABASE_URL`) is not set; there is no JWKS table to mint against. |
 | 429 | `rate_limited` | Per-caller mint cap exceeded. Includes `Retry-After` header. |

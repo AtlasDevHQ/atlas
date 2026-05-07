@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
+import { toast } from "sonner";
 import { schemaDiffSearchParams } from "./search-params";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -111,6 +112,11 @@ export default function SchemaDiffPage() {
   // and disappear). On `imported === 0` we leave the recovery card up so
   // the user knows the call ran but didn't help — that's actionable signal.
   const [recoverResult, setRecoverResult] = useState<{ imported: number } | null>(null);
+
+  // Re-run Diff click state. The hook's `loading` is `isPending` (false on
+  // cached refetches), so we track our own flag to spin the icon and gate
+  // double-clicks. Sonner's `toast.promise` handles the success/error copy.
+  const [rerunning, setRerunning] = useState(false);
 
   return (
     <PageShell connectionSelector={multipleConnections ? (
@@ -329,9 +335,35 @@ export default function SchemaDiffPage() {
 
           {/* Refresh button */}
           <div className="flex justify-end">
-            <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2">
-              <RefreshCw className="size-3.5" />
-              Re-run Diff
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={rerunning}
+              onClick={async () => {
+                setRerunning(true);
+                const promise = refetch().finally(() => setRerunning(false));
+                toast.promise(promise, {
+                  loading: "Re-running schema diff…",
+                  success: (result) => {
+                    // refetch returns a TanStack QueryObserverResult — read
+                    // the fresh data from result.data so the toast reflects
+                    // the actual outcome (avoids the stale-closure trap of
+                    // reading `diff` here).
+                    const fresh = result?.data;
+                    if (!fresh) return "Diff refreshed";
+                    const drift = fresh.summary.new + fresh.summary.removed + fresh.summary.changed;
+                    if (drift === 0) {
+                      return `Semantic layer in sync (${fresh.summary.unchanged} entities)`;
+                    }
+                    return `Diff refreshed — ${drift} table${drift === 1 ? "" : "s"} drifted, ${fresh.summary.unchanged} in sync`;
+                  },
+                  error: (err) => `Diff failed: ${err instanceof Error ? err.message : String(err)}`,
+                });
+              }}
+              className="gap-2"
+            >
+              <RefreshCw className={`size-3.5 ${rerunning ? "animate-spin" : ""}`} />
+              {rerunning ? "Re-running…" : "Re-run Diff"}
             </Button>
           </div>
         </div>

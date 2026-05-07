@@ -353,6 +353,7 @@
         "lucide-react": "^1.7.0",
         "nanoid": "^5.1.7",
         "next": "^16.2.1",
+        "next-themes": "^0.4.6",
         "nuqs": "^2.8.9",
         "radix-ui": "^1.4.3",
         "react": "^19.2.4",
@@ -365,6 +366,7 @@
         "react-syntax-highlighter": "^16.1.1",
         "recharts": "^3.8.1",
         "remark-gfm": "^4.0.1",
+        "sonner": "^2.0.7",
         "tailwind-merge": "^3.5.0",
         "zod": "^4.3.6",
       },
@@ -3832,6 +3834,8 @@
     "snowflake-sdk": ["snowflake-sdk@2.3.6", "", { "dependencies": { "@aws-crypto/sha256-js": "^5.2.0", "@aws-sdk/client-s3": "^3.983.0", "@aws-sdk/client-sts": "^3.983.0", "@aws-sdk/credential-provider-node": "^3.972.5", "@aws-sdk/ec2-metadata-service": "^3.983.0", "@azure/identity": "^4.10.1", "@azure/storage-blob": "12.26.x", "@smithy/node-http-handler": "^4.4.9", "@smithy/protocol-http": "^5.3.8", "@smithy/signature-v4": "^5.3.8", "@techteamer/ocsp": "1.0.1", "asn1.js": "^5.0.0", "asn1.js-rfc2560": "^5.0.0", "asn1.js-rfc5280": "^3.0.0", "axios": "^1.13.4", "big-integer": "^1.6.43", "bignumber.js": "^9.1.2", "browser-request": "^0.3.3", "expand-tilde": "^2.0.2", "fast-xml-parser": "^5.4.1", "fastest-levenshtein": "^1.0.16", "generic-pool": "^3.8.2", "google-auth-library": "^10.1.0", "https-proxy-agent": "^7.0.2", "jsonwebtoken": "^9.0.3", "mime-types": "^2.1.29", "moment": "^2.29.4", "moment-timezone": "^0.5.15", "oauth4webapi": "^3.0.1", "open": "^7.3.1", "simple-lru-cache": "^0.0.2", "toml": "^3.0.0", "uuid": "^8.3.2", "winston": "^3.1.0" } }, "sha512-yY7ooh00uO0SYL5lSI2w3hNCMphBvUcz7GDktqKE0TasCkIk5G/Ebjypa3XKI2cUBfjrx5wtlQF2vkBH75BODw=="],
 
     "sonic-boom": ["sonic-boom@4.2.1", "", { "dependencies": { "atomic-sleep": "^1.0.0" } }, "sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q=="],
+
+    "sonner": ["sonner@2.0.7", "", { "peerDependencies": { "react": "^18.0.0 || ^19.0.0 || ^19.0.0-rc", "react-dom": "^18.0.0 || ^19.0.0 || ^19.0.0-rc" } }, "sha512-W6ZN4p58k8aDKA4XPcx2hpIQXBRAgyiWVkYhT7CvK6D3iAu7xjvVyhQHg2/iaKJZ1XVJ4r7XuwGL+WGEK37i9w=="],
 
     "source-map": ["source-map@0.7.6", "", {}, "sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ=="],
 

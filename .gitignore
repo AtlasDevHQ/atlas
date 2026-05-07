@@ -25,6 +25,10 @@ routeTree.gen.ts
 e2e/browser/storage-state.json
 e2e/browser/test-results/
 .playwright-mcp/
+# k6 load-test artifacts — `loadtest.sh` writes one summary per run.
+# Pre-launch we keep the history out of git; once #2129 lands the
+# CI workflow will push these to a tracking issue instead.
+eval/load-tests/mcp/results/
 docs/superpowers/
 
 # Lighthouse CLI dumps Chrome's profile dir into cwd as a Windows-shaped path

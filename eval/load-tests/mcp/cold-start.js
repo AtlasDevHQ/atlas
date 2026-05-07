@@ -91,12 +91,13 @@ export default function () {
   sleep(0.25);
 }
 
-export function handleSummary(data) {
+// `loadtest.sh` passes `--summary-export=results/<scenario>-<UTC>.json`.
+// Don't double-emit `summary.json` to cwd.
+export function handleSummary() {
   return {
     'stdout':
       '\nMCP cold-start load test complete.\n' +
       'Read the per-frame breakdown from `http_req_duration{rpc:initialize}` and `{rpc:tools/list}` in the summary.\n' +
       'Total cold-start cost is the sum of those two — that\'s the user-visible "time to first tool dispatch" on a fresh client.\n',
-    'summary.json': JSON.stringify(data, null, 2),
   };
 }

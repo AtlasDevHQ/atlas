@@ -80,6 +80,17 @@ const log = createLogger("mcp-hosted");
 interface SessionEntry {
   readonly transport: WebStandardStreamableHTTPServerTransport;
   readonly server: McpServer;
+  /**
+   * Wall-clock ms of the most recent successful frame against this
+   * session. Updated on every dispatch (init AND every subsequent
+   * request). The lazy-sweep at session-creation reads this to evict
+   * idle entries when the cap-check trips — see {@link sweepIdleSessions}.
+   *
+   * Mutable by design: a `Map<string, SessionEntry>` of frozen objects
+   * would force a re-set on every dispatch, defeating the cheap-read
+   * property of the on-hot-path activity refresh.
+   */
+  lastSeenAt: number;
 }
 
 const sessions = new Map<string, SessionEntry>();
@@ -108,6 +119,114 @@ function maxSessions(): number {
   return parsed;
 }
 
+// ── Idle-session sweep ─────────────────────────────────────────────
+//
+// Streamable HTTP is request-response, not a long-lived socket — there
+// is no transport-level disconnect event for a client that closes
+// without sending the explicit `DELETE`. Real-world MCP clients
+// (Claude Desktop, Cursor) routinely vanish (laptop lid closed, app
+// killed, OS update) without a clean handshake. The pre-sweep
+// implementation kept those orphaned sessions in the in-memory map
+// forever — eventually saturating `maxSessions()` and 503-ing every
+// new connection until container restart.
+//
+// The sweep evicts any session whose `lastSeenAt` is older than the
+// idle timeout. Eviction calls `transport.close()` + `server.close()`
+// so resources actually free, not just the map entry.
+//
+// Where the sweep runs:
+//
+//   - **Lazily, only on cap-pressure** (inside `dispatchNewSession`
+//     when `sessions.size + pendingReservations >= cap`). A quiet
+//     region with no traffic doesn't burn CPU on a periodic sweep —
+//     leaked sessions linger but cost only memory until the next
+//     connection attempts to create a new one. The newly-arriving
+//     caller pays the O(n) sweep cost, which is the right shape: the
+//     work is amortized against the request that benefits from it.
+//
+// Not used:
+//
+//   - A `setInterval` background sweep would be slightly more
+//     responsive in extreme idle scenarios, but it adds a fiber to
+//     reason about (unref, shutdown ordering, test-time reset) and
+//     spends CPU on regions that have no traffic. Skipped — the lazy
+//     sweep covers every scenario where the cap actually matters.
+//   - SDK-level idle close hooks. The
+//     `WebStandardStreamableHTTPServerTransport` does not expose one;
+//     `transport.onclose` only fires on internal SDK close events
+//     (which Streamable HTTP rarely produces).
+
+const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const MIN_SESSION_IDLE_TIMEOUT_MS = 60 * 1000; // 1 minute floor
+
+/**
+ * Test-only override. Bypasses the production floor so the
+ * cap-pressure sweep can be driven end-to-end with sub-second
+ * timeouts. Production must keep the 1-minute floor so a
+ * misconfigured env var can't degenerate the sweep into a
+ * close-everything-on-every-request loop. Production code paths
+ * never set this.
+ */
+let _idleTimeoutOverrideMs: number | null = null;
+
+/** @internal — test-only. Pin idle timeout below the prod floor. */
+export function _setIdleTimeoutForTests(ms: number | null): void {
+  _idleTimeoutOverrideMs = ms;
+}
+
+function sessionIdleTimeoutMs(): number {
+  if (_idleTimeoutOverrideMs !== null) return _idleTimeoutOverrideMs;
+  const raw = process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
+  if (!raw) return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < MIN_SESSION_IDLE_TIMEOUT_MS) {
+    log.warn(
+      { raw, floor: MIN_SESSION_IDLE_TIMEOUT_MS },
+      "ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS missing/below floor — falling back to default",
+    );
+    return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
+/**
+ * Evict sessions whose `lastSeenAt` is older than the configured
+ * idle timeout. Returns the count of sessions evicted so the caller
+ * can decide whether the cap-check should be retried (a successful
+ * sweep means a slot opened up).
+ *
+ * Eviction calls `transport.close()` + `server.close()` so the
+ * underlying resources are released, not just the map entry. Both
+ * close paths swallow their own errors via `.catch(() => {})` to
+ * match the existing teardown pattern in `_resetHostedSessions` and
+ * `transport.onclose` — a hanging close on a leaked session must not
+ * block the new caller's init from proceeding.
+ */
+function sweepIdleSessions(now: number, idleTimeoutMs: number): number {
+  let evicted = 0;
+  const cutoff = now - idleTimeoutMs;
+  for (const [id, entry] of sessions) {
+    if (entry.lastSeenAt > cutoff) continue;
+    sessions.delete(id);
+    // intentionally ignored: best-effort teardown of an already-
+    // orphaned session — the client that owned this entry is gone
+    // by definition (no frames in `idleTimeoutMs`), so a close
+    // failure has nowhere to surface. The sweep counter is the
+    // signal that matters; missing one out of N closes does not
+    // affect cap accounting.
+    void entry.transport.close().catch(() => {});
+    void entry.server.close().catch(() => {});
+    evicted++;
+  }
+  if (evicted > 0) {
+    log.info(
+      { evicted, remaining: sessions.size, idleTimeoutMs },
+      "Swept idle MCP sessions",
+    );
+  }
+  return evicted;
+}
+
 export function _hostedSessionCount(): number {
   return sessions.size;
 }
@@ -123,6 +242,14 @@ export async function _resetHostedSessions(): Promise<void> {
     await entry.transport.close().catch(() => {});
     await entry.server.close().catch(() => {});
   }
+}
+
+/** @internal — test-only. Drive the sweep deterministically with a pinned clock. */
+export function _sweepIdleSessionsForTests(now?: number, idleTimeoutMs?: number): number {
+  return sweepIdleSessions(
+    now ?? Date.now(),
+    idleTimeoutMs ?? sessionIdleTimeoutMs(),
+  );
 }
 
 // ── OAuth 2.1 verification ─────────────────────────────────────────
@@ -731,6 +858,11 @@ async function dispatchExistingSession(
       },
     );
   }
+  // Refresh the activity timestamp so the lazy sweep at the cap-check
+  // doesn't evict an actively-used session. Updated PRE-dispatch so
+  // a long-running tool call (executeSQL on a large query) doesn't
+  // race with a concurrent sweep observing a stale `lastSeenAt`.
+  entry.lastSeenAt = Date.now();
   return entry.transport.handleRequest(req);
 }
 
@@ -739,14 +871,26 @@ async function dispatchNewSession(
   ctx: InitialFactoryContext,
 ): Promise<Response> {
   const cap = maxSessions();
+
+  // Lazy sweep: when the cap appears full, evict idle sessions FIRST
+  // and re-check. Without this, a region that has accumulated leaked
+  // sessions (Streamable HTTP has no transport disconnect event for
+  // a client that vanishes without sending DELETE — laptop closed,
+  // app killed, OS update) will permanently 503 every new connection
+  // until container restart. The sweep cost is paid only on
+  // cap-pressure, so quiet regions don't burn CPU evicting nothing.
   if (sessions.size + pendingReservations >= cap) {
-    return new Response(
-      JSON.stringify({
-        error: "too_many_sessions",
-        message: "Too many active MCP sessions on this region. Try again later.",
-      }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
-    );
+    sweepIdleSessions(Date.now(), sessionIdleTimeoutMs());
+    if (sessions.size + pendingReservations >= cap) {
+      return new Response(
+        JSON.stringify({
+          error: "too_many_sessions",
+          message:
+            "Too many active MCP sessions on this region. Try again later.",
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      );
+    }
   }
 
   pendingReservations++;
@@ -759,7 +903,10 @@ async function dispatchNewSession(
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
-        sessions.set(id, { transport, server: mcpServer });
+        // Stamp `lastSeenAt: Date.now()` at registration so the sweep
+        // doesn't immediately evict a freshly-created session that
+        // hasn't yet received a follow-up frame.
+        sessions.set(id, { transport, server: mcpServer, lastSeenAt: Date.now() });
         registered = true;
         emitSessionStartAudit(
           {

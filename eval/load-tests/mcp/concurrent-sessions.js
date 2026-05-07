@@ -119,10 +119,13 @@ export default function () {
   sleep(1);
 }
 
-export function handleSummary(data) {
+// `loadtest.sh` passes `--summary-export=results/<scenario>-<UTC>.json`,
+// so the per-run summary already lands in the right place. Don't also
+// emit `summary.json` to cwd — that just creates a second copy at the
+// repo root that someone has to remember to clean up.
+export function handleSummary() {
   return {
     'stdout': '\nMCP concurrent-sessions load test complete.\n' +
       'Read the per-stage P50/P95/P99 from the time-series export when running with `--out csv=...` or `--out json=...`.\n',
-    'summary.json': JSON.stringify(data, null, 2),
   };
 }

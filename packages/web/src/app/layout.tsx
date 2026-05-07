@@ -4,6 +4,7 @@ import { buildThemeInitScript } from "@/ui/hooks/theme-init-script";
 import { AuthGuard } from "@/ui/components/auth-guard";
 import { QueryProvider } from "@/ui/components/query-provider";
 import { ModeBanner } from "@/ui/components/mode-banner";
+import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -31,6 +32,7 @@ export default function RootLayout({
             </AuthGuard>
           </NuqsAdapter>
         </QueryProvider>
+        <Toaster richColors position="bottom-right" />
       </body>
     </html>
   );

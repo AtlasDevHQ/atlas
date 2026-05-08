@@ -29,6 +29,7 @@ import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
 import { getSemanticRoot, ensureOrgModeSemanticRoot } from "@atlas/api/lib/semantic/sync";
 import { getSetting } from "@atlas/api/lib/settings";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
+import { EXPLORE_TOOL_DESCRIPTION } from "./descriptions";
 
 const log = createLogger("explore");
 
@@ -475,22 +476,7 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
 // --- Tool definition ---
 
 export const explore = tool({
-  description: `Run bash commands to explore the semantic layer (YAML files describing the data model). The working directory is /semantic.
-
-Available commands include: ls, cat, head, tail, grep, find, wc, tree, sort, uniq, cut, awk, sed, and more. Use pipes and flags freely.
-
-The semantic directory contains:
-- catalog.yml: Index of all entities and their descriptions
-- entities/*.yml: Default connection table schemas with columns, types, sample values, joins
-- metrics/*.yml: Default connection metric definitions with authoritative SQL
-- glossary.yml: Business term definitions and disambiguation
-- {source}/entities/*.yml: Per-source table schemas (e.g. warehouse/entities/)
-- {source}/metrics/*.yml: Per-source metric definitions
-- {source}/glossary.yml: Source-specific glossary (optional)
-
-When multiple data sources are configured, each source has its own subdirectory.
-Entity YAMLs may contain \`cross_source_joins\` describing relationships to tables on other sources — these cannot be SQL-JOINed directly; query each source separately.
-Always start by listing the root directory to see what sources are available.`,
+  description: EXPLORE_TOOL_DESCRIPTION,
 
   inputSchema: z.object({
     command: z

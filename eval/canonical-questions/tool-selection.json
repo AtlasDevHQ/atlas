@@ -1,0 +1,34 @@
+{
+  "description": "Held-out tool-selection fixture for the MCP tool-description audit (#2075). Each item is an ambiguous user prompt where the correct tool routing is non-obvious; the rubric audit's success metric is post-rewrite accuracy >90% on this set, evaluated through `bun run atlas -- canonical-eval --mcp-llm --tool-selection`. The harness grades the LLM's first tool call against `expected_tool` (or any entry in `expected_alternates`).",
+  "rubric": {
+    "first_tool_must_match": "The grader walks the recorded MCP dispatch sequence and accepts the first non-noop tool call. The expected tool must be among `expected_tool` plus `expected_alternates`.",
+    "acceptance_floor": 0.9
+  },
+  "items": [
+    {
+      "id": "list-tables",
+      "prompt": "Show me what tables exist.",
+      "expected_tool": "listEntities",
+      "rationale": "Pure catalog discovery — `listEntities` returns the structured catalog. The pre-rewrite `explore` description framed itself as the agent's primary surface, biasing the LLM toward shell `ls` even when the typed catalog is faster and structured."
+    },
+    {
+      "id": "describe-table",
+      "prompt": "What does the `orders` table look like?",
+      "expected_tool": "describeEntity",
+      "rationale": "Single-entity introspection — `describeEntity` returns columns, joins, and query patterns. The wrong move (`executeSQL SELECT * FROM orders LIMIT 1`) costs a roundtrip and reveals neither types nor joins."
+    },
+    {
+      "id": "metric-or-sql",
+      "prompt": "How many orders did we have last month?",
+      "expected_tool": "runMetric",
+      "expected_alternates": ["executeSQL", "listEntities", "describeEntity"],
+      "rationale": "If a matching metric exists, `runMetric` is canonical. When the agent doesn't yet know whether one exists, calling `listEntities` / `describeEntity` first is acceptable preparation; the regression class is going straight to `executeSQL` with hand-rolled SQL when a metric definition exists."
+    },
+    {
+      "id": "glossary-term",
+      "prompt": "What does 'churn' mean here?",
+      "expected_tool": "searchGlossary",
+      "rationale": "Term disambiguation — `searchGlossary` is the only tool that returns the canonical definition. The wrong move is inventing a definition or guessing a column name."
+    }
+  ]
+}

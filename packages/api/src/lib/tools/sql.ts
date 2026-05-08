@@ -35,6 +35,7 @@ import {
   QueryExecutionError, RateLimitExceededError, ConcurrencyLimitError,
   RLSError, PluginRejectedError,
 } from "@atlas/api/lib/effect/errors";
+import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 
 const log = createLogger("sql");
 
@@ -968,14 +969,7 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
 }
 
 export const executeSQL = tool({
-  description: `Execute a read-only SQL query against the database. Only SELECT statements are allowed.
-
-Rules:
-- Always read the relevant entity schema from the semantic layer BEFORE writing SQL
-- Use exact column names from the schema — never guess
-- Use canonical metric SQL from metrics/*.yml when available
-- Include a LIMIT clause for large result sets
-- If a query fails, fix the issue — do not retry the same SQL`,
+  description: EXECUTE_SQL_TOOL_DESCRIPTION,
 
   inputSchema: z.object({
     sql: z.string().describe("The SELECT query to execute"),

@@ -710,6 +710,45 @@ describe("parseCanonicalEvalOptions", () => {
       parseCanonicalEvalOptions(["--schema", "salesforce-but-not-really"]),
     ).toThrow(/Invalid --schema/);
   });
+
+  it("rejects --tool-selection without --mcp-llm", () => {
+    expect(() => parseCanonicalEvalOptions(["--tool-selection"])).toThrow(
+      /--tool-selection requires --mcp-llm/,
+    );
+  });
+
+  it("rejects the three-way --llm + --mcp-llm + --tool-selection combination", () => {
+    // The mode-mutex check fires first ("--llm and --mcp-llm are mutually
+    // exclusive"). Pinning this here so a future refactor that reorders
+    // the guards still rejects an obviously incoherent set of flags.
+    expect(() =>
+      parseCanonicalEvalOptions(["--llm", "--mcp-llm", "--tool-selection"]),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  it("rejects --tool-selection with --write-baseline", () => {
+    expect(() =>
+      parseCanonicalEvalOptions(["--mcp-llm", "--tool-selection", "--write-baseline"]),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  it("rejects --tool-selection-fixture pointing at a missing file", () => {
+    expect(() =>
+      parseCanonicalEvalOptions([
+        "--mcp-llm",
+        "--tool-selection",
+        "--tool-selection-fixture",
+        "/nonexistent/path/to/fixture.json",
+      ]),
+    ).toThrow(/--tool-selection-fixture file not found/);
+  });
+
+  it("accepts --mcp-llm --tool-selection together and defaults the fixture path", () => {
+    const opts = parseCanonicalEvalOptions(["--mcp-llm", "--tool-selection"]);
+    expect(opts.mode).toBe("mcp-llm");
+    expect(opts.toolSelection).toBe(true);
+    expect(opts.toolSelectionFixturePath).toContain("tool-selection.json");
+  });
 });
 
 // ── bindMcpToolsForLlm contract ───────────────────────────────────────

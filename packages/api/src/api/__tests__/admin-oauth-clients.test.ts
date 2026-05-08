@@ -368,13 +368,19 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
     const deleteOrder = clientQueries
       .filter((q) => /^\s*DELETE\s+FROM/i.test(q.sql))
       .map((q) => {
-        const m = q.sql.match(/DELETE FROM "(\w+)"/);
+        // Quoted identifiers (Better Auth tables) and unquoted ones
+        // (Atlas-owned `oauth_client_rate_limits`) both need to round-
+        // trip — match either shape.
+        const m = q.sql.match(/DELETE FROM "?(\w+)"?/);
         return m ? m[1] : null;
       });
     expect(deleteOrder).toEqual([
       "oauthAccessToken",
       "oauthRefreshToken",
       "oauthConsent",
+      // #2071 — rate-limit override row dropped in the same tx so a
+      // re-registered client can't inherit the prior admin's quota.
+      "oauth_client_rate_limits",
       "oauthClient",
     ]);
 

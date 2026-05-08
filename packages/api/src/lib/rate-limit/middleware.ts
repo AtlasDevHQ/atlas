@@ -18,9 +18,7 @@
  *
  * The exposed `enforceClientRateLimit()` returns a discriminated
  * outcome so the caller branches on `denied` without exception
- * handling. Callers that hit denial return the envelope-as-tool-result
- * directly; callers above the tool layer (e.g., a future per-frame
- * outer guard) can attach the same `Retry-After` value to an HTTP 429.
+ * handling.
  */
 
 import type { AtlasMcpToolError } from "@useatlas/types/mcp";
@@ -30,7 +28,6 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import {
   checkClientRateLimit,
   resolveRateLimitFor,
-  setClientRateLimit,
   type RateLimitLoader,
 } from "./oauth-client";
 
@@ -82,9 +79,9 @@ export async function enforceClientRateLimit(
 
   if (verdict.allowed) return { kind: "ok" };
 
-  // Audit before envelope construction — a forensic query asking
-  // "which clients are getting rate-limited" must see the row even if
-  // the caller drops the response on the floor for any reason.
+  // Always emit the audit row on the denial branch — the row IS the
+  // forensic signal, regardless of how the envelope is later consumed
+  // (transport drop, agent retry, agent ignore-and-shift-tool).
   emitRateLimitAudit({
     clientId: input.clientId,
     userId: input.userId,
@@ -197,11 +194,3 @@ function rateLimitedHint(retryAfterSec: number): string {
   return `Wait ${retryAfterSec}s before retrying. The admin can raise this client's quota in Settings → OAuth Clients.`;
 }
 
-// ── Test surface ───────────────────────────────────────────────────
-
-/**
- * Pre-prime the limit cache. Production code never calls this — the
- * default DB loader populates the cache on first hit. Tests use it to
- * exercise the limiter without a real Postgres.
- */
-export const _setClientRateLimitForTests = setClientRateLimit;

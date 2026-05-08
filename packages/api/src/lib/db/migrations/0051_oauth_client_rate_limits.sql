@@ -15,8 +15,9 @@
 -- We don't add a foreign key to `oauthClient` because Better Auth doesn't
 -- declare `clientId` as PRIMARY KEY (it's a separate `id` column with
 -- `clientId` only UNIQUE) and binding via FK would couple Atlas's migration
--- ordering to Better Auth's schema generation. Application-level cleanup on
--- client revocation lives in `revokeOAuthClient()` in `lib/auth/oauth-clients.ts`.
+-- ordering to Better Auth's schema generation. Application-level cleanup
+-- runs alongside the Better-Auth-table DELETEs inside `revokeOAuthClient()`'s
+-- transaction (see the `phase = "rate_limits"` step in `oauth-clients.ts`).
 
 CREATE TABLE IF NOT EXISTS oauth_client_rate_limits (
   client_id           TEXT        NOT NULL,

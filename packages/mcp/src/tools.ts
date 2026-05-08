@@ -157,14 +157,19 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         () => {
           const requestId = dispatchId("mcp-explore");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("explore") }, async () => {
-            const limited = await rateLimitOrNull({
-              clientId,
-              orgId: workspaceId,
-              userId: actor.id,
-              toolName: "explore",
-            });
-            if (limited) return limited;
             try {
+              // Rate-limit gate (#2071) lives INSIDE the try so any throw
+              // from the limiter (loader rejection, audit-emission
+              // regression) lands in the same catch as a tool throw and
+              // surfaces an `internal_error` envelope with `request_id`
+              // — preserving the #2030 contract for limiter failures.
+              const limited = await rateLimitOrNull({
+                clientId,
+                orgId: workspaceId,
+                userId: actor.id,
+                toolName: "explore",
+              });
+              if (limited) return limited;
               const result = await explore.execute!(
                 { command },
                 { toolCallId: "mcp-explore", messages: [] },
@@ -228,14 +233,14 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         () => {
           const requestId = dispatchId("mcp-executeSQL");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL") }, async () => {
-            const limited = await rateLimitOrNull({
-              clientId,
-              orgId: workspaceId,
-              userId: actor.id,
-              toolName: "executeSQL",
-            });
-            if (limited) return limited;
             try {
+              const limited = await rateLimitOrNull({
+                clientId,
+                orgId: workspaceId,
+                userId: actor.id,
+                toolName: "executeSQL",
+              });
+              if (limited) return limited;
               const result = await executeSQL.execute!(
                 { sql, explanation, connectionId },
                 { toolCallId: "mcp-executeSQL", messages: [] },

@@ -166,14 +166,18 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-listEntities");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities") }, async () => {
-            const limited = await rateLimitOrNull({
-              clientId,
-              orgId: workspaceId,
-              userId: actor.id,
-              toolName: "listEntities",
-            });
-            if (limited) return limited;
             try {
+              // Rate-limit gate (#2071) lives INSIDE the try so any
+              // limiter throw lands in the same catch as a tool throw
+              // and produces an `internal_error` envelope with
+              // `request_id` — preserving the #2030 contract.
+              const limited = await rateLimitOrNull({
+                clientId,
+                orgId: workspaceId,
+                userId: actor.id,
+                toolName: "listEntities",
+              });
+              if (limited) return limited;
               const entities = listEntities({ filter });
               return toJsonContent({ count: entities.length, entities });
             } catch (err) {
@@ -211,14 +215,14 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-describeEntity");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity") }, async () => {
-            const limited = await rateLimitOrNull({
-              clientId,
-              orgId: workspaceId,
-              userId: actor.id,
-              toolName: "describeEntity",
-            });
-            if (limited) return limited;
             try {
+              const limited = await rateLimitOrNull({
+                clientId,
+                orgId: workspaceId,
+                userId: actor.id,
+                toolName: "describeEntity",
+              });
+              if (limited) return limited;
               const entity = getEntityByName(name);
               if (!entity) {
                 // Unknown-entity isn't really a "tool failed" condition for
@@ -269,14 +273,14 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-searchGlossary");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary") }, async () => {
-            const limited = await rateLimitOrNull({
-              clientId,
-              orgId: workspaceId,
-              userId: actor.id,
-              toolName: "searchGlossary",
-            });
-            if (limited) return limited;
             try {
+              const limited = await rateLimitOrNull({
+                clientId,
+                orgId: workspaceId,
+                userId: actor.id,
+                toolName: "searchGlossary",
+              });
+              if (limited) return limited;
               const matches = searchGlossary(term);
 
               // The disambiguation contract (#2020 + forthcoming #2025): when
@@ -382,14 +386,14 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-runMetric");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric") }, async () => {
-            const limited = await rateLimitOrNull({
-              clientId,
-              orgId: workspaceId,
-              userId: actor.id,
-              toolName: "runMetric",
-            });
-            if (limited) return limited;
             try {
+              const limited = await rateLimitOrNull({
+                clientId,
+                orgId: workspaceId,
+                userId: actor.id,
+                toolName: "runMetric",
+              });
+              if (limited) return limited;
               if (filters && Object.keys(filters).length > 0) {
                 return toEnvelopeResult(
                   envelope(

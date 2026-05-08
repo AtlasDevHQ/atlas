@@ -103,6 +103,7 @@ export type RevokePhase =
   | "access_tokens"
   | "refresh_tokens"
   | "consent"
+  | "rate_limits"
   | "client"
   | "commit";
 
@@ -266,18 +267,28 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
 
     // pg may return INTEGER columns as either number or string depending
     // on the @effect/sql vs raw-pool path — normalise both to a clean
-    // number-or-null. A non-finite value here means a row escaped the
-    // CHECK constraint (impossible without a manual SQL write), in which
-    // case "fall back to default" is the only safe behaviour.
+    // number-or-null. NULL means "no override"; an unparseable
+    // present value means a row escaped the CHECK constraint (manual
+    // SQL write, future migration that drops the constraint, schema
+    // drift). That's a data-integrity bug, not a "fall back to default"
+    // case — surface a 500 with a `requestId` so the admin can find
+    // the bad row, mirroring the liveAccess/liveRefresh treatment
+    // above (CLAUDE.md "false-negative-fallback" prohibition).
+    let rateLimitPerMinute: number | null = null;
     const rawRpm = r.rateLimitPerMinute;
-    const rpmNum =
-      rawRpm == null
-        ? null
-        : typeof rawRpm === "number"
+    if (rawRpm != null) {
+      const rpmNum =
+        typeof rawRpm === "number"
           ? rawRpm
           : Number.parseInt(String(rawRpm), 10);
-    const rateLimitPerMinute =
-      rpmNum != null && Number.isFinite(rpmNum) && rpmNum > 0 ? rpmNum : null;
+      if (!Number.isFinite(rpmNum) || rpmNum < 1) {
+        throw new Error(
+          `oauth-clients rateLimitPerMinute parse failed for clientId=${r.clientId} `
+          + `(rateLimitPerMinute=${String(rawRpm)})`,
+        );
+      }
+      rateLimitPerMinute = rpmNum;
+    }
 
     return {
       clientId: r.clientId,
@@ -388,6 +399,20 @@ export async function revokeOAuthClient(
         WHERE "clientId" = $1 AND "referenceId" = $2 ${extra}
         RETURNING "id"`,
       baseParams,
+    );
+    phase = "rate_limits";
+
+    // #2071 cleanup — drop any per-client rate-limit override row in the
+    // same transaction. The override table has no FK to `oauthClient`
+    // (Better Auth owns that schema), so without this DELETE the row
+    // would linger and a future re-registration with the same `clientId`
+    // would silently inherit the prior admin's override. Filtered by
+    // `client_id`/`reference_id` only — the table doesn't carry
+    // `userId`, so the user-scoped extra clause doesn't apply here.
+    await client.query(
+      `DELETE FROM oauth_client_rate_limits
+        WHERE client_id = $1 AND reference_id = $2`,
+      [clientId, scope.orgId],
     );
     phase = "client";
 

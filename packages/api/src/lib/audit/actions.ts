@@ -382,13 +382,16 @@ export const ADMIN_ACTIONS = {
      * Per-OAuth-client rate-limit hit on the hosted MCP endpoint (#2071).
      * Emitted once per denied tool dispatch — the same `(orgId, clientId)`
      * tuple may produce a burst of these rows during a runaway-agent
-     * incident, which is the forensic signal we want. Metadata carries
-     * `clientId`, `userId`, `tool`, the resolved per-client limit, the
-     * tool's weight against that limit, and the seconds-to-recover so
-     * incident review pivots on the same numbers the agent saw in its
-     * 429 envelope. `rate_limited` lives under `mcp_session` (rather
-     * than its own domain) because the existing `actorKind=mcp` admin
-     * audit filter (Theme A — A3) already covers this surface.
+     * incident, which is the forensic signal we want. Metadata shape:
+     *   - `clientId`, `userId`, `tool` at the top level
+     *   - `ratelimitState: { limit, weight, retryAfterSec, remaining }`
+     *     — the same numbers the agent saw in its `rate_limited`
+     *     `AtlasMcpToolError` envelope (note: `isError: true` MCP tool
+     *     result, not an HTTP 429). Forensic SQL must pivot through
+     *     the nested key, e.g.
+     *     `metadata->'ratelimitState'->>'retryAfterSec'`.
+     * Lives under `mcp_session` because the existing `actorKind=mcp`
+     * admin audit filter (#2067) already covers this surface.
      */
     rateLimited: "mcp_session.rate_limited",
   },

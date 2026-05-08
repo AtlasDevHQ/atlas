@@ -338,6 +338,8 @@ curl -X PATCH \
 ### What's not covered (yet)
 
 - **Cross-region reconciliation.** Each regional API has its own in-process buckets. A determined attacker holding tokens in `us`, `eu`, and `apac` can hit each region's quota independently, so the effective ceiling is `regions × per-client quota` rather than a single global one. Tracked as out-of-scope on [#2071](https://github.com/AtlasDevHQ/atlas/issues/2071).
+- **Multi-replica cache staleness.** Within a single region, the limiter cache is in-process. The `numReplicas: 1` pin documented above (under "Operational notes") means there's only one replica per regional service today, so an admin override invalidates the live cache immediately. If a future deployment lifts that pin (paired with the work tracked in [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069)), expect a brief staleness window after a `PATCH .../rate-limit` until the other replicas's caches expire — for now the override surface and the running limiter are pinned to the same process.
+- **Override DB outage.** If the internal database is unreachable when the limiter first sees a `(workspace, client)` pair, the loader logs a warning and the bucket falls back to the workspace default until the cache is refilled. This is fail-open by design (legitimate traffic keeps flowing during a DB blip), but an admin who set a low quota for an abusive client should know the override is bypassed during such a window. Operators paged on `oauth_client_rate_limits lookup failed` log lines have the signal to act.
 - **Tiered pricing.** The override mechanism is admin-only today; no usage-based billing tier consumes it. Will fold in alongside the v1.5 billing work.
 
 ## Operational notes

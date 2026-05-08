@@ -18,10 +18,17 @@ import { _resetClientRateLimitsForTests } from "../oauth-client";
 // need plus the AdminActionEntry type, so we replace them entirely.
 
 const auditCalls: Array<Record<string, unknown>> = [];
+let auditThrows = false;
 
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
+    if (auditThrows) {
+      // Stress the contract: the middleware must build the envelope
+      // even if audit emission throws. `logAdminAction` documents
+      // "NEVER throws" but the contract is JSDoc, not type-enforced.
+      throw new Error("synthetic audit failure");
+    }
   },
   ADMIN_ACTIONS: {
     mcp_session: {
@@ -38,6 +45,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 beforeEach(() => {
   auditCalls.length = 0;
+  auditThrows = false;
   _resetClientRateLimitsForTests();
 });
 
@@ -53,6 +61,23 @@ const baseInput = {
 };
 
 describe("enforceClientRateLimit", () => {
+  it("uses DEFAULT_REQUESTS_PER_MINUTE when no loader returns null (self-hosted bootstrap)", async () => {
+    // hasInternalDB() === false in this test file's mock — the
+    // defaultLoader path returns null and resolveRateLimitFor falls
+    // through to the documented default. Pin via an exhaustive drain.
+    const { enforceClientRateLimit } = await import("../middleware");
+    const { DEFAULT_REQUESTS_PER_MINUTE } = await import("../oauth-client");
+    const nullLoader = async () => null;
+    const light = { ...baseInput, toolName: "listEntities" };
+    // Drain exactly DEFAULT_REQUESTS_PER_MINUTE light calls.
+    for (let i = 0; i < DEFAULT_REQUESTS_PER_MINUTE; i++) {
+      const outcome = await enforceClientRateLimit(light, nullLoader);
+      expect(outcome.kind).toBe("ok");
+    }
+    const denied = await enforceClientRateLimit(light, nullLoader);
+    expect(denied.kind).toBe("denied");
+  });
+
   it("loads the override exactly once per (orgId, clientId)", async () => {
     const { enforceClientRateLimit } = await import("../middleware");
     let loaderCalls = 0;
@@ -118,5 +143,30 @@ describe("enforceClientRateLimit", () => {
     const outcome = await enforceClientRateLimit(baseInput, async () => 100);
     expect(outcome.kind).toBe("ok");
     expect(auditCalls).toHaveLength(0);
+  });
+
+  it("propagates an audit-emission throw — the per-tool try/catch must catch it", async () => {
+    // Silent-failure-hunter Finding #2: if `rateLimitOrNull` lived
+    // OUTSIDE the per-tool try, an audit throw on denial would
+    // propagate past the envelope and the agent would see a
+    // transport-level error. The fix moved the limiter inside the
+    // per-tool try, so this test exists to pin that the middleware
+    // itself does NOT swallow the throw — it is the tool-layer's
+    // job to translate it into an `internal_error` envelope. A
+    // regression that adds a defensive try/catch here would silently
+    // hide audit-emission bugs and break the explicit-translation
+    // contract that finding #2 fixed.
+    auditThrows = true;
+    const { enforceClientRateLimit } = await import("../middleware");
+    // Light tool so the budget admits one allowed call before denial.
+    // executeSQL (weight 5) against a budget of 1 would trip the
+    // single-weight-exceeds-limit branch on the very first dispatch.
+    const lightInput = { ...baseInput, toolName: "listEntities" };
+    const tightLoader = async () => 1;
+    const first = await enforceClientRateLimit(lightInput, tightLoader);
+    expect(first.kind).toBe("ok");
+    await expect(
+      enforceClientRateLimit(lightInput, tightLoader),
+    ).rejects.toThrow(/synthetic audit failure/);
   });
 });

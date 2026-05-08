@@ -307,6 +307,13 @@ adminOauthClients.openapi(revokeClientRoute, async (c) => {
       },
       "OAuth client revoked",
     );
+    // #2071 — drop the limiter's in-memory cache for the revoked
+    // (orgId, clientId) pair. The transactional DELETE removed any DB
+    // override, but the cached value would otherwise survive until
+    // process restart, so a re-registered client with the same
+    // canonical name (e.g. `claude-desktop`) would silently inherit
+    // the prior override budget.
+    setClientRateLimit(orgId!, clientId, null);
     logAdminAction({
       actionType: ADMIN_ACTIONS.oauth_client.revoke,
       targetType: "oauth_client",
@@ -358,6 +365,13 @@ adminOauthClients.openapi(rateLimitUpdateRoute, async (c) => {
   const { id: clientId } = c.req.valid("param");
   const { requestsPerMinute } = c.req.valid("json");
   const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+  // Closure-scoped flag mirrors the revoke handler: branches that
+  // already audited inline (404 / pre-fetch miss) suppress the
+  // tapErrorCause emission so the forensic trail isn't double-rowed.
+  // All other un-audited bubbles (DB throw on the upsert, listOAuthClients
+  // throwing for a malformed override) still emit a `status: "failure"`
+  // row with the scrubbed error message.
+  let auditedInline = false;
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
@@ -381,6 +395,7 @@ adminOauthClients.openapi(rateLimitUpdateRoute, async (c) => {
         status: "failure",
         metadata: { clientId, found: false, requestsPerMinute },
       });
+      auditedInline = true;
       return c.json(
         { error: "not_found", message: "OAuth client not found in this workspace.", requestId },
         404,
@@ -443,7 +458,32 @@ adminOauthClients.openapi(rateLimitUpdateRoute, async (c) => {
       },
       200,
     );
-  }), { label: "update oauth client rate-limit" });
+  }).pipe(
+    // Pure-interrupt causes (client disconnect, shutdown) leave the
+    // outcome indeterminate and are intentionally not audited — same
+    // precedent as F-23 / `admin-sessions.ts`. Other un-audited
+    // bubbles (DB throw on the upsert, listOAuthClients throwing for
+    // a malformed override row from finding #7) emit a `status:
+    // "failure"` row so forensic queries can pivot on outcome
+    // without joining on response code. `Effect.ignoreLogged` keeps
+    // a future `logAdminAction` regression from masking the original
+    // 500 with an audit emission throw.
+    Effect.tapErrorCause((cause) => {
+      if (auditedInline) return Effect.void;
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.oauth_client.rateLimitUpdate,
+          targetType: "oauth_client",
+          targetId: clientId,
+          status: "failure",
+          ipAddress,
+          metadata: { clientId, requestsPerMinute, error: errorMessage(err) },
+        }),
+      ).pipe(Effect.ignoreLogged);
+    }),
+  ), { label: "update oauth client rate-limit" });
 });
 
 export { adminOauthClients };

@@ -61,6 +61,15 @@ const ConnectWizard = dynamic(
   { ssr: false },
 );
 
+// Prompts preview block (#2179) — fetches `/api/v1/me/mcp-prompts` and
+// renders the source-grouped prompt set. Dynamic-imported alongside the
+// wizard to keep the page's first paint focused on the connected-agents
+// list; the preview slots in once the JS chunk arrives.
+const PromptsPreview = dynamic(
+  () => import("./prompts-preview").then((m) => m.PromptsPreview),
+  { ssr: false },
+);
+
 export default function AIAgentsPage() {
   const {
     data: listData,
@@ -185,6 +194,10 @@ export default function AIAgentsPage() {
             </div>
           </section>
         </AdminContentWrapper>
+      </ErrorBoundary>
+
+      <ErrorBoundary>
+        <PromptsPreview />
       </ErrorBoundary>
 
       {!isSaas && showStat && clients.length === 0 && (

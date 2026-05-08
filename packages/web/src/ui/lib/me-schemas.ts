@@ -91,3 +91,70 @@ export const RevokeOAuthClientResponseSchema = z.object({
   success: z.boolean(),
   tokensRevoked: z.number().int().nonnegative(),
 });
+
+// ---------------------------------------------------------------------------
+// MCP prompts preview (#2179) — Settings → AI Agents
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors the API route's `PromptListEntrySchema`. The Settings → AI
+ * Agents preview block buckets by `source` to show "Built-in (5) ·
+ * Canonical (20) · Semantic (12) · Library (3)"; reading `source` off
+ * each entry avoids name-prefix pattern-matching at the UI layer.
+ */
+export const McpPromptArgumentSchema = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  required: z.boolean(),
+});
+
+export const McpPromptSourceSchema = z.enum([
+  "builtin",
+  "canonical",
+  "semantic",
+  "library",
+]);
+
+export const McpPromptListEntrySchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  arguments: z.array(McpPromptArgumentSchema),
+  source: McpPromptSourceSchema,
+});
+
+/**
+ * Canonical-prompts gate envelope. `exposed=false` means the canonical
+ * eval prompts are hidden; `reason` tells the UI which banner to render:
+ *   - "toggle-never"        — admin opted out at Admin → Settings → MCP
+ *   - "no-demo-signal"      — toggle=auto, this isn't a demo workspace
+ *   - "signal-unavailable"  — toggle=auto, internal-DB connections probe
+ *                             failed AND no industry signal could
+ *                             confirm demo status (operator-facing
+ *                             outage signal — distinct from the
+ *                             confirmed-not-demo case so the user gets
+ *                             accurate advice)
+ *
+ * `.catch(null)` on the reason enum so a forward-compatible reason
+ * value during a multi-PR rollout degrades to the "unknown reason"
+ * banner branch instead of failing the entire response parse and
+ * blanking the preview block. Mirrors `CanonicalGateReason` in
+ * `packages/mcp/src/prompts/gating.ts` — keep both in sync.
+ */
+export const McpCanonicalGateSchema = z.object({
+  exposed: z.boolean(),
+  toggle: z.enum(["always", "never", "auto"]),
+  reason: z
+    .enum(["toggle-never", "no-demo-signal", "signal-unavailable"])
+    .nullable()
+    .catch(null),
+});
+
+export const McpPromptsResponseSchema = z.object({
+  prompts: z.array(McpPromptListEntrySchema),
+  canonicalGate: McpCanonicalGateSchema,
+});
+
+export type McpPromptListEntry = z.infer<typeof McpPromptListEntrySchema>;
+export type McpPromptSource = z.infer<typeof McpPromptSourceSchema>;
+export type McpCanonicalGate = z.infer<typeof McpCanonicalGateSchema>;
+export type McpPromptsResponse = z.infer<typeof McpPromptsResponseSchema>;

@@ -14812,6 +14812,166 @@
         "operationId": "postMeOauthClientsByIdRevoke"
       }
     },
+    "/api/v1/me/mcp-prompts": {
+      "get": {
+        "tags": [
+          "Me — MCP Prompts"
+        ],
+        "summary": "Preview the prompts your connected agent will see",
+        "description": "Returns the prompts an MCP-connected agent would see via `prompts/list` for the caller's active workspace, grouped by source (built-in / canonical / semantic / library). Powers the Settings → AI Agents preview block. Includes a `canonicalGate` envelope explaining why canonical eval prompts may be hidden so the UI can render a banner linking to Admin → Settings → MCP.",
+        "responses": {
+          "200": {
+            "description": "Prompt list + canonical gate envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "prompts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "arguments": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": {
+                                  "type": "string"
+                                },
+                                "required": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "description",
+                                "required"
+                              ]
+                            }
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "builtin",
+                              "canonical",
+                              "semantic",
+                              "library"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "arguments",
+                          "source"
+                        ]
+                      }
+                    },
+                    "canonicalGate": {
+                      "type": "object",
+                      "properties": {
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "toggle": {
+                          "type": "string",
+                          "enum": [
+                            "always",
+                            "never",
+                            "auto"
+                          ]
+                        },
+                        "reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "toggle-never",
+                            "no-demo-signal",
+                            "signal-unavailable",
+                            null
+                          ]
+                        }
+                      },
+                      "required": [
+                        "exposed",
+                        "toggle",
+                        "reason"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "prompts",
+                    "canonicalGate"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getMeMcpPrompts"
+      }
+    },
     "/api/v1/admin/organizations": {
       "get": {
         "tags": [
@@ -65552,6 +65712,9 @@
     },
     {
       "name": "Health"
+    },
+    {
+      "name": "Me — MCP Prompts"
     },
     {
       "name": "Me — OAuth Clients"

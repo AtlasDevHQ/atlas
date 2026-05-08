@@ -23,6 +23,7 @@ COPY packages/schemas/package.json packages/schemas/package.json
 COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
+COPY examples/embedded-mcp-onboarding/package.json examples/embedded-mcp-onboarding/package.json
 COPY plugins/clickhouse/package.json plugins/clickhouse/package.json
 COPY plugins/yaml-context/package.json plugins/yaml-context/package.json
 COPY plugins/daytona/package.json plugins/daytona/package.json

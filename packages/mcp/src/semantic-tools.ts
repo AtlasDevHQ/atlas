@@ -36,10 +36,15 @@ import {
 } from "@atlas/api/lib/semantic/lookups";
 import { executeSQL } from "@atlas/api/lib/tools/sql";
 import {
-  LIST_ENTITIES_TOOL_DESCRIPTION,
+  DESCRIBE_ENTITY_ERROR_CODES,
   DESCRIBE_ENTITY_TOOL_DESCRIPTION,
-  SEARCH_GLOSSARY_TOOL_DESCRIPTION,
+  LIST_ENTITIES_ERROR_CODES,
+  LIST_ENTITIES_TOOL_DESCRIPTION,
+  RUN_METRIC_ERROR_CODES,
   RUN_METRIC_TOOL_DESCRIPTION,
+  SEARCH_GLOSSARY_ERROR_CODES,
+  SEARCH_GLOSSARY_TOOL_DESCRIPTION,
+  withErrorContract,
   type SemanticToolName,
 } from "@atlas/api/lib/tools/descriptions";
 import {
@@ -66,21 +71,6 @@ const MAX_FREE_TEXT_LEN = 1024;
 // constraint at the Zod boundary gives the MCP client an immediate
 // error instead of an indistinguishable `{ found: false }`.
 const ENTITY_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
-
-// Per-tool error catalogs surfaced in tool descriptions — the LLM reads
-// these to learn which codes can come back, and the test suite asserts
-// each catalog is reachable.
-const LIST_ENTITIES_ERROR_CODES = ["internal_error"] as const;
-const DESCRIBE_ENTITY_ERROR_CODES = ["unknown_entity", "internal_error"] as const;
-const SEARCH_GLOSSARY_ERROR_CODES = ["ambiguous_term", "internal_error"] as const;
-const RUN_METRIC_ERROR_CODES = [
-  "unknown_metric",
-  "validation_failed",
-  "rls_denied",
-  "query_timeout",
-  "rate_limited",
-  "internal_error",
-] as const;
 
 export interface RegisterSemanticToolsOptions {
   /** Actor bound on every tool dispatch — see tools.ts. */
@@ -113,17 +103,6 @@ function errorMessage(err: unknown, fallback: string): string {
   // give the caller no signal anyway.
   const s = String(err);
   return s && s !== "[object Object]" ? s : fallback;
-}
-
-/**
- * Append the structured error contract to a tool's LLM-facing description
- * so agents can read the recovery surface from the same place they read
- * the tool's purpose.
- */
-function withErrorContract(base: string, codes: readonly string[]): string {
-  return `${base}
-
-Error contract: failures return an \`{ code, message, hint?, request_id?, retry_after? }\` JSON envelope as the tool result text with \`isError: true\`. Possible codes: ${codes.map((c) => `\`${c}\``).join(", ")}. Branch on \`code\`; never pattern-match \`message\`.`;
 }
 
 export function registerSemanticTools(

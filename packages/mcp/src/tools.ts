@@ -27,6 +27,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { explore } from "@atlas/api/lib/tools/explore";
 import { executeSQL } from "@atlas/api/lib/tools/sql";
+import {
+  EXECUTE_SQL_ERROR_CODES,
+  EXPLORE_ERROR_CODES,
+  withErrorContract,
+} from "@atlas/api/lib/tools/descriptions";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { getConfig } from "@atlas/api/lib/config";
@@ -86,27 +91,6 @@ function workspaceIdOf(actor: AtlasUser): string {
 function deployModeOf(): McpDeployMode {
   return getConfig()?.deployMode ?? "self-hosted";
 }
-
-/**
- * Append the structured error contract to a tool's LLM-facing description
- * so agents can read the recovery surface from the same place they read
- * the tool's purpose.
- */
-function withErrorContract(base: string, codes: readonly string[]): string {
-  return `${base}
-
-Error contract: failures return an \`{ code, message, hint?, request_id?, retry_after? }\` JSON envelope as the tool result text with \`isError: true\`. Possible codes: ${codes.map((c) => `\`${c}\``).join(", ")}. Branch on \`code\`; never pattern-match \`message\`.`;
-}
-
-const EXPLORE_ERROR_CODES = ["rate_limited", "internal_error"] as const;
-const EXECUTE_SQL_ERROR_CODES = [
-  "validation_failed",
-  "rls_denied",
-  "query_timeout",
-  "unknown_entity",
-  "rate_limited",
-  "internal_error",
-] as const;
 
 export function registerTools(server: McpServer, opts: RegisterToolsOptions): void {
   const { actor, transport = "stdio", clientId } = opts;

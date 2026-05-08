@@ -82,12 +82,33 @@ interface CanonicalEvalOptions {
   baselinePath: string;
   /** When true and `mode === "mcp-llm"`, write the run's per-question latencies back to `baselinePath`. */
   writeBaseline: boolean;
+  /**
+   * When true, swap the canonical-question path for the held-out
+   * tool-selection fixture — `eval/canonical-questions/tool-selection.json`
+   * unless `--tool-selection-fixture` overrides. The grader asserts on
+   * which tool the LLM picked first per item; the run exits non-zero
+   * when accuracy < `rubric.acceptance_floor` (default 0.9). Only
+   * meaningful with `--mcp-llm`. Drives the #2075 audit's success metric.
+   */
+  toolSelection: boolean;
+  /** Path to the tool-selection fixture (#2075). Defaults to `eval/canonical-questions/tool-selection.json`. */
+  toolSelectionFixturePath: string;
 }
 
 const DEFAULT_BASELINE_PATH = path.resolve(
   "eval",
   "canonical-questions",
   "mcp-llm-baseline.json",
+);
+
+const DEFAULT_TOOL_SELECTION_FIXTURE_PATH = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "..",
+  "eval",
+  "canonical-questions",
+  "tool-selection.json",
 );
 
 export function parseCanonicalEvalOptions(args: string[]): CanonicalEvalOptions {
@@ -124,6 +145,27 @@ export function parseCanonicalEvalOptions(args: string[]): CanonicalEvalOptions 
   if (writeBaseline && !mcpLlm) {
     throw new Error("--write-baseline only applies to --mcp-llm mode");
   }
+  const toolSelection = args.includes("--tool-selection");
+  if (toolSelection && !mcpLlm) {
+    throw new Error(
+      "--tool-selection requires --mcp-llm — the held-out tool-selection " +
+        "grader (#2075) reuses the MCP dispatch transport.",
+    );
+  }
+  if (toolSelection && writeBaseline) {
+    throw new Error(
+      "--tool-selection and --write-baseline are mutually exclusive: the " +
+        "tool-selection grader does not write per-question latency baselines.",
+    );
+  }
+  const toolSelectionFixturePath =
+    getFlag(args, "--tool-selection-fixture") ??
+    DEFAULT_TOOL_SELECTION_FIXTURE_PATH;
+  if (toolSelection && !fs.existsSync(toolSelectionFixturePath)) {
+    throw new Error(
+      `--tool-selection-fixture file not found: ${toolSelectionFixturePath}`,
+    );
+  }
   return {
     schema: schemaArg as ValidSchema,
     questionsPath,
@@ -131,6 +173,8 @@ export function parseCanonicalEvalOptions(args: string[]): CanonicalEvalOptions 
     json,
     baselinePath,
     writeBaseline,
+    toolSelection,
+    toolSelectionFixturePath,
   };
 }
 
@@ -582,6 +626,18 @@ async function runMcpLlmMode(
     `  using LLM provider=${providerType} model=${modelId}\n`,
   );
 
+  // Branch into the held-out tool-selection fixture (#2075) when
+  // requested. The MCP transport boot is identical to the canonical
+  // path; the grader is narrower (first-tool match, not per-mode answer
+  // correctness) and the acceptance metric is an accuracy floor.
+  if (options.toolSelection) {
+    return runToolSelectionMode({
+      ...options,
+      providerLabel: `${providerType}/${modelId}`,
+      model,
+    });
+  }
+
   const baseline = readBaseline(options.baselinePath);
   if (baseline) {
     process.stdout.write(
@@ -657,6 +713,91 @@ async function runMcpLlmMode(
   if (passing < ACCEPTANCE_FLOOR) {
     process.stderr.write(
       `\nFAIL: ${passing}/${result.outcomes.length} below acceptance floor ${ACCEPTANCE_FLOOR}\n`,
+    );
+    return 1;
+  }
+  return 0;
+}
+
+// ── Wiring (--tool-selection mode, #2075) ───────────────────────────────
+
+interface ToolSelectionModeOptions extends CanonicalEvalOptions {
+  readonly providerLabel: string;
+  readonly model: import("ai").LanguageModel;
+}
+
+/**
+ * Held-out tool-selection accuracy run for the MCP tool-description
+ * audit (#2075). Reuses the `--mcp-llm` MCP transport but swaps the
+ * grader for a per-item first-tool match against the JSON fixture at
+ * `eval/canonical-questions/tool-selection.json`.
+ *
+ * The acceptance criterion lives in the fixture's `rubric.acceptance_floor`
+ * (default 0.9) so the audit's success metric is co-located with the
+ * prompts it grades — drift the floor and the test it gates ship in the
+ * same PR.
+ */
+async function runToolSelectionMode(
+  options: ToolSelectionModeOptions,
+): Promise<number> {
+  const { runToolSelectionEval } = await import("./canonical-eval-tool-selection");
+
+  process.stdout.write(
+    `  tool-selection fixture: ${options.toolSelectionFixturePath}\n`,
+  );
+
+  const result = await runToolSelectionEval({
+    fixturePath: options.toolSelectionFixturePath,
+    model: options.model,
+  });
+
+  const passing = result.outcomes.filter((o) => o.passed).length;
+  const failing = result.outcomes.length - passing;
+  const accuracyPct = (result.accuracy * 100).toFixed(1);
+  const floorPct = (result.acceptanceFloor * 100).toFixed(1);
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          schema: options.schema,
+          mode: options.mode,
+          submode: "tool-selection",
+          total: result.outcomes.length,
+          passing,
+          failing,
+          accuracy: result.accuracy,
+          acceptanceFloor: result.acceptanceFloor,
+          outcomes: result.outcomes.map((o) => ({
+            id: o.id,
+            prompt: o.prompt,
+            expected: o.expected,
+            firstTool: o.firstTool,
+            toolSequence: o.toolSequence,
+            passed: o.passed,
+            latencyMs: o.latencyMs,
+          })),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else {
+    process.stdout.write(
+      `\nMCP tool-selection eval — ${passing}/${result.outcomes.length} accurate (${accuracyPct}%; floor ${floorPct}%)\n`,
+    );
+    for (const o of result.outcomes) {
+      const tag = o.passed ? "[PASS]" : "[FAIL]";
+      const firstTool = o.firstTool ?? "<none>";
+      process.stdout.write(
+        `  ${tag} ${o.id.padEnd(20)} ${String(o.latencyMs).padStart(5)}ms first=${firstTool} expected=${o.expected.join("|")} sequence=${o.toolSequence.join(",") || "<none>"}\n`,
+      );
+    }
+  }
+
+  if (result.accuracy < result.acceptanceFloor) {
+    process.stderr.write(
+      `\nFAIL: tool-selection accuracy ${accuracyPct}% below floor ${floorPct}%\n`,
     );
     return 1;
   }

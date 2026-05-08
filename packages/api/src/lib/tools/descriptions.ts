@@ -1,61 +1,111 @@
 /**
- * Shared LLM-facing prose for the typed semantic-layer tools, imported
- * by both MCP `registerSemanticTools` and (eventually) the agent tool
- * registry so the description stays in lockstep across surfaces.
+ * Single source of truth for the LLM-facing prose on every typed Atlas
+ * tool exposed over MCP. The MCP layer registers each tool with the
+ * description returned by `withErrorContract(BASE, CODES)` so the agent
+ * sees purpose, routing directives, an example, and the recovery
+ * envelope in one continuous block.
  *
- * `explore` and `executeSQL` keep their descriptions inline on the AI
- * SDK `tool({ description })` definition in `lib/tools/{explore,sql}.ts`
- * — the MCP layer reads `tool.description` directly. New typed tools
- * have no AI SDK wrapper yet, so this file is their single source of
- * truth.
+ * Drift here silently degrades tool selection — verbose descriptions
+ * outweigh terse ones in LLM tool routing. The rubric is enforced in
+ * `__tests__/description-rubric.test.ts`; the contributor-facing rubric
+ * lives at `apps/docs/content/docs/architecture/mcp-tools.mdx`.
+ *
+ * Adding a new typed tool? Append a `<NAME>_TOOL_DESCRIPTION` constant
+ * matching the rubric, an `<NAME>_ERROR_CODES` tuple, and register it via
+ * `withErrorContract(...)` at the MCP edge.
  */
 
-export const LIST_ENTITIES_TOOL_DESCRIPTION = `List semantic-layer entities (tables/views) declared in the project.
+// ── Description bodies ────────────────────────────────────────────────
 
-Returns one row per entity with { name, table, description, source }. Use this to
-discover what tables are available before reading their schemas. Pass an optional
-\`filter\` (case-insensitive substring) when the catalog is large — matches
-against name, table, and description.
+export const EXPLORE_TOOL_DESCRIPTION = `Run read-only bash commands (\`ls\`, \`cat\`, \`grep\`, \`find\`, \`head\`, \`tail\`, \`wc\`, \`awk\`, \`sed\`, pipes) against the on-disk semantic layer rooted at \`/semantic\`. The directory holds \`catalog.yml\`, \`entities/*.yml\`, \`metrics/*.yml\`, \`glossary.yml\`, and per-source subdirectories (\`{source}/entities\`, \`{source}/metrics\`).
 
-Prefer this tool over the \`explore\` shell when you only need the catalog.`;
+Use this when the typed tools (\`listEntities\`, \`describeEntity\`, \`searchGlossary\`, \`runMetric\`) cannot answer — for example, scanning every entity for a custom regex, dumping a raw YAML block the typed tools redact, or discovering per-source subdirectories you do not yet know exist. Example call: \`{ "command": "grep -rl 'cross_source_joins' entities/" }\`. Example response: stdout text on success or \`Error (exit N): ...\` on shell failure.
 
-export const DESCRIBE_ENTITY_TOOL_DESCRIPTION = `Return the full parsed entity definition for a single entity.
+Don't use this for catalog discovery, single-entity introspection, glossary lookup, or executing canonical metrics — the typed tools are faster and return structured JSON.`;
 
-Output is the entity's YAML rendered as JSON: dimensions (with types and sample
-values), measures, joins, query patterns, grain, and connection. Look up by the
-entity's \`name\` field or by \`table\` name — both work.
+export const EXECUTE_SQL_TOOL_DESCRIPTION = `Execute a single read-only SELECT against an Atlas-registered datasource. The query is parsed, table-whitelist-checked against the semantic layer, RLS-injected, auto-LIMITed, and run under a statement timeout — DDL/DML, multi-statement input, and unknown tables are rejected before execution. Result shape: \`{ "columns": ["..."], "rows": [{ "col": "value" }], "row_count": N, "truncated": false }\`.
 
-Always call this before writing SQL against an unfamiliar table. When the entity
-does not exist, returns an \`unknown_entity\` error envelope (see the per-tool
-error contract); the agent should call \`listEntities\` to discover what's
-available rather than guess.`;
+Use this when no canonical metric covers the question, when you need ad-hoc breakdowns, or when a virtual dimension or query pattern requires SQL the agent must compose. Always call \`describeEntity\` to read exact column names and joins. Example call: \`{ "sql": "SELECT status, count(*) FROM orders GROUP BY 1", "explanation": "order count by status" }\`.
 
-export const SEARCH_GLOSSARY_TOOL_DESCRIPTION = `Search the business glossary for a term.
+Don't use this for catalog discovery (use \`listEntities\`), schema lookup (use \`describeEntity\`), glossary disambiguation (use \`searchGlossary\`), or any question whose metric id exists under \`semantic/metrics/\` (use \`runMetric\`). Avoid retrying the same SQL after a validation or RLS error — fix the query.`;
 
-Returns matching glossary entries with { term, status, definition, note,
-possible_mappings, source }. Substring match across term, definition, note,
-and possible_mappings — searching by an underlying column name (e.g.
-\`orders.status\`) will hit the ambiguous parent term that lists it.
+export const LIST_ENTITIES_TOOL_DESCRIPTION = `Return the catalog of semantic-layer entities (tables and views) declared for this workspace. Each row carries \`{ name, table, description, source }\`; an optional case-insensitive \`filter\` substring narrows the result against name, table, and description. Example call: \`{ "filter": "order" }\`. Example response: \`{ "count": 3, "entities": [{ "name": "orders", "table": "orders", "description": "...", "source": "default" }] }\`.
 
-Critical: when a returned term has \`status: ambiguous\`, do NOT pick a mapping
-silently — surface the ambiguity to the user with the \`possible_mappings\` and
-ask which they mean. Empty result means no canonical definition; treat the term
-as a free-form column name and verify against entity schemas.`;
+Use this when you do not yet know which entity holds the data the user is asking about, when the catalog is large enough that a substring filter is faster than a full enumeration, or when you need the list of available \`source\` subdirectories before deciding which connection to query.
 
-export const RUN_METRIC_TOOL_DESCRIPTION = `Execute a canonical metric defined under \`semantic/metrics/\`.
+Don't use this to read a single entity's columns or query patterns — call \`describeEntity\` once you know the name. Avoid the \`explore\` shell for catalog reads; the typed result is structured and faster.`;
 
-Looks up the metric by \`id\`, runs its authoritative SQL through the same
-read-only pipeline as \`executeSQL\` (4-layer validation, RLS injection,
-auto-LIMIT, statement timeout), and returns { value, columns, rows, sql,
-executed_at }. \`value\` is the scalar when the result is a single column / single
-row; otherwise it falls back to the row array.
+export const DESCRIBE_ENTITY_TOOL_DESCRIPTION = `Return the parsed entity definition — dimensions (with types and \`sample_values\`), measures, joins, \`query_patterns\`, grain, and the \`connection\` it lives on — for one entity, looked up by either its \`name\` field or \`table\` name. Example call: \`{ "name": "orders" }\`. Example response: \`{ "found": true, "entity": { "name": "orders", "dimensions": [...], "measures": [...], "query_patterns": [...] } }\`.
 
-Use this whenever a metric exists for what the user asked — never reinvent the
-SQL. Returns an error when the metric id is unknown or the underlying SQL fails
-validation.
+Use this when you are about to write SQL against an unfamiliar table, when you need exact column names, when you need a pre-validated query pattern (preferred over hand-written SQL), or when you need the \`connection\` field to route an \`executeSQL\` call to the right datasource.
 
-\`filters\` is reserved for future pre-aggregation filter pass-through; passing
-a non-empty \`filters\` object is rejected today.`;
+Don't use this to enumerate the catalog — call \`listEntities\` first when the entity name is unknown. Avoid \`explore\` for entity reads; the typed result is normalized and survives YAML format changes.`;
+
+export const SEARCH_GLOSSARY_TOOL_DESCRIPTION = `Search the business glossary for a term, phrase, or column name. Returns matching entries with \`{ term, status, definition, note, possible_mappings, source }\` — substring match across term, definition, note, and \`possible_mappings\`, so \`orders.status\` will surface a parent term that lists it. Example call: \`{ "term": "churn" }\`. Example response: \`{ "count": 1, "matches": [{ "term": "churn", "status": "defined", "definition": "...", "possible_mappings": ["users.churned_at"] }] }\`.
+
+Use this whenever the user mentions a domain word whose meaning is non-obvious ("revenue", "active user", "churn"), before writing SQL that depends on a possibly-ambiguous term, or to confirm that an undefined term is not silently overloaded.
+
+Don't use this to read column types or table shape — that is \`describeEntity\`'s job. Avoid silently picking when a result returns \`status: ambiguous\`; the LLM must surface the \`possible_mappings\` and ask the user which they meant.`;
+
+export const RUN_METRIC_TOOL_DESCRIPTION = `Execute a canonical metric defined under \`semantic/metrics/\` by id. The metric's authoritative SQL flows through the same read-only pipeline as \`executeSQL\` (4-layer validation, RLS injection, auto-LIMIT, statement timeout) and the result collapses to a scalar when the SQL returns one row × one column; otherwise rows are passed through. Example call: \`{ "id": "monthly_active_users" }\`. Example response: \`{ "id": "monthly_active_users", "value": 4271, "columns": ["mau"], "rows": [{ "mau": 4271 }], "sql": "SELECT ...", "executed_at": "..." }\`.
+
+Use this whenever a metric exists for what the user asked — never re-derive metric SQL by hand, since the canonical definition encodes time grain, deduplication, and exclusion rules the agent will get wrong. Pair with \`listEntities\` or \`grep semantic/metrics/\` to discover ids.
+
+Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
+
+// ── Per-tool error catalogs ───────────────────────────────────────────
+//
+// Surfaced in tool descriptions via `withErrorContract` so an agent can
+// branch on `code` instead of pattern-matching `message`. Keep these in
+// lockstep with the classification in `packages/mcp/src/error-envelope.ts`
+// and the codes the per-tool execute paths actually return.
+
+export const EXPLORE_ERROR_CODES = ["rate_limited", "internal_error"] as const;
+export const EXECUTE_SQL_ERROR_CODES = [
+  "validation_failed",
+  "rls_denied",
+  "query_timeout",
+  "unknown_entity",
+  "rate_limited",
+  "internal_error",
+] as const;
+export const LIST_ENTITIES_ERROR_CODES = ["internal_error"] as const;
+export const DESCRIBE_ENTITY_ERROR_CODES = [
+  "unknown_entity",
+  "internal_error",
+] as const;
+export const SEARCH_GLOSSARY_ERROR_CODES = [
+  "ambiguous_term",
+  "internal_error",
+] as const;
+export const RUN_METRIC_ERROR_CODES = [
+  "unknown_metric",
+  "validation_failed",
+  "rls_denied",
+  "query_timeout",
+  "rate_limited",
+  "internal_error",
+] as const;
+
+// ── Error contract appendage ──────────────────────────────────────────
+
+/**
+ * Append the structured error contract to a tool's LLM-facing description
+ * so agents can read the recovery surface from the same place they read
+ * the tool's purpose. Codes are surfaced verbatim — keep
+ * `<TOOL>_ERROR_CODES` in lockstep with what the dispatch path actually
+ * returns.
+ */
+export function withErrorContract(
+  base: string,
+  codes: readonly string[],
+): string {
+  return `${base}
+
+Error contract: failures return an \`{ code, message, hint?, request_id?, retry_after? }\` JSON envelope as the tool result text with \`isError: true\`. Possible codes: ${codes.map((c) => `\`${c}\``).join(", ")}. Branch on \`code\`; never pattern-match \`message\`.`;
+}
+
+// ── Canonical tool names ──────────────────────────────────────────────
 
 /** Canonical tool names for the typed semantic tools registered over MCP. */
 export const SEMANTIC_TOOL_NAMES = [

@@ -1,0 +1,71 @@
+---
+title: MCP Tool Description Rubric
+description: How Atlas writes the LLM-facing prose for every typed MCP tool, and the test that keeps it from drifting.
+---
+
+> Contributor doc for the MCP tool-description audit ([#2075](https://github.com/AtlasDevHQ/atlas/issues/2075)). Pairs with the rubric test at [`packages/api/src/lib/tools/__tests__/description-rubric.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/description-rubric.test.ts) — the test fails CI if any of the six tool descriptions drifts off-rubric, so this page is enforceable, not aspirational.
+
+## Why descriptions matter
+
+Each Atlas MCP tool ships with a `description` field — a string the LLM reads before deciding which tool to call. Bad descriptions silently degrade tool selection: the LLM picks the wrong tool, returns the wrong answer, blames the data. Three failure modes we've actually hit:
+
+1. **Inconsistent length and structure.** LLMs weight verbose descriptions heavier than terse ones — when one tool's description is 30 lines and the next is 3, the long one wins arguments it shouldn't.
+2. **Hallucination-bait language.** Phrases like "Atlas will figure out the right table" invite over-trust. We want directive language: *Use this when X. Don't use it for Y.*
+3. **Stale framing.** `explore` predates the typed tools and used to read like the agent's primary surface. The typed tools are now the primary surface; `explore` is the fallback for raw file access.
+
+The rubric is the cheapest defense — every tool description follows the same shape, the test enforces it, and a future tool addition fails CI until it conforms.
+
+## The rubric
+
+Every typed MCP tool description must:
+
+- **80–150 words** in the long-form body (excluding the appended `Error contract:` section). Keeps every tool in the same length band so the LLM doesn't bias on volume.
+- Contain a **`Use this when …`** directive. Positive routing anchor — tells the LLM what the tool is for.
+- Contain a **`Don't use this …`** or **`Avoid …`** directive. Negative routing anchor — pushes the LLM away from the most common wrong choices for this tool.
+- Include at least one **inline JSON example** showing call shape (preferred) or response shape. LLMs trained on tool use produce better-shaped calls when the description shows the call shape verbatim.
+- End with the structured **`Error contract:`** section. Appended at the MCP layer by `withErrorContract(BASE, CODES)` — the LLM reads purpose → recovery in one continuous block. Codes must match what the dispatch path actually returns.
+
+The base description bodies live in [`packages/api/src/lib/tools/descriptions.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/descriptions.ts) — the single source of truth that both `explore` / `executeSQL` (legacy AI SDK tool wrappers) and `listEntities` / `describeEntity` / `searchGlossary` / `runMetric` (typed semantic tools) read from.
+
+## Template
+
+```
+{One-sentence purpose. End with a JSON shape sketch of inputs or outputs.}
+
+Use this when {three concrete routing cases, comma-separated}. {Optional caveat — e.g. "Always call describeEntity first."} Example call: `{ "key": "value" }`.
+
+Don't use this for {wrong route 1} (use `tool1`), {wrong route 2} (use `tool2`). Avoid {pitfall the LLM has actually hit in practice}.
+```
+
+The rubric test (`description-rubric.test.ts`) is permissive about wording — it asserts on length, the `Use this when` / `Don't use this` / `Avoid` markers, and the presence of an inline `{…}` JSON example. The exact prose is the contributor's call; the structure is not.
+
+## Adding a new MCP tool
+
+1. Append a `<NAME>_TOOL_DESCRIPTION` constant to `packages/api/src/lib/tools/descriptions.ts` matching the template above.
+2. Append a `<NAME>_ERROR_CODES` tuple alongside it. Codes must match what the dispatch path returns — keep this in lockstep with [`packages/mcp/src/error-envelope.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/error-envelope.ts).
+3. Register the tool with `withErrorContract(<NAME>_TOOL_DESCRIPTION, <NAME>_ERROR_CODES)` at the MCP edge ([`packages/mcp/src/tools.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/tools.ts) or [`packages/mcp/src/semantic-tools.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/mcp/src/semantic-tools.ts)).
+4. Append the new tool to the `TOOLS` array in `description-rubric.test.ts`. The test will fail until your description meets the rubric.
+
+## Held-out tool-selection eval
+
+Description quality is measured, not asserted. The held-out fixture at [`eval/canonical-questions/tool-selection.json`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/canonical-questions/tool-selection.json) carries ambiguous prompts where the correct routing is non-obvious — *"Show me what tables exist"* should pick `listEntities`, not `explore`; *"What does 'churn' mean here?"* should pick `searchGlossary`, not invent a definition.
+
+Run the eval against your provider:
+
+```bash
+export ATLAS_PROVIDER=anthropic ATLAS_MODEL=claude-haiku-4-5-20251001 ANTHROPIC_API_KEY=sk-ant-...
+bun run atlas -- canonical-eval --mcp-llm --tool-selection
+```
+
+The grader walks the LLM's tool-call sequence per item and asserts the **first** non-noop tool call matches `expected_tool` (or any entry in `expected_alternates`). Acceptance floor is `rubric.acceptance_floor` in the fixture (default 0.9). A run below the floor exits non-zero so a regression in description prose trips CI.
+
+The dispatch transport is shared with the canonical-question `--mcp-llm` mode — same MCP route, same `dynamicTool` binder, same actor. The grader is the only thing that diverges. See [`packages/cli/bin/canonical-eval-tool-selection.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/cli/bin/canonical-eval-tool-selection.ts) for the runner and [`packages/cli/bin/canonical-eval-tool-selection.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/cli/bin/canonical-eval-tool-selection.test.ts) for grader contract tests.
+
+## Why we don't enforce wording
+
+The rubric test asserts on shape, not specific words. Two reasons:
+
+1. **Wording is provider-sensitive.** What works on Anthropic models doesn't always work on OpenAI ones. The held-out tool-selection accuracy is the right signal there — measure against the provider you actually deploy with.
+2. **Future tools may need carve-outs.** A tool that exists specifically to handle a narrow ambiguous case may legitimately want to skip the `Avoid …` directive. The rubric test fails CI when that happens; the resolution is either to reshape the description or — if the carve-out is truly load-bearing — to lift the rubric and document why in the same PR.
+
+The held-out fixture is the audit's success metric. The rubric is the cheapest enforcement.

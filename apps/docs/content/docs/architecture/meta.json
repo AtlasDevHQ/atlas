@@ -6,6 +6,7 @@
     "sandbox",
     "content-mode",
     "enterprise",
-    "mcp-performance"
+    "mcp-performance",
+    "mcp-tools"
   ]
 }

@@ -1533,6 +1533,29 @@ export const subProcessorSnapshots = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Per-OAuth-client MCP rate-limit overrides (#2071) — see migration 0051 for
+// design notes (separate table vs JSONB on `oauthClient`, FK avoidance).
+// ---------------------------------------------------------------------------
+
+export const oauthClientRateLimits = pgTable(
+  "oauth_client_rate_limits",
+  {
+    clientId: text("client_id").notNull(),
+    referenceId: text("reference_id").notNull(),
+    requestsPerMinute: integer("requests_per_minute").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedByUserId: text("updated_by_user_id"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.clientId, t.referenceId] }),
+    check(
+      "oauth_client_rate_limits_rpm_range",
+      sql`requests_per_minute >= 1 AND requests_per_minute <= 3600`,
+    ),
+  ],
+);
+
 // MCP bearer tokens (`mcp_tokens`) were added in PR A of #2024 and removed
 // in PR C when the hosted MCP path moved to OAuth 2.1 access tokens issued
 // by `@better-auth/oauth-provider`. The drizzle table definition lived

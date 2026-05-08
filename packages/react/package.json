@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/react",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Embeddable Atlas chat UI for React applications",
   "license": "MIT",
   "repository": {
@@ -53,6 +53,7 @@
   },
   "peerDependencies": {
     "@ai-sdk/react": ">=3.0.0",
+    "@useatlas/sdk": ">=0.0.13",
     "ai": ">=6.0.0",
     "lucide-react": ">=0.400.0",
     "react": ">=18.0.0",

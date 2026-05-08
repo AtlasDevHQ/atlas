@@ -8,6 +8,7 @@
     "packages/*",
     "apps/*",
     "examples/nextjs-standalone",
+    "examples/embedded-mcp-onboarding",
     "plugins/*",
     "create-atlas-plugin",
     "ee"

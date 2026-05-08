@@ -1,12 +1,12 @@
 {
   "name": "@useatlas/sdk",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "TypeScript SDK for the Atlas text-to-SQL agent API",
   "type": "module",
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/client.ts --outdir dist --target node --packages external && bun x tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/index.ts src/client.ts src/mcp.ts --outdir dist --target node --packages external && bun x tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
-    "test": "bun test src/__tests__/client.test.ts src/__tests__/stream.test.ts src/__tests__/integration.test.ts src/__tests__/stream-integration.test.ts src/__tests__/fetch-starter-prompts.test.ts"
+    "test": "bun test src/__tests__/client.test.ts src/__tests__/stream.test.ts src/__tests__/integration.test.ts src/__tests__/stream-integration.test.ts src/__tests__/fetch-starter-prompts.test.ts src/__tests__/mcp.test.ts"
   },
   "exports": {
     ".": {
@@ -18,6 +18,11 @@
       "types": "./dist/client.d.ts",
       "import": "./dist/client.js",
       "default": "./dist/client.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "import": "./dist/mcp.js",
+      "default": "./dist/mcp.js"
     }
   },
   "main": "./dist/index.js",

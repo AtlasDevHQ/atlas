@@ -35,6 +35,14 @@ export type {
 export { useConversations } from "./hooks/use-conversations";
 export type { UseConversationsOptions, UseConversationsReturn } from "./hooks/use-conversations";
 
+export { useMcpConnect } from "./hooks/use-mcp-connect";
+export type {
+  UseMcpConnectOptions,
+  UseMcpConnectReturn,
+  UseMcpConnectStatus,
+  UseMcpConnectMode,
+} from "./hooks/use-mcp-connect";
+
 // Widget types (for script-tag embedders)
 export type {
   AtlasWidget,

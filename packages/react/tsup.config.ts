@@ -13,6 +13,7 @@ export default defineConfig([
       "react-dom",
       "react/jsx-runtime",
       "@ai-sdk/react",
+      "@useatlas/sdk",
       "ai",
       "lucide-react",
       "recharts",

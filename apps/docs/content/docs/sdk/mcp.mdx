@@ -1,0 +1,202 @@
+---
+title: MCP onboarding
+description: Programmatic OAuth 2.1 + DCR helpers for embedding the hosted-MCP install flow inside your own app.
+---
+
+The `@useatlas/sdk` MCP namespace and the `useMcpConnect` hook in
+`@useatlas/react` expose the same OAuth 2.1 + Dynamic Client Registration
+loopback flow that the `bunx @useatlas/mcp init --hosted` CLI runs — but
+reshaped so embedders can drop a "Connect your AI agent" button into a
+React app, a Next.js page, or any browser/server runtime that supports
+`fetch`.
+
+## When to use this
+
+You're embedding Atlas inside your own product (white-label SaaS, a
+support widget, an internal tool) and your users connect Claude Desktop,
+Cursor, Continue, or ChatGPT to the Atlas hosted MCP endpoint. Telling
+those users to open a terminal and run `bunx @useatlas/mcp init --hosted`
+defeats the embed; the helpers below mirror that flow over plain
+HTTP/JSON.
+
+For self-hosted deployments without managed auth, keep the CLI — the
+SDK helpers are gated on the OAuth provider Better Auth wires up under
+`ATLAS_DEPLOY_MODE=saas`.
+
+## Surface area
+
+| Method | Where | What it does |
+|--------|-------|--------------|
+| `atlas.mcp.beginConnect` | `@useatlas/sdk` | Discovery → DCR → returns the authorize URL + state |
+| `atlas.mcp.completeConnect` | `@useatlas/sdk` | Exchanges the OAuth `code` for an access token |
+| `atlas.mcp.buildConfig` | `@useatlas/sdk` | Returns a paste-ready `mcpServers["atlas"]` block |
+| `atlas.mcp.listAgents` | `@useatlas/sdk` | `GET /api/v1/me/oauth-clients` |
+| `atlas.mcp.revokeAgent` | `@useatlas/sdk` | `POST /api/v1/me/oauth-clients/:id/revoke` |
+| `atlas.mcp.connectMachineToMachine` | `@useatlas/sdk` | Server-to-server (gated on [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024)) |
+| `useMcpConnect` | `@useatlas/react` | React hook with popup or redirect lifecycle |
+
+The helpers are tree-shakeable. A bundle that only imports
+`createAtlasClient` for `query()` does not pull `mcp.ts` into its graph;
+the `@modelcontextprotocol/sdk` package is never imported here.
+
+---
+
+## Browser flow with `useMcpConnect`
+
+```tsx
+"use client";
+
+import { useMcpConnect } from "@useatlas/react/hooks";
+import { buildConfig } from "@useatlas/sdk";
+
+export function ConnectAgentButton() {
+  const { connect, status, error, accessToken, workspaceId } = useMcpConnect({
+    apiUrl: "https://mcp.useatlas.dev",
+    clientName: "My SaaS — Atlas",
+    redirectUri: `${window.location.origin}/oauth/callback`,
+    mode: "popup",
+  });
+
+  if (accessToken && workspaceId) {
+    const config = buildConfig({
+      client: "claude-desktop",
+      apiUrl: "https://mcp.useatlas.dev",
+      accessToken,
+      workspaceId,
+    });
+    return <pre>{JSON.stringify(config, null, 2)}</pre>;
+  }
+
+  return (
+    <>
+      <button onClick={() => void connect()} disabled={status !== "idle"}>
+        Connect your AI agent
+      </button>
+      {error && <p style={{ color: "crimson" }}>{error.message}</p>}
+    </>
+  );
+}
+```
+
+The hook handles two modes:
+
+- **`mode: "popup"`** (default) — opens a centred popup. Your app must
+  host a callback page that posts the OAuth `code` + `state` back to the
+  opener via `window.opener.postMessage(...)`. The hook listens for the
+  typed message, runs the token exchange, and surfaces the result.
+- **`mode: "redirect"`** — redirects the current window to the authorize
+  URL. On the callback page, mount the same hook with the same options;
+  it detects `?code` + `?state` and completes the exchange automatically.
+
+A worked Next.js example lives at
+[`examples/embedded-mcp-onboarding/`](https://github.com/AtlasDevHQ/atlas/tree/main/examples/embedded-mcp-onboarding)
+and includes the popup callback page that posts back to the opener.
+
+---
+
+## Server flow with `beginConnect` / `completeConnect`
+
+For Next.js server components, custom OAuth proxies, or any server-side
+flow that doesn't run in a browser tab, use the standalone exports:
+
+```ts
+import { beginConnect, completeConnect, buildConfig } from "@useatlas/sdk";
+
+// In a server action or route handler that initiates the flow:
+const { authorizationUrl, state, codeVerifier, clientId, tokenEndpoint, issuer } =
+  await beginConnect({
+    apiUrl: "https://mcp.useatlas.dev",
+    clientName: "My CI Pipeline",
+    redirectUri: "https://my-app.com/oauth/callback",
+  });
+
+// Persist { state, codeVerifier, clientId, tokenEndpoint, issuer } in
+// the user's session record. Then redirect them to authorizationUrl.
+
+// On the callback route after the OAuth server bounces them back:
+const { accessToken, refreshToken, expiresAt, workspaceId } =
+  await completeConnect({
+    apiUrl: "https://mcp.useatlas.dev",
+    state: req.query.state,
+    expectedState: session.mcp.state,
+    code: req.query.code,
+    codeVerifier: session.mcp.codeVerifier,
+    clientId: session.mcp.clientId,
+    redirectUri: "https://my-app.com/oauth/callback",
+    tokenEndpoint: session.mcp.tokenEndpoint,
+    issuer: session.mcp.issuer,
+  });
+
+const config = buildConfig({
+  client: "cursor",
+  apiUrl: "https://mcp.useatlas.dev",
+  accessToken,
+  workspaceId,
+});
+```
+
+`buildConfig` returns the JSON shape the requested MCP client expects:
+
+| `client` | Returns |
+|----------|---------|
+| `claude-desktop`, `cursor`, `continue`, `chatgpt` | `{ mcpServers: { atlas: { url, headers: { Authorization: "Bearer ..." } } } }` |
+| `generic` | `{ url, headers: { Authorization: "Bearer ..." } }` |
+
+Pass `serverName` to override the `mcpServers["atlas"]` key — useful
+when you embed multiple workspaces.
+
+---
+
+## Listing & revoking agents
+
+Once a user is authenticated against your Atlas client:
+
+```ts
+const { clients, deployMode } = await atlas.mcp.listAgents();
+
+await atlas.mcp.revokeAgent("claude-desktop");
+```
+
+These wrap the per-user `/api/v1/me/oauth-clients` surface — the same
+endpoints the **Settings → AI Agents** page uses. Cross-user isolation
+is enforced server-side: a user cannot list or revoke another user's
+agents.
+
+---
+
+## Machine-to-machine
+
+`atlas.mcp.connectMachineToMachine` is the OAuth `client_credentials`
+grant for headless / CI flows. The Atlas OAuth provider does not expose
+the grant yet ([#2024](https://github.com/AtlasDevHQ/atlas/issues/2024)
+deferred it); calling the helper today throws
+`AtlasMcpError(code: "grant_not_supported")`. When the grant lands the
+helper's body will switch to a live exchange — the public surface is
+fixed, so consumer code doesn't change.
+
+---
+
+## Errors
+
+Every helper throws `AtlasMcpError` with a stable `code`:
+
+| Code | Meaning |
+|------|---------|
+| `invalid_api_url` | `apiUrl` was not `https://` (or `http://localhost` for dev) |
+| `invalid_token_endpoint` | The discovered or supplied `tokenEndpoint` was not `https://`. Defends against a malicious DCR response advertising a plaintext token URL. |
+| `discovery_failed` | `.well-known/oauth-authorization-server` did not return a usable doc |
+| `registration_failed` | DCR `POST /register` failed |
+| `callback_state_mismatch` | The state returned in the callback didn't match `expectedState` (CSRF) |
+| `callback_state_missing` | The persisted flow state was missing when the callback arrived (sessionStorage cleared mid-flow). `useMcpConnect` only. |
+| `callback_missing_code` | The callback URL had no `?code=` parameter |
+| `popup_blocked` | The browser refused `window.open` (popup blocker). `useMcpConnect` only. |
+| `popup_closed` | The user closed the popup before authorizing. `useMcpConnect` only. |
+| `token_exchange_failed` | The token endpoint rejected the exchange |
+| `issuer_mismatch` | The minted JWT's `iss` claim doesn't match the discovered issuer |
+| `malformed_jwt` | The access token wasn't a 3-part JWT |
+| `missing_workspace_claim` | The token had no `https://atlas.useatlas.dev/workspace_id` claim |
+| `grant_not_supported` | `connectMachineToMachine` until [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024) lands |
+
+All errors include the original cause via `Error.cause` when relevant
+(network failures, JSON parse failures), so logging `err.cause` recovers
+the full upstream context.

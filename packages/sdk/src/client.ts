@@ -55,6 +55,22 @@ import type {
   TableInfo,
 } from "@useatlas/types";
 import { isChatErrorCode, isRetryableError } from "@useatlas/types";
+import {
+  beginConnect as mcpBeginConnect,
+  buildConfig as mcpBuildConfig,
+  completeConnect as mcpCompleteConnect,
+  connectMachineToMachine as mcpConnectMachineToMachine,
+  type BeginConnectOptions,
+  type BeginConnectResult,
+  type BuildConfigOptions,
+  type CompleteConnectOptions,
+  type CompleteConnectResult,
+  type ConnectMachineToMachineOptions,
+  type ConnectMachineToMachineResult,
+  type ListAgentsResponse,
+  type McpClientConfig,
+  type RevokeAgentResponse,
+} from "./mcp";
 
 /** @deprecated Use `Recipient` instead. */
 export type ScheduledTaskRecipient = Recipient;
@@ -1084,6 +1100,56 @@ export function createAtlasClient(options: AtlasClientOptions) {
       });
       await throwIfNotOk(res);
       return res;
+    },
+
+    /**
+     * MCP onboarding helpers pre-bound to the client's `baseUrl` so
+     * embedders don't repeat the apiUrl. The unbound versions live at
+     * `@useatlas/sdk/mcp` for callers who want to share an `apiUrl`
+     * across multiple clients or skip the AtlasClient construction.
+     */
+    mcp: {
+      /** Initiate the OAuth 2.1 + DCR flow. Returns the URL to open + state to persist. */
+      async beginConnect(
+        opts: Omit<BeginConnectOptions, "apiUrl">,
+      ): Promise<BeginConnectResult> {
+        return mcpBeginConnect({ apiUrl: base, ...opts });
+      },
+      /** Exchange the OAuth `code` for an access token + workspace id. */
+      async completeConnect(
+        opts: Omit<CompleteConnectOptions, "apiUrl">,
+      ): Promise<CompleteConnectResult> {
+        return mcpCompleteConnect({ apiUrl: base, ...opts });
+      },
+      /** Build a paste-ready config block for the requested MCP client. */
+      buildConfig(opts: Omit<BuildConfigOptions, "apiUrl">): McpClientConfig {
+        return mcpBuildConfig({ apiUrl: base, ...opts });
+      },
+      /** Server-to-server flow (currently throws — gated on #2024). */
+      async connectMachineToMachine(
+        opts: Omit<ConnectMachineToMachineOptions, "apiUrl">,
+      ): Promise<ConnectMachineToMachineResult> {
+        return mcpConnectMachineToMachine({ apiUrl: base, ...opts });
+      },
+      /**
+       * List the calling user's connected MCP agents (OAuth clients) for
+       * the active workspace. Wraps `GET /api/v1/me/oauth-clients`.
+       */
+      async listAgents(): Promise<ListAgentsResponse> {
+        const res = await get("/api/v1/me/oauth-clients");
+        return unwrap<ListAgentsResponse>(res);
+      },
+      /**
+       * Revoke one of the calling user's MCP agents. Wraps
+       * `POST /api/v1/me/oauth-clients/:id/revoke`.
+       */
+      async revokeAgent(clientId: string): Promise<RevokeAgentResponse> {
+        const res = await post(
+          `/api/v1/me/oauth-clients/${encodeURIComponent(clientId)}/revoke`,
+          {},
+        );
+        return unwrap<RevokeAgentResponse>(res);
+      },
     },
   };
 }

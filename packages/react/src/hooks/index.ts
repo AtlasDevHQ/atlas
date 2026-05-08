@@ -26,6 +26,14 @@ export type {
   UseAtlasConversationsReturn,
 } from "./use-atlas-conversations";
 
+export { useMcpConnect } from "./use-mcp-connect";
+export type {
+  UseMcpConnectOptions,
+  UseMcpConnectReturn,
+  UseMcpConnectStatus,
+  UseMcpConnectMode,
+} from "./use-mcp-connect";
+
 // Types re-exported for consumers who only import from hooks
 export type {
   AuthMode,

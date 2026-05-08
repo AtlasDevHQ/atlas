@@ -29,6 +29,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Send, TableProperties, BookOpen, Menu } from "lucide-react";
+import { useUiStore } from "@/lib/stores/ui-store";
 
 const OPENSTATUS_SLUG = process.env.NEXT_PUBLIC_OPENSTATUS_SLUG;
 const STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL;
@@ -58,10 +59,12 @@ function ChatPage() {
 
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
   const [loadingConversation, setLoadingConversation] = useState(false);
-  const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
-  const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+  const schemaExplorerOpen = useUiStore((s) => s.schemaExplorerOpen);
+  const setSchemaExplorerOpen = useUiStore((s) => s.setSchemaExplorerOpen);
+  const promptLibraryOpen = useUiStore((s) => s.promptLibraryOpen);
+  const setPromptLibraryOpen = useUiStore((s) => s.setPromptLibraryOpen);
   const [fetchErrorDismissed, setFetchErrorDismissed] = useState(false);
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers (#1474).
@@ -250,7 +253,7 @@ function ChatPage() {
       lastLoadedIdRef.current = id;
       setParams({ id });
       convos.setSelectedId(id);
-      setMobileMenuOpen(false);
+      setMobileSidebarOpen(false);
     } catch (err: unknown) {
       console.warn(
         "Failed to load conversation:",
@@ -316,8 +319,6 @@ function ChatPage() {
               onStar={(id, starred) => convos.starConversation(id, starred)}
               onConvertToNotebook={(id) => convos.convertToNotebook(id)}
               onNewChat={handleNewChat}
-              mobileOpen={mobileMenuOpen}
-              onMobileClose={() => setMobileMenuOpen(false)}
             />
           )}
 
@@ -330,7 +331,7 @@ function ChatPage() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => setMobileMenuOpen(true)}
+                      onClick={() => setMobileSidebarOpen(true)}
                       className="size-8 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
                       aria-label="Open conversation history"
                     >

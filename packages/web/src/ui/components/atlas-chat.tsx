@@ -42,6 +42,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
+import { useUiStore } from "@/lib/stores/ui-store";
 
 /* Static SVG icons — hoisted to avoid recreation on every render */
 const MenuIcon = (
@@ -142,11 +143,13 @@ export function AtlasChat() {
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
-  const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
-  const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+  const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
+  const schemaExplorerOpen = useUiStore((s) => s.schemaExplorerOpen);
+  const setSchemaExplorerOpen = useUiStore((s) => s.setSchemaExplorerOpen);
+  const promptLibraryOpen = useUiStore((s) => s.promptLibraryOpen);
+  const setPromptLibraryOpen = useUiStore((s) => s.setPromptLibraryOpen);
   // Tracks the message text being pinned so the affordance disables
   // mid-flight — without this, a quick double-click fires two POSTs and
   // the second 409s after a visible success toast.
@@ -474,7 +477,7 @@ export function AtlasChat() {
       setMessages(uiMessages);
       setConversationId(id);
       convos.setSelectedId(id);
-      setMobileMenuOpen(false);
+      setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
       // the wire, so any prior in-memory bucket is stale relative to the
       // freshly loaded message ids.
@@ -493,7 +496,7 @@ export function AtlasChat() {
     setConversationId(null);
     convos.setSelectedId(null);
     setInput("");
-    setMobileMenuOpen(false);
+    setMobileSidebarOpen(false);
     setPythonProgress(new Map());
     warningCtl.reset();
   }
@@ -519,8 +522,6 @@ export function AtlasChat() {
             onStar={(id, starred) => convos.starConversation(id, starred)}
             onConvertToNotebook={(id) => convos.convertToNotebook(id)}
             onNewChat={handleNewChat}
-            mobileOpen={mobileMenuOpen}
-            onMobileClose={() => setMobileMenuOpen(false)}
           />
         )}
 
@@ -533,7 +534,7 @@ export function AtlasChat() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => setMobileMenuOpen(true)}
+                      onClick={() => setMobileSidebarOpen(true)}
                       className="size-11 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
                       aria-label="Open conversation history"
                     >

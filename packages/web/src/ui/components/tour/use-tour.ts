@@ -1,11 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { TourStep, TourStatus } from "./types";
 import { TOUR_STEPS } from "./tour-steps";
-
-/** Local storage key used as fallback when the API is unavailable. */
-const TOUR_STORAGE_KEY = "atlas-tour-completed";
+import { useTourStore } from "@/lib/stores/tour-store";
 
 interface UseTourOptions {
   /** Atlas API base URL. */
@@ -45,32 +43,33 @@ export function useTour({
   isAdmin,
   serverTrackingEnabled,
 }: UseTourOptions): UseTourResult {
-  const [isActive, setIsActive] = useState(false);
-  const [currentStep, setCurrentStep] = useState(0);
+  const completed = useTourStore((s) => s.completed);
+  const isActive = useTourStore((s) => s.isActive);
+  const currentStep = useTourStore((s) => s.currentStep);
+  const setCompleted = useTourStore((s) => s.setCompleted);
+  const setActive = useTourStore((s) => s.setActive);
+  const setStep = useTourStore((s) => s.setStep);
+  const resetStore = useTourStore((s) => s.reset);
   const [loading, setLoading] = useState(true);
   const [statusChecked, setStatusChecked] = useState(false);
 
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
-  // Filter steps based on user role
   const steps = isAdmin ? TOUR_STEPS : TOUR_STEPS.filter((s) => !s.adminOnly);
 
-  // Check tour completion status on mount
+  // Resolve initial status: persisted `completed` short-circuits the API
+  // check. Otherwise probe the server (when tracking is enabled) and fall
+  // back to auto-starting the tour for users who've never seen it.
   useEffect(() => {
     if (statusChecked) return;
 
-    async function checkStatus() {
-      // Check local storage first for fast path
-      try {
-        if (localStorage.getItem(TOUR_STORAGE_KEY) === "true") {
-          setLoading(false);
-          setStatusChecked(true);
-          return;
-        }
-      } catch {
-        // intentionally ignored: localStorage unavailable — continue to API check
-      }
+    if (completed) {
+      setLoading(false);
+      setStatusChecked(true);
+      return;
+    }
 
+    let cancelled = false;
+    async function checkStatus() {
       if (serverTrackingEnabled) {
         try {
           const res = await fetch(`${apiUrl}/api/v1/onboarding/tour-status`, {
@@ -79,12 +78,8 @@ export function useTour({
           if (res.ok) {
             const data: TourStatus = await res.json();
             if (data.tourCompleted) {
-              // Sync to local storage
-              try {
-                localStorage.setItem(TOUR_STORAGE_KEY, "true");
-              } catch {
-                /// intentionally ignored: localStorage may be unavailable in some environments
-              }
+              if (cancelled) return;
+              setCompleted(true);
               setLoading(false);
               setStatusChecked(true);
               return;
@@ -98,25 +93,32 @@ export function useTour({
         }
       }
 
-      // Tour not completed — auto-start
-      setIsActive(true);
-      setCurrentStep(0);
+      if (cancelled) return;
+      // Tour not completed — auto-start.
+      setActive(true);
+      setStep(0);
       setLoading(false);
       setStatusChecked(true);
     }
 
     checkStatus();
-  }, [apiUrl, credentials, serverTrackingEnabled, statusChecked]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    apiUrl,
+    credentials,
+    serverTrackingEnabled,
+    statusChecked,
+    completed,
+    setCompleted,
+    setActive,
+    setStep,
+  ]);
 
   async function markComplete() {
-    // Save to local storage immediately
-    try {
-      localStorage.setItem(TOUR_STORAGE_KEY, "true");
-    } catch {
-      /// intentionally ignored: localStorage may be unavailable in some environments
-    }
+    setCompleted(true);
 
-    // Save to server
     if (serverTrackingEnabled) {
       try {
         await fetch(`${apiUrl}/api/v1/onboarding/tour-complete`, {
@@ -134,34 +136,26 @@ export function useTour({
 
   function next() {
     if (currentStep < steps.length - 1) {
-      setCurrentStep((s) => s + 1);
+      setStep(currentStep + 1);
     } else {
       // Last step — complete tour
-      setIsActive(false);
-      markComplete();
+      setActive(false);
+      void markComplete();
     }
   }
 
   function prev() {
-    if (currentStep > 0) {
-      setCurrentStep((s) => s - 1);
-    }
+    if (currentStep > 0) setStep(currentStep - 1);
   }
 
   function skip() {
-    setIsActive(false);
-    markComplete();
+    setActive(false);
+    void markComplete();
   }
 
   function start() {
-    // Reset local storage for replay
-    try {
-      localStorage.removeItem(TOUR_STORAGE_KEY);
-    } catch {
-      /// intentionally ignored: localStorage may be unavailable in some environments
-    }
+    resetStore();
 
-    // Reset server-side status
     if (serverTrackingEnabled) {
       fetch(`${apiUrl}/api/v1/onboarding/tour-reset`, {
         method: "POST",
@@ -174,9 +168,7 @@ export function useTour({
       });
     }
 
-    setCurrentStep(0);
     setStatusChecked(true);
-    setIsActive(true);
   }
 
   return {

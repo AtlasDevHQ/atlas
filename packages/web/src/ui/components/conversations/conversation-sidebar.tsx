@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
 import { DemoIndicatorChip } from "../demo-indicator-chip";
+import { useUiStore } from "@/lib/stores/ui-store";
 
 type SidebarFilter = "all" | "saved";
 
@@ -21,8 +22,6 @@ export function ConversationSidebar({
   onStar,
   onConvertToNotebook,
   onNewChat,
-  mobileOpen,
-  onMobileClose,
 }: {
   conversations: Conversation[];
   selectedId: string | null;
@@ -32,20 +31,20 @@ export function ConversationSidebar({
   onStar: (id: string, starred: boolean) => Promise<void>;
   onConvertToNotebook?: (id: string) => Promise<{ id: string }>;
   onNewChat: () => void;
-  mobileOpen: boolean;
-  onMobileClose: () => void;
 }) {
   const [filter, setFilter] = useState<SidebarFilter>("all");
+  const mobileOpen = useUiStore((s) => s.mobileSidebarOpen);
+  const setMobileOpen = useUiStore((s) => s.setMobileSidebarOpen);
 
   // Close mobile sidebar on Escape
   useEffect(() => {
     if (!mobileOpen) return;
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onMobileClose();
+      if (e.key === "Escape") setMobileOpen(false);
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [mobileOpen, onMobileClose]);
+  }, [mobileOpen, setMobileOpen]);
 
   const starredConversations = conversations.filter((c) => c.starred);
   const filteredConversations = filter === "saved" ? starredConversations : conversations;
@@ -130,7 +129,7 @@ export function ConversationSidebar({
         <>
           <div
             className="fixed inset-0 z-40 bg-black/30 md:hidden"
-            onClick={onMobileClose}
+            onClick={() => setMobileOpen(false)}
           />
           <div className="fixed inset-y-0 left-0 z-50 w-[280px] md:hidden">
             {sidebar}

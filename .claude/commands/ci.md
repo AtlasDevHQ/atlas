@@ -10,6 +10,7 @@ bun x syncpack lint    # Workspace dependency versions consistent
 SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh  # Template drift
 bash scripts/check-security-headers-drift.sh  # Scaffold next.config.ts security-header parity
 bash scripts/check-railway-watch.sh  # Railway watchPatterns cover Dockerfile COPY sources
+bash scripts/check-schema-drift.sh   # Drizzle schema.ts ↔ migrations parity
 ```
 
 Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration loop. For iteration, use `cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests whose source graph your branch touched — typical 10–60s vs 225s full).
@@ -24,6 +25,7 @@ Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration
 | Syncpack | `No issues found` |
 | Template drift | `Template drift check passed` |
 | Railway watch | `all deploy Dockerfile COPY sources are covered` |
+| Schema drift | `Schema drift check passed` (every migration table is in `packages/api/src/lib/db/schema.ts`) |
 
 **If any gate fails:**
 
@@ -36,9 +38,11 @@ Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration
 
 2. After fixing, re-run only the failed gate to verify, then run all gates once more.
 
+   - **Schema drift**: a new migration created/altered a table without a matching definition in `packages/api/src/lib/db/schema.ts`. Add the drizzle table (mirror SQL types, PK, indexes, CHECK constraints) and re-run.
+
 **If all gates pass:**
 
-Report: `CI gates: lint, type, test, syncpack, drift, railway-watch — all pass.`
+Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drift — all pass.`
 
 ---
 
@@ -73,7 +77,7 @@ gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state
 
 **If all checks pass:**
 
-Report: `CI gates: lint, type, test, syncpack, drift, railway-watch — all pass. Remote: CI, Sync Starters, Railway (api/web/docs) — all green.`
+Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drift — all pass. Remote: CI, Sync Starters, Railway (api/web/docs) — all green.`
 
 ---
 

@@ -49,6 +49,10 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
 - [ ] **`FeatureName` registry for admin surfaces** — `<MutationErrorSurface>`, `<EnterpriseUpsell>`, `<FeatureGate>`, `<AdminContentWrapper>`, and `<ReasonDialog>` type their `feature` prop as `FeatureName` from `@/ui/components/admin/feature-registry`. Adding a new admin surface means appending its canonical name to `FEATURE_NAMES` first — then TS guides every call site into agreement. Casing matches the banner copy ("SSO" not "sso"); consolidate duplicates rather than adding variants. The registry is the `tsgo`-enforced source of truth for user-visible feature labels — skip it and typos render in production upsells
 
+### Database & Migrations
+- [ ] **Drizzle schema mirrors every migration** — Adding a `packages/api/src/lib/db/migrations/####_*.sql` file that creates or alters a table requires a matching update to `packages/api/src/lib/db/schema.ts` **in the same PR**. Mirror SQL types, primary keys (composite via `primaryKey({ columns: [...] })`), indexes (`index` / `uniqueIndex`), and CHECK constraints (`check("name", sql\`...\`)`). CI runs `bash scripts/check-schema-drift.sh` and fails if a migration table is missing from `schema.ts`. Without the mirror, the next `drizzle-kit generate` emits a `DROP TABLE` that wipes the table on the next deploy. The drift check is part of `/ci`; never push a migration-only PR
+- [ ] **DROP TABLE migrations are tracked separately** — `scripts/check-schema-drift.sh` excludes tables explicitly dropped by migrations (e.g. `mcp_tokens`, dropped by 0047). When you drop a table, remove its `pgTable` definition from `schema.ts` in the same commit and the drift check stays green
+
 ### Effect.ts (packages/api only)
 - [ ] **Use Context.Tag for services** — All backend services use `class Foo extends Context.Tag("Foo")<Foo, FooShape>()`. Service interfaces are `FooShape` with `readonly` fields
 - [ ] **Layer.effect vs Layer.scoped** — Use `Layer.scoped` when the service has a finalizer (cleanup on shutdown). Use `Layer.effect` for stateless services

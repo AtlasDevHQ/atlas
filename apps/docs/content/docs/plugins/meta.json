@@ -9,6 +9,7 @@
     "interactions",
     "actions",
     "context",
+    "sdk",
     "authoring-guide",
     "cookbook",
     "composition"

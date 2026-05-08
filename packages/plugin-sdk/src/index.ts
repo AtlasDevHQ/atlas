@@ -49,6 +49,10 @@ export type {
   ConfigSchemaField,
   AtlasPlugin,
   $InferServerPlugin,
+  AtlasMcpTool,
+  McpToolContext,
+  McpToolAuditEntry,
+  PluginZodSchema,
 } from "./types";
 
 export { SANDBOX_DEFAULT_PRIORITY } from "./types";

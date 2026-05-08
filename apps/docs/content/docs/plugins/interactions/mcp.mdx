@@ -10,6 +10,10 @@ The MCP interaction plugin wraps the `@atlas/mcp` server package as an Atlas plu
 Tool bridging and resource registration are handled internally by `@atlas/mcp` -- this plugin is a thin lifecycle wrapper that makes it configurable via `atlas.config.ts`.
 
 <Callout type="info">
+**Plugins can contribute MCP tools.** Any plugin can implement `mcpTools()` to register first-class tools that show up in `tools/list` alongside Atlas's own (`executeSQL`, `explore`, the typed semantic tools). See the [Plugin MCP Tools guide](/plugins/sdk/mcp-tools) for the contract, the description rubric (which plugin tools share with native tools — drift fails CI), and a complete example. The reference implementation lives in [`@useatlas/yaml-context`](https://github.com/AtlasDevHQ/atlas/blob/main/plugins/yaml-context/src/index.ts).
+</Callout>
+
+<Callout type="info">
 For one-command setup against Claude Desktop / Cursor / Continue, prefer `bunx @useatlas/mcp init --local` — see the [MCP guide](/guides/mcp). This page documents using `@useatlas/mcp` as an Atlas plugin inside an existing project.
 </Callout>
 

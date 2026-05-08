@@ -33,6 +33,10 @@ import {
   wireContextPlugins,
 } from "@atlas/api/lib/plugins/wiring";
 import {
+  wireMcpToolPlugins,
+  pluginMcpToolRegistry,
+} from "@atlas/api/lib/plugins/mcp-tools";
+import {
   setPluginTools,
   setContextFragments,
   setDialectHints,
@@ -198,6 +202,26 @@ if (config.plugins?.length) {
   if (pluginToolRegistry.size > 0) {
     pluginToolRegistry.freeze();
     setPluginTools(pluginToolRegistry);
+  }
+
+  // #2078 — collect plugin MCP tools into the global registry. The MCP
+  // server reads from the same singleton at boot via
+  // `packages/mcp/src/plugin-tools.ts`, so when the SSE / hosted MCP
+  // server runs in the same process as the Hono API the wiring is
+  // shared. Stdio MCP boots `createAtlasMcpServer` separately and does
+  // its own wiring there. Failures don't abort the API server.
+  const mcpToolResult = wireMcpToolPlugins(plugins, pluginMcpToolRegistry);
+  if (mcpToolResult.failed.length > 0) {
+    log.error(
+      { failed: mcpToolResult.failed },
+      "Some plugin MCP tools failed to register",
+    );
+  }
+  if (mcpToolResult.wired.length > 0) {
+    log.info(
+      { count: mcpToolResult.wired.length },
+      `Plugin MCP tools registered (${mcpToolResult.wired.length})`,
+    );
   }
 
   const ctxResult = await wireContextPlugins(plugins);

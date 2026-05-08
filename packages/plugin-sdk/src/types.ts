@@ -395,6 +395,144 @@ export interface AtlasPluginBase<TConfig = undefined> {
    * When provided, replaces the default in-memory LRU cache.
    */
   cacheBackend?: PluginCacheBackend;
+
+  /**
+   * Register MCP tools the plugin contributes. Called once at boot after
+   * `initialize()` resolves. The host namespaces each returned tool's
+   * `name` as `<plugin-id>.<name>` and registers it on the MCP server so
+   * it appears in `tools/list` alongside Atlas's own (`executeSQL`,
+   * `explore`, the typed semantic tools).
+   *
+   * Plugin tool descriptions go through the same `withErrorContract` +
+   * word-count rubric as native tools — drift fails CI. Inputs are
+   * zod-validated before the handler runs; handler errors get wrapped in
+   * the standard `AtlasMcpToolError` envelope so a misbehaving plugin
+   * cannot return arbitrary error shapes. Audit + OTel coverage matches
+   * native tools with no special-case path.
+   */
+  mcpTools?(): readonly AtlasMcpTool[];
+}
+
+// ---------------------------------------------------------------------------
+// MCP tool extension point — plugins contribute first-class agent tools
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural Zod-shaped schema accepted by `AtlasMcpTool.inputSchema`.
+ *
+ * Defined structurally so the plugin SDK does not take a hard runtime
+ * dependency on a specific Zod version (plugins ship their own zod). Any
+ * object exposing `parse()`, `safeParse()`, and `_def` (the marker the AI
+ * SDK / MCP SDK use to detect Zod schemas) satisfies the contract.
+ */
+export interface PluginZodSchema<TOut = unknown> {
+  parse(input: unknown): TOut;
+  safeParse(input: unknown):
+    | { success: true; data: TOut }
+    | {
+        success: false;
+        error: {
+          issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>;
+          message: string;
+        };
+      };
+  /**
+   * Zod's internal definition object — the MCP SDK and the AI SDK both
+   * introspect this to derive a JSON Schema for the tool's input.
+   * Required (not optional) so a structural impostor with only
+   * `parse` / `safeParse` cannot typecheck through `register()` and
+   * later fail at MCP `tools/list` generation far from the authoring
+   * site. Type is `unknown` because the shape is opaque across Zod
+   * versions; the contract is "this field exists and the host's
+   * schema-introspection layer will probe it."
+   */
+  readonly _def: unknown;
+}
+
+/**
+ * Per-dispatch context passed to a plugin MCP tool's `handler`.
+ *
+ * The host populates this from the same RequestContext that backs the
+ * audit log and OTel attribution. `clientId` is set for hosted MCP (per
+ * #2067) and undefined for stdio. `audit` is a fire-and-forget structured
+ * event emitter — it never throws back to the handler.
+ */
+export interface McpToolContext {
+  /** Resolved workspace id (`actor.activeOrganizationId` or `actor.id`). */
+  readonly workspaceId: string;
+  /** Bound MCP actor user id. */
+  readonly userId: string;
+  /** Hosted-MCP OAuth `client_id`. Undefined for stdio dispatches. */
+  readonly clientId?: string;
+  /** Per-dispatch request id — surfaces in `audit_log.request_id` / OTel spans. */
+  readonly requestId: string;
+  /** Owning plugin id (matches the `<plugin-id>.<name>` namespace). */
+  readonly pluginId: string;
+  /** Pino-compatible child logger scoped to the plugin + tool. */
+  readonly logger: PluginLogger;
+  /**
+   * Fire-and-forget structured event emitter. Plugins log domain-specific
+   * audit signals here; the host binds the `mcp` actor on the request
+   * context so any nested `executeSQL` (or any other code path that
+   * writes its own `audit_log` row) is stamped with the plugin tool's
+   * `qualifiedName`, `clientId`, and request id consistently. The host
+   * does NOT itself write a row to `audit_log` for the dispatch — pure
+   * plugin tools that don't invoke `executeSQL` produce zero rows in
+   * `audit_log`, just structured pino events via this `audit()` call.
+   * Failures inside `audit` are swallowed and logged — they never
+   * propagate.
+   */
+  audit(entry: McpToolAuditEntry): void;
+}
+
+/** Structured audit event a plugin handler can emit via `McpToolContext.audit`. */
+export interface McpToolAuditEntry {
+  /** Short event name, e.g. `"runbooks.search"`, `"runbook.fetched"`. */
+  readonly event: string;
+  /** Whether the operation the event describes succeeded. */
+  readonly success: boolean;
+  /** Optional duration in ms for timing-shaped events. */
+  readonly durationMs?: number;
+  /** Optional structured payload. Avoid sensitive data — values land in pino logs. */
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * A single MCP tool contributed by a plugin via `AtlasPluginBase.mcpTools()`.
+ *
+ * The `name` is the local (un-namespaced) tool identifier. The host
+ * registers it as `<plugin-id>.<name>` to avoid collisions with Atlas's
+ * own tools (`executeSQL`, `explore`, `listEntities`, `describeEntity`,
+ * `searchGlossary`, `runMetric`). Local names must match
+ * `^[a-zA-Z][a-zA-Z0-9_-]{0,63}$` — no dots, slashes, or whitespace.
+ *
+ * `inputSchema` is enforced before `handler` runs: a parse failure short-
+ * circuits with a `validation_failed` error envelope and the handler is
+ * never invoked. Handler throws are wrapped in an `internal_error`
+ * envelope carrying the dispatch's `request_id` so an LLM agent can
+ * correlate the failure with server logs.
+ */
+export interface AtlasMcpTool<
+  TInput = unknown,
+  TOutput = unknown,
+> {
+  /** Local tool name. Host namespaces as `<plugin-id>.<name>`. */
+  readonly name: string;
+  /**
+   * LLM-facing description. Goes through the same rubric as native tools
+   * (80–150 words, `Use this when …`, `Don't use this …`/`Avoid …`, at
+   * least one inline JSON example) and gets the same `Error contract:`
+   * appendage at registration time. Drift fails CI.
+   */
+  readonly description: string;
+  /** Per-tool error catalog appended to the description via `withErrorContract`. */
+  readonly errorCodes?: ReadonlyArray<string>;
+  /** Zod schema for validating the LLM-supplied arguments. */
+  readonly inputSchema: PluginZodSchema<TInput>;
+  /** Optional Zod schema describing the structured response shape. */
+  readonly outputSchema?: PluginZodSchema<TOutput>;
+  /** Tool handler. Receives the parsed args and a per-dispatch context. */
+  handler(args: TInput, context: McpToolContext): Promise<TOutput>;
 }
 
 // ---------------------------------------------------------------------------

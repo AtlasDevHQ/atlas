@@ -297,6 +297,15 @@ export class PluginRegistry {
     return this.entries.length;
   }
 
+  /**
+   * True once `initializeAll` has run. Boot paths that may run twice in
+   * the same process (Hono server + in-process MCP server) check this
+   * to skip re-init rather than throw.
+   */
+  get isInitialized(): boolean {
+    return this.initialized;
+  }
+
   /** Reset registry state. For testing only. */
   _reset(): void {
     this.entries = [];

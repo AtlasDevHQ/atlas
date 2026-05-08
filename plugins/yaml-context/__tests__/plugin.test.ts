@@ -175,6 +175,77 @@ describe("plugin shape", () => {
 });
 
 // ---------------------------------------------------------------------------
+// MCP tool — getYamlContextStats (#2078 reference implementation)
+// ---------------------------------------------------------------------------
+
+describe("mcpTools()", () => {
+  test("plugin exposes mcpTools() returning getYamlContextStats", () => {
+    const plugin = contextYamlPlugin({ semanticDir });
+    expect(typeof plugin.mcpTools).toBe("function");
+    const tools = plugin.mcpTools!();
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe("getYamlContextStats");
+  });
+
+  test("getYamlContextStats handler returns counts and semanticDir", async () => {
+    const plugin = contextYamlPlugin({ semanticDir });
+    const tool = plugin.mcpTools!()[0];
+    const audited: { event: string; success: boolean }[] = [];
+    const ctx = {
+      workspaceId: "org-1",
+      userId: "user-1",
+      requestId: "test-1",
+      pluginId: "context-yaml",
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      audit: (entry: { event: string; success: boolean }) => {
+        audited.push({ event: entry.event, success: entry.success });
+      },
+    };
+    const result = (await tool.handler({}, ctx)) as {
+      entities: number;
+      glossary: number;
+      metrics: number;
+      semanticDir: string;
+      filter?: string;
+    };
+    expect(result.entities).toBe(2);
+    expect(result.glossary).toBe(2);
+    expect(result.metrics).toBe(2);
+    expect(result.semanticDir).toBe(semanticDir);
+    expect(audited).toEqual([{ event: "context_yaml.stats", success: true }]);
+  });
+
+  test("getYamlContextStats applies the optional case-insensitive filter", async () => {
+    const plugin = contextYamlPlugin({ semanticDir });
+    const tool = plugin.mcpTools!()[0];
+    const ctx = {
+      workspaceId: "org-1",
+      userId: "user-1",
+      requestId: "test-2",
+      pluginId: "context-yaml",
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      audit: () => {},
+    };
+    const result = (await tool.handler({ filter: "comp" }, ctx)) as {
+      entities: number;
+      filter?: string;
+    };
+    expect(result.entities).toBe(1);
+    expect(result.filter).toBe("comp");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // YAML readers
 // ---------------------------------------------------------------------------
 

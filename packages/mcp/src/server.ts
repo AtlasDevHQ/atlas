@@ -12,14 +12,19 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { initializeConfig, getConfig } from "@atlas/api/lib/config";
+import { createLogger } from "@atlas/api/lib/logger";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { loadSettings } from "@atlas/api/lib/settings";
 import { registerTools } from "./tools.js";
+import { registerPluginTools } from "./plugin-tools.js";
+import { bootPluginsForMcp } from "@atlas/api/lib/plugins";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts/registry.js";
 import { resolveMcpActor } from "./actor.js";
 import type { McpTransport } from "./telemetry.js";
+
+const log = createLogger("mcp:boot");
 // `serverInfo.version` is what MCP clients (Claude Desktop, Cursor) show
 // in their server picker. Reading from package.json keeps the value in
 // sync without a hand-edit on every bump.
@@ -91,8 +96,9 @@ export async function createAtlasMcpServer(
       // Don't refuse to boot if the DB read fails — fall back to env vars
       // only and log so an operator can correlate "toggle didn't take
       // effect" with the underlying connectivity error.
-      process.stderr.write(
-        `[atlas-mcp] loadSettings failed at boot, settings cache may be stale: ${err instanceof Error ? err.message : String(err)}\n`,
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "loadSettings failed at boot, settings cache may be stale",
       );
     }
   }
@@ -107,6 +113,47 @@ export async function createAtlasMcpServer(
   });
 
   registerTools(server, { actor, transport, clientId });
+
+  // #2078 — plugins contribute additional MCP tools via `mcpTools()`.
+  // Boot the plugin lifecycle so factory functions can run, then walk
+  // the singleton registry to register each tool on this server. The
+  // helper is idempotent for the in-process (SSE / hosted) case where
+  // the Hono server already booted plugins. Failures inside either step
+  // are logged but never block server creation. Two distinct catches
+  // because the failure modes diverge: a `bootPluginsForMcp` throw is
+  // a plugin-config problem (broken atlas.config.ts), while a
+  // `registerPluginTools` throw is an MCP-SDK contract violation
+  // (malformed schema, name collision the registry let through). An
+  // operator debugging "tool didn't show up" needs to know which side.
+  try {
+    await bootPluginsForMcp();
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Plugin lifecycle boot failed before MCP tool registration — plugin tools will be absent from tools/list",
+    );
+  }
+  try {
+    const pluginToolCount = registerPluginTools(server, {
+      actor,
+      transport,
+      ...(clientId && { clientId }),
+      workspaceId: actor.activeOrganizationId ?? actor.id,
+      deployMode: getConfig()?.deployMode ?? "self-hosted",
+    });
+    if (pluginToolCount > 0) {
+      log.info(
+        { count: pluginToolCount },
+        `Registered ${pluginToolCount} plugin MCP tool(s)`,
+      );
+    }
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Plugin MCP tool registration on the MCP server failed — server will boot without plugin tools",
+    );
+  }
+
   registerResources(server);
   await registerPrompts(server, {
     // `actor.activeOrganizationId` may be undefined for trusted-transport

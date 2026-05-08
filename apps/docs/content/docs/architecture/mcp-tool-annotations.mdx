@@ -19,14 +19,14 @@ Atlas exposes the same six tools whether mounted via stdio (`bunx @useatlas/mcp 
 
 | Tool | Catalog description |
 | --- | --- |
-| `explore` | Read-only shell (`ls`, `cat`, `grep`, `find`) over the on-disk semantic layer for ad-hoc discovery the typed tools can't answer. |
+| `explore` | Read-only shell (`ls`, `cat`, `grep`, `find`) over the on-disk semantic layer — discovery the typed tools can't cover. |
 | `executeSQL` | Run a single read-only SELECT against a configured datasource — parsed, table-whitelisted, RLS-injected, auto-LIMITed, and timed out. |
 | `listEntities` | Return the catalog of semantic-layer entities (tables and views) declared for the workspace, with an optional substring filter. |
 | `describeEntity` | Return one entity's parsed definition — dimensions, measures, joins, query patterns, grain, and the connection it lives on. |
 | `searchGlossary` | Search the business glossary for a term, phrase, or column name; surface ambiguous terms instead of guessing. |
 | `runMetric` | Execute a canonical metric defined under `semantic/metrics/` by id, using its authoritative SQL — never re-derive metric SQL by hand. |
 
-Each row is a complete sentence, period included. Stay under 140 characters per row so they don't wrap awkwardly in a constrained directory cell.
+Each description is a complete sentence, period included. Stay under 140 characters per description so it doesn't wrap awkwardly in a constrained directory cell.
 
 ## Server-level metadata
 
@@ -42,7 +42,7 @@ Catalog forms also ask for short / long descriptions of the server itself. These
 
 Same six tools, two reader populations. The LLM-facing rubric ([`mcp-tools.mdx`](./mcp-tools.mdx)) optimizes for agent dispatch accuracy — the held-out fixture at [`eval/canonical-questions/tool-selection.json`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/canonical-questions/tool-selection.json) measures that quantitatively. The catalog rubric optimizes for human comprehension at a glance — measured qualitatively by reviewer feedback when the form lands.
 
-If the LLM-facing description for a tool changes shape (purpose, routing intent, scope), update the row above in the same PR. The structural enforcement is asymmetric: `description-rubric.test.ts` fails CI on LLM-facing drift, but the catalog row drift is contributor-policed. A 1-line guard test checks that every tool name in `SEMANTIC_TOOL_NAMES` (plus `explore` / `executeSQL`) appears in the table above — drop a tool from the codebase without removing the row and CI flags it.
+If the LLM-facing description for a tool changes shape (purpose, routing intent, scope), update the row above in the same PR. The structural enforcement is asymmetric: [`description-rubric.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/description-rubric.test.ts) fails CI on LLM-facing drift; [`catalog-annotations.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/catalog-annotations.test.ts) reads this MDX and asserts every tool name in `SEMANTIC_TOOL_NAMES` (plus `explore` / `executeSQL`) appears as a row, no orphan rows reference a removed tool, and each description stays under the 140-character limit. Drop a tool from the codebase without removing the row — or add a row that doesn't match a real tool — and CI flags it.
 
 ## Submission checklist (for the operator)
 

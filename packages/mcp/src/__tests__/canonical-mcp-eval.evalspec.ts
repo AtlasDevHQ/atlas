@@ -101,7 +101,15 @@ import { startEvalAuthServer, type EvalAuthFixture } from "../eval/auth";
 const auditEntries: AdminActionEntry[] = [];
 mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
-    mcp_session: { start: "mcp_session.start" },
+    mcp_session: {
+      start: "mcp_session.start",
+      // #2073 — workspace-admission denial. Eval doesn't exercise the
+      // multi-scope path (no internal DB → legacy single-scope only),
+      // but the action constant must exist so a partial-mock leak
+      // doesn't fail with "denied not found" if the runtime path ever
+      // touches it.
+      denied: "mcp_session.denied",
+    },
     oauth_token: {
       issue: "oauth_token.issue",
       refresh: "oauth_token.refresh",

@@ -30,7 +30,11 @@
  * own audit emission and request-context bridging.
  */
 
-import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import {
+  internalQuery,
+  getInternalDB,
+  hasInternalDB,
+} from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("oauth-workspace-grants");
@@ -69,6 +73,15 @@ export interface WorkspaceGrant {
 export async function getOAuthClientScope(
   clientId: string,
 ): Promise<WorkspaceScope> {
+  // No internal DB → no `oauth_client_workspace_scope` table to query.
+  // Treat as legacy single-scope. This is the right default for:
+  //   - self-hosted setups without `DATABASE_URL` configured
+  //   - the canonical-mcp-eval (#2125) which intentionally runs without
+  //     an internal DB to keep the eval pool-free
+  //   - bootstrap before migrations have applied
+  // Any caller that needs the multi-scope path must have an internal DB
+  // — that's the precondition for the migration to have run at all.
+  if (!hasInternalDB()) return "single";
   const rows = await internalQuery<{ scope: string }>(
     `SELECT scope
        FROM oauth_client_workspace_scope
@@ -102,6 +115,12 @@ export async function hasWorkspaceGrant(
   clientId: string,
   workspaceId: string,
 ): Promise<boolean> {
+  // No internal DB → no grants table; only the legacy single-scope path
+  // is reachable in this configuration, and `getOAuthClientScope` short-
+  // circuits there before this function gets called. Returning `false`
+  // is a defensive safety net for any callsite that bypasses the scope
+  // check.
+  if (!hasInternalDB()) return false;
   const rows = await internalQuery<{ exists: number }>(
     `SELECT 1 AS exists
        FROM oauth_client_workspace_grants
@@ -155,6 +174,11 @@ export async function listWorkspaceGrantsForClient(
 export async function listUserWorkspaceIds(
   userId: string,
 ): Promise<string[]> {
+  // No internal DB → no `member` table; the user has no workspaces this
+  // surface knows about. Empty array short-circuits the
+  // `customAccessTokenClaims` plural-claim path (length > 1 guard) and
+  // the per-user CLI prompt (length > 1 guard).
+  if (!hasInternalDB()) return [];
   const rows = await internalQuery<{ organizationId: string }>(
     `SELECT "organizationId"
        FROM member
@@ -176,6 +200,10 @@ export async function userIsWorkspaceMember(
   userId: string,
   workspaceId: string,
 ): Promise<boolean> {
+  // No internal DB → no `member` table. Same defensive default as
+  // `hasWorkspaceGrant`: only the legacy single-scope path is
+  // reachable, which doesn't call this function.
+  if (!hasInternalDB()) return false;
   const rows = await internalQuery<{ exists: number }>(
     `SELECT 1 AS exists
        FROM member

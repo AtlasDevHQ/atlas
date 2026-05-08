@@ -1103,11 +1103,10 @@ export function createAtlasClient(options: AtlasClientOptions) {
     },
 
     /**
-     * MCP onboarding helpers (#2079). The OAuth helpers (`beginConnect`,
-     * `completeConnect`, `buildConfig`, `connectMachineToMachine`) are
-     * pre-bound to the client's `baseUrl` so embedders don't repeat the
-     * apiUrl. They forward to the same standalone exports — see
-     * `@useatlas/sdk/mcp` for the unbound versions.
+     * MCP onboarding helpers pre-bound to the client's `baseUrl` so
+     * embedders don't repeat the apiUrl. The unbound versions live at
+     * `@useatlas/sdk/mcp` for callers who want to share an `apiUrl`
+     * across multiple clients or skip the AtlasClient construction.
      */
     mcp: {
       /** Initiate the OAuth 2.1 + DCR flow. Returns the URL to open + state to persist. */

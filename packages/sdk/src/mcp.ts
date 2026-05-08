@@ -1,25 +1,12 @@
 /**
- * `@useatlas/sdk` programmatic MCP onboarding helper (#2079).
- *
- * Mirrors the OAuth 2.1 + DCR loopback flow that the
- * `@useatlas/mcp init --hosted` CLI runs (in `plugins/mcp/src/init/hosted.ts`)
- * but reshaped so it can run from a server-side framework, a browser,
- * an embedded React component, or a Node CI script. The CLI binds a
- * `127.0.0.1:0` loopback listener to receive the redirect; the SDK
- * delegates that step to the caller — it returns the `authorizationUrl`
- * for the caller to open (popup / redirect / new tab) and exposes
- * `completeConnect` to exchange the resulting `code` for a JWT.
- *
- * ── Single-workspace baseline ──────────────────────────────────────
- *
- * Single-workspace is the only shape today because cross-workspace
- * agent identity (#2073, Theme C3 of milestone 1.4.1) had not landed
- * when this module shipped. Once C3 lands, the multi-workspace shape
- * tracks via #2196: `beginConnect`/`buildConfig` will accept an
- * optional `workspaceId?`, and `buildConfig` will emit the workspace-
- * aware config block when the token's claims cover multiple
- * workspaces. The current single-workspace surface stays backward-
- * compatible.
+ * Programmatic MCP onboarding helpers — OAuth 2.1 + DCR + PKCE flow
+ * reshaped so it runs from a server-side framework, a browser, an
+ * embedded React component, or a Node CI script. The
+ * `@useatlas/mcp init --hosted` CLI binds a `127.0.0.1:0` loopback
+ * listener to receive the redirect; this module delegates that step
+ * to the caller — `beginConnect` returns the `authorizationUrl` for
+ * the caller to open (popup / redirect / new tab) and `completeConnect`
+ * exchanges the resulting `code` for a JWT.
  *
  * ── What the caller must persist between begin → complete ───────────
  *
@@ -42,10 +29,14 @@
 
 export type AtlasMcpErrorCode =
   | "invalid_api_url"
+  | "invalid_token_endpoint"
   | "discovery_failed"
   | "registration_failed"
   | "callback_state_mismatch"
+  | "callback_state_missing"
   | "callback_missing_code"
+  | "popup_blocked"
+  | "popup_closed"
   | "token_exchange_failed"
   | "issuer_mismatch"
   | "malformed_jwt"
@@ -144,7 +135,12 @@ export interface CompleteConnectResult {
   accessToken: string;
   /** OAuth 2.1 refresh token, when offline_access was granted. */
   refreshToken: string | null;
-  /** ms epoch — derived from `expires_in` at exchange time. */
+  /**
+   * ms epoch. Derived from `expires_in` at exchange time; falls back
+   * to one hour from now when the token endpoint omits `expires_in`,
+   * so callers scheduling refresh against a server with a non-standard
+   * lifetime should re-check expiry from the JWT itself.
+   */
   expiresAt: number;
   /** `https://atlas.useatlas.dev/workspace_id` claim from the JWT. */
   workspaceId: string;
@@ -171,14 +167,27 @@ export interface McpHttpServer {
   headers: { Authorization: string };
 }
 
-export interface McpClientConfig {
-  /** Set when `client` is one of the wrapper-style entries. */
-  mcpServers?: Record<string, McpHttpServer>;
-  /** Set when `client` is `"generic"` — the bare server block. */
-  url?: string;
-  /** Set when `client` is `"generic"` — the bare server block. */
-  headers?: { Authorization: string };
+/**
+ * Discriminated by `client`:
+ * - `"generic"` returns the bare server block — `{ url, headers }`.
+ * - everything else returns the wrapped block —
+ *   `{ mcpServers: { [serverName]: McpHttpServer } }`.
+ *
+ * Splitting these as a tagged union (instead of one bag with optional
+ * fields) means a consumer that destructures `cfg` gets only the
+ * fields that are actually present for the chosen client, without
+ * needing runtime guards.
+ */
+export interface McpWrappedConfig {
+  readonly kind: "wrapped";
+  readonly mcpServers: Record<string, McpHttpServer>;
 }
+
+export interface McpBareConfig extends McpHttpServer {
+  readonly kind: "bare";
+}
+
+export type McpClientConfig = McpWrappedConfig | McpBareConfig;
 
 export interface ConnectMachineToMachineOptions {
   apiUrl: string;
@@ -256,6 +265,7 @@ export async function completeConnect(
   }
 
   const apiUrl = trimTrailingSlash(options.apiUrl);
+  validateApiUrl(apiUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   let tokenEndpoint = options.tokenEndpoint;
@@ -265,6 +275,10 @@ export async function completeConnect(
     tokenEndpoint = tokenEndpoint ?? metadata.token_endpoint;
     issuer = issuer ?? metadata.issuer;
   }
+  // The discovered or caller-supplied token endpoint must be https — a
+  // malicious DCR response can advertise `token_endpoint: "http://evil"`
+  // and smuggle the auth code + PKCE verifier over plaintext otherwise.
+  validateTokenEndpoint(tokenEndpoint);
 
   const tokenResponse = await exchangeCode({
     tokenEndpoint,
@@ -298,17 +312,19 @@ const SERVER_NAME_DEFAULT = "atlas";
 
 export function buildConfig(options: BuildConfigOptions): McpClientConfig {
   const apiUrl = trimTrailingSlash(options.apiUrl);
-  const url = `${apiUrl}/mcp/${options.workspaceId}/sse`;
+  // workspaceId is opaque server-issued; encode it defensively so a
+  // value containing path-sensitive characters can't reshape the URL.
+  const url = `${apiUrl}/mcp/${encodeURIComponent(options.workspaceId)}/sse`;
   const block: McpHttpServer = {
     url,
     headers: { Authorization: `Bearer ${options.accessToken}` },
   };
 
   if (options.client === "generic") {
-    return { url: block.url, headers: block.headers };
+    return { kind: "bare", url: block.url, headers: block.headers };
   }
   const name = options.serverName ?? SERVER_NAME_DEFAULT;
-  return { mcpServers: { [name]: block } };
+  return { kind: "wrapped", mcpServers: { [name]: block } };
 }
 
 // ── connectMachineToMachine ──────────────────────────────────────────
@@ -317,15 +333,14 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
  * Server-to-server flow using the OAuth `client_credentials` grant.
  *
  * Throws `AtlasMcpError(code: "grant_not_supported")` until the Atlas
- * OAuth provider exposes the grant. Tracking issue: #2024 lists
- * `client_credentials` as deferred. When the provider lands the grant,
- * swap this body for the live exchange — the public surface is fixed.
+ * OAuth provider exposes the grant. When the provider lands it, swap
+ * this body for the live exchange — the public surface is fixed.
  */
 export async function connectMachineToMachine(
   _options: ConnectMachineToMachineOptions,
 ): Promise<ConnectMachineToMachineResult> {
   throw new AtlasMcpError(
-    "client_credentials grant is not yet enabled on the Atlas OAuth provider — see #2024 deferred work. Use the authorization-code flow (beginConnect / completeConnect) for now.",
+    "client_credentials grant is not yet enabled on the Atlas OAuth provider. Use the authorization-code flow (beginConnect / completeConnect) for now.",
     "grant_not_supported",
   );
 }
@@ -377,14 +392,21 @@ function trimTrailingSlash(s: string): string {
   return s.replace(/\/+$/, "");
 }
 
-function validateApiUrl(apiUrl: string): void {
+/**
+ * Refuse anything other than `https://` (or `http://localhost` for
+ * dev). Used by `beginConnect` for `apiUrl` AND by `completeConnect`
+ * for the discovered `tokenEndpoint` — a malicious DCR response
+ * pointing `token_endpoint` at `http://evil/token` would otherwise
+ * smuggle the auth code + PKCE verifier over plaintext.
+ */
+function validateHttpsUrl(input: string, code: "invalid_api_url" | "invalid_token_endpoint", label: string): void {
   let parsed: URL;
   try {
-    parsed = new URL(apiUrl);
+    parsed = new URL(input);
   } catch (err) {
     throw new AtlasMcpError(
-      `apiUrl is not a valid URL: ${apiUrl}`,
-      "invalid_api_url",
+      `${label} is not a valid URL: ${input}`,
+      code,
       { cause: err },
     );
   }
@@ -396,9 +418,17 @@ function validateApiUrl(apiUrl: string): void {
     return;
   }
   throw new AtlasMcpError(
-    `apiUrl must use https:// (or http://localhost for dev). Got: ${apiUrl}`,
-    "invalid_api_url",
+    `${label} must use https:// (or http://localhost for dev). Got: ${input}`,
+    code,
   );
+}
+
+function validateApiUrl(apiUrl: string): void {
+  validateHttpsUrl(apiUrl, "invalid_api_url", "apiUrl");
+}
+
+function validateTokenEndpoint(tokenEndpoint: string): void {
+  validateHttpsUrl(tokenEndpoint, "invalid_token_endpoint", "tokenEndpoint");
 }
 
 async function discover(
@@ -629,12 +659,14 @@ async function describeErrorBody(res: Response): Promise<string> {
 
 /**
  * Decode a JWT payload WITHOUT verifying the signature. Safe here only
- * because we just minted the token through a TLS-protected OAuth flow
- * against an issuer we discovered ourselves. The hosted MCP endpoint
- * re-verifies the signature on every request via JWKS, so any tampering
- * between here and there is rejected server-side. Do NOT lift this
- * helper out as a generic JWT decoder — without the surrounding flow's
- * TLS + issuer guarantees, "decode without verify" is unsafe.
+ * because both `apiUrl` and `tokenEndpoint` are validated as
+ * `https://` (or loopback) before this is reached — and the surrounding
+ * `enforceIssuer` rejects any token whose `iss` claim drifts from what
+ * discovery returned. The hosted MCP endpoint re-verifies the signature
+ * on every request via JWKS, so any tampering between here and there is
+ * rejected server-side. Do NOT lift this helper out as a generic JWT
+ * decoder — without the surrounding flow's TLS + issuer guarantees,
+ * "decode without verify" is unsafe.
  */
 function decodeJwtPayload(jwtToken: string): Record<string, unknown> {
   const parts = jwtToken.split(".");

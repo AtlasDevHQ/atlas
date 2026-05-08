@@ -28,6 +28,15 @@ export default function OauthCallbackPage() {
     const error = params.get("error");
     const error_description = params.get("error_description");
 
+    // If the user navigated here directly (no OAuth params at all), do
+    // NOT post a phantom callback — a stale parent tab in
+    // `awaiting_callback` would otherwise resolve to a `callback_missing_code`
+    // error caused by something the user never initiated.
+    if (!code && !state && !error) {
+      setMessage("This page expects an OAuth callback — there are no parameters to forward.");
+      return;
+    }
+
     window.opener.postMessage(
       {
         type: "atlas-mcp-callback",

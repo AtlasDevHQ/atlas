@@ -346,6 +346,70 @@ describe("completeConnect", () => {
       expect((err as AtlasMcpError).code).toBe("token_exchange_failed");
     }
   });
+
+  test("rejects non-https tokenEndpoint with invalid_token_endpoint", async () => {
+    try {
+      await completeConnect({
+        ...baseComplete,
+        tokenEndpoint: "http://evil.example.com/token",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasMcpError);
+      expect((err as AtlasMcpError).code).toBe("invalid_token_endpoint");
+    }
+  });
+
+  test("rejects non-https apiUrl on completeConnect", async () => {
+    try {
+      await completeConnect({
+        ...baseComplete,
+        apiUrl: "http://evil.example.com",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasMcpError);
+      expect((err as AtlasMcpError).code).toBe("invalid_api_url");
+    }
+  });
+
+  test("double-submit of the same code surfaces the server's invalid_grant", async () => {
+    let calls = 0;
+    const fetchImpl: FetchStub = async () => {
+      calls++;
+      // First call succeeds (test fixture sees a fresh code), second
+      // call returns invalid_grant — the SDK does not cache.
+      if (calls === 1) {
+        return jsonResponse({
+          access_token: VALID_TOKEN,
+          expires_in: 3600,
+          refresh_token: "rfr",
+        });
+      }
+      return new Response(
+        JSON.stringify({ error: "invalid_grant", error_description: "code already used" }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const first = await completeConnect({
+      ...baseComplete,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(first.accessToken).toBe(VALID_TOKEN);
+
+    try {
+      await completeConnect({
+        ...baseComplete,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasMcpError);
+      expect((err as AtlasMcpError).code).toBe("token_exchange_failed");
+    }
+    expect(calls).toBe(2);
+  });
 });
 
 // ── buildConfig ───────────────────────────────────────────────────────
@@ -357,9 +421,10 @@ describe("buildConfig", () => {
     workspaceId: WORKSPACE_ID,
   };
 
-  test("claude-desktop returns mcpServers wrapper with url + Authorization header", () => {
+  test("claude-desktop returns wrapped block with url + Authorization header", () => {
     const cfg = buildConfig({ client: "claude-desktop", ...args });
     expect(cfg).toEqual({
+      kind: "wrapped",
       mcpServers: {
         atlas: {
           url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
@@ -369,25 +434,29 @@ describe("buildConfig", () => {
     });
   });
 
-  test("cursor uses same mcpServers shape", () => {
+  test("cursor uses the wrapped shape", () => {
     const cfg = buildConfig({ client: "cursor", ...args });
-    expect(cfg.mcpServers?.atlas?.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
-    expect(cfg.mcpServers?.atlas?.headers?.Authorization).toBe("Bearer access-token-xyz");
+    if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
+    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
+    expect(cfg.mcpServers.atlas.headers.Authorization).toBe("Bearer access-token-xyz");
   });
 
-  test("continue uses same mcpServers shape", () => {
+  test("continue uses the wrapped shape", () => {
     const cfg = buildConfig({ client: "continue", ...args });
-    expect(cfg.mcpServers?.atlas?.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
+    if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
+    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
   });
 
-  test("chatgpt uses same mcpServers shape", () => {
+  test("chatgpt uses the wrapped shape", () => {
     const cfg = buildConfig({ client: "chatgpt", ...args });
-    expect(cfg.mcpServers?.atlas?.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
+    if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
+    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
   });
 
   test("generic returns the bare {url, headers} block", () => {
     const cfg = buildConfig({ client: "generic", ...args });
     expect(cfg).toEqual({
+      kind: "bare",
       url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
       headers: { Authorization: "Bearer access-token-xyz" },
     });
@@ -395,16 +464,28 @@ describe("buildConfig", () => {
 
   test("custom serverName parameter overrides 'atlas'", () => {
     const cfg = buildConfig({ client: "claude-desktop", serverName: "atlas-prod", ...args });
-    expect(cfg.mcpServers?.["atlas-prod"]).toBeDefined();
-    expect(cfg.mcpServers?.atlas).toBeUndefined();
+    if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
+    expect(cfg.mcpServers["atlas-prod"]).toBeDefined();
+    expect(cfg.mcpServers.atlas).toBeUndefined();
   });
 
   test("trims trailing slashes from apiUrl", () => {
     const cfg = buildConfig({ client: "generic", ...args, apiUrl: `${API_URL}/` });
     expect(cfg).toEqual({
+      kind: "bare",
       url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
       headers: { Authorization: "Bearer access-token-xyz" },
     });
+  });
+
+  test("URL-encodes workspaceId so a path-sensitive value can't reshape the URL", () => {
+    const cfg = buildConfig({
+      ...args,
+      client: "generic",
+      workspaceId: "a/b c",
+    });
+    if (cfg.kind !== "bare") throw new Error("expected bare");
+    expect(cfg.url).toBe(`${API_URL}/mcp/${encodeURIComponent("a/b c")}/sse`);
   });
 });
 
@@ -422,7 +503,8 @@ describe("connectMachineToMachine", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(AtlasMcpError);
       expect((err as AtlasMcpError).code).toBe("grant_not_supported");
-      expect((err as AtlasMcpError).message).toContain("#2024");
+      expect((err as AtlasMcpError).message).toContain("client_credentials");
+      expect((err as AtlasMcpError).message).toContain("authorization-code");
     }
   });
 });

@@ -103,8 +103,10 @@ export {
   type ConnectMachineToMachineOptions,
   type ConnectMachineToMachineResult,
   type ListAgentsResponse,
+  type McpBareConfig,
   type McpClientConfig,
   type McpClientId,
   type McpHttpServer,
+  type McpWrappedConfig,
   type RevokeAgentResponse,
 } from "./mcp";

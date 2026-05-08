@@ -1,19 +1,32 @@
 "use client";
 
 import { useMcpConnect } from "@useatlas/react/hooks";
-import { buildConfig } from "@useatlas/sdk";
+import { buildConfig, type McpClientConfig, type McpClientId } from "@useatlas/sdk";
 import { useState } from "react";
+
+/** Drop the `kind` discriminator so the paste output is clean JSON. */
+function stripKind(cfg: McpClientConfig): Record<string, unknown> {
+  const { kind: _kind, ...rest } = cfg;
+  return rest;
+}
 
 const ATLAS_API_URL =
   process.env.NEXT_PUBLIC_ATLAS_API_URL ?? "https://mcp.useatlas.dev";
 
+const MCP_CLIENTS: ReadonlyArray<McpClientId> = [
+  "claude-desktop",
+  "cursor",
+  "continue",
+  "chatgpt",
+  "generic",
+];
+
 /**
- * Worked example for #2079 — embedders show their own users a
- * "Connect your AI agent" button. The popup OAuth flow lands on
- * `/oauth/callback`, which posts the auth code back to this window.
- * The hook completes the exchange and surfaces `accessToken` +
- * `workspaceId`. We then render `buildConfig` output the user can
- * copy into Claude Desktop / Cursor / Continue.
+ * Worked example — embedders show their own users a "Connect your AI
+ * agent" button. The popup OAuth flow lands on `/oauth/callback`,
+ * which posts the auth code back to this window. The hook completes
+ * the exchange and surfaces the access token + workspace id. We then
+ * render `buildConfig` output the user can copy into their MCP client.
  */
 export default function Page() {
   const redirectUri =
@@ -21,20 +34,24 @@ export default function Page() {
       ? `${window.location.origin}/oauth/callback`
       : "http://localhost:3000/oauth/callback";
 
-  const { connect, status, error, accessToken, workspaceId, reset } = useMcpConnect({
+  const result = useMcpConnect({
     apiUrl: ATLAS_API_URL,
     clientName: "Atlas Embedded Demo",
     redirectUri,
     mode: "popup",
   });
+  const { connect, status, reset } = result;
 
-  const [client, setClient] = useState<"claude-desktop" | "cursor" | "continue" | "chatgpt" | "generic">(
-    "claude-desktop",
-  );
+  const [client, setClient] = useState<McpClientId>("claude-desktop");
 
   const config =
-    accessToken && workspaceId
-      ? buildConfig({ client, apiUrl: ATLAS_API_URL, accessToken, workspaceId })
+    result.status === "success"
+      ? buildConfig({
+          client,
+          apiUrl: ATLAS_API_URL,
+          accessToken: result.accessToken,
+          workspaceId: result.workspaceId,
+        })
       : null;
 
   return (
@@ -94,7 +111,7 @@ export default function Page() {
         </span>
       </section>
 
-      {error && (
+      {result.status === "error" && (
         <pre
           style={{
             background: "#1f1f1f",
@@ -106,19 +123,19 @@ export default function Page() {
             wordBreak: "break-word",
           }}
         >
-          {error.message}
+          {result.error.message}
         </pre>
       )}
 
-      {accessToken && workspaceId && config && (
+      {result.status === "success" && config && (
         <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>Paste-ready config</h2>
           <p style={{ color: "#a1a1aa", marginTop: 0 }}>
-            Workspace ID: <code>{workspaceId}</code>
+            Workspace ID: <code>{result.workspaceId}</code>
           </p>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {(["claude-desktop", "cursor", "continue", "chatgpt", "generic"] as const).map((id) => (
+            {MCP_CLIENTS.map((id) => (
               <button
                 key={id}
                 onClick={() => setClient(id)}
@@ -147,7 +164,7 @@ export default function Page() {
               overflow: "auto",
             }}
           >
-            {JSON.stringify(config, null, 2)}
+            {JSON.stringify(stripKind(config), null, 2)}
           </pre>
         </section>
       )}

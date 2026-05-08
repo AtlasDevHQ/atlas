@@ -35,7 +35,6 @@ export type {
 export { useConversations } from "./hooks/use-conversations";
 export type { UseConversationsOptions, UseConversationsReturn } from "./hooks/use-conversations";
 
-// MCP onboarding hook (#2079)
 export { useMcpConnect } from "./hooks/use-mcp-connect";
 export type {
   UseMcpConnectOptions,

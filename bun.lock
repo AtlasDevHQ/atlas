@@ -256,7 +256,7 @@
     },
     "packages/react": {
       "name": "@useatlas/react",
-      "version": "0.0.8",
+      "version": "0.0.9",
       "dependencies": {
         "@radix-ui/react-slot": "^1.2.4",
         "@tanstack/react-query": "^5.96.2",
@@ -291,6 +291,7 @@
       },
       "peerDependencies": {
         "@ai-sdk/react": ">=3.0.0",
+        "@useatlas/sdk": ">=0.0.13",
         "ai": ">=6.0.0",
         "exceljs": ">=4.0.0",
         "lucide-react": ">=0.400.0",
@@ -325,7 +326,7 @@
     },
     "packages/sdk": {
       "name": "@useatlas/sdk",
-      "version": "0.0.12",
+      "version": "0.0.13",
       "dependencies": {
         "@useatlas/types": "^0.0.18",
       },

@@ -154,6 +154,17 @@ for f in "$WEB_SRC"/lib/*.ts; do
   cp "$f" "$TEMPLATES/nextjs-standalone/src/lib/" 2>/dev/null || true
 done
 
+# Copy web lib subdirs (stores, etc.) — Step 3's `rm -rf src/lib` wipes the
+# subdirs Step 2c copied, so re-copy them after the API source is laid down.
+# Without this, anything web imports via `@/lib/<dir>/` (e.g. `@/lib/stores/ui-store`)
+# fails to resolve in the scaffolded vercel project — same loop as Step 2c.
+for libsub in stores; do
+  if [ -d "$WEB_SRC/lib/$libsub" ]; then
+    rm -rf "$TEMPLATES/nextjs-standalone/src/lib/$libsub"
+    cp -r "$WEB_SRC/lib/$libsub" "$TEMPLATES/nextjs-standalone/src/lib/$libsub"
+  fi
+done
+
 # Copy Next.js app pages — page.tsx and layout.tsx use template overrides:
 # page.tsx: standalone AtlasChat widget (not SaaS native chat page)
 # layout.tsx: no ModeBanner (developer/published mode is SaaS-only)

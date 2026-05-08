@@ -5,7 +5,8 @@
  * `trigger()`; `MfaEnrollmentDialog` reads the same state and renders the
  * modal.
  *
- * Two policies that don't belong in either the hook layer or the dialog:
+ * State lives in `useMfaGateStore` (zustand). This file composes the store
+ * with two hook-only concerns that can't live in a store action:
  *
  * 1. **Skip on the enrollment page.** When pathname starts with
  *    `/admin/settings/security`, `trigger` is a no-op. Otherwise a
@@ -15,17 +16,22 @@
  *    the gate in `sessionStorage` so the security page can bounce the
  *    user back after enrollment completes. `consumeOriginPath()` reads +
  *    clears the slot atomically.
+ *
+ * `MfaGateProvider` is a thin scope marker — it tracks whether an admin
+ * surface is mounted (so `useMfaGate` can throw on misuse) and clears
+ * state when the admin tree unmounts (so a stale trigger from elsewhere
+ * doesn't auto-open the dialog the next time admin mounts).
  */
 
 import {
   createContext,
   useCallback,
   useContext,
-  useMemo,
-  useState,
+  useEffect,
   type ReactNode,
 } from "react";
 import { usePathname } from "next/navigation";
+import { useMfaGateStore } from "@/lib/stores/mfa-gate-store";
 
 const ENROLLMENT_PATH_PREFIX = "/admin/settings/security";
 
@@ -51,7 +57,7 @@ export interface MfaGateContextValue {
   clear: () => void;
 }
 
-const MfaGateContext = createContext<MfaGateContextValue | null>(null);
+const ScopeContext = createContext<boolean>(false);
 
 /** Read + clear the origin path. Null when no origin was captured (direct nav). */
 export function consumeOriginPath(): string | null {
@@ -70,10 +76,23 @@ export function consumeOriginPath(): string | null {
 }
 
 export function MfaGateProvider({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
-  const [state, setState] = useState<MfaGateState | null>(null);
+  const clear = useMfaGateStore((s) => s.clear);
 
-  const trigger = useCallback(
+  // Tie the dialog's lifecycle to the admin layout the way React Context did
+  // before this state moved to a global store: when the admin tree unmounts,
+  // forget any open gate. The optional-gate variant returns NOOP outside the
+  // provider, so non-admin surfaces can't leave stale state behind.
+  useEffect(() => () => clear(), [clear]);
+
+  return <ScopeContext.Provider value={true}>{children}</ScopeContext.Provider>;
+}
+
+function useTrigger(): (enrollmentUrl: string) => void {
+  const pathname = usePathname();
+  const state = useMfaGateStore((s) => s.state);
+  const setState = useMfaGateStore((s) => s.setState);
+
+  return useCallback(
     (enrollmentUrl: string) => {
       // Skip when already on the enrollment page so the page's own fetches
       // can't re-arm the dialog and trap the user on the destination.
@@ -82,34 +101,23 @@ export function MfaGateProvider({ children }: { children: ReactNode }) {
       // Idempotent: the first failed fetch wins. Concurrent fan-out
       // (parallel admin queries on a fresh page load) shouldn't stomp the
       // origin path that the first failure captured.
-      setState((prev) => {
-        if (prev) return prev;
-        if (typeof window !== "undefined") {
-          try {
-            const origin = pathname ?? window.location.pathname;
-            window.sessionStorage.setItem(ORIGIN_PATH_KEY, origin);
-          } catch {
-            // intentionally ignored: sessionStorage write can throw in
-            // private mode; the dialog still opens, the user just doesn't
-            // get the redirect-back nicety.
-          }
+      if (state) return;
+
+      if (typeof window !== "undefined") {
+        try {
+          const origin = pathname ?? window.location.pathname;
+          window.sessionStorage.setItem(ORIGIN_PATH_KEY, origin);
+        } catch {
+          // intentionally ignored: sessionStorage write can throw in
+          // private mode; the dialog still opens, the user just doesn't
+          // get the redirect-back nicety.
         }
-        return { enrollmentUrl };
-      });
+      }
+
+      setState({ enrollmentUrl });
     },
-    [pathname],
+    [pathname, state, setState],
   );
-
-  const clear = useCallback(() => {
-    setState(null);
-  }, []);
-
-  const value = useMemo<MfaGateContextValue>(
-    () => ({ state, trigger, clear }),
-    [state, trigger, clear],
-  );
-
-  return <MfaGateContext.Provider value={value}>{children}</MfaGateContext.Provider>;
 }
 
 /**
@@ -121,13 +129,17 @@ export function MfaGateProvider({ children }: { children: ReactNode }) {
  * conversation views) should use {@link useMfaGateOptional} instead.
  */
 export function useMfaGate(): MfaGateContextValue {
-  const ctx = useContext(MfaGateContext);
-  if (!ctx) {
+  const inScope = useContext(ScopeContext);
+  const state = useMfaGateStore((s) => s.state);
+  const clear = useMfaGateStore((s) => s.clear);
+  const trigger = useTrigger();
+
+  if (!inScope) {
     throw new Error(
       "useMfaGate must be used inside <MfaGateProvider>. Mount it in the admin layout.",
     );
   }
-  return ctx;
+  return { state, trigger, clear };
 }
 
 /**
@@ -137,8 +149,13 @@ export function useMfaGate(): MfaGateContextValue {
  * (e.g. embedded in the chat) without throwing on every fetch.
  */
 export function useMfaGateOptional(): MfaGateContextValue {
-  const ctx = useContext(MfaGateContext);
-  return ctx ?? NOOP_GATE;
+  const inScope = useContext(ScopeContext);
+  const state = useMfaGateStore((s) => s.state);
+  const clear = useMfaGateStore((s) => s.clear);
+  const trigger = useTrigger();
+
+  if (!inScope) return NOOP_GATE;
+  return { state, trigger, clear };
 }
 
 const NOOP_GATE: MfaGateContextValue = {

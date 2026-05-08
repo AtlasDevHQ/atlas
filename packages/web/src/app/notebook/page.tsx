@@ -16,6 +16,7 @@ import { NavBar } from "@/ui/components/tour/nav-bar";
 import { Button } from "@/components/ui/button";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
 import type { ForkInfo } from "@/ui/components/notebook/types";
+import { useUiStore } from "@/lib/stores/ui-store";
 
 const GuidedTour = dynamic(
   () => import("@/ui/components/tour/guided-tour").then((m) => m.GuidedTour),
@@ -42,7 +43,7 @@ function NotebookContent() {
   const focusCellId = params.cell || undefined;
 
   const [error, setError] = useState<string | null>(null);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const tempIdRef = useRef(`temp:${Date.now()}`);
 
@@ -263,7 +264,7 @@ function NotebookContent() {
       setMessages(transformMessages(convData.messages));
       setParams({ id, cell: "" });
       convos.setSelectedId(id);
-      setMobileMenuOpen(false);
+      setMobileSidebarOpen(false);
     } catch (err: unknown) {
       console.warn(
         "Failed to load conversation:",
@@ -317,8 +318,6 @@ function NotebookContent() {
               onDelete={(id) => convos.deleteConversation(id)}
               onStar={(id, starred) => convos.starConversation(id, starred)}
               onNewChat={handleNewChat}
-              mobileOpen={mobileMenuOpen}
-              onMobileClose={() => setMobileMenuOpen(false)}
             />
           )}
           <main id="main" className="flex-1 flex flex-col overflow-hidden">

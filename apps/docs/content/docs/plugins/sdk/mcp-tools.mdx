@@ -64,20 +64,23 @@ The contributor-facing rubric (with the "why" the audit existed) lives in [`mcp-
 
 - **Input is zod-validated before the handler runs.** A schema rejection short-circuits with a `validation_failed` envelope; your handler is never invoked.
 - **Handler throws are wrapped.** Any `throw` inside `handler` is caught and surfaced as an `internal_error` envelope carrying the dispatch's `request_id` so an LLM agent can correlate the failure with server logs. Plugins cannot leak arbitrary error shapes through the MCP boundary.
-- **Audit + OTel coverage matches native tools.** The dispatch wrapper binds a `mcp` actor with `clientId` (hosted) and `toolName: "<plugin>.<tool>"`. The audit_log row, OTel span, tool-call counter, and latency histogram all pick up the actor — no per-plugin instrumentation is needed.
+- **Audit + OTel coverage matches native tools.** The dispatch wrapper binds a `mcp` actor with `clientId` (hosted) and `toolName: "<plugin>.<tool>"`. Any nested `executeSQL` row in `audit_log`, the OTel span, the tool-call counter, and the latency histogram all pick up the actor — no per-plugin instrumentation is needed. The host does **not** itself write a row to `audit_log` for the plugin-tool dispatch; pure plugin tools that don't invoke `executeSQL` produce no `audit_log` rows. Use `ctx.audit({ event, success, ... })` for structured pino events when you want a domain-specific signal.
 - **Rate limiting matches native tools.** Hosted MCP runs every dispatch through the per-OAuth-client limiter (#2071). Stdio MCP is exempt by design.
 
 ## Complete example
 
 ```typescript
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { z } from "zod";
 import { definePlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasContextPlugin,
   AtlasMcpTool,
+  AtlasPluginContext,
 } from "@useatlas/plugin-sdk";
 
-const RUNBOOK_SEARCH_DESCRIPTION = `Search the runbooks knowledge base loaded by the \`runbooks-context\` plugin and return matching titles + ids. The base is parsed at boot from \`./runbooks/*.md\` and cached in memory; calls are O(log N) over the title index. Example call: \`{ "query": "kafka lag" }\`. Example response: \`{ "matches": [{ "id": "kafka-lag-101", "title": "Investigating Kafka Lag" }] }\`.
+const RUNBOOK_SEARCH_DESCRIPTION = `Search the runbooks knowledge base loaded by the \`runbooks-context\` plugin and return matching titles + ids. The base is parsed at \`initialize()\` from \`./runbooks/*.md\` and cached in a closure-scoped title index; calls are O(N) over the cached titles. Example call: \`{ "query": "kafka lag" }\`. Example response: \`{ "matches": [{ "id": "kafka-lag-101", "title": "Investigating Kafka Lag" }] }\`.
 
 Use this when the user asks about an incident, an alert, or a runbook by topic — searching the title index is faster than dumping a context string. Pair with \`getRunbook(id)\` to fetch the full body when a hit looks relevant.
 
@@ -87,7 +90,14 @@ const searchInputSchema = z.object({
   query: z.string().min(1).max(256),
 });
 
-function buildSearchRunbooksTool(): AtlasMcpTool<{ query: string }> {
+interface RunbookEntry {
+  readonly id: string;
+  readonly title: string;
+}
+
+function buildSearchRunbooksTool(
+  index: ReadonlyArray<RunbookEntry>,
+): AtlasMcpTool<{ query: string }> {
   return {
     name: "search",
     description: RUNBOOK_SEARCH_DESCRIPTION,
@@ -95,7 +105,8 @@ function buildSearchRunbooksTool(): AtlasMcpTool<{ query: string }> {
     inputSchema: searchInputSchema,
     async handler({ query }, ctx) {
       const start = performance.now();
-      const matches = await titleIndex.search(query);
+      const needle = query.toLowerCase();
+      const matches = index.filter((r) => r.title.toLowerCase().includes(needle));
       ctx.audit({
         event: "runbooks.search",
         success: true,
@@ -107,14 +118,28 @@ function buildSearchRunbooksTool(): AtlasMcpTool<{ query: string }> {
   };
 }
 
-export function runbooksContextPlugin(): AtlasContextPlugin {
+export function runbooksContextPlugin(opts: { runbooksDir: string }): AtlasContextPlugin {
+  let index: RunbookEntry[] = [];
   return definePlugin({
     id: "runbooks",
     types: ["context"] as const,
     version: "0.1.0",
     contextProvider: { load: async () => "" },
+    async initialize(_ctx: AtlasPluginContext) {
+      // Build the title index once at boot. Real plugins parse front
+      // matter, prefix-trees, etc; this snippet keeps it minimal so
+      // the example compiles as-is.
+      const files = fs.readdirSync(opts.runbooksDir)
+        .filter((f) => f.endsWith(".md"));
+      index = files.map((f) => ({
+        id: f.replace(/\.md$/, ""),
+        title: fs.readFileSync(path.join(opts.runbooksDir, f), "utf-8")
+          .split("\n", 1)[0]
+          .replace(/^#\s+/, "") || f,
+      }));
+    },
     mcpTools() {
-      return [buildSearchRunbooksTool()];
+      return [buildSearchRunbooksTool(index)];
     },
   });
 }

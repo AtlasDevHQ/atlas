@@ -436,7 +436,17 @@ export interface PluginZodSchema<TOut = unknown> {
           message: string;
         };
       };
-  readonly _def?: unknown;
+  /**
+   * Zod's internal definition object — the MCP SDK and the AI SDK both
+   * introspect this to derive a JSON Schema for the tool's input.
+   * Required (not optional) so a structural impostor with only
+   * `parse` / `safeParse` cannot typecheck through `register()` and
+   * later fail at MCP `tools/list` generation far from the authoring
+   * site. Type is `unknown` because the shape is opaque across Zod
+   * versions; the contract is "this field exists and the host's
+   * schema-introspection layer will probe it."
+   */
+  readonly _def: unknown;
 }
 
 /**
@@ -462,10 +472,15 @@ export interface McpToolContext {
   readonly logger: PluginLogger;
   /**
    * Fire-and-forget structured event emitter. Plugins log domain-specific
-   * audit signals here; the host already records the dispatch in
-   * `audit_log` via the `mcp` actor binding so plugins do not need to
-   * write the row themselves. Failures inside `audit` are swallowed and
-   * logged — they never propagate.
+   * audit signals here; the host binds the `mcp` actor on the request
+   * context so any nested `executeSQL` (or any other code path that
+   * writes its own `audit_log` row) is stamped with the plugin tool's
+   * `qualifiedName`, `clientId`, and request id consistently. The host
+   * does NOT itself write a row to `audit_log` for the dispatch — pure
+   * plugin tools that don't invoke `executeSQL` produce zero rows in
+   * `audit_log`, just structured pino events via this `audit()` call.
+   * Failures inside `audit` are swallowed and logged — they never
+   * propagate.
    */
   audit(entry: McpToolAuditEntry): void;
 }
@@ -506,7 +521,8 @@ export interface AtlasMcpTool<
   /**
    * LLM-facing description. Goes through the same rubric as native tools
    * (80–150 words, `Use this when …`, `Don't use this …`/`Avoid …`, at
-   * least one inline JSON example). Drift fails CI.
+   * least one inline JSON example) and gets the same `Error contract:`
+   * appendage at registration time. Drift fails CI.
    */
   readonly description: string;
   /** Per-tool error catalog appended to the description via `withErrorContract`. */

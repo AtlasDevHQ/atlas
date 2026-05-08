@@ -11,8 +11,32 @@
  *   `traceMcpToolCall` span — same coverage as native tools.
  */
 
-import { describe, expect, it, beforeEach } from "bun:test";
+import { describe, expect, it, beforeEach, mock } from "bun:test";
 import { z } from "zod/v4";
+
+// Stub the rate-limit middleware so we can drive (a) ok, (b) denied
+// envelope, and (c) limiter throws — the three branches of the
+// `clientId`-set dispatch path. mock.module replaces ALL named exports
+// from the module per CLAUDE.md so partial-mock leakage doesn't break
+// other tests in the same isolated subprocess.
+const rateLimitState: {
+  outcome:
+    | { kind: "ok" }
+    | { kind: "denied"; envelope: { code: string; message: string; retry_after?: number } }
+    | { kind: "throw"; error: Error };
+  calls: Array<{ orgId: string; clientId: string; userId: string; toolName: string }>;
+} = {
+  outcome: { kind: "ok" },
+  calls: [],
+};
+mock.module("@atlas/api/lib/rate-limit/middleware", () => ({
+  enforceClientRateLimit: mock(async (input: { orgId: string; clientId: string; userId: string; toolName: string }) => {
+    rateLimitState.calls.push(input);
+    const o = rateLimitState.outcome;
+    if (o.kind === "throw") throw o.error;
+    return o;
+  }),
+}));
 import {
   PluginMcpToolRegistry,
   wireMcpToolPlugins,
@@ -20,7 +44,10 @@ import {
   type AtlasMcpToolLike,
   type McpServerLike,
   type McpCallToolResult,
+  type McpToolContextShape,
 } from "@atlas/api/lib/plugins/mcp-tools";
+
+type McpLogger = McpToolContextShape["logger"];
 import { PluginRegistry, type PluginLike } from "@atlas/api/lib/plugins/registry";
 
 interface FakeRegisteredTool {
@@ -116,6 +143,20 @@ describe("PluginMcpToolRegistry", () => {
         makeTool({ inputSchema: { parse: () => null } as never }),
       ),
     ).toThrow(/safeParse/);
+  });
+
+  it("rejects schemas missing _def (would break tools/list JSON Schema derivation)", () => {
+    // A `{ parse, safeParse }` impostor that *would* validate inputs
+    // but lacks `_def` — the MCP SDK introspects `_def` to derive the
+    // JSON Schema shipped in `tools/list`, so accepting this would fail
+    // at the wire far from the authoring site.
+    const impostor = {
+      parse: (x: unknown) => x,
+      safeParse: (x: unknown) => ({ success: true as const, data: x }),
+    };
+    expect(() =>
+      registry.register("runbooks", makeTool({ inputSchema: impostor as never })),
+    ).toThrow(/_def/);
   });
 
   it("rejects non-function handlers", () => {
@@ -266,6 +307,10 @@ describe("registerPluginMcpTools (MCP server registration)", () => {
   beforeEach(() => {
     registry = new PluginMcpToolRegistry();
     server = new FakeMcpServer();
+    // Reset module-level rate-limit mock state so a later test
+    // doesn't inherit `kind: "throw"` from an earlier `describe`.
+    rateLimitState.outcome = { kind: "ok" };
+    rateLimitState.calls = [];
   });
 
   function actor() {
@@ -374,6 +419,107 @@ describe("registerPluginMcpTools (MCP server registration)", () => {
     expect(JSON.parse(result.content[0].text)).toEqual({ matches: ["alpha"] });
   });
 
+  describe("rate-limit gate (#2071)", () => {
+    beforeEach(() => {
+      rateLimitState.outcome = { kind: "ok" };
+      rateLimitState.calls = [];
+    });
+
+    it("skips the limiter entirely when clientId is undefined (stdio MCP exempt)", async () => {
+      registry.register(
+        "runbooks",
+        makeTool({
+          name: "search",
+          inputSchema: z.object({}),
+          handler: async () => ({ ok: true }),
+        }),
+      );
+      registerPluginMcpTools(server, {
+        registry,
+        actor: actor(),
+        transport: "stdio",
+        workspaceId: "org-1",
+        deployMode: "self-hosted",
+      });
+      const handler = server.registered.get("runbooks.search")!.handler;
+      await handler({});
+      expect(rateLimitState.calls).toEqual([]);
+    });
+
+    it("denied bucket short-circuits with the limiter's rate_limited envelope", async () => {
+      let handlerCalled = false;
+      registry.register(
+        "runbooks",
+        makeTool({
+          name: "search",
+          inputSchema: z.object({}),
+          handler: async () => {
+            handlerCalled = true;
+            return { ok: true };
+          },
+        }),
+      );
+      rateLimitState.outcome = {
+        kind: "denied",
+        envelope: {
+          code: "rate_limited",
+          message: "Client claude-desktop QPM limit reached (60/min)",
+          retry_after: 30,
+        },
+      };
+      registerPluginMcpTools(server, {
+        registry,
+        actor: actor(),
+        transport: "stdio",
+        workspaceId: "org-1",
+        deployMode: "self-hosted",
+        clientId: "claude-desktop",
+      });
+      const handler = server.registered.get("runbooks.search")!.handler;
+      const result = await handler({});
+      expect(result.isError).toBe(true);
+      expect(handlerCalled).toBe(false);
+      const body = JSON.parse(result.content[0].text);
+      expect(body.code).toBe("rate_limited");
+      expect(body.retry_after).toBe(30);
+      // Limiter received the qualified tool name so abuse rows can scope by tool.
+      expect(rateLimitState.calls[0].toolName).toBe("runbooks.search");
+      expect(rateLimitState.calls[0].clientId).toBe("claude-desktop");
+    });
+
+    it("limiter throws → internal_error envelope with request_id (rather than fail-closed silently)", async () => {
+      let handlerCalled = false;
+      registry.register(
+        "runbooks",
+        makeTool({
+          name: "search",
+          inputSchema: z.object({}),
+          handler: async () => {
+            handlerCalled = true;
+            return { ok: true };
+          },
+        }),
+      );
+      rateLimitState.outcome = { kind: "throw", error: new Error("loader rejected") };
+      registerPluginMcpTools(server, {
+        registry,
+        actor: actor(),
+        transport: "stdio",
+        workspaceId: "org-1",
+        deployMode: "self-hosted",
+        clientId: "claude-desktop",
+      });
+      const handler = server.registered.get("runbooks.search")!.handler;
+      const result = await handler({});
+      expect(result.isError).toBe(true);
+      expect(handlerCalled).toBe(false);
+      const body = JSON.parse(result.content[0].text);
+      expect(body.code).toBe("internal_error");
+      expect(body.message).toBe("loader rejected");
+      expect(body.request_id).toMatch(/^mcp-plugin-/);
+    });
+  });
+
   it("propagates the mcp actor into RequestContext for audit + OTel", async () => {
     let observed: { actor?: unknown; requestId?: string } = {};
     registry.register(
@@ -424,5 +570,138 @@ describe("registerPluginMcpTools (MCP server registration)", () => {
       toolName: "runbooks.search",
     });
     expect(observed.requestId).toMatch(/^mcp-plugin-/);
+  });
+
+  describe("McpToolContext.audit()", () => {
+    it("emits a structured pino event on success and does not throw", async () => {
+      const logged: Array<{ level: string; obj: Record<string, unknown>; msg: string }> = [];
+      registry.register(
+        "runbooks",
+        makeTool({
+          name: "search",
+          inputSchema: z.object({}),
+          handler: async (_args, ctx) => {
+            ctx.audit({
+              event: "runbooks.search",
+              success: true,
+              durationMs: 42,
+              metadata: { hits: 3 },
+            });
+            return { ok: true };
+          },
+        }),
+      );
+      registerPluginMcpTools(server, {
+        registry,
+        actor: actor(),
+        transport: "stdio",
+        workspaceId: "org-1",
+        deployMode: "self-hosted",
+        loggerFor: () => ({
+          info: ((obj: Record<string, unknown> | string, msg?: string) => {
+            if (typeof obj === "string") logged.push({ level: "info", obj: {}, msg: obj });
+            else logged.push({ level: "info", obj, msg: msg ?? "" });
+          }) as McpLogger["info"],
+          warn: ((obj: Record<string, unknown> | string, msg?: string) => {
+            if (typeof obj === "string") logged.push({ level: "warn", obj: {}, msg: obj });
+            else logged.push({ level: "warn", obj, msg: msg ?? "" });
+          }) as McpLogger["warn"],
+          error: (() => {}) as McpLogger["error"],
+          debug: (() => {}) as McpLogger["debug"],
+        }),
+      });
+      const handler = server.registered.get("runbooks.search")!.handler;
+      const result = await handler({});
+      expect(result.isError).toBeUndefined();
+      const audit = logged.find((l) => l.msg === "plugin_audit:runbooks.search");
+      expect(audit, "audit() should have emitted a `plugin_audit:<event>` log").toBeDefined();
+      expect(audit!.level).toBe("info");
+      expect(audit!.obj.success).toBe(true);
+      expect(audit!.obj.durationMs).toBe(42);
+      expect(audit!.obj.metadata).toEqual({ hits: 3 });
+    });
+
+    it("swallows logger throws without propagating to the handler return", async () => {
+      registry.register(
+        "runbooks",
+        makeTool({
+          name: "search",
+          inputSchema: z.object({}),
+          handler: async (_args, ctx) => {
+            // Trigger the catch path inside audit() by providing a logger
+            // whose info() throws. The handler's return value must still
+            // surface as the dispatch result — audit must never propagate.
+            ctx.audit({ event: "x", success: true });
+            return { ok: true };
+          },
+        }),
+      );
+      registerPluginMcpTools(server, {
+        registry,
+        actor: actor(),
+        transport: "stdio",
+        workspaceId: "org-1",
+        deployMode: "self-hosted",
+        loggerFor: () => ({
+          info: (() => {
+            throw new Error("logger sink down");
+          }) as McpLogger["info"],
+          warn: (() => {
+            throw new Error("logger sink down");
+          }) as McpLogger["warn"],
+          error: (() => {}) as McpLogger["error"],
+          debug: (() => {}) as McpLogger["debug"],
+        }),
+      });
+      const handler = server.registered.get("runbooks.search")!.handler;
+      const result = await handler({});
+      // audit() throwing would be caught by the dispatch handler-throw
+      // branch and surface as `internal_error`. Asserting success means
+      // audit() really did swallow.
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content[0].text)).toEqual({ ok: true });
+    });
+  });
+
+  describe("traceWrap", () => {
+    it("wraps the handler invocation (not just precedes it) so OTel spans cover handler latency", async () => {
+      const order: string[] = [];
+      registry.register(
+        "runbooks",
+        makeTool({
+          name: "search",
+          inputSchema: z.object({}),
+          handler: async () => {
+            order.push("handler");
+            return { ok: true };
+          },
+        }),
+      );
+      registerPluginMcpTools(server, {
+        registry,
+        actor: actor(),
+        transport: "stdio",
+        workspaceId: "org-1",
+        deployMode: "self-hosted",
+        traceWrap: async (spanCtx, fn) => {
+          order.push(`trace-start:${spanCtx.toolName}`);
+          const result = await fn();
+          order.push(`trace-end:${spanCtx.toolName}`);
+          return result;
+        },
+      });
+      const handler = server.registered.get("runbooks.search")!.handler;
+      const result = await handler({});
+      // The trace must START before the handler runs and END after — a
+      // regression that called fn() outside the wrap (e.g., started the
+      // span but awaited the handler outside it) would lose handler
+      // latency and exception propagation in OTel spans.
+      expect(order).toEqual([
+        "trace-start:runbooks.search",
+        "handler",
+        "trace-end:runbooks.search",
+      ]);
+      expect(JSON.parse(result.content[0].text)).toEqual({ ok: true });
+    });
   });
 });

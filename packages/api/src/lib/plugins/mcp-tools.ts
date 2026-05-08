@@ -48,7 +48,12 @@ export interface ZodSchemaLike {
           message: string;
         };
       };
-  readonly _def?: unknown;
+  /**
+   * Zod's internal definition. Required so a `{ parse, safeParse }`
+   * impostor cannot pass `register()` and break the MCP SDK's JSON-
+   * Schema derivation downstream. See `PluginZodSchema._def` in the SDK.
+   */
+  readonly _def: unknown;
 }
 
 export interface McpToolAuditEntry {
@@ -150,6 +155,13 @@ export class PluginMcpToolRegistry {
     ) {
       throw new Error(
         `Plugin "${pluginId}" tool "${tool.name}" inputSchema must expose safeParse() (Zod-shaped)`,
+      );
+    }
+    if (!("_def" in (tool.inputSchema as object))) {
+      // The MCP SDK derives JSON Schema from `_def`. A structural
+      // impostor without it would pass `safeParse` but break tools/list.
+      throw new Error(
+        `Plugin "${pluginId}" tool "${tool.name}" inputSchema must expose _def (Zod-shaped — required for tools/list JSON Schema derivation)`,
       );
     }
     if (typeof tool.handler !== "function") {
@@ -402,20 +414,27 @@ function defaultLogger(pluginId: string, qualifiedName: string): McpToolContextS
 
 /**
  * Register every plugin MCP tool in `opts.registry` on the given MCP
- * server. The dispatch wrapper:
+ * server. The dispatch wrapper, in execution order:
  *
  * 1. Generates a per-call `request_id` (`mcp-plugin-<uuid>`).
- * 2. Validates the LLM-supplied arguments against the plugin's
+ * 2. Wraps everything below in `withRequestContext({ user: actor,
+ *    actor: { kind: "mcp", clientId, toolName: qualifiedName } })` so
+ *    any nested `executeSQL` audit_log row inherits the plugin tool's
+ *    `tool_name`, `client_id`, and `actor_kind` consistently with
+ *    native tools. The wrap is the OUTERMOST step — every subsequent
+ *    step runs inside the actor binding.
+ * 3. Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads
+ *    `clientId`; stdio MCP leaves it undefined and is exempt.
+ *    A denied bucket short-circuits with the limiter's `rate_limited`
+ *    envelope; a limiter throw surfaces as `internal_error`.
+ * 4. Validates the LLM-supplied arguments against the plugin's
  *    `inputSchema` — a parse failure short-circuits with a
  *    `validation_failed` envelope (handler is never invoked).
- * 3. Wraps the dispatch in `withRequestContext({ user: actor, actor:
- *    { kind: "mcp", clientId, toolName: qualifiedName } })` so
- *    `audit_log.{actor_kind, client_id, tool_name}` and any nested
- *    `executeSQL` audit row are stamped consistently with native tools.
- * 4. Applies the optional `traceWrap` (OTel) — stdio/SSE pass
+ * 5. Applies the optional `traceWrap` (OTel) — stdio/SSE pass
  *    `traceMcpToolCall`; tests pass identity.
- * 5. Builds the `McpToolContext` and invokes the plugin handler.
- * 6. On a handler throw, returns an `internal_error` envelope carrying
+ * 6. Builds the `McpToolContext` and invokes the plugin handler inside
+ *    the trace wrap.
+ * 7. On a handler throw, returns an `internal_error` envelope carrying
  *    `request_id` so an LLM agent can correlate with server logs.
  */
 export function registerPluginMcpTools(
@@ -532,11 +551,24 @@ export function registerPluginMcpTools(
                   `plugin_audit:${entry.event}`,
                 );
               } catch (err) {
-                // Audit must never propagate. Swallow + structured warn.
-                tlogger.warn(
-                  { err: err instanceof Error ? err.message : String(err) },
-                  "Plugin audit() write failed — event dropped",
-                );
+                // Audit must never propagate. The plugin's logger threw —
+                // fall back to the host module logger (independent of
+                // tlogger), wrapped in a final swallow guard so a broken
+                // sink at *both* levels still cannot escape audit().
+                try {
+                  log.warn(
+                    {
+                      err: err instanceof Error ? err.message : String(err),
+                      pluginId: tool.pluginId,
+                      qualifiedName: tool.qualifiedName,
+                      requestId,
+                    },
+                    "Plugin audit() write failed via plugin logger — event dropped",
+                  );
+                } catch {
+                  // intentionally ignored: last-resort sink when both
+                  // the plugin logger and the host module logger fail.
+                }
               }
             },
           };

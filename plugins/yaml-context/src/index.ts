@@ -233,11 +233,11 @@ export function buildContextString(
  * the cases where another tool is better, and a JSON example showing
  * the call shape.
  */
-export const GET_YAML_CONTEXT_STATS_DESCRIPTION = `Return summary counts for the semantic layer the \`context-yaml\` plugin loaded at boot — the number of entity YAML files parsed, the number of glossary terms resolved, the number of canonical metrics enumerated, and the absolute on-disk path of the directory. The plugin caches its parsed view of \`semantic/\` after the first context-build, so this call is O(1) once the cache is warm. Example call: \`{ "filter": "orders" }\`. Example response: \`{ "entities": 12, "glossary": 38, "metrics": 5, "semanticDir": "/app/semantic" }\`.
+export const GET_YAML_CONTEXT_STATS_DESCRIPTION = `Return summary counts for the semantic layer the \`context-yaml\` plugin parses on demand — number of entity YAML files found, number of glossary terms resolved, number of canonical metrics enumerated, and the absolute on-disk path of the directory. Each call re-reads the YAML files from disk; small workspaces parse in single-digit milliseconds. Example call: \`{ "filter": "orders" }\`. Example response: \`{ "entities": 12, "glossary": 38, "metrics": 5, "semanticDir": "/app/semantic" }\`.
 
 Use this when an MCP client wants a one-line "did Atlas pick up my YAML?" sanity check before routing to \`listEntities\` / \`describeEntity\`, or when a chat surface wants to advertise the workspace's catalog size in a status line.
 
-Don't use this for entity discovery — call \`listEntities\` instead. Avoid using \`getYamlContextStats\` to detect schema drift; the counts cache through cache invalidation only.`;
+Don't use this for entity discovery — call \`listEntities\` for the actual catalog rows with names and descriptions. Avoid polling \`getYamlContextStats\` for drift detection; large workspaces should cache results.`;
 
 const yamlContextStatsInputSchema = z.object({
   /**
@@ -265,10 +265,13 @@ const yamlContextStatsOutputSchema = z.object({
 /**
  * Build the plugin's `getYamlContextStats` MCP tool. Pure factory —
  * the closure-captured `semanticDir` keeps the tool transparent to the
- * surrounding plugin lifecycle (`refresh()` clearing `cachedContext`
- * has no effect on the counts because `listEntities` etc. parse the
- * underlying YAML files fresh each call — the host already caches the
- * parsed semantic layer at the engine level).
+ * surrounding plugin lifecycle. The handler re-reads the underlying
+ * YAML files on every call (it intentionally does NOT consult the
+ * `cachedContext` that `contextProvider.load()` populates, since that
+ * cache holds the formatted markdown context fragment, not the parsed
+ * entity / glossary / metric arrays). For large workspaces the agent
+ * should call this sparingly; the simple disk reads are fine for the
+ * "did my YAML get picked up?" sanity-check use case.
  */
 function buildYamlContextStatsTool(semanticDir: string): AtlasMcpTool<
   z.infer<typeof yamlContextStatsInputSchema>,

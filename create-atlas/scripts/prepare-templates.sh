@@ -210,12 +210,26 @@ for tpl in docker nextjs-standalone; do
 done
 
 # ── Step 5d: Copy CLI source files referenced by bin/atlas.ts ────────
-# bin/atlas.ts imports ../src/env-check and ../src/progress.
+# bin/atlas.ts imports both top-level files (../src/env-check,
+# ../src/progress, ../src/completions, ../src/validate, ../src/doctor)
+# AND every command (../src/commands/{init,plugin,migrate,migrate-import,
+# diff,export,import,improve,learn,query}). Static imports fail at
+# scaffold smoke-test time if any of these are missing, even when the
+# command isn't invoked — bun resolves static imports eagerly.
 # Must happen AFTER src/ is populated (Steps 2-4 wipe and rebuild src/).
 CLI_SRC="$MONOREPO/packages/cli/src"
 for tpl in docker nextjs-standalone; do
-  cp "$CLI_SRC/env-check.ts" "$TEMPLATES/$tpl/src/"
-  cp "$CLI_SRC/progress.ts"  "$TEMPLATES/$tpl/src/"
+  cp "$CLI_SRC/env-check.ts"   "$TEMPLATES/$tpl/src/"
+  cp "$CLI_SRC/progress.ts"    "$TEMPLATES/$tpl/src/"
+  cp "$CLI_SRC/completions.ts" "$TEMPLATES/$tpl/src/"
+  cp "$CLI_SRC/validate.ts"    "$TEMPLATES/$tpl/src/"
+  cp "$CLI_SRC/doctor.ts"      "$TEMPLATES/$tpl/src/"
+
+  rm -rf "$TEMPLATES/$tpl/src/commands"
+  cp -r "$CLI_SRC/commands" "$TEMPLATES/$tpl/src/commands"
+  # Tests don't ship with scaffolded apps.
+  find "$TEMPLATES/$tpl/src/commands" -name '__tests__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src/commands" -name '*.test.ts' -delete 2>/dev/null || true
 done
 
 # ── Step 5e: Copy @useatlas/schemas source into ALL templates ────────

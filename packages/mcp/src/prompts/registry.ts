@@ -400,10 +400,14 @@ export interface RegisterPromptsOptions {
  * Convert a `CanonicalPrompt` into the resolver shape — captured here
  * (not in `canonical.ts`) so the canonical loader stays free of the
  * MCP SDK types and can be tested as a pure function.
+ *
+ * Takes just `workspaceId` (not the full `InstrumentationContext`) —
+ * the gate only depends on the workspace, and narrowing the dependency
+ * makes it obvious that audit/OTel context doesn't influence visibility.
  */
 function canonicalDescriptor(
   cp: CanonicalPrompt,
-  ctx: InstrumentationContext,
+  workspaceId: string | undefined,
 ): PromptDescriptor {
   return {
     name: cp.name,
@@ -411,9 +415,7 @@ function canonicalDescriptor(
     source: "canonical",
     args: [],
     resolve: async (): Promise<GetPromptResult> => {
-      const allowed = await shouldExposeCanonicalPrompts({
-        workspaceId: ctx.workspaceId,
-      });
+      const allowed = await shouldExposeCanonicalPrompts({ workspaceId });
       if (!allowed) {
         // Mirror the SDK's "prompt not found" path verbatim — same
         // ErrorCode + message shape as `mcp.js` lines 423/447 — so an
@@ -463,7 +465,7 @@ export async function registerPrompts(
 
   // 2. Canonical eval prompts (gated per-request — see canonicalDescriptor)
   for (const cp of loadCanonicalPrompts()) {
-    descriptors.push(canonicalDescriptor(cp, ctx));
+    descriptors.push(canonicalDescriptor(cp, ctx.workspaceId));
   }
 
   // 3. Semantic layer query patterns
@@ -491,10 +493,7 @@ export async function registerPrompts(
   // Register every descriptor with the SDK so `prompts/get` routes to
   // our resolver. We wrap the resolver to attach OTel + audit on every
   // dispatch — instrumentation never masks the underlying result.
-  const descriptorByName = new Map<string, PromptDescriptor>();
   for (const d of descriptors) {
-    descriptorByName.set(d.name, d);
-
     const argsSchema: Record<string, z.ZodString> = {};
     for (const arg of d.args) {
       argsSchema[arg.name] = z.string().describe(arg.description);
@@ -573,10 +572,4 @@ export async function registerPrompts(
 
     return { prompts };
   });
-
-  // Test/debug seam — surface our local registry for assertions without
-  // reaching into SDK internals.
-  (server as unknown as {
-    _atlasPromptDescriptors?: ReadonlyMap<string, PromptDescriptor>;
-  })._atlasPromptDescriptors = descriptorByName;
 }

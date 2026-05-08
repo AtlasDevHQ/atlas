@@ -587,8 +587,10 @@ chat.openapi(chatRoute, async (c) => {
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
     // this nested call adds the user after inline auth completes.
+    // #2072 — stamp 'chat' on the surface so chat-only approval rules
+    // fire here but mcp/scheduler/slack-only rules do not.
     return withRequestContext(
-      { requestId, user: authResult.user, atlasMode },
+      { requestId, user: authResult.user, atlasMode, approvalSurface: "chat" },
       async () => {
         // Startup diagnostics — fast-fail with actionable errors
         const diagnostics = await validateEnvironment();

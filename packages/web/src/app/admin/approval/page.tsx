@@ -55,7 +55,14 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { extractFetchError, friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import { ApprovalRuleSchema } from "@/ui/lib/admin-schemas";
-import type { ApprovalRequest, ApprovalRule, ApprovalRuleType, ApprovalStatus } from "@/ui/lib/types";
+import {
+  APPROVAL_RULE_SURFACES,
+  type ApprovalRequest,
+  type ApprovalRule,
+  type ApprovalRuleSurface,
+  type ApprovalRuleType,
+  type ApprovalStatus,
+} from "@/ui/lib/types";
 import {
   AlertCircle,
   Check,
@@ -99,12 +106,28 @@ const RULE_TYPES: { value: ApprovalRuleType; label: string; description: string 
   { value: "cost", label: "Cost", description: "Match queries exceeding a cost threshold" },
 ];
 
+// #2072 — surface dropdown copy. The first row is the rule-side default
+// ('any') so admins authoring a rule that should fire everywhere don't
+// have to think about scoping; surface-specific choices follow.
+const SURFACE_OPTIONS: { value: ApprovalRuleSurface; label: string; description: string }[] = [
+  { value: "any", label: "Any surface", description: "Fires for every request, regardless of origin" },
+  { value: "chat", label: "Chat only", description: "Chat UI / /api/v1/query / demo" },
+  { value: "mcp", label: "MCP only", description: "Hosted Model Context Protocol clients (e.g. Claude Desktop)" },
+  { value: "scheduler", label: "Scheduler only", description: "Scheduled task runs" },
+  { value: "slack", label: "Slack only", description: "Slack receiver webhooks" },
+  { value: "teams", label: "Teams only", description: "Microsoft Teams receiver webhooks" },
+  { value: "webhook", label: "Webhook only", description: "Generic webhook receivers" },
+];
+
 const createRuleSchema = z
   .object({
     name: z.string().min(1, "Rule name is required"),
     ruleType: z.enum(["table", "column", "cost"]),
     pattern: z.string(),
     threshold: z.string(),
+    // #2072 — admin can pin a new rule to a single surface or leave it
+    // at 'any' (the migration default) for fires-everywhere semantics.
+    surface: z.enum(APPROVAL_RULE_SURFACES),
   })
   .refine(
     (data) => data.ruleType === "cost" || data.pattern.trim().length > 0,
@@ -183,7 +206,10 @@ function RulesSection() {
 
   const ruleForm = useForm<z.infer<typeof createRuleSchema>>({
     resolver: zodResolver(createRuleSchema),
-    defaultValues: { name: "", ruleType: "table", pattern: "", threshold: "" },
+    // #2072 — 'any' default keeps the form's behavior identical to the
+    // pre-2072 UX: an admin who doesn't touch the dropdown gets a rule
+    // that fires for every transport.
+    defaultValues: { name: "", ruleType: "table", pattern: "", threshold: "", surface: "any" },
   });
 
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/admin/approval/rules", {
@@ -214,6 +240,10 @@ function RulesSection() {
         pattern: values.pattern,
         threshold: values.ruleType === "cost" ? Number(values.threshold) : null,
         enabled: true,
+        // #2072 — surface flows on the wire. The route layer's zod parser
+        // re-validates against the same enum and a typo here surfaces as
+        // a 400 with a clear message instead of a 500.
+        surface: values.surface,
       },
     });
     if (result.ok) {
@@ -309,6 +339,37 @@ function RulesSection() {
                     )}
                   />
                 </div>
+                {/*
+                  #2072 — Surface dropdown. Full-width below the type/name
+                  pair so the rule editor reads top-to-bottom: identity,
+                  type, then where it applies. 'Any surface' is the
+                  default and preserves pre-2072 fires-everywhere
+                  semantics.
+                */}
+                <FormField
+                  control={ruleForm.control}
+                  name="surface"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Surface</FormLabel>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger aria-label="Approval rule surface">
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {SURFACE_OPTIONS.map((s) => (
+                            <SelectItem key={s.value} value={s.value}>
+                              {s.label} — {s.description}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 {ruleForm.watch("ruleType") !== "cost" ? (
                   <FormField
                     control={ruleForm.control}
@@ -371,6 +432,7 @@ function RulesSection() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Type</TableHead>
+                  <TableHead>Surface</TableHead>
                   <TableHead>Pattern / Threshold</TableHead>
                   <TableHead>Enabled</TableHead>
                   <TableHead className="w-[80px]" />
@@ -382,6 +444,17 @@ function RulesSection() {
                     <TableCell className="font-medium">{rule.name}</TableCell>
                     <TableCell>
                       <Badge variant="secondary">{rule.ruleType}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      {/*
+                        #2072 — outline variant for 'any' (the default,
+                        which fires everywhere — visually subdued so a
+                        surface-pinned row stands out) and a filled
+                        secondary badge for the scoped values.
+                      */}
+                      <Badge variant={rule.surface === "any" ? "outline" : "secondary"}>
+                        {rule.surface}
+                      </Badge>
                     </TableCell>
                     <TableCell className="font-mono text-xs">
                       {rule.ruleType === "cost" ? `> ${rule.threshold}` : rule.pattern}

@@ -21,6 +21,37 @@ export type ApprovalRuleType = (typeof APPROVAL_RULE_TYPES)[number];
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "expired"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
+/**
+ * Surface scope for approval rules (#2072). `'any'` preserves pre-2072
+ * fires-for-every-request semantics; the others pin to a transport.
+ *
+ * Two adjacent enums:
+ *   - `APPROVAL_RULE_SURFACES` — values an admin can pin a rule to.
+ *   - `APPROVAL_REQUEST_SURFACES` — values stamped on a created approval
+ *     request to record where it originated. No `'any'` — a real request
+ *     always has a single surface (or NULL if the caller didn't stamp).
+ */
+export const APPROVAL_RULE_SURFACES = [
+  "any",
+  "chat",
+  "mcp",
+  "scheduler",
+  "slack",
+  "teams",
+  "webhook",
+] as const;
+export type ApprovalRuleSurface = (typeof APPROVAL_RULE_SURFACES)[number];
+
+export const APPROVAL_REQUEST_SURFACES = [
+  "chat",
+  "mcp",
+  "scheduler",
+  "slack",
+  "teams",
+  "webhook",
+] as const;
+export type ApprovalRequestSurface = (typeof APPROVAL_REQUEST_SURFACES)[number];
+
 // ── Approval rule ───────────────────────────────────────────────────
 
 /**
@@ -32,6 +63,8 @@ interface ApprovalRuleBase {
   orgId: string;
   name: string;
   enabled: boolean;
+  /** #2072 — origin surface this rule applies to. `'any'` (default) fires for every request. */
+  surface: ApprovalRuleSurface;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,6 +106,12 @@ interface ApprovalRequestBase {
   connectionId: string;
   tablesAccessed: string[];
   columnsAccessed: string[];
+  /**
+   * #2072 — origin surface of the request that produced this row. `null`
+   * for legacy rows or callers that didn't stamp surface on the
+   * RequestContext.
+   */
+  surface: ApprovalRequestSurface | null;
   createdAt: string;
   expiresAt: string;
 }
@@ -122,15 +161,16 @@ export type ApprovalRequest = ApprovalRequestBase & (
  * runtime validation alone.
  */
 export type CreateApprovalRuleRequest =
-  | { ruleType: "cost"; threshold: number; name: string; pattern?: ""; enabled?: boolean }
-  | { ruleType: "table"; pattern: string; name: string; threshold?: null; enabled?: boolean }
-  | { ruleType: "column"; pattern: string; name: string; threshold?: null; enabled?: boolean };
+  | { ruleType: "cost"; threshold: number; name: string; pattern?: ""; enabled?: boolean; surface?: ApprovalRuleSurface }
+  | { ruleType: "table"; pattern: string; name: string; threshold?: null; enabled?: boolean; surface?: ApprovalRuleSurface }
+  | { ruleType: "column"; pattern: string; name: string; threshold?: null; enabled?: boolean; surface?: ApprovalRuleSurface };
 
 export interface UpdateApprovalRuleRequest {
   name?: string;
   pattern?: string;
   threshold?: number | null;
   enabled?: boolean;
+  surface?: ApprovalRuleSurface;
 }
 
 export interface ReviewApprovalRequest {

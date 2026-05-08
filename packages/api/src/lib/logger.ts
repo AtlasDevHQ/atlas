@@ -50,6 +50,15 @@ interface RequestContext {
   trustDeviceIdentifier?: string;
   /** #2067 — request-shape discriminator persisted to `audit_log.{actor_kind, client_id, tool_name}`. */
   actor?: RequestActor;
+  /**
+   * #2072 — origin surface for surface-scoped approval rule matching.
+   * Stamped by every agent-facing route (chat / query / slack / teams /
+   * webhook / mcp / scheduler) so `checkApprovalRequired` can apply
+   * `WHERE surface = $req OR surface = 'any'`. Distinct from
+   * `actor.kind` (which is the audit-log discriminator and uses a
+   * different value space — `human` / `agent` / `mcp` / `scheduler`).
+   */
+  approvalSurface?: import("@useatlas/types").ApprovalRequestSurface;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

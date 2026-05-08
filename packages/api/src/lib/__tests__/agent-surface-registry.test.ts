@@ -50,7 +50,11 @@ const KNOWN_AGENT_CALLERS: AgentCallerSpec[] = [
   {
     file: "packages/api/src/lib/scheduler/executor.ts",
     // F-54: resolves the task creator and passes as actor.
-    bindingProof: /agentQueryEffect\([^)]*,\s*\{\s*actor\s*\}/,
+    // #2072: also stamps approvalSurface for surface-scoped rules — the
+    // regex covers either the bare `{ actor }` shape OR an options bag
+    // that includes both fields, so future option additions don't trip
+    // this guardrail.
+    bindingProof: /agentQueryEffect\([^)]*,\s*\{[^{}]*\bactor\b/,
   },
   {
     file: "packages/api/src/api/routes/slack.ts",

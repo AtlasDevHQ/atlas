@@ -165,7 +165,7 @@ export function registerSemanticTools(
         { toolName: "listEntities", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-listEntities");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities") }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities"), approvalSurface: "mcp" }, async () => {
             try {
               // Rate-limit gate (#2071) lives INSIDE the try so any
               // limiter throw lands in the same catch as a tool throw
@@ -214,7 +214,7 @@ export function registerSemanticTools(
         { toolName: "describeEntity", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-describeEntity");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity") }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity"), approvalSurface: "mcp" }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,
@@ -272,7 +272,7 @@ export function registerSemanticTools(
         { toolName: "searchGlossary", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-searchGlossary");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary") }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary"), approvalSurface: "mcp" }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,
@@ -385,7 +385,7 @@ export function registerSemanticTools(
         },
         () => {
           const requestId = dispatchId("mcp-runMetric");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric") }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric"), approvalSurface: "mcp" }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,

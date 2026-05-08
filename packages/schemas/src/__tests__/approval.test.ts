@@ -9,6 +9,10 @@ const validTableRule = {
   pattern: "users",
   threshold: null,
   enabled: true,
+  // #2072 — 'any' is the migration default and preserves pre-2072
+  // fires-everywhere semantics. Surface-scoped variants are exercised
+  // in the dedicated describe block below.
+  surface: "any" as const,
   createdAt: "2026-04-19T12:00:00.000Z",
   updatedAt: "2026-04-19T12:00:00.000Z",
 };
@@ -42,6 +46,9 @@ const pendingRequest = {
   connectionId: "conn_1",
   tablesAccessed: ["users"],
   columnsAccessed: ["users.email"],
+  // #2072 — null is the legacy / unstamped default. A specific surface
+  // ("chat" / "mcp" / etc.) is asserted in the new surface block below.
+  surface: null,
   status: "pending" as const,
   reviewerId: null,
   reviewerEmail: null,
@@ -190,6 +197,46 @@ describe("enum strict rejection", () => {
 
   test("unknown status on ApprovalRequest fails parse", () => {
     const drifted = { ...pendingRequest, status: "pending_review" };
+    expect(ApprovalRequestSchema.safeParse(drifted).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Surface enum (#2072) — admin can pin a rule to a single transport, and
+// the request row records its origin. The schemas reject typos before
+// they reach the rule evaluator (which would silently mismatch every
+// request and leave the operator wondering why the rule didn't fire).
+// ---------------------------------------------------------------------------
+
+describe("surface enum (#2072)", () => {
+  test("ApprovalRuleSchema parses every documented rule surface", () => {
+    for (const surface of ["any", "chat", "mcp", "scheduler", "slack", "teams", "webhook"] as const) {
+      const rule = { ...validTableRule, surface };
+      expect(ApprovalRuleSchema.parse(rule).surface).toBe(surface);
+    }
+  });
+
+  test("ApprovalRuleSchema rejects unknown rule surface", () => {
+    const drifted = { ...validTableRule, surface: "msc" };
+    expect(ApprovalRuleSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("ApprovalRuleSchema rejects null rule surface (rules must always pin a value)", () => {
+    const drifted = { ...validTableRule, surface: null };
+    expect(ApprovalRuleSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("ApprovalRequestSchema parses every documented request surface plus null", () => {
+    for (const surface of ["chat", "mcp", "scheduler", "slack", "teams", "webhook", null] as const) {
+      const req = { ...pendingRequest, surface };
+      expect(ApprovalRequestSchema.parse(req).surface).toBe(surface);
+    }
+  });
+
+  test("ApprovalRequestSchema rejects 'any' on a request row (rule-only value)", () => {
+    // 'any' is the rule-side wildcard. A REQUEST always originated from
+    // a single surface — emitting 'any' here would be a writer bug.
+    const drifted = { ...pendingRequest, surface: "any" };
     expect(ApprovalRequestSchema.safeParse(drifted).success).toBe(false);
   });
 });

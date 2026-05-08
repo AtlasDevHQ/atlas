@@ -78,6 +78,10 @@ function makeRuleRow(overrides: Partial<Record<string, unknown>> = {}): Record<s
     pattern: "users",
     threshold: null,
     enabled: true,
+    // #2072 — default 'any' fires for every request surface, preserving
+    // the pre-2072 behavior every legacy test was written against.
+    // Surface-scoped tests override this explicitly.
+    surface: "any",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -102,6 +106,9 @@ function makeQueueRow(overrides: Partial<Record<string, unknown>> = {}): Record<
     reviewer_email: null,
     review_comment: null,
     reviewed_at: null,
+    // #2072 — null preserves the pre-2072 unstamped shape; the surface-
+    // isolation tests override explicitly.
+    surface: null,
     created_at: "2026-01-01T00:00:00Z",
     expires_at: "2030-01-01T00:00:00Z",
     ...overrides,
@@ -221,6 +228,46 @@ describe("createApprovalRule", () => {
     await expect(
       run(createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "users" })),
     ).rejects.toThrow("unexpected rule_type");
+  });
+
+  it("#2072: defaults surface to 'any' when admin doesn't pin one", async () => {
+    ee.queueMockRows([makeRuleRow({ surface: "any" })]);
+    const result = await run(createApprovalRule("org-1", {
+      ruleType: "table",
+      name: "PII tables",
+      pattern: "users",
+    }));
+    expect(result.surface).toBe("any");
+    const insert = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO approval_rules"));
+    expect(insert).toBeDefined();
+    expect(insert!.params).toContain("any");
+  });
+
+  it("#2072: persists explicit surface (mcp) when admin pins it", async () => {
+    ee.queueMockRows([makeRuleRow({ surface: "mcp" })]);
+    const result = await run(createApprovalRule("org-1", {
+      ruleType: "table",
+      name: "MCP-only PII",
+      pattern: "users",
+      surface: "mcp",
+    }));
+    expect(result.surface).toBe("mcp");
+    const insert = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO approval_rules"));
+    expect(insert!.params).toContain("mcp");
+  });
+
+  it("#2072: rejects an invalid surface value at validation", async () => {
+    try {
+      await run(createApprovalRule("org-1", {
+        ruleType: "table",
+        name: "bad",
+        pattern: "users",
+        surface: "msc" as never,
+      }));
+      expect.unreachable("expected ApprovalError for invalid surface");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApprovalError);
+    }
   });
 
   it("rejects table rule without pattern", async () => {
@@ -384,6 +431,102 @@ describe("checkApprovalRequired", () => {
     const result = await run(checkApprovalRequired("org-1", ["public.users"], ["id"]));
     expect(result.required).toBe(true);
   });
+
+  // ── #2072 surface scoping ──────────────────────────────────────────
+
+  describe("#2072 surface scoping", () => {
+    it("pushes the request surface into the SQL filter (mcp request)", async () => {
+      ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users", surface: "mcp" })]);
+      const result = await run(checkApprovalRequired(
+        "org-1",
+        ["users"],
+        ["id"],
+        { surface: "mcp" },
+      ));
+      expect(result.required).toBe(true);
+      // Captured SQL contains the surface predicate so a future refactor
+      // that drops it (and re-introduces the all-or-nothing pre-2072
+      // shape) fails this test instead of silently regressing.
+      const captured = ee.capturedQueries[ee.capturedQueries.length - 1];
+      expect(captured.sql).toContain("surface = 'any'");
+      expect(captured.sql).toContain("surface = $2");
+      expect(captured.params).toEqual(["org-1", "mcp"]);
+    });
+
+    it("acceptance: MCP-only rule fires for MCP queries against the same shape", async () => {
+      // Authoring an `mcp`-only rule and querying via the MCP transport
+      // is the headline acceptance criterion in #2072.
+      ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "customers", surface: "mcp" })]);
+      const result = await run(checkApprovalRequired(
+        "org-1",
+        ["customers"],
+        ["id"],
+        { surface: "mcp" },
+      ));
+      expect(result.required).toBe(true);
+      expect(result.matchedRules).toHaveLength(1);
+      expect(result.matchedRules[0].surface).toBe("mcp");
+    });
+
+    it("acceptance: same MCP-only rule does NOT fire for chat queries against the same shape", async () => {
+      // The DB-side filter passes a different `$2` (chat vs mcp), so the
+      // chat call never sees the mcp-scoped row. Empty mock rows simulate
+      // "the SQL filter excluded the rule" — no row returned.
+      ee.queueMockRows([]);
+      const result = await run(checkApprovalRequired(
+        "org-1",
+        ["customers"],
+        ["id"],
+        { surface: "chat" },
+      ));
+      expect(result.required).toBe(false);
+      const captured = ee.capturedQueries[ee.capturedQueries.length - 1];
+      expect(captured.params).toEqual(["org-1", "chat"]);
+    });
+
+    it("'any' rule fires for every surface (preserves pre-2072 default)", async () => {
+      // The migration default sets every existing row to 'any'. This
+      // non-destructive promise is the criterion most likely to regress.
+      for (const surface of ["chat", "mcp", "scheduler", "slack", "teams", "webhook"] as const) {
+        ee.reset();
+        mockEnterpriseEnabled = true;
+        ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users", surface: "any" })]);
+        const result = await run(checkApprovalRequired(
+          "org-1",
+          ["users"],
+          ["id"],
+          { surface },
+        ));
+        expect(result.required, `'any' rule must fire for surface "${surface}"`).toBe(true);
+      }
+    });
+
+    it("passes NULL surface to SQL when the caller didn't stamp one (fail-closed for scoped rules)", async () => {
+      // Routes that haven't been retrofitted to stamp surface end up
+      // here. The SQL filter still fires 'any' rules but skips
+      // surface-scoped ones — that's the fail-closed shape (a route
+      // forgetting to stamp can't accidentally trip a surface-scoped
+      // rule meant for a different transport).
+      ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users", surface: "any" })]);
+      const result = await run(checkApprovalRequired("org-1", ["users"], ["id"]));
+      expect(result.required).toBe(true);
+      const captured = ee.capturedQueries[ee.capturedQueries.length - 1];
+      expect(captured.params).toEqual(["org-1", null]);
+    });
+
+    it("scheduler-only rule does not fire for chat queries", async () => {
+      // The third worked example in the issue body.
+      ee.queueMockRows([]);
+      const result = await run(checkApprovalRequired(
+        "org-1",
+        ["payroll"],
+        ["amount"],
+        { surface: "chat" },
+      ));
+      expect(result.required).toBe(false);
+      expect(ee.capturedQueries[ee.capturedQueries.length - 1].params).toEqual(["org-1", "chat"]);
+    });
+  });
 });
 
 // ── Queue Management Tests ──────────────────────────────────────────
@@ -409,6 +552,67 @@ describe("createApprovalRequest", () => {
     expect(result.status).toBe("pending");
     expect(result.tablesAccessed).toEqual(["users"]);
     expect(ee.capturedQueries[0].sql).toContain("INSERT INTO approval_queue");
+  });
+
+  it("#2072: stamps surface on the queued row when caller provides it", async () => {
+    ee.queueMockRows([makeQueueRow({ surface: "mcp" })]);
+    const result = await run(createApprovalRequest({
+      orgId: "org-1",
+      ruleId: "rule-1",
+      ruleName: "MCP rule",
+      requesterId: "user-1",
+      requesterEmail: "user@example.com",
+      querySql: "SELECT * FROM customers",
+      explanation: null,
+      connectionId: "default",
+      tablesAccessed: ["customers"],
+      columnsAccessed: ["id"],
+      surface: "mcp",
+    }));
+    expect(result.surface).toBe("mcp");
+    // The captured INSERT carries the surface in the parameter list so
+    // a future refactor that drops the binding regresses this test.
+    const insert = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO approval_queue"));
+    expect(insert).toBeDefined();
+    expect(insert!.params).toContain("mcp");
+  });
+
+  it("#2072: stores surface as null when the caller does not provide it (legacy shape)", async () => {
+    ee.queueMockRows([makeQueueRow({ surface: null })]);
+    const result = await run(createApprovalRequest({
+      orgId: "org-1",
+      ruleId: "rule-1",
+      ruleName: "Any rule",
+      requesterId: "user-1",
+      requesterEmail: null,
+      querySql: "SELECT * FROM users",
+      explanation: null,
+      connectionId: "default",
+      tablesAccessed: ["users"],
+      columnsAccessed: ["id"],
+    }));
+    expect(result.surface).toBeNull();
+  });
+
+  it("#2072: rejects a surface value that isn't in the request enum (typo)", async () => {
+    try {
+      await run(createApprovalRequest({
+        orgId: "org-1",
+        ruleId: "rule-1",
+        ruleName: "Any rule",
+        requesterId: "user-1",
+        requesterEmail: null,
+        querySql: "SELECT * FROM users",
+        explanation: null,
+        connectionId: "default",
+        tablesAccessed: ["users"],
+        columnsAccessed: ["id"],
+        surface: "msc" as never,
+      }));
+      expect.unreachable("expected ApprovalError for invalid surface");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApprovalError);
+    }
   });
 });
 

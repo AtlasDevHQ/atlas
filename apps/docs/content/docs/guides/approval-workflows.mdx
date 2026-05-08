@@ -41,6 +41,32 @@ When a user runs a query, the SQL validation pipeline checks the query against a
 | **Column** | Triggers when a query accesses a specific column | `ssn` — any query reading the `ssn` column requires approval |
 | **Cost** | Triggers when estimated row count exceeds threshold | `100000` — queries expected to return more than 100K rows need approval |
 
+### Surface Scoping
+
+Every rule has a **surface** that pins it to a single transport (or `any` for fires-everywhere):
+
+| Surface | When the rule fires |
+|---------|---------------------|
+| `any` (default) | Every request, regardless of origin — preserves the pre-#2072 behavior |
+| `chat` | Chat UI (`/admin`), `/api/v1/chat`, `/api/v1/query`, demo |
+| `mcp` | Hosted Model Context Protocol clients (e.g. Claude Desktop) |
+| `scheduler` | Scheduled task runs |
+| `slack` | Slack receiver webhooks |
+| `teams` | Microsoft Teams receiver webhooks |
+| `webhook` | Generic webhook receivers |
+
+A rule fires when **its surface is `any` OR its surface equals the request's origin surface**. Multiple rules can match; the first match wins.
+
+#### Worked examples
+
+- **MCP-only sensitive-table rule.** "MCP queries against `customers` need approval; chat from authenticated users does not." Author a `table` rule with `pattern: "customers"` and `surface: "mcp"`. Chat queries against `customers` run normally; the same query via Claude Desktop's hosted MCP transport queues for approval.
+- **Scheduler pre-approved.** "Scheduled queries are pre-approved; MCP queries are not." Leave the broad rule at `surface: "any"` and add a narrower rule with `surface: "scheduler"` that disables it (or simply don't create a scheduler-scoped block — `any` rules continue to fire). Conversely, to *exempt* the scheduler from a default-`any` rule, switch the default rule to `surface: "chat"` (or another non-scheduler value) so scheduled runs sail through.
+- **Slack allowlist.** "Slack-receiver queries are pre-approved within a Slack workspace allowlist; MCP queries from external clients are not." Use a `surface: "mcp"` rule that requires approval; Slack receivers (which stamp `surface: "slack"`) bypass it.
+
+#### Audit dimension
+
+The `approval_queue.surface` column records where each queued request originated, and approve / deny entries in `admin_action_log` carry the same surface in their metadata. The admin audit view (`/admin/audit`) lets you filter approval activity by surface — useful for "show me every MCP-blocked query last week" or "which surfaces are tripping the most rules."
+
 ### Approval Statuses
 
 | Status | Description |
@@ -59,13 +85,24 @@ When a user runs a query, the SQL validation pipeline checks the query against a
 Rules are managed via the admin console at `/admin/approval` or the API.
 
 ```bash
-# Create a table-based approval rule
+# Create a table-based approval rule (fires for every surface — default)
 curl -X POST http://localhost:3001/api/v1/admin/approval/rules \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Require approval for PII tables",
     "ruleType": "table",
     "pattern": "users",
+    "enabled": true
+  }'
+
+# Create an MCP-only rule — chat queries against the same table run normally
+curl -X POST http://localhost:3001/api/v1/admin/approval/rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "MCP-only PII gate",
+    "ruleType": "table",
+    "pattern": "customers",
+    "surface": "mcp",
     "enabled": true
   }'
 ```
@@ -130,8 +167,9 @@ All approval decisions are logged in the internal database's `approval_queue` ta
 - Reviewer identity and email
 - Review timestamp and comment
 - Final status (approved/denied/expired)
+- **Origin surface** (#2072) — `chat` / `mcp` / `scheduler` / `slack` / `teams` / `webhook`
 
-The standard audit log also records queries that were blocked pending approval.
+The standard audit log also records queries that were blocked pending approval. Admin actions (`approval.rule_create`, `approval.rule_update`, `approval.approve`, `approval.deny`) carry the surface in their metadata so `/admin/audit` can break down approval activity by where the request came from.
 
 ---
 

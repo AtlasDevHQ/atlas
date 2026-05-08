@@ -18,7 +18,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { APPROVAL_STATUSES } from "@useatlas/types";
+import { APPROVAL_STATUSES, APPROVAL_RULE_SURFACES } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
@@ -44,6 +44,17 @@ const approvalDomainError = domainError(ApprovalError, { validation: 400, not_fo
 // Request body schemas — response shapes live in @useatlas/schemas.
 // ---------------------------------------------------------------------------
 
+// #2072 — surface scope is shared across rule types. `'any'` (default)
+// preserves pre-2072 fires-everywhere semantics; the others pin a rule
+// to a single transport. Kept as a `z.enum` (not `.optional()`) on the
+// shared shape so a typo is rejected at the route boundary as a 400
+// rather than landing in `validateRuleInput` as a 500.
+const SurfaceField = z.enum(APPROVAL_RULE_SURFACES).optional().openapi({
+  description:
+    "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+  example: "any",
+});
+
 // Discriminated on `ruleType` (#1660) — encodes "cost needs threshold;
 // table/column need pattern" at the wire layer. A cost body missing
 // `threshold`, or a table body missing `pattern`, is now a 400 from the
@@ -66,6 +77,7 @@ const CostRuleBodySchema = z.object({
     description: "Whether the rule is active. Defaults to true.",
     example: true,
   }),
+  surface: SurfaceField,
 });
 
 const NamedRuleBodySchema = z.object({
@@ -89,6 +101,7 @@ const NamedRuleBodySchema = z.object({
     description: "Whether the rule is active. Defaults to true.",
     example: true,
   }),
+  surface: SurfaceField,
 });
 
 const CreateRuleBodySchema = z.discriminatedUnion("ruleType", [
@@ -101,6 +114,7 @@ const UpdateRuleBodySchema = z.object({
   pattern: z.string().optional(),
   threshold: z.number().nullable().optional(),
   enabled: z.boolean().optional(),
+  surface: SurfaceField,
 });
 
 const ReviewBodySchema = z.object({
@@ -356,9 +370,10 @@ adminApproval.openapi(createRuleRoute, async (c) => {
 
     // `body` is narrowed by the discriminated union (#1660); pass it
     // through as the matching CreateApprovalRuleRequest variant.
+    // #2072 — surface (optional) flows on every variant.
     const input = body.ruleType === "cost"
-      ? { ruleType: "cost" as const, name: body.name, threshold: body.threshold, enabled: body.enabled }
-      : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled };
+      ? { ruleType: "cost" as const, name: body.name, threshold: body.threshold, enabled: body.enabled, surface: body.surface }
+      : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled, surface: body.surface };
 
     const rule = yield* createApprovalRule(orgId!, input);
 
@@ -372,7 +387,9 @@ adminApproval.openapi(createRuleRoute, async (c) => {
       targetType: "approval",
       targetId: rule.id,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { name: body.name, ruleType: body.ruleType },
+      // #2072 — surface stamped in admin-action metadata so /admin/audit
+      // shows the new dimension on rule-creation events.
+      metadata: { name: body.name, ruleType: body.ruleType, surface: rule.surface },
     });
 
     return c.json({ rule }, 201);
@@ -398,7 +415,11 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
       targetType: "approval",
       targetId: ruleId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { keysChanged: Object.keys(body) },
+      // #2072 — record the post-update surface alongside the keysChanged
+      // diff so a compliance reviewer can see when a rule was rescoped
+      // (e.g. mcp-only → any) without having to cross-reference the rule
+      // table at the timestamp.
+      metadata: { keysChanged: Object.keys(body), surface: rule.surface },
     });
 
     return c.json({ rule }, 200);
@@ -483,7 +504,11 @@ adminApproval.openapi(reviewRoute, async (c) => {
       targetType: "approval",
       targetId: itemId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { requestId: itemId },
+      // #2072 — surface comes from the queued row (stamped at request
+      // creation by lib/tools/sql.ts). Surfacing it on the approve/deny
+      // audit row lets reports break down approval decisions by origin
+      // without joining back to approval_queue.
+      metadata: { requestId: itemId, surface: result.surface },
     });
 
     return c.json({ request: result }, 200);

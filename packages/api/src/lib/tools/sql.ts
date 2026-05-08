@@ -1048,13 +1048,22 @@ export const executeSQL = tool({
               const checkReqCtx = getRequestContext();
               const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
               const checkUserId = checkReqCtx?.user?.id;
+              // #2072 — propagate the request's origin surface so
+              // surface-scoped rules only fire on the matching transport.
+              // Routes stamp this on `withRequestContext`; an unstamped
+              // route (or a legacy caller) reaches checkApprovalRequired
+              // with `surface: undefined` and only triggers `'any'` rules.
+              const checkSurface = checkReqCtx?.approvalSurface;
               // Pass requesterId so the defensive identity-missing check
               // distinguishes "scheduler/Slack/MCP forgot to bind anything"
               // (fail-closed) from "demo / single-user mode bound a user
               // but no org" (pass-through, no rule can match anyway).
               approvalMatch = await Effect.runPromise(checkApprovalRequired(
                 checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-                checkUserId ? { requesterId: checkUserId } : undefined,
+                {
+                  ...(checkUserId ? { requesterId: checkUserId } : {}),
+                  ...(checkSurface ? { surface: checkSurface } : {}),
+                },
               ));
             } catch (err) {
               log.error(
@@ -1102,6 +1111,10 @@ export const executeSQL = tool({
                   connectionId: connId,
                   tablesAccessed: classification.tablesAccessed,
                   columnsAccessed: classification.columnsAccessed,
+                  // #2072 — stamp the origin surface on the queue row so
+                  // /admin/audit + Theme A's filter view (#2067) can
+                  // break down approvals by where they came from.
+                  surface: reqCtxForApproval?.approvalSurface ?? null,
                 }));
                 logQueryAudit({
                   sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,

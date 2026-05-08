@@ -11,7 +11,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { initializeConfig } from "@atlas/api/lib/config";
+import { initializeConfig, getConfig } from "@atlas/api/lib/config";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { loadSettings } from "@atlas/api/lib/settings";
@@ -20,7 +20,6 @@ import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts/registry.js";
 import { resolveMcpActor } from "./actor.js";
 import type { McpTransport } from "./telemetry.js";
-import { getConfig } from "@atlas/api/lib/config";
 // `serverInfo.version` is what MCP clients (Claude Desktop, Cursor) show
 // in their server picker. Reading from package.json keeps the value in
 // sync without a hand-edit on every bump.
@@ -68,7 +67,8 @@ interface CreateMcpServerOptions {
  *    `withRequestContext({ user })` so the approval gate sees a bound
  *    actor.
  * 4. Registers semantic layer YAML files as MCP resources
- * 5. Registers prompt templates (built-in, semantic layer, prompt library)
+ * 5. Registers prompt templates (built-in, canonical eval, semantic layer,
+ *    prompt library — see `prompts/registry.ts` for the source order)
  */
 export async function createAtlasMcpServer(
   opts?: CreateMcpServerOptions,

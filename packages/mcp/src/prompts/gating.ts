@@ -24,12 +24,19 @@
  * NovaMart prompts into a real-data workspace.
  */
 
+import type { CanonicalToggle } from "@useatlas/types/mcp";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 
 export const EXPOSE_CANONICAL_SETTING = "ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS";
 
-export type CanonicalToggle = "always" | "never" | "auto";
+/**
+ * Re-exported for backend-only callers. The admin page imports the type
+ * directly from `@useatlas/types/mcp` because frontend can't depend on
+ * `@atlas/api`. See `packages/types/src/mcp.ts` for why the matching
+ * const tuple lives in callers, not here.
+ */
+export type { CanonicalToggle };
 
 export interface ShouldExposeCanonicalOpts {
   /** Active workspace id (`actor.activeOrganizationId`). May be undefined for stdio without bound user. */

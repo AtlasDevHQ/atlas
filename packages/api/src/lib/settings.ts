@@ -388,7 +388,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "MCP",
     label: "Expose canonical eval prompts",
     description:
-      "Surface the 20 NovaMart canonical eval questions as MCP prompts/list entries. `auto` exposes them only when the active dataset is `__demo__` or `novamart`; `always` exposes them regardless of dataset; `never` hides them.",
+      "Surface the 20 NovaMart canonical eval questions as MCP prompts/list entries. `auto` exposes them when the workspace has a published `__demo__` connection or `ATLAS_DEMO_INDUSTRY` is set; `always` exposes them regardless of dataset; `never` hides them.",
     type: "select",
     options: ["auto", "always", "never"],
     default: "auto",

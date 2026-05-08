@@ -322,7 +322,7 @@ Canonical prompts are **gated by workspace** so real-data deployments don't see 
 | `always` | Always expose, regardless of dataset |
 | `never` | Always hide |
 
-Flip the toggle from **Admin → Settings → MCP**. Changes propagate to live MCP sessions within ~5s (the live settings cache TTL) — no process restart required.
+Flip the toggle from **Admin → Settings → MCP**. Same-instance writes propagate immediately (the in-process settings cache updates synchronously on save); cross-replica SaaS propagation is bounded by the periodic settings refresh (`ATLAS_SETTINGS_REFRESH_INTERVAL`, default 30s). No MCP process restart required either way.
 
 ### Semantic layer patterns
 

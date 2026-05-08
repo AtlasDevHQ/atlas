@@ -13,8 +13,14 @@
  *                              (#2076). Workspace-gated — see
  *                              `gating.ts` — and the gate is re-evaluated
  *                              per request so flipping the admin toggle
- *                              propagates within the settings cache TTL
- *                              (5s) without a process restart.
+ *                              takes effect on the next call without a
+ *                              process restart. Same-instance writes
+ *                              propagate immediately (the in-process
+ *                              settings `_cache` updates synchronously
+ *                              on `setSetting`); cross-replica SaaS
+ *                              propagation is bounded by the periodic
+ *                              settings refresh (`ATLAS_SETTINGS_REFRESH_INTERVAL`,
+ *                              default 30s).
  *   3. Semantic-layer query patterns — `query_patterns` field from
  *                              entity YAML files. Per-workspace by
  *                              construction (semantic root scoped to
@@ -27,7 +33,11 @@
  *   - An OTel counter increment on `atlas.mcp.prompts.calls` so
  *     operators can see which prompts agents actually pull.
  *   - An `audit_log` row (when an internal DB is available) so
- *     compliance can scope agent activity by prompt name.
+ *     compliance can scope agent activity by prompt name. The DB write
+ *     is fire-and-forget — `internalExecute` returns void and routes
+ *     async rejections to its internal circuit-breaker error handler
+ *     (see `packages/api/src/lib/db/internal.ts:648`), so the prompts
+ *     response never blocks on audit latency or fails on audit error.
  *
  * Failures in instrumentation never mask the underlying response.
  */
@@ -85,15 +95,24 @@ function slugify(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Source-tagged descriptor — single shape used by registration + listing.
+// Source-tagged descriptor — discriminated union so the canonical-only
+// per-call gate is a typed contract rather than a hidden side effect of
+// each resolver's closure.
 // ---------------------------------------------------------------------------
 
 export type PromptSource = "builtin" | "semantic" | "library" | "canonical";
 
-interface PromptDescriptor {
+/**
+ * Synthetic source label used by `prompts/list` telemetry — the dispatch
+ * spans many sources at once, so we tag the counter / audit row with
+ * `(mixed)` rather than picking one. Kept distinct from `PromptSource`
+ * so the closed union for per-prompt sources stays clean for `prompts/get`.
+ */
+export type PromptSourceLabel = PromptSource | "(mixed)";
+
+interface PromptDescriptorBase {
   readonly name: string;
   readonly description?: string;
-  readonly source: PromptSource;
   /**
    * Argument metadata used to build the `arguments` field on the
    * `prompts/list` response. Kept alongside the registered prompt so we
@@ -101,10 +120,35 @@ interface PromptDescriptor {
    * override.
    */
   readonly args: ReadonlyArray<{ name: string; description: string }>;
-  readonly resolve: (
-    args: Record<string, string>,
-  ) => GetPromptResult | Promise<GetPromptResult>;
 }
+
+/**
+ * Built-in / semantic / library descriptors — visibility doesn't depend
+ * on per-request state, so there's no gate. `resolve` takes the agent's
+ * argument map (built-ins substitute; semantic/library ignore it).
+ */
+type StaticDescriptor = PromptDescriptorBase & {
+  readonly source: "builtin" | "semantic" | "library";
+  readonly resolve: (args: Record<string, string>) => GetPromptResult;
+};
+
+/**
+ * Canonical descriptor — workspace-gated. The `gate` field is the
+ * single source of truth for visibility: the list handler calls it
+ * once per request to decide inclusion, and the dispatch wrapper calls
+ * it again before invoking `resolve` so an agent that cached a stale
+ * list can't sneak through. Encoding the gate as a typed field (rather
+ * than burying it inside `resolve`'s closure) means a future canonical
+ * descriptor that forgot the check would fail to type-check rather
+ * than silently ship.
+ */
+type CanonicalDescriptor = PromptDescriptorBase & {
+  readonly source: "canonical";
+  readonly gate: () => Promise<boolean>;
+  readonly resolve: () => GetPromptResult;
+};
+
+type PromptDescriptor = StaticDescriptor | CanonicalDescriptor;
 
 // ---------------------------------------------------------------------------
 // Built-in templates
@@ -295,8 +339,15 @@ interface InstrumentationContext {
    * Resolved auth mode of the bound actor — one of the canonical
    * `AuthMode` values (`simple-key` / `managed` / `byot`) or `none` when
    * MCP runs without a bound user. Written to `audit_log.auth_mode`
-   * exactly the way `logQueryAudit` already does so a column-level
-   * audit dashboard sees a single value-space across surfaces.
+   * the same way `logQueryAudit` does so a column-level audit
+   * dashboard sees a single value-space across surfaces.
+   *
+   * Note the freshness asymmetry vs. `logQueryAudit`: that function
+   * reads `getRequestContext().user.mode` per-call, while this one
+   * captures `actor.mode` once at `registerPrompts()` time. Fine for
+   * stdio (one actor per process) and for hosted SSE where each session
+   * owns its own server instance; if session re-binding is ever
+   * introduced, this needs to flip to per-call resolution.
    */
   readonly authMode: AuthMode;
 }
@@ -308,7 +359,7 @@ interface InstrumentationContext {
 function recordPromptCounter(
   method: "list" | "get",
   name: string,
-  source: PromptSource | "(mixed)",
+  source: PromptSourceLabel,
   ctx: InstrumentationContext,
 ): void {
   try {
@@ -340,7 +391,7 @@ function recordPromptCounter(
 function writePromptAudit(
   method: "list" | "get",
   name: string | null,
-  source: PromptSource | "(mixed)",
+  source: PromptSourceLabel,
   durationMs: number,
   rowCount: number | null,
   success: boolean,
@@ -397,40 +448,26 @@ export interface RegisterPromptsOptions {
 }
 
 /**
- * Convert a `CanonicalPrompt` into the resolver shape — captured here
- * (not in `canonical.ts`) so the canonical loader stays free of the
- * MCP SDK types and can be tested as a pure function.
+ * Convert a `CanonicalPrompt` into a typed canonical descriptor —
+ * captured here (not in `canonical.ts`) so the canonical loader stays
+ * free of the MCP SDK types and can be tested as a pure function.
  *
- * Takes just `workspaceId` (not the full `InstrumentationContext`) —
- * the gate only depends on the workspace, and narrowing the dependency
- * makes it obvious that audit/OTel context doesn't influence visibility.
+ * The `gate` field is what the dispatch layer calls — both at list
+ * time (to decide inclusion) and at get time (to refuse stale-listed
+ * canonicals). Both call sites delegate here to keep the visibility
+ * policy in one place.
  */
 function canonicalDescriptor(
   cp: CanonicalPrompt,
   workspaceId: string | undefined,
-): PromptDescriptor {
+): CanonicalDescriptor {
   return {
     name: cp.name,
     description: cp.description,
     source: "canonical",
     args: [],
-    resolve: async (): Promise<GetPromptResult> => {
-      const allowed = await shouldExposeCanonicalPrompts({ workspaceId });
-      if (!allowed) {
-        // Mirror the SDK's "prompt not found" path verbatim — same
-        // ErrorCode + message shape as `mcp.js` lines 423/447 — so an
-        // agent's prompts/get error handler can't tell a gated
-        // canonical apart from a name typo. Returning the prompt
-        // anyway would make the toggle a visibility-only setting; in
-        // real-data workspaces we want a hard "no" so an agent that
-        // cached a stale list doesn't get an answer it shouldn't see.
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          `Prompt ${cp.name} not found`,
-        );
-      }
-      return promptResult(cp.question, cp.description);
-    },
+    gate: () => shouldExposeCanonicalPrompts({ workspaceId }),
+    resolve: () => promptResult(cp.question, cp.description),
   };
 }
 
@@ -508,8 +545,22 @@ export async function registerPrompts(
         const start = performance.now();
         let success = true;
         try {
-          const result = await d.resolve(args);
-          return result;
+          // Canonical descriptors carry a typed `gate` — invoke it at
+          // dispatch time so a stale-listed canonical can't be retrieved.
+          // Mirrors the SDK's "prompt not found" path (mcp.js:423) so
+          // an agent's error handler can't distinguish a closed gate
+          // from a name typo.
+          if (d.source === "canonical") {
+            const allowed = await d.gate();
+            if (!allowed) {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                `Prompt ${d.name} not found`,
+              );
+            }
+            return d.resolve();
+          }
+          return d.resolve(args);
         } catch (err) {
           success = false;
           throw err;
@@ -531,7 +582,7 @@ export async function registerPrompts(
 
   // Override the SDK's default `prompts/list` handler so we can
   //   (a) hide canonical prompts when the gate is closed (per request,
-  //       so the toggle propagates within the settings cache TTL), and
+  //       so the toggle takes effect on the next call), and
   //   (b) emit an audit row + counter increment for every list call.
   // We re-implement the listing from our local descriptors rather than
   // reading the SDK's internal `_registeredPrompts` — that's stable
@@ -539,9 +590,16 @@ export async function registerPrompts(
   // refactors.
   server.server.setRequestHandler(ListPromptsRequestSchema, async () => {
     const start = performance.now();
-    const allowCanonical = await shouldExposeCanonicalPrompts({
-      workspaceId: ctx.workspaceId,
-    });
+    // Single gate evaluation per list call — every canonical descriptor
+    // shares the same workspaceId + toggle, so per-descriptor gating
+    // would be wasteful. The first canonical descriptor's `gate` is the
+    // canonical (heh) source; if there are zero canonicals registered
+    // (e.g. the YAML file is missing), nothing to gate and we skip the
+    // probe entirely.
+    const firstCanonical = descriptors.find(isCanonicalDescriptor);
+    const allowCanonical = firstCanonical
+      ? await firstCanonical.gate()
+      : false;
     const visible = descriptors.filter(
       (d) => d.source !== "canonical" || allowCanonical,
     );
@@ -572,4 +630,10 @@ export async function registerPrompts(
 
     return { prompts };
   });
+}
+
+function isCanonicalDescriptor(
+  d: PromptDescriptor,
+): d is CanonicalDescriptor {
+  return d.source === "canonical";
 }

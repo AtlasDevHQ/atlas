@@ -126,11 +126,9 @@ export const oauthTokenRefresh: Counter = meter.createCounter(
  * Attributes:
  *   - `method`     — `list` / `get`.
  *   - `prompt`     — prompt name on `get`; `(none)` on `list`.
- *   - `source`     — `builtin` / `semantic` / `library` / `canonical` /
- *                    `unknown` (when an agent requests a name we no
- *                    longer have, the SDK rejects with InvalidParams
- *                    before our wrapper sees it — `unknown` would only
- *                    appear if the registry got out of sync).
+ *   - `source`     — `builtin` / `semantic` / `library` / `canonical`
+ *                    on `get`; `(mixed)` on `list` (the dispatch covers
+ *                    every source so a single label would be wrong).
  *   - `transport`  — `stdio` / `sse`.
  *   - `deploy.mode`— `self-hosted` / `saas`.
  *

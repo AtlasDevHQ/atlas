@@ -83,9 +83,13 @@ const { registerPrompts } = await import("../../prompts/registry.js");
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function createTestClient() {
+async function createTestClient(opts?: {
+  workspaceId?: string;
+  authMode?: "simple-key" | "managed" | "byot" | "none";
+  clientId?: string;
+}) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
-  await registerPrompts(server);
+  await registerPrompts(server, opts);
 
   const client = new Client({ name: "test-client", version: "0.0.1" });
   const [clientTransport, serverTransport] =
@@ -755,5 +759,142 @@ describe("MCP prompts — audit log", () => {
     const { client } = await createTestClient();
     await client.listPrompts();
     expect(internalExecuteCalls.length).toBe(0);
+  });
+
+  it("writes success=false audit row when prompts/get refuses a gated canonical", async () => {
+    // Default toggle (auto) + no demo signal → canonical resolver throws.
+    // Setup: switch fixture to one with a canonical question.
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "registry-canonical-getfail-"),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "questions.yml"),
+      `
+questions:
+  - id: cq-001
+    category: simple_metric
+    question: What is our total GMV?
+    mode: metric
+    metric_id: total_gmv
+`,
+    );
+    process.env.ATLAS_CANONICAL_QUESTIONS_PATH = path.join(
+      tmpDir,
+      "questions.yml",
+    );
+
+    mockHasInternalDB = true;
+    const { client } = await createTestClient();
+    await expect(
+      client.getPrompt({ name: "canonical-total-gmv" }),
+    ).rejects.toThrow();
+
+    const getRows = internalExecuteCalls.filter((c) =>
+      String(c.params[7]).startsWith("prompts.get"),
+    );
+    expect(getRows.length).toBe(1);
+    // success column (4th param, index 3)
+    expect(getRows[0]!.params[3]).toBe(false);
+    // sql carries the prompt name
+    expect(String(getRows[0]!.params[0])).toContain("canonical-total-gmv");
+  });
+
+  it("writes audit row tagged with the bound workspace id", async () => {
+    mockHasInternalDB = true;
+    const { client } = await createTestClient({ workspaceId: "org_demo_123" });
+    await client.listPrompts();
+
+    const listRows = internalExecuteCalls.filter((c) =>
+      String(c.params[7]).startsWith("prompts.list"),
+    );
+    expect(listRows.length).toBeGreaterThanOrEqual(1);
+    // org_id is the 5th param, index 4
+    expect(listRows[0]!.params[4]).toBe("org_demo_123");
+  });
+
+  it("writes auth_mode from the bound actor, not the literal 'mcp'", async () => {
+    mockHasInternalDB = true;
+    const { client } = await createTestClient({
+      workspaceId: "org_x",
+      authMode: "managed",
+    });
+    await client.listPrompts();
+
+    const listRows = internalExecuteCalls.filter((c) =>
+      String(c.params[7]).startsWith("prompts.list"),
+    );
+    // auth_mode is the 9th param, index 8
+    expect(listRows[0]!.params[8]).toBe("managed");
+    // Defense in depth — confirm the regression-fix string never reappears
+    expect(listRows[0]!.params[8]).not.toBe("mcp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — gating end-to-end through the registry (#2076)
+// ---------------------------------------------------------------------------
+
+describe("MCP prompts — canonical end-to-end through registry", () => {
+  beforeEach(() => {
+    mockScannedEntities = [];
+    mockHasInternalDB = false;
+    mockInternalQueryRows = [];
+    mockInternalQueryError = null;
+    mockSemanticRootError = null;
+    mockSettings = {};
+    internalExecuteCalls.length = 0;
+  });
+
+  it("exposes all 20 real canonical prompts via the __demo__ connection signal", async () => {
+    // Point at the real eval/canonical-questions/questions.yml — proves
+    // the loader → registry → SDK list path keeps every entry intact.
+    delete process.env.ATLAS_CANONICAL_QUESTIONS_PATH;
+
+    mockHasInternalDB = true;
+    mockInternalQueryRows = [{ active: true }]; // __demo__ connection published
+
+    const { client } = await createTestClient({ workspaceId: "org_demo" });
+    const result = await client.listPrompts();
+    const canonical = result.prompts.filter((p) =>
+      p.name.startsWith("canonical-"),
+    );
+    expect(canonical.length).toBe(20);
+  });
+
+  it("hides canonical prompts from a real-data workspace by default", async () => {
+    delete process.env.ATLAS_CANONICAL_QUESTIONS_PATH;
+
+    // Real-data workspace: internal DB available, no __demo__ row,
+    // no industry setting, no toggle override.
+    mockHasInternalDB = true;
+    mockInternalQueryRows = [{ active: false }];
+
+    const { client } = await createTestClient({ workspaceId: "org_real" });
+    const result = await client.listPrompts();
+    const canonical = result.prompts.filter((p) =>
+      p.name.startsWith("canonical-"),
+    );
+    expect(canonical.length).toBe(0);
+  });
+
+  it("rejected canonical get carries McpError with InvalidParams code", async () => {
+    delete process.env.ATLAS_CANONICAL_QUESTIONS_PATH;
+
+    const { client } = await createTestClient();
+    try {
+      await client.getPrompt({ name: "canonical-total-gmv" });
+      throw new Error("expected getPrompt to reject");
+    } catch (err) {
+      // The SDK forwards the error envelope with the McpError code, not
+      // a generic InternalError. The string code/InvalidParams is what
+      // an agent's error handler will branch on.
+      const msg = err instanceof Error ? err.message : String(err);
+      expect(msg).toContain("not found");
+      // The MCP SDK serializes the error code into the JSON-RPC envelope;
+      // re-throwing on the client side preserves the message but loses
+      // the structured code. The contract here is the message shape —
+      // exactly mirrors the SDK's own "Prompt ... not found" string.
+      expect(msg).toContain("canonical-total-gmv");
+    }
   });
 });

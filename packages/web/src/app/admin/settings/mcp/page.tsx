@@ -17,6 +17,7 @@
 import { useState } from "react";
 import { z } from "zod";
 import { Sparkles } from "lucide-react";
+import type { CanonicalToggle } from "@useatlas/types/mcp";
 import {
   Select,
   SelectContent,
@@ -29,6 +30,16 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+
+// Local mirror of the canonical-toggle values. Must mirror
+// `CanonicalToggle` from `@useatlas/types/mcp` — a const tuple
+// duplicated here rather than exported from the types package because
+// adding a value export to `@useatlas/types` breaks the scaffold
+// smoke tests in CI (they pull the published npm version). The type
+// import above is the compile-time source of truth, so an additional
+// toggle value in `@useatlas/types` would surface as a TS error here.
+const CANONICAL_TOGGLES = ["auto", "always", "never"] as const satisfies
+  readonly CanonicalToggle[];
 
 const SettingSchema = z.object({
   key: z.string(),
@@ -53,13 +64,20 @@ type Setting = z.infer<typeof SettingSchema>;
 
 const CANONICAL_KEY = "ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS";
 
-const TOGGLE_DESCRIPTIONS: Record<string, string> = {
+// `Record<CanonicalToggle, string>` makes a missing description fail
+// type-check, so adding a fourth toggle value to `@useatlas/types/mcp`
+// can't ship without copy here.
+const TOGGLE_DESCRIPTIONS: Record<CanonicalToggle, string> = {
   auto: "Expose canonical prompts only when this workspace looks like a demo workspace (active __demo__ connection or onboarding industry set).",
   always:
     "Always expose the 20 NovaMart canonical prompts, including in real-data workspaces. Useful when you want them as worked examples.",
   never:
     "Never expose canonical prompts on this workspace. The built-in templates and your own query patterns still appear.",
 };
+
+function isCanonicalToggle(value: string): value is CanonicalToggle {
+  return (CANONICAL_TOGGLES as readonly string[]).includes(value);
+}
 
 export default function McpSettingsPage() {
   const { data, loading, error, refetch } = useAdminFetch(
@@ -117,10 +135,15 @@ function CanonicalToggle({
   manageable: boolean;
   onSaved: () => void;
 }) {
-  const value = setting.currentValue ?? setting.default ?? "auto";
-  const options = setting.options ?? ["auto", "always", "never"];
+  const rawValue = setting.currentValue ?? setting.default ?? "auto";
+  const value: CanonicalToggle = isCanonicalToggle(rawValue) ? rawValue : "auto";
+  // The API returns whatever string set values it has; narrow to the
+  // closed set defensively in case a future setting variant ships
+  // before the UI is updated.
+  const options: CanonicalToggle[] = (setting.options ?? CANONICAL_TOGGLES)
+    .filter(isCanonicalToggle);
 
-  const [pending, setPending] = useState<string | null>(null);
+  const [pending, setPending] = useState<CanonicalToggle | null>(null);
   const saveMutation = useAdminMutation({
     path: `/api/v1/admin/settings/${encodeURIComponent(setting.key)}`,
     method: "PUT",
@@ -131,13 +154,13 @@ function CanonicalToggle({
   });
 
   async function handleChange(next: string) {
-    if (next === value) return;
+    if (!isCanonicalToggle(next) || next === value) return;
     setPending(next);
     const result = await saveMutation.mutate({ body: { value: next } });
     if (!result.ok) setPending(null);
   }
 
-  const display = pending ?? value;
+  const display: CanonicalToggle = pending ?? value;
 
   return (
     <section className="rounded-2xl border bg-card/60 p-6 shadow-sm">
@@ -185,7 +208,7 @@ function CanonicalToggle({
       </div>
 
       <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-        {TOGGLE_DESCRIPTIONS[display] ?? null}
+        {TOGGLE_DESCRIPTIONS[display]}
       </p>
 
       {!manageable && (

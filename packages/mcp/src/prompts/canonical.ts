@@ -13,6 +13,11 @@
  *   - mode=glossary  → `canonical-glossary-{slugified term}`
  *   - fallback       → `canonical-{slugified id}`
  *
+ * Every mode-specific shape falls back to `canonical-{slugified id}`
+ * when the mode-specific fields are missing (e.g. a `mode: pattern`
+ * row without an `entity`), so a malformed-but-tagged question still
+ * gets a stable name rather than disappearing from the prompts surface.
+ *
  * `evalMode` lets the description distinguish "deterministic" questions
  * (the harness asserts on dispatched SQL or a non-zero scalar) from "llm"
  * questions (glossary disambiguation, where the agent must ask). The
@@ -143,9 +148,19 @@ export function loadCanonicalPrompts(
     return [];
   }
 
-  if (!parsed || typeof parsed !== "object") return [];
+  if (!parsed || typeof parsed !== "object") {
+    process.stderr.write(
+      `[atlas-mcp] canonical questions YAML did not parse to an object at ${filePath} — skipping\n`,
+    );
+    return [];
+  }
   const root = parsed as QuestionsRoot;
-  if (!Array.isArray(root.questions)) return [];
+  if (!Array.isArray(root.questions)) {
+    process.stderr.write(
+      `[atlas-mcp] canonical questions YAML at ${filePath} has no top-level "questions:" array — skipping\n`,
+    );
+    return [];
+  }
 
   const prompts: CanonicalPrompt[] = [];
   const seen = new Set<string>();
@@ -167,9 +182,9 @@ function toCanonicalPrompt(q: RawQuestion): CanonicalPrompt | null {
   if (typeof q.question !== "string" || !q.question) return null;
   if (typeof q.mode !== "string" || !q.mode) return null;
 
-  const slug = slugFor(q);
-  if (!slug) return null;
-
+  // `q.id` is now narrowed to non-empty `string`, so `slugFor` is total —
+  // every branch falls back to `slugify(q.id)` as a non-empty result.
+  const slug = slugFor(q as RawQuestion & { id: string });
   const category =
     typeof q.category === "string" && q.category ? q.category : null;
   const evalMode: CanonicalEvalMode =
@@ -186,31 +201,32 @@ function toCanonicalPrompt(q: RawQuestion): CanonicalPrompt | null {
   };
 }
 
-function slugFor(q: RawQuestion): string | null {
+function slugFor(q: RawQuestion & { id: string }): string {
+  // Last-resort: `stringSlug(q.id)` returns null only for ids that
+  // contain no `[a-z0-9]` after lowercasing — basically pathological
+  // input ("---"). Fall back to the raw id in that case rather than
+  // silently dropping the question; the row already passed the
+  // non-empty `id` check at the call site.
+  const idSlug = (): string => stringSlug(q.id) ?? q.id;
   switch (q.mode) {
-    case "metric": {
-      const slug = stringSlug(q.metric_id);
-      return slug ?? stringSlug(q.id);
-    }
+    case "metric":
+      return stringSlug(q.metric_id) ?? idSlug();
     case "pattern": {
       const entity = stringSlug(q.entity);
       const pattern = stringSlug(q.pattern);
-      if (entity && pattern) return `${entity}-${pattern}`;
-      return stringSlug(q.id);
+      return entity && pattern ? `${entity}-${pattern}` : idSlug();
     }
     case "virtual": {
       const entity = stringSlug(q.entity);
       const dimension = stringSlug(q.dimension);
-      if (entity && dimension) return `${entity}-${dimension}`;
-      return stringSlug(q.id);
+      return entity && dimension ? `${entity}-${dimension}` : idSlug();
     }
     case "glossary": {
       const term = stringSlug(q.term);
-      if (term) return `glossary-${term}`;
-      return stringSlug(q.id);
+      return term ? `glossary-${term}` : idSlug();
     }
     default:
-      return stringSlug(q.id);
+      return idSlug();
   }
 }
 

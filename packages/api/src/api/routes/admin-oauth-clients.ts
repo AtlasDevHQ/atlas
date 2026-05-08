@@ -33,7 +33,11 @@ import {
   findOAuthClient,
   listOAuthClients,
   revokeOAuthClient,
+  setOAuthClientRateLimit,
+  MIN_OAUTH_CLIENT_RPM,
+  MAX_OAUTH_CLIENT_RPM,
 } from "@atlas/api/lib/auth/oauth-clients";
+import { setClientRateLimit } from "@atlas/api/lib/rate-limit/oauth-client";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -65,6 +69,9 @@ const OAuthClientSchema = z.object({
   // Admin surface includes it so the wire shape stays in lockstep
   // with the per-user one and OpenAPI consumers see one schema.
   tokenState: z.enum(["active", "reconnect_required", "revoked"]),
+  // rateLimitPerMinute (#2071) — per-client MCP quota override.
+  // null = workspace default (60); positive integer = explicit override.
+  rateLimitPerMinute: z.number().int().positive().nullable(),
 });
 
 const ListClientsResponseSchema = z.object({
@@ -74,6 +81,23 @@ const ListClientsResponseSchema = z.object({
 const RevokeResponseSchema = z.object({
   success: z.boolean(),
   tokensRevoked: z.number().int().nonnegative(),
+});
+
+const RateLimitUpdateBodySchema = z.object({
+  // Null clears the override and returns the client to the workspace
+  // default. A positive integer in [1, 3600] sets the override.
+  requestsPerMinute: z
+    .number()
+    .int()
+    .min(MIN_OAUTH_CLIENT_RPM)
+    .max(MAX_OAUTH_CLIENT_RPM)
+    .nullable(),
+});
+
+const RateLimitUpdateResponseSchema = z.object({
+  success: z.boolean(),
+  clientId: z.string().min(1),
+  rateLimitPerMinute: z.number().int().positive().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -95,6 +119,39 @@ const listClientsRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const rateLimitUpdateRoute = createRoute({
+  method: "patch",
+  path: "/{id}/rate-limit",
+  tags: ["Admin — OAuth Clients"],
+  summary: "Set or clear per-client MCP rate limit",
+  description:
+    "Override the per-OAuth-client MCP request quota. Pass `requestsPerMinute: null` to clear the override (returns the client to the workspace default of 60 weighted requests/min). Otherwise set a positive integer in [1, 3600]. Audited as `oauth_client.rate_limit_update`.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).max(ID_MAX_LEN).openapi({
+        param: { name: "id", in: "path" },
+        example: "claude-desktop",
+      }),
+    }),
+    body: {
+      required: true,
+      content: { "application/json": { schema: RateLimitUpdateBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Rate limit updated",
+      content: { "application/json": { schema: RateLimitUpdateResponseSchema } },
+    },
+    400: { description: "Invalid request body", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Client not found in this workspace", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -294,6 +351,99 @@ adminOauthClients.openapi(revokeClientRoute, async (c) => {
       ).pipe(Effect.ignoreLogged);
     }),
   ), { label: "revoke oauth client" });
+});
+
+// PATCH /:id/rate-limit — set or clear the per-client MCP rate limit (#2071)
+adminOauthClients.openapi(rateLimitUpdateRoute, async (c) => {
+  const { id: clientId } = c.req.valid("param");
+  const { requestsPerMinute } = c.req.valid("json");
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId, user } = yield* AuthContext;
+    const { requestId } = c.get("orgContext");
+
+    // Pre-fetch confirms the client exists in this workspace before we
+    // write the override row. Without this, an admin could write rate-
+    // limit overrides for arbitrary clientIds (the override table has
+    // no FK to `oauthClient` because Better Auth owns that schema), so
+    // a typo would silently linger. The pre-fetch also captures
+    // `clientName` for the audit metadata, mirroring the revoke handler.
+    const prior = yield* Effect.promise(() =>
+      findOAuthClient(clientId, { kind: "org", orgId: orgId! }),
+    );
+    if (!prior) {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.oauth_client.rateLimitUpdate,
+        targetType: "oauth_client",
+        targetId: clientId,
+        ipAddress,
+        status: "failure",
+        metadata: { clientId, found: false, requestsPerMinute },
+      });
+      return c.json(
+        { error: "not_found", message: "OAuth client not found in this workspace.", requestId },
+        404,
+      );
+    }
+
+    // Capture the previous value for the audit row so the forensic trail
+    // shows a delta, not just the new state. The list query already
+    // joins `oauth_client_rate_limits`, so we don't need a second probe.
+    const priorRow = yield* Effect.promise(() =>
+      listOAuthClients({ kind: "org", orgId: orgId! }),
+    );
+    const priorRpm =
+      priorRow.find((r) => r.clientId === clientId)?.rateLimitPerMinute ?? null;
+
+    yield* Effect.promise(() =>
+      setOAuthClientRateLimit({
+        clientId,
+        orgId: orgId!,
+        requestsPerMinute,
+        updatedByUserId: user!.id,
+      }),
+    );
+    // Invalidate the limiter's in-memory cache for this (orgId, clientId).
+    // Passing `null` to setClientRateLimit removes the cached entry; the
+    // next dispatch reloads from `oauth_client_rate_limits` (which now
+    // either has the new override or no row at all). Without this, the
+    // limiter would keep using the stale value until process restart.
+    setClientRateLimit(orgId!, clientId, null);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.oauth_client.rateLimitUpdate,
+      targetType: "oauth_client",
+      targetId: clientId,
+      ipAddress,
+      metadata: {
+        clientId,
+        clientName: prior.clientName,
+        previousRpm: priorRpm,
+        newRpm: requestsPerMinute,
+      },
+    });
+
+    log.info(
+      {
+        requestId,
+        clientId,
+        actorId: user?.id,
+        previousRpm: priorRpm,
+        newRpm: requestsPerMinute,
+      },
+      "OAuth client rate-limit override updated",
+    );
+
+    return c.json(
+      {
+        success: true,
+        clientId,
+        rateLimitPerMinute: requestsPerMinute,
+      },
+      200,
+    );
+  }), { label: "update oauth client rate-limit" });
 });
 
 export { adminOauthClients };

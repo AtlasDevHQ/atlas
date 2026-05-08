@@ -306,6 +306,17 @@ export const ADMIN_ACTIONS = {
    */
   oauth_client: {
     revoke: "oauth_client.revoke",
+    /**
+     * Per-OAuth-client rate-limit override change (#2071). Fired by the
+     * admin PATCH route at `/admin/oauth-clients/:id/rate-limit` whenever
+     * an admin sets, updates, or clears the per-minute quota for a
+     * registered client. Metadata: `{ clientId, clientName,
+     * previousRpm, newRpm }` where either bound being `null` means
+     * "use workspace default". Distinct from `mcp_session.rate_limited`
+     * (which fires on every blocked dispatch) — this row is the
+     * configuration trail; that row is the enforcement trail.
+     */
+    rateLimitUpdate: "oauth_client.rate_limit_update",
   },
   /**
    * OAuth 2.1 token lifecycle audit (#2066). Emitted when Better Auth's
@@ -367,6 +378,19 @@ export const ADMIN_ACTIONS = {
    */
   mcp_session: {
     start: "mcp_session.start",
+    /**
+     * Per-OAuth-client rate-limit hit on the hosted MCP endpoint (#2071).
+     * Emitted once per denied tool dispatch — the same `(orgId, clientId)`
+     * tuple may produce a burst of these rows during a runaway-agent
+     * incident, which is the forensic signal we want. Metadata carries
+     * `clientId`, `userId`, `tool`, the resolved per-client limit, the
+     * tool's weight against that limit, and the seconds-to-recover so
+     * incident review pivots on the same numbers the agent saw in its
+     * 429 envelope. `rate_limited` lives under `mcp_session` (rather
+     * than its own domain) because the existing `actorKind=mcp` admin
+     * audit filter (Theme A — A3) already covers this surface.
+     */
+    rateLimited: "mcp_session.rate_limited",
   },
   /**
    * Approval-workflow domain. `approve` / `deny` cover the review decision

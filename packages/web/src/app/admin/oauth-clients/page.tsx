@@ -27,9 +27,20 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { KeyRound, Loader2, Trash2 } from "lucide-react";
+import { Gauge, KeyRound, Loader2, RotateCcw, Trash2 } from "lucide-react";
+
+// Wire-shape default for the per-client MCP rate limit. Mirrors
+// `DEFAULT_REQUESTS_PER_MINUTE` in `packages/api/src/lib/rate-limit/oauth-client.ts`
+// — a shared constant module would create a frontend↔api dependency
+// the codebase intentionally avoids (CLAUDE.md: "Frontend is a pure
+// HTTP client").
+const DEFAULT_RATE_LIMIT_PER_MINUTE = 60;
+const MIN_RATE_LIMIT_PER_MINUTE = 1;
+const MAX_RATE_LIMIT_PER_MINUTE = 3600;
 
 export default function OAuthClientsPage() {
   const {
@@ -50,7 +61,23 @@ export default function OAuthClientsPage() {
     invalidates: refetch,
   });
 
+  // PATCH /admin/oauth-clients/:id/rate-limit (#2071)
+  const rateLimitMutation = useAdminMutation<{
+    success: boolean;
+    clientId: string;
+    rateLimitPerMinute: number | null;
+  }>({
+    method: "PATCH",
+    invalidates: refetch,
+  });
+
   const [revokeTarget, setRevokeTarget] = useState<OAuthClient | null>(null);
+  const [rateLimitTarget, setRateLimitTarget] = useState<OAuthClient | null>(null);
+  // Form state for the rate-limit dialog. Empty string maps to "use the
+  // workspace default" (the API's null contract). Numeric input bounds
+  // are enforced at submit time so invalid keystrokes don't show a
+  // disabled/red state on every digit.
+  const [rateLimitInput, setRateLimitInput] = useState<string>("");
 
   async function handleRevoke() {
     if (!revokeTarget) return;
@@ -73,6 +100,54 @@ export default function OAuthClientsPage() {
     // doesn't bleed into other surfaces (e.g. on next open) after dismissal.
     revokeMutation.reset();
     setRevokeTarget(null);
+  }
+
+  function requestRateLimitEdit(client: OAuthClient) {
+    rateLimitMutation.reset();
+    setRateLimitTarget(client);
+    setRateLimitInput(
+      client.rateLimitPerMinute != null ? String(client.rateLimitPerMinute) : "",
+    );
+  }
+
+  function dismissRateLimitDialog() {
+    if (rateLimitMutation.saving) return;
+    rateLimitMutation.reset();
+    setRateLimitTarget(null);
+    setRateLimitInput("");
+  }
+
+  // Pure validation so the input + submit button can disable in lockstep.
+  function parsedRateLimit(): number | null | "invalid" {
+    const trimmed = rateLimitInput.trim();
+    if (trimmed === "") return null; // empty → "use default"
+    const parsed = Number.parseInt(trimmed, 10);
+    if (
+      !Number.isFinite(parsed)
+      || parsed < MIN_RATE_LIMIT_PER_MINUTE
+      || parsed > MAX_RATE_LIMIT_PER_MINUTE
+      || String(parsed) !== trimmed
+    ) {
+      return "invalid";
+    }
+    return parsed;
+  }
+
+  async function handleRateLimitSubmit(reset: boolean) {
+    if (!rateLimitTarget) return;
+    let body: { requestsPerMinute: number | null };
+    if (reset) {
+      body = { requestsPerMinute: null };
+    } else {
+      const parsed = parsedRateLimit();
+      if (parsed === "invalid") return; // submit button is disabled — defensive
+      body = { requestsPerMinute: parsed };
+    }
+    const result = await rateLimitMutation.mutate({
+      path: `/api/v1/admin/oauth-clients/${encodeURIComponent(rateLimitTarget.clientId)}/rate-limit`,
+      body,
+    });
+    if (result.ok) dismissRateLimitDialog();
   }
 
   const activeCount = clients.filter((c) => !c.disabled).length;
@@ -132,6 +207,7 @@ export default function OAuthClientsPage() {
                   key={client.clientId}
                   client={client}
                   onRevoke={requestRevoke}
+                  onEditRateLimit={requestRateLimitEdit}
                 />
               ))}
             </div>
@@ -178,6 +254,92 @@ export default function OAuthClientsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Rate-limit override dialog (#2071). Distinct from the revoke
+          flow — admins frequently raise a quota for a known-trusted
+          agent without revoking, and the API contract is symmetric
+          (null clears, integer sets). */}
+      <Dialog
+        open={!!rateLimitTarget}
+        onOpenChange={(open) => {
+          if (!open) dismissRateLimitDialog();
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set MCP rate limit</DialogTitle>
+            <DialogDescription>
+              Override the per-minute MCP request quota for{" "}
+              <strong>
+                {rateLimitTarget?.clientName ?? rateLimitTarget?.clientId ?? "this client"}
+              </strong>
+              . Leave blank to use the workspace default of {DEFAULT_RATE_LIMIT_PER_MINUTE}{" "}
+              weighted requests per minute. Bound: {MIN_RATE_LIMIT_PER_MINUTE}–
+              {MAX_RATE_LIMIT_PER_MINUTE}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2 pt-2">
+            <Label htmlFor="rate-limit-input" className="text-xs">
+              Requests per minute
+            </Label>
+            <Input
+              id="rate-limit-input"
+              type="number"
+              inputMode="numeric"
+              min={MIN_RATE_LIMIT_PER_MINUTE}
+              max={MAX_RATE_LIMIT_PER_MINUTE}
+              step={1}
+              value={rateLimitInput}
+              placeholder={String(DEFAULT_RATE_LIMIT_PER_MINUTE)}
+              onChange={(e) => setRateLimitInput(e.target.value)}
+              disabled={rateLimitMutation.saving}
+              aria-invalid={parsedRateLimit() === "invalid" ? true : undefined}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              executeSQL costs 5 weight; listEntities costs 1. A 60/min budget admits ~12 executeSQL or ~60 listEntities calls per minute.
+            </p>
+          </div>
+          <MutationErrorSurface
+            error={rateLimitMutation.error}
+            feature="OAuth Clients"
+            variant="inline"
+          />
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleRateLimitSubmit(true)}
+              disabled={
+                rateLimitMutation.saving || rateLimitTarget?.rateLimitPerMinute == null
+              }
+              aria-label="Reset to workspace default"
+            >
+              <RotateCcw className="mr-1.5 size-3.5" />
+              Reset to default
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={dismissRateLimitDialog}
+                disabled={rateLimitMutation.saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => handleRateLimitSubmit(false)}
+                disabled={
+                  rateLimitMutation.saving || parsedRateLimit() === "invalid"
+                }
+              >
+                {rateLimitMutation.saving && (
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                )}
+                Save
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -185,9 +347,11 @@ export default function OAuthClientsPage() {
 function OAuthClientShell({
   client,
   onRevoke,
+  onEditRateLimit,
 }: {
   client: OAuthClient;
   onRevoke: (client: OAuthClient) => void;
+  onEditRateLimit: (client: OAuthClient) => void;
 }) {
   const status: StatusKind = client.disabled
     ? "unavailable"
@@ -195,6 +359,8 @@ function OAuthClientShell({
       ? "connected"
       : "ready";
   const displayName = client.clientName ?? client.clientId;
+  const effectiveRpm = client.rateLimitPerMinute ?? DEFAULT_RATE_LIMIT_PER_MINUTE;
+  const isOverridden = client.rateLimitPerMinute != null;
 
   return (
     <Shell
@@ -220,16 +386,27 @@ function OAuthClientShell({
         ) : undefined
       }
       actions={
-        <Button
-          variant="outline"
-          size="xs"
-          onClick={() => onRevoke(client)}
-          className="text-destructive hover:text-destructive"
-          aria-label={`Revoke ${displayName}`}
-        >
-          <Trash2 className="mr-1.5 size-3" />
-          Revoke
-        </Button>
+        <div className="flex flex-col items-end gap-1.5 sm:flex-row sm:items-center">
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => onEditRateLimit(client)}
+            aria-label={`Edit rate limit for ${displayName}`}
+          >
+            <Gauge className="mr-1.5 size-3" />
+            Rate
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => onRevoke(client)}
+            className="text-destructive hover:text-destructive"
+            aria-label={`Revoke ${displayName}`}
+          >
+            <Trash2 className="mr-1.5 size-3" />
+            Revoke
+          </Button>
+        </div>
       }
     >
       <DetailList>
@@ -243,6 +420,23 @@ function OAuthClientShell({
           label="Active tokens"
           value={String(client.tokenCount)}
           mono
+        />
+        {/* MCP rate limit (#2071). Default value renders dimmed; an
+            admin-set override renders bold with an `· override` suffix
+            so the at-a-glance scan answers "which clients have a custom
+            budget" without opening the edit dialog. */}
+        <DetailRow
+          label="MCP rate limit"
+          value={
+            <span
+              className={cn(
+                "font-mono tabular-nums",
+                isOverridden ? "font-semibold" : "text-muted-foreground",
+              )}
+            >
+              {effectiveRpm}/min{isOverridden ? " · override" : ""}
+            </span>
+          }
         />
         {client.redirectUris.length > 0 && (
           <DetailRow

@@ -47,6 +47,7 @@ import {
   envelope,
   toEnvelopeResult,
 } from "./error-envelope.js";
+import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 
 export interface RegisterToolsOptions {
   /**
@@ -75,6 +76,37 @@ export interface RegisterToolsOptions {
 
 function dispatchId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+/**
+ * Per-OAuth-client rate-limit gate (#2071). Hosted MCP runs through the
+ * OAuth flow which sets `clientId`; stdio MCP leaves it undefined and is
+ * intentionally exempt — the limiter exists to scope hosted-tenant
+ * usage, not the operator's own bench testing.
+ *
+ * Returns `null` when the dispatch should proceed; returns a tool result
+ * envelope (with the `rate_limited` AtlasMcpToolError envelope already
+ * shaped) when the bucket is empty so the caller can short-circuit.
+ *
+ * `userId` falls back to the actor id when no `activeOrganizationId` is
+ * present so the audit row never carries an empty subject — matches the
+ * `workspaceIdOf` fallback above.
+ */
+async function rateLimitOrNull(args: {
+  clientId: string | undefined;
+  orgId: string;
+  userId: string;
+  toolName: string;
+}): Promise<CallToolResult | null> {
+  if (!args.clientId) return null;
+  const outcome = await enforceClientRateLimit({
+    orgId: args.orgId,
+    clientId: args.clientId,
+    userId: args.userId,
+    toolName: args.toolName,
+  });
+  if (outcome.kind === "ok") return null;
+  return toEnvelopeResult(outcome.envelope);
 }
 
 /**
@@ -125,6 +157,13 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         () => {
           const requestId = dispatchId("mcp-explore");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("explore") }, async () => {
+            const limited = await rateLimitOrNull({
+              clientId,
+              orgId: workspaceId,
+              userId: actor.id,
+              toolName: "explore",
+            });
+            if (limited) return limited;
             try {
               const result = await explore.execute!(
                 { command },
@@ -189,6 +228,13 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         () => {
           const requestId = dispatchId("mcp-executeSQL");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL") }, async () => {
+            const limited = await rateLimitOrNull({
+              clientId,
+              orgId: workspaceId,
+              userId: actor.id,
+              toolName: "executeSQL",
+            });
+            if (limited) return limited;
             try {
               const result = await executeSQL.execute!(
                 { sql, explanation, connectionId },

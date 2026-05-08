@@ -295,6 +295,8 @@ describe("migrateAuthTables", () => {
             { name: "0047_drop_mcp_tokens.sql" },
             { name: "0048_trusted_device.sql" },
             { name: "0049_audit_log_mcp_columns.sql" },
+            { name: "0050_backfill_email_verified_grandfathered.sql" },
+            { name: "0051_oauth_client_rate_limits.sql" },
           ],
         };
       }

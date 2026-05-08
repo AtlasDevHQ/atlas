@@ -78,15 +78,22 @@ export const EXECUTE_SQL_ERROR_CODES = [
   "rate_limited",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
+// Per-OAuth-client rate limiting (#2071) gates every hosted-MCP tool,
+// including the semantic-layer reads — `rate_limited` joins each
+// catalog so the LLM-facing description advertises the recovery code
+// agents will see under load.
 export const LIST_ENTITIES_ERROR_CODES = [
+  "rate_limited",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const DESCRIBE_ENTITY_ERROR_CODES = [
   "unknown_entity",
+  "rate_limited",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const SEARCH_GLOSSARY_ERROR_CODES = [
   "ambiguous_term",
+  "rate_limited",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const RUN_METRIC_ERROR_CODES = [

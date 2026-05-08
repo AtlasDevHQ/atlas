@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(51);
+    expect(count).toBe(52);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -159,6 +159,7 @@ describe("runMigrations", () => {
         "0048_trusted_device.sql",
         "0049_audit_log_mcp_columns.sql",
         "0050_backfill_email_verified_grandfathered.sql",
+        "0051_oauth_client_rate_limits.sql",
       ],
     });
 

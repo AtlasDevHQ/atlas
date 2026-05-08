@@ -57,6 +57,7 @@ import {
   envelope,
   toEnvelopeResult,
 } from "./error-envelope.js";
+import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
 // SaaS) shouldn't be able to drive megabyte strings into the catalog
@@ -87,6 +88,30 @@ export interface RegisterSemanticToolsOptions {
 
 function dispatchId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+/**
+ * Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads `clientId`
+ * through `registerSemanticTools`; stdio MCP leaves it undefined and
+ * skips the limiter — the limiter scopes hosted-tenant abuse, not local
+ * operator usage. Returns a tool result envelope (`code: rate_limited`)
+ * when the bucket is empty, or `null` when the dispatch should proceed.
+ */
+async function rateLimitOrNull(args: {
+  clientId: string | undefined;
+  orgId: string;
+  userId: string;
+  toolName: string;
+}): Promise<CallToolResult | null> {
+  if (!args.clientId) return null;
+  const outcome = await enforceClientRateLimit({
+    orgId: args.orgId,
+    clientId: args.clientId,
+    userId: args.userId,
+    toolName: args.toolName,
+  });
+  if (outcome.kind === "ok") return null;
+  return toEnvelopeResult(outcome.envelope);
 }
 
 function toJsonContent(value: unknown): CallToolResult {
@@ -141,6 +166,13 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-listEntities");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities") }, async () => {
+            const limited = await rateLimitOrNull({
+              clientId,
+              orgId: workspaceId,
+              userId: actor.id,
+              toolName: "listEntities",
+            });
+            if (limited) return limited;
             try {
               const entities = listEntities({ filter });
               return toJsonContent({ count: entities.length, entities });
@@ -179,6 +211,13 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-describeEntity");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity") }, async () => {
+            const limited = await rateLimitOrNull({
+              clientId,
+              orgId: workspaceId,
+              userId: actor.id,
+              toolName: "describeEntity",
+            });
+            if (limited) return limited;
             try {
               const entity = getEntityByName(name);
               if (!entity) {
@@ -230,6 +269,13 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-searchGlossary");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary") }, async () => {
+            const limited = await rateLimitOrNull({
+              clientId,
+              orgId: workspaceId,
+              userId: actor.id,
+              toolName: "searchGlossary",
+            });
+            if (limited) return limited;
             try {
               const matches = searchGlossary(term);
 
@@ -336,6 +382,13 @@ export function registerSemanticTools(
         () => {
           const requestId = dispatchId("mcp-runMetric");
           return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric") }, async () => {
+            const limited = await rateLimitOrNull({
+              clientId,
+              orgId: workspaceId,
+              userId: actor.id,
+              toolName: "runMetric",
+            });
+            if (limited) return limited;
             try {
               if (filters && Object.keys(filters).length > 0) {
                 return toEnvelopeResult(

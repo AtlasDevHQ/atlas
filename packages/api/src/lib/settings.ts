@@ -372,6 +372,30 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // MCP — only the prompts gating today; future MCP-surface settings land here
+  // so admins find them next to AI Agents under a single section.
+  // #2076 — gating the canonical eval prompts is a "spot decision" that
+  // a workspace admin makes once after picking their dataset, so we
+  // surface it as a tri-state instead of a boolean. `auto` reads the
+  // dataset signal (`__demo__` connection / `ATLAS_DEMO_INDUSTRY` set)
+  // so the SaaS demo workspaces and self-hosted novamart fixtures both
+  // light up without a manual flip; explicit `always` / `never` lets
+  // a real-data customer opt in (e.g. they want NovaMart prompts as
+  // examples for their analyst training set) or a demo workspace opt
+  // out (e.g. running a pre-launch experiment).
+  {
+    key: "ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS",
+    section: "MCP",
+    label: "Expose canonical eval prompts",
+    description:
+      "Surface the 20 NovaMart canonical eval questions as MCP prompts/list entries. `auto` exposes them when the workspace has a published `__demo__` connection or `ATLAS_DEMO_INDUSTRY` is set; `always` exposes them regardless of dataset; `never` hides them.",
+    type: "select",
+    options: ["auto", "always", "never"],
+    default: "auto",
+    envVar: "ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS",
+    scope: "workspace",
+  },
+
   // Appearance
   {
     key: "ATLAS_BRAND_COLOR",

@@ -163,3 +163,25 @@ export function parseAtlasMcpToolError(value: unknown): AtlasMcpToolError | null
     ...(retry_after !== undefined && { retry_after }),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Canonical-prompts toggle (#2076)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tri-state setting controlling whether the 20 NovaMart canonical eval
+ * prompts surface in MCP `prompts/list` for a given workspace. `auto`
+ * resolves to the dataset signal (active `__demo__` connection or
+ * `ATLAS_DEMO_INDUSTRY` set); `always` / `never` are explicit overrides.
+ *
+ * The values exist as a *type* in `@useatlas/types` so the API
+ * (`packages/mcp/src/prompts/gating.ts`) and the admin UI
+ * (`packages/web/src/app/admin/settings/mcp/page.tsx`) share a single
+ * source of truth without `@atlas/web` reaching into `@atlas/api`. The
+ * matching const tuple is intentionally NOT exported from this package
+ * because adding a value export to `@useatlas/types` breaks the
+ * Scaffold smoke tests in CI (they pull the published npm version,
+ * which won't yet include the new export). Mirror a local `as const`
+ * tuple in callers if you need the values at runtime.
+ */
+export type CanonicalToggle = "auto" | "always" | "never";

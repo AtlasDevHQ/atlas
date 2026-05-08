@@ -11,11 +11,13 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { initializeConfig } from "@atlas/api/lib/config";
+import { initializeConfig, getConfig } from "@atlas/api/lib/config";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { loadSettings } from "@atlas/api/lib/settings";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
-import { registerPrompts } from "./prompts.js";
+import { registerPrompts } from "./prompts/registry.js";
 import { resolveMcpActor } from "./actor.js";
 import type { McpTransport } from "./telemetry.js";
 // `serverInfo.version` is what MCP clients (Claude Desktop, Cursor) show
@@ -65,13 +67,34 @@ interface CreateMcpServerOptions {
  *    `withRequestContext({ user })` so the approval gate sees a bound
  *    actor.
  * 4. Registers semantic layer YAML files as MCP resources
- * 5. Registers prompt templates (built-in, semantic layer, prompt library)
+ * 5. Registers prompt templates (built-in, canonical eval, semantic layer,
+ *    prompt library — see `prompts/registry.ts` for the source order)
  */
 export async function createAtlasMcpServer(
   opts?: CreateMcpServerOptions,
 ): Promise<McpServer> {
   if (!opts?.skipConfig) {
     await initializeConfig();
+  }
+
+  // #2076 — workspace-scoped settings (e.g. ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS)
+  // live in the internal DB. Without `loadSettings()`, the in-process cache
+  // is empty and `getSettingAuto` only sees env vars — the admin toggle
+  // would silently never propagate to stdio MCP. Run once at boot when an
+  // internal DB is configured. The SSE/hosted entry point already calls
+  // `loadSettings()` indirectly via `buildAppLayer`, but the call here is
+  // idempotent (it just re-fills the cache) so we don't bother branching.
+  if (hasInternalDB()) {
+    try {
+      await loadSettings();
+    } catch (err) {
+      // Don't refuse to boot if the DB read fails — fall back to env vars
+      // only and log so an operator can correlate "toggle didn't take
+      // effect" with the underlying connectivity error.
+      process.stderr.write(
+        `[atlas-mcp] loadSettings failed at boot, settings cache may be stale: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 
   const actor = opts?.actor ?? (await resolveMcpActor());
@@ -85,7 +108,16 @@ export async function createAtlasMcpServer(
 
   registerTools(server, { actor, transport, clientId });
   registerResources(server);
-  await registerPrompts(server);
+  await registerPrompts(server, {
+    // `actor.activeOrganizationId` may be undefined for trusted-transport
+    // (system:mcp) — gating falls back to the platform-level demo signal
+    // (`ATLAS_DEMO_INDUSTRY`) in that case.
+    workspaceId: actor.activeOrganizationId,
+    clientId,
+    transport,
+    deployMode: getConfig()?.deployMode ?? "self-hosted",
+    authMode: actor.mode,
+  });
 
   return server;
 }

@@ -96,7 +96,16 @@ for tpl in docker nextjs-standalone; do
   # Merge web lib files into existing API lib (don't delete — API source lives there too)
   if [ -d "$WEB_SRC/lib" ]; then
     cp "$WEB_SRC"/lib/*.ts "$TEMPLATES/$tpl/src/lib/" 2>/dev/null || true
-    # Copy web lib subdirs that don't exist in API (auth/client.ts has special handling)
+    # Copy web lib subdirs (delete+replace each one) — auth/ has the special
+    # docker-only client.ts override applied below; everything else is a
+    # straight copy. Without this, anything web imports via `@/lib/<dir>/`
+    # (e.g. `@/lib/stores/ui-store`) fails to resolve in scaffolded apps.
+    for libsub in stores; do
+      if [ -d "$WEB_SRC/lib/$libsub" ]; then
+        rm -rf "$TEMPLATES/$tpl/src/lib/$libsub"
+        cp -r "$WEB_SRC/lib/$libsub" "$TEMPLATES/$tpl/src/lib/$libsub"
+      fi
+    done
   fi
   # Remove test files from synced web source
   find "$TEMPLATES/$tpl/src/ui" -name '__tests__' -type d -exec rm -rf {} + 2>/dev/null || true

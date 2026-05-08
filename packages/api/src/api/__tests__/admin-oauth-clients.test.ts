@@ -381,6 +381,11 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
       // #2071 — rate-limit override row dropped in the same tx so a
       // re-registered client can't inherit the prior admin's quota.
       "oauth_client_rate_limits",
+      // #2073 — workspace-scope marker + grant rows for cross-workspace
+      // agents, dropped before the parent client so a re-registered
+      // clientId can't inherit prior grants.
+      "oauth_client_workspace_grants",
+      "oauth_client_workspace_scope",
       "oauthClient",
     ]);
 

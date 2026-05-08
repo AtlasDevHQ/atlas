@@ -25,7 +25,7 @@ import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 
 mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
-    mcp_session: { start: "mcp_session.start" },
+    mcp_session: { start: "mcp_session.start", denied: "mcp_session.denied" },
     oauth_token: {
       issue: "oauth_token.issue",
       refresh: "oauth_token.refresh",

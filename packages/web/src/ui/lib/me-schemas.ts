@@ -64,6 +64,29 @@ export const OAuthClientSchema = z.object({
    * the write boundary, not on the read boundary.
    */
   rateLimitPerMinute: z.number().int().positive().nullable(),
+  /**
+   * Cross-workspace agent identity (#2073). `'single'` means the client
+   * is bound to its origin workspace (legacy behavior); `'multi'` means
+   * the user upgraded the client to access every workspace they're a
+   * member of via per-request `X-Atlas-Workspace` resolution. The
+   * Settings → AI Agents page renders a "Connected to all your
+   * workspaces" badge for the multi state and surfaces per-workspace
+   * revoke beneath the row.
+   *
+   * Strict enum (no `.catch` fallback) — this field controls the UI's
+   * scope-toggle and per-workspace revoke gating. A server bug emitting
+   * an unknown value should fail the parse loudly so we get an error
+   * boundary surface, not silently render the agent as `'single'` and
+   * have the user revoke the wrong way.
+   */
+  workspaceScope: z.enum(["single", "multi"]),
+  /**
+   * The granted workspace ids for `'multi'`-scope clients. Ordered by
+   * `granted_at ASC` (origin workspace first). Empty for `'single'` —
+   * the implicit grant is the OAuth client's `referenceId` and lives
+   * outside the grant table.
+   */
+  grantedWorkspaceIds: z.array(z.string()),
 });
 
 export const ListOAuthClientsResponseSchema = z.object({

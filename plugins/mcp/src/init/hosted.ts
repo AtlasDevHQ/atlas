@@ -120,6 +120,14 @@ export interface HostedFlowResult {
   refreshToken: Bearer | null;
   /** The `https://atlas.useatlas.dev/workspace_id` claim from the JWT. */
   workspaceId: string;
+  /**
+   * The `https://atlas.useatlas.dev/workspace_ids` plural claim (#2073),
+   * if present in the JWT. Atlas mints this for users belonging to more
+   * than one workspace; the CLI uses it to decide whether to prompt for
+   * single-vs-multi-workspace setup at write time. Empty array (or
+   * missing claim) means single-workspace user — no prompt.
+   */
+  workspaceIds: string[];
   /** `${apiUrl}/mcp/${workspaceId}/sse` — what the MCP client connects to. */
   mcpUrl: string;
 }
@@ -190,6 +198,7 @@ const FETCH_TIMEOUT_MS = 30 * 1000;
 const REQUESTED_SCOPE = "openid profile email mcp:read offline_access";
 const CLIENT_NAME = "Atlas MCP CLI";
 const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
+const WORKSPACES_CLAIM = "https://atlas.useatlas.dev/workspace_ids";
 
 // ── Public entry point ─────────────────────────────────────────────────
 
@@ -286,6 +295,7 @@ export async function runHostedAuthFlow(
     const claims = decodeJwtPayload(tokenResponse.access_token);
     enforceIssuer(claims, metadata.issuer);
     const workspaceId = extractWorkspaceClaim(claims);
+    const workspaceIds = extractWorkspacesClaim(claims);
 
     return {
       accessToken: tokenResponse.access_token as Bearer,
@@ -293,6 +303,7 @@ export async function runHostedAuthFlow(
         ? (tokenResponse.refresh_token as Bearer)
         : null,
       workspaceId,
+      workspaceIds,
       mcpUrl: `${apiUrl}/mcp/${workspaceId}/sse`,
     };
   } finally {
@@ -632,6 +643,24 @@ function extractWorkspaceClaim(payload: Record<string, unknown>): string {
     );
   }
   return claim;
+}
+
+/**
+ * Extract the optional plural workspace claim (#2073). Returns an empty
+ * array when the claim is missing, malformed, or contains non-string
+ * entries. Unlike the singular claim, this one is OPTIONAL — Atlas only
+ * mints it for users belonging to more than one workspace, so its
+ * absence is the common case (single-workspace users) and not a fatal
+ * error. Malformed values silently degrade to empty rather than
+ * `missing_workspace_claim`, since the CLI's worst case under "no plural
+ * claim" is "skip the prompt" — strictly safer than failing the install.
+ */
+function extractWorkspacesClaim(payload: Record<string, unknown>): string[] {
+  const raw = payload[WORKSPACES_CLAIM];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
 }
 
 // ── Loopback listener — handler factory + default Bun.serve impl ───────

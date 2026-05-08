@@ -156,6 +156,30 @@ mock.module("@atlas/api/lib/db/internal", () => {
   };
 });
 
+// #2073 — workspace-grants helper. Default to the legacy single-scope
+// path (no scope row, no grants) so existing tests don't have to opt
+// in. Multi-scope tests override these mocks per-case.
+const mockGetOAuthClientScope: Mock<(clientId: string) => Promise<"single" | "multi">> = mock(
+  async () => "single",
+);
+const mockHasWorkspaceGrant: Mock<(clientId: string, workspaceId: string) => Promise<boolean>> = mock(
+  async () => false,
+);
+const mockUserIsWorkspaceMember: Mock<(userId: string, workspaceId: string) => Promise<boolean>> = mock(
+  async () => false,
+);
+mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
+  getOAuthClientScope: (clientId: string) => mockGetOAuthClientScope(clientId),
+  hasWorkspaceGrant: (clientId: string, workspaceId: string) =>
+    mockHasWorkspaceGrant(clientId, workspaceId),
+  userIsWorkspaceMember: (userId: string, workspaceId: string) =>
+    mockUserIsWorkspaceMember(userId, workspaceId),
+  listUserWorkspaceIds: async () => [],
+  listWorkspaceGrantsForClient: async () => [],
+  setWorkspaceScopeAndGrants: async () => undefined,
+  revokeWorkspaceGrant: async () => 0,
+}));
+
 const auditedEntries: AdminActionEntry[] = [];
 const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
   (entry: AdminActionEntry) => {
@@ -167,6 +191,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
     mcp_session: {
       start: "mcp_session.start",
+      denied: "mcp_session.denied",
     },
   },
   logAdminAction: (entry: AdminActionEntry) => mockLogAdminAction(entry),
@@ -254,6 +279,15 @@ beforeEach(() => {
   mockApiRegion.mockReset();
   mockWorkspaceRegion.mockReset();
   mockLogAdminAction.mockReset();
+  // #2073 — reset workspace-grants mocks to legacy defaults so tests
+  // not exercising the cross-workspace path see the unchanged single-
+  // scope behavior. Multi-scope tests opt in via mockResolvedValue.
+  mockGetOAuthClientScope.mockReset();
+  mockHasWorkspaceGrant.mockReset();
+  mockUserIsWorkspaceMember.mockReset();
+  mockGetOAuthClientScope.mockResolvedValue("single");
+  mockHasWorkspaceGrant.mockResolvedValue(false);
+  mockUserIsWorkspaceMember.mockResolvedValue(false);
   auditedEntries.length = 0;
   __mockedConfig = {
     datasources: {},
@@ -729,6 +763,8 @@ describe("hosted MCP — path/claim workspace match", () => {
       scope: "openid mcp:read",
       [WORKSPACE_CLAIM]: ORG_A,
     });
+    // Single-scope (default) — path/claim mismatch must 403.
+    mockGetOAuthClientScope.mockResolvedValue("single");
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/mcp/${ORG_B}/sse`, {
@@ -740,11 +776,318 @@ describe("hosted MCP — path/claim workspace match", () => {
         body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
       });
       expect(res.status).toBe(403);
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe("forbidden");
+      // #2073 — opaque single-scope mismatch surfaces under the
+      // structured `cross_workspace_denied` envelope so the CLI / agent
+      // can render the actionable hint without parsing log lines.
+      const body = (await res.json()) as { error: string; hint?: string };
+      expect(body.error).toBe("cross_workspace_denied");
+      expect(body.hint).toBeDefined();
       expect(
         auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
+    } finally {
+      handle.close();
+    }
+  });
+});
+
+// ── #2073 cross-workspace agent identity ──────────────────────────────
+
+describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
+  beforeEach(() => {
+    // Default to legacy single-scope. Multi-scope tests opt in.
+    mockGetOAuthClientScope.mockReset();
+    mockHasWorkspaceGrant.mockReset();
+    mockUserIsWorkspaceMember.mockReset();
+    mockGetOAuthClientScope.mockResolvedValue("single");
+    mockHasWorkspaceGrant.mockResolvedValue(false);
+    mockUserIsWorkspaceMember.mockResolvedValue(false);
+  });
+
+  it("multi-scope: X-Atlas-Workspace header overrides path workspace", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockGetOAuthClientScope.mockResolvedValue("multi");
+    mockHasWorkspaceGrant.mockImplementation(
+      async (_clientId, workspaceId) => workspaceId === ORG_B,
+    );
+    mockUserIsWorkspaceMember.mockImplementation(
+      async (_userId, workspaceId) => workspaceId === ORG_B,
+    );
+
+    const handle = await startServer();
+    try {
+      // Path pins to ORG_A, but the header redirects to ORG_B and the
+      // grant + membership for ORG_B succeed → request is admitted.
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+          "X-Atlas-Workspace": ORG_B,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      // The dispatch reaches session creation (status not 401/403); the
+      // exact body shape depends on the SDK's handshake. We're only
+      // gating on "did we get past the workspace authorization layer."
+      expect(res.status).not.toBe(403);
+      expect(res.status).not.toBe(401);
+      // The grant lookup ran for ORG_B (the resolved workspace), not ORG_A.
+      const grantArgs = mockHasWorkspaceGrant.mock.calls.map((c) => c[1]);
+      expect(grantArgs).toContain(ORG_B);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("multi-scope: X-Atlas-Default-Workspace fills in when X-Atlas-Workspace is absent", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockGetOAuthClientScope.mockResolvedValue("multi");
+    mockHasWorkspaceGrant.mockImplementation(
+      async (_clientId, workspaceId) => workspaceId === ORG_B,
+    );
+    mockUserIsWorkspaceMember.mockImplementation(
+      async (_userId, workspaceId) => workspaceId === ORG_B,
+    );
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+          "X-Atlas-Default-Workspace": ORG_B,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).not.toBe(403);
+      const grantArgs = mockHasWorkspaceGrant.mock.calls.map((c) => c[1]);
+      expect(grantArgs).toContain(ORG_B);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("multi-scope: falls back to path workspace when no override header is set", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockGetOAuthClientScope.mockResolvedValue("multi");
+    mockHasWorkspaceGrant.mockResolvedValue(true);
+    mockUserIsWorkspaceMember.mockResolvedValue(true);
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).not.toBe(403);
+      // The path workspace IS the resolved workspace.
+      const grantArgs = mockHasWorkspaceGrant.mock.calls.map((c) => c[1]);
+      expect(grantArgs).toContain(ORG_A);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("multi-scope: 403 cross_workspace_denied when no grant exists for the resolved workspace", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockGetOAuthClientScope.mockResolvedValue("multi");
+    mockHasWorkspaceGrant.mockResolvedValue(false);
+    mockUserIsWorkspaceMember.mockResolvedValue(true);
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+          "X-Atlas-Workspace": ORG_B,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; hint?: string };
+      expect(body.error).toBe("cross_workspace_denied");
+      expect(body.hint).toContain("Settings");
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("multi-scope: 403 when grant exists but the user is no longer a workspace member", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockGetOAuthClientScope.mockResolvedValue("multi");
+    mockHasWorkspaceGrant.mockResolvedValue(true);
+    // Membership revoked since token issuance — must take effect immediately.
+    mockUserIsWorkspaceMember.mockResolvedValue(false);
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+          "X-Atlas-Workspace": ORG_B,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; hint?: string };
+      expect(body.error).toBe("cross_workspace_denied");
+      // The hint differs between "no grant" and "no membership" so the
+      // user gets actionable advice. Membership revoked → guides them
+      // to reconfirm membership; grant missing → points to Settings.
+      expect(body.hint).toContain("membership");
+      // Audit must record the denial with the membership_revoked reason
+      // so forensic queries can split the two failure modes.
+      const denial = auditedEntries.find(
+        (e) => e.actionType === "mcp_session.denied",
+      );
+      expect(denial).toBeDefined();
+      expect((denial!.metadata as { reason: string }).reason).toBe(
+        "membership_revoked",
+      );
+      expect((denial!.metadata as { resolvedWorkspaceId: string }).resolvedWorkspaceId).toBe(
+        ORG_B,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("multi-scope: 500 + denied audit when the admission DB lookup itself throws", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    // Simulate a Postgres outage on the scope lookup. The router catches,
+    // logs error, returns 500 internal_error — but MUST emit a denied
+    // audit row so the request appears in forensic queries asking
+    // "show me every cross-workspace denial today" even when the
+    // underlying failure was an internal-DB outage rather than a
+    // missing grant.
+    mockGetOAuthClientScope.mockRejectedValue(new Error("connection refused"));
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+          "X-Atlas-Workspace": ORG_B,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string; requestId: string };
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeDefined();
+      // No session-start audit (request never reached dispatch).
+      expect(
+        auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
+      ).toHaveLength(0);
+      // Denial audit fired with the admission_lookup_failed reason.
+      const denial = auditedEntries.find(
+        (e) => e.actionType === "mcp_session.denied",
+      );
+      expect(denial).toBeDefined();
+      expect((denial!.metadata as { reason: string }).reason).toBe(
+        "admission_lookup_failed",
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("multi-scope: session-start audit records the resolved workspace + claim workspace separately", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockGetOAuthClientScope.mockResolvedValue("multi");
+    mockHasWorkspaceGrant.mockResolvedValue(true);
+    mockUserIsWorkspaceMember.mockResolvedValue(true);
+
+    const handle = await startServer();
+    try {
+      // Path workspace = ORG_A, header overrides to ORG_B → resolved is ORG_B.
+      // The audit row's `metadata.orgId` MUST be the resolved workspace
+      // (so forensic queries asking "what happened in workspace B today"
+      // find this row) and `metadata.claimOrgId` MUST be the JWT singular
+      // claim (ORG_A) so the cross-workspace pivot stays reconstructable.
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+          "X-Atlas-Workspace": ORG_B,
+          // Use a JSON-RPC initialize so the session creates and the
+          // start audit fires.
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "initialize",
+          id: 1,
+          params: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "test", version: "0.0.1" },
+          },
+        }),
+      });
+      expect(res.status).toBe(200);
+      const startAudit = auditedEntries.find(
+        (e) => e.actionType === "mcp_session.start",
+      );
+      expect(startAudit).toBeDefined();
+      const meta = startAudit!.metadata as { orgId: string; claimOrgId?: string };
+      expect(meta.orgId).toBe(ORG_B);
+      expect(meta.claimOrgId).toBe(ORG_A);
     } finally {
       handle.close();
     }

@@ -29,10 +29,18 @@ export interface StdioServerConfig {
  * clients (Claude Desktop, Cursor, Continue) all accept this `url` +
  * `headers` shape for remote MCP servers; the bearer is the JWT minted
  * by the OAuth 2.1 loopback flow in `init/hosted.ts`.
+ *
+ * `env` is a forward-compat slot for the cross-workspace identity flow
+ * (#2073). Today's MCP clients don't bridge stdio-style env into HTTP
+ * headers, so the block is informational — but writing it costs
+ * nothing and lets a future agent-framework wrapper read
+ * `ATLAS_DEFAULT_WORKSPACE` and inject `X-Atlas-Default-Workspace` on
+ * every request without re-running this CLI.
  */
 export interface HttpServerConfig {
   url: string;
   headers?: Record<string, string>;
+  env?: Record<string, string>;
 }
 
 export type ServerConfig = StdioServerConfig | HttpServerConfig;
@@ -79,13 +87,25 @@ interface BuildHostedOpts {
   url: string;
   /** OAuth 2.1 access token (JWT). Written verbatim into the Authorization header. */
   accessToken: string;
+  /**
+   * Default workspace id (#2073) for multi-workspace agents. When set,
+   * the config writes an `env: { ATLAS_DEFAULT_WORKSPACE }` block as
+   * the forward-compat hint for agent frameworks that bridge env into
+   * `X-Atlas-Default-Workspace`. Single-workspace clients leave this
+   * undefined and the env block is omitted.
+   */
+  defaultWorkspaceId?: string;
 }
 
 export function buildHostedServerConfig(opts: BuildHostedOpts): HttpServerConfig {
-  return {
+  const cfg: HttpServerConfig = {
     url: opts.url,
     headers: { Authorization: `Bearer ${opts.accessToken}` },
   };
+  if (opts.defaultWorkspaceId) {
+    cfg.env = { ATLAS_DEFAULT_WORKSPACE: opts.defaultWorkspaceId };
+  }
+  return cfg;
 }
 
 interface ExistingShape {

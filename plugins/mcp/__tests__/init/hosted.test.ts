@@ -1015,3 +1015,152 @@ describe("defaultServeImpl — single-shot listener guard", () => {
   });
 });
 
+// ── runInit --hosted multi-workspace prompt (#2073) ──────────────────
+
+describe("runInit --hosted — multi-workspace prompt (#2073)", () => {
+  /**
+   * Build a minimal fakeFetch that mints a JWT with both singular and
+   * plural workspace claims, so `runInit` reaches the multi-workspace
+   * prompt branch in `runHosted`.
+   */
+  function multiWorkspaceFlow(args: {
+    workspaceIds: string[];
+  }): { serve: ServeImpl; controller: () => FakeServer; fetchImpl: typeof fetch } {
+    const { serve, controller } = fakeServe();
+    const fetchImpl = fakeFetch({
+      token: {
+        access_token: jwt({
+          sub: "user-1",
+          iss: DISCOVERY_BODY.issuer,
+          "https://atlas.useatlas.dev/workspace_id": "ws_alpha",
+          "https://atlas.useatlas.dev/workspace_ids": args.workspaceIds,
+        }),
+        refresh_token: "r-1",
+      },
+    });
+    return { serve, controller, fetchImpl };
+  }
+
+  /**
+   * Drive the OAuth callback into the captured loopback handler so the
+   * flow completes. Mirrors the happy-path test's invoke pattern.
+   */
+  async function fireCallback(controller: () => FakeServer): Promise<void> {
+    await new Promise((r) => setTimeout(r, 0));
+    const params = new URLSearchParams();
+    params.set("code", "abc123");
+    params.set("state", EXPECTED_STATE);
+    controller().invoke(params);
+  }
+
+  it("does NOT prompt single-workspace users (length 1 plural claim)", async () => {
+    const { serve, controller, fetchImpl } = multiWorkspaceFlow({
+      workspaceIds: ["ws_alpha"],
+    });
+    let promptInvoked = false;
+    const promise = runInit({
+      mode: "hosted",
+      apiUrl: FAKE_API,
+      write: false,
+      env: {},
+      fetchImpl,
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      workspacePromptImpl: async () => {
+        promptInvoked = true;
+        return "single";
+      },
+    });
+    await fireCallback(controller);
+    const cap = captureStdio();
+    try {
+      const res = await promise;
+      expect(res.exitCode).toBe(0);
+    } finally {
+      cap.restore();
+    }
+    expect(promptInvoked).toBe(false);
+  });
+
+  it("prompts when the user belongs to >1 workspaces and writes a multi-workspace config block", async () => {
+    const { serve, controller, fetchImpl } = multiWorkspaceFlow({
+      workspaceIds: ["ws_alpha", "ws_beta", "ws_gamma"],
+    });
+    const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-multi-"));
+    const target = join(dir, "claude_desktop_config.json");
+    type PromptArgs = { workspaceIds: string[]; activeWorkspaceId: string };
+    let promptArgs: PromptArgs | null = null;
+    const promise = runInit({
+      mode: "hosted",
+      apiUrl: FAKE_API,
+      write: true,
+      configPathOverride: target,
+      env: {},
+      fetchImpl,
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      workspacePromptImpl: async (args) => {
+        promptArgs = args;
+        return "multi";
+      },
+    });
+    await fireCallback(controller);
+    const cap = captureStdio();
+    try {
+      const res = await promise;
+      expect(res.exitCode).toBe(0);
+    } finally {
+      cap.restore();
+    }
+
+    // Prompt was invoked with all three workspaces + active one.
+    expect(promptArgs).not.toBeNull();
+    expect(promptArgs!.workspaceIds).toEqual(["ws_alpha", "ws_beta", "ws_gamma"]);
+    expect(promptArgs!.activeWorkspaceId).toBe("ws_alpha");
+
+    // Multi choice writes the env.ATLAS_DEFAULT_WORKSPACE block — the
+    // forward-compat hint for agent frameworks bridging env into
+    // X-Atlas-Default-Workspace.
+    const written = JSON.parse(readFileSync(target, "utf8"));
+    expect(written.mcpServers.atlas.env.ATLAS_DEFAULT_WORKSPACE).toBe("ws_alpha");
+    expect(written.mcpServers.atlas.headers.Authorization).toMatch(/^Bearer /);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("single choice on a multi-workspace user does NOT write the env block (legacy shape)", async () => {
+    const { serve, controller, fetchImpl } = multiWorkspaceFlow({
+      workspaceIds: ["ws_alpha", "ws_beta"],
+    });
+    const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-single-"));
+    const target = join(dir, "claude_desktop_config.json");
+    const promise = runInit({
+      mode: "hosted",
+      apiUrl: FAKE_API,
+      write: true,
+      configPathOverride: target,
+      env: {},
+      fetchImpl,
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      workspacePromptImpl: async () => "single",
+    });
+    await fireCallback(controller);
+    const cap = captureStdio();
+    try {
+      await promise;
+    } finally {
+      cap.restore();
+    }
+    const written = JSON.parse(readFileSync(target, "utf8"));
+    expect(written.mcpServers.atlas.env).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+

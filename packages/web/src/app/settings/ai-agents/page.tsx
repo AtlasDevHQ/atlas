@@ -51,7 +51,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { AlertTriangle, Bot, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, Bot, Globe, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 // Wizard is heavier than the list view (carries client-config templates +
 // clipboard glue) and only opens on user action. Dynamic import keeps the
@@ -93,6 +93,26 @@ export default function AIAgentsPage() {
     invalidates: refetch,
   });
 
+  // #2073 — workspace-scope toggle + per-workspace grant revoke. Both
+  // hit the same `/api/v1/me/oauth-clients/:id/...` family and share
+  // the refetch invalidation hook so the agents list rerenders with
+  // the new scope/grant state without a manual refresh.
+  const scopeMutation = useAdminMutation<{
+    success: boolean;
+    workspaceScope: "single" | "multi";
+    grantedWorkspaceIds: string[];
+  }>({
+    method: "POST",
+    invalidates: refetch,
+  });
+  const grantMutation = useAdminMutation<{
+    success: boolean;
+    removed: number;
+  }>({
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
   const [revokeTarget, setRevokeTarget] = useState<OAuthClient | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
 
@@ -115,6 +135,20 @@ export default function AIAgentsPage() {
     if (revokeMutation.saving) return;
     revokeMutation.reset();
     setRevokeTarget(null);
+  }
+
+  async function toggleWorkspaceScope(client: OAuthClient) {
+    const targetMode = client.workspaceScope === "multi" ? "single" : "multi";
+    await scopeMutation.mutate({
+      path: `/api/v1/me/oauth-clients/${encodeURIComponent(client.clientId)}/workspace-scope`,
+      body: { mode: targetMode },
+    });
+  }
+
+  async function revokeWorkspaceGrant(client: OAuthClient, workspaceId: string) {
+    await grantMutation.mutate({
+      path: `/api/v1/me/oauth-clients/${encodeURIComponent(client.clientId)}/workspaces/${encodeURIComponent(workspaceId)}`,
+    });
   }
 
   const totalCount = clients.length;
@@ -188,6 +222,10 @@ export default function AIAgentsPage() {
                   <AIAgentShell
                     client={client}
                     onRevoke={requestRevoke}
+                    onToggleScope={toggleWorkspaceScope}
+                    onRevokeWorkspaceGrant={revokeWorkspaceGrant}
+                    scopeMutating={scopeMutation.saving}
+                    grantMutating={grantMutation.saving}
                   />
                 </div>
               ))}
@@ -336,9 +374,17 @@ function presentTokenState(tokenState: OAuthClient["tokenState"]): {
 function AIAgentShell({
   client,
   onRevoke,
+  onToggleScope,
+  onRevokeWorkspaceGrant,
+  scopeMutating,
+  grantMutating,
 }: {
   client: OAuthClient;
   onRevoke: (client: OAuthClient) => void;
+  onToggleScope: (client: OAuthClient) => void;
+  onRevokeWorkspaceGrant: (client: OAuthClient, workspaceId: string) => void;
+  scopeMutating: boolean;
+  grantMutating: boolean;
 }) {
   const presentation = presentTokenState(client.tokenState);
   const displayName = client.clientName ?? client.clientId;
@@ -348,7 +394,10 @@ function AIAgentShell({
       ? `Last used ${formatDateTime(client.lastUsedAt)}`
       : "Registered but never used");
 
-  const badge = presentation.badge ? (
+  // #2073 — multi-scope badge precedes the token-state badge so the
+  // cross-workspace surface is visible at a glance even when a state
+  // badge (Reconnect / Revoked) is also present.
+  const stateBadge = presentation.badge ? (
     <Badge
       variant="outline"
       className={cn(
@@ -368,13 +417,34 @@ function AIAgentShell({
     </Badge>
   ) : undefined;
 
+  const scopeBadge = client.workspaceScope === "multi" ? (
+    <Badge
+      variant="outline"
+      className="shrink-0 text-[10px] border-primary/30 text-primary"
+      title="This agent can be pointed at any of your workspaces via the X-Atlas-Workspace header."
+    >
+      <Globe className="mr-1 size-3" aria-hidden="true" />
+      All workspaces
+    </Badge>
+  ) : undefined;
+
+  const titleBadge =
+    scopeBadge && stateBadge ? (
+      <span className="flex items-center gap-1.5">
+        {scopeBadge}
+        {stateBadge}
+      </span>
+    ) : (
+      scopeBadge ?? stateBadge
+    );
+
   return (
     <Shell
       icon={Bot}
       title={displayName}
       description={description}
       status={presentation.status}
-      titleBadge={badge}
+      titleBadge={titleBadge}
       actions={
         <div className="flex items-center gap-2">
           {client.tokenState === "reconnect_required" && (
@@ -393,6 +463,21 @@ function AIAgentShell({
               Reconnect
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => onToggleScope(client)}
+            disabled={scopeMutating}
+            aria-label={
+              client.workspaceScope === "multi"
+                ? `Restrict ${displayName} to its origin workspace`
+                : `Allow ${displayName} to access all your workspaces`
+            }
+          >
+            {scopeMutating && <Loader2 className="mr-1.5 size-3 animate-spin" />}
+            {!scopeMutating && <Globe className="mr-1.5 size-3" />}
+            {client.workspaceScope === "multi" ? "Restrict" : "Multi-workspace"}
+          </Button>
           <Button
             variant="outline"
             size="xs"
@@ -427,6 +512,36 @@ function AIAgentShell({
           />
         )}
       </DetailList>
+
+      {client.workspaceScope === "multi" && client.grantedWorkspaceIds.length > 0 && (
+        <div className="mt-3 border-t border-border/50 pt-3">
+          <p className="mb-2 text-[11px] font-medium text-muted-foreground">
+            Granted workspaces ({client.grantedWorkspaceIds.length})
+          </p>
+          <ul className="space-y-1.5">
+            {client.grantedWorkspaceIds.map((workspaceId) => (
+              <li
+                key={workspaceId}
+                className="flex items-center justify-between gap-2 text-xs"
+              >
+                <code className="truncate font-mono text-muted-foreground">
+                  {workspaceId}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => onRevokeWorkspaceGrant(client, workspaceId)}
+                  disabled={grantMutating}
+                  className="text-destructive hover:text-destructive"
+                  aria-label={`Revoke ${displayName} access to workspace ${workspaceId}`}
+                >
+                  Revoke
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Shell>
   );
 }

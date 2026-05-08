@@ -69,6 +69,28 @@ export interface LocalInitOptions {
   detectClientsImpl?: () => ClientInfo[];
 }
 
+/**
+ * Cross-workspace prompt outcome (#2073). The CLI offers two choices to
+ * users who belong to more than one workspace:
+ *   - `single`: pin this agent to the active workspace (legacy behavior)
+ *   - `multi`:  configure for cross-workspace use; the user upgrades the
+ *               agent to multi-scope in Settings → AI Agents
+ *
+ * Single-workspace users never see the prompt — the CLI treats it as an
+ * implicit `single` choice.
+ */
+export type WorkspaceChoice = "single" | "multi";
+
+/**
+ * Test seam for the interactive prompt. Production callers leave this
+ * undefined and the default readline-backed prompt is used; tests pass
+ * a stub that immediately resolves with the chosen value.
+ */
+export type WorkspacePromptImpl = (args: {
+  workspaceIds: string[];
+  activeWorkspaceId: string;
+}) => Promise<WorkspaceChoice>;
+
 export interface HostedInitOptions {
   mode: "hosted";
   /** Override the hosted Atlas API base. Defaults to `https://mcp.useatlas.dev`. */
@@ -86,6 +108,12 @@ export interface HostedInitOptions {
   randomBytesImpl?: (length: number) => Uint8Array;
   callbackTimeoutMs?: number;
   detectClientsImpl?: () => ClientInfo[];
+  /**
+   * Override the multi-workspace prompt (test seam). Default uses
+   * `node:readline` against process.stdin/stdout. Set to `() => Promise.resolve("single")`
+   * for non-interactive scripts; tests typically supply a deterministic stub.
+   */
+  workspacePromptImpl?: WorkspacePromptImpl;
 }
 
 export type RunInitOptions = LocalInitOptions | HostedInitOptions;
@@ -126,14 +154,37 @@ async function runHosted(opts: HostedInitOptions): Promise<RunInitResult> {
     return { exitCode: 1 };
   }
 
+  const isMultiWorkspaceUser = result.workspaceIds.length > 1;
+  let workspaceChoice: WorkspaceChoice = "single";
+  if (isMultiWorkspaceUser) {
+    const promptImpl = opts.workspacePromptImpl ?? defaultWorkspacePrompt;
+    workspaceChoice = await promptImpl({
+      workspaceIds: result.workspaceIds,
+      activeWorkspaceId: result.workspaceId,
+    });
+  }
+
   const serverCfg = buildHostedServerConfig({
     url: result.mcpUrl,
     accessToken: result.accessToken,
+    // Hint the agent's framework about the default workspace via env;
+    // forward-compat for wrappers that bridge env into a header. Today's
+    // MCP clients (Claude Desktop, Cursor) ignore the env block on
+    // HTTP/SSE configs, but writing it is harmless.
+    defaultWorkspaceId:
+      workspaceChoice === "multi" ? result.workspaceId : undefined,
   });
   const clientId = opts.client ?? pickDefaultClient(opts.detectClientsImpl);
   const configPath = opts.configPathOverride ?? getDefaultConfigPath(clientId);
 
   console.log(`Authorized for workspace ${result.workspaceId} at ${apiUrl}.`);
+  if (workspaceChoice === "multi") {
+    console.log(
+      `Multi-workspace mode: this agent will use ${result.workspaceId} by default. ` +
+        `Open https://app.useatlas.dev/settings/ai-agents to grant access to your other ` +
+        `workspaces (${result.workspaceIds.length - 1} additional).`,
+    );
+  }
 
   if (!opts.write || configPath === null) {
     printPasteSnippet(clientId, serverCfg, configPath);
@@ -261,3 +312,66 @@ function printPasteSnippet(
   console.log("# Paste the following into your MCP client config:");
   console.log(snippet);
 }
+
+/**
+ * Default multi-workspace prompt (#2073). Asks via stdin/stdout once the
+ * OAuth flow has finished and we know the user belongs to N>1 workspaces.
+ *
+ * Two choices, not N+1:
+ *   1. `single` — pin the agent to the active workspace. URL bakes in
+ *      `${activeWorkspaceId}` (today's behavior, no follow-up needed).
+ *   2. `multi`  — configure for cross-workspace use; user upgrades the
+ *      grant set in Settings → AI Agents.
+ *
+ * Why not N+1: picking "workspace #2 instead of the active one" requires
+ * either re-running OAuth with that workspace active OR a server-side
+ * mint-against-other-workspace endpoint. Both are out of scope for the
+ * 1.4.1 close-out PR; the two-choice prompt covers the install-once
+ * path acceptably and Settings → AI Agents handles the rest.
+ *
+ * Falls back to `single` on any I/O error (TTY closed mid-prompt, EOF,
+ * unparseable input). The CLI never blocks waiting for unreachable
+ * input; degrading to the safe default is preferable to a hung process.
+ */
+const defaultWorkspacePrompt: WorkspacePromptImpl = async ({
+  workspaceIds,
+  activeWorkspaceId,
+}) => {
+  // Lazy-import readline so test runs that supply `workspacePromptImpl`
+  // don't have to mock stdin/stdout. Same pattern as serve.ts's lazy
+  // dynamic imports for transport modules.
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const question = (q: string) =>
+    new Promise<string>((resolve) => rl.question(q, resolve));
+
+  try {
+    console.log("");
+    console.log(
+      `You belong to ${workspaceIds.length} workspaces. Configure this agent for:`,
+    );
+    console.log(`  [1] Just ${activeWorkspaceId} (active workspace, default)`);
+    console.log(`  [2] All your workspaces (workspace-aware via X-Atlas-Workspace)`);
+    const answer = (await question("Choice [1]: ")).trim();
+    if (answer === "2") return "multi";
+    return "single";
+  } catch (err: unknown) {
+    // Narrowed: only Error instances downgrade silently to the safe
+    // default ("single"). Anything else (a non-Error throw — vanishingly
+    // rare from readline but possible from a future test harness)
+    // re-throws so the install fails loudly rather than silently
+    // configuring single-workspace for a multi-workspace user.
+    //
+    // Logged to stderr so operators piping the install output see the
+    // downgrade — the previous empty `catch {}` mapped every TTY hiccup
+    // to a silent "single" and looked indistinguishable from the user
+    // picking option 1.
+    if (!(err instanceof Error)) throw err;
+    process.stderr.write(
+      `[atlas-mcp init] workspace prompt failed (${err.message}) — defaulting to single-workspace setup. Re-run interactively to opt into multi-workspace.\n`,
+    );
+    return "single";
+  } finally {
+    rl.close();
+  }
+};

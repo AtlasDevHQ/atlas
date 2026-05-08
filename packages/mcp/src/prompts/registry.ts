@@ -36,10 +36,13 @@ import { z } from "zod/v4";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   ListPromptsRequestSchema,
+  ErrorCode,
+  McpError,
   type GetPromptResult,
   type Prompt,
   type PromptArgument,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { AuthMode } from "@useatlas/types/auth";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 import { scanEntities } from "@atlas/api/lib/semantic/scanner";
 import {
@@ -288,6 +291,14 @@ interface InstrumentationContext {
   readonly clientId: string | undefined;
   readonly transport: McpTransport;
   readonly deployMode: McpDeployMode;
+  /**
+   * Resolved auth mode of the bound actor — one of the canonical
+   * `AuthMode` values (`simple-key` / `managed` / `byot`) or `none` when
+   * MCP runs without a bound user. Written to `audit_log.auth_mode`
+   * exactly the way `logQueryAudit` already does so a column-level
+   * audit dashboard sees a single value-space across surfaces.
+   */
+  readonly authMode: AuthMode;
 }
 
 /**
@@ -353,7 +364,7 @@ function writePromptAudit(
         "mcp",
         ctx.clientId ?? null,
         `prompts.${method}`,
-        "mcp",
+        ctx.authMode,
       ],
     );
   } catch (err) {
@@ -376,6 +387,13 @@ export interface RegisterPromptsOptions {
   readonly transport?: McpTransport;
   /** Resolved deploy mode, read once at registration time. Defaults to `self-hosted`. */
   readonly deployMode?: McpDeployMode;
+  /**
+   * Auth mode of the bound actor (`actor.mode`). Mirrors the
+   * `audit_log.auth_mode` value `logQueryAudit` writes for SQL
+   * dispatches so a single dashboard query covers both surfaces.
+   * Defaults to `none` when stdio MCP boots without a bound user.
+   */
+  readonly authMode?: AuthMode;
 }
 
 /**
@@ -397,12 +415,17 @@ function canonicalDescriptor(
         workspaceId: ctx.workspaceId,
       });
       if (!allowed) {
-        // Mirror the SDK's "prompt not found" semantics for a gated
-        // prompt. Returning the prompt anyway would make the toggle a
-        // visibility-only setting; in real-data workspaces we want a
-        // hard "no" so an agent that cached a stale list doesn't get
-        // an answer it shouldn't see.
-        throw new Error(`Prompt ${cp.name} not found`);
+        // Mirror the SDK's "prompt not found" path verbatim — same
+        // ErrorCode + message shape as `mcp.js` lines 423/447 — so an
+        // agent's prompts/get error handler can't tell a gated
+        // canonical apart from a name typo. Returning the prompt
+        // anyway would make the toggle a visibility-only setting; in
+        // real-data workspaces we want a hard "no" so an agent that
+        // cached a stale list doesn't get an answer it shouldn't see.
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Prompt ${cp.name} not found`,
+        );
       }
       return promptResult(cp.question, cp.description);
     },
@@ -418,6 +441,7 @@ export async function registerPrompts(
     clientId: opts.clientId,
     transport: opts.transport ?? "stdio",
     deployMode: opts.deployMode ?? "self-hosted",
+    authMode: opts.authMode ?? "none",
   };
 
   const descriptors: PromptDescriptor[] = [];

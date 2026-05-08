@@ -729,6 +729,10 @@ describe("MCP prompts — audit log", () => {
     expect(String(listRows[0]!.params[0])).toContain("mcp:prompts.list");
     // actor_kind is the 6th param
     expect(listRows[0]!.params[5]).toBe("mcp");
+    // auth_mode is the 9th param — defaults to "none" when no actor is
+    // bound; the test client doesn't pass `authMode` so this should be
+    // a value from the canonical AuthMode union, not the string "mcp".
+    expect(listRows[0]!.params[8]).toBe("none");
   });
 
   it("writes a row per prompts/get call", async () => {

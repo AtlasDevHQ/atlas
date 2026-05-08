@@ -175,6 +175,10 @@ Ordering recommendation: B → D (eval safety net) → C (governance) → E (dis
 
 ---
 
+## Parallel: 1.4.2 — End-user shakeout
+
+Tracker: [milestone #42](https://github.com/AtlasDevHQ/atlas/milestones/42). Bug-hunting and polish from dogfooding Atlas as an end-user/tester after 1.4.1 ships. Mostly admin console rough edges (#2167–#2172, #2175–#2177), BYOT gaps (#2173, #2174), and platform-admin/operational findings (#2165, #2166, #2168). Scope is intentionally elastic — issues land here as bug-bash passes file them. Promote items to a dedicated milestone if scope grows (e.g. BYOT may outgrow #2173/#2174).
+
 ## Closed parallel tracks
 
 - [x] **Multi-method MFA hardening** (6 issues #2082/#2090/#2091/#2092/#2093/#2094) — WebAuthn passkeys + TOTP + trusted-device 30d shipped end-to-end across enrollment, sign-in, governance, telemetry, and recovery. Full detail in `ROADMAP-archive.md`.

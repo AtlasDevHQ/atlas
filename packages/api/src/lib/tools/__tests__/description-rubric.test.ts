@@ -25,6 +25,8 @@
 
 import { describe, expect, it } from "bun:test";
 
+import type { AtlasMcpToolErrorCode } from "@useatlas/types/mcp";
+
 import {
   DESCRIBE_ENTITY_ERROR_CODES,
   DESCRIBE_ENTITY_TOOL_DESCRIPTION,
@@ -44,14 +46,34 @@ import {
 const MIN_WORDS = 80;
 const MAX_WORDS = 150;
 
-// A `{ …"key": value… }` block — at least one quoted key/value pair so a
-// bare `{}` or a stray brace pair doesn't satisfy "inline JSON example."
-const JSON_EXAMPLE_RE = /\{[^{}]*"[^"{}]+"\s*:[^{}]+\}/;
+// A `{ …"key": value… }` block whose key is one of the recognized tool
+// arg / response keys we ship today. Without the key whitelist, a stub
+// like `{ "x": 0 }` would satisfy "inline JSON example" while telling
+// the LLM nothing useful about the call shape — the audit's whole point
+// is that the example must reflect a real call. Adding a new tool means
+// extending this list when its primary arg/result key is new.
+const RECOGNIZED_EXAMPLE_KEYS = [
+  "command", // explore
+  "sql", // executeSQL
+  "explanation", // executeSQL
+  "filter", // listEntities
+  "name", // describeEntity / response shape
+  "entity", // describeEntity response
+  "term", // searchGlossary
+  "id", // runMetric
+  "value", // runMetric response
+  "matches", // searchGlossary response
+  "entities", // listEntities response
+  "count", // listEntities / searchGlossary response
+] as const;
+const JSON_EXAMPLE_RE = new RegExp(
+  `\\{[^{}]*"(?:${RECOGNIZED_EXAMPLE_KEYS.join("|")})"\\s*:[^{}]+\\}`,
+);
 
 interface ToolUnderRubric {
   readonly name: string;
   readonly base: string;
-  readonly codes: readonly string[];
+  readonly codes: readonly AtlasMcpToolErrorCode[];
 }
 
 const TOOLS: readonly ToolUnderRubric[] = [

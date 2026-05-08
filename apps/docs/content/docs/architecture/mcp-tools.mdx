@@ -3,7 +3,7 @@ title: MCP Tool Description Rubric
 description: How Atlas writes the LLM-facing prose for every typed MCP tool, and the test that keeps it from drifting.
 ---
 
-> Contributor doc for the MCP tool-description audit ([#2075](https://github.com/AtlasDevHQ/atlas/issues/2075)). Pairs with the rubric test at [`packages/api/src/lib/tools/__tests__/description-rubric.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/description-rubric.test.ts) — the test fails CI if any of the six tool descriptions drifts off-rubric, so this page is enforceable, not aspirational.
+> Contributor doc for the MCP tool-description audit ([#2075](https://github.com/AtlasDevHQ/atlas/issues/2075)). Pairs with the rubric test at [`packages/api/src/lib/tools/__tests__/description-rubric.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/description-rubric.test.ts) — the test fails CI if any tool description in the rubric's `TOOLS` array drifts off-rubric, so this page is enforceable, not aspirational.
 
 ## Why descriptions matter
 
@@ -53,11 +53,12 @@ Description quality is measured, not asserted. The held-out fixture at [`eval/ca
 Run the eval against your provider:
 
 ```bash
-export ATLAS_PROVIDER=anthropic ATLAS_MODEL=claude-haiku-4-5-20251001 ANTHROPIC_API_KEY=sk-ant-...
+# Resolve the current model id from apps/docs/content/docs/reference/environment-variables.mdx.
+export ATLAS_PROVIDER=anthropic ATLAS_MODEL=<latest-haiku-id> ANTHROPIC_API_KEY=sk-ant-...
 bun run atlas -- canonical-eval --mcp-llm --tool-selection
 ```
 
-The grader walks the LLM's tool-call sequence per item and asserts the **first** non-noop tool call matches `expected_tool` (or any entry in `expected_alternates`). Acceptance floor is `rubric.acceptance_floor` in the fixture (default 0.9). A run below the floor exits non-zero so a regression in description prose trips CI.
+The grader walks the LLM's tool-call sequence per item and asserts the **first** tool call matches `expected_tool` (or any entry in `expected_alternates`). Acceptance floor is `rubric.acceptance_floor` in the fixture (default 0.9). A run below the floor exits non-zero so a regression in description prose trips CI.
 
 The dispatch transport is shared with the canonical-question `--mcp-llm` mode — same MCP route, same `dynamicTool` binder, same actor. The grader is the only thing that diverges. See [`packages/cli/bin/canonical-eval-tool-selection.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/cli/bin/canonical-eval-tool-selection.ts) for the runner and [`packages/cli/bin/canonical-eval-tool-selection.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/cli/bin/canonical-eval-tool-selection.test.ts) for grader contract tests.
 

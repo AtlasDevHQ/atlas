@@ -8,16 +8,20 @@
  * Drift here silently degrades tool selection — verbose descriptions
  * outweigh terse ones in LLM tool routing. The rubric is enforced in
  * `__tests__/description-rubric.test.ts`; the contributor-facing rubric
- * lives at `apps/docs/content/docs/architecture/mcp-tools.mdx`.
+ * (with the "why" the audit existed in the first place) lives at
+ * `apps/docs/content/docs/architecture/mcp-tools.mdx`.
  *
  * Adding a new typed tool? Append a `<NAME>_TOOL_DESCRIPTION` constant
- * matching the rubric, an `<NAME>_ERROR_CODES` tuple, and register it via
+ * matching the rubric, an `<NAME>_ERROR_CODES` tuple typed as
+ * `readonly AtlasMcpToolErrorCode[]`, and register it via
  * `withErrorContract(...)` at the MCP edge.
  */
 
+import type { AtlasMcpToolErrorCode } from "@useatlas/types/mcp";
+
 // ── Description bodies ────────────────────────────────────────────────
 
-export const EXPLORE_TOOL_DESCRIPTION = `Run read-only bash commands (\`ls\`, \`cat\`, \`grep\`, \`find\`, \`head\`, \`tail\`, \`wc\`, \`awk\`, \`sed\`, pipes) against the on-disk semantic layer rooted at \`/semantic\`. The directory holds \`catalog.yml\`, \`entities/*.yml\`, \`metrics/*.yml\`, \`glossary.yml\`, and per-source subdirectories (\`{source}/entities\`, \`{source}/metrics\`).
+export const EXPLORE_TOOL_DESCRIPTION = `Run read-only bash commands (\`ls\`, \`cat\`, \`grep\`, \`find\`, \`head\`, \`tail\`, \`wc\`, \`awk\`, \`sed\`, pipes) against the on-disk semantic layer the backend exposes — typically the \`semantic/\` directory at the repo root, or an org-scoped subdirectory under multi-tenant deploys. The working directory holds \`catalog.yml\`, \`entities/*.yml\`, \`metrics/*.yml\`, \`glossary.yml\`, and per-source subdirectories (\`{source}/entities\`, \`{source}/metrics\`).
 
 Use this when the typed tools (\`listEntities\`, \`describeEntity\`, \`searchGlossary\`, \`runMetric\`) cannot answer — for example, scanning every entity for a custom regex, dumping a raw YAML block the typed tools redact, or discovering per-source subdirectories you do not yet know exist. Example call: \`{ "command": "grep -rl 'cross_source_joins' entities/" }\`. Example response: stdout text on success or \`Error (exit N): ...\` on shell failure.
 
@@ -58,9 +62,14 @@ Don't use this when no metric id matches; fall back to \`executeSQL\` with a que
 // Surfaced in tool descriptions via `withErrorContract` so an agent can
 // branch on `code` instead of pattern-matching `message`. Keep these in
 // lockstep with the classification in `packages/mcp/src/error-envelope.ts`
-// and the codes the per-tool execute paths actually return.
+// and the codes the per-tool execute paths actually return. `satisfies`
+// makes a typo'd code (`"timeOut"`, `"unknown_metricz"`) a compile error
+// rather than landing in the LLM-facing description silently.
 
-export const EXPLORE_ERROR_CODES = ["rate_limited", "internal_error"] as const;
+export const EXPLORE_ERROR_CODES = [
+  "rate_limited",
+  "internal_error",
+] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const EXECUTE_SQL_ERROR_CODES = [
   "validation_failed",
   "rls_denied",
@@ -68,16 +77,18 @@ export const EXECUTE_SQL_ERROR_CODES = [
   "unknown_entity",
   "rate_limited",
   "internal_error",
-] as const;
-export const LIST_ENTITIES_ERROR_CODES = ["internal_error"] as const;
+] as const satisfies readonly AtlasMcpToolErrorCode[];
+export const LIST_ENTITIES_ERROR_CODES = [
+  "internal_error",
+] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const DESCRIBE_ENTITY_ERROR_CODES = [
   "unknown_entity",
   "internal_error",
-] as const;
+] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const SEARCH_GLOSSARY_ERROR_CODES = [
   "ambiguous_term",
   "internal_error",
-] as const;
+] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const RUN_METRIC_ERROR_CODES = [
   "unknown_metric",
   "validation_failed",
@@ -85,7 +96,7 @@ export const RUN_METRIC_ERROR_CODES = [
   "query_timeout",
   "rate_limited",
   "internal_error",
-] as const;
+] as const satisfies readonly AtlasMcpToolErrorCode[];
 
 // ── Error contract appendage ──────────────────────────────────────────
 
@@ -94,11 +105,12 @@ export const RUN_METRIC_ERROR_CODES = [
  * so agents can read the recovery surface from the same place they read
  * the tool's purpose. Codes are surfaced verbatim — keep
  * `<TOOL>_ERROR_CODES` in lockstep with what the dispatch path actually
- * returns.
+ * returns. The `AtlasMcpToolErrorCode` type bound prevents a typo'd code
+ * from landing in the LLM-facing prose.
  */
 export function withErrorContract(
   base: string,
-  codes: readonly string[],
+  codes: readonly AtlasMcpToolErrorCode[],
 ): string {
   return `${base}
 

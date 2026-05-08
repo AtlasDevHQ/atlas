@@ -603,7 +603,8 @@ async function runMcpLlmMode(
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(
       `\nError: --mcp-llm requires a configured LLM provider: ${msg}\n` +
-        `Tip: export ATLAS_PROVIDER=anthropic ATLAS_MODEL=claude-haiku-4-5-20251001 ANTHROPIC_API_KEY=sk-ant-...\n`,
+        `Tip: export ATLAS_PROVIDER=<provider> ATLAS_MODEL=<model-id> <PROVIDER>_API_KEY=...\n` +
+          `     (see apps/docs/content/docs/reference/environment-variables.mdx for current model ids)\n`,
     );
     return 1;
   }
@@ -706,7 +707,7 @@ async function runMcpLlmMode(
     }
   }
 
-  // Acceptance criterion (#2119 Part B): ≥18/20 canonical questions
+  // Acceptance criterion (#2119 Part B): ≥90% of canonical questions
   // resolved correctly. We exit 1 below the bar so a regression trips
   // the workflow red on tag pushes (`continue-on-error: false` in CI).
   const ACCEPTANCE_FLOOR = Math.ceil(result.outcomes.length * 0.9);

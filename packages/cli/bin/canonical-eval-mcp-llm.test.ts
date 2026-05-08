@@ -717,6 +717,15 @@ describe("parseCanonicalEvalOptions", () => {
     );
   });
 
+  it("rejects the three-way --llm + --mcp-llm + --tool-selection combination", () => {
+    // The mode-mutex check fires first ("--llm and --mcp-llm are mutually
+    // exclusive"). Pinning this here so a future refactor that reorders
+    // the guards still rejects an obviously incoherent set of flags.
+    expect(() =>
+      parseCanonicalEvalOptions(["--llm", "--mcp-llm", "--tool-selection"]),
+    ).toThrow(/mutually exclusive/);
+  });
+
   it("rejects --tool-selection with --write-baseline", () => {
     expect(() =>
       parseCanonicalEvalOptions(["--mcp-llm", "--tool-selection", "--write-baseline"]),

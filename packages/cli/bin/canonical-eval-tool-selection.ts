@@ -11,10 +11,11 @@
  * after several wasted dispatches — the rubric audit needs a held-out
  * signal that fires on the FIRST decision.
  *
- * Pass criterion per item: the first non-noop tool call's `name` is
- * either `expected_tool` or a member of `expected_alternates`. Overall
- * acceptance: items_passing / items_total >= `rubric.acceptance_floor`
- * (default 0.9 per the issue).
+ * Pass criterion per item: the first tool call's `name` is either
+ * `expected_tool` or a member of `expected_alternates`. Overall
+ * acceptance: items_passing / items_total >= `rubric.acceptance_floor`.
+ * The default floor (`DEFAULT_ACCEPTANCE_FLOOR` below) is a starting
+ * point — fixtures override it.
  */
 
 import * as fs from "fs";
@@ -330,3 +331,21 @@ function bindToolsForRecording(
   }
   return set as ToolSet;
 }
+
+// ── Test surface ──────────────────────────────────────────────────────
+
+/**
+ * Internal helper exposed for direct unit testing. The full
+ * `runToolSelectionEval` path requires a live MCP transport + auth
+ * fixture; the `bindToolsForRecording` shape is the load-bearing piece
+ * of the audit's grader contract (push-before-dispatch, error envelope
+ * pass-through, unparseable fallback) and is cheaply exercised against
+ * a fake `callTool`.
+ */
+export const __forTesting__ = {
+  bindToolsForRecording: (
+    client: { callTool: EvalMcpClient["callTool"] },
+    tools: readonly ToolListEntry[],
+    recorder: string[],
+  ): ToolSet => bindToolsForRecording(client, tools, recorder),
+} as const;

@@ -14584,6 +14584,19 @@
                               "reconnect_required",
                               "revoked"
                             ]
+                          },
+                          "workspaceScope": {
+                            "type": "string",
+                            "enum": [
+                              "single",
+                              "multi"
+                            ]
+                          },
+                          "grantedWorkspaceIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [
@@ -14596,7 +14609,9 @@
                           "type",
                           "lastUsedAt",
                           "tokenCount",
-                          "tokenState"
+                          "tokenState",
+                          "workspaceScope",
+                          "grantedWorkspaceIds"
                         ]
                       }
                     },
@@ -14810,6 +14825,287 @@
           }
         },
         "operationId": "postMeOauthClientsByIdRevoke"
+      }
+    },
+    "/api/v1/me/oauth-clients/{id}/workspace-scope": {
+      "post": {
+        "tags": [
+          "Me — OAuth Clients"
+        ],
+        "summary": "Toggle this agent's cross-workspace mode (#2073)",
+        "description": "Upgrade an OAuth client from `single`-scope (legacy, bound to its registration workspace) to `multi`-scope (workspace-aware: the user picks per-request via `X-Atlas-Workspace`, the audit + rate-limit + approval surfaces all read the resolved workspace). `mode='multi'` creates grants for every workspace the caller is currently a member of; `mode='single'` clears the grant set.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "example": "claude-desktop"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "single",
+                      "multi"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Scope updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "workspaceScope": {
+                      "type": "string",
+                      "enum": [
+                        "single",
+                        "multi"
+                      ]
+                    },
+                    "grantedWorkspaceIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "workspaceScope",
+                    "grantedWorkspaceIds"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Client not found for this user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postMeOauthClientsByIdWorkspaceScope"
+      }
+    },
+    "/api/v1/me/oauth-clients/{id}/workspaces/{workspaceId}": {
+      "delete": {
+        "tags": [
+          "Me — OAuth Clients"
+        ],
+        "summary": "Revoke this agent's access to one workspace (#2073)",
+        "description": "For a `multi`-scope client, removes a single (clientId, workspaceId) grant. The OAuth client itself stays intact for the other granted workspaces; tokens that have already been minted stay valid for those. Cross-user isolation: the caller must own the OAuth client (registered by them) AND be a current member of the workspace whose grant they're removing.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "example": "claude-desktop"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grant removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "removed": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "removed"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Client or grant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteMeOauthClientsByIdWorkspacesByWorkspaceId"
       }
     },
     "/api/v1/me/mcp-prompts": {

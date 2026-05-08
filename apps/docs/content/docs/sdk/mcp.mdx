@@ -183,10 +183,14 @@ Every helper throws `AtlasMcpError` with a stable `code`:
 | Code | Meaning |
 |------|---------|
 | `invalid_api_url` | `apiUrl` was not `https://` (or `http://localhost` for dev) |
+| `invalid_token_endpoint` | The discovered or supplied `tokenEndpoint` was not `https://`. Defends against a malicious DCR response advertising a plaintext token URL. |
 | `discovery_failed` | `.well-known/oauth-authorization-server` did not return a usable doc |
 | `registration_failed` | DCR `POST /register` failed |
 | `callback_state_mismatch` | The state returned in the callback didn't match `expectedState` (CSRF) |
+| `callback_state_missing` | The persisted flow state was missing when the callback arrived (sessionStorage cleared mid-flow). `useMcpConnect` only. |
 | `callback_missing_code` | The callback URL had no `?code=` parameter |
+| `popup_blocked` | The browser refused `window.open` (popup blocker). `useMcpConnect` only. |
+| `popup_closed` | The user closed the popup before authorizing. `useMcpConnect` only. |
 | `token_exchange_failed` | The token endpoint rejected the exchange |
 | `issuer_mismatch` | The minted JWT's `iss` claim doesn't match the discovered issuer |
 | `malformed_jwt` | The access token wasn't a 3-part JWT |

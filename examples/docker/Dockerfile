@@ -14,6 +14,7 @@ COPY packages/react/package.json packages/react/package.json
 COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
+COPY examples/embedded-mcp-onboarding/package.json examples/embedded-mcp-onboarding/package.json
 # Plugins are workspace members — their package.json files must be
 # present for the lockfile to validate during bun ci (--frozen-lockfile).
 COPY plugins/clickhouse/package.json plugins/clickhouse/package.json

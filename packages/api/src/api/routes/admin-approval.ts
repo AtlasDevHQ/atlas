@@ -46,9 +46,10 @@ const approvalDomainError = domainError(ApprovalError, { validation: 400, not_fo
 
 // #2072 — surface scope is shared across rule types. `'any'` (default)
 // preserves pre-2072 fires-everywhere semantics; the others pin a rule
-// to a single transport. Kept as a `z.enum` (not `.optional()`) on the
-// shared shape so a typo is rejected at the route boundary as a 400
-// rather than landing in `validateRuleInput` as a 500.
+// to a single transport. The field is `.optional()` because the EE
+// layer applies the `'any'` default — the strict `z.enum(...)` on the
+// inner type still rejects typos at the route boundary as a 400
+// rather than letting them land in `validateRuleInput` as a 500.
 const SurfaceField = z.enum(APPROVAL_RULE_SURFACES).optional().openapi({
   description:
     "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -505,10 +506,12 @@ adminApproval.openapi(reviewRoute, async (c) => {
       targetId: itemId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
       // #2072 — surface comes from the queued row (stamped at request
-      // creation by lib/tools/sql.ts). Surfacing it on the approve/deny
-      // audit row lets reports break down approval decisions by origin
-      // without joining back to approval_queue.
-      metadata: { requestId: itemId, surface: result.surface },
+      // creation by lib/tools/sql.ts). NULL on the queue row means
+      // either a legacy pre-2072 request or a route that didn't stamp
+      // surface; surface those distinctly as "unknown_origin" rather
+      // than a literal null so compliance reviewers can tell them
+      // apart from a forensics query that explicitly wrote null.
+      metadata: { requestId: itemId, surface: result.surface ?? "unknown_origin" },
     });
 
     return c.json({ request: result }, 200);

@@ -94,12 +94,54 @@ async function readRepoFile(relPath: string): Promise<string> {
   return readFile(abs, "utf8");
 }
 
+/**
+ * #2072 surface-stamp registry — symmetric guardrail to the F-54/F-55
+ * binding registry above. Every agent caller (or its parent transport
+ * frame) must stamp the request's origin on `RequestContext.approvalSurface`,
+ * either inline via `withRequestContext({ ..., approvalSurface: "..." })` or
+ * by passing `approvalSurface` to `executeAgentQuery`. A route that omits
+ * the stamp silently degrades surface-scoped approval rules to no-op for
+ * that transport — the same class of silent governance regression F-54/F-55
+ * closed for the actor binding.
+ */
+interface SurfaceStamperSpec {
+  file: string;
+  /** Regex that must appear in the file. Use `\b<value>\b` to pin the literal. */
+  surfaceProof: RegExp;
+}
+
+const KNOWN_SURFACE_STAMPERS: SurfaceStamperSpec[] = [
+  // Web chat surface — chat / query / demo / API form all stamp 'chat'.
+  { file: "packages/api/src/api/routes/chat.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
+  { file: "packages/api/src/api/routes/query.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
+  { file: "packages/api/src/api/routes/demo.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
+  // Slack receivers stamp 'slack' (both DM and thread-followup paths).
+  { file: "packages/api/src/api/routes/slack.ts", surfaceProof: /approvalSurface:\s*"slack"/ },
+  // Scheduler executor stamps 'scheduler' on every scheduled run.
+  { file: "packages/api/src/lib/scheduler/executor.ts", surfaceProof: /approvalSurface:\s*"scheduler"/ },
+  // MCP — both the per-tool dispatch frames and the outer hosted-MCP
+  // session frame stamp 'mcp'.
+  { file: "packages/mcp/src/tools.ts", surfaceProof: /approvalSurface:\s*"mcp"/ },
+  { file: "packages/mcp/src/semantic-tools.ts", surfaceProof: /approvalSurface:\s*"mcp"/ },
+  { file: "packages/mcp/src/hosted.ts", surfaceProof: /approvalSurface:\s*"mcp"/ },
+];
+
 describe("F-54/F-55 agent-surface registry", () => {
   it("every known caller binds an actor or a withRequestContext({ user })", async () => {
     for (const spec of KNOWN_AGENT_CALLERS) {
       const source = await readRepoFile(spec.file);
       expect(source).toMatch(AGENT_INVOCATION_PATTERN);
       expect(source, `${spec.file} must satisfy bindingProof ${spec.bindingProof}`).toMatch(spec.bindingProof);
+    }
+  });
+
+  it("#2072: every known surface-stamping caller writes approvalSurface with the expected value", async () => {
+    for (const spec of KNOWN_SURFACE_STAMPERS) {
+      const source = await readRepoFile(spec.file);
+      expect(
+        source,
+        `${spec.file} must stamp approvalSurface (regex ${spec.surfaceProof}). A route that skips this silently downgrades surface-scoped approval rules for that transport.`,
+      ).toMatch(spec.surfaceProof);
     }
   });
 

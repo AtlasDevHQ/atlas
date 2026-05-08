@@ -129,11 +129,15 @@ beforeEach(() => {
   mockLogAdminAction.mockClear();
   mockCreateApprovalRule.mockClear();
   mockCreateApprovalRule.mockImplementation(() =>
-    Effect.succeed({ id: "rule-123", orgId: "org-alpha", ruleType: "cost", name: "Flag cost", enabled: true }),
+    // #2072 — surface returned by the EE layer (default 'any'). Audit
+    // metadata mirrors this from the post-create rule.
+    Effect.succeed({ id: "rule-123", orgId: "org-alpha", ruleType: "cost", name: "Flag cost", enabled: true, surface: "any" }),
   );
   mockUpdateApprovalRule.mockClear();
   mockUpdateApprovalRule.mockImplementation(() =>
-    Effect.succeed({ id: "rule-123", orgId: "org-alpha", ruleType: "cost", name: "Flag cost (updated)", enabled: true }),
+    // #2072 — simulate an admin rescoping the rule from 'any' to 'mcp'
+    // so the rule_update audit metadata picks up the post-update surface.
+    Effect.succeed({ id: "rule-123", orgId: "org-alpha", ruleType: "cost", name: "Flag cost (updated)", enabled: true, surface: "mcp" }),
   );
   mockDeleteApprovalRule.mockClear();
   mockDeleteApprovalRule.mockImplementation(() => Effect.succeed(true));
@@ -161,7 +165,11 @@ describe("POST /api/v1/admin/approval/rules — audit emission (F-29)", () => {
     expect(entry.actionType).toBe("approval.rule_create");
     expect(entry.targetType).toBe("approval");
     expect(entry.targetId).toBe("rule-123");
-    expect(entry.metadata).toMatchObject({ name: "Flag cost", ruleType: "cost" });
+    // #2072 — surface stamped from the post-create rule. Pinning this
+    // catches a regression that drops surface from the rule_create
+    // metadata builder (admin-approval.ts) — a compliance reviewer would
+    // otherwise lose the audit dimension silently.
+    expect(entry.metadata).toMatchObject({ name: "Flag cost", ruleType: "cost", surface: "any" });
   });
 });
 
@@ -186,6 +194,10 @@ describe("PUT /api/v1/admin/approval/rules/:id — audit emission (F-29)", () =>
     const keys = entry.metadata?.keysChanged;
     expect(Array.isArray(keys)).toBe(true);
     expect((keys as string[]).sort()).toEqual(["enabled", "name"]);
+    // #2072 — surface stamped from the post-update rule so a reviewer
+    // can see when a rule's scope changed (e.g. 'any' → 'mcp')
+    // alongside the keysChanged list.
+    expect(entry.metadata?.surface).toBe("mcp");
   });
 
   it("does not emit when the rule does not exist (404)", async () => {

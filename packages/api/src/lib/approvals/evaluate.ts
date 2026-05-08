@@ -14,9 +14,13 @@
  *   - `surface = '<value>'` rule  →  fires only when the request stamped
  *     that exact surface on its RequestContext.
  *   - Unknown request surface  →  only `'any'` rules match. A rule pinned
- *     to a surface (e.g. `'mcp'`) does NOT match an unknown-surface
- *     request — fail-closed so a route that forgets to stamp surface
- *     can't accidentally trip surface-scoped rules.
+ *     to a specific surface (e.g. `'mcp'`) does NOT match an unknown-
+ *     surface request. This is *scope isolation*, not the F-54/F-55
+ *     governance fail-closed: if a route forgets to stamp surface, an
+ *     `'any'` rule still fires (so governance is preserved); only the
+ *     surface-scoped rules become dormant for that caller. The true
+ *     governance fail-closed lives in `checkApprovalRequired`'s
+ *     `identityMissing` path.
  */
 
 import {

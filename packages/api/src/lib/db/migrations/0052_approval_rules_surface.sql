@@ -39,9 +39,11 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_approval_rules_org_surface
   ON approval_rules (org_id, surface);
 
--- Audit dimension: stamp the request's origin on each queued approval row
--- so /admin/audit and Theme A's audit-filter view (#2067) can break down
--- approvals by surface. NULL for legacy rows preserved on existing data.
+-- Audit dimension: stamp the request's origin on each queued approval
+-- row so reviewers can break down approvals by surface (queryable via
+-- direct SQL against admin_action_log.metadata->>'surface' and this
+-- column today; a filterable admin UI is planned, not yet shipped).
+-- NULL for legacy rows preserved on existing data.
 ALTER TABLE approval_queue
   ADD COLUMN IF NOT EXISTS surface TEXT;
 

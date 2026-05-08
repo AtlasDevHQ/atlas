@@ -132,9 +132,11 @@ export async function executeScheduledTask(
   // Effect dies — operators see "Task execution timed out after 30000ms"
   // not "(FiberFailure) Error: Task execution timed out…" in the run row.
   const exit = await Effect.runPromiseExit(
-    // #2072 — stamp 'scheduler' so a "scheduler-pre-approved" rule can
-    // fire here without affecting chat / mcp queries against the same
-    // tables.
+    // #2072 — stamp 'scheduler' so scheduler-scoped approval rules
+    // fire only on scheduled runs, leaving chat / mcp queries against
+    // the same tables unaffected. (Approval rules are additive; they
+    // can only require approval, never waive it — to exempt the
+    // scheduler from a broad rule, narrow that rule's surface.)
     agentQueryEffect(task.question, requestId, taskId, timeoutMs, { actor, approvalSurface: "scheduler" }),
   );
   if (Exit.isFailure(exit)) {

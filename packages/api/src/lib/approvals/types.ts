@@ -1,49 +1,42 @@
 /**
- * Surface-scoping type definitions for approval rules (#2072).
+ * Surface-scoping helpers for approval rules (#2072).
  *
- * Two related but distinct surface enums:
+ * The canonical enums live in `@useatlas/types/approval` so the SQL
+ * route layer, the wire schemas, the web admin types, and this module
+ * all share a single source of truth — eliminating the four-copies
+ * drift surface that PR #2191 review caught.
  *
- *   - `APPROVAL_RULE_SURFACES` — values an admin can pin a rule to. Includes
- *     `'any'` so an admin can author "fires regardless of origin" (the
- *     pre-2072 default behavior).
- *   - `REQUEST_SURFACES` — what the agent's call site stamps on the
- *     `RequestContext` to identify where a query came from. No `'any'` —
- *     an actual request always originated from a single surface.
- *
- * The two enums are linked by an exhaustiveness test in
- * `__tests__/evaluate.test.ts`: every `REQUEST_SURFACES` value must
- * appear in `APPROVAL_RULE_SURFACES`. If a new request surface lands
- * (e.g. a new chat-platform receiver) without a matching rule-side entry,
- * surface-scoped rules for it cannot be authored — the test fails so the
- * schema / migration / type drift is caught at the test layer instead of
- * silently regressing governance UX.
+ * The runtime guards live here (in @atlas/api) rather than in
+ * @useatlas/types because they're consumers of the enum tuples and
+ * @useatlas/types stays declaration-only.
  */
 
-export const APPROVAL_RULE_SURFACES = [
-  "any",
-  "chat",
-  "mcp",
-  "scheduler",
-  "slack",
-  "teams",
-  "webhook",
-] as const;
-export type ApprovalRuleSurface = (typeof APPROVAL_RULE_SURFACES)[number];
+import {
+  APPROVAL_RULE_SURFACES,
+  APPROVAL_REQUEST_SURFACES,
+  type ApprovalRuleSurface,
+  type ApprovalRequestSurface,
+} from "@useatlas/types";
 
-export const REQUEST_SURFACES = [
-  "chat",
-  "mcp",
-  "scheduler",
-  "slack",
-  "teams",
-  "webhook",
-] as const;
-export type RequestSurface = (typeof REQUEST_SURFACES)[number];
+export {
+  APPROVAL_RULE_SURFACES,
+  APPROVAL_REQUEST_SURFACES,
+  type ApprovalRuleSurface,
+  type ApprovalRequestSurface,
+};
+
+/**
+ * Aliases for in-package consumers (`evaluate.ts`) that prefer the
+ * shorter names. Anyone reading `evaluate.ts` is already inside the
+ * approval-rules namespace; the prefix is redundant noise there.
+ */
+export const REQUEST_SURFACES = APPROVAL_REQUEST_SURFACES;
+export type RequestSurface = ApprovalRequestSurface;
 
 export function isApprovalRuleSurface(value: string): value is ApprovalRuleSurface {
   return (APPROVAL_RULE_SURFACES as readonly string[]).includes(value);
 }
 
-export function isRequestSurface(value: string): value is RequestSurface {
-  return (REQUEST_SURFACES as readonly string[]).includes(value);
+export function isRequestSurface(value: string): value is ApprovalRequestSurface {
+  return (APPROVAL_REQUEST_SURFACES as readonly string[]).includes(value);
 }

@@ -118,16 +118,22 @@ function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
     log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — skipping rule");
     return null;
   }
-  // #2072: defensive read. Pre-2072 callers can't write a `surface` column
-  // and the migration default fills 'any'. A NULL/missing/unknown value
-  // post-migration means schema drift — treat as corrupt rather than
-  // silently coerce. Coercing to 'any' would re-open governance bypass for
-  // an admin who just authored a surface-scoped rule that's been corrupted.
-  const surfaceValue = typeof row.surface === "string" ? row.surface : "any";
-  if (!isValidRuleSurface(surfaceValue)) {
-    log.warn({ ruleId: row.id, surface: surfaceValue }, "Approval rule has unexpected surface in database — skipping rule");
+  // #2072: fail-closed-strict on surface drift. The column is NOT NULL
+  // with DEFAULT 'any' post-0052, so a NULL/missing read indicates
+  // schema drift (partial restore, hand-rolled migration, ORM
+  // misbehavior). Coercing to 'any' would silently broaden a surface-
+  // scoped rule that an admin authored to ALL surfaces — exactly the
+  // governance bypass shape this column exists to prevent. Drop the
+  // row instead so the operator sees the warning and the missing rule.
+  if (typeof row.surface !== "string") {
+    log.warn({ ruleId: row.id }, "Approval rule has missing/null surface in database — schema drift, skipping rule");
     return null;
   }
+  if (!isValidRuleSurface(row.surface)) {
+    log.warn({ ruleId: row.id, surface: row.surface }, "Approval rule has unexpected surface in database — skipping rule");
+    return null;
+  }
+  const surfaceValue = row.surface;
   const base = {
     id: row.id,
     orgId: row.org_id,

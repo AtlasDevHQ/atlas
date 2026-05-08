@@ -25,11 +25,19 @@ export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
  * Surface scope for approval rules (#2072). `'any'` preserves pre-2072
  * fires-for-every-request semantics; the others pin to a transport.
  *
- * Two adjacent enums:
- *   - `APPROVAL_RULE_SURFACES` — values an admin can pin a rule to.
+ * Two derived enums share a single source of truth:
+ *   - `APPROVAL_RULE_SURFACES` — values an admin can pin a rule to,
+ *     including the `'any'` wildcard.
  *   - `APPROVAL_REQUEST_SURFACES` — values stamped on a created approval
- *     request to record where it originated. No `'any'` — a real request
- *     always has a single surface (or NULL if the caller didn't stamp).
+ *     request to record where it originated. Derived from the rule
+ *     enum by filtering out `'any'` because a real request always has
+ *     a single concrete origin (or NULL when the caller didn't stamp).
+ *
+ * Both the runtime tuple (`.filter(...)`) and the type (`Exclude<>`)
+ * are derived so a new transport added to `APPROVAL_RULE_SURFACES`
+ * automatically propagates to the request-side enum, the SQL CHECK,
+ * and every consumer. PR #2191 review surfaced an earlier shape where
+ * the two were independently declared and could drift silently.
  */
 export const APPROVAL_RULE_SURFACES = [
   "any",
@@ -42,15 +50,10 @@ export const APPROVAL_RULE_SURFACES = [
 ] as const;
 export type ApprovalRuleSurface = (typeof APPROVAL_RULE_SURFACES)[number];
 
-export const APPROVAL_REQUEST_SURFACES = [
-  "chat",
-  "mcp",
-  "scheduler",
-  "slack",
-  "teams",
-  "webhook",
-] as const;
-export type ApprovalRequestSurface = (typeof APPROVAL_REQUEST_SURFACES)[number];
+export type ApprovalRequestSurface = Exclude<ApprovalRuleSurface, "any">;
+export const APPROVAL_REQUEST_SURFACES = APPROVAL_RULE_SURFACES.filter(
+  (s): s is ApprovalRequestSurface => s !== "any",
+);
 
 // ── Approval rule ───────────────────────────────────────────────────
 

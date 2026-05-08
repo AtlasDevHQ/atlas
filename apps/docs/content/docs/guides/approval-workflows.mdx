@@ -57,15 +57,17 @@ Every rule has a **surface** that pins it to a single transport (or `any` for fi
 
 A rule fires when **its surface is `any` OR its surface equals the request's origin surface**. Multiple rules can match; the first match wins.
 
+Rules are **additive** — they only ever require approval, never waive it. To exempt a transport from a broad rule, narrow that rule's surface; you can't add a "this surface is exempt" rule because rules can't subtract from each other.
+
 #### Worked examples
 
 - **MCP-only sensitive-table rule.** "MCP queries against `customers` need approval; chat from authenticated users does not." Author a `table` rule with `pattern: "customers"` and `surface: "mcp"`. Chat queries against `customers` run normally; the same query via Claude Desktop's hosted MCP transport queues for approval.
-- **Scheduler pre-approved.** "Scheduled queries are pre-approved; MCP queries are not." Leave the broad rule at `surface: "any"` and add a narrower rule with `surface: "scheduler"` that disables it (or simply don't create a scheduler-scoped block — `any` rules continue to fire). Conversely, to *exempt* the scheduler from a default-`any` rule, switch the default rule to `surface: "chat"` (or another non-scheduler value) so scheduled runs sail through.
-- **Slack allowlist.** "Slack-receiver queries are pre-approved within a Slack workspace allowlist; MCP queries from external clients are not." Use a `surface: "mcp"` rule that requires approval; Slack receivers (which stamp `surface: "slack"`) bypass it.
+- **Scheduler exempt from a sensitive-table rule.** "Block sensitive-table reads everywhere except scheduled tasks (where an admin already reviewed the SQL)." Author the rule with `surface: "any"`, then *narrow it* to a non-scheduler set by creating one rule per allowed surface (e.g. `surface: "chat"` and `surface: "mcp"` with the same pattern). Don't create a `surface: "scheduler"` rule and expect it to "disable" the broad rule — rules are additive; pinning the broad rule's scope is the only way to exempt a transport.
+- **MCP-only gate on a less-trusted transport.** "Chat queries from authenticated users run normally; queries via the hosted MCP transport (third-party agents) require sign-off." Author a `surface: "mcp"` rule. Chat / scheduler / Slack receivers (which stamp their respective surfaces) bypass it; only MCP requests trigger approval.
 
 #### Audit dimension
 
-The `approval_queue.surface` column records where each queued request originated, and approve / deny entries in `admin_action_log` carry the same surface in their metadata. The admin audit view (`/admin/audit`) lets you filter approval activity by surface — useful for "show me every MCP-blocked query last week" or "which surfaces are tripping the most rules."
+The `approval_queue.surface` column records where each queued request originated, and the rule_create / rule_update / approve / deny entries in `admin_action_log` carry the same surface in their JSONB metadata (queue rows that pre-date #2072 or arrive from a route that hasn't been retrofitted to stamp surface render as `"unknown_origin"` in the action metadata so reviewers can tell them apart from a forensics query that explicitly wrote null). A filterable admin audit UI for the surface dimension is planned but not yet shipped — for now, run ad-hoc SQL against `admin_action_log.metadata->>'surface'` and `approval_queue.surface` directly.
 
 ### Approval Statuses
 
@@ -169,7 +171,7 @@ All approval decisions are logged in the internal database's `approval_queue` ta
 - Final status (approved/denied/expired)
 - **Origin surface** (#2072) — `chat` / `mcp` / `scheduler` / `slack` / `teams` / `webhook`
 
-The standard audit log also records queries that were blocked pending approval. Admin actions (`approval.rule_create`, `approval.rule_update`, `approval.approve`, `approval.deny`) carry the surface in their metadata so `/admin/audit` can break down approval activity by where the request came from.
+The standard audit log also records queries that were blocked pending approval. Admin actions (`approval.rule_create`, `approval.rule_update`, `approval.approve`, `approval.deny`) carry the surface in their JSONB metadata; the surface column on `approval_queue` does the same for the queued requests. A filterable admin audit UI for the surface dimension is planned but not yet shipped — query `admin_action_log.metadata->>'surface'` directly until it lands.
 
 ---
 

@@ -1052,7 +1052,9 @@ export const executeSQL = tool({
               // surface-scoped rules only fire on the matching transport.
               // Routes stamp this on `withRequestContext`; an unstamped
               // route (or a legacy caller) reaches checkApprovalRequired
-              // with `surface: undefined` and only triggers `'any'` rules.
+              // with `surface: undefined` and only triggers `'any'`
+              // rules — scope isolation rather than governance bypass,
+              // since the `'any'` migration default still fires.
               const checkSurface = checkReqCtx?.approvalSurface;
               // Pass requesterId so the defensive identity-missing check
               // distinguishes "scheduler/Slack/MCP forgot to bind anything"
@@ -1111,9 +1113,9 @@ export const executeSQL = tool({
                   connectionId: connId,
                   tablesAccessed: classification.tablesAccessed,
                   columnsAccessed: classification.columnsAccessed,
-                  // #2072 — stamp the origin surface on the queue row so
-                  // /admin/audit + Theme A's filter view (#2067) can
-                  // break down approvals by where they came from.
+                  // #2072 — stamp the origin surface on the queue row
+                  // for the audit dimension (queryable via direct SQL
+                  // until a surface filter ships in /admin/audit).
                   surface: reqCtxForApproval?.approvalSurface ?? null,
                 }));
                 logQueryAudit({

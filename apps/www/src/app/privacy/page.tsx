@@ -101,6 +101,18 @@ const SECTIONS: LegalSectionData[] = [
       "Five commitments, each one expanded above: no training on Customer Data, no selling, no ad-network sharing, no warehouse reads beyond authorized queries (with one Customer-initiated carve-out for first-time schema profiling), no persistent result-set storage.",
   },
   {
+    id: "mcp",
+    title: "MCP and external AI agents",
+    legal: [
+      "Customers may connect external AI agents (e.g. Claude Desktop, custom MCP clients) to Atlas Cloud via the Model Context Protocol (MCP) — a standard tool-use transport. The connection runs over OAuth 2.1 to the hosted MCP endpoint at mcp.useatlas.dev (self-hosted Atlas exposes the same surface at the Customer's chosen domain).",
+      "Tool calls dispatched by the connected agent flow through the same authenticated path as queries from the Atlas web UI: the agent's tool inputs (entity-lookup arguments, generated SQL, glossary terms) are processed identically to Customer-issued queries. They land in the same audit and telemetry surfaces described above and are subject to the same retention. Atlas does not exfiltrate tool inputs to a different storage class or share them with the MCP catalog operator.",
+      "The connected agent's vendor (e.g. Anthropic for Claude Desktop) sees the agent's prompts and the tool-call results returned to the agent — that traffic is governed by the agent vendor's own privacy policy, not Atlas's. Atlas does not transmit Customer Data to the catalog operator outside the active tool-call response stream.",
+      "Self-hosted Atlas: the MCP transport is in-process. No third party (including Atlas DevHQ) sees the data flow.",
+    ],
+    plain:
+      "External agents connect via OAuth + MCP. Tool calls are treated identically to queries from the Atlas UI — same auth, audit, retention. The connected agent's vendor sees its own prompt and the tool result; Atlas doesn't share that traffic anywhere else. Self-hosted: the transport is in-process and nothing leaves your infrastructure.",
+  },
+  {
     id: "share",
     title: "Who we share with",
     legal: [

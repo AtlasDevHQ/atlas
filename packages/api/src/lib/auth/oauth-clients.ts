@@ -112,6 +112,12 @@ export interface OAuthClientRow {
    * For `multi`-scope clients, the workspace ids the user is currently
    * granted access to. Empty for `single`-scope clients (the implicit
    * grant is the OAuth client's `referenceId`). Sorted by `granted_at`.
+   *
+   * Mutable `string[]` (not `readonly`) because the row type flows
+   * through `OpenAPIHono`'s response inference; switching to `readonly`
+   * forces a `string[]` ↔ `readonly string[]` mismatch at every wire
+   * handler. Mutation isn't a real risk here — every consumer either
+   * forwards verbatim to JSON or maps over it.
    */
   grantedWorkspaceIds: string[];
 }

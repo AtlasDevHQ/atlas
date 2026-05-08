@@ -13,9 +13,13 @@
  *      the same key so the test can't drift from the production claim.
  *
  * The string itself is URN-shaped so it cannot collide with any future
- * standard JWT claim. If we ever migrate domains (e.g. `useatlas.dev` →
- * `useatlas.com`), bumping this constant is a single edit and every
- * downstream verifier breaks loudly until they pick up the change.
+ * standard JWT claim. NOTE: the URN literal is duplicated in
+ * `plugins/mcp/src/init/hosted.ts` (the CLI cannot import from
+ * `@atlas/api`), so a domain migration requires a `grep` for the literal
+ * across both packages — bumping this constant alone will silently
+ * downgrade the CLI's plural-claim detection to "no claim found" rather
+ * than fail loudly. Tracked in the duplicated `WORKSPACE_CLAIM` /
+ * `WORKSPACES_CLAIM` consts on the plugin side.
  */
 
 /**

@@ -1114,10 +1114,16 @@ export function buildPlugins() {
               claims[ATLAS_OAUTH_WORKSPACES_CLAIM] = workspaceIds;
             }
           } catch (err: unknown) {
-            log.warn(
+            // Elevated to error so dashboards / Sentry route this.
+            // The user-visible token still issues correctly (singular
+            // claim only), but the CLI install flow downstream will
+            // silently skip the multi-workspace prompt — operators
+            // need to see sustained failure here, not just once-warn.
+            log.error(
               {
                 err: err instanceof Error ? err.message : String(err),
                 userId: user.id,
+                metric: "atlas_oauth_plural_claim_lookup_failed",
               },
               "listUserWorkspaceIds failed during token issuance — emitting only singular claim",
             );

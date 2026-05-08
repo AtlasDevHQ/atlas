@@ -1,13 +1,21 @@
 /**
  * Per-user OAuth-clients management (#2065 — Settings → AI Agents).
  *
- * Mounted at /api/v1/me/oauth-clients. Workspace users (non-admin) can list
- * and self-revoke OAuth clients THEY personally registered through the
- * hosted MCP install path. The admin variant
+ * Mounted at /api/v1/me/oauth-clients. Workspace users (non-admin) can list,
+ * self-revoke, and (for #2073) toggle multi-workspace mode + revoke per-
+ * workspace grants for OAuth clients THEY personally registered through
+ * the hosted MCP install path. The admin variant
  * (`/api/v1/admin/oauth-clients`) sees every client in the workspace and is
  * documented in `admin-oauth-clients.ts`. SQL + transaction lifecycle live
- * in the shared helper at `lib/auth/oauth-clients.ts` so the two surfaces
- * cannot drift on revocation semantics.
+ * in the shared helpers at `lib/auth/oauth-clients.ts` and
+ * `lib/auth/oauth-workspace-grants.ts` so the two surfaces cannot drift on
+ * revocation / scope-toggle semantics.
+ *
+ * Routes:
+ *   GET    /                                 — list calling user's clients
+ *   POST   /:id/revoke                       — atomic revoke (#2065)
+ *   POST   /:id/workspace-scope              — single↔multi toggle (#2073)
+ *   DELETE /:id/workspaces/:workspaceId      — per-workspace grant revoke (#2073)
  *
  * Cross-user isolation: every SELECT and DELETE filters by both
  * `referenceId = activeOrgId` (tenant) and `userId = caller` (user). User A
@@ -16,14 +24,16 @@
  * is sufficient (DCR clients are workspace-scoped at registration, but a
  * misconfigured row could match on org alone).
  *
- * Audit: emitted via the existing `oauth_client.revoke` action. The audit
- * row records `actor_id` / `actor_email` only — the role (member vs
- * admin) is implicit. Forensic queries that need to distinguish
- * self-revoke from admin-revoke must join `actor_id` against `member` or
- * read the metadata `clientName` against the workspace's user list.
- * Reusing one action type lets a single retention policy and a single
- * downstream alert apply to both surfaces; differentiating purely by
- * action type would have required forking those.
+ * Audit: all four routes emit the `oauth_client.revoke` action with a
+ * `metadata.phase` discriminator so a single retention policy and a single
+ * downstream alert cover the whole family:
+ *   - phase=undefined → `/revoke` (full client + tokens)
+ *   - phase="workspace_scope" → `/workspace-scope` toggle
+ *   - phase="workspace_grant" → `/workspaces/:workspaceId` per-grant revoke
+ * Forensic queries that need to distinguish admin-revoke from self-revoke
+ * must join `actor_id` against `member` or read the metadata `clientName`.
+ * Differentiating purely by action type would have required forking the
+ * retention policies + dashboards.
  *
  * The `GET` response includes the resolved `deployMode`. The
  * `/settings/ai-agents` page uses it to gate the "Connect new agent" CTA
@@ -59,10 +69,14 @@ import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 const log = createLogger("me-oauth-clients");
 
 /**
- * Upper bound for the `:id` route parameter — `client_id` values are
- * typically 32–64 chars (DCR-issued UUIDs or short well-known names like
- * `claude-desktop`). Capping prevents adversarial inputs from bloating
- * `admin_action_log.metadata` on the `found: false` audit branch.
+ * Upper bound for path-param values — `client_id` and `workspaceId`
+ * are typically 32–64 chars (DCR-issued UUIDs or short well-known
+ * names like `claude-desktop`). The cap defends two adjacent surfaces:
+ * the `found: false` audit branch on `/:id/revoke` (where the param
+ * lands in `admin_action_log.metadata`) and the per-workspace revoke
+ * route's `workspaceId` (a sanity bound — the route doesn't audit a
+ * `found: false` branch but oversized params still cost log line bytes
+ * downstream and shouldn't be unbounded).
  */
 const ID_MAX_LEN = 255;
 

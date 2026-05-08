@@ -355,10 +355,21 @@ const defaultWorkspacePrompt: WorkspacePromptImpl = async ({
     const answer = (await question("Choice [1]: ")).trim();
     if (answer === "2") return "multi";
     return "single";
-  } catch {
-    // intentionally ignored: any prompt failure (closed TTY, EOF) falls
-    // back to the safe default. The user can re-run the install or use
-    // `--no-prompt` (future flag) to skip non-interactively.
+  } catch (err: unknown) {
+    // Narrowed: only Error instances downgrade silently to the safe
+    // default ("single"). Anything else (a non-Error throw — vanishingly
+    // rare from readline but possible from a future test harness)
+    // re-throws so the install fails loudly rather than silently
+    // configuring single-workspace for a multi-workspace user.
+    //
+    // Logged to stderr so operators piping the install output see the
+    // downgrade — the previous empty `catch {}` mapped every TTY hiccup
+    // to a silent "single" and looked indistinguishable from the user
+    // picking option 1.
+    if (!(err instanceof Error)) throw err;
+    process.stderr.write(
+      `[atlas-mcp init] workspace prompt failed (${err.message}) — defaulting to single-workspace setup. Re-run interactively to opt into multi-workspace.\n`,
+    );
     return "single";
   } finally {
     rl.close();

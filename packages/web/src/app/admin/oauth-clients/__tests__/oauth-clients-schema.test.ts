@@ -26,6 +26,10 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
         // rateLimitPerMinute (#2071) — null means workspace default;
         // non-null is an admin-set override.
         rateLimitPerMinute: 120,
+        // workspaceScope (#2073) — required wire field; "single" is
+        // the legacy default for clients with no scope row.
+        workspaceScope: "single" as const,
+        grantedWorkspaceIds: [],
       },
       {
         clientId: "dcr-uuid-abc",
@@ -42,6 +46,8 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
         // use" affordance whichever leg of the enum lands here.
         tokenState: "reconnect_required" as const,
         rateLimitPerMinute: null,
+        workspaceScope: "single" as const,
+        grantedWorkspaceIds: [],
       },
     ],
   };

@@ -790,6 +790,15 @@ const WORKSPACE_OVERRIDE_HEADER = "x-atlas-workspace";
 const WORKSPACE_DEFAULT_HEADER = "x-atlas-default-workspace";
 
 interface WorkspaceResolution {
+  /**
+   * Non-empty workspace id. The resolver guards each branch with a
+   * `length > 0` check, so an empty `X-Atlas-Workspace` header (or a
+   * blank path segment) falls through to the next priority — never
+   * surfaces here. The type doesn't enforce non-empty (TS has no
+   * built-in `NonEmptyString`), but the resolver does, and downstream
+   * consumers (`hasWorkspaceGrant`, `userIsWorkspaceMember`) treat it
+   * as a workspace id without re-checking.
+   */
   readonly resolved: string;
   readonly source: "header" | "default-header" | "path";
 }
@@ -869,6 +878,12 @@ async function authorizeWorkspaceAccess(
         },
         "MCP single-scope path/bearer mismatch — refusing dispatch",
       );
+      emitWorkspaceDenialAudit({
+        bearer,
+        pathWorkspaceId,
+        resolvedWorkspaceId: bearer.orgId,
+        reason: "single_scope_mismatch",
+      });
       return {
         kind: "denied",
         status: 403,
@@ -906,6 +921,12 @@ async function authorizeWorkspaceAccess(
       },
       "MCP cross-workspace request denied — missing grant or membership",
     );
+    emitWorkspaceDenialAudit({
+      bearer,
+      pathWorkspaceId,
+      resolvedWorkspaceId: resolvedOrgId,
+      reason: granted ? "membership_revoked" : "missing_grant",
+    });
     return {
       kind: "denied",
       status: 403,
@@ -921,6 +942,59 @@ async function authorizeWorkspaceAccess(
   }
 
   return { kind: "ok", resolvedOrgId };
+}
+
+/**
+ * Audit hook for cross-workspace denial (#2073). Fires for every
+ * `cross_workspace_denied` response AND for the 500-class branch where
+ * the admission lookup itself threw — without this row, an attacker
+ * probing during a Postgres incident produces no audit trail at all
+ * and forensic queries asking "show me every denied cross-workspace
+ * request today" miss the DB-outage class entirely.
+ *
+ * Wrapped in try/catch with the same discipline as
+ * `emitSessionStartAudit` — audit emission must never break the
+ * user-visible 403/500 response shape.
+ */
+type WorkspaceDenialReason =
+  | "single_scope_mismatch"
+  | "missing_grant"
+  | "membership_revoked"
+  | "admission_lookup_failed";
+
+function emitWorkspaceDenialAudit(args: {
+  readonly bearer: VerifiedBearer;
+  readonly pathWorkspaceId: string;
+  readonly resolvedWorkspaceId: string | null;
+  readonly reason: WorkspaceDenialReason;
+}): void {
+  try {
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.mcp_session.denied,
+      targetType: "mcp_session",
+      targetId: args.bearer.clientId,
+      status: "failure",
+      metadata: {
+        clientId: args.bearer.clientId,
+        userId: args.bearer.user.id,
+        pathWorkspaceId: args.pathWorkspaceId,
+        ...(args.resolvedWorkspaceId !== null
+          ? { resolvedWorkspaceId: args.resolvedWorkspaceId }
+          : {}),
+        claimOrgId: args.bearer.orgId,
+        reason: args.reason,
+      },
+    });
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        clientId: args.bearer.clientId,
+        reason: args.reason,
+      },
+      "mcp_session.denied audit emission threw — denial response unaffected",
+    );
+  }
 }
 
 // ── Audit emission on session-init ──────────────────────────────────
@@ -980,23 +1054,21 @@ function emitSessionStartAudit(
 interface InitialFactoryContext {
   readonly user: AtlasUser;
   /**
-   * The resolved workspace for THIS request. For `single`-scope clients
-   * this equals the JWT's `referenceId` claim (legacy behavior). For
-   * `multi`-scope clients this is whatever the priority chain selected
-   * (header / default-header / path). Audit + rate-limit + approval
-   * surfaces all read this — never `bearer.orgId` directly — so admin
-   * forensic queries pivot on the workspace the request actually
-   * touched, not the workspace the OAuth client was registered against.
+   * #2073 — workspace identity for this request. The two fields are
+   * grouped under a single sub-record so consumers can't accidentally
+   * pluck the wrong one: `workspace.resolved` is what RLS / rate-limit /
+   * approval / audit ALWAYS read (the post-priority-chain value);
+   * `workspace.fromBearerClaim` is the JWT singular claim, recorded
+   * alongside in audit metadata so cross-workspace requests stay
+   * reconstructable. The structural separation prevents the previous
+   * shape's `orgId` / `claimOrgId` ambiguity, where a refactor that
+   * swapped the two looked correct at the type level but silently
+   * pivoted the audit trail to the wrong workspace.
    */
-  readonly orgId: string;
-  /**
-   * The JWT's singular `workspace_id` claim — the workspace the OAuth
-   * client was originally registered against. Recorded alongside the
-   * resolved `orgId` so cross-workspace requests stay reconstructable
-   * in the audit trail (`claimOrgId !== orgId` flags a per-request
-   * workspace switch).
-   */
-  readonly claimOrgId: string;
+  readonly workspace: {
+    readonly resolved: string;
+    readonly fromBearerClaim: string;
+  };
   readonly clientId: string;
   readonly tokenJti: string | null;
   readonly scopes: ReadonlyArray<string>;
@@ -1021,8 +1093,10 @@ function bindFactoryContext(
   });
   return {
     user,
-    orgId: resolvedOrgId,
-    claimOrgId: bearer.orgId,
+    workspace: {
+      resolved: resolvedOrgId,
+      fromBearerClaim: bearer.orgId,
+    },
     clientId: bearer.clientId,
     tokenJti: bearer.tokenJti,
     scopes: bearer.scopes,
@@ -1119,19 +1193,19 @@ async function dispatchNewSession(
           {
             kind: "ok",
             user: ctx.user,
-            orgId: ctx.claimOrgId,
+            orgId: ctx.workspace.fromBearerClaim,
             clientId: ctx.clientId,
             tokenJti: ctx.tokenJti,
             scopes: ctx.scopes,
           },
           id,
           region,
-          ctx.orgId,
+          ctx.workspace.resolved,
         );
         log.info(
           {
             sessionId: id,
-            orgId: ctx.orgId,
+            orgId: ctx.workspace.resolved,
             clientId: ctx.clientId,
             region,
           },
@@ -1285,6 +1359,17 @@ export function createHostedMcpRouter(): Hono {
         },
         "MCP workspace admission lookup failed — refusing dispatch",
       );
+      // Emit a denial audit so forensic queries asking "show me every
+      // cross-workspace request denied today" find this row even when
+      // the underlying failure was an internal-DB outage rather than
+      // a missing grant. Without this, a Postgres incident produces no
+      // audit trail at all for the affected requests.
+      emitWorkspaceDenialAudit({
+        bearer: verified,
+        pathWorkspaceId,
+        resolvedWorkspaceId: null,
+        reason: "admission_lookup_failed",
+      });
       return c.json(
         {
           error: "internal_error",
@@ -1328,7 +1413,7 @@ export function createHostedMcpRouter(): Hono {
       log.error(
         {
           requestId,
-          orgId: factoryCtx.orgId,
+          orgId: factoryCtx.workspace.resolved,
           err: err instanceof Error ? err.message : String(err),
         },
         "MCP dispatch failed",

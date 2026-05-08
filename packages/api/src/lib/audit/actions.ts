@@ -394,6 +394,24 @@ export const ADMIN_ACTIONS = {
      * admin audit filter (#2067) already covers this surface.
      */
     rateLimited: "mcp_session.rate_limited",
+    /**
+     * Workspace-admission denial on the hosted MCP edge (#2073). Emitted
+     * for every cross_workspace_denied response AND for the 500-class
+     * branch where the grants/membership lookup itself threw — without
+     * this row, an attacker probing during a Postgres incident produces
+     * no audit trail at all and forensic queries asking "show me every
+     * cross-workspace request denied today" miss the DB-outage class
+     * entirely. Metadata: `{ clientId, userId, pathWorkspaceId,
+     * resolvedWorkspaceId?, reason }`. `reason` is one of:
+     *   - `"single_scope_mismatch"` — legacy single-scope client whose
+     *     path workspace doesn't match its JWT singular claim
+     *   - `"missing_grant"` — multi-scope client; resolved workspace
+     *     has no `oauth_client_workspace_grants` row
+     *   - `"membership_revoked"` — multi-scope client; user is no
+     *     longer a member of the resolved workspace (live check)
+     *   - `"admission_lookup_failed"` — DB lookup itself threw (500)
+     */
+    denied: "mcp_session.denied",
   },
   /**
    * Approval-workflow domain. `approve` / `deny` cover the review decision

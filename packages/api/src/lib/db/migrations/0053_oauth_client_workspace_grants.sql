@@ -30,10 +30,9 @@
 -- Why two tables instead of one (grants alone, presence-of-row = multi):
 --   Inferring scope from grant-row presence breaks the audit story —
 --   "this client used to be multi-scope but the user revoked all grants"
---   needs a place to record that. The explicit `scope` row also supports
---   future single-workspace-but-non-active-org clients (CLI choice 1/2 in
---   the issue), where a single grant is paired with a `'single'` scope
---   marker so the runtime path differs from "multi with one grant."
+--   needs a place to record that. The explicit `scope` row decouples
+--   "what mode is this client in?" from "which workspaces is it allowed
+--   into?", so a future re-grant doesn't read as a fresh install.
 --
 -- Backwards compatibility:
 --   Existing OAuth clients (registered before this migration) have NO row

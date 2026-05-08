@@ -73,18 +73,20 @@ export const OAuthClientSchema = z.object({
    * workspaces" badge for the multi state and surfaces per-workspace
    * revoke beneath the row.
    *
-   * `.catch("single")` collapses unknown enum values during a multi-PR
-   * rollout — better to render the safe default than fail the whole
-   * agents list when a future scope value lands schema-first.
+   * Strict enum (no `.catch` fallback) — this field controls the UI's
+   * scope-toggle and per-workspace revoke gating. A server bug emitting
+   * an unknown value should fail the parse loudly so we get an error
+   * boundary surface, not silently render the agent as `'single'` and
+   * have the user revoke the wrong way.
    */
-  workspaceScope: z.enum(["single", "multi"]).catch("single"),
+  workspaceScope: z.enum(["single", "multi"]),
   /**
    * The granted workspace ids for `'multi'`-scope clients. Ordered by
    * `granted_at ASC` (origin workspace first). Empty for `'single'` —
    * the implicit grant is the OAuth client's `referenceId` and lives
    * outside the grant table.
    */
-  grantedWorkspaceIds: z.array(z.string()).catch([]),
+  grantedWorkspaceIds: z.array(z.string()),
 });
 
 export const ListOAuthClientsResponseSchema = z.object({

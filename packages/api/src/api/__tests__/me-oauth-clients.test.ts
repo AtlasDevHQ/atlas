@@ -901,6 +901,42 @@ describe("me oauth-clients — POST /:id/workspace-scope (#2073)", () => {
     );
     expect(res.status).toBe(404);
   });
+
+  it("multi: returns 404 when the user has zero workspace memberships (defensive guard)", async () => {
+    // The route guards against writing a multi-scope marker with no
+    // grants — that would lock the user out of every workspace including
+    // the origin one. A user with an active org but zero member rows
+    // shouldn't be reachable in production, but the explicit 404 keeps
+    // a regression from corrupting the scope row.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT") && sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      if (sql.includes("FROM member")) {
+        return [];
+      }
+      return [];
+    });
+    let setScopeCalled = false;
+    queryHandler = async (sql) => {
+      if (sql.includes("INSERT INTO oauth_client_workspace_scope")) {
+        setScopeCalled = true;
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      meRequestWithBody(
+        "POST",
+        "/api/v1/me/oauth-clients/claude-desktop/workspace-scope",
+        { mode: "multi" },
+      ),
+    );
+    expect(res.status).toBe(404);
+    // CRITICAL: the helper must not have been invoked at all — a
+    // partial write would leave scope='multi' with zero grants.
+    expect(setScopeCalled).toBe(false);
+  });
 });
 
 describe("me oauth-clients — DELETE /:id/workspaces/:workspaceId (#2073)", () => {

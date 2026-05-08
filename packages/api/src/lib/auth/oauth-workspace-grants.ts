@@ -30,7 +30,10 @@
  * own audit emission and request-context bridging.
  */
 
-import { internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("oauth-workspace-grants");
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,7 +77,20 @@ export async function getOAuthClientScope(
     [clientId],
   );
   if (rows.length === 0) return "single";
-  return rows[0].scope === "multi" ? "multi" : "single";
+  const raw = rows[0].scope;
+  if (raw === "multi") return "multi";
+  if (raw !== "single") {
+    // The DB CHECK constraint at migration 0053 forbids this; if we see
+    // an unknown value, schema drift or a direct SQL write bypassed the
+    // constraint. Surfacing at warn rather than throw so the request
+    // path stays available — but make the drift visible to operators
+    // rather than silently treating an unknown scope as legacy.
+    log.warn(
+      { clientId, rawScope: raw },
+      "oauth_client_workspace_scope row carries unknown scope value — coercing to 'single'",
+    );
+  }
+  return "single";
 }
 
 /**
@@ -202,14 +218,9 @@ export async function setWorkspaceScopeAndGrants(args: {
     );
   }
 
-  // Use the existing pool helper rather than opening a raw connection —
-  // `internalQuery` runs a single statement, but for the transactional
-  // upsert + delete we need a connection-bound sequence. Lazy-import the
-  // pool here to keep the module tree-shakable for callers that only
-  // need the read helpers.
-  const { getInternalDB } = await import("@atlas/api/lib/db/internal");
   const pool = getInternalDB();
   const conn = await pool.connect();
+  let rollbackErr: Error | null = null;
   try {
     await conn.query("BEGIN");
 
@@ -256,14 +267,27 @@ export async function setWorkspaceScopeAndGrants(args: {
 
     await conn.query("COMMIT");
   } catch (err) {
-    await conn.query("ROLLBACK").catch(() => {
-      // intentionally ignored: rollback failure surfaces via the original
-      // throw below; the connection is destroyed by `release(err)` in
-      // finally so a poisoned client never returns to the pool.
+    // Mirrors `revokeOAuthClient`'s rollback handling. ROLLBACK can itself
+    // fail (TCP reset between BEGIN and ROLLBACK); capture that error so
+    // the `finally` block can pass it to `release(err)` — pg destroys the
+    // socket when `release` receives a truthy arg, ensuring a poisoned
+    // client (mid-transaction) never returns to the pool to corrupt the
+    // next borrower. The original throw below carries the user-visible
+    // failure; the rollback warn captures the recovery-path drift.
+    await conn.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        {
+          err: rollbackErr.message,
+          clientId: args.clientId,
+          mode: args.mode,
+        },
+        "ROLLBACK failed after setWorkspaceScopeAndGrants error — client will be destroyed",
+      );
     });
     throw err;
   } finally {
-    conn.release();
+    conn.release(rollbackErr ?? undefined);
   }
 }
 

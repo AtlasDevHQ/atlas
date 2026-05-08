@@ -16,6 +16,8 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { loadSettings } from "@atlas/api/lib/settings";
 import { registerTools } from "./tools.js";
+import { registerPluginTools } from "./plugin-tools.js";
+import { bootPluginsForMcp } from "@atlas/api/lib/plugins";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts/registry.js";
 import { resolveMcpActor } from "./actor.js";
@@ -107,6 +109,33 @@ export async function createAtlasMcpServer(
   });
 
   registerTools(server, { actor, transport, clientId });
+
+  // #2078 — plugins contribute additional MCP tools via `mcpTools()`.
+  // Boot the plugin lifecycle so factory functions can run, then walk
+  // the singleton registry to register each tool on this server. The
+  // helper is idempotent for the in-process (SSE / hosted) case where
+  // the Hono server already booted plugins. Failures inside the helper
+  // are logged but never block server creation.
+  try {
+    await bootPluginsForMcp();
+    const pluginToolCount = registerPluginTools(server, {
+      actor,
+      transport,
+      ...(clientId && { clientId }),
+      workspaceId: actor.activeOrganizationId ?? actor.id,
+      deployMode: getConfig()?.deployMode ?? "self-hosted",
+    });
+    if (pluginToolCount > 0) {
+      process.stderr.write(
+        `[atlas-mcp] Registered ${pluginToolCount} plugin MCP tool(s)\n`,
+      );
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[atlas-mcp] Plugin MCP tool boot failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+
   registerResources(server);
   await registerPrompts(server, {
     // `actor.activeOrganizationId` may be undefined for trusted-transport

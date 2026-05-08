@@ -16,6 +16,7 @@
     "./lib/auth/*": "./src/lib/auth/*.ts",
     "./lib/db/*": "./src/lib/db/*.ts",
     "./lib/tools/*": "./src/lib/tools/*.ts",
+    "./lib/plugins": "./src/lib/plugins/index.ts",
     "./lib/plugins/*": "./src/lib/plugins/*.ts",
     "./api/routes/*": "./src/api/routes/*.ts",
     "./testing/*": "./src/__mocks__/*.ts"
@@ -83,6 +84,7 @@
     "@types/diff": "^8.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/pg": "^8.20.0",
+    "@useatlas/yaml-context": "workspace:*",
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.2",
     "pg-mem": "^3.0.14"

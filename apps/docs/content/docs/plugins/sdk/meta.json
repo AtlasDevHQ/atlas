@@ -1,0 +1,5 @@
+{
+  "title": "Plugin SDK",
+  "description": "Authoring contracts plugins implement",
+  "pages": ["mcp-tools"]
+}

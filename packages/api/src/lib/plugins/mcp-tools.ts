@@ -1,0 +1,594 @@
+/**
+ * Plugin MCP tool registry — collects MCP tools contributed by plugins
+ * via `AtlasPluginBase.mcpTools()` so the MCP server can expose them in
+ * `tools/list` alongside Atlas's own (`executeSQL`, `explore`, the typed
+ * semantic tools).
+ *
+ * Architecture (#2078): plugins return `AtlasMcpTool[]` from `mcpTools()`.
+ * Each tool's local `name` is namespaced as `<plugin-id>.<name>` to avoid
+ * collisions with native tools. The registry validates name shape and
+ * rejects duplicate qualified names. Atlas's own tools register first
+ * via `packages/mcp/src/tools.ts`; plugin tools register on top via
+ * `packages/mcp/src/plugin-tools.ts`.
+ *
+ * The structural mirror types here intentionally avoid a runtime
+ * dependency on `@useatlas/plugin-sdk` (mirrors how `lib/plugins/registry.ts`
+ * defines `PluginLike` locally). The plugin SDK's `AtlasMcpTool` /
+ * `McpToolContext` are the canonical authoring contract; this file is
+ * the host-side projection.
+ */
+
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
+import type { PluginRegistry, PluginLike } from "./registry";
+
+const log = createLogger("plugins:mcp-tools");
+
+// ---------------------------------------------------------------------------
+// Structural type mirrors (no runtime dep on @useatlas/plugin-sdk)
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural mirror of `PluginZodSchema` from the SDK. Either a real Zod
+ * schema or anything exposing `safeParse` will satisfy this; the registry
+ * only calls `safeParse` to bridge to the AI SDK's tool-input validation.
+ */
+export interface ZodSchemaLike {
+  parse(input: unknown): unknown;
+  safeParse(input: unknown):
+    | { success: true; data: unknown }
+    | {
+        success: false;
+        error: {
+          issues: ReadonlyArray<{
+            path: ReadonlyArray<PropertyKey>;
+            message: string;
+          }>;
+          message: string;
+        };
+      };
+  readonly _def?: unknown;
+}
+
+export interface McpToolAuditEntry {
+  readonly event: string;
+  readonly success: boolean;
+  readonly durationMs?: number;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface McpToolContextShape {
+  readonly workspaceId: string;
+  readonly userId: string;
+  readonly clientId?: string;
+  readonly requestId: string;
+  readonly pluginId: string;
+  readonly logger: {
+    info(obj: Record<string, unknown>, msg?: string): void;
+    info(msg: string): void;
+    warn(obj: Record<string, unknown>, msg?: string): void;
+    warn(msg: string): void;
+    error(obj: Record<string, unknown>, msg?: string): void;
+    error(msg: string): void;
+    debug(obj: Record<string, unknown>, msg?: string): void;
+    debug(msg: string): void;
+  };
+  audit(entry: McpToolAuditEntry): void;
+}
+
+export interface AtlasMcpToolLike<TInput = unknown, TOutput = unknown> {
+  readonly name: string;
+  readonly description: string;
+  readonly errorCodes?: ReadonlyArray<string>;
+  readonly inputSchema: ZodSchemaLike;
+  readonly outputSchema?: ZodSchemaLike;
+  handler(args: TInput, ctx: McpToolContextShape): Promise<TOutput>;
+}
+
+// ---------------------------------------------------------------------------
+// Registry
+// ---------------------------------------------------------------------------
+
+/**
+ * A plugin-contributed MCP tool that has been validated and namespaced.
+ * The `qualifiedName` is what shows up in MCP `tools/list` and in
+ * `audit_log.tool_name`.
+ */
+export interface RegisteredPluginMcpTool {
+  readonly pluginId: string;
+  /** `<plugin-id>.<localName>` — globally unique. */
+  readonly qualifiedName: string;
+  /** The un-namespaced name as returned by the plugin. */
+  readonly localName: string;
+  readonly description: string;
+  readonly errorCodes?: ReadonlyArray<string>;
+  readonly inputSchema: ZodSchemaLike;
+  readonly outputSchema?: ZodSchemaLike;
+  handler(args: unknown, ctx: McpToolContextShape): Promise<unknown>;
+}
+
+/**
+ * Local-name shape: starts with a letter, then letters / digits /
+ * underscore / dash, max 64 chars. Dots are reserved for the
+ * `<plugin-id>.<name>` separator and are explicitly disallowed in the
+ * local segment so `pluginA.foo.bar` cannot ambiguously match
+ * `<pluginA>.<foo.bar>` vs `<pluginA.foo>.<bar>`.
+ */
+const LOCAL_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const PLUGIN_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
+export class PluginMcpToolRegistry {
+  private tools = new Map<string, RegisteredPluginMcpTool>();
+  private frozen = false;
+
+  register(pluginId: string, tool: AtlasMcpToolLike): RegisteredPluginMcpTool {
+    if (this.frozen) {
+      throw new Error("PluginMcpToolRegistry is frozen — cannot register more tools");
+    }
+    if (!pluginId || !PLUGIN_ID_PATTERN.test(pluginId)) {
+      throw new Error(
+        `Invalid plugin id "${pluginId}" — must match ${PLUGIN_ID_PATTERN}`,
+      );
+    }
+    if (!tool || typeof tool !== "object") {
+      throw new Error(`Plugin "${pluginId}" returned a non-object MCP tool`);
+    }
+    if (typeof tool.name !== "string" || !LOCAL_NAME_PATTERN.test(tool.name)) {
+      throw new Error(
+        `Plugin "${pluginId}" tool name "${tool.name}" is invalid — must match ${LOCAL_NAME_PATTERN} (letters, digits, _, -; no dots)`,
+      );
+    }
+    if (typeof tool.description !== "string" || !tool.description.trim()) {
+      throw new Error(
+        `Plugin "${pluginId}" tool "${tool.name}" is missing a non-empty description`,
+      );
+    }
+    if (
+      !tool.inputSchema ||
+      typeof (tool.inputSchema as ZodSchemaLike).safeParse !== "function"
+    ) {
+      throw new Error(
+        `Plugin "${pluginId}" tool "${tool.name}" inputSchema must expose safeParse() (Zod-shaped)`,
+      );
+    }
+    if (typeof tool.handler !== "function") {
+      throw new Error(
+        `Plugin "${pluginId}" tool "${tool.name}" handler must be a function`,
+      );
+    }
+
+    const qualifiedName = `${pluginId}.${tool.name}`;
+    if (this.tools.has(qualifiedName)) {
+      throw new Error(
+        `Plugin MCP tool "${qualifiedName}" is already registered — namespace collision`,
+      );
+    }
+
+    const entry: RegisteredPluginMcpTool = {
+      pluginId,
+      qualifiedName,
+      localName: tool.name,
+      description: tool.description,
+      errorCodes: tool.errorCodes,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+      handler: tool.handler as RegisteredPluginMcpTool["handler"],
+    };
+    this.tools.set(qualifiedName, entry);
+    return entry;
+  }
+
+  get(qualifiedName: string): RegisteredPluginMcpTool | undefined {
+    return this.tools.get(qualifiedName);
+  }
+
+  getAll(): RegisteredPluginMcpTool[] {
+    return Array.from(this.tools.values());
+  }
+
+  freeze(): this {
+    this.frozen = true;
+    return this;
+  }
+
+  get size(): number {
+    return this.tools.size;
+  }
+
+  /** Reset registry state. For testing only. */
+  _reset(): void {
+    this.tools.clear();
+    this.frozen = false;
+  }
+}
+
+/**
+ * Global registry. Populated at boot by `wireMcpToolPlugins`; consumed by
+ * the MCP server via `packages/mcp/src/plugin-tools.ts`.
+ */
+export const pluginMcpToolRegistry = new PluginMcpToolRegistry();
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+
+interface PluginWithMcpTools extends PluginLike {
+  mcpTools(): readonly AtlasMcpToolLike[];
+}
+
+function hasMcpTools(p: PluginLike): p is PluginWithMcpTools {
+  return typeof (p as Record<string, unknown>).mcpTools === "function";
+}
+
+export interface WireMcpToolsResult {
+  readonly wired: ReadonlyArray<{ pluginId: string; qualifiedName: string }>;
+  readonly failed: ReadonlyArray<{ pluginId: string; tool?: string; error: string }>;
+}
+
+/**
+ * Walk every healthy plugin's `mcpTools()` and register the returned
+ * tools in the plugin MCP registry. Atlas's own tools register on the
+ * MCP server through `packages/mcp/src/tools.ts` first; this loader runs
+ * after, mirroring `wireActionPlugins` ordering.
+ *
+ * Per-plugin failures (a thrown `mcpTools()` factory, a malformed tool,
+ * a namespace collision) are collected in `failed` and logged — they do
+ * not abort other plugins. The registry is frozen by the caller after
+ * all wire functions return.
+ */
+export function wireMcpToolPlugins(
+  pluginRegistry: PluginRegistry,
+  registry: PluginMcpToolRegistry = pluginMcpToolRegistry,
+): WireMcpToolsResult {
+  const wired: Array<{ pluginId: string; qualifiedName: string }> = [];
+  const failed: Array<{ pluginId: string; tool?: string; error: string }> = [];
+
+  for (const plugin of pluginRegistry.getAllHealthy()) {
+    if (!hasMcpTools(plugin)) continue;
+
+    let tools: readonly AtlasMcpToolLike[];
+    try {
+      const result = plugin.mcpTools();
+      if (!Array.isArray(result)) {
+        const msg = `mcpTools() returned non-array (${typeof result})`;
+        failed.push({ pluginId: plugin.id, error: msg });
+        log.error({ pluginId: plugin.id }, msg);
+        continue;
+      }
+      tools = result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      failed.push({ pluginId: plugin.id, error: msg });
+      log.error(
+        { pluginId: plugin.id, err: err instanceof Error ? err : new Error(String(err)) },
+        "Plugin mcpTools() factory threw",
+      );
+      continue;
+    }
+
+    for (const tool of tools) {
+      try {
+        const entry = registry.register(plugin.id, tool);
+        wired.push({ pluginId: plugin.id, qualifiedName: entry.qualifiedName });
+        log.info(
+          { pluginId: plugin.id, qualifiedName: entry.qualifiedName },
+          "Plugin MCP tool registered",
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const toolName = tool && typeof tool === "object" ? (tool as { name?: unknown }).name : undefined;
+        failed.push({
+          pluginId: plugin.id,
+          tool: typeof toolName === "string" ? toolName : undefined,
+          error: msg,
+        });
+        log.error(
+          {
+            pluginId: plugin.id,
+            tool: typeof toolName === "string" ? toolName : undefined,
+            err: err instanceof Error ? err : new Error(String(err)),
+          },
+          "Failed to register plugin MCP tool",
+        );
+      }
+    }
+  }
+
+  return { wired, failed };
+}
+
+// ---------------------------------------------------------------------------
+// MCP server registration — transport-agnostic dispatch wrapping
+// ---------------------------------------------------------------------------
+
+/** Structural mirror of the bits of `@modelcontextprotocol/sdk`'s `McpServer` that we touch. */
+export interface McpServerLike {
+  registerTool(
+    name: string,
+    config: {
+      title?: string;
+      description?: string;
+      inputSchema?: unknown;
+      outputSchema?: unknown;
+    },
+    handler: (args: Record<string, unknown>) => Promise<McpCallToolResult>,
+  ): unknown;
+}
+
+export interface McpCallToolResult {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+}
+
+/**
+ * Dispatch options for `registerPluginMcpTools`. The host wires `actor`,
+ * `transport`, `workspaceId`, `deployMode`, and `clientId` from the same
+ * MCP server boot path that powers `tools.ts` / `semantic-tools.ts`. The
+ * optional `traceWrap` injects OTel coverage (#2029) — stdio MCP can pass
+ * `traceMcpToolCall` from `packages/mcp/src/telemetry.ts`; tests pass
+ * passthrough.
+ */
+export interface RegisterPluginMcpToolsOptions {
+  registry: PluginMcpToolRegistry;
+  actor: AtlasUser;
+  transport: "stdio" | "sse";
+  workspaceId: string;
+  deployMode: "self-hosted" | "saas";
+  clientId?: string;
+  /** OTel wrapper. Default is passthrough. */
+  traceWrap?: <T>(
+    spanCtx: {
+      readonly toolName: string;
+      readonly workspaceId: string;
+      readonly transport: "stdio" | "sse";
+      readonly deployMode: "self-hosted" | "saas";
+      readonly attributes?: Readonly<Record<string, string | number | boolean>>;
+    },
+    fn: () => Promise<T>,
+  ) => Promise<T>;
+  /** Logger factory for the plugin's `McpToolContext`. */
+  loggerFor?: (
+    pluginId: string,
+    qualifiedName: string,
+  ) => McpToolContextShape["logger"];
+}
+
+/** Append the standard error contract to a plugin tool description. */
+function withPluginErrorContract(
+  base: string,
+  codes: ReadonlyArray<string>,
+): string {
+  return `${base}
+
+Error contract: failures return an \`{ code, message, hint?, request_id?, retry_after? }\` JSON envelope as the tool result text with \`isError: true\`. Possible codes: ${codes.map((c) => `\`${c}\``).join(", ")}. Branch on \`code\`; never pattern-match \`message\`.`;
+}
+
+const DEFAULT_PLUGIN_ERROR_CODES = ["validation_failed", "internal_error"] as const;
+
+function envelope(
+  code: string,
+  message: string,
+  extras?: { hint?: string; request_id?: string; retry_after?: number },
+): { code: string; message: string; hint?: string; request_id?: string; retry_after?: number } {
+  return {
+    code,
+    message,
+    ...(extras?.hint !== undefined && { hint: extras.hint }),
+    ...(extras?.request_id !== undefined && { request_id: extras.request_id }),
+    ...(extras?.retry_after !== undefined && { retry_after: extras.retry_after }),
+  };
+}
+
+function envelopeResult(
+  code: string,
+  message: string,
+  extras?: { hint?: string; request_id?: string; retry_after?: number },
+): McpCallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(envelope(code, message, extras)) }],
+    isError: true,
+  };
+}
+
+function dispatchId(): string {
+  return `mcp-plugin-${crypto.randomUUID()}`;
+}
+
+function defaultLogger(pluginId: string, qualifiedName: string): McpToolContextShape["logger"] {
+  const child = createLogger(`plugin:${pluginId}:${qualifiedName}`);
+  return child as unknown as McpToolContextShape["logger"];
+}
+
+/**
+ * Register every plugin MCP tool in `opts.registry` on the given MCP
+ * server. The dispatch wrapper:
+ *
+ * 1. Generates a per-call `request_id` (`mcp-plugin-<uuid>`).
+ * 2. Validates the LLM-supplied arguments against the plugin's
+ *    `inputSchema` — a parse failure short-circuits with a
+ *    `validation_failed` envelope (handler is never invoked).
+ * 3. Wraps the dispatch in `withRequestContext({ user: actor, actor:
+ *    { kind: "mcp", clientId, toolName: qualifiedName } })` so
+ *    `audit_log.{actor_kind, client_id, tool_name}` and any nested
+ *    `executeSQL` audit row are stamped consistently with native tools.
+ * 4. Applies the optional `traceWrap` (OTel) — stdio/SSE pass
+ *    `traceMcpToolCall`; tests pass identity.
+ * 5. Builds the `McpToolContext` and invokes the plugin handler.
+ * 6. On a handler throw, returns an `internal_error` envelope carrying
+ *    `request_id` so an LLM agent can correlate with server logs.
+ */
+export function registerPluginMcpTools(
+  server: McpServerLike,
+  opts: RegisterPluginMcpToolsOptions,
+): void {
+  const {
+    registry,
+    actor,
+    transport,
+    workspaceId,
+    deployMode,
+    clientId,
+    traceWrap,
+    loggerFor = defaultLogger,
+  } = opts;
+
+  for (const tool of registry.getAll()) {
+    const codes = tool.errorCodes ?? DEFAULT_PLUGIN_ERROR_CODES;
+    const description = withPluginErrorContract(tool.description, codes);
+
+    const dispatchHandler = async (
+      args: Record<string, unknown>,
+    ): Promise<McpCallToolResult> => {
+      const requestId = dispatchId();
+      const mcpActor = {
+        kind: "mcp" as const,
+        ...(clientId ? { clientId } : {}),
+        toolName: tool.qualifiedName,
+      };
+
+      return withRequestContext(
+        { requestId, user: actor, actor: mcpActor },
+        async () => {
+          // Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads
+          // `clientId`; stdio MCP leaves it undefined and is intentionally
+          // exempt — the limiter scopes hosted-tenant abuse, not local
+          // bench testing. Lives INSIDE the request context so any audit
+          // emission picks up the bound actor.
+          if (clientId) {
+            try {
+              const outcome = await enforceClientRateLimit({
+                orgId: workspaceId,
+                clientId,
+                userId: actor.id,
+                toolName: tool.qualifiedName,
+              });
+              if (outcome.kind !== "ok") {
+                return {
+                  content: [
+                    { type: "text" as const, text: JSON.stringify(outcome.envelope) },
+                  ],
+                  isError: true,
+                };
+              }
+            } catch (err) {
+              // Limiter failure is not the plugin's fault — surface as
+              // internal_error rather than failing closed silently.
+              const message = err instanceof Error ? err.message : String(err);
+              log.error(
+                {
+                  err: err instanceof Error ? err : new Error(String(err)),
+                  qualifiedName: tool.qualifiedName,
+                },
+                "Plugin MCP rate-limit gate threw — wrapping as internal_error",
+              );
+              return envelopeResult("internal_error", message, {
+                request_id: requestId,
+              });
+            }
+          }
+
+          const parse = tool.inputSchema.safeParse(args ?? {});
+          if (!parse.success) {
+            const issue = parse.error.issues[0];
+            const path =
+              issue?.path && issue.path.length > 0
+                ? issue.path.map((p) => String(p)).join(".")
+                : "(root)";
+            const message = issue?.message ?? parse.error.message;
+            return envelopeResult(
+              "validation_failed",
+              `Input validation failed at ${path}: ${message}`,
+            );
+          }
+
+          const trace =
+            traceWrap ??
+            (async <T,>(_ctx: unknown, fn: () => Promise<T>) => fn());
+
+          const tlogger = loggerFor(tool.pluginId, tool.qualifiedName);
+          const ctx: McpToolContextShape = {
+            workspaceId,
+            userId: actor.id,
+            ...(clientId ? { clientId } : {}),
+            requestId,
+            pluginId: tool.pluginId,
+            logger: tlogger,
+            audit(entry) {
+              try {
+                const logFn =
+                  entry.success ? tlogger.info.bind(tlogger) : tlogger.warn.bind(tlogger);
+                logFn(
+                  {
+                    pluginId: tool.pluginId,
+                    qualifiedName: tool.qualifiedName,
+                    requestId,
+                    workspaceId,
+                    ...(clientId ? { clientId } : {}),
+                    success: entry.success,
+                    ...(entry.durationMs !== undefined && { durationMs: entry.durationMs }),
+                    ...(entry.metadata && { metadata: entry.metadata }),
+                  },
+                  `plugin_audit:${entry.event}`,
+                );
+              } catch (err) {
+                // Audit must never propagate. Swallow + structured warn.
+                tlogger.warn(
+                  { err: err instanceof Error ? err.message : String(err) },
+                  "Plugin audit() write failed — event dropped",
+                );
+              }
+            },
+          };
+
+          try {
+            return await trace(
+              {
+                toolName: tool.qualifiedName,
+                workspaceId,
+                transport,
+                deployMode,
+              },
+              async () => {
+                const result = await tool.handler(parse.data, ctx);
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: JSON.stringify(result, null, 2),
+                    },
+                  ],
+                };
+              },
+            );
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            tlogger.error(
+              {
+                pluginId: tool.pluginId,
+                qualifiedName: tool.qualifiedName,
+                requestId,
+                err: err instanceof Error ? err : new Error(String(err)),
+              },
+              "Plugin MCP tool handler threw — wrapping in internal_error envelope",
+            );
+            return envelopeResult("internal_error", message || `${tool.qualifiedName} failed`, {
+              request_id: requestId,
+            });
+          }
+        },
+      );
+    };
+
+    server.registerTool(
+      tool.qualifiedName,
+      {
+        title: tool.qualifiedName,
+        description,
+        inputSchema: tool.inputSchema,
+        ...(tool.outputSchema && { outputSchema: tool.outputSchema }),
+      },
+      dispatchHandler,
+    );
+  }
+}

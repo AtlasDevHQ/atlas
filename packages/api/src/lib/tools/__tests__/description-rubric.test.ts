@@ -148,3 +148,96 @@ describe("MCP tool description rubric", () => {
     });
   }
 });
+
+// ── Plugin-contributed tools (#2078) ────────────────────────────────────
+//
+// Plugin MCP tools share the same rubric as native tools. The host
+// rebuilds the LLM-facing description via `withErrorContract` at boot
+// using the same helper that drives the native pass above, so any
+// regression in a plugin's prose fails CI here. Iterating
+// `pluginMcpToolRegistry.getAll()` is intentional — every registered
+// plugin tool is checked, so adding a new tool to a plugin is a
+// rubric-coverage opt-in by default.
+//
+// We register the canonical reference plugin (`@useatlas/yaml-context`)
+// at the top of the suite so the singleton is non-empty when the
+// per-tool checks run. Tests can register additional plugin tools
+// before this suite runs to expand coverage; the singleton is shared
+// across the @atlas/api test process.
+
+import { contextYamlPlugin } from "@useatlas/yaml-context";
+import { PluginMcpToolRegistry } from "../../plugins/mcp-tools";
+
+describe("MCP tool description rubric — plugin-contributed tools", () => {
+  const registry = new PluginMcpToolRegistry();
+  const yamlContext = contextYamlPlugin();
+  for (const tool of yamlContext.mcpTools?.() ?? []) {
+    registry.register(yamlContext.id, tool);
+  }
+
+  const pluginTools = registry.getAll();
+
+  it("at least one plugin tool is registered (yaml-context reference)", () => {
+    expect(
+      pluginTools.length,
+      "No plugin MCP tools registered — yaml-context.getYamlContextStats should be present as the reference implementation",
+    ).toBeGreaterThan(0);
+  });
+
+  for (const tool of pluginTools) {
+    describe(tool.qualifiedName, () => {
+      it(`base description word count is in [${MIN_WORDS}, ${MAX_WORDS}]`, () => {
+        const count = wordCount(tool.description);
+        expect(
+          count,
+          `${tool.qualifiedName} base description has ${count} words; rubric requires ${MIN_WORDS}–${MAX_WORDS}.`,
+        ).toBeGreaterThanOrEqual(MIN_WORDS);
+        expect(
+          count,
+          `${tool.qualifiedName} base description has ${count} words; rubric requires ${MIN_WORDS}–${MAX_WORDS}.`,
+        ).toBeLessThanOrEqual(MAX_WORDS);
+      });
+
+      it("contains a 'Use this when' directive", () => {
+        expect(
+          tool.description.includes("Use this when"),
+          `${tool.qualifiedName} description must contain 'Use this when …'.`,
+        ).toBe(true);
+      });
+
+      it("contains a 'Don't use this' or 'Avoid' directive", () => {
+        const has =
+          tool.description.includes("Don't use this") ||
+          tool.description.includes("Avoid");
+        expect(
+          has,
+          `${tool.qualifiedName} description must contain 'Don't use this …' or 'Avoid …'.`,
+        ).toBe(true);
+      });
+
+      it("contains at least one inline JSON example", () => {
+        // Plugin tools may use any reasonable arg/response key — accept
+        // any `{...key: value...}` block, since the native-tool key
+        // whitelist would be too restrictive across the plugin
+        // ecosystem.
+        const hasJsonBlock = /\{[^{}]*"[^"]+"\s*:[^{}]+\}/.test(tool.description);
+        expect(
+          hasJsonBlock,
+          `${tool.qualifiedName} description must include a JSON example (call shape or response shape).`,
+        ).toBe(true);
+      });
+
+      it("appended via withErrorContract surfaces the error envelope contract", () => {
+        const codes =
+          tool.errorCodes && tool.errorCodes.length > 0
+            ? (tool.errorCodes as readonly AtlasMcpToolErrorCode[])
+            : (["validation_failed", "internal_error"] as const);
+        const full = withErrorContract(tool.description, codes);
+        expect(full).toContain("Error contract:");
+        expect(full.indexOf("Error contract:")).toBeGreaterThan(
+          tool.description.length - 1,
+        );
+      });
+    });
+  }
+});

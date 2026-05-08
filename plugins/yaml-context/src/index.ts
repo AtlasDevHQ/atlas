@@ -20,8 +20,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { z } from "zod";
 import { definePlugin } from "@useatlas/plugin-sdk";
-import type { AtlasContextPlugin, PluginHealthResult } from "@useatlas/plugin-sdk";
+import type {
+  AtlasContextPlugin,
+  AtlasMcpTool,
+  PluginHealthResult,
+} from "@useatlas/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -214,6 +219,102 @@ export function buildContextString(
 }
 
 // ---------------------------------------------------------------------------
+// MCP tool — reference implementation of AtlasPlugin.mcpTools (#2078)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reference description for `getYamlContextStats`. Follows the same
+ * rubric as Atlas's native tools (80–150 words, `Use this when …`,
+ * `Don't use this …`, inline JSON example) so contributors copying this
+ * shape into their own plugins start out CI-compliant.
+ *
+ * The wording deliberately mirrors `EXPLORE_TOOL_DESCRIPTION` in tone —
+ * concrete numbers in the response, an explicit anti-routing anchor for
+ * the cases where another tool is better, and a JSON example showing
+ * the call shape.
+ */
+export const GET_YAML_CONTEXT_STATS_DESCRIPTION = `Return summary counts for the semantic layer the \`context-yaml\` plugin loaded at boot — the number of entity YAML files parsed, the number of glossary terms resolved, the number of canonical metrics enumerated, and the absolute on-disk path of the directory. The plugin caches its parsed view of \`semantic/\` after the first context-build, so this call is O(1) once the cache is warm. Example call: \`{ "filter": "orders" }\`. Example response: \`{ "entities": 12, "glossary": 38, "metrics": 5, "semanticDir": "/app/semantic" }\`.
+
+Use this when an MCP client wants a one-line "did Atlas pick up my YAML?" sanity check before routing to \`listEntities\` / \`describeEntity\`, or when a chat surface wants to advertise the workspace's catalog size in a status line.
+
+Don't use this for entity discovery — call \`listEntities\` instead. Avoid using \`getYamlContextStats\` to detect schema drift; the counts cache through cache invalidation only.`;
+
+const yamlContextStatsInputSchema = z.object({
+  /**
+   * Optional case-insensitive substring filter for entities. Mirrors the
+   * `filter` param on `listEntities` so a downstream agent can chain a
+   * scoped count + a scoped enumerate without re-coding the predicate.
+   */
+  filter: z
+    .string()
+    .max(256)
+    .optional()
+    .describe(
+      "Optional case-insensitive substring filter; entities whose table name does not include the substring are excluded from the count.",
+    ),
+});
+
+const yamlContextStatsOutputSchema = z.object({
+  entities: z.number().int().nonnegative(),
+  glossary: z.number().int().nonnegative(),
+  metrics: z.number().int().nonnegative(),
+  semanticDir: z.string(),
+  filter: z.string().optional(),
+});
+
+/**
+ * Build the plugin's `getYamlContextStats` MCP tool. Pure factory —
+ * the closure-captured `semanticDir` keeps the tool transparent to the
+ * surrounding plugin lifecycle (`refresh()` clearing `cachedContext`
+ * has no effect on the counts because `listEntities` etc. parse the
+ * underlying YAML files fresh each call — the host already caches the
+ * parsed semantic layer at the engine level).
+ */
+function buildYamlContextStatsTool(semanticDir: string): AtlasMcpTool<
+  z.infer<typeof yamlContextStatsInputSchema>,
+  z.infer<typeof yamlContextStatsOutputSchema>
+> {
+  return {
+    name: "getYamlContextStats",
+    description: GET_YAML_CONTEXT_STATS_DESCRIPTION,
+    errorCodes: ["validation_failed", "internal_error"],
+    inputSchema: yamlContextStatsInputSchema,
+    outputSchema: yamlContextStatsOutputSchema,
+    async handler({ filter }, ctx) {
+      const start = performance.now();
+      let entities = readEntitySummaries(semanticDir);
+      if (filter) {
+        const needle = filter.toLowerCase();
+        entities = entities.filter((e) => e.table.toLowerCase().includes(needle));
+      }
+      const glossary = readGlossaryTerms(semanticDir);
+      const metrics = readMetricSummaries(semanticDir);
+      const durationMs = Math.round(performance.now() - start);
+
+      ctx.audit({
+        event: "context_yaml.stats",
+        success: true,
+        durationMs,
+        metadata: {
+          entities: entities.length,
+          glossary: glossary.length,
+          metrics: metrics.length,
+          ...(filter !== undefined && { filter }),
+        },
+      });
+
+      return {
+        entities: entities.length,
+        glossary: glossary.length,
+        metrics: metrics.length,
+        semanticDir,
+        ...(filter !== undefined && { filter }),
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Plugin builder
 // ---------------------------------------------------------------------------
 
@@ -235,6 +336,10 @@ export function buildContextYamlPlugin(
     version: "0.1.0",
     name: "YAML Semantic Layer Context",
     config,
+
+    mcpTools() {
+      return [buildYamlContextStatsTool(semanticDir)];
+    },
 
     contextProvider: {
       async load(): Promise<string> {

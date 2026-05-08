@@ -1,0 +1,139 @@
+---
+title: Plugin MCP Tools
+description: Contribute MCP tools from a plugin via AtlasPlugin.mcpTools().
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Plugins can contribute first-class MCP tools that show up in the agent's `tools/list` alongside Atlas's own (`executeSQL`, `explore`, `listEntities`, `describeEntity`, `searchGlossary`, `runMetric`). This is the same surface the agent loop uses — tools added here participate in the same audit log, OTel coverage, and per-OAuth-client rate limiting as native tools.
+
+The extension point exists so a plugin can do agent-native work (search a runbook KB, fetch a page from Confluence, look up a customer record in Salesforce) without stuffing a string into `contextProvider.load()`. If your plugin can answer "what is the agent doing right now?" with a structured query, you almost certainly want `mcpTools()` over a context fragment.
+
+## The contract
+
+```typescript
+import type { AtlasMcpTool, McpToolContext } from "@useatlas/plugin-sdk";
+
+interface AtlasMcpTool<TInput = unknown, TOutput = unknown> {
+  /** Local tool name. Host namespaces as `<plugin-id>.<name>`. */
+  readonly name: string;
+  /** LLM-facing description — see "Description rubric" below. */
+  readonly description: string;
+  /** Per-tool error catalog appended via `withErrorContract`. */
+  readonly errorCodes?: ReadonlyArray<string>;
+  /** Zod schema for validating LLM-supplied arguments. */
+  readonly inputSchema: PluginZodSchema<TInput>;
+  /** Optional Zod schema describing the structured response shape. */
+  readonly outputSchema?: PluginZodSchema<TOutput>;
+  /** Tool handler. */
+  handler(args: TInput, ctx: McpToolContext): Promise<TOutput>;
+}
+
+interface McpToolContext {
+  readonly workspaceId: string;
+  readonly userId: string;
+  readonly clientId?: string;
+  readonly requestId: string;
+  readonly pluginId: string;
+  readonly logger: PluginLogger;
+  audit(entry: McpToolAuditEntry): void;
+}
+```
+
+`AtlasPluginBase.mcpTools?(): readonly AtlasMcpTool[]` is the entry point. The host calls it once at boot, after `initialize()` has resolved.
+
+## Namespacing
+
+The host registers each returned tool as `<plugin-id>.<name>`. Local names must match `^[a-zA-Z][a-zA-Z0-9_-]{0,63}$` — no dots, slashes, or whitespace, since dots are reserved for the namespace separator. Two plugins can both define a `search` tool; agents call them as `runbooks.search` and `docs.search`.
+
+A plugin cannot shadow Atlas's own tools — there is no name `executeSQL` registerable from `mcpTools()` because the host always prefixes with `<plugin-id>.`.
+
+## Description rubric
+
+Plugin tool descriptions go through the **same** rubric as native tools. CI fails if a registered plugin tool's description does not match. Specifically:
+
+- **80–150 words** — LLMs weight verbose descriptions heavier than terse ones; keep all tools in the same band.
+- **`Use this when …` directive** — positive routing anchor.
+- **`Don't use this …` or `Avoid …` directive** — anti-routing anchor.
+- **At least one inline JSON example** — call shape or response shape, so the LLM produces well-shaped invocations.
+- **`withErrorContract`** — the host appends the per-tool error code catalog.
+
+The contributor-facing rubric (with the "why" the audit existed) lives in [`mcp-tools.mdx`](/architecture/mcp-tools).
+
+## Validation, errors, and audit
+
+- **Input is zod-validated before the handler runs.** A schema rejection short-circuits with a `validation_failed` envelope; your handler is never invoked.
+- **Handler throws are wrapped.** Any `throw` inside `handler` is caught and surfaced as an `internal_error` envelope carrying the dispatch's `request_id` so an LLM agent can correlate the failure with server logs. Plugins cannot leak arbitrary error shapes through the MCP boundary.
+- **Audit + OTel coverage matches native tools.** The dispatch wrapper binds a `mcp` actor with `clientId` (hosted) and `toolName: "<plugin>.<tool>"`. The audit_log row, OTel span, tool-call counter, and latency histogram all pick up the actor — no per-plugin instrumentation is needed.
+- **Rate limiting matches native tools.** Hosted MCP runs every dispatch through the per-OAuth-client limiter (#2071). Stdio MCP is exempt by design.
+
+## Complete example
+
+```typescript
+import { z } from "zod";
+import { definePlugin } from "@useatlas/plugin-sdk";
+import type {
+  AtlasContextPlugin,
+  AtlasMcpTool,
+} from "@useatlas/plugin-sdk";
+
+const RUNBOOK_SEARCH_DESCRIPTION = `Search the runbooks knowledge base loaded by the \`runbooks-context\` plugin and return matching titles + ids. The base is parsed at boot from \`./runbooks/*.md\` and cached in memory; calls are O(log N) over the title index. Example call: \`{ "query": "kafka lag" }\`. Example response: \`{ "matches": [{ "id": "kafka-lag-101", "title": "Investigating Kafka Lag" }] }\`.
+
+Use this when the user asks about an incident, an alert, or a runbook by topic — searching the title index is faster than dumping a context string. Pair with \`getRunbook(id)\` to fetch the full body when a hit looks relevant.
+
+Don't use this for general Atlas catalog discovery; that's \`listEntities\`. Avoid passing the whole question as the query — the index is optimized for short keyword phrases.`;
+
+const searchInputSchema = z.object({
+  query: z.string().min(1).max(256),
+});
+
+function buildSearchRunbooksTool(): AtlasMcpTool<{ query: string }> {
+  return {
+    name: "search",
+    description: RUNBOOK_SEARCH_DESCRIPTION,
+    errorCodes: ["validation_failed", "internal_error"],
+    inputSchema: searchInputSchema,
+    async handler({ query }, ctx) {
+      const start = performance.now();
+      const matches = await titleIndex.search(query);
+      ctx.audit({
+        event: "runbooks.search",
+        success: true,
+        durationMs: Math.round(performance.now() - start),
+        metadata: { query, hits: matches.length },
+      });
+      return { matches };
+    },
+  };
+}
+
+export function runbooksContextPlugin(): AtlasContextPlugin {
+  return definePlugin({
+    id: "runbooks",
+    types: ["context"] as const,
+    version: "0.1.0",
+    contextProvider: { load: async () => "" },
+    mcpTools() {
+      return [buildSearchRunbooksTool()];
+    },
+  });
+}
+```
+
+The agent sees this tool as `runbooks.search`. The LLM-facing description includes the appended `Error contract:` line listing `validation_failed` and `internal_error`.
+
+## Reference implementation
+
+`@useatlas/yaml-context` ships a single MCP tool — `context-yaml.getYamlContextStats` — that returns counts for the entities, glossary terms, and metrics it loaded. It exists primarily as a reference: a real-world example of `mcpTools()` that satisfies the rubric and validates the extension point end-to-end. Read [its source](https://github.com/AtlasDevHQ/atlas/blob/main/plugins/yaml-context/src/index.ts) when starting your own plugin.
+
+## What's not in scope
+
+- **Per-plugin permission scoping.** Plugin tools inherit the workspace's permissions today. Refining scope per plugin is a v2 ask.
+- **Marketplace UX changes.** The existing plugin marketplace just lists; tools surface through MCP whether or not the marketplace lists them.
+
+## Related
+
+- [#2078](https://github.com/AtlasDevHQ/atlas/issues/2078) — the milestone that shipped this surface.
+- [#2030 — structured error envelope](https://github.com/AtlasDevHQ/atlas/issues/2030) — the shape plugin tool errors flow through.
+- [Plugin authoring guide](/plugins/authoring-guide) — `definePlugin` / `createPlugin` basics.
+- [MCP plugin](/plugins/interactions/mcp) — the wrapper that runs the MCP server itself.

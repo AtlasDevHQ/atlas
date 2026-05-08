@@ -1,0 +1,57 @@
+---
+title: MCP Catalog Tool Annotations
+description: Catalog-facing one-sentence descriptions for every Atlas MCP tool, sized for human directory listings (Claude Desktop, mcp.so, registry.modelcontextprotocol.io).
+---
+
+> Catalog reviewers see this surface, not the LLM-facing prose audited in the [tool description rubric](./mcp-tools.mdx). Two surfaces, two audiences — keep them in lockstep but don't conflate them.
+
+## Why two surfaces
+
+The descriptions in [`packages/api/src/lib/tools/descriptions.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/descriptions.ts) are **LLM-facing**: 80–150 words each, with `Use this when …` / `Don't use this …` directives and inline JSON examples. They optimize for tool selection accuracy in an agent loop. A human reading them in a directory listing would bounce — they're a wall of text.
+
+Catalog surfaces (Anthropic's Claude Desktop directory at `clau.de/mcp-directory-submission`, mcp.so, the public MCP registry) display tools as a short bullet list next to a server card. The reviewer scanning that list needs one sentence per tool — terse, plainspoken, no JSON. **The same description, re-shaped for a different reader.**
+
+This page is the source of truth for the catalog form. Submission flows copy the strings below verbatim into the form. Drift here means a future submission round either guesses wording (likely off-brand) or rewrites it (likely off-spec). Pin it in the docs so the next person copying into a form doesn't have to re-derive it.
+
+## The 6 Atlas MCP tools
+
+Atlas exposes the same six tools whether mounted via stdio (`bunx @useatlas/mcp init`) or over hosted SSE (`https://mcp.useatlas.dev`). Plugin-contributed tools are namespaced (`<plugin-id>.<name>`) and surface separately under each plugin's catalog entry — they are not part of the core Atlas listing.
+
+| Tool | Catalog description |
+| --- | --- |
+| `explore` | Read-only shell (`ls`, `cat`, `grep`, `find`) over the on-disk semantic layer — discovery the typed tools can't cover. |
+| `executeSQL` | Run a single read-only SELECT against a configured datasource — parsed, table-whitelisted, RLS-injected, auto-LIMITed, and timed out. |
+| `listEntities` | Return the catalog of semantic-layer entities (tables and views) declared for the workspace, with an optional substring filter. |
+| `describeEntity` | Return one entity's parsed definition — dimensions, measures, joins, query patterns, grain, and the connection it lives on. |
+| `searchGlossary` | Search the business glossary for a term, phrase, or column name; surface ambiguous terms instead of guessing. |
+| `runMetric` | Execute a canonical metric defined under `semantic/metrics/` by id, using its authoritative SQL — never re-derive metric SQL by hand. |
+
+Each description is a complete sentence, period included. Stay under 140 characters per description so it doesn't wrap awkwardly in a constrained directory cell.
+
+## Server-level metadata
+
+Catalog forms also ask for short / long descriptions of the server itself. These pair with the per-tool annotations above:
+
+- **Short (≤80 chars):** *Query your company's data via natural language. Semantic layer + validated SQL.*
+- **Tagline alternates (in case 80 chars is too long for the field):**
+  - *Natural-language data analyst. Semantic layer + validated SQL.* (60 chars)
+  - *Text-to-SQL that respects your schema, glossary, and metrics.* (60 chars)
+- **Long (200–300 words):** Lead with the moat (semantic layer + 4-layer SQL validation prevents the agent from hallucinating tables, joining wrong, or running unbounded scans). Explain what an agent gets when it connects: typed tools that read the catalog, fetch entity definitions, disambiguate domain terms, and run pre-defined metrics. Close with the install command for whichever surface the catalog targets — `bunx @useatlas/mcp init --hosted` for the SaaS, or the stdio `claude_desktop_config.json` snippet for self-hosted.
+
+## How this maps to the LLM-facing rubric
+
+Same six tools, two reader populations. The LLM-facing rubric ([`mcp-tools.mdx`](./mcp-tools.mdx)) optimizes for agent dispatch accuracy — the held-out fixture at [`eval/canonical-questions/tool-selection.json`](https://github.com/AtlasDevHQ/atlas/blob/main/eval/canonical-questions/tool-selection.json) measures that quantitatively. The catalog rubric optimizes for human comprehension at a glance — measured qualitatively by reviewer feedback when the form lands.
+
+If the LLM-facing description for a tool changes shape (purpose, routing intent, scope), update the row above in the same PR. The structural enforcement is asymmetric: [`description-rubric.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/description-rubric.test.ts) fails CI on LLM-facing drift; [`catalog-annotations.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/catalog-annotations.test.ts) reads this MDX and asserts every tool name in `SEMANTIC_TOOL_NAMES` (plus `explore` / `executeSQL`) appears as a row, no orphan rows reference a removed tool, and each description stays under the 140-character limit. Drop a tool from the codebase without removing the row — or add a row that doesn't match a real tool — and CI flags it.
+
+## Submission checklist (for the operator)
+
+When opening the Anthropic catalog form (or any future MCP directory):
+
+1. Copy the table above into the per-tool annotations section verbatim.
+2. Use the short-description string above for the tagline field.
+3. Expand the long description from the bullet plan above; tune voice to the directory if needed (e.g. mcp.so reads more technical, Claude Desktop more end-user).
+4. Branding pack lives at [`apps/www/public/brand/README.md`](https://github.com/AtlasDevHQ/atlas/blob/main/apps/www/public/brand/README.md) — pull the SVG mark + the 1024×1024 PNG from there.
+5. Privacy policy URL: `https://www.useatlas.dev/privacy` (already covers MCP-relevant data flows — no model training on Customer Data, no warehouse reads beyond authorized queries, sub-processor list at `useatlas.dev/dpa`).
+
+The off-repo deliverables (review tenant credentials, demo video, form submission, post-submission Notion tracking) are operator-side and out of scope for this page. See issue [#2077](https://github.com/AtlasDevHQ/atlas/issues/2077) for the full submission plan.

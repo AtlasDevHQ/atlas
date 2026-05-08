@@ -7,6 +7,7 @@
     "content-mode",
     "enterprise",
     "mcp-performance",
-    "mcp-tools"
+    "mcp-tools",
+    "mcp-tool-annotations"
   ]
 }

@@ -282,6 +282,66 @@ Open `~/.continue/config.json`. Add the wizard's `mcpServers.atlas` block under 
 
 In ChatGPT's **Connectors / MCP servers** UI, click **Add server** and paste the URL from the wizard's config block. ChatGPT performs DCR + PKCE on its own when you first invoke a tool.
 
+## Per-client rate limiting
+
+The hosted MCP endpoint enforces a **per-OAuth-client** weighted request quota. Default is **60 weighted requests/minute** per registered client, scoped by `(workspace_id, client_id)` so one greedy agent (an experimental polling loop, a runaway script) cannot starve siblings registered against the same workspace.
+
+### Per-tool weights
+
+Not all tools are equal. The bucket is debited per dispatch by the tool's weight:
+
+| Tool                                  | Weight |
+| ------------------------------------- | ------ |
+| `executeSQL`, `explore`               | 5      |
+| `runMetric`                           | 3      |
+| `listEntities`, `describeEntity`, `searchGlossary` | 1 |
+
+A 60/min budget admits roughly **12 `executeSQL` calls** or **60 `listEntities` calls** per minute. Mixing tools costs the sum of their weights.
+
+### When the bucket empties
+
+The dispatch returns the standard MCP error envelope ([#2030](https://github.com/AtlasDevHQ/atlas/issues/2030)) as the tool result text:
+
+```json
+{
+  "code": "rate_limited",
+  "message": "OAuth client \"<id>\" exceeded its hosted-MCP quota (60 weighted requests/min).",
+  "hint": "Wait <N>s before retrying. The admin can raise this client's quota in Settings → OAuth Clients.",
+  "retry_after": 12
+}
+```
+
+`retry_after` is whole seconds; agents should branch on `code === "rate_limited"` and back off for that long. The body of an outer 429 (when one is emitted at the HTTP boundary) carries the same value in the `Retry-After` header. Every denied dispatch writes an `mcp_session.rate_limited` row to the audit log so admins can pivot on `actorKind=mcp` to see which client is hitting the limit and how often.
+
+### Admin override per client
+
+Admins can raise or lower the per-client quota at **Settings → OAuth Clients** (the "Rate" button on each row). Bound: 1..3600 requests/minute. A client without an explicit override uses the workspace default. Override changes write `oauth_client.rate_limit_update` to the audit log with the previous → new delta.
+
+The override is also addressable directly:
+
+```bash
+# Raise claude-desktop's quota to 300/min
+curl -X PATCH \
+  -H "Authorization: Bearer <admin_session_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"requestsPerMinute": 300}' \
+  https://api.useatlas.dev/api/v1/admin/oauth-clients/claude-desktop/rate-limit
+
+# Reset to the workspace default
+curl -X PATCH \
+  -H "Authorization: Bearer <admin_session_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"requestsPerMinute": null}' \
+  https://api.useatlas.dev/api/v1/admin/oauth-clients/claude-desktop/rate-limit
+```
+
+### What's not covered (yet)
+
+- **Cross-region reconciliation.** Each regional API has its own in-process buckets. A determined attacker holding tokens in `us`, `eu`, and `apac` can hit each region's quota independently, so the effective ceiling is `regions × per-client quota` rather than a single global one. Tracked as out-of-scope on [#2071](https://github.com/AtlasDevHQ/atlas/issues/2071).
+- **Multi-replica cache staleness.** Within a single region, the limiter cache is in-process. The `numReplicas: 1` pin documented above (under "Operational notes") means there's only one replica per regional service today, so an admin override invalidates the live cache immediately. If a future deployment lifts that pin (paired with the work tracked in [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069)), expect a brief staleness window after a `PATCH .../rate-limit` until the other replicas's caches expire — for now the override surface and the running limiter are pinned to the same process.
+- **Override DB outage.** If the internal database is unreachable when the limiter first sees a `(workspace, client)` pair, the loader logs a warning and the bucket falls back to the workspace default until the cache is refilled. This is fail-open by design (legitimate traffic keeps flowing during a DB blip), but an admin who set a low quota for an abusive client should know the override is bypassed during such a window. Operators paged on `oauth_client_rate_limits lookup failed` log lines have the signal to act.
+- **Tiered pricing.** The override mechanism is admin-only today; no usage-based billing tier consumes it. Will fold in alongside the v1.5 billing work.
+
 ## Operational notes
 
 - **Max sessions per instance** is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100). Hitting the cap returns `503 too_many_sessions`. The cap counts both registered sessions and in-flight initializations.

@@ -123,13 +123,14 @@ const { app } = await import("../index");
 
 afterAll(() => mocks.cleanup());
 
-function adminRequest(method: string, path: string): Request {
+function adminRequest(method: string, path: string, body?: unknown): Request {
   return new Request(`http://localhost${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer test-token",
     },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
 
@@ -367,13 +368,19 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
     const deleteOrder = clientQueries
       .filter((q) => /^\s*DELETE\s+FROM/i.test(q.sql))
       .map((q) => {
-        const m = q.sql.match(/DELETE FROM "(\w+)"/);
+        // Quoted identifiers (Better Auth tables) and unquoted ones
+        // (Atlas-owned `oauth_client_rate_limits`) both need to round-
+        // trip — match either shape.
+        const m = q.sql.match(/DELETE FROM "?(\w+)"?/);
         return m ? m[1] : null;
       });
     expect(deleteOrder).toEqual([
       "oauthAccessToken",
       "oauthRefreshToken",
       "oauthConsent",
+      // #2071 — rate-limit override row dropped in the same tx so a
+      // re-registered client can't inherit the prior admin's quota.
+      "oauth_client_rate_limits",
       "oauthClient",
     ]);
 
@@ -594,5 +601,119 @@ describe("admin oauth-clients — POST /oauth-clients/:id/revoke", () => {
       found: false,
       race: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/v1/admin/oauth-clients/:id/rate-limit (#2071)
+// ---------------------------------------------------------------------------
+
+describe("admin oauth-clients — PATCH /:id/rate-limit", () => {
+  function primeListAndFind(rateLimitPerMinute: number | null) {
+    // Both `findOAuthClient` and `listOAuthClients` are called by the
+    // PATCH handler. The list query runs the joined SELECT against
+    // `oauthClient` + `oauth_client_rate_limits`; `findOAuthClient`
+    // runs a narrower probe.
+    mocks.mockInternalQuery.mockImplementation(
+      async (sql: string, params?: unknown[]) => {
+        if (sql.includes(`FROM "oauthClient"`) && sql.includes("SELECT") && !sql.includes("LEFT JOIN")) {
+          // findOAuthClient probe
+          if (params?.[0] === "claude-desktop" && params?.[1] === "org-alpha") {
+            return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+          }
+          return [];
+        }
+        if (sql.includes("oauthClient") && sql.includes("LEFT JOIN") && sql.includes("oauth_client_rate_limits")) {
+          // listOAuthClients
+          return [{
+            clientId: "claude-desktop",
+            clientName: "Claude Desktop",
+            redirectUris: [],
+            createdAt: "2026-04-12T10:00:00.000Z",
+            updatedAt: null,
+            disabled: false,
+            type: "public",
+            lastUsedAt: null,
+            tokenCount: "0",
+            liveTokenCount: "0",
+            liveRefreshCount: "0",
+            rateLimitPerMinute,
+          }];
+        }
+        if (sql.includes("oauth_client_rate_limits") && (sql.includes("INSERT") || sql.includes("DELETE"))) {
+          return [];
+        }
+        return [];
+      },
+    );
+  }
+
+  it("upserts the override and audits the previous → new delta", async () => {
+    primeListAndFind(null);
+    const res = await app.fetch(
+      adminRequest("PATCH", "/api/v1/admin/oauth-clients/claude-desktop/rate-limit", {
+        requestsPerMinute: 120,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; clientId: string; rateLimitPerMinute: number | null };
+    expect(body).toEqual({ success: true, clientId: "claude-desktop", rateLimitPerMinute: 120 });
+
+    const audit = lastAuditCall();
+    expect(audit.actionType).toBe("oauth_client.rate_limit_update");
+    expect(audit.targetType).toBe("oauth_client");
+    expect(audit.targetId).toBe("claude-desktop");
+    expect(audit.metadata).toMatchObject({
+      clientId: "claude-desktop",
+      clientName: "Claude Desktop",
+      previousRpm: null,
+      newRpm: 120,
+    });
+  });
+
+  it("clears the override when requestsPerMinute is null", async () => {
+    primeListAndFind(120);
+    const res = await app.fetch(
+      adminRequest("PATCH", "/api/v1/admin/oauth-clients/claude-desktop/rate-limit", {
+        requestsPerMinute: null,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const audit = lastAuditCall();
+    expect(audit.metadata).toMatchObject({ previousRpm: 120, newRpm: null });
+  });
+
+  it("rejects invalid bodies with 400", async () => {
+    const res = await app.fetch(
+      adminRequest("PATCH", "/api/v1/admin/oauth-clients/claude-desktop/rate-limit", {
+        requestsPerMinute: 0,
+      }),
+    );
+    // hono/zod-openapi surfaces request-body validation failures as 422.
+    expect(res.status).toBe(422);
+  });
+
+  it("rejects values above the 3600/min ceiling with 400", async () => {
+    const res = await app.fetch(
+      adminRequest("PATCH", "/api/v1/admin/oauth-clients/claude-desktop/rate-limit", {
+        requestsPerMinute: 5000,
+      }),
+    );
+    // hono/zod-openapi surfaces request-body validation failures as 422.
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 404 when the client doesn't belong to the workspace", async () => {
+    mocks.mockInternalQuery.mockImplementation(async () => []);
+    const res = await app.fetch(
+      adminRequest("PATCH", "/api/v1/admin/oauth-clients/no-such-client/rate-limit", {
+        requestsPerMinute: 120,
+      }),
+    );
+    expect(res.status).toBe(404);
+    const audit = lastAuditCall();
+    expect(audit.actionType).toBe("oauth_client.rate_limit_update");
+    expect(audit.status).toBe("failure");
+    expect(audit.metadata).toMatchObject({ clientId: "no-such-client", found: false });
   });
 });

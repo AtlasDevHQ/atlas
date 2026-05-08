@@ -89,12 +89,21 @@ export interface OAuthClientRow {
   lastUsedAt: string | null;
   tokenCount: number;
   tokenState: OAuthTokenState;
+  /**
+   * Per-OAuth-client MCP rate limit (#2071). `null` means the client uses
+   * the workspace default (60 req/min — see `DEFAULT_REQUESTS_PER_MINUTE`
+   * in `lib/rate-limit/oauth-client.ts`); a numeric value is the
+   * admin-set override stored in `oauth_client_rate_limits`. The admin
+   * page renders "Rate (60/min)" or "Rate (override)" off this field.
+   */
+  rateLimitPerMinute: number | null;
 }
 
 export type RevokePhase =
   | "access_tokens"
   | "refresh_tokens"
   | "consent"
+  | "rate_limits"
   | "client"
   | "commit";
 
@@ -177,7 +186,12 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
     tokenCount: string;
     liveTokenCount: string;
     liveRefreshCount: string;
+    rateLimitPerMinute: number | string | null;
   }>(
+    // Left-join the per-client rate-limit override (#2071) so the
+    // single round-trip carries everything the admin/me list view needs
+    // — no second waterfall fetch from the page. NULL here means
+    // "no override; use DEFAULT_REQUESTS_PER_MINUTE".
     `SELECT c."clientId" AS "clientId",
             c."name" AS "clientName",
             c."redirectUris" AS "redirectUris",
@@ -196,16 +210,21 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
                  ${scope.kind === "user" ? `AND r."userId" = $2` : ""}
                  AND (r."revoked" IS NULL)
                  AND (r."expiresAt" IS NULL OR r."expiresAt" > NOW())
-            ) AS "liveRefreshCount"
+            ) AS "liveRefreshCount",
+            rl."requests_per_minute" AS "rateLimitPerMinute"
        FROM "oauthClient" c
        LEFT JOIN "oauthAccessToken" t
          ON t."clientId" = c."clientId"
         AND t."referenceId" = c."referenceId"
         ${tokenUserClause}
+       LEFT JOIN oauth_client_rate_limits rl
+         ON rl.client_id = c."clientId"
+        AND rl.reference_id = c."referenceId"
        WHERE c."referenceId" = $1
          ${userClause}
        GROUP BY c."id", c."clientId", c."name", c."redirectUris", c."createdAt",
-                c."updatedAt", c."disabled", c."type", c."referenceId"
+                c."updatedAt", c."disabled", c."type", c."referenceId",
+                rl."requests_per_minute"
        ORDER BY c."createdAt" DESC`,
     params,
   );
@@ -246,6 +265,31 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
         ? "active"
         : "reconnect_required";
 
+    // pg may return INTEGER columns as either number or string depending
+    // on the @effect/sql vs raw-pool path — normalise both to a clean
+    // number-or-null. NULL means "no override"; an unparseable
+    // present value means a row escaped the CHECK constraint (manual
+    // SQL write, future migration that drops the constraint, schema
+    // drift). That's a data-integrity bug, not a "fall back to default"
+    // case — surface a 500 with a `requestId` so the admin can find
+    // the bad row, mirroring the liveAccess/liveRefresh treatment
+    // above (CLAUDE.md "false-negative-fallback" prohibition).
+    let rateLimitPerMinute: number | null = null;
+    const rawRpm = r.rateLimitPerMinute;
+    if (rawRpm != null) {
+      const rpmNum =
+        typeof rawRpm === "number"
+          ? rawRpm
+          : Number.parseInt(String(rawRpm), 10);
+      if (!Number.isFinite(rpmNum) || rpmNum < 1) {
+        throw new Error(
+          `oauth-clients rateLimitPerMinute parse failed for clientId=${r.clientId} `
+          + `(rateLimitPerMinute=${String(rawRpm)})`,
+        );
+      }
+      rateLimitPerMinute = rpmNum;
+    }
+
     return {
       clientId: r.clientId,
       clientName: r.clientName,
@@ -257,6 +301,7 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
       lastUsedAt: r.lastUsedAt,
       tokenCount: parseInt(r.tokenCount, 10),
       tokenState,
+      rateLimitPerMinute,
     };
   });
 }
@@ -355,6 +400,20 @@ export async function revokeOAuthClient(
         RETURNING "id"`,
       baseParams,
     );
+    phase = "rate_limits";
+
+    // #2071 cleanup — drop any per-client rate-limit override row in the
+    // same transaction. The override table has no FK to `oauthClient`
+    // (Better Auth owns that schema), so without this DELETE the row
+    // would linger and a future re-registration with the same `clientId`
+    // would silently inherit the prior admin's override. Filtered by
+    // `client_id`/`reference_id` only — the table doesn't carry
+    // `userId`, so the user-scoped extra clause doesn't apply here.
+    await client.query(
+      `DELETE FROM oauth_client_rate_limits
+        WHERE client_id = $1 AND reference_id = $2`,
+      [clientId, scope.orgId],
+    );
     phase = "client";
 
     const deleted = await client.query(
@@ -407,4 +466,70 @@ export async function revokeOAuthClient(
   } finally {
     client.release(rollbackErr ?? undefined);
   }
+}
+
+// ---------------------------------------------------------------------------
+// UPSERT — per-client rate-limit override (#2071)
+// ---------------------------------------------------------------------------
+
+/** Bounds enforced by both the route validator and the SQL CHECK constraint. */
+export const MIN_OAUTH_CLIENT_RPM = 1;
+export const MAX_OAUTH_CLIENT_RPM = 3600;
+
+/**
+ * Set or clear the per-OAuth-client rate-limit override for one
+ * (clientId, orgId) pair.
+ *
+ * `requestsPerMinute = null` deletes the row, returning the bucket to
+ * the workspace default on the next limiter check (after the
+ * in-memory cache invalidation the admin route does alongside this
+ * call). A positive integer upserts the row and stamps `updated_at` /
+ * `updated_by_user_id` for forensic queries that ask "who raised this
+ * client's quota and when."
+ *
+ * The route layer is responsible for verifying that the (clientId,
+ * orgId) pair actually exists in `oauthClient` before calling this
+ * helper — the override table doesn't FK onto `oauthClient` (Better
+ * Auth owns that schema), so a row written for a non-existent client
+ * would silently linger after revocation. `findOAuthClient` is the
+ * single source for that pre-fetch and the admin route already does
+ * it for the audit trail.
+ */
+export async function setOAuthClientRateLimit(args: {
+  clientId: string;
+  orgId: string;
+  requestsPerMinute: number | null;
+  updatedByUserId: string;
+}): Promise<void> {
+  if (args.requestsPerMinute === null) {
+    await internalQuery(
+      `DELETE FROM oauth_client_rate_limits
+        WHERE client_id = $1 AND reference_id = $2`,
+      [args.clientId, args.orgId],
+    );
+    return;
+  }
+  if (
+    !Number.isInteger(args.requestsPerMinute) ||
+    args.requestsPerMinute < MIN_OAUTH_CLIENT_RPM ||
+    args.requestsPerMinute > MAX_OAUTH_CLIENT_RPM
+  ) {
+    // Defense-in-depth: the route validator should catch this, but the
+    // helper is also called from admin scripts and tests. Throw with a
+    // structured message rather than rely on the SQL CHECK constraint
+    // surfacing a Postgres-shaped error to the caller.
+    throw new Error(
+      `requestsPerMinute must be an integer in [${MIN_OAUTH_CLIENT_RPM}, ${MAX_OAUTH_CLIENT_RPM}], got ${args.requestsPerMinute}`,
+    );
+  }
+  await internalQuery(
+    `INSERT INTO oauth_client_rate_limits
+       (client_id, reference_id, requests_per_minute, updated_at, updated_by_user_id)
+     VALUES ($1, $2, $3, now(), $4)
+     ON CONFLICT (client_id, reference_id) DO UPDATE
+       SET requests_per_minute = EXCLUDED.requests_per_minute,
+           updated_at = EXCLUDED.updated_at,
+           updated_by_user_id = EXCLUDED.updated_by_user_id`,
+    [args.clientId, args.orgId, args.requestsPerMinute, args.updatedByUserId],
+  );
 }

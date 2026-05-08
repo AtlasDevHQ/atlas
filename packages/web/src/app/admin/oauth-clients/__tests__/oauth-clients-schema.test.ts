@@ -23,6 +23,9 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
         // tokenState (#2066) — required wire field. Active row has at
         // least one outstanding non-expired access or refresh token.
         tokenState: "active" as const,
+        // rateLimitPerMinute (#2071) — null means workspace default;
+        // non-null is an admin-set override.
+        rateLimitPerMinute: 120,
       },
       {
         clientId: "dcr-uuid-abc",
@@ -38,6 +41,7 @@ describe("ListOAuthClientsResponseSchema round-trip", () => {
         // is fresh; UI presents the same "registered, awaiting first
         // use" affordance whichever leg of the enum lands here.
         tokenState: "reconnect_required" as const,
+        rateLimitPerMinute: null,
       },
     ],
   };

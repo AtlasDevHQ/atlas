@@ -50,6 +50,20 @@ export const OAuthClientSchema = z.object({
   // Legacy `tokenCount` stays as the informational "tokens issued"
   // signal; `tokenState` is the load-bearing health field.
   tokenState: z.enum(["active", "reconnect_required", "revoked"]),
+  /**
+   * Per-OAuth-client MCP rate limit override (#2071). `null` means the
+   * client uses the workspace default (60 req/min); a numeric value is
+   * the admin-set override. The admin page renders this as a "Rate"
+   * column with a small badge: "60/min" (default, dimmed) or
+   * "120/min · override" (bold) so admins can see at a glance which
+   * clients have a custom budget.
+   *
+   * Bound: 1..3600 enforced at the DB CHECK constraint and the route
+   * input schema. The wire shape stays open-int-or-null because the
+   * admin page renders any positive integer; the validation belongs at
+   * the write boundary, not on the read boundary.
+   */
+  rateLimitPerMinute: z.number().int().positive().nullable(),
 });
 
 export const ListOAuthClientsResponseSchema = z.object({

@@ -67,9 +67,12 @@ export type {
 export type {
   ApprovalRule,
   ApprovalRuleType,
+  ApprovalRuleSurface,
   ApprovalRequest,
+  ApprovalRequestSurface,
   ApprovalStatus,
 } from "@useatlas/types";
+export { APPROVAL_RULE_SURFACES, APPROVAL_REQUEST_SURFACES } from "@useatlas/types";
 export type {
   PIICategory,
   PIIConfidence,

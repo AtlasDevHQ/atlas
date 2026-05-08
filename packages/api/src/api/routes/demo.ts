@@ -395,10 +395,11 @@ demo.openapi(demoChatRoute, async (c) => {
     );
   }
 
-  // Bind request context (no org for demo users)
+  // Bind request context (no org for demo users).
+  // #2072 — demo runs the same flow as chat from the user's POV.
   const demoUser = createAtlasUser(userId, "simple-key", `demo:${email}`);
   return withRequestContext(
-    { requestId, user: demoUser },
+    { requestId, user: demoUser, approvalSurface: "chat" },
     async () => {
       // Startup diagnostics
       const diagnostics = await validateEnvironment();

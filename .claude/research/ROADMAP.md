@@ -154,7 +154,7 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 ### Theme C — Governance
 
 - [x] Per-OAuth-client rate limiting for MCP ([#2071](https://github.com/AtlasDevHQ/atlas/issues/2071), [#2180](https://github.com/AtlasDevHQ/atlas/pull/2180)) — sliding-window limiter scoped by `(workspaceId, clientId)` with per-tool weighting (executeSQL/explore = 5×); admin overrides live in a standalone `oauth_client_rate_limits` table to avoid Better-Auth-owned `oauthClient` schema collision. 429 envelope + `mcp.rate_limited` audit + Playwright e2e.
-- [ ] MCP-specific approval rules ([#2072](https://github.com/AtlasDevHQ/atlas/issues/2072)) — surface-scoped approval rules so admins can require approval for MCP queries without affecting chat queries.
+- [x] MCP-specific approval rules ([#2072](https://github.com/AtlasDevHQ/atlas/issues/2072)) — surface-scoped approval rules with the seven-value `surface` enum (`any` / `chat` / `mcp` / `scheduler` / `slack` / `teams` / `webhook`); `any` (default) preserves pre-2072 fires-everywhere semantics while pinned values fire only for matching origins. Migration `0052_approval_rules_surface` adds the column + CHECK + `(org_id, surface)` index plus an audit-side surface column on `approval_queue`. Routes (chat/query/demo/slack/scheduler/MCP-tools/MCP-hosted) stamp the surface on `RequestContext`; `checkApprovalRequired` filters in SQL with `surface = 'any' OR surface = $req`. Admin UI gains a surface dropdown + list column; admin-action audit metadata records the surface on rule create/update + approve/deny. Scope isolation: an unstamped route only matches `'any'` rules — the governance gate is still active (any-rules fire), but surface-scoped rules don't accidentally trip on a transport that forgot to stamp.
 - [ ] Cross-workspace agent identity ([#2073](https://github.com/AtlasDevHQ/atlas/issues/2073)) — one OAuth flow + one client config serves multi-workspace users; `X-Atlas-Workspace` header for per-request scoping.
 
 ### Theme D — Eval + tool quality
@@ -171,7 +171,7 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 
 Backlog (post-1.4.1): `runbooks-context` plugin (#2023, next milestone headline), `/agent-mode` chat-first view (#2022), `/ee` decoupling refactor (#2017).
 
-Ordering recommendation: B → D → C → E. Theme A complete (3/3); **Theme B + Theme D fully closed**; **Theme C now 1/3** (C1 closed via #2180); **Theme E now 1/3** (E2 closed via #2078). Open: C2 #2072, C3 #2073, E1 #2077, E3 #2079, plus deferred follow-up #2179. Next risk-class item is **C2 (MCP-specific approval rules, [#2072](https://github.com/AtlasDevHQ/atlas/issues/2072))** — surface-scoped governance lights up the same admin path that catalog submission (E1) needs to demo. E1 (catalog submission) follows once C is done.
+Ordering recommendation: B → D → C → E. Theme A complete (3/3); **Theme B + Theme D fully closed**; **Theme C now 2/3** (C1 closed via #2180, C2 closed via #2072 PR); **Theme E now 1/3** (E2 closed via #2078). Open: C3 #2073, E1 #2077, E3 #2079, plus deferred follow-up #2179. Next risk-class item is **C3 (cross-workspace agent identity, [#2073](https://github.com/AtlasDevHQ/atlas/issues/2073))** — finishing the governance trio. E1 (catalog submission) follows once C is done.
 
 ---
 

@@ -31347,6 +31347,18 @@
                               "enabled": {
                                 "type": "boolean"
                               },
+                              "surface": {
+                                "type": "string",
+                                "enum": [
+                                  "any",
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "webhook"
+                                ]
+                              },
                               "createdAt": {
                                 "type": "string"
                               },
@@ -31374,6 +31386,7 @@
                               "orgId",
                               "name",
                               "enabled",
+                              "surface",
                               "createdAt",
                               "updatedAt",
                               "ruleType",
@@ -31395,6 +31408,18 @@
                               },
                               "enabled": {
                                 "type": "boolean"
+                              },
+                              "surface": {
+                                "type": "string",
+                                "enum": [
+                                  "any",
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "webhook"
+                                ]
                               },
                               "createdAt": {
                                 "type": "string"
@@ -31420,6 +31445,7 @@
                               "orgId",
                               "name",
                               "enabled",
+                              "surface",
                               "createdAt",
                               "updatedAt",
                               "ruleType",
@@ -31441,6 +31467,18 @@
                               },
                               "enabled": {
                                 "type": "boolean"
+                              },
+                              "surface": {
+                                "type": "string",
+                                "enum": [
+                                  "any",
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "webhook"
+                                ]
                               },
                               "createdAt": {
                                 "type": "string"
@@ -31466,6 +31504,7 @@
                               "orgId",
                               "name",
                               "enabled",
+                              "surface",
                               "createdAt",
                               "updatedAt",
                               "ruleType",
@@ -31630,6 +31669,20 @@
                         "type": "boolean",
                         "description": "Whether the rule is active. Defaults to true.",
                         "example": true
+                      },
+                      "surface": {
+                        "type": "string",
+                        "enum": [
+                          "any",
+                          "chat",
+                          "mcp",
+                          "scheduler",
+                          "slack",
+                          "teams",
+                          "webhook"
+                        ],
+                        "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+                        "example": "any"
                       }
                     },
                     "required": [
@@ -31671,6 +31724,20 @@
                         "type": "boolean",
                         "description": "Whether the rule is active. Defaults to true.",
                         "example": true
+                      },
+                      "surface": {
+                        "type": "string",
+                        "enum": [
+                          "any",
+                          "chat",
+                          "mcp",
+                          "scheduler",
+                          "slack",
+                          "teams",
+                          "webhook"
+                        ],
+                        "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+                        "example": "any"
                       }
                     },
                     "required": [
@@ -31709,6 +31776,18 @@
                             "enabled": {
                               "type": "boolean"
                             },
+                            "surface": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook"
+                              ]
+                            },
                             "createdAt": {
                               "type": "string"
                             },
@@ -31736,6 +31815,7 @@
                             "orgId",
                             "name",
                             "enabled",
+                            "surface",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -31757,6 +31837,18 @@
                             },
                             "enabled": {
                               "type": "boolean"
+                            },
+                            "surface": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook"
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -31782,6 +31874,7 @@
                             "orgId",
                             "name",
                             "enabled",
+                            "surface",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -31803,6 +31896,18 @@
                             },
                             "enabled": {
                               "type": "boolean"
+                            },
+                            "surface": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook"
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -31828,6 +31933,7 @@
                             "orgId",
                             "name",
                             "enabled",
+                            "surface",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -31975,6 +32081,20 @@
                   },
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "surface": {
+                    "type": "string",
+                    "enum": [
+                      "any",
+                      "chat",
+                      "mcp",
+                      "scheduler",
+                      "slack",
+                      "teams",
+                      "webhook"
+                    ],
+                    "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+                    "example": "any"
                   }
                 }
               }
@@ -32006,6 +32126,18 @@
                             "enabled": {
                               "type": "boolean"
                             },
+                            "surface": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook"
+                              ]
+                            },
                             "createdAt": {
                               "type": "string"
                             },
@@ -32033,6 +32165,7 @@
                             "orgId",
                             "name",
                             "enabled",
+                            "surface",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -32054,6 +32187,18 @@
                             },
                             "enabled": {
                               "type": "boolean"
+                            },
+                            "surface": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook"
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -32079,6 +32224,7 @@
                             "orgId",
                             "name",
                             "enabled",
+                            "surface",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -32100,6 +32246,18 @@
                             },
                             "enabled": {
                               "type": "boolean"
+                            },
+                            "surface": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook"
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -32125,6 +32283,7 @@
                             "orgId",
                             "name",
                             "enabled",
+                            "surface",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -32454,6 +32613,21 @@
                                   "type": "string"
                                 }
                               },
+                              "surface": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "enum": [
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "webhook",
+                                  null
+                                ]
+                              },
                               "createdAt": {
                                 "type": "string"
                               },
@@ -32491,6 +32665,7 @@
                               "connectionId",
                               "tablesAccessed",
                               "columnsAccessed",
+                              "surface",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -32547,6 +32722,21 @@
                                 "items": {
                                   "type": "string"
                                 }
+                              },
+                              "surface": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "enum": [
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "webhook",
+                                  null
+                                ]
                               },
                               "createdAt": {
                                 "type": "string"
@@ -32591,6 +32781,7 @@
                               "connectionId",
                               "tablesAccessed",
                               "columnsAccessed",
+                              "surface",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -32647,6 +32838,21 @@
                                 "items": {
                                   "type": "string"
                                 }
+                              },
+                              "surface": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "enum": [
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "webhook",
+                                  null
+                                ]
                               },
                               "createdAt": {
                                 "type": "string"
@@ -32691,6 +32897,7 @@
                               "connectionId",
                               "tablesAccessed",
                               "columnsAccessed",
+                              "surface",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -32748,6 +32955,21 @@
                                   "type": "string"
                                 }
                               },
+                              "surface": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "enum": [
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "webhook",
+                                  null
+                                ]
+                              },
                               "createdAt": {
                                 "type": "string"
                               },
@@ -32785,6 +33007,7 @@
                               "connectionId",
                               "tablesAccessed",
                               "columnsAccessed",
+                              "surface",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -32996,6 +33219,21 @@
                                 "type": "string"
                               }
                             },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
+                            },
                             "createdAt": {
                               "type": "string"
                             },
@@ -33033,6 +33271,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -33089,6 +33328,21 @@
                               "items": {
                                 "type": "string"
                               }
+                            },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -33133,6 +33387,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -33189,6 +33444,21 @@
                               "items": {
                                 "type": "string"
                               }
+                            },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -33233,6 +33503,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -33290,6 +33561,21 @@
                                 "type": "string"
                               }
                             },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
+                            },
                             "createdAt": {
                               "type": "string"
                             },
@@ -33327,6 +33613,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -33539,6 +33826,21 @@
                                 "type": "string"
                               }
                             },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
+                            },
                             "createdAt": {
                               "type": "string"
                             },
@@ -33576,6 +33878,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -33632,6 +33935,21 @@
                               "items": {
                                 "type": "string"
                               }
+                            },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -33676,6 +33994,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -33732,6 +34051,21 @@
                               "items": {
                                 "type": "string"
                               }
+                            },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -33776,6 +34110,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -33833,6 +34168,21 @@
                                 "type": "string"
                               }
                             },
+                            "surface": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "enum": [
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "webhook",
+                                null
+                              ]
+                            },
                             "createdAt": {
                               "type": "string"
                             },
@@ -33870,6 +34220,7 @@
                             "connectionId",
                             "tablesAccessed",
                             "columnsAccessed",
+                            "surface",
                             "createdAt",
                             "expiresAt",
                             "status",

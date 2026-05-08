@@ -9,6 +9,7 @@
 import { runAgent } from "@atlas/api/lib/agent";
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import type { ApprovalRequestSurface } from "@useatlas/types";
 
 const log = createLogger("agent-query");
 
@@ -66,6 +67,15 @@ export interface ExecuteAgentQueryOptions {
    * and only then calls `executeAgentQuery`).
    */
   actor?: AtlasUser;
+  /**
+   * #2072 — origin surface for surface-scoped approval rules. System
+   * callers (scheduler, chat-platform receivers) MUST pass this so an
+   * "MCP-only" or "scheduler-only" rule fires for the correct transport.
+   * When omitted, falls back to whatever surface the parent
+   * RequestContext stamped (or undefined if neither is set, in which
+   * case only `'any'` rules match — fail-closed).
+   */
+  approvalSurface?: ApprovalRequestSurface;
 }
 
 /**
@@ -83,6 +93,11 @@ export async function executeAgentQuery(
   const inheritedCtx = getRequestContext();
   const boundUser = options?.actor ?? inheritedCtx?.user;
   const inheritedMode = inheritedCtx?.atlasMode;
+  // #2072 — explicit option wins; otherwise fall through to whatever the
+  // parent RequestContext stamped. System-initiated callers (scheduler,
+  // Slack, Teams) pass this explicitly because they don't run inside a
+  // route-level `withRequestContext` that would have set it.
+  const surface = options?.approvalSurface ?? inheritedCtx?.approvalSurface;
 
   if (!boundUser) {
     log.warn(
@@ -97,6 +112,7 @@ export async function executeAgentQuery(
       requestId: id,
       ...(boundUser ? { user: boundUser } : {}),
       ...(inheritedMode ? { atlasMode: inheritedMode } : {}),
+      ...(surface ? { approvalSurface: surface } : {}),
     },
     async () => {
     const priorUIMessages = (options?.priorMessages ?? []).map((m, i) => ({

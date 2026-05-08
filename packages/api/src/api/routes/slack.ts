@@ -320,7 +320,12 @@ slack.openapi(commandsRoute, async (c) => {
         });
       }
 
-      const queryResult = await executeAgentQuery(text, undefined, actor ? { actor } : undefined);
+      // #2072 — stamp 'slack' so surface-scoped approval rules can
+      // distinguish Slack receivers from chat / mcp / scheduler.
+      const queryResult = await executeAgentQuery(text, undefined, {
+        ...(actor ? { actor } : {}),
+        approvalSurface: "slack",
+      });
 
       // Persist messages for thread history
       addMessage({ conversationId, role: "user", content: text });
@@ -522,6 +527,8 @@ slack.openapi(eventsRoute, async (c) => {
           const queryOptions: Parameters<typeof executeAgentQuery>[2] = {
             ...(priorMessages ? { priorMessages } : {}),
             ...(actor ? { actor } : {}),
+            // #2072 — stamp 'slack' for the thread-followup path too.
+            approvalSurface: "slack",
           };
           const queryResult = await executeAgentQuery(
             text,

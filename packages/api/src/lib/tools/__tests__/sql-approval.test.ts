@@ -109,7 +109,12 @@ mock.module("@atlas/api/lib/rls", () => ({
   injectRLSConditions: (sql: string) => sql,
 }));
 
-let requestContextValue: { requestId: string; user?: { id: string; activeOrganizationId?: string; label?: string; claims?: Record<string, unknown> } } = {
+let requestContextValue: {
+  requestId: string;
+  user?: { id: string; activeOrganizationId?: string; label?: string; claims?: Record<string, unknown> };
+  // #2072 — surface stamped by route-level withRequestContext frames.
+  approvalSurface?: "chat" | "mcp" | "scheduler" | "slack" | "teams" | "webhook";
+} = {
   requestId: "test-approval",
   user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
 };
@@ -137,9 +142,12 @@ const mockCheckApprovalRequired = mock<
   (orgId: unknown, t: unknown, c: unknown, options?: unknown) =>
     import("effect").Effect.Effect<ApprovalMatchResultMock, Error, never>
 >(() => Effect.succeed({ required: false, matchedRules: [] }));
-const mockCreateApprovalRequest = mock(() =>
-  Effect.succeed({ id: "req-test", status: "pending" }),
-);
+const mockCreateApprovalRequest = mock<
+  // #2072 — typed signature so per-test `mockImplementation((opts) => ...)`
+  // can assert the surface field on the payload without a `(opts: unknown)`
+  // cast that TypeScript narrows away from the original mock factory.
+  (opts: unknown) => import("effect").Effect.Effect<{ id: string; status: string }, never, never>
+>(() => Effect.succeed({ id: "req-test", status: "pending" }));
 const mockHasApprovedRequest = mock(() => Effect.succeed(false));
 
 mock.module("@atlas/ee/governance/approval", () => ({
@@ -260,5 +268,109 @@ describe("F-54/F-55 executeSQL approval gate", () => {
     );
     expect(result.success).toBe(true);
     expect(mockCheckApprovalRequired).toHaveBeenCalled();
+  });
+
+  // ── #2072 surface forwarding ─────────────────────────────────────────
+  // Pin the wire from RequestContext.approvalSurface into
+  // checkApprovalRequired's options bag and through to the createApprovalRequest
+  // payload. The DB-side filter is unit-tested in
+  // ee/src/governance/approval.test.ts, but a refactor that drops the
+  // `surface: checkSurface` spread in lib/tools/sql.ts would silently
+  // degrade every surface-scoped rule to no-op against the corresponding
+  // transport without those tests failing.
+
+  it("#2072: forwards approvalSurface from RequestContext into checkApprovalRequired", async () => {
+    requestContextValue = {
+      requestId: "test-approval",
+      user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
+      approvalSurface: "mcp",
+    };
+    mockCheckApprovalRequired.mockImplementation((_orgId: unknown, _t: unknown, _c: unknown, options?: unknown) => {
+      const opts = options as { surface?: string } | undefined;
+      expect(opts?.surface).toBe("mcp");
+      return Effect.succeed({ required: false, matchedRules: [] });
+    });
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+    expect(result.success).toBe(true);
+    expect(mockCheckApprovalRequired).toHaveBeenCalled();
+  });
+
+  it("#2072: omits surface from checkApprovalRequired options when RequestContext doesn't stamp one", async () => {
+    requestContextValue = {
+      requestId: "test-approval",
+      user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
+      // approvalSurface deliberately absent — legacy / unstamped path.
+    };
+    mockCheckApprovalRequired.mockImplementation((_orgId: unknown, _t: unknown, _c: unknown, options?: unknown) => {
+      const opts = options as { surface?: string } | undefined;
+      expect(opts?.surface).toBeUndefined();
+      return Effect.succeed({ required: false, matchedRules: [] });
+    });
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("#2072: stamps approvalSurface on the createApprovalRequest payload when a rule matches", async () => {
+    requestContextValue = {
+      requestId: "test-approval",
+      user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
+      approvalSurface: "slack",
+    };
+    mockCheckApprovalRequired.mockImplementation(() =>
+      Effect.succeed({
+        required: true,
+        matchedRules: [{ id: "rule-1", name: "PII tables" }],
+      }),
+    );
+    mockCreateApprovalRequest.mockImplementation((opts: unknown) => {
+      const p = opts as { surface?: string | null };
+      expect(p.surface).toBe("slack");
+      return Effect.succeed({ id: "req-test", status: "pending" });
+    });
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.approval_required).toBe(true);
+    expect(mockCreateApprovalRequest).toHaveBeenCalled();
+  });
+
+  it("#2072: stamps null surface on the createApprovalRequest payload when caller didn't stamp one", async () => {
+    // Legacy / unstamped path — the queue row records null which renders
+    // as "unknown_origin" in admin-action metadata. Pinning this keeps
+    // the audit-dimension contract intact for callers that haven't been
+    // retrofitted.
+    requestContextValue = {
+      requestId: "test-approval",
+      user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
+    };
+    mockCheckApprovalRequired.mockImplementation(() =>
+      Effect.succeed({
+        required: true,
+        matchedRules: [{ id: "rule-1", name: "PII tables" }],
+      }),
+    );
+    mockCreateApprovalRequest.mockImplementation((opts: unknown) => {
+      const p = opts as { surface?: string | null };
+      expect(p.surface).toBeNull();
+      return Effect.succeed({ id: "req-test", status: "pending" });
+    });
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+    expect(result.success).toBe(false);
+    expect(mockCreateApprovalRequest).toHaveBeenCalled();
   });
 });

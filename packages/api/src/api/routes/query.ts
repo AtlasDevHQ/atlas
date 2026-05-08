@@ -196,8 +196,12 @@ query.openapi(
       requireAuth(preamble);
       const { authResult } = preamble;
 
-      // Bind user identity into AsyncLocalStorage for downstream logging/audit
-      return withRequestContext({ requestId, user: authResult.user }, async () => {
+      // Bind user identity into AsyncLocalStorage for downstream logging/audit.
+      // #2072 — `/api/v1/query` is the API form of chat; surface-scoped
+      // approval rules treat it identically to the chat UI.
+      return withRequestContext(
+        { requestId, user: authResult.user, approvalSurface: "chat" },
+        async () => {
 
         // Workspace status check — block suspended/deleted workspaces
         const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);

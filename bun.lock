@@ -84,6 +84,22 @@
         "ipaddr.js": "^2.3.0",
       },
     },
+    "examples/embedded-mcp-onboarding": {
+      "name": "@atlas/embedded-mcp-onboarding-example",
+      "version": "0.1.0",
+      "dependencies": {
+        "@useatlas/react": "workspace:*",
+        "@useatlas/sdk": "workspace:*",
+        "next": "^16.2.1",
+        "react": "^19.2.4",
+        "react-dom": "^19.2.4",
+      },
+      "devDependencies": {
+        "@types/react": "^19.2.14",
+        "@types/react-dom": "^19.2.3",
+        "typescript": "^6.0.2",
+      },
+    },
     "examples/nextjs-standalone": {
       "name": "@atlas/nextjs-standalone",
       "version": "0.1.0",
@@ -757,6 +773,8 @@
     "@atlas/docs": ["@atlas/docs@workspace:apps/docs"],
 
     "@atlas/ee": ["@atlas/ee@workspace:ee"],
+
+    "@atlas/embedded-mcp-onboarding-example": ["@atlas/embedded-mcp-onboarding-example@workspace:examples/embedded-mcp-onboarding"],
 
     "@atlas/mcp": ["@atlas/mcp@workspace:packages/mcp"],
 

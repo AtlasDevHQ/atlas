@@ -26,6 +26,16 @@ export type {
   UseAtlasConversationsReturn,
 } from "./use-atlas-conversations";
 
+// MCP onboarding hook (#2079) — wraps `@useatlas/sdk` beginConnect/completeConnect
+// with a popup-or-redirect lifecycle. Surfaces { connect, status, error, accessToken }.
+export { useMcpConnect } from "./use-mcp-connect";
+export type {
+  UseMcpConnectOptions,
+  UseMcpConnectReturn,
+  UseMcpConnectStatus,
+  UseMcpConnectMode,
+} from "./use-mcp-connect";
+
 // Types re-exported for consumers who only import from hooks
 export type {
   AuthMode,

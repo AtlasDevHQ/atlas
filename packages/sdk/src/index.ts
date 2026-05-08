@@ -80,3 +80,31 @@ export {
   type FetchStarterPromptsConfig,
   type FetchStarterPromptsCredentials,
 } from "./fetch-starter-prompts";
+
+// ── MCP onboarding (#2079) ────────────────────────────────────────────
+//
+// Standalone helpers, also bound to `client.mcp.*` for the call shape
+// `atlas.mcp.beginConnect(...)`. Importing only `createAtlasClient` does
+// not pull these in unless the caller actually accesses `client.mcp`,
+// since the client.ts re-export is a static import — bundlers tree-shake
+// the unused functions away through the named-export graph.
+export {
+  AtlasMcpError,
+  beginConnect,
+  buildConfig,
+  completeConnect,
+  connectMachineToMachine,
+  type AtlasMcpErrorCode,
+  type BeginConnectOptions,
+  type BeginConnectResult,
+  type BuildConfigOptions,
+  type CompleteConnectOptions,
+  type CompleteConnectResult,
+  type ConnectMachineToMachineOptions,
+  type ConnectMachineToMachineResult,
+  type ListAgentsResponse,
+  type McpClientConfig,
+  type McpClientId,
+  type McpHttpServer,
+  type RevokeAgentResponse,
+} from "./mcp";

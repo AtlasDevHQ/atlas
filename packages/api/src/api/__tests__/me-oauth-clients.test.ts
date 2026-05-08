@@ -778,3 +778,193 @@ describe("me oauth-clients — POST /me/oauth-clients/:id/revoke", () => {
     expect(body.clients).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/me/oauth-clients/:id/workspace-scope (#2073)
+// ---------------------------------------------------------------------------
+
+function meRequestWithBody(method: string, path: string, body: unknown): Request {
+  return new Request(`http://localhost${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer test-token",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("me oauth-clients — POST /:id/workspace-scope (#2073)", () => {
+  it("multi: writes scope row + grants for every workspace the user belongs to", async () => {
+    mocks.mockInternalQuery.mockImplementation(
+      async (sql: string, _params?: unknown[]) => {
+        if (sql.includes("SELECT") && sql.includes("oauthClient")) {
+          return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+        }
+        if (sql.includes("FROM member")) {
+          return [
+            { organizationId: "org-alpha" },
+            { organizationId: "org-beta" },
+            { organizationId: "org-gamma" },
+          ];
+        }
+        return [];
+      },
+    );
+    // Capture transactional writes.
+    const writes: { sql: string; params?: unknown[] }[] = [];
+    queryHandler = async (sql, params) => {
+      writes.push({ sql, params });
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      meRequestWithBody(
+        "POST",
+        "/api/v1/me/oauth-clients/claude-desktop/workspace-scope",
+        { mode: "multi" },
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      workspaceScope: "single" | "multi";
+      grantedWorkspaceIds: string[];
+    };
+    expect(body.success).toBe(true);
+    expect(body.workspaceScope).toBe("multi");
+    expect(body.grantedWorkspaceIds).toEqual(["org-alpha", "org-beta", "org-gamma"]);
+
+    const upsertSql = writes
+      .map((w) => w.sql)
+      .find((s) => s.includes("INSERT INTO oauth_client_workspace_scope"));
+    expect(upsertSql).toBeDefined();
+    const grantInserts = writes.filter((w) =>
+      w.sql.includes("INSERT INTO oauth_client_workspace_grants"),
+    );
+    expect(grantInserts).toHaveLength(3);
+
+    // Audit row marks the phase so retention/dashboards can split scope
+    // toggles from outright revokes.
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("oauth_client.revoke");
+    expect(entry.metadata).toMatchObject({
+      clientId: "claude-desktop",
+      phase: "workspace_scope",
+      mode: "multi",
+    });
+  });
+
+  it("single: clears existing grants and writes scope='single'", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      return [];
+    });
+    const writes: { sql: string }[] = [];
+    queryHandler = async (sql) => {
+      writes.push({ sql });
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      meRequestWithBody(
+        "POST",
+        "/api/v1/me/oauth-clients/claude-desktop/workspace-scope",
+        { mode: "single" },
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      workspaceScope: string;
+      grantedWorkspaceIds: string[];
+    };
+    expect(body.workspaceScope).toBe("single");
+    expect(body.grantedWorkspaceIds).toEqual([]);
+    expect(
+      writes.some((w) => w.sql.includes("DELETE FROM oauth_client_workspace_grants")),
+    ).toBe(true);
+  });
+
+  it("returns 404 when the client belongs to another user", async () => {
+    mocks.mockInternalQuery.mockImplementation(async () => []);
+
+    const res = await app.fetch(
+      meRequestWithBody(
+        "POST",
+        "/api/v1/me/oauth-clients/foreign-client/workspace-scope",
+        { mode: "multi" },
+      ),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("me oauth-clients — DELETE /:id/workspaces/:workspaceId (#2073)", () => {
+  it("removes a single grant; OAuth client and other grants survive", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      if (sql.includes("FROM member")) {
+        return [
+          { organizationId: "org-alpha" },
+          { organizationId: "org-beta" },
+        ];
+      }
+      if (sql.includes("DELETE FROM oauth_client_workspace_grants")) {
+        return [{ clientId: "claude-desktop" }];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      meRequest(
+        "DELETE",
+        "/api/v1/me/oauth-clients/claude-desktop/workspaces/org-beta",
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; removed: number };
+    expect(body.success).toBe(true);
+    expect(body.removed).toBe(1);
+
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({
+      clientId: "claude-desktop",
+      phase: "workspace_grant",
+      workspaceId: "org-beta",
+    });
+  });
+
+  it("returns 404 when the user is not a member of the workspace being targeted", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("oauthClient")) {
+        return [{ clientId: "claude-desktop", clientName: "Claude Desktop" }];
+      }
+      if (sql.includes("FROM member")) {
+        // Caller belongs to alpha + gamma, not beta. Cross-workspace
+        // probe must 404, not silently succeed against a workspace the
+        // user has no relationship with.
+        return [
+          { organizationId: "org-alpha" },
+          { organizationId: "org-gamma" },
+        ];
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      meRequest(
+        "DELETE",
+        "/api/v1/me/oauth-clients/claude-desktop/workspaces/org-beta",
+      ),
+    );
+
+    expect(res.status).toBe(404);
+  });
+});

@@ -47,6 +47,11 @@ import {
   listOAuthClients,
   revokeOAuthClient,
 } from "@atlas/api/lib/auth/oauth-clients";
+import {
+  listUserWorkspaceIds,
+  revokeWorkspaceGrant,
+  setWorkspaceScopeAndGrants,
+} from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -80,6 +85,15 @@ const OAuthClientSchema = z.object({
   // renders three badges (Active / Reconnect required / Revoked); the
   // legacy `tokenCount` field stays informational for "tokens issued".
   tokenState: z.enum(["active", "reconnect_required", "revoked"]),
+  // workspaceScope (#2073) — `'single'` (legacy default, no row in
+  // `oauth_client_workspace_scope`) or `'multi'` (cross-workspace path).
+  // The page renders a "Connected to all your workspaces" badge for
+  // `multi` and exposes per-workspace revoke for the granted set.
+  workspaceScope: z.enum(["single", "multi"]),
+  // Granted workspace ids for `multi`-scope clients; empty for `single`.
+  // The order is `granted_at ASC` so the UI's first row matches the
+  // origin workspace (where DCR happened) for the typical install path.
+  grantedWorkspaceIds: z.array(z.string()),
 });
 
 const ListMyClientsResponseSchema = z.object({
@@ -92,6 +106,27 @@ const ListMyClientsResponseSchema = z.object({
 const RevokeResponseSchema = z.object({
   success: z.boolean(),
   tokensRevoked: z.number().int().nonnegative(),
+});
+
+// #2073 — workspace-scope upgrade payload + response.
+const SetWorkspaceScopeRequestSchema = z.object({
+  // `mode = 'multi'` upgrades the client to cross-workspace operation
+  // and grants access to every workspace the caller is currently a
+  // member of. `mode = 'single'` reverts to the legacy single-scope
+  // path: the scope row stamps `'single'` and every grant for this
+  // client is removed (the implicit grant for `referenceId` resumes).
+  mode: z.enum(["single", "multi"]),
+});
+
+const SetWorkspaceScopeResponseSchema = z.object({
+  success: z.boolean(),
+  workspaceScope: z.enum(["single", "multi"]),
+  grantedWorkspaceIds: z.array(z.string()),
+});
+
+const RevokeWorkspaceGrantResponseSchema = z.object({
+  success: z.boolean(),
+  removed: z.number().int().nonnegative(),
 });
 
 // ---------------------------------------------------------------------------
@@ -147,6 +182,78 @@ const revokeMyClientRoute = createRoute({
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Client not found for this user", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const setWorkspaceScopeRoute = createRoute({
+  method: "post",
+  path: "/{id}/workspace-scope",
+  tags: ["Me — OAuth Clients"],
+  summary: "Toggle this agent's cross-workspace mode (#2073)",
+  description:
+    "Upgrade an OAuth client from `single`-scope (legacy, bound to its " +
+    "registration workspace) to `multi`-scope (workspace-aware: the user " +
+    "picks per-request via `X-Atlas-Workspace`, the audit + rate-limit + " +
+    "approval surfaces all read the resolved workspace). `mode='multi'` " +
+    "creates grants for every workspace the caller is currently a member " +
+    "of; `mode='single'` clears the grant set.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).max(ID_MAX_LEN).openapi({
+        param: { name: "id", in: "path" },
+        example: "claude-desktop",
+      }),
+    }),
+    body: {
+      content: {
+        "application/json": { schema: SetWorkspaceScopeRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Scope updated",
+      content: { "application/json": { schema: SetWorkspaceScopeResponseSchema } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Client not found for this user", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const revokeWorkspaceGrantRoute = createRoute({
+  method: "delete",
+  path: "/{id}/workspaces/{workspaceId}",
+  tags: ["Me — OAuth Clients"],
+  summary: "Revoke this agent's access to one workspace (#2073)",
+  description:
+    "For a `multi`-scope client, removes a single (clientId, workspaceId) " +
+    "grant. The OAuth client itself stays intact for the other granted " +
+    "workspaces; tokens that have already been minted stay valid for those. " +
+    "Cross-user isolation: the caller must own the OAuth client (registered " +
+    "by them) AND be a current member of the workspace whose grant they're " +
+    "removing.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).max(ID_MAX_LEN).openapi({
+        param: { name: "id", in: "path" },
+        example: "claude-desktop",
+      }),
+      workspaceId: z.string().min(1).max(ID_MAX_LEN).openapi({
+        param: { name: "workspaceId", in: "path" },
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Grant removed",
+      content: { "application/json": { schema: RevokeWorkspaceGrantResponseSchema } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Client or grant not found", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -341,6 +448,185 @@ meOauthClients.openapi(revokeMyClientRoute, async (c) => {
       ).pipe(Effect.ignoreLogged);
     }),
   ), { label: "revoke my oauth client" });
+});
+
+// POST /:id/workspace-scope — toggle multi-workspace mode (#2073).
+meOauthClients.openapi(setWorkspaceScopeRoute, async (c) => {
+  const { id: clientId } = c.req.valid("param");
+  const { mode } = c.req.valid("json");
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+    const orgId = user?.activeOrganizationId;
+
+    if (!hasInternalDB()) {
+      return c.json(
+        { error: "not_available", message: "OAuth client management requires an internal database.", requestId },
+        404,
+      );
+    }
+    if (!user || !orgId) {
+      return c.json(
+        { error: "not_found", message: "OAuth client not found.", requestId },
+        404,
+      );
+    }
+
+    const scope = { kind: "user" as const, userId: user.id, orgId };
+    // Pre-fetch — proves the caller owns this client at this workspace
+    // before we touch the scope/grant tables. Cross-user / cross-workspace
+    // probes 404 here, not 403, so they look indistinguishable from an
+    // unknown client (avoids leaking the existence of clients in other
+    // workspaces).
+    const prior = yield* Effect.promise(() => findOAuthClient(clientId, scope));
+    if (!prior) {
+      return c.json(
+        { error: "not_found", message: "OAuth client not found.", requestId },
+        404,
+      );
+    }
+
+    // For `multi`, expand to every workspace the user is currently a
+    // member of. The grant set tracks WORKSPACE membership (admin
+    // policy), not the user's session-active workspace — picking
+    // mode=multi means "let this agent into any workspace I belong to."
+    let workspaceIds: string[] = [];
+    if (mode === "multi") {
+      workspaceIds = yield* Effect.promise(() => listUserWorkspaceIds(user.id));
+      if (workspaceIds.length === 0) {
+        // Defensive: a user with an active org but zero `member` rows
+        // is a state we shouldn't be able to reach (the active org
+        // assignment requires a member row), but bail gracefully so we
+        // don't write a multi-scope marker with no grants.
+        log.warn(
+          { requestId, userId: user.id, orgId, clientId },
+          "set workspace-scope multi requested but user has no member rows",
+        );
+        return c.json(
+          {
+            error: "not_found",
+            message: "No workspaces available to grant.",
+            requestId,
+          },
+          404,
+        );
+      }
+    }
+
+    yield* Effect.promise(() =>
+      setWorkspaceScopeAndGrants({
+        clientId,
+        referenceId: orgId,
+        mode,
+        workspaceIds,
+        grantedByUserId: user.id,
+      }),
+    );
+
+    log.info(
+      { requestId, clientId, mode, workspaceCount: workspaceIds.length, actorId: user.id },
+      "Updated OAuth client workspace scope",
+    );
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.oauth_client.revoke,
+      // Reuse the revoke action type with phase metadata so a single
+      // retention policy + downstream alert covers both scope toggles
+      // and revokes (per the existing /api/v1/me/oauth-clients audit
+      // discipline). Distinguish via metadata.phase so forensic queries
+      // can pivot.
+      targetType: "oauth_client",
+      targetId: clientId,
+      ipAddress,
+      metadata: {
+        clientId,
+        clientName: prior.clientName,
+        phase: "workspace_scope",
+        mode,
+        grantedWorkspaceIds: workspaceIds,
+      },
+    });
+
+    return c.json(
+      {
+        success: true,
+        workspaceScope: mode,
+        grantedWorkspaceIds: workspaceIds,
+      },
+      200,
+    );
+  }), { label: "set my oauth client workspace scope" });
+});
+
+// DELETE /:id/workspaces/:workspaceId — per-workspace revoke (#2073).
+meOauthClients.openapi(revokeWorkspaceGrantRoute, async (c) => {
+  const { id: clientId, workspaceId } = c.req.valid("param");
+  const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+    const orgId = user?.activeOrganizationId;
+
+    if (!hasInternalDB()) {
+      return c.json(
+        { error: "not_available", message: "OAuth client management requires an internal database.", requestId },
+        404,
+      );
+    }
+    if (!user || !orgId) {
+      return c.json(
+        { error: "not_found", message: "OAuth client not found.", requestId },
+        404,
+      );
+    }
+
+    const scope = { kind: "user" as const, userId: user.id, orgId };
+    // The caller must own the OAuth client at the active workspace AND
+    // be a member of the workspace whose grant they're trying to remove.
+    // The first check is the IDOR guard; the second prevents a member
+    // of workspace A from revoking a grant on workspace B (where the
+    // user isn't a member, so they shouldn't see the grant exists).
+    const prior = yield* Effect.promise(() => findOAuthClient(clientId, scope));
+    if (!prior) {
+      return c.json(
+        { error: "not_found", message: "OAuth client not found.", requestId },
+        404,
+      );
+    }
+    const userWorkspaces = yield* Effect.promise(() => listUserWorkspaceIds(user.id));
+    if (!userWorkspaces.includes(workspaceId)) {
+      return c.json(
+        { error: "not_found", message: "Workspace grant not found.", requestId },
+        404,
+      );
+    }
+
+    const removed = yield* Effect.promise(() =>
+      revokeWorkspaceGrant({ clientId, workspaceId }),
+    );
+
+    log.info(
+      { requestId, clientId, workspaceId, removed, actorId: user.id },
+      "Revoked workspace grant for OAuth client",
+    );
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.oauth_client.revoke,
+      targetType: "oauth_client",
+      targetId: clientId,
+      ipAddress,
+      metadata: {
+        clientId,
+        clientName: prior.clientName,
+        phase: "workspace_grant",
+        workspaceId,
+        removed,
+      },
+    });
+
+    return c.json({ success: true, removed }, 200);
+  }), { label: "revoke my oauth client workspace grant" });
 });
 
 export { meOauthClients };

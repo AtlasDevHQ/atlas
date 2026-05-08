@@ -23,7 +23,12 @@ import { passkey } from "@better-auth/passkey";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import { oauthProvider } from "@better-auth/oauth-provider";
-import { ATLAS_OAUTH_WORKSPACE_CLAIM, readActiveOrgId } from "@atlas/api/lib/auth/oauth-claims";
+import {
+  ATLAS_OAUTH_WORKSPACE_CLAIM,
+  ATLAS_OAUTH_WORKSPACES_CLAIM,
+  readActiveOrgId,
+} from "@atlas/api/lib/auth/oauth-claims";
+import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
@@ -1085,10 +1090,40 @@ export function buildPlugins() {
       // literal — drift between sites silently breaks every token.
       // The `referenceId` argument here is sourced from `postLogin.
       // consentReferenceId` above — see that hook for why.
-      customAccessTokenClaims: ({ referenceId }) => {
-        return referenceId
-          ? { [ATLAS_OAUTH_WORKSPACE_CLAIM]: referenceId }
-          : {};
+      customAccessTokenClaims: async ({ referenceId, user }) => {
+        if (!referenceId) return {};
+        const claims: Record<string, unknown> = {
+          [ATLAS_OAUTH_WORKSPACE_CLAIM]: referenceId,
+        };
+        // #2073 — emit the plural `workspace_ids` claim for users who
+        // belong to more than one workspace. The CLI reads this at
+        // write-time to decide whether to prompt for single-vs-multi
+        // workspace setup; the runtime authorization layer at the MCP
+        // edge ignores this claim entirely (it does a live DB lookup
+        // against `member` + grants so membership revocation takes
+        // effect immediately rather than waiting for token refresh).
+        //
+        // The lookup is wrapped in try/catch because token issuance
+        // must never fail on a transient internal-DB hiccup — the
+        // singular claim is sufficient for backward compat, and the
+        // plural claim is a CLI affordance, not a security boundary.
+        if (user?.id) {
+          try {
+            const workspaceIds = await listUserWorkspaceIds(user.id);
+            if (workspaceIds.length > 1) {
+              claims[ATLAS_OAUTH_WORKSPACES_CLAIM] = workspaceIds;
+            }
+          } catch (err: unknown) {
+            log.warn(
+              {
+                err: err instanceof Error ? err.message : String(err),
+                userId: user.id,
+              },
+              "listUserWorkspaceIds failed during token issuance — emitting only singular claim",
+            );
+          }
+        }
+        return claims;
       },
       // Refresh-token audit + telemetry hook (#2066). `customTokenResponseFields`
       // is the only oauthProvider hook that surfaces `grantType`; we gate

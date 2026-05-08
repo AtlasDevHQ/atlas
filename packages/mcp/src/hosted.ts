@@ -71,6 +71,11 @@ import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
+import {
+  getOAuthClientScope,
+  hasWorkspaceGrant,
+  userIsWorkspaceMember,
+} from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { createAtlasMcpServer } from "./server.js";
 
 const log = createLogger("mcp-hosted");
@@ -761,12 +766,170 @@ async function checkResidency(
   };
 }
 
+// ── Cross-workspace agent identity (#2073) ────────────────────────
+
+/**
+ * Header carrying a per-request workspace override. The MCP edge
+ * resolves the runtime workspace via this priority chain (highest first):
+ *
+ *   1. `X-Atlas-Workspace`         — explicit per-request override
+ *   2. `X-Atlas-Default-Workspace` — bridged from the agent's
+ *      `ATLAS_DEFAULT_WORKSPACE` env at the framework boundary
+ *      (forward-compat: today no MCP client framework auto-bridges
+ *      the env, but the header is honored when an operator's wrapper
+ *      sets it)
+ *   3. Path workspace              — the URL pin (= JWT singular claim
+ *      for legacy clients; an arbitrary granted workspace for
+ *      multi-scope clients)
+ *
+ * Single-scope clients ignore (1) + (2) — only the path is consulted,
+ * and it must equal the JWT singular claim. The priority chain only
+ * fires for `multi`-scope clients.
+ */
+const WORKSPACE_OVERRIDE_HEADER = "x-atlas-workspace";
+const WORKSPACE_DEFAULT_HEADER = "x-atlas-default-workspace";
+
+interface WorkspaceResolution {
+  readonly resolved: string;
+  readonly source: "header" | "default-header" | "path";
+}
+
+/**
+ * Pick the runtime workspace for a multi-scope request. Returns the
+ * source so the audit log can pivot on "which mechanism resolved this
+ * request" — useful for debugging "why did my X-Atlas-Workspace get
+ * ignored" (typo in the header name → falls through to default → looks
+ * like the override never fired).
+ */
+function resolveMultiScopeWorkspace(
+  req: Request,
+  pathWorkspaceId: string,
+): WorkspaceResolution {
+  const override = req.headers.get(WORKSPACE_OVERRIDE_HEADER);
+  if (override && override.length > 0) {
+    return { resolved: override, source: "header" };
+  }
+  const defaultHeader = req.headers.get(WORKSPACE_DEFAULT_HEADER);
+  if (defaultHeader && defaultHeader.length > 0) {
+    return { resolved: defaultHeader, source: "default-header" };
+  }
+  return { resolved: pathWorkspaceId, source: "path" };
+}
+
+interface WorkspaceAdmissionResult {
+  readonly kind: "ok";
+  readonly resolvedOrgId: string;
+}
+interface WorkspaceAdmissionDenied {
+  readonly kind: "denied";
+  readonly status: 403;
+  readonly body: {
+    error: "cross_workspace_denied";
+    message: string;
+    hint: string;
+    requestId: string;
+  };
+}
+type WorkspaceAdmission = WorkspaceAdmissionResult | WorkspaceAdmissionDenied;
+
+/**
+ * Authorize the request against the (clientId, resolvedWorkspace) pair.
+ *
+ * Three checks for `multi`-scope clients:
+ *   1. A grant row exists for (clientId, resolvedWorkspace) — admin
+ *      policy (the user explicitly opted into this workspace at install
+ *      time or via Settings).
+ *   2. The user is a current member of `resolvedWorkspace` — org
+ *      policy (membership can be revoked at any time, must take effect
+ *      immediately).
+ *   3. (Implicit) Both DB lookups must succeed — a Postgres outage
+ *      surfaces upstream as `internal_error` from the catch in the
+ *      router, never as a silent admit.
+ *
+ * `single`-scope clients short-circuit to the legacy path:
+ * `pathWorkspaceId === verified.orgId`, no grant lookup, no membership
+ * lookup. Existing single-workspace clients continue to work unchanged.
+ */
+async function authorizeWorkspaceAccess(
+  req: Request,
+  bearer: VerifiedBearer,
+  pathWorkspaceId: string,
+  requestId: string,
+): Promise<WorkspaceAdmission> {
+  const scope = await getOAuthClientScope(bearer.clientId);
+
+  if (scope === "single") {
+    if (pathWorkspaceId !== bearer.orgId) {
+      log.warn(
+        {
+          requestId,
+          claimWorkspaceId: bearer.orgId,
+          pathWorkspaceId,
+          clientId: bearer.clientId,
+        },
+        "MCP single-scope path/bearer mismatch — refusing dispatch",
+      );
+      return {
+        kind: "denied",
+        status: 403,
+        body: {
+          error: "cross_workspace_denied",
+          message: "Access token not authorized for this workspace.",
+          hint:
+            "This OAuth client is bound to a single workspace. Re-run `bunx @useatlas/mcp init --hosted --write` from the target workspace, or upgrade the client to multi-workspace mode in Settings → AI Agents.",
+          requestId,
+        },
+      };
+    }
+    return { kind: "ok", resolvedOrgId: bearer.orgId };
+  }
+
+  // multi-scope — run the priority chain.
+  const resolution = resolveMultiScopeWorkspace(req, pathWorkspaceId);
+  const resolvedOrgId = resolution.resolved;
+
+  const [granted, member] = await Promise.all([
+    hasWorkspaceGrant(bearer.clientId, resolvedOrgId),
+    userIsWorkspaceMember(bearer.user.id, resolvedOrgId),
+  ]);
+
+  if (!granted || !member) {
+    log.warn(
+      {
+        requestId,
+        clientId: bearer.clientId,
+        userId: bearer.user.id,
+        resolvedOrgId,
+        resolutionSource: resolution.source,
+        granted,
+        member,
+      },
+      "MCP cross-workspace request denied — missing grant or membership",
+    );
+    return {
+      kind: "denied",
+      status: 403,
+      body: {
+        error: "cross_workspace_denied",
+        message: "Access token not authorized for this workspace.",
+        hint: granted
+          ? "Workspace membership has changed — confirm you are still a member of the requested workspace."
+          : "This OAuth client has no grant for the requested workspace. Open Settings → AI Agents to manage which workspaces this agent can access.",
+        requestId,
+      },
+    };
+  }
+
+  return { kind: "ok", resolvedOrgId };
+}
+
 // ── Audit emission on session-init ──────────────────────────────────
 
 function emitSessionStartAudit(
   bearer: VerifiedBearer,
   sessionId: string,
   region: string | null,
+  resolvedOrgId: string,
 ): void {
   // The SDK invokes `onsessioninitialized` from inside its session-init
   // dispatch — a synchronous throw here propagates out and the SDK
@@ -776,6 +939,13 @@ function emitSessionStartAudit(
   // already swallows its own internal failures and writes pino lines;
   // we add this outer guard to also catch the rare case where the
   // module itself throws synchronously.
+  //
+  // #2073 — `orgId` is the RESOLVED workspace (post priority-chain),
+  // not the JWT singular claim. Forensic queries that ask "rows from
+  // workspace X" surface the workspace the request actually touched,
+  // not the workspace the OAuth client was registered against.
+  // `claimOrgId` is recorded separately so cross-workspace requests
+  // remain reconstructable in the audit trail.
   try {
     logAdminAction({
       actionType: ADMIN_ACTIONS.mcp_session.start,
@@ -783,7 +953,10 @@ function emitSessionStartAudit(
       targetId: sessionId,
       metadata: {
         sessionId,
-        orgId: bearer.orgId,
+        orgId: resolvedOrgId,
+        ...(bearer.orgId !== resolvedOrgId
+          ? { claimOrgId: bearer.orgId }
+          : {}),
         clientId: bearer.clientId,
         ...(bearer.tokenJti !== null ? { tokenJti: bearer.tokenJti } : {}),
         ...(region !== null ? { region } : {}),
@@ -795,7 +968,7 @@ function emitSessionStartAudit(
       {
         err: err instanceof Error ? err.message : String(err),
         sessionId,
-        orgId: bearer.orgId,
+        resolvedOrgId,
       },
       "mcp_session.start audit emission threw — session continues",
     );
@@ -806,16 +979,50 @@ function emitSessionStartAudit(
 
 interface InitialFactoryContext {
   readonly user: AtlasUser;
+  /**
+   * The resolved workspace for THIS request. For `single`-scope clients
+   * this equals the JWT's `referenceId` claim (legacy behavior). For
+   * `multi`-scope clients this is whatever the priority chain selected
+   * (header / default-header / path). Audit + rate-limit + approval
+   * surfaces all read this — never `bearer.orgId` directly — so admin
+   * forensic queries pivot on the workspace the request actually
+   * touched, not the workspace the OAuth client was registered against.
+   */
   readonly orgId: string;
+  /**
+   * The JWT's singular `workspace_id` claim — the workspace the OAuth
+   * client was originally registered against. Recorded alongside the
+   * resolved `orgId` so cross-workspace requests stay reconstructable
+   * in the audit trail (`claimOrgId !== orgId` flags a per-request
+   * workspace switch).
+   */
+  readonly claimOrgId: string;
   readonly clientId: string;
   readonly tokenJti: string | null;
   readonly scopes: ReadonlyArray<string>;
 }
 
-function bindFactoryContext(bearer: VerifiedBearer): InitialFactoryContext {
+function bindFactoryContext(
+  bearer: VerifiedBearer,
+  resolvedOrgId: string,
+): InitialFactoryContext {
+  // Re-bind the actor so RLS / audit / approval surfaces downstream see
+  // the RESOLVED workspace as `activeOrganizationId`. Without this, the
+  // per-tool frame would inherit the JWT's singular claim and any code
+  // reading `actor.activeOrganizationId` would silently route to the
+  // wrong workspace under the cross-workspace path.
+  const user = createAtlasUser(bearer.user.id, bearer.user.mode, bearer.user.label, {
+    ...(bearer.user.role !== undefined ? { role: bearer.user.role } : {}),
+    activeOrganizationId: resolvedOrgId,
+    claims:
+      bearer.user.claims !== undefined
+        ? { ...bearer.user.claims, [ATLAS_OAUTH_WORKSPACE_CLAIM]: resolvedOrgId }
+        : { [ATLAS_OAUTH_WORKSPACE_CLAIM]: resolvedOrgId },
+  });
   return {
-    user: bearer.user,
-    orgId: bearer.orgId,
+    user,
+    orgId: resolvedOrgId,
+    claimOrgId: bearer.orgId,
     clientId: bearer.clientId,
     tokenJti: bearer.tokenJti,
     scopes: bearer.scopes,
@@ -912,13 +1119,14 @@ async function dispatchNewSession(
           {
             kind: "ok",
             user: ctx.user,
-            orgId: ctx.orgId,
+            orgId: ctx.claimOrgId,
             clientId: ctx.clientId,
             tokenJti: ctx.tokenJti,
             scopes: ctx.scopes,
           },
           id,
           region,
+          ctx.orgId,
         );
         log.info(
           {
@@ -1054,30 +1262,44 @@ export function createHostedMcpRouter(): Hono {
       return c.json(verified.body, verified.status, headers);
     }
 
-    // Path/claim mismatch is opaque 403 — 404 would leak whether the
-    // path workspace exists, 401 would say the bearer is invalid (it
-    // isn't, just not for this URL).
-    if (pathWorkspaceId !== verified.orgId) {
-      log.warn(
+    // #2073 — workspace admission. Single-scope clients keep the legacy
+    // `pathWorkspaceId === verified.orgId` check. Multi-scope clients
+    // run the priority chain (header / default-header / path) and admit
+    // only against grants + live membership. Mismatch → opaque 403 with
+    // the structured `cross_workspace_denied` envelope (the hint guides
+    // the user toward Settings → AI Agents or the CLI re-init flow).
+    let admission: WorkspaceAdmission;
+    try {
+      admission = await authorizeWorkspaceAccess(
+        c.req.raw,
+        verified,
+        pathWorkspaceId,
+        requestId,
+      );
+    } catch (err) {
+      log.error(
         {
           requestId,
-          claimWorkspaceId: verified.orgId,
-          pathWorkspaceId,
           clientId: verified.clientId,
+          err: err instanceof Error ? err.message : String(err),
         },
-        "MCP path/bearer workspace mismatch — refusing dispatch",
+        "MCP workspace admission lookup failed — refusing dispatch",
       );
       return c.json(
         {
-          error: "forbidden",
-          message: "Access token not authorized for this workspace.",
+          error: "internal_error",
+          message: "Workspace authorization lookup failed.",
           requestId,
         },
-        403,
+        500,
       );
     }
+    if (admission.kind === "denied") {
+      return c.json(admission.body, admission.status);
+    }
+    const resolvedOrgId = admission.resolvedOrgId;
 
-    const residency = await checkResidency(verified.orgId, requestId);
+    const residency = await checkResidency(resolvedOrgId, requestId);
     if (residency.kind === "misrouted") {
       return c.json(residency.body, residency.status);
     }
@@ -1085,7 +1307,7 @@ export function createHostedMcpRouter(): Hono {
       return c.json(residency.body, residency.status);
     }
 
-    const factoryCtx = bindFactoryContext(verified);
+    const factoryCtx = bindFactoryContext(verified, resolvedOrgId);
     const sessionId = c.req.raw.headers.get("mcp-session-id");
 
     try {

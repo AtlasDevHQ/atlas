@@ -27,6 +27,26 @@ export const ATLAS_OAUTH_WORKSPACE_CLAIM =
   "https://atlas.useatlas.dev/workspace_id";
 
 /**
+ * The plural workspace-ids claim (#2073). Emitted alongside the singular
+ * claim above for tokens issued to users who belong to more than one
+ * workspace, so the CLI can detect multi-workspace setup at write time
+ * without a follow-up server call. The runtime authorization layer in
+ * the hosted MCP edge does NOT rely on this claim — it does a live DB
+ * lookup against `member` + `oauth_client_workspace_grants` so
+ * membership revocation takes effect immediately rather than waiting
+ * for token refresh. The claim is informational; the grants table is
+ * authoritative.
+ *
+ * Privacy note: this claim leaks the user's full workspace membership
+ * to whichever OAuth client received the token. Acceptable because
+ * (a) the user explicitly authorized this client, (b) the JWT is a
+ * user-bound credential the client already holds, and (c) the workspace
+ * IDs are opaque UUIDs without org-name leakage.
+ */
+export const ATLAS_OAUTH_WORKSPACES_CLAIM =
+  "https://atlas.useatlas.dev/workspace_ids";
+
+/**
  * Read the active workspace id off a Better Auth session. The
  * `activeOrganizationId` field is contributed by the organization
  * plugin and is not part of the base session type the `oauthProvider`

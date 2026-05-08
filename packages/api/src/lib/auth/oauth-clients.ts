@@ -97,6 +97,23 @@ export interface OAuthClientRow {
    * page renders "Rate (60/min)" or "Rate (override)" off this field.
    */
   rateLimitPerMinute: number | null;
+  /**
+   * Cross-workspace agent identity (#2073). `'single'` means the client
+   * is bound to its origin `referenceId` (legacy default); `'multi'`
+   * means the user has opted into the cross-workspace path and the
+   * client's grant set lives in `oauth_client_workspace_grants`.
+   *
+   * Settings → AI Agents reads this to render the "Connected to all your
+   * workspaces" badge and to decide whether per-workspace revoke removes
+   * a single grant (multi) vs the whole client (single).
+   */
+  workspaceScope: "single" | "multi";
+  /**
+   * For `multi`-scope clients, the workspace ids the user is currently
+   * granted access to. Empty for `single`-scope clients (the implicit
+   * grant is the OAuth client's `referenceId`). Sorted by `granted_at`.
+   */
+  grantedWorkspaceIds: string[];
 }
 
 export type RevokePhase =
@@ -104,6 +121,8 @@ export type RevokePhase =
   | "refresh_tokens"
   | "consent"
   | "rate_limits"
+  | "workspace_grants"
+  | "workspace_scope"
   | "client"
   | "commit";
 
@@ -187,11 +206,17 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
     liveTokenCount: string;
     liveRefreshCount: string;
     rateLimitPerMinute: number | string | null;
+    workspaceScope: string | null;
+    grantedWorkspaceIds: string[] | null;
   }>(
     // Left-join the per-client rate-limit override (#2071) so the
     // single round-trip carries everything the admin/me list view needs
     // — no second waterfall fetch from the page. NULL here means
     // "no override; use DEFAULT_REQUESTS_PER_MINUTE".
+    //
+    // #2073: also left-join the workspace-scope marker and aggregate the
+    // grant list. NULL `scope` means the client never opted into the
+    // cross-workspace path — the route normalizes that to `'single'`.
     `SELECT c."clientId" AS "clientId",
             c."name" AS "clientName",
             c."redirectUris" AS "redirectUris",
@@ -211,7 +236,14 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
                  AND (r."revoked" IS NULL)
                  AND (r."expiresAt" IS NULL OR r."expiresAt" > NOW())
             ) AS "liveRefreshCount",
-            rl."requests_per_minute" AS "rateLimitPerMinute"
+            rl."requests_per_minute" AS "rateLimitPerMinute",
+            ws."scope" AS "workspaceScope",
+            COALESCE(
+              (SELECT array_agg(g.workspace_id ORDER BY g.granted_at ASC)
+                 FROM oauth_client_workspace_grants g
+                WHERE g.client_id = c."clientId"),
+              ARRAY[]::text[]
+            ) AS "grantedWorkspaceIds"
        FROM "oauthClient" c
        LEFT JOIN "oauthAccessToken" t
          ON t."clientId" = c."clientId"
@@ -220,11 +252,14 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
        LEFT JOIN oauth_client_rate_limits rl
          ON rl.client_id = c."clientId"
         AND rl.reference_id = c."referenceId"
+       LEFT JOIN oauth_client_workspace_scope ws
+         ON ws.client_id = c."clientId"
        WHERE c."referenceId" = $1
          ${userClause}
        GROUP BY c."id", c."clientId", c."name", c."redirectUris", c."createdAt",
                 c."updatedAt", c."disabled", c."type", c."referenceId",
-                rl."requests_per_minute"
+                rl."requests_per_minute",
+                ws."scope"
        ORDER BY c."createdAt" DESC`,
     params,
   );
@@ -290,6 +325,17 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
       rateLimitPerMinute = rpmNum;
     }
 
+    // #2073 normalization. Absence of the join row reads as the legacy
+    // `'single'` default; an unexpected value (drift / direct SQL write
+    // bypassing the CHECK constraint) collapses to `'single'` rather
+    // than failing the entire list — the alternative would be to make
+    // every existing client invisible during a partial rollout, which
+    // is worse than rendering an under-promoted scope.
+    const workspaceScope: "single" | "multi" =
+      r.workspaceScope === "multi" ? "multi" : "single";
+    const grantedWorkspaceIds =
+      Array.isArray(r.grantedWorkspaceIds) ? r.grantedWorkspaceIds : [];
+
     return {
       clientId: r.clientId,
       clientName: r.clientName,
@@ -302,6 +348,8 @@ export async function listOAuthClients(scope: OAuthClientScope): Promise<OAuthCl
       tokenCount: parseInt(r.tokenCount, 10),
       tokenState,
       rateLimitPerMinute,
+      workspaceScope,
+      grantedWorkspaceIds,
     };
   });
 }
@@ -413,6 +461,25 @@ export async function revokeOAuthClient(
       `DELETE FROM oauth_client_rate_limits
         WHERE client_id = $1 AND reference_id = $2`,
       [clientId, scope.orgId],
+    );
+    phase = "workspace_grants";
+
+    // #2073 cleanup — drop every workspace grant + the scope marker for
+    // this client. Both tables have no FK to `oauthClient` (Better Auth
+    // owns that schema); without this DELETE, a future re-registration
+    // with the same `clientId` would silently inherit the prior client's
+    // grants and scope marker. Filtered by `client_id` only — these
+    // tables don't carry `userId` or `referenceId`-as-tenant-isolation,
+    // so the user-scoped extra clause doesn't apply here.
+    await client.query(
+      `DELETE FROM oauth_client_workspace_grants WHERE client_id = $1`,
+      [clientId],
+    );
+    phase = "workspace_scope";
+
+    await client.query(
+      `DELETE FROM oauth_client_workspace_scope WHERE client_id = $1`,
+      [clientId],
     );
     phase = "client";
 

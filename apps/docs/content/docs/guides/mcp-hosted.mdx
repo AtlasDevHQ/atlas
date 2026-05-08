@@ -145,17 +145,55 @@ Tokens are bound to a per-region resource audience (`https://mcp.useatlas.dev/mc
 
 ### Workspace claim
 
-Every issued JWT carries a custom claim `https://atlas.useatlas.dev/workspace_id` set to the workspace the user authenticated against. The hosted MCP route verifies this claim matches the `{workspace_id}` path segment — mismatch is `403 forbidden`. The server never reveals whether a given workspace exists.
+Every issued JWT carries a custom claim `https://atlas.useatlas.dev/workspace_id` set to the workspace the user authenticated against. The hosted MCP route verifies this claim matches the `{workspace_id}` path segment — mismatch is `403 cross_workspace_denied`. The server never reveals whether a given workspace exists.
+
+For users who belong to more than one workspace, the JWT also carries a plural `https://atlas.useatlas.dev/workspace_ids` claim listing every workspace the user is a member of. The CLI installer reads this at write-time to offer the **multi-workspace** setup flow described below; the runtime authorization layer ignores the plural claim and does a live DB check against `member` + `oauth_client_workspace_grants` so workspace-membership revocation takes effect immediately rather than waiting for token refresh.
 
 ## Workspace scoping
+
+Atlas supports two scoping modes per OAuth client:
+
+### Single-workspace (default)
+
+The agent is bound to its origin workspace. The path workspace MUST match the JWT's singular `workspace_id` claim:
 
 ```http
 GET /mcp/org_b/sse                 ← path workspace
 Authorization: Bearer <jwt>        ← workspace_id claim = org_a
-→ 403 forbidden
+→ 403 cross_workspace_denied
 ```
 
 This guards against probing: a user authenticated against workspace A cannot pivot to workspace B by URL.
+
+### Multi-workspace (#2073)
+
+Users with access to multiple workspaces can opt one OAuth client into **cross-workspace** operation: a single install serves every workspace they're a member of. The runtime resolves the workspace per request via this priority chain (highest first):
+
+1. `X-Atlas-Workspace: <id>` — explicit per-request override (use this if your agent framework supports custom headers)
+2. `X-Atlas-Default-Workspace: <id>` — bridged from the agent's `ATLAS_DEFAULT_WORKSPACE` env at the framework boundary (forward-compat: today no MCP client framework auto-bridges the env, but operators wiring their own wrapper can set it once and have every request inherit it)
+3. Path workspace (`{workspace_id}` in the URL) — the install-time default
+
+After resolution, the request is admitted only if both:
+
+- An entry exists in `oauth_client_workspace_grants` for `(client_id, resolved_workspace)` (admin policy: which workspaces did the user opt this agent into?)
+- The user is currently a member of `resolved_workspace` (org policy: live check, no 1-hour token-refresh delay)
+
+Either check failing returns `403 cross_workspace_denied` with an actionable hint distinguishing the two failure modes.
+
+#### Enabling multi-workspace
+
+When you run `bunx @useatlas/mcp init --hosted --write` from a multi-workspace account, the installer prompts:
+
+```
+You belong to 3 workspaces. Configure this agent for:
+  [1] Just org_a (active workspace, default)
+  [2] All your workspaces (workspace-aware via X-Atlas-Workspace)
+Choice [1]:
+```
+
+Picking `[2]` writes the same `mcpServers.atlas.url` (pinned to your active workspace) plus an `env.ATLAS_DEFAULT_WORKSPACE` block as a forward-compat marker. After the install, open **Settings → AI Agents** to grant this agent access to your other workspaces — that's where the `oauth_client_workspace_grants` rows are written. The "Multi-workspace" toggle next to each agent flips the scope between `single` and `multi`; per-workspace revoke removes a single grant without touching the others.
+
+Single-workspace clients continue to work unchanged after this feature shipped — the legacy code path is preserved for OAuth clients that have no row in `oauth_client_workspace_scope`.
 
 ## Cross-region routing
 

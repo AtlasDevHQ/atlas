@@ -709,6 +709,7 @@ async function runEvalAuthFlow(input: RunFlowInput): Promise<HostedFlowResult> {
     accessToken: result.accessToken as Bearer,
     refreshToken: result.refreshToken,
     workspaceId: result.workspaceId,
+    workspaceIds: result.workspaceIds,
     mcpUrl: result.mcpUrl,
   };
 }

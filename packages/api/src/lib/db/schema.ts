@@ -1572,6 +1572,43 @@ export const oauthClientRateLimits = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Cross-workspace agent identity (#2073) — see migration 0053 for the full
+// design rationale. Two-table layout mirrors the #2071 precedent of NOT
+// adding columns to Better-Auth-owned `oauthClient`.
+// ---------------------------------------------------------------------------
+
+export const oauthClientWorkspaceScope = pgTable(
+  "oauth_client_workspace_scope",
+  {
+    clientId: text("client_id").primaryKey(),
+    referenceId: text("reference_id").notNull(),
+    scope: text("scope").notNull().default("single"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedByUserId: text("updated_by_user_id"),
+  },
+  (t) => [
+    check(
+      "oauth_client_workspace_scope_value",
+      sql`${t.scope} IN ('single', 'multi')`,
+    ),
+  ],
+);
+
+export const oauthClientWorkspaceGrants = pgTable(
+  "oauth_client_workspace_grants",
+  {
+    clientId: text("client_id").notNull(),
+    workspaceId: text("workspace_id").notNull(),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+    grantedByUserId: text("granted_by_user_id").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.clientId, t.workspaceId] }),
+    index("idx_oauth_client_workspace_grants_workspace").on(t.workspaceId),
+  ],
+);
+
 // MCP bearer tokens (`mcp_tokens`) were added in PR A of #2024 and removed
 // in PR C when the hosted MCP path moved to OAuth 2.1 access tokens issued
 // by `@better-auth/oauth-provider`. The drizzle table definition lived

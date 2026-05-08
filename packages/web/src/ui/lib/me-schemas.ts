@@ -64,6 +64,27 @@ export const OAuthClientSchema = z.object({
    * the write boundary, not on the read boundary.
    */
   rateLimitPerMinute: z.number().int().positive().nullable(),
+  /**
+   * Cross-workspace agent identity (#2073). `'single'` means the client
+   * is bound to its origin workspace (legacy behavior); `'multi'` means
+   * the user upgraded the client to access every workspace they're a
+   * member of via per-request `X-Atlas-Workspace` resolution. The
+   * Settings → AI Agents page renders a "Connected to all your
+   * workspaces" badge for the multi state and surfaces per-workspace
+   * revoke beneath the row.
+   *
+   * `.catch("single")` collapses unknown enum values during a multi-PR
+   * rollout — better to render the safe default than fail the whole
+   * agents list when a future scope value lands schema-first.
+   */
+  workspaceScope: z.enum(["single", "multi"]).catch("single"),
+  /**
+   * The granted workspace ids for `'multi'`-scope clients. Ordered by
+   * `granted_at ASC` (origin workspace first). Empty for `'single'` —
+   * the implicit grant is the OAuth client's `referenceId` and lives
+   * outside the grant table.
+   */
+  grantedWorkspaceIds: z.array(z.string()).catch([]),
 });
 
 export const ListOAuthClientsResponseSchema = z.object({

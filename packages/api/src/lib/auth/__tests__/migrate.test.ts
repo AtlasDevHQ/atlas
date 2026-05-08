@@ -298,6 +298,7 @@ describe("migrateAuthTables", () => {
             { name: "0050_backfill_email_verified_grandfathered.sql" },
             { name: "0051_oauth_client_rate_limits.sql" },
             { name: "0052_approval_rules_surface.sql" },
+            { name: "0053_oauth_client_workspace_grants.sql" },
           ],
         };
       }

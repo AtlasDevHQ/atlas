@@ -43,6 +43,25 @@ export interface ShouldExposeCanonicalOpts {
   readonly workspaceId?: string;
 }
 
+/**
+ * UI-facing reason key for why the canonical-gate is closed. `null`
+ * when canonical prompts are exposed (no banner needed). The HTTP
+ * endpoint `/api/v1/me/mcp-prompts` (#2179) surfaces these so the
+ * Settings → AI Agents preview block can render the right banner copy
+ * — e.g. "an admin disabled them" vs "we couldn't auto-detect a demo
+ * workspace". Distinct from the boolean the SDK list handler needs
+ * because the SDK simply hides closed-gate prompts; the workspace UI
+ * needs to *explain* the absence.
+ */
+export type CanonicalGateReason = "toggle-never" | "no-demo-signal";
+
+export interface CanonicalGateResult {
+  readonly exposed: boolean;
+  readonly toggle: CanonicalToggle;
+  /** UI-facing reason key when `exposed=false`, otherwise `null`. */
+  readonly reason: CanonicalGateReason | null;
+}
+
 function readToggle(workspaceId: string | undefined): CanonicalToggle {
   const raw = getSettingAuto(EXPOSE_CANONICAL_SETTING, workspaceId);
   if (raw === "always" || raw === "never") return raw;
@@ -75,17 +94,35 @@ function hasDemoIndustry(workspaceId: string | undefined): boolean {
   return typeof value === "string" && value.length > 0;
 }
 
+/**
+ * Rich evaluator — same gate logic as `shouldExposeCanonicalPrompts`,
+ * but returns the resolved toggle + reason key so the UI can explain
+ * the closed-gate state. The boolean wrapper below stays for callers
+ * that only care about visibility (the SDK `prompts/list` override).
+ */
+export async function evaluateCanonicalGate(
+  opts: ShouldExposeCanonicalOpts,
+): Promise<CanonicalGateResult> {
+  const toggle = readToggle(opts.workspaceId);
+  if (toggle === "always") {
+    return { exposed: true, toggle, reason: null };
+  }
+  if (toggle === "never") {
+    return { exposed: false, toggle, reason: "toggle-never" };
+  }
+
+  if (opts.workspaceId) {
+    const demoActive = await hasPublishedDemoConnection(opts.workspaceId);
+    if (demoActive) return { exposed: true, toggle, reason: null };
+  }
+  if (hasDemoIndustry(opts.workspaceId)) {
+    return { exposed: true, toggle, reason: null };
+  }
+  return { exposed: false, toggle, reason: "no-demo-signal" };
+}
+
 export async function shouldExposeCanonicalPrompts(
   opts: ShouldExposeCanonicalOpts,
 ): Promise<boolean> {
-  const toggle = readToggle(opts.workspaceId);
-  if (toggle === "always") return true;
-  if (toggle === "never") return false;
-
-  // toggle === "auto" — fall back to dataset detection.
-  if (opts.workspaceId) {
-    const demoActive = await hasPublishedDemoConnection(opts.workspaceId);
-    if (demoActive) return true;
-  }
-  return hasDemoIndustry(opts.workspaceId);
+  return (await evaluateCanonicalGate(opts)).exposed;
 }

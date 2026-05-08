@@ -7,6 +7,7 @@
     "./server": "./src/server.ts",
     "./sse": "./src/sse.ts",
     "./hosted": "./src/hosted.ts",
+    "./prompts/listing": "./src/prompts/listing.ts",
     "./eval/auth": "./src/eval/auth.ts",
     "./eval/client": "./src/eval/client.ts",
     "./eval/failure-artifact": "./src/eval/failure-artifact.ts"

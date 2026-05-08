@@ -284,6 +284,20 @@ try {
   );
 }
 
+// Per-user MCP prompts preview (#2179). Powers the Settings → AI Agents
+// "prompts your agent will see" block. Same source-merging + gating
+// pipeline the MCP server uses for `prompts/list`, surfaced over HTTP
+// so the page can render before the user has connected an agent.
+try {
+  const { meMcpPrompts } = await import("./routes/me-mcp-prompts");
+  app.route("/api/v1/me/mcp-prompts", meMcpPrompts);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load me-mcp-prompts routes — Settings → AI Agents prompts preview will be unavailable",
+  );
+}
+
 // Admin routes — always available (auth-gated to admin role).
 // Wrapped in try/catch so a missing dependency (e.g. js-yaml) doesn't crash the entire server.
 try {

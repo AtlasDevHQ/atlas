@@ -171,7 +171,7 @@ Tracker: [milestone #41](https://github.com/AtlasDevHQ/atlas/milestones/41). Rou
 
 ### Theme F — Spawn follow-ups (added 2026-05-08 to extend 1.4.1 closeout)
 
-Eight items surfaced during 1.4.1 work that didn't have a home. Closing them inside 1.4.1 keeps the milestone coherent — every loose thread the work generated lands here before the milestone collapses.
+Nine items surfaced during 1.4.1 work that didn't have a home. Closing them inside 1.4.1 keeps the milestone coherent — every loose thread the work generated lands here before the milestone collapses.
 
 - [ ] Durable Postgres-backed MCP session store via Better Auth `secondaryStorage` ([#2109](https://github.com/AtlasDevHQ/atlas/issues/2109)) — spawned by B2 sticky-routing ADR; lifts the in-memory session map so any region can resume any session. Architecture-tagged.
 - [ ] Wire MCP load tests into Playwright + CI infra ([#2129](https://github.com/AtlasDevHQ/atlas/issues/2129)) — B3 shipped a manual runbook; this issue cadenced it. `scripts/print-bearer.ts` + scheduled CI job + result capture.
@@ -181,10 +181,11 @@ Eight items surfaced during 1.4.1 work that didn't have a home. Closing them ins
 - [ ] `PromptListEntry` per-source discriminated union ([#2193](https://github.com/AtlasDevHQ/atlas/issues/2193)) — replace stringly-typed `sourceMode` with a tagged union so impossible (source, evalMode) pairs are unrepresentable.
 - [ ] Consolidate `/guides/mcp` + `/guides/mcp-hosted` ([#2113](https://github.com/AtlasDevHQ/atlas/issues/2113)) — per-client subsections, "after you connect" capstone, security paragraph; the docs split predates the 1.4.0 hosted-MCP work.
 - [ ] Rethink `explore` tool surface — file-ops vs semantic operations ([#2123](https://github.com/AtlasDevHQ/atlas/issues/2123)) — `explore` predates the typed tools; revisit whether it should be split (`explore.shell` vs `explore.semantic`) or scoped down. Architecture-tagged.
+- [ ] Extract shared OAuth 2.1 + DCR helper from `packages/sdk` and `packages/mcp` ([#2203](https://github.com/AtlasDevHQ/atlas/issues/2203)) — E3 (#2198) duplicates `packages/mcp/src/init/hosted.ts`'s loopback flow; collapse to a single `packages/oauth-helper/` so HTTPS-only validation + future spec quirks land once. Architecture-tagged.
 
 Backlog (post-1.4.1): `runbooks-context` plugin (#2023, 1.4.2 headline candidate), `/agent-mode` chat-first view (#2022), `/ee` decoupling refactor (#2017), agent-auth provider (#2058).
 
-Ordering recommendation: B → D → C → E → F (closeout sweep). Theme A complete (3/3); **Theme B + Theme D fully closed**; **Theme C now 2/3** (C1 #2180, C2 #2191); **Theme E now 3/3** (E1 in-repo deliverables shipped — submission unblocked; E2 #2190; E3 #2079); Theme F 0/8. Open: C3 #2073, plus the 8 Theme-F follow-ups — nine left to close 1.4.1. Next risk-class item is **C3 (cross-workspace agent identity, [#2073](https://github.com/AtlasDevHQ/atlas/issues/2073))** — finishing the governance trio. E1's in-repo deliverables shipped (#2195); the catalog-form submission is operator-side via Notion / YC alignment. Theme F follows.
+Ordering recommendation: B → D → C → E → F (closeout sweep). Theme A complete (3/3); **Theme B + Theme D fully closed**; **Theme C now 2/3** (C1 #2180, C2 #2191); **Theme E now 3/3** (E1 in-repo deliverables shipped — submission unblocked; E2 #2190; E3 #2198); Theme F 0/9. Open: C3 #2073 (in flight via PR #2202), plus the 9 Theme-F follow-ups — ten left to close 1.4.1. Next risk-class item is **C3 (cross-workspace agent identity, [#2073](https://github.com/AtlasDevHQ/atlas/issues/2073))** — finishing the governance trio. E1's in-repo deliverables shipped (#2195); the catalog-form submission is operator-side via Notion / YC alignment. Theme F follows.
 
 ---
 

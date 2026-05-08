@@ -110,10 +110,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # @useatlas/types resolves to packages/types/dist via its "exports" field,
-      # so api tests can't import it until the package has been built.
-      - name: Build @useatlas/types
-        run: bun run --filter '@useatlas/types' build
+      # @useatlas/types and @useatlas/plugin-sdk both resolve to their
+      # `dist/` via their "exports" field, so api tests can't import them
+      # until the packages have been built. plugin-sdk is required because
+      # `description-rubric.test.ts` imports `@useatlas/yaml-context`,
+      # which imports `@useatlas/plugin-sdk` for the plugin contract.
+      - name: Build @useatlas/types + @useatlas/plugin-sdk
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
 
       - name: Test @atlas/api (shard ${{ matrix.shard }}/4)
         working-directory: packages/api

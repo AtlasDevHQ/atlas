@@ -15,9 +15,10 @@ import { initializeConfig } from "@atlas/api/lib/config";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
-import { registerPrompts } from "./prompts.js";
+import { registerPrompts } from "./prompts/registry.js";
 import { resolveMcpActor } from "./actor.js";
 import type { McpTransport } from "./telemetry.js";
+import { getConfig } from "@atlas/api/lib/config";
 // `serverInfo.version` is what MCP clients (Claude Desktop, Cursor) show
 // in their server picker. Reading from package.json keeps the value in
 // sync without a hand-edit on every bump.
@@ -85,7 +86,15 @@ export async function createAtlasMcpServer(
 
   registerTools(server, { actor, transport, clientId });
   registerResources(server);
-  await registerPrompts(server);
+  await registerPrompts(server, {
+    // `actor.activeOrganizationId` may be undefined for trusted-transport
+    // (system:mcp) — gating falls back to the platform-level demo signal
+    // (`ATLAS_DEMO_INDUSTRY`) in that case.
+    workspaceId: actor.activeOrganizationId,
+    clientId,
+    transport,
+    deployMode: getConfig()?.deployMode ?? "self-hosted",
+  });
 
   return server;
 }

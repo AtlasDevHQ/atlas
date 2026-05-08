@@ -27,10 +27,12 @@
     "@useatlas/types": "workspace:*",
     "better-auth": "^1.6.9",
     "effect": "^3.21.0",
-    "hono": "^4.12.9"
+    "hono": "^4.12.9",
+    "js-yaml": "^4.1.1"
   },
   "devDependencies": {
     "@better-auth/oauth-provider": "^1.6.9",
+    "@types/js-yaml": "^4.0.9",
     "zod": "^4.3.6"
   }
 }

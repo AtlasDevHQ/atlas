@@ -1,4 +1,7 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -16,6 +19,8 @@ let mockScannedEntities: Array<{
   sourceName: string;
   raw: Record<string, unknown>;
 }> = [];
+let mockSettings: Record<string, string | undefined> = {};
+const internalExecuteCalls: Array<{ sql: string; params: unknown[] }> = [];
 
 mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => {
@@ -36,6 +41,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     if (mockInternalQueryError) throw mockInternalQueryError;
     return mockInternalQueryRows;
   },
+  internalExecute: async (sql: string, params: unknown[] = []) => {
+    internalExecuteCalls.push({ sql, params });
+    return { rowCount: 1 };
+  },
+}));
+
+mock.module("@atlas/api/lib/settings", () => ({
+  getSettingAuto: (key: string, _orgId?: string) => mockSettings[key],
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -47,8 +60,24 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
+// Default the canonical loader to an empty YAML so the existing
+// built-in / semantic / library tests don't accidentally pick up the
+// 20 NovaMart prompts. Tests that need canonical content override
+// `process.env.ATLAS_CANONICAL_QUESTIONS_PATH` directly.
+const emptyCanonicalDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), "registry-canonical-empty-"),
+);
+fs.writeFileSync(
+  path.join(emptyCanonicalDir, "questions.yml"),
+  "questions: []\n",
+);
+process.env.ATLAS_CANONICAL_QUESTIONS_PATH = path.join(
+  emptyCanonicalDir,
+  "questions.yml",
+);
+
 // Import after mocks
-const { registerPrompts } = await import("../prompts.js");
+const { registerPrompts } = await import("../../prompts/registry.js");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,6 +117,8 @@ describe("MCP prompts — built-in templates", () => {
     mockInternalQueryRows = [];
     mockInternalQueryError = null;
     mockSemanticRootError = null;
+    mockSettings = {};
+    internalExecuteCalls.length = 0;
   });
 
   it("lists all 5 built-in prompt templates", async () => {
@@ -203,6 +234,8 @@ describe("MCP prompts — semantic layer", () => {
     mockInternalQueryError = null;
     mockSemanticRootError = null;
     mockScannedEntities = [];
+    mockSettings = {};
+    internalExecuteCalls.length = 0;
   });
 
   it("registers prompts from entity query_patterns", async () => {
@@ -445,6 +478,8 @@ describe("MCP prompts — prompt library", () => {
     mockInternalQueryRows = [];
     mockInternalQueryError = null;
     mockSemanticRootError = null;
+    mockSettings = {};
+    internalExecuteCalls.length = 0;
   });
 
   it("registers prompts from internal DB when available", async () => {
@@ -541,5 +576,180 @@ describe("MCP prompts — prompt library", () => {
       .map((p) => p.name)
       .filter((n) => n.startsWith("library-"));
     expect(libraryPrompts.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — canonical (#2076)
+// ---------------------------------------------------------------------------
+
+describe("MCP prompts — canonical (gated)", () => {
+  let canonicalTmpDir: string;
+
+  beforeEach(() => {
+    mockScannedEntities = [];
+    mockHasInternalDB = false;
+    mockInternalQueryRows = [];
+    mockInternalQueryError = null;
+    mockSemanticRootError = null;
+    mockSettings = {};
+    internalExecuteCalls.length = 0;
+
+    canonicalTmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "registry-canonical-"),
+    );
+    const filePath = path.join(canonicalTmpDir, "questions.yml");
+    fs.writeFileSync(
+      filePath,
+      `
+questions:
+  - id: cq-001
+    category: simple_metric
+    question: What is our total GMV?
+    mode: metric
+    metric_id: total_gmv
+  - id: cq-013
+    category: glossary
+    question: Show me revenue last quarter
+    mode: glossary
+    term: revenue
+`,
+    );
+    process.env.ATLAS_CANONICAL_QUESTIONS_PATH = filePath;
+  });
+
+  it("auto + ATLAS_DEMO_INDUSTRY set: canonical prompts surface", async () => {
+    mockSettings["ATLAS_DEMO_INDUSTRY"] = "ecommerce";
+
+    const { client } = await createTestClient();
+    const result = await client.listPrompts();
+    const names = result.prompts.map((p) => p.name);
+
+    expect(names).toContain("canonical-total-gmv");
+    expect(names).toContain("canonical-glossary-revenue");
+  });
+
+  it("auto + no demo signal: canonical prompts hidden", async () => {
+    const { client } = await createTestClient();
+    const result = await client.listPrompts();
+    const canonicalPrompts = result.prompts
+      .map((p) => p.name)
+      .filter((n) => n.startsWith("canonical-"));
+    expect(canonicalPrompts.length).toBe(0);
+  });
+
+  it("`always` toggle exposes canonical for any workspace", async () => {
+    mockSettings["ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS"] = "always";
+    const { client } = await createTestClient();
+    const result = await client.listPrompts();
+    const names = result.prompts.map((p) => p.name);
+    expect(names).toContain("canonical-total-gmv");
+  });
+
+  it("`never` toggle hides canonical even when demo industry is set", async () => {
+    mockSettings["ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS"] = "never";
+    mockSettings["ATLAS_DEMO_INDUSTRY"] = "ecommerce";
+    const { client } = await createTestClient();
+    const result = await client.listPrompts();
+    const canonicalPrompts = result.prompts
+      .map((p) => p.name)
+      .filter((n) => n.startsWith("canonical-"));
+    expect(canonicalPrompts.length).toBe(0);
+  });
+
+  it("prompts/get returns the canonical question text when allowed", async () => {
+    mockSettings["ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS"] = "always";
+    const { client } = await createTestClient();
+    const result = await client.getPrompt({
+      name: "canonical-total-gmv",
+    });
+    const text = getMessageText(
+      result.messages as Array<{ role: string; content: unknown }>,
+    );
+    expect(text).toBe("What is our total GMV?");
+  });
+
+  it("prompts/get refuses canonical when the gate is closed", async () => {
+    // Default toggle (auto) + no demo signal.
+    const { client } = await createTestClient();
+    await expect(
+      client.getPrompt({ name: "canonical-total-gmv" }),
+    ).rejects.toThrow();
+  });
+
+  it("toggle flip propagates between calls without restart", async () => {
+    // Initial state: auto, no demo signal → hidden.
+    const { client } = await createTestClient();
+    const before = await client.listPrompts();
+    expect(
+      before.prompts.map((p) => p.name).some((n) => n.startsWith("canonical-")),
+    ).toBe(false);
+
+    // Admin flips toggle to `always` (would propagate via the settings
+    // cache TTL in production; the mock returns the new value
+    // immediately).
+    mockSettings["ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS"] = "always";
+
+    const after = await client.listPrompts();
+    expect(
+      after.prompts.map((p) => p.name).some((n) => n.startsWith("canonical-")),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — audit + OTel (#2076)
+// ---------------------------------------------------------------------------
+
+describe("MCP prompts — audit log", () => {
+  beforeEach(() => {
+    mockScannedEntities = [];
+    mockHasInternalDB = false;
+    mockInternalQueryRows = [];
+    mockInternalQueryError = null;
+    mockSemanticRootError = null;
+    mockSettings = {};
+    internalExecuteCalls.length = 0;
+    process.env.ATLAS_CANONICAL_QUESTIONS_PATH = path.join(
+      emptyCanonicalDir,
+      "questions.yml",
+    );
+  });
+
+  it("writes a row per prompts/list call when internal DB is available", async () => {
+    mockHasInternalDB = true;
+    const { client } = await createTestClient();
+    await client.listPrompts();
+
+    const listRows = internalExecuteCalls.filter((c) =>
+      String(c.params[7]).startsWith("prompts.list"),
+    );
+    expect(listRows.length).toBeGreaterThanOrEqual(1);
+    // sql is the first param
+    expect(String(listRows[0]!.params[0])).toContain("mcp:prompts.list");
+    // actor_kind is the 6th param
+    expect(listRows[0]!.params[5]).toBe("mcp");
+  });
+
+  it("writes a row per prompts/get call", async () => {
+    mockHasInternalDB = true;
+    const { client } = await createTestClient();
+    await client.getPrompt({
+      name: "revenue-trend",
+      arguments: { period: "6 months" },
+    });
+
+    const getRows = internalExecuteCalls.filter((c) =>
+      String(c.params[7]).startsWith("prompts.get"),
+    );
+    expect(getRows.length).toBeGreaterThanOrEqual(1);
+    expect(String(getRows[0]!.params[0])).toContain("revenue-trend");
+  });
+
+  it("skips audit writes when internal DB is unavailable", async () => {
+    mockHasInternalDB = false;
+    const { client } = await createTestClient();
+    await client.listPrompts();
+    expect(internalExecuteCalls.length).toBe(0);
   });
 });

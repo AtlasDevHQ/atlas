@@ -117,3 +117,35 @@ export const oauthTokenRefresh: Counter = meter.createCounter(
       "OAuth 2.1 refresh_token grants completed (Better Auth oauthProvider)",
   },
 );
+
+/**
+ * `atlas.mcp.prompts.calls` — every `prompts/list` and `prompts/get`
+ * request, attributed to the resolving prompt source so operators can
+ * tell which prompts library agents actually pull (#2076).
+ *
+ * Attributes:
+ *   - `method`     — `list` / `get`.
+ *   - `prompt`     — prompt name on `get`; `(none)` on `list`.
+ *   - `source`     — `builtin` / `semantic` / `library` / `canonical` /
+ *                    `unknown` (when an agent requests a name we no
+ *                    longer have, the SDK rejects with InvalidParams
+ *                    before our wrapper sees it — `unknown` would only
+ *                    appear if the registry got out of sync).
+ *   - `transport`  — `stdio` / `sse`.
+ *   - `deploy.mode`— `self-hosted` / `saas`.
+ *
+ * `prompt` deliberately ships unhashed because the prompt ID space is
+ * small and stable (built-in templates + canonical eval set + curated
+ * library + per-workspace query_patterns). High-cardinality blowup
+ * would require an exotic semantic-layer with thousands of patterns,
+ * which doesn't exist today; if it does, drop the `prompt` attribute
+ * downstream rather than at the source so the counter stays joinable
+ * with other MCP series.
+ */
+export const mcpPromptCalls: Counter = meter.createCounter(
+  "atlas.mcp.prompts.calls",
+  {
+    description:
+      "MCP prompts surface dispatch count by method + prompt + source",
+  },
+);

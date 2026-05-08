@@ -125,13 +125,28 @@ export const McpPromptListEntrySchema = z.object({
 /**
  * Canonical-prompts gate envelope. `exposed=false` means the canonical
  * eval prompts are hidden; `reason` tells the UI which banner to render:
- *   - "toggle-never"     — admin opted out at Admin → Settings → MCP
- *   - "no-demo-signal"   — toggle=auto, this isn't a demo workspace
+ *   - "toggle-never"        — admin opted out at Admin → Settings → MCP
+ *   - "no-demo-signal"      — toggle=auto, this isn't a demo workspace
+ *   - "signal-unavailable"  — toggle=auto, internal-DB connections probe
+ *                             failed AND no industry signal could
+ *                             confirm demo status (operator-facing
+ *                             outage signal — distinct from the
+ *                             confirmed-not-demo case so the user gets
+ *                             accurate advice)
+ *
+ * `.catch(null)` on the reason enum so a forward-compatible reason
+ * value during a multi-PR rollout degrades to the "unknown reason"
+ * banner branch instead of failing the entire response parse and
+ * blanking the preview block. Mirrors `CanonicalGateReason` in
+ * `packages/mcp/src/prompts/gating.ts` — keep both in sync.
  */
 export const McpCanonicalGateSchema = z.object({
   exposed: z.boolean(),
   toggle: z.enum(["always", "never", "auto"]),
-  reason: z.enum(["toggle-never", "no-demo-signal"]).nullable(),
+  reason: z
+    .enum(["toggle-never", "no-demo-signal", "signal-unavailable"])
+    .nullable()
+    .catch(null),
 });
 
 export const McpPromptsResponseSchema = z.object({

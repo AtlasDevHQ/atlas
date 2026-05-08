@@ -44,23 +44,58 @@ export interface ShouldExposeCanonicalOpts {
 }
 
 /**
- * UI-facing reason key for why the canonical-gate is closed. `null`
- * when canonical prompts are exposed (no banner needed). The HTTP
+ * UI-facing reason key for why the canonical-gate is closed. The HTTP
  * endpoint `/api/v1/me/mcp-prompts` (#2179) surfaces these so the
- * Settings → AI Agents preview block can render the right banner copy
- * — e.g. "an admin disabled them" vs "we couldn't auto-detect a demo
- * workspace". Distinct from the boolean the SDK list handler needs
- * because the SDK simply hides closed-gate prompts; the workspace UI
- * needs to *explain* the absence.
+ * Settings → AI Agents preview block can render the right banner copy.
+ * Distinct from the boolean the SDK list handler needs because the
+ * SDK simply hides closed-gate prompts; the workspace UI needs to
+ * *explain* the absence.
+ *
+ * Three closed-gate paths:
+ *   - `toggle-never`        — admin opted out at Admin → Settings → MCP.
+ *   - `no-demo-signal`      — toggle=auto, the workspace has no
+ *                             `__demo__` connection AND no
+ *                             `ATLAS_DEMO_INDUSTRY` setting.
+ *   - `signal-unavailable`  — toggle=auto, but the connections probe
+ *                             failed (internal DB outage, schema drift,
+ *                             etc.) AND no industry signal could
+ *                             confirm demo status either way. Distinct
+ *                             from `no-demo-signal` because the user-
+ *                             actionable advice differs ("retry / file
+ *                             a ticket" vs "this isn't a demo
+ *                             workspace") and operators dogfooding the
+ *                             SaaS need an in-product signal that
+ *                             something is broken.
+ *
+ * Mirrored as a Zod enum at:
+ *   - `packages/api/src/api/routes/me-mcp-prompts.ts` (route response)
+ *   - `packages/web/src/ui/lib/me-schemas.ts` (web client parse)
+ * Keep all three lockstep; there is no shared schema module yet (see
+ * the `@useatlas/types` value-export caveat documented at
+ * `packages/web/src/app/admin/settings/mcp/page.tsx:34-42`).
  */
-export type CanonicalGateReason = "toggle-never" | "no-demo-signal";
+export type CanonicalGateReason =
+  | "toggle-never"
+  | "no-demo-signal"
+  | "signal-unavailable";
 
-export interface CanonicalGateResult {
-  readonly exposed: boolean;
-  readonly toggle: CanonicalToggle;
-  /** UI-facing reason key when `exposed=false`, otherwise `null`. */
-  readonly reason: CanonicalGateReason | null;
-}
+/**
+ * Discriminated union encoding the invariant `exposed=true ⇒ reason=null`
+ * directly in the type system — consumers narrow on `exposed` instead
+ * of defending against a "shouldn't happen" null/non-null pair.
+ */
+export type CanonicalGateResult =
+  | { readonly exposed: true; readonly toggle: CanonicalToggle; readonly reason: null }
+  | { readonly exposed: false; readonly toggle: CanonicalToggle; readonly reason: CanonicalGateReason };
+
+/**
+ * Tri-state demo-connection probe result. Distinct from a `boolean`
+ * because "couldn't determine" is a different forensic state from
+ * "verified-not-a-demo-workspace" — the loss of information happens
+ * at the call site (where we can decide policy) rather than inside
+ * the helper.
+ */
+type DemoConnectionProbe = "active" | "inactive" | "error";
 
 function readToggle(workspaceId: string | undefined): CanonicalToggle {
   const raw = getSettingAuto(EXPOSE_CANONICAL_SETTING, workspaceId);
@@ -68,10 +103,10 @@ function readToggle(workspaceId: string | undefined): CanonicalToggle {
   return "auto";
 }
 
-async function hasPublishedDemoConnection(
+async function probeDemoConnection(
   workspaceId: string,
-): Promise<boolean> {
-  if (!hasInternalDB()) return false;
+): Promise<DemoConnectionProbe> {
+  if (!hasInternalDB()) return "inactive";
   try {
     const rows = await internalQuery<{ active: boolean }>(
       `SELECT EXISTS (
@@ -80,12 +115,12 @@ async function hasPublishedDemoConnection(
        ) AS active`,
       [workspaceId],
     );
-    return rows[0]?.active === true;
+    return rows[0]?.active === true ? "active" : "inactive";
   } catch (err) {
     process.stderr.write(
       `[atlas-mcp] canonical gating: connections query failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
-    return false;
+    return "error";
   }
 }
 
@@ -99,6 +134,13 @@ function hasDemoIndustry(workspaceId: string | undefined): boolean {
  * but returns the resolved toggle + reason key so the UI can explain
  * the closed-gate state. The boolean wrapper below stays for callers
  * that only care about visibility (the SDK `prompts/list` override).
+ *
+ * Reason resolution under `auto`:
+ *   1. Connections probe → if active OR industry signal set, expose.
+ *   2. Connections probe inactive AND no industry → `no-demo-signal`.
+ *   3. Connections probe errored AND no industry → `signal-unavailable`
+ *      (we genuinely couldn't determine demo status — distinct from
+ *      "this isn't a demo workspace" so the UI advice can differ).
  */
 export async function evaluateCanonicalGate(
   opts: ShouldExposeCanonicalOpts,
@@ -111,12 +153,20 @@ export async function evaluateCanonicalGate(
     return { exposed: false, toggle, reason: "toggle-never" };
   }
 
+  let probe: DemoConnectionProbe = "inactive";
   if (opts.workspaceId) {
-    const demoActive = await hasPublishedDemoConnection(opts.workspaceId);
-    if (demoActive) return { exposed: true, toggle, reason: null };
+    probe = await probeDemoConnection(opts.workspaceId);
+    if (probe === "active") return { exposed: true, toggle, reason: null };
   }
   if (hasDemoIndustry(opts.workspaceId)) {
     return { exposed: true, toggle, reason: null };
+  }
+  // Industry signal absent — disambiguate by probe result. Probe-errored
+  // case must NOT collapse into `no-demo-signal` because the UI advice
+  // ("Atlas only surfaces canonical prompts to demo workspaces") is
+  // misleading when the actual cause was a DB outage.
+  if (probe === "error") {
+    return { exposed: false, toggle, reason: "signal-unavailable" };
   }
   return { exposed: false, toggle, reason: "no-demo-signal" };
 }

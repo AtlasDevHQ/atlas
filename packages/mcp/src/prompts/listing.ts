@@ -163,9 +163,11 @@ function slugify(text: string): string {
 }
 
 /**
- * Semantic query patterns — derived per workspace from entity YAMLs.
- * Failures to scan / read the semantic root degrade to "no semantic
- * prompts" rather than failing the listing.
+ * Semantic query patterns — read from the process-wide
+ * `ATLAS_SEMANTIC_ROOT` (single semantic layer per API process today;
+ * per-workspace isolation is a future change). Failures to scan / read
+ * the semantic root degrade to "no semantic prompts" rather than
+ * failing the listing.
  */
 export function loadSemanticPrompts(): SemanticPrompt[] {
   const prompts: SemanticPrompt[] = [];

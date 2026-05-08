@@ -216,6 +216,57 @@ describe("listMcpPrompts — canonical gate", () => {
     expect(result.prompts.filter((p) => p.source === "canonical")).toEqual([]);
   });
 
+  it("toggle=never wins over a positive demo signal (precedence)", async () => {
+    // Pins the branch order in `evaluateCanonicalGate` — admin's explicit
+    // opt-out must beat the auto-detected demo-industry signal. A
+    // regression that reordered the toggle === "never" check below the
+    // demo-signal probe would still expose canonicals here, and the UI
+    // banner would show the wrong copy ("Atlas only surfaces canonical
+    // eval prompts to demo workspaces") instead of "An admin disabled
+    // the canonical NovaMart eval prompts."
+    process.env.ATLAS_CANONICAL_QUESTIONS_PATH = fixtureWithCanonical();
+    mockSettings["ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS"] = "never";
+    mockSettings["ATLAS_DEMO_INDUSTRY"] = "ecommerce";
+
+    const result = await listMcpPrompts({ workspaceId: "org-demo" });
+
+    expect(result.canonicalGate.exposed).toBe(false);
+    expect(result.canonicalGate.reason).toBe("toggle-never");
+  });
+
+  it("surfaces reason='signal-unavailable' when the connections probe errors and no industry signal", async () => {
+    // Distinguishes a real internal-DB outage from "this isn't a demo
+    // workspace" — the UI banner copy + user-actionable advice differ
+    // (retry / contact support vs flip toggle). A regression that
+    // collapsed the error case back into `no-demo-signal` would leave
+    // operators dogfooding the SaaS without an in-product outage signal.
+    process.env.ATLAS_CANONICAL_QUESTIONS_PATH = fixtureWithCanonical();
+    mockHasInternalDB = true;
+    mockInternalQueryError = new Error("connection refused");
+
+    const result = await listMcpPrompts({ workspaceId: "org-real" });
+
+    expect(result.canonicalGate.exposed).toBe(false);
+    expect(result.canonicalGate.toggle).toBe("auto");
+    expect(result.canonicalGate.reason).toBe("signal-unavailable");
+  });
+
+  it("DB error + industry signal still exposes (industry is enough on its own)", async () => {
+    // Probe failure is recoverable when the industry signal independently
+    // confirms demo status — the gate stays open. This pins that
+    // `signal-unavailable` is reserved for the case where BOTH signals
+    // fail to confirm demo status, not "any DB error."
+    process.env.ATLAS_CANONICAL_QUESTIONS_PATH = fixtureWithCanonical();
+    mockSettings["ATLAS_DEMO_INDUSTRY"] = "ecommerce";
+    mockHasInternalDB = true;
+    mockInternalQueryError = new Error("connection refused");
+
+    const result = await listMcpPrompts({ workspaceId: "org-demo" });
+
+    expect(result.canonicalGate.exposed).toBe(true);
+    expect(result.canonicalGate.reason).toBeNull();
+  });
+
   it("hides canonical prompts on toggle=auto without demo signal (reason='no-demo-signal')", async () => {
     process.env.ATLAS_CANONICAL_QUESTIONS_PATH = fixtureWithCanonical();
     // toggle defaults to auto; no industry, internal DB returns no demo connection

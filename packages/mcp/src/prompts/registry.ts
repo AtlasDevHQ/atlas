@@ -1,6 +1,10 @@
 /**
  * MCP prompt templates — exposes curated query patterns via the MCP
- * `prompts/list` and `prompts/get` protocol.
+ * `prompts/list` and `prompts/get` protocol. This file owns the SDK
+ * registration + per-dispatch instrumentation; the source loaders live
+ * in `./listing.ts` and are imported here so the workspace HTTP
+ * preview endpoint (`/api/v1/me/mcp-prompts`, #2179) and the SDK list
+ * handler stay in lockstep.
  *
  * Four sources, in registration order (matters because the SDK's
  * `prompts/list` is order-preserving and prompt pickers in agent
@@ -22,9 +26,11 @@
  *                              settings refresh (`ATLAS_SETTINGS_REFRESH_INTERVAL`,
  *                              default 30s).
  *   3. Semantic-layer query patterns — `query_patterns` field from
- *                              entity YAML files. Per-workspace by
- *                              construction (semantic root scoped to
- *                              the workspace).
+ *                              entity YAML files. Today the semantic
+ *                              root is process-wide (`ATLAS_SEMANTIC_ROOT`
+ *                              or default), not per-workspace —
+ *                              per-workspace isolation is a future
+ *                              change.
  *   4. Prompt library         — admin-curated rows from the internal
  *                              DB's `prompt_items` table. Optional
  *                              (skipped when no internal DB).
@@ -87,10 +93,13 @@ function substituteArgs(
 // ---------------------------------------------------------------------------
 // Source-tagged descriptor — discriminated union so the canonical-only
 // per-call gate is a typed contract rather than a hidden side effect of
-// each resolver's closure.
+// each resolver's closure. `PromptSource` is re-exported from
+// `./listing.js` so the workspace HTTP endpoint (which constructs its
+// Zod enum from the same set) cannot drift on the source vocabulary.
 // ---------------------------------------------------------------------------
 
-export type PromptSource = "builtin" | "semantic" | "library" | "canonical";
+import type { PromptSource } from "./listing.js";
+export type { PromptSource };
 
 /**
  * Synthetic source label used by `prompts/list` telemetry — the dispatch

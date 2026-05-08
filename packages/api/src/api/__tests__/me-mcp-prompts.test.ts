@@ -46,7 +46,7 @@ let mockListResult: {
   canonicalGate: {
     exposed: boolean;
     toggle: "always" | "never" | "auto";
-    reason: "toggle-never" | "no-demo-signal" | null;
+    reason: "toggle-never" | "no-demo-signal" | "signal-unavailable" | null;
   };
 } = {
   prompts: [],
@@ -277,6 +277,55 @@ describe("GET /api/v1/me/mcp-prompts", () => {
     const res = await app.fetch(meRequest("/api/v1/me/mcp-prompts"));
     expect(res.status).toBe(200);
     expect(listCalls[0]?.workspaceId).toBeUndefined();
+  });
+
+  it("ignores a smuggled `workspaceId` query param even when the user has no active org", async () => {
+    // Defense-in-depth for tenant isolation. The route reads
+    // `user.activeOrganizationId` directly today, so a `?workspaceId=`
+    // query param has no effect — but a future regression that fell
+    // back to `c.req.query("workspaceId")` when `activeOrganizationId`
+    // is undefined would tenant-bleed canonical prompts to anyone who
+    // could guess an org id. This test pins the contract: an unbound
+    // user always forwards `undefined`, never the smuggled value.
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: {
+          id: "user-1",
+          mode: "managed",
+          label: "user@test.com",
+          role: "member",
+        },
+      }),
+    );
+
+    const res = await app.fetch(
+      meRequest("/api/v1/me/mcp-prompts?workspaceId=org-victim"),
+    );
+    expect(res.status).toBe(200);
+    expect(listCalls[0]?.workspaceId).toBeUndefined();
+    expect(listCalls[0]?.workspaceId).not.toBe("org-victim");
+  });
+
+  it("forwards the new 'signal-unavailable' reason when canonical gate probes error", async () => {
+    // Distinguishes the operator-facing internal-DB outage signal from
+    // "this isn't a demo workspace." The route is a passthrough so this
+    // is mostly a wire-compat check — the Zod schema must accept the
+    // new enum value end-to-end.
+    mockListResult = {
+      prompts: [],
+      canonicalGate: {
+        exposed: false,
+        toggle: "auto",
+        reason: "signal-unavailable",
+      },
+    };
+
+    const res = await app.fetch(meRequest("/api/v1/me/mcp-prompts"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as typeof mockListResult;
+    expect(body.canonicalGate.reason).toBe("signal-unavailable");
   });
 
   it("returns 500 with requestId when listMcpPrompts throws", async () => {

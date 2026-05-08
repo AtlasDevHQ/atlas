@@ -32,12 +32,17 @@ import { validationHook } from "./validation-hook";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 // Late-bound import — `@atlas/mcp/prompts/listing` pulls semantic /
-// settings / internal-DB modules. Keeping the import inside the handler
-// matches the pattern at `index.ts:483` for `@atlas/mcp/hosted` and
-// keeps the standalone Vercel template (which does not bundle MCP)
-// from failing at module load.
+// settings / internal-DB modules. The lazy `await import()` keeps the
+// route module's top-level load fast and matches the runtime shape of
+// the `@atlas/mcp/hosted` mount in `index.ts`. The
+// `/* turbopackIgnore: true */` directive prevents Next.js / Turbopack
+// from tracing the module into the standalone Vercel template bundle
+// (`examples/nextjs-standalone`) — that deploy does not ship the heavy
+// `@atlas/mcp` graph and Turbopack tracing alone would defeat the
+// late-bind goal. The Hono runtime resolves the import natively at
+// runtime via the workspace dep.
 async function loadListingModule() {
-  return await import("@atlas/mcp/prompts/listing");
+  return await import(/* turbopackIgnore: true */ "@atlas/mcp/prompts/listing");
 }
 
 // ---------------------------------------------------------------------------
@@ -66,10 +71,17 @@ const PromptListEntrySchema = z.object({
   source: PromptSourceSchema,
 });
 
+// Reason enum mirrors `CanonicalGateReason` in
+// `packages/mcp/src/prompts/gating.ts` — keep all three (gating.ts,
+// route schema, web schema) in lockstep. There is no shared schema
+// module yet because `@useatlas/types` is type-only (see the
+// scaffold-CI caveat documented in `admin/settings/mcp/page.tsx`).
 const CanonicalGateSchema = z.object({
   exposed: z.boolean(),
   toggle: z.enum(["always", "never", "auto"]),
-  reason: z.enum(["toggle-never", "no-demo-signal"]).nullable(),
+  reason: z
+    .enum(["toggle-never", "no-demo-signal", "signal-unavailable"])
+    .nullable(),
 });
 
 const McpPromptsResponseSchema = z.object({

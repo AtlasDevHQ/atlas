@@ -29,6 +29,8 @@ import {
   type McpCanonicalGate,
 } from "@/ui/lib/me-schemas";
 import { SectionHeading } from "@/ui/components/admin/compact";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
@@ -41,8 +43,10 @@ import { cn } from "@/lib/utils";
 const SOURCE_PREVIEW_LIMIT = 3;
 
 // Single source-of-truth map for source labels + icons. Adding a future
-// source here cascades through the grouping, banners, and "View all"
-// without per-call-site touch-ups.
+// source still requires updates to `SOURCE_ORDER` (render order) and to
+// the `groupBySource` init record — TypeScript exhaustiveness on
+// `Record<McpPromptSource, …>` will flag the misses, so the change-set
+// is type-checked rather than guessed.
 const SOURCE_META: Record<McpPromptSource, { label: string; icon: typeof Sparkles; description: string }> = {
   builtin: {
     label: "Built-in",
@@ -76,46 +80,47 @@ const SOURCE_ORDER: ReadonlyArray<McpPromptSource> = [
 ];
 
 export function PromptsPreview() {
-  const { data, loading, error } = useAdminFetch("/api/v1/me/mcp-prompts", {
-    schema: McpPromptsResponseSchema,
-  });
-  const [showAll, setShowAll] = useState(false);
-
-  if (loading) {
-    return (
-      <section className="mt-10" data-testid="prompts-preview-loading">
-        <SectionHeading
-          title="Prompts your agent will see"
-          description="Loading…"
-        />
-      </section>
-    );
-  }
-
-  if (error || !data) {
-    // Failure here is non-blocking — the connected-agents list above is
-    // the page's primary value. A muted error keeps the preview honest
-    // without breaking the rest of the page.
-    return (
-      <section className="mt-10" data-testid="prompts-preview-error">
-        <SectionHeading
-          title="Prompts your agent will see"
-          description="Couldn't load the prompt preview."
-        />
-      </section>
-    );
-  }
-
-  const grouped = groupBySource(data.prompts);
-  const totalVisible = data.prompts.length;
+  const { data, loading, error, refetch } = useAdminFetch(
+    "/api/v1/me/mcp-prompts",
+    { schema: McpPromptsResponseSchema },
+  );
 
   return (
     <section className="mt-10" data-testid="prompts-preview">
       <SectionHeading
         title="Prompts your agent will see"
-        description={`${totalVisible} prompt${totalVisible === 1 ? "" : "s"} grouped by source. Counts match the prompts/list response your connected agent receives.`}
+        description={
+          data
+            ? `${data.prompts.length} prompt${data.prompts.length === 1 ? "" : "s"} grouped by source. Counts match the prompts/list response your connected agent receives.`
+            : "Counts match the prompts/list response your connected agent receives."
+        }
       />
+      <ErrorBoundary>
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="AI Agents"
+          onRetry={refetch}
+          loadingMessage="Loading prompt preview…"
+        >
+          {data ? <PromptsPreviewContent data={data} /> : null}
+        </AdminContentWrapper>
+      </ErrorBoundary>
+    </section>
+  );
+}
 
+function PromptsPreviewContent({
+  data,
+}: {
+  data: { prompts: ReadonlyArray<McpPromptListEntry>; canonicalGate: McpCanonicalGate };
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const grouped = groupBySource(data.prompts);
+  const totalVisible = data.prompts.length;
+
+  return (
+    <>
       {!data.canonicalGate.exposed && (
         <CanonicalGateBanner gate={data.canonicalGate} />
       )}
@@ -153,7 +158,7 @@ export function PromptsPreview() {
           </Button>
         </div>
       )}
-    </section>
+    </>
   );
 }
 
@@ -225,25 +230,41 @@ function SourceGroup({
 
 function CanonicalGateBanner({ gate }: { gate: McpCanonicalGate }) {
   const { reason, toggle } = gate;
-  // Reason key → banner copy. `null` is unreachable when `exposed=false`
-  // (the API always sets a reason for closed gates) but exhaustively
-  // handled so the type checker rejects future reasons that forget UI
-  // touchpoints.
-  const copy =
-    reason === "toggle-never"
-      ? {
+  // Reason key → banner copy. `signal-unavailable` is the operator-
+  // facing outage signal: the connections probe failed AND no industry
+  // signal could confirm demo status — the user-actionable advice
+  // ("retry / contact support") differs from "this isn't a demo
+  // workspace," so the two reasons render distinct copy. `null` is
+  // unreachable when `exposed=false` for current API shapes, but we
+  // include a defensive fallback for the multi-PR-rollout scenario
+  // where a future reason key lands in the API before this page is
+  // updated (the schema's `.catch(null)` keeps the response parseable
+  // and steers unknown values into this generic banner).
+  const copy = (() => {
+    switch (reason) {
+      case "toggle-never":
+        return {
           title: "Canonical eval prompts are turned off",
           body: "An admin disabled the canonical NovaMart eval prompts at Admin → Settings → MCP. Your agent won't see them in prompts/list.",
-        }
-      : reason === "no-demo-signal"
-        ? {
-            title: "Canonical eval prompts are auto-detected",
-            body: `Atlas only surfaces canonical eval prompts to demo workspaces (toggle is "${toggle}"). Switch to "always" in Admin → Settings → MCP if you want them in prompts/list anyway.`,
-          }
-        : {
-            title: "Canonical eval prompts are hidden",
-            body: "Visit Admin → Settings → MCP to manage the canonical-prompts toggle.",
-          };
+        };
+      case "no-demo-signal":
+        return {
+          title: "Canonical eval prompts are auto-detected",
+          body: `Atlas only surfaces canonical eval prompts to demo workspaces (toggle is "${toggle}"). Switch to "always" in Admin → Settings → MCP if you want them in prompts/list anyway.`,
+        };
+      case "signal-unavailable":
+        return {
+          title: "Couldn't check canonical-prompts gate",
+          body: "Atlas tried to detect demo-workspace status but the internal-DB probe failed. Try refreshing — if the issue persists, open Admin → Settings → MCP to set the toggle explicitly or contact support.",
+        };
+      case null:
+      default:
+        return {
+          title: "Canonical eval prompts are hidden",
+          body: "Visit Admin → Settings → MCP to manage the canonical-prompts toggle.",
+        };
+    }
+  })();
 
   return (
     <Alert

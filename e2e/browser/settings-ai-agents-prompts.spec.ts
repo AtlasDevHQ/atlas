@@ -39,7 +39,7 @@ interface MockPromptsBody {
   canonicalGate: {
     exposed: boolean;
     toggle: "always" | "never" | "auto";
-    reason: "toggle-never" | "no-demo-signal" | null;
+    reason: "toggle-never" | "no-demo-signal" | "signal-unavailable" | null;
   };
 }
 
@@ -172,7 +172,7 @@ test.describe("Settings → AI Agents — prompts preview", () => {
     await expect(page.getByTestId("canonical-gate-banner")).toHaveCount(0);
   });
 
-  test("'View all' expands beyond the per-source preview limit", async ({ page }) => {
+  test("'View all' expands and collapses (round-trip)", async ({ page }) => {
     await installMocks(page, fixturePromptsExposed());
     await page.goto("/settings/ai-agents");
 
@@ -180,6 +180,8 @@ test.describe("Settings → AI Agents — prompts preview", () => {
 
     // Canonical fixture has 6 entries; collapsed view shows 3 + "+3 more".
     const canonical = page.getByTestId("prompts-preview-source-canonical");
+    const toggle = page.getByTestId("prompts-preview-toggle");
+    await expect(toggle).toHaveText(/View all prompts/i);
     await expect(canonical.getByText(/^canonical-q-1/)).toBeVisible();
     await expect(canonical.getByText(/^canonical-q-2/)).toBeVisible();
     await expect(canonical.getByText(/^canonical-q-3/)).toBeVisible();
@@ -187,11 +189,33 @@ test.describe("Settings → AI Agents — prompts preview", () => {
     await expect(canonical.getByText(/\+3 more/)).toBeVisible();
 
     // Click "View all" → entries 4,5,6 visible + "+N more" gone.
-    await page.getByTestId("prompts-preview-toggle").click();
+    await toggle.click();
+    await expect(toggle).toHaveText(/Show less/i);
     await expect(canonical.getByText(/^canonical-q-4/)).toBeVisible();
     await expect(canonical.getByText(/^canonical-q-5/)).toBeVisible();
     await expect(canonical.getByText(/^canonical-q-6/)).toBeVisible();
     await expect(canonical.getByText(/\+3 more/)).toHaveCount(0);
+
+    // Click "Show less" → back to collapsed state. Pins the toggle's
+    // reversibility; a regression that hardcoded `setShowAll(true)`
+    // would let "View all" work once and become a no-op.
+    await toggle.click();
+    await expect(toggle).toHaveText(/View all prompts/i);
+    await expect(canonical.getByText(/^canonical-q-4/)).toHaveCount(0);
+    await expect(canonical.getByText(/\+3 more/)).toBeVisible();
+  });
+
+  test("'View all' toggle is hidden when the prompt count is below the threshold", async ({ page }) => {
+    // The gated fixture has only 5 builtins (no canonical / semantic /
+    // library). 5 ≤ 12 (SOURCE_PREVIEW_LIMIT × SOURCE_ORDER.length), so
+    // the toggle should NOT render — no "View all" affordance for a
+    // list that already shows everything. A regression flipping the
+    // threshold check would surface a useless button.
+    await installMocks(page, fixturePromptsGated());
+    await page.goto("/settings/ai-agents");
+
+    await expect(page.getByTestId("prompts-preview")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("prompts-preview-toggle")).toHaveCount(0);
   });
 
   test("closed canonical gate surfaces the banner + admin link", async ({ page }) => {
@@ -211,5 +235,26 @@ test.describe("Settings → AI Agents — prompts preview", () => {
 
     // Canonical group is suppressed when none surface from the API.
     await expect(page.getByTestId("prompts-preview-source-canonical")).toHaveCount(0);
+  });
+
+  test("'signal-unavailable' reason renders the outage-distinct banner copy", async ({ page }) => {
+    // Operator-facing fail-closed signal: the connections probe errored
+    // and no industry signal could confirm demo status. The banner copy
+    // must point at "internal-DB probe failed" rather than the
+    // misleading "this isn't a demo workspace" copy used for the
+    // `no-demo-signal` reason.
+    await installMocks(page, {
+      prompts: fixturePromptsGated().prompts,
+      canonicalGate: { exposed: false, toggle: "auto", reason: "signal-unavailable" },
+    });
+    await page.goto("/settings/ai-agents");
+
+    await expect(page.getByTestId("prompts-preview")).toBeVisible({ timeout: 15_000 });
+
+    const banner = page.getByTestId("canonical-gate-banner");
+    await expect(banner).toBeVisible();
+    await expect(
+      banner.getByText(/Couldn't check canonical-prompts gate/i),
+    ).toBeVisible();
   });
 });

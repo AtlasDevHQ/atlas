@@ -662,6 +662,18 @@ export const ADMIN_ACTIONS = {
   conversation: {
     budgetExceeded: "conversation.budget_exceeded",
   },
+  /**
+   * Query-result cache lifecycle. `flush` covers the manual purge from
+   * the admin cache surface (`admin-cache.ts`). The cache is a
+   * process-wide singleton — flushing clears entries for every workspace
+   * sharing the runtime, so a forensic row is the only way to attribute
+   * a fleet-wide cache invalidation to a specific admin once #2167 widened
+   * the gate from `platform_admin` to `admin/owner/platform_admin`.
+   * Metadata: `{ flushed }` — count of entries cleared.
+   */
+  cache: {
+    flush: "cache.flush",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

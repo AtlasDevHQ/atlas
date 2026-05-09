@@ -110,6 +110,7 @@ const navGroups: NavGroup[] = [
     title: "Security",
     icon: Shield,
     items: [
+      { href: "/admin/security", label: "MFA & Sessions" },
       { href: "/admin/sso", label: "SSO" },
       { href: "/admin/scim", label: "SCIM" },
       { href: "/admin/ip-allowlist", label: "IP Allowlist" },
@@ -143,7 +144,6 @@ const navGroups: NavGroup[] = [
       { href: "/admin/residency", label: "Data Residency" },
       { href: "/admin/settings", label: "Settings" },
       { href: "/admin/settings/mcp", label: "MCP" },
-      { href: "/admin/settings/security", label: "Security" },
     ],
   },
   {

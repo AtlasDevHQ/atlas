@@ -1,7 +1,12 @@
 "use client";
 
 /**
- * Admin → Settings → Security
+ * Admin → Security
+ *
+ * Top-level admin page for the signed-in user's own MFA + session posture.
+ * #2175 — promoted out of `/admin/settings/security` so security stops
+ * feeling like an optional config-tab item. Pre-launch, no redirect
+ * from the old path is needed (zero existing bookmarks to preserve).
  *
  * Lets the signed-in admin manage every available second factor:
  *

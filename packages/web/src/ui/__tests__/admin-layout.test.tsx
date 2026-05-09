@@ -114,7 +114,7 @@ function mockMfaRequiredFetch() {
         JSON.stringify({
           error: "mfa_enrollment_required",
           message: "Two-factor authentication is required for admin accounts.",
-          enrollmentUrl: "/admin/settings/security",
+          enrollmentUrl: "/admin/security",
         }),
         { status: 403 },
       ),

@@ -119,7 +119,7 @@ describe("mfaRequired middleware", () => {
     // than slipping past silently.
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("mfa_enrollment_required");
-    expect(body.enrollmentUrl).toBe("/admin/settings/security");
+    expect(body.enrollmentUrl).toBe("/admin/security");
     expect(body.requestId).toBe("test-req-id");
     expect(typeof body.message).toBe("string");
     expect((body.message as string).toLowerCase()).toContain("two-factor");

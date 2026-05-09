@@ -16,7 +16,7 @@
  *
  *   { error: "mfa_enrollment_required",
  *     message: "...",
- *     enrollmentUrl: "/admin/settings/security",
+ *     enrollmentUrl: "/admin/security",
  *     requestId }
  *
  * ### What is NOT gated by this middleware
@@ -44,9 +44,10 @@
  *    carve-out: AdminLayout must be able to check password status before
  *    the user has enrolled a second factor.
  *
- * 3. **The Next.js security page (`/admin/settings/security`).** Rendered
- *    by the frontend, not by the API admin router, so it is reachable
- *    independent of this middleware.
+ * 3. **The Next.js security page (`/admin/security`).** Rendered by
+ *    the frontend, not by the API admin router, so it is reachable
+ *    independent of this middleware. (Promoted from
+ *    `/admin/settings/security` in #2175.)
  *
  * Member-role users are NEVER gated. The enrollment surface is available
  * to them voluntarily; the policy is admin-only.
@@ -76,7 +77,7 @@ const ENFORCED_ROLES = new Set(["admin", "owner", "platform_admin"]);
  * Where the web app should send the user to complete enrollment.
  * Surfaced in the 403 body so clients don't have to hard-code the path.
  */
-export const ENROLLMENT_URL = "/admin/settings/security";
+export const ENROLLMENT_URL = "/admin/security";
 
 /** Wire-format error code in the 403 body. Public API — exported for tests. */
 export const MFA_ENROLLMENT_REQUIRED = "mfa_enrollment_required";

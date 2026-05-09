@@ -8,7 +8,7 @@ import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
 import { useMfaGateOptional } from "@/ui/components/admin/mfa-gate-context";
 
 // See use-admin-fetch.ts for rationale.
-const DEFAULT_ENROLLMENT_URL = "/admin/settings/security";
+const DEFAULT_ENROLLMENT_URL = "/admin/security";
 
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";

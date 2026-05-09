@@ -9,7 +9,7 @@
  * with two hook-only concerns that can't live in a store action:
  *
  * 1. **Skip on the enrollment page.** When pathname starts with
- *    `/admin/settings/security`, `trigger` is a no-op. Otherwise a
+ *    `/admin/security`, `trigger` is a no-op. Otherwise a
  *    pre-enroll fetch on that page could re-arm the dialog and trap the
  *    user on the page they need to complete enrollment on.
  * 2. **Capture origin path for redirect-back.** Stash the URL that fired
@@ -33,13 +33,13 @@ import {
 import { usePathname } from "next/navigation";
 import { useMfaGateStore } from "@/lib/stores/mfa-gate-store";
 
-const ENROLLMENT_PATH_PREFIX = "/admin/settings/security";
+const ENROLLMENT_PATH_PREFIX = "/admin/security";
 
 /** sessionStorage key for the redirect-back URL captured at gate time. */
 const ORIGIN_PATH_KEY = "atlas:mfa-origin-path";
 
 interface MfaGateState {
-  /** Where the API told us to send the user. Always `/admin/settings/security` today. */
+  /** Where the API told us to send the user. Always `/admin/security` today. */
   enrollmentUrl: string;
 }
 

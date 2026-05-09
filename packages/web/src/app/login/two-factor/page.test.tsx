@@ -49,7 +49,7 @@ const searchParamsGetMock = mock<(_key: string) => string | null>(() => null);
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
   // Page reads `?callbackURL=...` to bounce the user back to the
-  // surface that triggered the 2FA challenge (e.g. /admin/settings/security
+  // surface that triggered the 2FA challenge (e.g. /admin/security
   // when re-authing for passkey enrollment). Tests assert the safe path
   // policy is enforced.
   useSearchParams: () => ({ get: searchParamsGetMock }),
@@ -184,15 +184,15 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
     });
   });
 
-  test("?callbackURL=/admin/settings/security routes there after verify (passkey re-auth bounce)", async () => {
+  test("?callbackURL=/admin/security routes there after verify (passkey re-auth bounce)", async () => {
     // The callbackURL hand-off is what makes passkey re-auth feel
     // continuous: the user clicks "add passkey" → SESSION_NOT_FRESH →
     // re-auth dialog → twoFactorRedirect → 2FA challenge → bounces
-    // BACK to /admin/settings/security. Without this assertion, a
+    // BACK to /admin/security. Without this assertion, a
     // future refactor that drops the searchParams read would silently
     // drop every TOTP-enabled user at `/` instead.
     searchParamsGetMock.mockImplementation((key: string) =>
-      key === "callbackURL" ? "/admin/settings/security" : null,
+      key === "callbackURL" ? "/admin/security" : null,
     );
     render(<TwoFactorChallengePage />);
     fireEvent.change(getCodeInput(), { target: { value: "123456" } });
@@ -202,7 +202,7 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
     });
 
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/admin/settings/security");
+      expect(routerPushMock).toHaveBeenCalledWith("/admin/security");
     });
   });
 

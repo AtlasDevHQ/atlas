@@ -78,8 +78,11 @@
  */
 
 import { Data, Effect, Layer } from "effect";
+import { createLogger } from "@atlas/api/lib/logger";
 import { Config } from "./layers";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
+
+const log = createLogger("effect:saas-guards");
 
 const ISSUE_REF = "#1978";
 const RATE_LIMIT_ISSUE_REF = "#1983";
@@ -674,7 +677,16 @@ export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | 
       // Warn-only: surface the failure but keep booting. The strict
       // path covers operators who explicitly chose "fail boot on this
       // class of error"; everyone else keeps the existing "best effort
-      // validation" behavior.
+      // validation" behavior. Log loudly so the cause is in the boot
+      // log even when boot continues — without this the underlying
+      // error (third-party plugin throwing in `getConfigSchema()`,
+      // JSONB shape drift, module-load failure) would be dropped on
+      // the floor (#2252).
+      log.warn(
+        { err: result.cause },
+        `Plugin config validation threw — proceeding without stale-config checks ` +
+          `(set ATLAS_STRICT_PLUGIN_SECRETS=true to fail boot instead). See ${ISSUE_REF_1988} / #2252.`,
+      );
       return;
     }
 
@@ -692,6 +704,14 @@ export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | 
         }),
       );
     }
+    // Warn-only stale-config branch: per-issue `log.warn` lines are
+    // already emitted by `validateStoredPluginConfigs()` itself
+    // (`lib/plugins/validation.ts:180`), and SaaS regions ALSO get a
+    // single `log.error` summary there (line 195). No additional log
+    // call needed at this site — but the cross-reference is load-bearing
+    // because the docstring at the top of this guard claims "stale
+    // configs are always logged as warnings", and that promise lives
+    // in the validator, not here. See #2252.
   }),
 );
 

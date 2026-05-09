@@ -185,7 +185,7 @@ Nine items surfaced during 1.4.1 work that didn't have a home. Closing them insi
 
 Backlog (post-1.4.1): `runbooks-context` plugin (#2023, 1.4.2 headline candidate), `/agent-mode` chat-first view (#2022), `/ee` decoupling refactor (#2017), agent-auth provider (#2058).
 
-Ordering recommendation: B → D → C → E → F (closeout sweep). Theme A complete (3/3); **Theme B + Theme C + Theme D fully closed**; **Theme E now 3/3** (E1 in-repo deliverables shipped — submission unblocked; E2 #2190; E3 #2198); Theme F 2/9 (#2192 schema consolidation in via @useatlas/schemas/mcp-prompts; #2113 docs consolidation in). Open: 7 Theme-F follow-ups left to close 1.4.1, plus E1 #2077 stays open until the Anthropic catalog form is submitted (operator-side via Notion / YC alignment). Next pick: any remaining Theme-F item — the architecture-tagged ones (#2109, #2150, #2123, #2203) are the highest-leverage closeout reads since they encode invariants for the next milestone.
+Ordering recommendation: B → D → C → E → F (closeout sweep). Theme A complete (3/3); **Theme B + Theme C + Theme D fully closed**; **Theme E now 3/3** (E1 in-repo deliverables shipped — submission unblocked; E2 #2190; E3 #2198); Theme F 3/9 (#2192 schema consolidation; #2113 docs consolidation; #2150 listEntities consolidation). Open: 6 Theme-F follow-ups left to close 1.4.1, plus E1 #2077 stays open until the Anthropic catalog form is submitted (operator-side via Notion / YC alignment). Next pick: any remaining Theme-F item — the architecture-tagged ones (#2109, #2123, #2203) are the highest-leverage closeout reads since they encode invariants for the next milestone.
 
 ---
 

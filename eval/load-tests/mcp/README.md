@@ -60,10 +60,49 @@ never appears in argv, stdout, or any persisted file.
 
 Outputs land at `eval/load-tests/mcp/results/<scenario>-<UTC>.json`
 (k6's `--summary-export` aggregate — counts, rates, P50/P95/P99) and
-`<scenario>-<UTC>.txt` (k6's streaming output). The `results/` dir is
-gitignored — pre-launch we keep run history local; once
-[#2129](https://github.com/AtlasDevHQ/atlas/issues/2129) lands the CI
-workflow will push to a tracking issue.
+`<scenario>-<UTC>.log` (k6's streaming output). The `results/` dir is
+gitignored — run history stays local. The CI workflow uploads the same
+files as a workflow artifact for any run kicked off via GitHub
+([#2129](https://github.com/AtlasDevHQ/atlas/issues/2129)).
+
+For a markdown summary table across one or more `summary.json` files
+without re-piecing it from the raw k6 output, use the renderer the CI
+workflow uses internally:
+
+```bash
+./eval/load-tests/mcp/summarize.sh results/*.json
+```
+
+## CI workflow
+
+A manual `workflow_dispatch`-only workflow runs the same scripts
+against any region — see [`.github/workflows/load-test-mcp.yml`](../../../.github/workflows/load-test-mcp.yml).
+Trigger from the **Actions** tab → **MCP Load Test** → **Run
+workflow**. Inputs:
+
+- `base_url` — `mcp.useatlas.dev` (US) / `mcp-eu.useatlas.dev` /
+  `mcp-apac.useatlas.dev`. Defaults to US.
+- `scenarios` — `all`, `cold-start`, `concurrent-sessions`, or
+  `tool-call-mix`. Pick one when you only want a partial run.
+- `stages` / `stage_seconds` / `mix_duration` / `ttl_seconds` — same
+  knobs as the local script. Leave blank for defaults.
+
+Required GitHub Actions repo secrets:
+
+- `LOADTEST_ADMIN_EMAIL` — load-test workspace member email
+- `LOADTEST_ADMIN_PASSWORD` — that user's password
+
+The workflow installs k6 + jq, runs the scenario(s), writes a markdown
+summary table to the run's step summary, and uploads `summary.json` +
+`.log` files as a `mcp-load-test-results` artifact (30-day retention).
+Each scenario step is `continue-on-error: true` so one scenario's
+failure doesn't drop the others' results.
+
+When the target region has `ATLAS_LOADTEST_ALLOWED_ORGS` set (the
+SaaS hardening posture documented at
+[`platform-ops/mcp-load-test-tokens`](../../../apps/docs/content/docs/platform-ops/mcp-load-test-tokens.mdx)),
+the user's active workspace must be in the allowlist or the mint
+endpoint returns 404.
 
 `BASE_URL` defaults to `https://mcp.useatlas.dev` — the brand
 hostname for the customer-facing MCP surface. Hitting this URL means

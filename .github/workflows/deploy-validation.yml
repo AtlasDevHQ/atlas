@@ -124,6 +124,131 @@ jobs:
       - name: Build nextjs-standalone example
         run: bun run --filter '@atlas/nextjs-standalone' build
 
+  # Build the production deploy/api/Dockerfile, run it under the SaaS env
+  # contract (#2226), and probe /api/health. Catches everything the
+  # `migrate-pg` smoke (#2225) catches plus serverExternalPackages drift,
+  # Dockerfile COPY drift (#2206 sibling), start.sh regressions, healthcheck
+  # path drift, boot-time SaaS guard regressions, and prod-mode bundling
+  # errors that don't surface in unit tests.
+  #
+  # Env contract: scripts/saas-env-fixture.ts emits every value from the
+  # single source of truth in packages/api/src/lib/effect/saas-env.ts.
+  # Adding a new SaaS guard means adding a field to that fixture — the
+  # workflow auto-picks it up with no edits here.
+  boot-smoke:
+    name: Boot Smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atlas"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Generate SaaS env fixture
+        run: |
+          bun run scripts/saas-env-fixture.ts \
+            --database-url "postgresql://atlas:atlas@127.0.0.1:5432/atlas" \
+            > /tmp/saas.env
+          # Echo only the keys (not values) for runner-log review. Fixture
+          # values are non-secret CI defaults but the convention is to keep
+          # env-file contents off stdout.
+          echo "Fixture keys:"
+          cut -d= -f1 /tmp/saas.env
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Build deploy/api image
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: .
+          file: deploy/api/Dockerfile
+          load: true
+          tags: atlas-api:boot-smoke
+          # gha cache makes warm runs 30-60s vs 3-4 min cold. Branch and
+          # main share the cache so PR builds reuse main's layers.
+          cache-from: type=gha,scope=boot-smoke
+          cache-to: type=gha,scope=boot-smoke,mode=max
+
+      - name: Run API container
+        run: |
+          # --network=host gives the container access to the postgres
+          # service on 127.0.0.1:5432 (the same address the runner uses).
+          # Linux-only but GH Actions ubuntu-latest is Linux.
+          docker run -d \
+            --name atlas-api \
+            --network=host \
+            --env-file /tmp/saas.env \
+            atlas-api:boot-smoke
+
+      - name: Probe /api/health (90s budget)
+        run: |
+          # The probe verifies the SaaS boot guards passed AND the
+          # health route still resolves at /api/health — NOT that
+          # downstream dependencies (LLM API key, populated DB) are
+          # healthy. /api/health returns:
+          #   - 200 for status="ok"|"degraded" (boot succeeded; some
+          #     non-essential components may be down)
+          #   - 503 for status="error" (boot succeeded but a critical
+          #     component is unreachable — expected in CI because the
+          #     fixture lacks an LLM provider key, so provider is "down")
+          # Any other status (404 path drift, 405 verb mismatch, 502
+          # proxy-but-app-dead) means the listener bound but health
+          # routing or the runtime has regressed — the exact class of
+          # boot-time bug this gate catches. Connection-refused / curl
+          # error means the SaaS guards failed and the process exited
+          # before HTTP started — the other class.
+          set +e
+          for i in $(seq 1 45); do
+            status=$(curl -sS -o /tmp/health-body.json -w "%{http_code}" \
+              --max-time 5 http://127.0.0.1:3001/api/health 2>/dev/null)
+            if [ "$status" = "200" ] || [ "$status" = "503" ]; then
+              echo "Boot smoke passed on attempt $i (~$(( i * 2 ))s) — HTTP $status"
+              echo "──── /api/health response body ────"
+              cat /tmp/health-body.json 2>/dev/null || echo "(empty)"
+              exit 0
+            fi
+            if [ -n "$status" ] && [ "$status" != "000" ]; then
+              # Listener is up but returning an unexpected status — fail
+              # immediately. This is a boot-time regression (route drift,
+              # method mismatch, runtime crash behind a proxy).
+              echo "::error::Unexpected HTTP $status from /api/health — listener is up but health route regressed"
+              echo "──── /api/health response body ────"
+              cat /tmp/health-body.json 2>/dev/null || echo "(empty)"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "::error::API never bound to port 3001 within 90s (boot guard failure?)"
+          exit 1
+
+      - name: Dump container logs
+        if: always()
+        run: |
+          echo "──── docker logs atlas-api ────"
+          docker logs atlas-api 2>&1 || echo "(container not running)"
+          echo "──── docker inspect (state) ────"
+          docker inspect --format='{{json .State}}' atlas-api 2>&1 || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f atlas-api 2>/dev/null || true
+
   # Lightweight checks that don't need bun: Docker compose validation + deploy mode defaults.
   config-validation:
     name: Config & Deploy Mode
@@ -169,7 +294,7 @@ jobs:
   # failure or cancellation propagates here and blocks the merge.
   deploy-validation-required:
     name: Deploy Validation
-    needs: [changes, scaffold-smoke, standalone-build, config-validation]
+    needs: [changes, scaffold-smoke, standalone-build, config-validation, boot-smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -179,6 +304,7 @@ jobs:
           SCAFFOLD_RESULT: ${{ needs.scaffold-smoke.result }}
           STANDALONE_RESULT: ${{ needs.standalone-build.result }}
           CONFIG_RESULT: ${{ needs.config-validation.result }}
+          BOOT_SMOKE_RESULT: ${{ needs.boot-smoke.result }}
         run: |
           set -euo pipefail
           fail=0
@@ -190,6 +316,12 @@ jobs:
           fi
           # The conditional jobs may legitimately skip when no scaffold-relevant
           # paths changed; success or skipped both count as a pass.
+          # boot-smoke runs unconditionally (no `if:` guard) — its result must
+          # be `success`. A `skipped` here would mean the gate was bypassed.
+          if [ "$BOOT_SMOKE_RESULT" != "success" ]; then
+            echo "::error::boot-smoke job result was '$BOOT_SMOKE_RESULT' (expected 'success')"
+            fail=1
+          fi
           for pair in "scaffold-smoke=$SCAFFOLD_RESULT" "standalone-build=$STANDALONE_RESULT" "config-validation=$CONFIG_RESULT"; do
             name=${pair%%=*}
             result=${pair#*=}

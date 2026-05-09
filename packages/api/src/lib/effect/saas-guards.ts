@@ -79,6 +79,7 @@
 
 import { Data, Effect, Layer } from "effect";
 import { Config } from "./layers";
+import { readSaasEnv, type SaasEnv } from "./saas-env";
 
 const ISSUE_REF = "#1978";
 const RATE_LIMIT_ISSUE_REF = "#1983";
@@ -250,8 +251,8 @@ export class MigrationsRequiredError extends Data.TaggedError("MigrationsRequire
  * is unambiguous operator intent — config-file and `auto` can fall
  * through to `self-hosted` quietly.
  */
-function explicitSaasFromEnv(): boolean {
-  return process.env.ATLAS_DEPLOY_MODE === "saas";
+function explicitSaasFromEnv(env: SaasEnv): boolean {
+  return env.ATLAS_DEPLOY_MODE === "saas";
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -275,8 +276,9 @@ function explicitSaasFromEnv(): boolean {
 export const EnterpriseGuardLive: Layer.Layer<never, EnterpriseRequiredError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
+    const env = readSaasEnv();
 
-    const requestedSaas = explicitSaasFromEnv();
+    const requestedSaas = explicitSaasFromEnv(env);
     const resolvedSaas = config.deployMode === "saas";
 
     if (requestedSaas && !resolvedSaas) {
@@ -392,7 +394,8 @@ export const InternalDbGuardLive: Layer.Layer<never, InternalDatabaseRequiredErr
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
 
-    if (!process.env.DATABASE_URL) {
+    const env = readSaasEnv();
+    if (!env.DATABASE_URL) {
       yield* Effect.fail(
         new InternalDatabaseRequiredError({
           message:
@@ -429,19 +432,19 @@ export const InternalDbGuardLive: Layer.Layer<never, InternalDatabaseRequiredErr
  * exists to close. The pinning test in `saas-guards.test.ts` covers
  * `"0"`, `"0.5"`, `"-300"`, `"abc"`.
  *
- * Reads `process.env.ATLAS_RATE_LIMIT_RPM` directly rather than via
- * `getSetting()`. Two reasons: matches the env-direct pattern of
- * `InternalDbGuardLive`, and makes the operator contract crisp — the
- * env var must be set at deploy time. Post-boot writes via `setSetting`
- * are blocked by `SAAS_IMMUTABLE_KEYS` in `lib/settings.ts`, so a
- * platform admin cannot re-open the hole at runtime.
+ * Reads the env var via `readSaasEnv()` rather than `getSetting()`.
+ * Two reasons: matches the env-direct pattern of `InternalDbGuardLive`,
+ * and makes the operator contract crisp — the env var must be set at
+ * deploy time. Post-boot writes via `setSetting` are blocked by
+ * `SAAS_IMMUTABLE_KEYS` in `lib/settings.ts`, so a platform admin
+ * cannot re-open the hole at runtime.
  */
 export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
 
-    const raw = process.env.ATLAS_RATE_LIMIT_RPM;
+    const raw = readSaasEnv().ATLAS_RATE_LIMIT_RPM;
     if (raw === undefined || raw === "") {
       return yield* Effect.fail(
         new RateLimitRequiredError({
@@ -498,8 +501,9 @@ function isPlausiblePostgresUrl(raw: unknown): boolean {
  */
 function resolveClaimedRegion(
   config: { residency?: { defaultRegion?: string } | undefined },
+  env: SaasEnv,
 ): string | null {
-  const envRegion = process.env.ATLAS_API_REGION;
+  const envRegion = env.ATLAS_API_REGION;
   if (envRegion && envRegion.length > 0) return envRegion;
   return config.residency?.defaultRegion ?? null;
 }
@@ -525,7 +529,7 @@ export const RegionGuardLive: Layer.Layer<never, RegionMisconfiguredError, Confi
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
 
-    const claimedRegion = resolveClaimedRegion(config);
+    const claimedRegion = resolveClaimedRegion(config, readSaasEnv());
     // No region claimed at all. The misrouting middleware also no-ops
     // in this case, so the contract is consistent.
     if (claimedRegion === null) return;
@@ -552,7 +556,7 @@ export const RegionGuardLive: Layer.Layer<never, RegionMisconfiguredError, Confi
 
     const regionEntry = regions[claimedRegion] as { databaseUrl?: unknown } | undefined;
     if (!isPlausiblePostgresUrl(regionEntry?.databaseUrl)) {
-      yield* Effect.fail(
+      return yield* Effect.fail(
         new RegionMisconfiguredError({
           claimedRegion,
           availableRegions,
@@ -579,8 +583,8 @@ export const RegionGuardLive: Layer.Layer<never, RegionMisconfiguredError, Confi
  * "fail boot rather than run with stale plugin state" contracts and
  * splitting the knob would force operators to remember two flags.
  */
-function isStrictPluginMode(): boolean {
-  return process.env.ATLAS_STRICT_PLUGIN_SECRETS === "true";
+function isStrictPluginMode(env: SaasEnv): boolean {
+  return env.ATLAS_STRICT_PLUGIN_SECRETS === "true";
 }
 
 /**
@@ -621,6 +625,7 @@ function isStrictPluginMode(): boolean {
 export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | PluginConfigCheckFailedError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* Config;
+    const env = readSaasEnv();
 
     // The inner async function catches every synchronous throw and the
     // dynamic `import()` rejection, converting both into a discriminated
@@ -654,7 +659,7 @@ export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | 
       // the same default for "we couldn't even check"). Otherwise log
       // and continue; the validation function itself follows the same
       // policy for unexpected DB errors so the contract is consistent.
-      if (isStrictPluginMode()) {
+      if (isStrictPluginMode(env)) {
         return yield* Effect.fail(
           new PluginConfigCheckFailedError({
             cause: result.cause,
@@ -675,7 +680,7 @@ export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | 
 
     if (result.issues.length === 0) return;
 
-    if (isStrictPluginMode()) {
+    if (isStrictPluginMode(env)) {
       yield* Effect.fail(
         new PluginConfigStaleError({
           issues: result.issues,

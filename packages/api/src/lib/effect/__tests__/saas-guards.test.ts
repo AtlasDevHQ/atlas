@@ -74,16 +74,13 @@ function makeTestConfigLayer(
   });
 }
 
-const GUARD_ENV_KEYS = [
-  "ATLAS_DEPLOY_MODE",
-  "ATLAS_ENCRYPTION_KEYS",
-  "ATLAS_ENCRYPTION_KEY",
-  "BETTER_AUTH_SECRET",
-  "DATABASE_URL",
-  "ATLAS_RATE_LIMIT_RPM",
-  "ATLAS_API_REGION",
-  "ATLAS_STRICT_PLUGIN_SECRETS",
-] as const;
+// Source of truth lives in `effect/saas-env.ts :: SAAS_ENV_KEYS` (#2226).
+// Consume it directly so a new SaaS-contract field automatically gets
+// cleaned between test cases — without this, a leaked env var from a
+// prior process could let a later "succeeds when …" assertion pass for
+// the wrong reason.
+const { SAAS_ENV_KEYS } = await import("../saas-env");
+const GUARD_ENV_KEYS = SAAS_ENV_KEYS;
 
 function withCleanEnv<T>(run: () => Promise<T>): Promise<T> {
   const saved: Record<string, string | undefined> = {};

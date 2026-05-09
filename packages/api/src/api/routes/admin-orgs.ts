@@ -608,6 +608,9 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
     if (workspace.workspace_status === "suspended") return c.json({ error: "conflict", message: "Workspace is already suspended." }, 409);
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "suspended"));
+    // Drop the cached `getCachedWorkspace` entry so the next user-side
+    // request sees the new status within its TTL window (#2165).
+    invalidatePlanCache(orgId);
     // Audit the mutation commit BEFORE the pool drain — a transient
     // `drainOrg` rejection must not silently drop the audit row after
     // the DB already flipped to suspended. Drain failure still fails
@@ -641,6 +644,7 @@ adminOrgs.openapi(activateOrgRoute, async (c) => {
     if (workspace.workspace_status === "active") return c.json({ error: "conflict", message: "Workspace is already active." }, 409);
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "active"));
+    invalidatePlanCache(orgId); // #2165 — see suspend handler above
     log.info({ orgId, requestId, admin: user?.id }, "Workspace activated");
     // Canonical action_type is `workspace.unsuspend` (not
     // `workspace.activate`) — the endpoint path deliberately differs
@@ -699,6 +703,7 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
       try: () => updateWorkspaceStatus(orgId, "deleted"),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
+    invalidatePlanCache(orgId); // #2165 — see suspend handler above
 
     log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings }, "Workspace soft-deleted with cascading cleanup");
     // `cleanup` mirrors platform-admin.ts. `poolsDrained`/`warnings`

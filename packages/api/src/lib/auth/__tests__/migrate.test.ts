@@ -300,6 +300,7 @@ describe("migrateAuthTables", () => {
             { name: "0052_approval_rules_surface.sql" },
             { name: "0053_oauth_client_workspace_grants.sql" },
             { name: "0054_prompt_collections_dedup_unique.sql" },
+            { name: "0055_audit_log_auth_mode_check.sql" },
           ],
         };
       }

@@ -15,9 +15,9 @@ const config: NextConfig = {
   async redirects() {
     return [
       // /guides/mcp-hosted was consolidated into /guides/mcp under the
-      // hosted/self-hosted tabs (#2113). Anchors that survived the merge
-      // continue to deep-link the right section.
-      { source: "/guides/mcp-hosted", destination: "/guides/mcp", permanent: true },
+      // hosted/self-hosted tabs (#2113). The `:rest*` wildcard matches zero
+      // or more segments, so this single rule handles both the bare path
+      // and any deeper anchor links that survived the merge.
       {
         source: "/guides/mcp-hosted/:rest*",
         destination: "/guides/mcp/:rest*",

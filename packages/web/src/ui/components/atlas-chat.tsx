@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { PythonProgressData } from "./chat/python-result-card";
 import { useAtlasConfig } from "../context";
 import { ThemeToggle } from "./theme-toggle";
+import { UserMenu } from "./user-menu";
 import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
@@ -529,27 +530,7 @@ export function AtlasChat() {
                     <TableProperties className="size-4" />
                   </Button>
                   <ThemeToggle className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400" />
-                  {isSignedIn && (
-                    <>
-                      <span className="hidden text-xs text-zinc-500 sm:inline dark:text-zinc-400">
-                        {managedSession.data?.user?.email}
-                      </span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          authClient.signOut().catch((err: unknown) => {
-                            console.error("Sign out failed:", err instanceof Error ? err.message : String(err));
-                            setTransientWarning("Sign out failed. Please try again.");
-                            setTimeout(() => setTransientWarning(""), 5000);
-                          });
-                        }}
-                        className="text-xs text-zinc-500 dark:text-zinc-400"
-                      >
-                        Sign out
-                      </Button>
-                    </>
-                  )}
+                  {isSignedIn && <UserMenu />}
                 </div>
               </div>
             </header>

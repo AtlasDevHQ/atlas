@@ -46,6 +46,7 @@ import {
   PluginConfigGuardLive,
   MigrationsRequiredError,
 } from "./saas-guards";
+import { readSaasEnv } from "./saas-env";
 
 const log = createLogger("effect:layers");
 
@@ -859,7 +860,7 @@ export const MigrationGuardLive: Layer.Layer<never, MigrationsRequiredError, Con
     // Skip when there's no internal DB at all — `InternalDbGuardLive`
     // already fails boot for that case in SaaS, and a duplicate
     // failure here would just obscure the actual misconfig.
-    if (!process.env.DATABASE_URL) return;
+    if (!readSaasEnv().DATABASE_URL) return;
 
     const migration = yield* Migration;
     if (migration.migrated) return;

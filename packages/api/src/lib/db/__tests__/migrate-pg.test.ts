@@ -28,17 +28,24 @@ describeIfPg("migrate-pg (real Postgres)", () => {
 
   beforeAll(async () => {
     pool = new Pool({ connectionString: TEST_DB_URL });
-    // Per-test schema so concurrent shards / re-runs don't collide.
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
-    // Set search_path on every connection in this pool so the migration
-    // runner's CREATE TABLE / CREATE INDEX / etc. land in our scratch
-    // schema instead of polluting `public`.
+    // Listener must register BEFORE the first query so every connection
+    // (including the one that runs the upcoming CREATE SCHEMA) sets
+    // search_path to the scratch schema. CREATE SCHEMA itself ignores
+    // search_path — it creates the named schema directly — so the
+    // chicken-and-egg of "SET search_path to a not-yet-created schema"
+    // is harmless: Postgres falls back to `public` for that one
+    // statement, the schema gets created, and every subsequent query
+    // on that connection lands in the scratch schema.
     pool.on("connect", (client) => {
-      void client.query(`SET search_path TO "${schemaName}"`).catch(() => {
-        // Connection-setup failure surfaces on the next query — don't
-        // double-log here.
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        // Surface the failure — silently falling back to `public` would
+        // pollute the shared CI Postgres and mask the real cause.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`migrate-pg: SET search_path failed on new connection: ${message}`);
       });
     });
+    // Per-test schema so concurrent shards / re-runs don't collide.
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
   });
 
   afterAll(async () => {

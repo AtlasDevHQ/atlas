@@ -42,7 +42,8 @@ const mockInternalExecute = mock((_sql: string, _params?: unknown[]) => {});
 let mockActiveOrgId: string | undefined;
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mockListEntities,
+  listEntityRows: mockListEntities,
+  listEntities: mock(async () => []),
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,
   deleteEntity: mockDeleteEntity,

@@ -13,7 +13,8 @@ const TEST_ACTOR = createAtlasUser("u_sem", "managed", "sem@test", {
 
 // --- Mocks for the semantic lookup helpers + executeSQL pipeline ---
 
-const mockListEntities = mock<(...args: unknown[]) => unknown>(() => [
+// #2150: consolidated `listEntities(opts)` is async — return a Promise.
+const mockListEntities = mock<(...args: unknown[]) => unknown>(async () => [
   { name: "User", table: "users", description: "Users", source: "default" },
   { name: "orders", table: "orders", description: "Orders", source: "default" },
 ]);
@@ -67,14 +68,46 @@ const mockFindMetricById = mock<(...args: unknown[]) => unknown>(
 );
 
 mock.module("@atlas/api/lib/semantic/lookups", () => ({
-  listEntities: mockListEntities,
+  // #2150: `listEntities` was consolidated into `semantic/entities.ts` and
+  // is mocked there now (see the entities mock below). lookups still owns
+  // `getEntityByName`, `searchGlossary`, and `findMetricById` — the other
+  // three semantic-tools dispatches.
   getEntityByName: mockGetEntityByName,
   searchGlossary: mockSearchGlossary,
   findMetricById: mockFindMetricById,
-  // The SUT only needs the four above. Re-export the full surface area as
-  // mocks anyway so other modules importing from this path don't break.
   loadGlossaryTerms: mock(() => []),
   loadMetricDefinitions: mock(() => []),
+}));
+
+// #2150: the consolidated `listEntities(opts)` lives in `semantic/entities.ts`
+// and branches DB vs disk by `orgId`. The MCP test passes a workspaceId so
+// the call would normally hit the DB; we stub the surface here so the test
+// stays hermetic and asserts on the same fixture that the old lookups mock
+// returned.
+mock.module("@atlas/api/lib/semantic/entities", () => ({
+  listEntities: mockListEntities,
+  // The other entities exports aren't used by the SUT; provide minimal
+  // stubs so any transitive importer doesn't see undefined exports.
+  listEntityRows: mock(async () => []),
+  listEntitiesWithOverlay: mock(async () => []),
+  getEntity: mock(async () => null),
+  upsertEntity: mock(async () => {}),
+  upsertDraftEntity: mock(async () => {}),
+  upsertTombstone: mock(async () => {}),
+  deleteDraftEntity: mock(async () => false),
+  deleteEntity: mock(async () => false),
+  countEntities: mock(async () => 0),
+  bulkUpsertEntities: mock(async () => 0),
+  createVersion: mock(async () => "v1"),
+  listVersions: mock(async () => ({ versions: [], total: 0 })),
+  getVersion: mock(async () => null),
+  generateChangeSummary: mock(async () => null),
+  applyTombstones: mock(async () => 0),
+  promoteDraftEntities: mock(async () => 0),
+  archiveSingleConnection: mock(async () => ({ status: "not_found" as const })),
+  restoreSingleConnection: mock(async () => ({ status: "not_found" as const })),
+  DEMO_CONNECTION_ID: "__demo__",
+  SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
 }));
 
 const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(
@@ -249,7 +282,14 @@ describe("MCP semantic tools", () => {
       name: "listEntities",
       arguments: { filter: "ord" },
     });
-    expect(mockListEntities).toHaveBeenCalledWith({ filter: "ord" });
+    // MCP binds workspace id + published mode so the discovery surface
+    // matches the published-mode whitelist `executeSQL` consults. Drafts
+    // never leak to external clients regardless of caller workspace mode.
+    expect(mockListEntities).toHaveBeenCalledWith({
+      orgId: TEST_ACTOR.activeOrganizationId,
+      mode: "published",
+      filter: "ord",
+    });
   });
 
   // --- describeEntity ---

@@ -29,7 +29,8 @@ const mockCountEntities = mock((): Promise<number> => Promise.resolve(0));
 const mockBulkUpsertEntities = mock((): Promise<number> => Promise.resolve(0));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mockListEntities,
+  listEntityRows: mockListEntities,
+  listEntities: mock(async () => []),
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,

@@ -47,7 +47,8 @@ const mockGenerateChangeSummary = mock((): Promise<string | null> => Promise.res
 const SEMANTIC_ENTITY_STATUSES = ["published", "draft", "draft_delete", "archived"] as const;
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mockListEntities,
+  listEntityRows: mockListEntities,
+  listEntities: mock(async () => []),
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,

@@ -146,6 +146,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertDraftEntity: async () => {},
   upsertTombstone: async () => {},
   deleteDraftEntity: async () => false,
+  listEntityRows: async () => [],
   listEntities: async () => [],
   listEntitiesWithOverlay: async () => [],
   getEntity: async () => null,

@@ -196,7 +196,8 @@ describe("loadOrgWhitelist — developer mode uses overlay", () => {
   const mockListEntitiesWithOverlay = mock(async () => [] as Record<string, unknown>[]);
 
   mock.module("@atlas/api/lib/semantic/entities", () => ({
-    listEntities: mockListEntities,
+    listEntityRows: mockListEntities,
+    listEntities: mock(async () => []),
     listEntitiesWithOverlay: mockListEntitiesWithOverlay,
     getEntity: mock(async () => null),
     upsertEntity: mock(async () => {}),

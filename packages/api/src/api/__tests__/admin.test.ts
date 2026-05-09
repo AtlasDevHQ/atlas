@@ -327,7 +327,8 @@ const mockGetVersion: Mock<(...args: unknown[]) => Promise<unknown>> = mock(() =
 const mockGenerateChangeSummary: Mock<(oldYaml: string | null, newYaml: string) => Promise<string | null>> = mock(() => Promise.resolve("Initial version"));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mockListEntitiesAdmin,
+  listEntityRows: mockListEntitiesAdmin,
+  listEntities: mock(() => Promise.resolve([])),
   getEntity: mockGetEntityAdmin,
   upsertEntity: mockUpsertEntityAdmin,
   deleteEntity: mockDeleteEntityAdmin,

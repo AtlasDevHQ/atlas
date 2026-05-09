@@ -94,7 +94,8 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 
 // `runMetric` resolves the metric definition through these helpers.
 mock.module("@atlas/api/lib/semantic/lookups", () => ({
-  listEntities: () => [],
+  // #2150: `listEntities` was consolidated into `semantic/entities.ts`
+  // (mocked separately below). The remaining lookups stay here.
   getEntityByName: () => null,
   searchGlossary: () => [],
   findMetricById: (id: string) =>
@@ -113,6 +114,31 @@ mock.module("@atlas/api/lib/semantic/lookups", () => ({
       : null,
   loadGlossaryTerms: () => [],
   loadMetricDefinitions: () => [],
+}));
+
+// #2150: stub the consolidated `listEntities` for the MCP listEntities tool.
+mock.module("@atlas/api/lib/semantic/entities", () => ({
+  listEntities: async () => [],
+  listEntityRows: async () => [],
+  listEntitiesWithOverlay: async () => [],
+  getEntity: async () => null,
+  upsertEntity: async () => {},
+  upsertDraftEntity: async () => {},
+  upsertTombstone: async () => {},
+  deleteDraftEntity: async () => false,
+  deleteEntity: async () => false,
+  countEntities: async () => 0,
+  bulkUpsertEntities: async () => 0,
+  createVersion: async () => "v1",
+  listVersions: async () => ({ versions: [], total: 0 }),
+  getVersion: async () => null,
+  generateChangeSummary: async () => null,
+  applyTombstones: async () => 0,
+  promoteDraftEntities: async () => 0,
+  archiveSingleConnection: async () => ({ status: "not_found" as const }),
+  restoreSingleConnection: async () => ({ status: "not_found" as const }),
+  DEMO_CONNECTION_ID: "__demo__",
+  SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
 }));
 
 // Don't mock @atlas/api/lib/config: its many runtime exports would require

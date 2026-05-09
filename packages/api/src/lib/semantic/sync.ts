@@ -208,8 +208,8 @@ export async function syncAllEntitiesToDisk(orgId: string): Promise<number> {
 }
 
 async function _doSyncAllEntitiesToDisk(orgId: string): Promise<number> {
-  const { listEntities } = await import("@atlas/api/lib/semantic/entities");
-  const rows = await listEntities(orgId);
+  const { listEntityRows } = await import("@atlas/api/lib/semantic/entities");
+  const rows = await listEntityRows(orgId);
 
   const root = getSemanticRoot(orgId);
 
@@ -416,10 +416,10 @@ async function _buildOrgModeRoot(
   mode: import("@useatlas/types/auth").AtlasMode,
   root: string,
 ): Promise<{ written: number; failed: number }> {
-  const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+  const { listEntityRows, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
 
   const rows = mode === "published"
-    ? await listEntities(orgId, undefined, "published")
+    ? await listEntityRows(orgId, undefined, "published")
     : await listEntitiesWithOverlay(orgId);
 
   await Promise.all([

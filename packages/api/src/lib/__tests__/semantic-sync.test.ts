@@ -35,7 +35,8 @@ const mockHasInternalDB = mock((): boolean => true);
 const mockInternalQuery = mock((): Promise<Array<{ org_id: string }>> => Promise.resolve([]));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mockListEntities,
+  listEntityRows: mockListEntities,
+  listEntities: mock(async () => []),
   getEntity: mock(() => Promise.resolve(null)),
   upsertEntity: mock(() => Promise.resolve()),
   deleteEntity: mock(() => Promise.resolve(false)),

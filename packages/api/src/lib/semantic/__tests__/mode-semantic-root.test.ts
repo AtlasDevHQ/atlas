@@ -27,7 +27,8 @@ const mockListEntities = mock(async (_orgId: string, _type?: string, status?: st
 const mockListEntitiesWithOverlay = mock(async () => [...publishedRows, ...overlayRows]);
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mockListEntities,
+  listEntityRows: mockListEntities,
+  listEntities: async () => [],
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   getEntity: async () => null,
   upsertEntity: async () => {},

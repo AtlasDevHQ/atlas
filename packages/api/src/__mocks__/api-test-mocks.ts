@@ -414,6 +414,7 @@ export function createApiTestMocks(
   }));
 
   mock.module("@atlas/api/lib/semantic/entities", () => ({
+    listEntityRows: mock(() => Promise.resolve([])),
     listEntities: mock(() => Promise.resolve([])),
     getEntity: mock(() => Promise.resolve(null)),
     upsertEntity: mock(() => Promise.resolve()),

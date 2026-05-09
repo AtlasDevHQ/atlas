@@ -18,7 +18,7 @@ import {
   getWhitelistedTables,
   loadOrgWhitelist,
 } from "./whitelist";
-import { listEntities, listEntitiesWithOverlay } from "./entities";
+import { listEntityRows, listEntitiesWithOverlay } from "./entities";
 
 const log = createLogger("semantic-diff");
 
@@ -350,11 +350,11 @@ export async function getYAMLSnapshotsFromDB(
   // Lazy import to avoid pulling js-yaml into the CLI's bundle of this module.
   const yaml = await import("js-yaml");
 
-  // Always filter to non-archived rows. `listEntities(..., undefined)` would
+  // Always filter to non-archived rows. `listEntityRows(..., undefined)` would
   // include `archived` (verified at entities.ts) — undesirable for a diff.
   const rows = atlasMode === "developer"
     ? await listEntitiesWithOverlay(orgId, "entity")
-    : await listEntities(orgId, "entity", "published");
+    : await listEntityRows(orgId, "entity", "published");
 
   for (const row of rows) {
     const rowConnection = row.connection_id ?? "default";

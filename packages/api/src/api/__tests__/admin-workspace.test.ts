@@ -228,6 +228,9 @@ mock.module("@atlas/api/lib/semantic", () => ({
 }));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  // #2150: DB-row export is `listEntityRows`; consolidated `listEntities`
+  // returns summaries.
+  listEntityRows: mock(() => Promise.resolve([])),
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mock(() => Promise.resolve(null)),
   upsertEntity: mock(() => Promise.resolve()),

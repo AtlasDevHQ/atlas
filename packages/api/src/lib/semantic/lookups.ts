@@ -19,56 +19,12 @@ const log = createLogger("semantic-lookups");
 
 // ---------------------------------------------------------------------------
 // Entities
+//
+// Note (#2150): the old disk-only `listEntities` export lived here and
+// returned `EntityListEntry[]`. It was consolidated into
+// `semantic/entities.ts` so both data sources (DB-per-org and disk YAML)
+// share one entry point. The `EntityListEntry` type now lives there too.
 // ---------------------------------------------------------------------------
-
-export interface EntityListEntry {
-  /** Display name — `name` field if present, otherwise the table name. */
-  readonly name: string;
-  readonly table: string;
-  /** Description from the entity YAML; `null` when absent. */
-  readonly description: string | null;
-  /** Source name: `"default"` for root `entities/`, subdir name otherwise. */
-  readonly source: string;
-}
-
-/**
- * List entities available in the semantic layer. Optional `filter` is a
- * case-insensitive substring match against name, table, and description.
- */
-export function listEntities(
-  opts: { filter?: string; semanticRoot?: string } = {},
-): EntityListEntry[] {
-  const root = opts.semanticRoot ?? getSemanticRoot();
-  const { entities } = scanEntities(root);
-  const filter = opts.filter?.trim().toLowerCase() ?? "";
-
-  const results: EntityListEntry[] = [];
-  for (const { sourceName, raw } of entities) {
-    if (typeof raw.table !== "string" || !raw.table) continue;
-
-    const name =
-      typeof raw.name === "string" && raw.name ? raw.name : raw.table;
-    const description =
-      typeof raw.description === "string" && raw.description
-        ? raw.description
-        : null;
-    const entry: EntityListEntry = {
-      name,
-      table: raw.table,
-      description,
-      source: sourceName,
-    };
-
-    if (filter) {
-      const haystack = `${name}\n${entry.table}\n${description ?? ""}`.toLowerCase();
-      if (!haystack.includes(filter)) continue;
-    }
-
-    results.push(entry);
-  }
-
-  return results.sort((a, b) => a.name.localeCompare(b.name));
-}
 
 /**
  * Find a specific entity by `name` (or `table`, fallback) and return its

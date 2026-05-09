@@ -146,6 +146,9 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertDraftEntity: async () => {},
   upsertTombstone: async () => {},
   deleteDraftEntity: async () => false,
+  // #2150: DB-row export is `listEntityRows`; consolidated `listEntities`
+  // returns summaries.
+  listEntityRows: async () => [],
   listEntities: async () => [],
   listEntitiesWithOverlay: async () => [],
   getEntity: async () => null,

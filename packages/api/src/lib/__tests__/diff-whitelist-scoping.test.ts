@@ -85,7 +85,10 @@ const mockListEntitiesWithOverlay = mock(
 );
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mockListEntities,
+  // #2150: `listEntityRows` returns DB rows; consolidated `listEntities`
+  // returns summaries — kept as a stub so the partial-mock rule holds.
+  listEntityRows: mockListEntities,
+  listEntities: mock(async () => []),
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   getEntity: async () => null,
   upsertEntity: async () => {},

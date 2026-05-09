@@ -28,8 +28,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { withRequestContext } from "@atlas/api/lib/logger";
+import { listEntities } from "@atlas/api/lib/semantic/entities";
 import {
-  listEntities,
   getEntityByName,
   searchGlossary,
   findMetricById,
@@ -178,7 +178,11 @@ export function registerSemanticTools(
                 toolName: "listEntities",
               });
               if (limited) return limited;
-              const entities = listEntities({ filter });
+              // #2150: pass `orgId` so MCP tool discovery reads from the
+              // same per-org `semantic_entities` table the executeSQL
+              // whitelist sees. Self-hosted stdio without an internal DB
+              // falls back to disk inside `listEntities`.
+              const entities = await listEntities({ orgId: workspaceId, filter });
               return toJsonContent({ count: entities.length, entities });
             } catch (err) {
               const message = errorMessage(err, "listEntities tool failed");

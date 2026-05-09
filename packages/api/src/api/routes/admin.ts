@@ -1448,7 +1448,7 @@ admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semanti
     return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
   }
 
-  const { listEntities } = await import("@atlas/api/lib/semantic/entities");
+  const { listEntityRows } = await import("@atlas/api/lib/semantic/entities");
   const rawType = c.req.query("type");
   if (rawType && !VALID_ENTITY_TYPES.has(rawType)) {
     return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
@@ -1456,7 +1456,7 @@ admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semanti
   const entityType = rawType as "entity" | "metric" | "glossary" | "catalog" | undefined;
   const atlasMode = getAtlasMode(c);
   const statusFilter = atlasMode === "published" ? "published" as const : undefined;
-  const rows = await listEntities(orgId, entityType, statusFilter);
+  const rows = await listEntityRows(orgId, entityType, statusFilter);
   return c.json({
     entities: rows.map((r) => ({
       name: r.name,

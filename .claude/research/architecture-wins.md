@@ -1329,3 +1329,37 @@ The reference implementation lives in `plugins/yaml-context/src/index.ts` — `g
 - **The `runbooks-context` plugin (1.4.2) can now be authored without re-deriving the surface.** The `mcpTools()` factory pattern, the `McpToolContext.audit()` event emitter, and the rubric helper are all in place — adding `searchRunbooks` / `getRunbook` / `listRunbookCategories` is a 100-line plugin file plus its YAML KB.
 
 **Category:** Module-deepening refactor that took a single-purpose extension point (`contextProvider.load() → string`) and added a sibling first-class agent-surface contract (`mcpTools() → AtlasMcpTool[]`) without growing the plugin-author API beyond the existing `definePlugin()` factory. The split between "host registry + transport-agnostic dispatch" (api-side) and "MCP-SDK adapter" (mcp-side) follows the precedent set by the connection registry (`@atlas/api/lib/db/connection`) being driver-agnostic with the postgres / mysql / clickhouse drivers as thin shims.
+
+
+## 49. Consolidate parallel `listEntities` exports — one entry, explicit data source (#2150)
+
+**Date:** 2026-05-08
+**Issue:** #2150
+**Milestone:** 1.4.1 — MCP: Bringing It All Together (Theme F; architecture-tagged)
+
+**Before:** Two `listEntities` exports, same name, different worlds.
+- `lib/semantic/lookups.ts:listEntities(opts)` — sync, returned `EntityListEntry[]` from on-disk YAML. The MCP `listEntities` tool consumed it.
+- `lib/semantic/entities.ts:listEntities(orgId, entityType?, statusFilter?)` — async, returned `SemanticEntityRow[]` from the per-org `semantic_entities` table. The whitelist loader, the diff snapshot, the disk sync, the expert context loader, and the admin route all consumed it.
+
+The footgun: any future "list entities for this org" code path could grab the disk export and silently disagree with `executeSQL`'s whitelist. That class of disagreement was the proximate symptom of #2142 — the MCP `listEntities` tool returned 13 NovaMart entities while the per-org DB had zero, so the agent saw `customers` exist but every `SELECT FROM customers` came back as `unknown_entity`. The customer-facing fix in #2147 patched the wizard write and the whitelist fallback; this win removes the architectural drift that made the bug possible in the first place.
+
+**The win:** one canonical `listEntities(opts: { orgId?, filter?, semanticRoot? }): Promise<EntityListEntry[]>` in `entities.ts` that branches data source explicitly:
+- `orgId` provided AND internal DB configured → reads per-org from `semantic_entities` and projects to the summary shape. SaaS and multi-tenant calls always take this branch, so MCP tool discovery and the SQL whitelist read from the same universe — the #2142 class is permanently dead.
+- `orgId` undefined OR no internal DB → falls back to the on-disk YAML scanner. This is the self-hosted stdio + boot-time semantic-discovery surface.
+
+The DB row-shape callers (whitelist, sync, diff, expert, admin route) didn't *want* `EntityListEntry` — they need `yaml_content`, `status`, `connection_id`, and timestamps to do their work. They moved to a new explicitly-named `listEntityRows(orgId, entityType?, statusFilter?): Promise<SemanticEntityRow[]>` export so each caller's intent is legible at the call site: "give me the rows" vs "give me the summary list." The MCP tool now passes `orgId: workspaceId` so DB-backed deployments read the same entities `executeSQL` whitelists from; self-hosted stdio without an internal DB falls through to disk inside the same function, so the boot-time semantic-discovery surface still works.
+
+A new contract test at `__tests__/list-entities-data-source.test.ts` pins the data-source-per-call shape so future code can't accidentally cross the streams. It asserts the orgId-present-vs-absent branching, that the no-DB-fallback path doesn't hit the DB mock, that the shape is the same `EntityListEntry` summary across both branches (with `source` mirroring `connection_id` for DB rows and the subdir name for disk rows), and that filter applies identically in both branches.
+
+**What got unbundled:**
+- **Caller intent is now explicit.** `listEntityRows` says "I need DB row data" at every call site; `listEntities` says "I need a caller-facing summary." A reader can't pick the wrong one without understanding what they're asking for.
+- **Disk-vs-DB selection moved out of the call site, into the function.** Every previous caller had to know whether they wanted disk or DB before calling. Now `listEntities({ orgId })` makes the choice locally based on configuration: SaaS callers get DB, self-hosted-stdio gets disk, and the function knows. The MCP tool no longer has to inspect deploy mode to pick the right helper.
+- **The disk path stopped being a parallel implementation.** The lookups.ts copy of the disk scan logic is gone; `listEntities` calls `scanEntities` directly. The `EntityListEntry` type also moved to `entities.ts` so its definition lives next to the function that produces it.
+
+**Impact:**
+- **`mcp listEntities` tool dispatches now read per-org DB rows when bound.** The MCP edge sees the same set `executeSQL` whitelists from. A bound user against a SaaS workspace will never see "13 entities exist but all SELECTs are rejected" again — the symptom that surfaced this issue.
+- **+~200 lines / −~80 lines net** across one new test file, the consolidation in `entities.ts` (new `listEntities` + private `rowToEntry` / `scanDiskEntities` helpers), the type move out of `lookups.ts`, the rename across 5 production callers, and the mock additions across 18 test files. The win isn't line count — it's that "two functions doing different things behind the same name" became "one function with explicit data-source selection."
+- **Test mocks updated everywhere `entities.ts` is partial-mocked.** Each `mock.module("@atlas/api/lib/semantic/entities", …)` now provides both `listEntityRows` (the renamed DB function) and `listEntities` (the new summary export) so the partial-mock-causes-SyntaxError-in-other-files rule keeps holding under bun's per-file isolation.
+- **One contract test pins it forever.** `list-entities-data-source.test.ts` asserts the branching invariants directly, so a future "we'll just add a third path" attempt fails CI immediately.
+
+**Category:** Module-deepening refactor that collapsed a same-name-different-shape footgun into a single explicit interface. Sibling to win #46 (boot-guard family) in spirit — the architectural commitment is "make the wrong thing impossible to reach for," not "rename the dangerous thing and audit." The DB-row callers' migration to `listEntityRows` is the deliberate seam: when a future caller types `listEntities`, they get the summary; when they type `listEntityRows`, they get the rows. The compiler arbitrates intent.

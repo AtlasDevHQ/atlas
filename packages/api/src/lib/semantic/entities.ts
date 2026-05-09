@@ -3,14 +3,53 @@
  *
  * Entity types: "entity", "metric", "glossary", "catalog".
  * Each entity is stored as raw YAML content keyed by (orgId, entityType, name).
+ *
+ * Two list-style exports live here intentionally (#2150):
+ *
+ * - `listEntityRows` — returns the full DB-row shape (`SemanticEntityRow[]`)
+ *   keyed to a specific org. Use when the caller needs `yaml_content`,
+ *   `status`, `connection_id`, or other row-level fields (whitelist load,
+ *   diff snapshots, sync-to-disk, admin row listings).
+ *
+ * - `listEntities` — the canonical caller-facing summary export. Returns
+ *   `EntityListEntry[]` (display shape) and branches the data source by
+ *   `orgId`: when bound AND the internal DB is configured it reads per-org
+ *   from `semantic_entities`; otherwise it falls back to the on-disk YAML
+ *   scanner. The fallback is the self-hosted stdio + boot-time
+ *   semantic-discovery surface; SaaS / multi-tenant calls always pass
+ *   `orgId` so the MCP tool surface and `executeSQL` whitelist read from
+ *   the same source (kills the #2142 class permanently).
  */
 
+import * as fs from "fs";
+import * as yaml from "js-yaml";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { Effect, Duration } from "effect";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
+import { getSemanticRoot } from "./files";
+import { scanEntities } from "./scanner";
 
 const log = createLogger("semantic-entities");
+
+// ---------------------------------------------------------------------------
+// Caller-facing summary shape — same on disk and DB so switching sources
+// can never silently change the field set.
+// ---------------------------------------------------------------------------
+
+export interface EntityListEntry {
+  /** Display name — `name` field if present, otherwise the table name. */
+  readonly name: string;
+  readonly table: string;
+  /** Description from the entity YAML; `null` when absent. */
+  readonly description: string | null;
+  /**
+   * Source tag. For disk reads, the subdirectory name (`"default"` for
+   * root `entities/`, otherwise the per-source dir). For DB reads, the
+   * row's `connection_id` (`"default"` when null).
+   */
+  readonly source: string;
+}
 
 export type SemanticEntityType = "entity" | "metric" | "glossary" | "catalog";
 
@@ -145,13 +184,20 @@ export async function deleteDraftEntity(
 }
 
 /**
- * List all semantic entities for an org, optionally filtered by type and status.
+ * List raw semantic-entity DB rows for an org, optionally filtered by type
+ * and status. Returns the full row shape (`yaml_content`, `status`,
+ * `connection_id`, timestamps) so callers that need to parse YAML or
+ * inspect lifecycle state can do so without a second query.
+ *
+ * Use this when you need the row-level data; reach for `listEntities`
+ * (the consolidated summary export) when you only need name/table/
+ * description for display or discovery.
  *
  * @param statusFilter - When provided, adds `AND status = $N` to the query.
  *   Use `"published"` in published mode to hide draft/archived rows.
  *   Omit (or pass undefined) in developer mode to return all rows.
  */
-export async function listEntities(
+export async function listEntityRows(
   orgId: string,
   entityType?: SemanticEntityType,
   statusFilter?: SemanticEntityStatus,
@@ -194,6 +240,118 @@ export async function listEntities(
      ORDER BY entity_type, name`,
     [orgId],
   );
+}
+
+// ---------------------------------------------------------------------------
+// Canonical caller-facing summary export (#2150).
+// ---------------------------------------------------------------------------
+
+/**
+ * List entities as caller-facing summaries — the single export every
+ * surface-level "what entities exist?" question should reach for.
+ *
+ * Branches the data source explicitly:
+ *
+ * - `orgId` provided AND internal DB configured → reads per-org rows
+ *   from `semantic_entities` (delegates to `listEntityRows(orgId, "entity")`)
+ *   and projects each row to the summary shape. SaaS / multi-tenant
+ *   callers always take this branch, so MCP tool discovery sees the same
+ *   universe `executeSQL` whitelists from (kills the #2142 class).
+ *
+ * - `orgId` undefined OR no internal DB → falls back to scanning the
+ *   on-disk semantic root. This is the self-hosted stdio + boot-time
+ *   semantic-discovery surface.
+ *
+ * `filter` is a case-insensitive substring match against name, table,
+ * and description; applied identically in both branches.
+ */
+export async function listEntities(
+  opts: {
+    readonly orgId?: string;
+    readonly filter?: string;
+    readonly semanticRoot?: string;
+  } = {},
+): Promise<EntityListEntry[]> {
+  const filter = opts.filter?.trim().toLowerCase() ?? "";
+  const matchesFilter = (entry: EntityListEntry): boolean => {
+    if (!filter) return true;
+    const haystack = `${entry.name}\n${entry.table}\n${entry.description ?? ""}`.toLowerCase();
+    return haystack.includes(filter);
+  };
+
+  if (opts.orgId && hasInternalDB()) {
+    const rows = await listEntityRows(opts.orgId, "entity");
+    const summaries: EntityListEntry[] = [];
+    for (const row of rows) {
+      const summary = rowToEntry(row);
+      if (summary && matchesFilter(summary)) summaries.push(summary);
+    }
+    return summaries.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  return scanDiskEntities(opts.semanticRoot, matchesFilter);
+}
+
+function rowToEntry(row: SemanticEntityRow): EntityListEntry | null {
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const loaded = yaml.load(row.yaml_content);
+    if (loaded && typeof loaded === "object") {
+      parsed = loaded as Record<string, unknown>;
+    }
+  } catch (err) {
+    log.warn(
+      { orgId: row.org_id, name: row.name, err: err instanceof Error ? err.message : String(err) },
+      "listEntities: failed to parse semantic_entities.yaml_content — skipping row",
+    );
+    return null;
+  }
+
+  // The DB row shape is the source of truth for `name` and connection
+  // even when the YAML omits or contradicts them.
+  const tableField = parsed?.table;
+  const table = typeof tableField === "string" && tableField ? tableField : row.name;
+  const nameField = parsed?.name;
+  const name = typeof nameField === "string" && nameField ? nameField : table;
+  const descField = parsed?.description;
+  const description = typeof descField === "string" && descField ? descField : null;
+
+  return {
+    name,
+    table,
+    description,
+    source: row.connection_id ?? "default",
+  };
+}
+
+function scanDiskEntities(
+  semanticRoot: string | undefined,
+  matchesFilter: (entry: EntityListEntry) => boolean,
+): EntityListEntry[] {
+  const root = semanticRoot ?? getSemanticRoot();
+  // The scanner reads through `fs` lazily — guard against a missing root
+  // so self-hosted boot before semantic init returns an empty list rather
+  // than throwing.
+  if (!fs.existsSync(root)) return [];
+
+  const { entities } = scanEntities(root);
+  const results: EntityListEntry[] = [];
+  for (const { sourceName, raw } of entities) {
+    if (typeof raw.table !== "string" || !raw.table) continue;
+
+    const name = typeof raw.name === "string" && raw.name ? raw.name : raw.table;
+    const description =
+      typeof raw.description === "string" && raw.description ? raw.description : null;
+    const entry: EntityListEntry = {
+      name,
+      table: raw.table,
+      description,
+      source: sourceName,
+    };
+    if (matchesFilter(entry)) results.push(entry);
+  }
+
+  return results.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**

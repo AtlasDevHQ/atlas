@@ -3,13 +3,17 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  listEntities,
   getEntityByName,
   loadGlossaryTerms,
   searchGlossary,
   loadMetricDefinitions,
   findMetricById,
 } from "../lookups";
+// #2150: the disk-only `listEntities` was consolidated into entities.ts.
+// We import the canonical export here so the disk-side cases (filter,
+// source tagging, defensive coercion, malformed-file resilience) keep
+// regression coverage through the new entry point.
+import { listEntities } from "../entities";
 // `beforeAll` / `afterAll` already imported at the top from "bun:test".
 
 let tmpRoot: string;
@@ -99,9 +103,9 @@ afterAll(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-describe("listEntities", () => {
-  it("returns all entities sorted by name", () => {
-    const result = listEntities({ semanticRoot: tmpRoot });
+describe("listEntities (disk branch via consolidated export)", () => {
+  it("returns all entities sorted by name", async () => {
+    const result = await listEntities({ semanticRoot: tmpRoot });
     const names = result.map((e) => e.name);
     expect(names).toContain("User");
     expect(names).toContain("orders");
@@ -109,19 +113,19 @@ describe("listEntities", () => {
     expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
   });
 
-  it("filters by case-insensitive substring across name/table/description", () => {
-    const result = listEntities({ semanticRoot: tmpRoot, filter: "ORDER" });
+  it("filters by case-insensitive substring across name/table/description", async () => {
+    const result = await listEntities({ semanticRoot: tmpRoot, filter: "ORDER" });
     expect(result).toHaveLength(1);
     expect(result[0].table).toBe("orders");
   });
 
-  it("returns empty array when filter matches nothing", () => {
-    const result = listEntities({ semanticRoot: tmpRoot, filter: "nonexistent" });
+  it("returns empty array when filter matches nothing", async () => {
+    const result = await listEntities({ semanticRoot: tmpRoot, filter: "nonexistent" });
     expect(result).toEqual([]);
   });
 
-  it("tags per-source entities with the source directory name", () => {
-    const result = listEntities({ semanticRoot: tmpRoot });
+  it("tags per-source entities with the source directory name", async () => {
+    const result = await listEntities({ semanticRoot: tmpRoot });
     const events = result.find((e) => e.table === "events");
     expect(events?.source).toBe("warehouse");
   });
@@ -268,8 +272,8 @@ describe("malformed-file resilience", () => {
     fs.rmSync(resilientRoot, { recursive: true, force: true });
   });
 
-  it("listEntities skips malformed entity files and returns the rest", () => {
-    const result = listEntities({ semanticRoot: resilientRoot });
+  it("listEntities skips malformed entity files and returns the rest", async () => {
+    const result = await listEntities({ semanticRoot: resilientRoot });
     const tables = result.map((e) => e.table);
     expect(tables).toContain("good");
     // The bad file may or may not parse far enough to surface — what
@@ -323,14 +327,14 @@ describe("listEntities — defensive coercion", () => {
     fs.rmSync(coerceRoot, { recursive: true, force: true });
   });
 
-  it("returns description: null when the YAML field is empty", () => {
-    const result = listEntities({ semanticRoot: coerceRoot });
+  it("returns description: null when the YAML field is empty", async () => {
+    const result = await listEntities({ semanticRoot: coerceRoot });
     const noDesc = result.find((e) => e.table === "no_desc");
     expect(noDesc?.description).toBeNull();
   });
 
-  it("falls back to table when name is non-string", () => {
-    const result = listEntities({ semanticRoot: coerceRoot });
+  it("falls back to table when name is non-string", async () => {
+    const result = await listEntities({ semanticRoot: coerceRoot });
     const nonStringName = result.find((e) => e.table === "non_string_name");
     expect(nonStringName?.name).toBe("non_string_name");
   });

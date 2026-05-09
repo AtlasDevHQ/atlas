@@ -441,10 +441,10 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
     _orgWhitelists.delete(cacheKey);
   }
 
-  const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+  const { listEntityRows, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
   const rows = mode === "developer"
     ? await listEntitiesWithOverlay(orgId, "entity")
-    : await listEntities(orgId, "entity", mode === "published" ? "published" : undefined);
+    : await listEntityRows(orgId, "entity", mode === "published" ? "published" : undefined);
 
   const byConnection = new Map<string, Set<string>>();
   let parseFailures = 0;
@@ -492,7 +492,7 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
  *
  * @param mode - `"published"` → published-only cache; `"developer"` → overlay
  *   cache (drafts on published, tombstones hidden, archived-connection entities
- *   excluded); omitted → legacy cache built from `listEntities` with no status
+ *   excluded); omitted → legacy cache built from `listEntityRows` with no status
  *   filter (includes tombstones and archived rows).
  */
 export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default", mode?: "published" | "developer"): Set<string> {

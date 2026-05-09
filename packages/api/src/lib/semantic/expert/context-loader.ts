@@ -55,10 +55,10 @@ export async function loadEntitiesFromDB(
   const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
   if (!hasInternalDB()) return { entities: [], totalRows: 0, parseFailures: 0 };
 
-  const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+  const { listEntityRows, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
   const rows = mode === "developer"
     ? await listEntitiesWithOverlay(orgId, "entity")
-    : await listEntities(orgId, "entity", "published");
+    : await listEntityRows(orgId, "entity", "published");
 
   const entities: ParsedEntity[] = [];
   let parseFailures = 0;

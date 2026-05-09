@@ -716,6 +716,24 @@ describe("0042_audit_retention_default.sql", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: 0048_trusted_device.sql
+// ---------------------------------------------------------------------------
+
+describe("0048_trusted_device.sql", () => {
+  it("is registered in MANAGED_AUTH_MIGRATIONS so non-managed deploys skip it", () => {
+    // 0048 declares `user_id TEXT REFERENCES "user"(id) ON DELETE CASCADE`.
+    // Better Auth owns the `user` table; non-managed-auth deploys never
+    // create it, so applying this migration there fails boot. The skip
+    // wiring lives in `MANAGED_AUTH_MIGRATIONS` — pin the membership.
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(
+      /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0048_trusted_device\.sql"/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: 0050_backfill_email_verified_grandfathered.sql (#2117)
 // ---------------------------------------------------------------------------
 

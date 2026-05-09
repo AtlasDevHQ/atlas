@@ -15,6 +15,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { abuseEscalations } from "@atlas/api/lib/metrics";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
+import { isLoadTestWorkspace } from "@atlas/api/lib/auth/load-test-allowlist";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
@@ -145,9 +146,17 @@ interface WorkspaceAbuseState {
 
 const workspaceState = new Map<string, WorkspaceAbuseState>();
 
+/**
+ * Workspaces that have already had their load-test allowlist skip
+ * logged once. Bounded by the size of `ATLAS_LOADTEST_ALLOWED_ORGS`
+ * (operator-controlled), so unbounded growth isn't a concern.
+ */
+const warnedLoadTestSkip = new Set<string>();
+
 /** Reset all in-memory state. For tests. */
 export function _resetAbuseState(): void {
   workspaceState.clear();
+  warnedLoadTestSkip.clear();
 }
 
 /** Get or create workspace state. */
@@ -195,6 +204,25 @@ export function recordQueryEvent(
   workspaceId: string,
   opts: { success: boolean; tablesAccessed?: string[] },
 ): void {
+  // #2166 — workspaces in the load-test allowlist
+  // (`ATLAS_LOADTEST_ALLOWED_ORGS`) bypass the escalation chain so a
+  // designated load-test workspace can't auto-suspend itself while
+  // running scenarios that legitimately exceed the rate limits. Same
+  // allowlist that gates the self-mint MCP load-test JWT endpoint
+  // (`api/routes/me-load-test.ts`) — single source of truth in
+  // `lib/auth/load-test-allowlist.ts`. Log the first skip per process
+  // so operators see the escape hatch is engaged without log spam.
+  if (isLoadTestWorkspace(workspaceId)) {
+    if (!warnedLoadTestSkip.has(workspaceId)) {
+      warnedLoadTestSkip.add(workspaceId);
+      log.info(
+        { workspaceId },
+        "Abuse tracking skipped (workspace in ATLAS_LOADTEST_ALLOWED_ORGS)",
+      );
+    }
+    return;
+  }
+
   const config = getAbuseConfig();
   const windowMs = config.queryRateWindowSeconds * 1000;
   const state = getState(workspaceId);

@@ -94,6 +94,8 @@ const {
   _resetAbuseState,
 } = await import("../abuse");
 
+const { isLoadTestWorkspace } = await import("../../auth/load-test-allowlist");
+
 describe("Abuse Prevention Engine", () => {
   beforeEach(() => {
     _resetAbuseState();
@@ -187,6 +189,48 @@ describe("Abuse Prevention Engine", () => {
       // More events don't change anything (no crash, stays suspended)
       recordQueryEvent("ws-stopped", { success: true });
       expect(checkAbuseStatus("ws-stopped").level).toBe("suspended");
+    });
+
+    // #2166 — load-test allowlist. Workspaces in
+    // ATLAS_LOADTEST_ALLOWED_ORGS (the same allowlist that gates the
+    // self-mint MCP load-test JWT endpoint) skip every counter so they
+    // cannot escalate past `none`, regardless of how aggressively they
+    // hammer the rate limits.
+    it("does not escalate workspaces in ATLAS_LOADTEST_ALLOWED_ORGS", () => {
+      const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-loadtest";
+      try {
+        const config = getAbuseConfig();
+        // Same loop that suspends a non-allowlisted org in the prior tests.
+        for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+          recordQueryEvent("ws-loadtest", { success: true });
+        }
+        expect(checkAbuseStatus("ws-loadtest").level).toBe("none");
+        // First skip emits a single info log; subsequent skips stay quiet.
+        const skipLogs = infoCalls.filter((c) =>
+          c.msg.includes("ATLAS_LOADTEST_ALLOWED_ORGS"),
+        );
+        expect(skipLogs.length).toBe(1);
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+      }
+    });
+
+    it("isLoadTestWorkspace reflects env-var changes without restart", () => {
+      const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      try {
+        delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        expect(isLoadTestWorkspace("ws-x")).toBe(false);
+        process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-x, ws-y ,  ";
+        // Whitespace + empty entries get trimmed/dropped.
+        expect(isLoadTestWorkspace("ws-x")).toBe(true);
+        expect(isLoadTestWorkspace("ws-y")).toBe(true);
+        expect(isLoadTestWorkspace("ws-z")).toBe(false);
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+      }
     });
 
     it("triggers on high error rate", () => {

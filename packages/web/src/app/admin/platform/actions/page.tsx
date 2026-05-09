@@ -228,10 +228,10 @@ function ActionsPageContent() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Action Log</h2>
+          <h1 className="text-2xl font-bold tracking-tight">Action Log</h1>
           <p className="text-muted-foreground">
             All admin actions across the platform. {total > 0 && `${total} total entries.`}
           </p>

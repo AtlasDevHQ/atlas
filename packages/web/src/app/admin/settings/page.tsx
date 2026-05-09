@@ -2,6 +2,7 @@
 
 import { useState, type ComponentType } from "react";
 import { z } from "zod";
+import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -31,6 +32,8 @@ import { cn } from "@/lib/utils";
 import {
   Bot,
   Brain,
+  Check,
+  Copy,
   Cpu,
   Database,
   FlaskConical,
@@ -373,6 +376,103 @@ function SettingRow({
   );
 }
 
+// ── Workspace identity (#2233) ────────────────────────────────────
+
+// Pure presenter so the rendered states have a regression test without
+// pulling Better Auth's session client into the test harness.
+export function WorkspaceIdentityCard({
+  orgId,
+  orgName,
+}: {
+  orgId: string | null;
+  orgName: string | null;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    if (!orgId) return;
+    try {
+      await navigator.clipboard.writeText(orgId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.debug(
+        "Clipboard write failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  if (!orgId) return null;
+
+  return (
+    <section className="mb-8">
+      <SectionHeading
+        title="Workspace identity"
+        description="Machine-readable identifiers for the active workspace"
+      />
+      <div className="space-y-3 rounded-xl border bg-card/40 px-4 py-3.5">
+        {orgName && (
+          <div className="flex items-baseline justify-between text-xs">
+            <span className="text-muted-foreground">Name</span>
+            <span className="font-medium text-foreground">{orgName}</span>
+          </div>
+        )}
+        <div className="space-y-1.5">
+          <label
+            htmlFor="workspace-id"
+            className="block text-xs text-muted-foreground"
+          >
+            Workspace ID
+          </label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="workspace-id"
+              readOnly
+              value={orgId}
+              onFocus={(e) => e.currentTarget.select()}
+              className="font-mono text-xs"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={handleCopy}
+              className="size-9 shrink-0"
+              aria-label={copied ? "Copied workspace ID" : "Copy workspace ID"}
+            >
+              {copied ? (
+                <Check className="size-4 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <Copy className="size-4" />
+              )}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Use this when configuring the CLI, SDK, or load-test allowlists.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function WorkspaceIdentitySection() {
+  const session = authClient.useSession();
+  // Better Auth's public session type doesn't expose `activeOrganizationId` /
+  // `activeOrganizationName`; the Atlas org plugin stamps them on the session
+  // payload, so cast through `Record<string, unknown>` to read them — same
+  // pattern as `org-switcher.tsx` and `connect-wizard.tsx`.
+  const sessionData = session.data?.session as
+    | Record<string, unknown>
+    | undefined;
+  const orgId = (sessionData?.activeOrganizationId as string | undefined) ?? null;
+  const orgName =
+    (sessionData?.activeOrganizationName as string | undefined) ?? null;
+
+  return <WorkspaceIdentityCard orgId={orgId} orgName={orgName} />;
+}
+
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function SettingsPage() {
@@ -447,6 +547,10 @@ export default function SettingsPage() {
               <span className="text-muted-foreground/60">overridden</span>
             </div>
           )}
+        </div>
+
+        <div className="mx-auto max-w-3xl">
+          <WorkspaceIdentitySection />
         </div>
 
         <AdminContentWrapper

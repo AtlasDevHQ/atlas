@@ -853,7 +853,7 @@ export function resolveAllowUnauthDcr(env: NodeJS.ProcessEnv): boolean {
 /**
  * Default access-token TTL — 1 hour (Better Auth's default, OAuth 2.1
  * "industry standard"). Refresh-token default — 30 days. Documented in
- * `docs/guides/mcp-hosted.mdx` so SDK consumers have one source of truth
+ * `docs/guides/mcp.mdx` (hosted protocol reference) so SDK consumers have one source of truth
  * for the contract; the literals here are the implementation half.
  *
  * Surfacing both as env vars (#2066) lets the e2e test override them to
@@ -1044,8 +1044,9 @@ export function buildPlugins() {
       // Token TTLs (#2066). Defaults match Better Auth's own defaults
       // (1h access / 30d refresh) but surfaced explicitly so the e2e
       // test can drop access TTL to ~30s without rebuilding the auth
-      // server. The values are documented in mcp-hosted.mdx — keep
-      // that doc in lockstep with the defaults above.
+      // server. The values are documented in mcp.mdx (hosted protocol
+      // reference → token refresh contract) — keep that doc in lockstep
+      // with the defaults above.
       accessTokenExpiresIn: resolveAccessTokenTtlSeconds(process.env),
       refreshTokenExpiresIn: resolveRefreshTokenTtlSeconds(process.env),
       // Tag the registered DCR client with the workspace it belongs to.

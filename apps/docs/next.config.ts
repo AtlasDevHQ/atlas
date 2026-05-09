@@ -12,6 +12,19 @@ const config: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      // /guides/mcp-hosted was consolidated into /guides/mcp under the
+      // hosted/self-hosted tabs (#2113). Anchors that survived the merge
+      // continue to deep-link the right section.
+      { source: "/guides/mcp-hosted", destination: "/guides/mcp", permanent: true },
+      {
+        source: "/guides/mcp-hosted/:rest*",
+        destination: "/guides/mcp/:rest*",
+        permanent: true,
+      },
+    ];
+  },
 };
 
 const withMDX = createMDX();

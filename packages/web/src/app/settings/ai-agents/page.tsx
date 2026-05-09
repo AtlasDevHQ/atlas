@@ -242,7 +242,7 @@ export default function AIAgentsPage() {
         <p className="mt-6 text-xs text-muted-foreground">
           Self-hosted Atlas: install agents via the{" "}
           <a
-            href="https://docs.useatlas.dev/guides/mcp-hosted"
+            href="https://docs.useatlas.dev/guides/mcp"
             target="_blank"
             rel="noopener noreferrer"
             className="underline underline-offset-2"

@@ -23,7 +23,7 @@ For one-command setup against Claude Desktop / Cursor / Continue, prefer `bunx @
 bun add @useatlas/mcp @modelcontextprotocol/sdk
 ```
 
-When loaded inside an Atlas project (monorepo dev or a `create-atlas-agent` scaffold), the `@atlas/mcp` server runtime is resolved via dynamic import — you don't need to depend on it directly. Standalone `bunx @useatlas/mcp serve` outside an Atlas project is intentionally not supported; the zero-config path for connecting any MCP client to Atlas is `bunx @useatlas/mcp init --hosted` against Atlas SaaS (see the [hosted endpoint reference](/guides/mcp-hosted)).
+When loaded inside an Atlas project (monorepo dev or a `create-atlas-agent` scaffold), the `@atlas/mcp` server runtime is resolved via dynamic import — you don't need to depend on it directly. Standalone `bunx @useatlas/mcp serve` outside an Atlas project is intentionally not supported; the zero-config path for connecting any MCP client to Atlas is `bunx @useatlas/mcp init --hosted` against Atlas SaaS (see the [hosted endpoint reference](/guides/mcp#hosted-protocol-reference)).
 
 ## Configuration
 

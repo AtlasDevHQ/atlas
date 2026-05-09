@@ -67,31 +67,31 @@ const CLIENT_PRESETS: readonly ClientPreset[] = [
     id: "claude-desktop",
     label: "Claude Desktop",
     description: "Anthropic's desktop app — paste the block into your Claude Desktop config.",
-    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp-hosted#claude-desktop",
+    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp#claude-desktop",
   },
   {
     id: "cursor",
     label: "Cursor",
     description: "Cursor IDE's MCP integration — drops into your Cursor settings.",
-    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp-hosted#cursor",
+    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp#cursor",
   },
   {
     id: "continue",
     label: "Continue",
     description: "Continue.dev IDE extension — paste into the Continue config.",
-    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp-hosted#continue",
+    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp#continue",
   },
   {
     id: "chatgpt",
     label: "ChatGPT",
     description: "OpenAI's ChatGPT app — set the connector URL in ChatGPT's MCP settings.",
-    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp-hosted#chatgpt",
+    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp#chatgpt",
   },
   {
     id: "other",
     label: "Other / Generic MCP",
     description: "Any spec-compliant MCP client — point it at the URL below.",
-    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp-hosted",
+    pasteHelpHref: "https://docs.useatlas.dev/guides/mcp",
   },
 ];
 

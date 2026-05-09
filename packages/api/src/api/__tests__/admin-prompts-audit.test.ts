@@ -153,6 +153,57 @@ describe("POST /api/v1/admin/prompts — audit emission", () => {
       industry: "saas",
     });
   });
+
+  it("returns 409 duplicate_name when the unique index from #2169 trips (matches by SQLSTATE 23505)", async () => {
+    // The new (COALESCE(org_id, ''), lower(name)) index in migration 0054
+    // surfaces as a Postgres unique_violation. Without translation in
+    // admin-prompts.ts the route would 500; we want a friendly 409.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.startsWith("INSERT INTO prompt_collections")) {
+        const err = new Error('duplicate key value violates unique constraint "prompt_collections_org_name_uniq"');
+        (err as { code?: string }).code = "23505";
+        throw err;
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/prompts/", {
+        name: "Existing",
+        industry: "saas",
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("duplicate_name");
+    expect(body.message).toContain("Existing");
+    // Audit must NOT fire for failed creates — we only emit on success.
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("does NOT mistake a non-23505 INSERT failure for a duplicate (regression guard)", async () => {
+    // Make sure the 23505 catch is keyed on SQLSTATE, not message
+    // contents. A pool exhaustion error must propagate as 500, not 409.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.startsWith("INSERT INTO prompt_collections")) {
+        const err = new Error("connection terminated unexpectedly");
+        (err as { code?: string }).code = "57P01";
+        throw err;
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/prompts/", {
+        name: "Anything",
+        industry: "saas",
+      }),
+    );
+
+    expect(res.status).toBe(500);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -196,6 +247,29 @@ describe("PATCH /api/v1/admin/prompts/:id — audit emission", () => {
       adminRequest("PATCH", "/api/v1/admin/prompts/col-builtin", { name: "Try" }),
     );
     expect(res.status).toBe(403);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 duplicate_name when a rename trips the unique index from #2169", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.startsWith("SELECT * FROM prompt_collections")) {
+        return [collectionRow({ id: "col-1", name: "Old Name" })];
+      }
+      if (sql.startsWith("UPDATE prompt_collections")) {
+        const err = new Error('duplicate key value violates unique constraint "prompt_collections_org_name_uniq"');
+        (err as { code?: string }).code = "23505";
+        throw err;
+      }
+      return [];
+    });
+
+    const res = await app.fetch(
+      adminRequest("PATCH", "/api/v1/admin/prompts/col-1", { name: "Already Taken" }),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("duplicate_name");
     expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 });

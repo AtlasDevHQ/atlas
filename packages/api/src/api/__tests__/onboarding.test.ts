@@ -912,20 +912,41 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     ).toBe(false);
   });
 
-  it("seeds demo prompt collections for the ecommerce industry", async () => {
+  it("does NOT seed org-scoped builtin prompt collections — globals are visible to org-with-demo via the listing query", async () => {
+    // /use-demo previously copied each global builtin (org_id IS NULL,
+    // is_builtin = true) into the calling org's namespace. The
+    // `org-with-demo` listing query already returns global builtins
+    // matching the demo industry alongside org-scoped customs (see
+    // packages/api/src/lib/prompts/scoping.ts → buildCollectionsListQuery),
+    // so the per-org copy was redundant — and surfaced as the duplicate
+    // "E-commerce KPIs" library reported in #2169 (one row from the
+    // global seed at startup, one from the per-org copy here). The
+    // /use-demo flow must not touch prompt_collections at all.
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
 
-    // The seedDemoPromptCollections function queries for builtin collections
-    const builtinQuery = mockInternalQuery.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("is_builtin = true") && call[0].includes("industry"),
+    // No write into prompt_collections / prompt_items.
+    const promptCollectionWrites = mockInternalQuery.mock.calls.filter(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO prompt_collections"),
     );
-    expect(builtinQuery).toBeDefined();
-    const params = builtinQuery![1] as unknown[];
-    expect(params[0]).toBe("ecommerce");
+    expect(promptCollectionWrites.length).toBe(0);
+
+    const promptItemWrites = mockInternalQuery.mock.calls.filter(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO prompt_items"),
+    );
+    expect(promptItemWrites.length).toBe(0);
+
+    // No read of prompt_collections either — the previous seed function
+    // first SELECTed the global builtins for this industry, so a
+    // residual call here would mean the function is still being invoked
+    // (just dropping inserts because of the mock returning a stub row).
+    const promptCollectionReads = mockInternalQuery.mock.calls.filter(
+      (call) => typeof call[0] === "string" && call[0].includes("FROM prompt_collections"),
+    );
+    expect(promptCollectionReads.length).toBe(0);
   });
 
   it("rejects when auth mode is not managed", async () => {
@@ -1227,45 +1248,11 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(data.partialFailures).toEqual([]);
   });
 
-  it("partialFailures lists BOTH steps when both phase-4 decorations fail", async () => {
-    mockSetSetting.mockImplementation(async () => { throw new Error("settings down"); });
-    const originalImpl = mockInternalQuery.getMockImplementation();
-    mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (typeof sql === "string" && sql.includes("is_builtin = true")) {
-        throw new Error("prompt collections table missing");
-      }
-      return [{ id: "__demo__" }];
-    });
-    const res = await request("/api/v1/onboarding/use-demo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(201);
-    const data = await json(res);
-    expect(data.partialFailures).toContain("demo_industry_setting");
-    expect(data.partialFailures).toContain("demo_prompt_collections");
-    if (originalImpl) mockInternalQuery.mockImplementation(originalImpl);
-  });
-
-  it("succeeds even when prompt collection seeding fails (non-fatal)", async () => {
-    const originalImpl = mockInternalQuery.getMockImplementation();
-    mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (typeof sql === "string" && sql.includes("is_builtin = true")) {
-        throw new Error("prompt_collections table missing");
-      }
-      return [{ id: "__demo__" }];
-    });
-    const res = await request("/api/v1/onboarding/use-demo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoType: "cybersec" }),
-    });
-    expect(res.status).toBe(201);
-    const data = await json(res);
-    expect(data.connectionId).toBe("__demo__");
-    if (originalImpl) mockInternalQuery.mockImplementation(originalImpl);
-  });
+  // The pre-#2169 phase 4 ran two decorations (demo_industry_setting +
+  // demo_prompt_collections) and tracked both in `partialFailures`.
+  // After #2169 the prompt-collection seed is gone (the global builtins
+  // are visible to org-with-demo orgs already), so the only decoration
+  // left is `demo_industry_setting` — covered by the test above.
 
   it("returns 500 with requestId when DB upsert fails", async () => {
     mockInternalQuery.mockImplementation(async () => { throw new Error("connection reset"); });

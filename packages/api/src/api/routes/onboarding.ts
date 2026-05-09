@@ -42,63 +42,13 @@ const log = createLogger("onboarding");
 // releases supported a `demoType` picker covering `demo` (SaaS CRM, 3 tables),
 // `cybersec` (Sentinel Security, 62 tables), and `ecommerce` (NovaMart, 52
 // tables). The body field is gone; the route always provisions ecommerce.
-
-/**
- * Seed org-scoped prompt collections matching the demo industry.
- * Copies the global builtins for that industry into the org's namespace
- * so they appear in the prompt library immediately after demo setup.
- */
-async function seedDemoPromptCollections(orgId: string, industry: string): Promise<void> {
-  // Find global builtin collections for this industry
-  const builtins = await internalQuery<{ id: string; name: string; description: string; sort_order: number }>(
-    `SELECT id, name, description, sort_order FROM prompt_collections
-     WHERE is_builtin = true AND industry = $1 AND org_id IS NULL`,
-    [industry],
-  );
-
-  for (const builtin of builtins) {
-    try {
-      // Skip if org already has a collection with this name
-      const existing = await internalQuery<{ id: string }>(
-        `SELECT id FROM prompt_collections WHERE name = $1 AND org_id = $2`,
-        [builtin.name, orgId],
-      );
-      if (existing.length > 0) continue;
-
-      // Create org-scoped copy
-      const inserted = await internalQuery<{ id: string }>(
-        `INSERT INTO prompt_collections (name, industry, description, is_builtin, sort_order, org_id, status)
-         VALUES ($1, $2, $3, true, $4, $5, 'published')
-         RETURNING id`,
-        [builtin.name, industry, builtin.description, builtin.sort_order, orgId],
-      );
-      if (!inserted[0]?.id) {
-        log.warn({ collection: builtin.name, orgId }, "Failed to seed demo prompt collection — INSERT returned no rows");
-        continue;
-      }
-
-      // Copy prompt items from the global collection (independent inserts — parallelize)
-      const items = await internalQuery<{ question: string; description: string; category: string; sort_order: number }>(
-        `SELECT question, description, category, sort_order FROM prompt_items
-         WHERE collection_id = $1 ORDER BY sort_order ASC`,
-        [builtin.id],
-      );
-      const collectionId = inserted[0].id;
-      await Promise.all(items.map((item) =>
-        internalQuery(
-          `INSERT INTO prompt_items (collection_id, question, description, category, sort_order)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [collectionId, item.question, item.description, item.category, item.sort_order],
-        ),
-      ));
-    } catch (err) {
-      log.warn(
-        { err: errorMessage(err), collection: builtin.name, orgId },
-        "Failed to seed demo prompt collection — skipping to next",
-      );
-    }
-  }
-}
+//
+// Pre-#2169 we also copied the global builtin prompt_collections rows into
+// the calling org's namespace here. That copy was redundant — the
+// `org-with-demo` listing query in `lib/prompts/scoping.ts` already
+// surfaces global builtins matching the demo industry — and produced the
+// duplicate "E-commerce KPIs" library reported in #2169 (one global
+// row + one per-org copy, both visible to /admin/prompts).
 
 /** Valid connection ID: lowercase alphanumeric, hyphens, underscores, 1-64 chars. Must not start with underscore (reserved for internal IDs). */
 const CONNECTION_ID_PATTERN = /^[a-z][a-z0-9_-]{0,62}[a-z0-9]$/;
@@ -278,12 +228,14 @@ const UseDemoResponseSchema = z.object({
   maskedUrl: z.string(),
   entitiesImported: z.number(),
   /**
-   * Names of post-commit decoration steps that failed (industry setting,
-   * prompt collection seed). Always present as an array — empty when the
-   * full install succeeded — so consumers can call `.includes()` or
-   * `.length` without optional-chaining gymnastics.
+   * Names of post-commit decoration steps that failed. Today the only
+   * decoration is `demo_industry_setting`; #2169 dropped the redundant
+   * per-org prompt-collection seed (the `org-with-demo` listing query
+   * already returns the global builtins). Always present as an array —
+   * empty when the full install succeeded — so consumers can call
+   * `.includes()` or `.length` without optional-chaining gymnastics.
    */
-  partialFailures: z.array(z.enum(["demo_industry_setting", "demo_prompt_collections"])),
+  partialFailures: z.array(z.enum(["demo_industry_setting"])),
 });
 
 // Strict-but-empty: validation parses to {} and silently strips unknown keys
@@ -833,36 +785,26 @@ onboarding.openapi(
         log.warn({ err: errorMessage(err), requestId }, "Demo connection saved but runtime registration failed");
       }
 
-      // Write demo_industry setting + seed prompt collections concurrently.
-      // Both are independent post-commit decorations — failure leaves the
-      // workspace queryable but with reduced features (no demoIndustry-aware
-      // banners, no pre-seeded prompts). We surface that through a
-      // `partialFailures` array on the 201 response so the frontend can show
-      // a degraded-state notice instead of pretending everything worked.
-      const phase4Results = yield* Effect.all([
-        Effect.tryPromise({
-          try: () => setSetting("ATLAS_DEMO_INDUSTRY", industry, user?.id, orgId),
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(
-          Effect.map(() => ({ ok: true as const, step: "demo_industry_setting" as const })),
-          Effect.catchAll((err) => {
-            log.warn({ err: err.message, requestId, orgId, industry }, "Failed to write demo_industry setting — non-fatal");
-            return Effect.succeed({ ok: false as const, step: "demo_industry_setting" as const });
-          }),
-        ),
-        Effect.tryPromise({
-          try: () => seedDemoPromptCollections(orgId, industry),
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(
-          Effect.map(() => ({ ok: true as const, step: "demo_prompt_collections" as const })),
-          Effect.catchAll((err) => {
-            log.warn({ err: err.message, requestId, orgId, industry }, "Failed to seed demo prompt collections — non-fatal");
-            return Effect.succeed({ ok: false as const, step: "demo_prompt_collections" as const });
-          }),
-        ),
-      ], { concurrency: "unbounded" });
+      // Write demo_industry setting. Independent post-commit decoration —
+      // failure leaves the workspace queryable but with no demoIndustry-aware
+      // banners. Surfaced through a `partialFailures` array on the 201
+      // response so the frontend can show a degraded-state notice instead
+      // of pretending everything worked. The `org-with-demo` listing query
+      // (lib/prompts/scoping.ts) keys off this setting, so the demo
+      // industry's global builtin prompt collections show up automatically
+      // — there's no per-org prompt seed to do here (#2169).
+      const settingResult = yield* Effect.tryPromise({
+        try: () => setSetting("ATLAS_DEMO_INDUSTRY", industry, user?.id, orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.map(() => ({ ok: true as const, step: "demo_industry_setting" as const })),
+        Effect.catchAll((err) => {
+          log.warn({ err: err.message, requestId, orgId, industry }, "Failed to write demo_industry setting — non-fatal");
+          return Effect.succeed({ ok: false as const, step: "demo_industry_setting" as const });
+        }),
+      );
 
-      const partialFailures = phase4Results.filter((r) => !r.ok).map((r) => r.step);
+      const partialFailures = settingResult.ok ? [] : [settingResult.step];
 
       _resetWhitelists();
 

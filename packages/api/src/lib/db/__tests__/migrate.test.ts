@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(54);
+    expect(count).toBe(55);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -162,6 +162,7 @@ describe("runMigrations", () => {
         "0051_oauth_client_rate_limits.sql",
         "0052_approval_rules_surface.sql",
         "0053_oauth_client_workspace_grants.sql",
+        "0054_prompt_collections_dedup_unique.sql",
       ],
     });
 
@@ -776,6 +777,12 @@ describe("runSeeds", () => {
     // Should check for existing collections
     const selectPrompt = queries.find((q) => q.includes("SELECT id FROM prompt_collections"));
     expect(selectPrompt).toBeDefined();
+    // Existence probe is scoped to the global namespace (#2169). Pinned
+    // here so a future refactor can't loosen the filter back to a bare
+    // `name = $1 AND is_builtin = true` — that form would short-circuit
+    // the global insert if a workspace with leftover org-scoped builtin
+    // copies (predating migration 0054) had run runSeeds again.
+    expect(selectPrompt).toContain("org_id IS NULL");
 
     // Should insert 3 built-in collections
     const inserts = queries.filter((q) => q.includes("INSERT INTO prompt_collections"));
@@ -888,5 +895,63 @@ describe("0047_drop_mcp_tokens.sql", () => {
     // didn't expect. There are no FKs to mcp_tokens today, but the
     // bound here is a future-proof invariant.
     expect(sql).not.toMatch(/DROP TABLE[^;]*CASCADE/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0054_prompt_collections_dedup_unique.sql (#2169)
+// ---------------------------------------------------------------------------
+//
+// Pin the dedup-then-add-index ordering. The unique index would error
+// out on existing duplicates if it ran before the cleanup DELETE, so
+// dropping or reordering either statement would silently break the
+// migration on workspaces that hit the original /use-demo bug.
+
+describe("0054_prompt_collections_dedup_unique.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0054_prompt_collections_dedup_unique.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  // Strip line comments so regex assertions can't be tripped by prose
+  // headers that mention SQL keywords (e.g. the migration's preamble
+  // explains why we "DELETE before CREATE UNIQUE INDEX" — without
+  // stripping, a greedy regex would match the comment first).
+  function stripComments(sql: string): string {
+    return sql
+      .split("\n")
+      .map((line) => line.replace(/--.*$/, ""))
+      .join("\n");
+  }
+
+  it("removes redundant org-scoped builtin copies before creating the unique index", () => {
+    const sql = stripComments(fs.readFileSync(filePath, "utf-8"));
+
+    const deleteIdx = sql.search(/DELETE FROM prompt_collections/i);
+    const indexIdx = sql.search(/CREATE UNIQUE INDEX[^;]*prompt_collections/i);
+
+    expect(deleteIdx).toBeGreaterThan(-1);
+    expect(indexIdx).toBeGreaterThan(-1);
+    expect(deleteIdx).toBeLessThan(indexIdx);
+  });
+
+  it("scopes the unique index by org and case-insensitive name", () => {
+    const sql = stripComments(fs.readFileSync(filePath, "utf-8"));
+
+    expect(sql).toMatch(/CREATE UNIQUE INDEX[^;]*prompt_collections[^;]*lower\s*\(\s*name\s*\)/i);
+    expect(sql).toMatch(/COALESCE\s*\(\s*org_id/i);
+  });
+
+  it("dedup keeps the oldest row by created_at (FK-safe)", () => {
+    const sql = stripComments(fs.readFileSync(filePath, "utf-8"));
+
+    // Generic same-org dedup: items must be reparented to the kept row
+    // before the duplicate row is dropped, so prompt_items survive.
+    expect(sql).toMatch(/UPDATE prompt_items/i);
+    // "Oldest first" expressed as ORDER BY created_at ASC (a windowed
+    // SELECT, not an aggregate MIN) so the keeper id can be picked
+    // deterministically with a tiebreaker on id.
+    expect(sql).toMatch(/ORDER BY[\s\S]*?created_at\s+ASC/i);
   });
 });

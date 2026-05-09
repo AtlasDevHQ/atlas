@@ -24,6 +24,19 @@ import {
 
 const log = createLogger("admin-prompts");
 
+/**
+ * SQLSTATE 23505 = unique_violation. The `prompt_collections_org_name_uniq`
+ * index introduced in migration 0054 (#2169) collapses `COALESCE(org_id, '')`
+ * + `lower(name)`, so two collections in the same workspace can't share a
+ * case-insensitive name. We translate the violation into a typed result so
+ * create/rename routes can return a 409 instead of leaking a generic 500.
+ */
+const PG_UNIQUE_VIOLATION = "23505";
+
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string } | null | undefined)?.code === PG_UNIQUE_VIOLATION;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -182,6 +195,10 @@ const createCollectionRoute = createRoute({
       description: "Internal database not configured",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    409: {
+      description: "A collection with this name already exists in the workspace (#2169)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -233,6 +250,10 @@ const updateCollectionRoute = createRoute({
     429: {
       description: "Rate limit exceeded",
       content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    409: {
+      description: "Renaming would collide with an existing collection in the workspace (#2169)",
+      content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -531,8 +552,29 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
     // until the admin publishes; published mode creates them live.
     const status = atlasMode === "developer" ? "draft" : "published";
 
-    const rows = yield* queryEffect<Record<string, unknown>>(`INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin, status) VALUES ($1, $2, $3, $4, false, $5) RETURNING *`, [orgId ?? null, name, industry, description, status]);
-    const created = toPromptCollection(rows[0]);
+    // Map the new `prompt_collections_org_name_uniq` violation (#2169)
+    // to a 409 with a name-collision message. Without this catch the
+    // bare INSERT surfaces as a generic 500 — fine when no constraint
+    // existed, but unhelpful now that an admin can trigger the
+    // violation by typing an existing name.
+    const insertOutcome = yield* queryEffect<Record<string, unknown>>(
+      `INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin, status) VALUES ($1, $2, $3, $4, false, $5) RETURNING *`,
+      [orgId ?? null, name, industry, description, status],
+    ).pipe(
+      Effect.map((rows) => ({ kind: "ok" as const, rows })),
+      Effect.catchAll((err) =>
+        isUniqueViolation(err)
+          ? Effect.succeed({ kind: "duplicate" as const })
+          : Effect.fail(err),
+      ),
+    );
+    if (insertOutcome.kind === "duplicate") {
+      return c.json(
+        { error: "duplicate_name", message: `A prompt collection named "${name}" already exists in this workspace.`, requestId },
+        409,
+      );
+    }
+    const created = toPromptCollection(insertOutcome.rows[0]);
     logAdminAction({
       actionType: ADMIN_ACTIONS.prompt.collectionCreate,
       targetType: "prompt",
@@ -576,9 +618,28 @@ adminPrompts.openapi(updateCollectionRoute, async (c) => {
     updateParams.push(id);
     const idIdx = paramIdx;
 
-    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE prompt_collections SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams);
-    if (updated.length === 0) return c.json({ error: "not_found", message: "Collection was deleted before update completed." }, 404);
-    const collection = toPromptCollection(updated[0]);
+    // Renames can hit the unique index from #2169 if the new name
+    // matches another collection in the same workspace (case-insensitive).
+    // Translate to 409 so the admin sees an actionable message.
+    const updateOutcome = yield* queryEffect<Record<string, unknown>>(
+      `UPDATE prompt_collections SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`,
+      updateParams,
+    ).pipe(
+      Effect.map((rows) => ({ kind: "ok" as const, rows })),
+      Effect.catchAll((err) =>
+        isUniqueViolation(err)
+          ? Effect.succeed({ kind: "duplicate" as const })
+          : Effect.fail(err),
+      ),
+    );
+    if (updateOutcome.kind === "duplicate") {
+      return c.json(
+        { error: "duplicate_name", message: `A prompt collection with that name already exists in this workspace.`, requestId },
+        409,
+      );
+    }
+    if (updateOutcome.rows.length === 0) return c.json({ error: "not_found", message: "Collection was deleted before update completed." }, 404);
+    const collection = toPromptCollection(updateOutcome.rows[0]);
     logAdminAction({
       actionType: ADMIN_ACTIONS.prompt.collectionUpdate,
       targetType: "prompt",

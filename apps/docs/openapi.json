@@ -8838,8 +8838,7 @@
                       "items": {
                         "type": "string",
                         "enum": [
-                          "demo_industry_setting",
-                          "demo_prompt_collections"
+                          "demo_industry_setting"
                         ]
                       }
                     }
@@ -19981,6 +19980,31 @@
               }
             }
           },
+          "409": {
+            "description": "A collection with this name already exists in the workspace (#2169)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -20168,6 +20192,31 @@
           },
           "404": {
             "description": "Collection not found or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Renaming would collide with an existing collection in the workspace (#2169)",
             "content": {
               "application/json": {
                 "schema": {

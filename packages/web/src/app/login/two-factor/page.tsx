@@ -317,7 +317,11 @@ function TwoFactorChallengeForm() {
               />
             </div>
 
-            <label className="flex items-start gap-2.5 text-sm">
+            {/* Don't wrap <Checkbox> in <label> — Radix Checkbox is a button, and a
+                wrapping label dispatches a synthetic activation click on its labelable
+                descendant when the descendant itself is clicked, double-firing
+                onCheckedChange and net-toggling back. Use htmlFor. (#2170 follow-up) */}
+            <div className="flex items-start gap-2.5 text-sm">
               <Checkbox
                 id="trust-device"
                 checked={trustDevice}
@@ -325,14 +329,14 @@ function TwoFactorChallengeForm() {
                 disabled={busy || passkeyBusy}
                 className="mt-0.5"
               />
-              <span className="flex-1 select-none">
+              <label htmlFor="trust-device" className="flex-1 select-none cursor-pointer">
                 <span className="font-medium">Trust this device for 30 days</span>
                 <span className="mt-0.5 block text-xs text-muted-foreground">
                   Skip the code prompt on this browser until {formatTrustExpiry()}.
                   Don't enable on a shared computer.
                 </span>
-              </span>
-            </label>
+              </label>
+            </div>
 
             {error && <ChallengeErrorAlert message={error} />}
 

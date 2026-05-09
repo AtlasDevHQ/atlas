@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "bun:test";
 import { betterAuth } from "better-auth";
 import { bearer } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
-import { resetAuthInstance } from "../server";
+import { resetAuthInstance, canMintSCIMToken } from "../server";
 
 describe("Better Auth instance shape", () => {
   afterEach(() => {
@@ -31,5 +31,41 @@ describe("Better Auth instance shape", () => {
     // Drain the $context promise so the async DB adapter init error
     // doesn't surface as an unhandled rejection after the test ends.
     await instance.$context.catch(() => {});
+  });
+});
+
+// #2242 — regression coverage for the SCIM token role gate. The previous
+// gate accepted {admin, platform_admin} only; an org owner would pass the
+// upstream admin SCIM router (which accepts owner via adminAuth) and then
+// bomb at this predicate with "Only admin users can generate SCIM
+// tokens". Aligning to the canonical ADMIN_ROLES triple closes that
+// inconsistency.
+describe("canMintSCIMToken", () => {
+  it("accepts admin", () => {
+    expect(canMintSCIMToken("admin")).toBe(true);
+  });
+
+  it("accepts owner — #2242 regression", () => {
+    expect(canMintSCIMToken("owner")).toBe(true);
+  });
+
+  it("accepts platform_admin", () => {
+    expect(canMintSCIMToken("platform_admin")).toBe(true);
+  });
+
+  it("rejects member", () => {
+    expect(canMintSCIMToken("member")).toBe(false);
+  });
+
+  it("rejects undefined / missing role", () => {
+    expect(canMintSCIMToken(undefined)).toBe(false);
+    expect(canMintSCIMToken(null)).toBe(false);
+  });
+
+  it("rejects unknown / typo'd role values", () => {
+    expect(canMintSCIMToken("administrator")).toBe(false);
+    expect(canMintSCIMToken("Owner")).toBe(false);
+    expect(canMintSCIMToken("")).toBe(false);
+    expect(canMintSCIMToken(42)).toBe(false);
   });
 });

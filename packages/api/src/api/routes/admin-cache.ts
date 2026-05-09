@@ -2,14 +2,16 @@
  * Admin cache management routes.
  *
  * Mounted under /api/v1/admin/cache via admin.route().
- * Platform-admin only: the query cache is a global resource.
+ * Org-admin scope: the cache is a per-workspace operational surface
+ * (already listed in the org-admin sidebar). Stats are aggregate counters
+ * with no per-org breakdown so there's no cross-org leak.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createPlatformRouter } from "./admin-router";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-cache");
 
@@ -22,14 +24,14 @@ const getCacheStatsRoute = createRoute({
   path: "/stats",
   tags: ["Admin — Cache"],
   summary: "Cache statistics",
-  description: "Returns cache hit/miss statistics. Platform admin only.",
+  description: "Returns cache hit/miss statistics.",
   responses: {
     200: {
       description: "Cache stats",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -40,14 +42,14 @@ const flushCacheRoute = createRoute({
   path: "/flush",
   tags: ["Admin — Cache"],
   summary: "Flush cache",
-  description: "Flushes all cache entries. Platform admin only.",
+  description: "Flushes all cache entries.",
   responses: {
     200: {
       description: "Cache flushed",
       content: { "application/json": { schema: z.object({ ok: z.boolean(), flushed: z.number(), message: z.string() }) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -57,7 +59,7 @@ const flushCacheRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminCache = createPlatformRouter();
+const adminCache = createAdminRouter();
 
 // GET /stats — cache statistics
 adminCache.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cache statistics", async () => {

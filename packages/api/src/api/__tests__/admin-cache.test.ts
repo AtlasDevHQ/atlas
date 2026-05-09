@@ -2,7 +2,8 @@
  * Tests for admin cache management routes.
  *
  * The cache router is mounted under /api/v1/admin/cache via admin.route()
- * and uses createPlatformRouter() — only platform_admin role has access.
+ * and uses createAdminRouter() — admin/owner/platform_admin roles all have
+ * access; regular members get 403 (#2167).
  *
  * Endpoints:
  * - GET  /cache/stats  — cache statistics
@@ -67,8 +68,12 @@ function setPlatformAdmin(): void {
   mocks.setPlatformAdmin();
 }
 
-function setRegularAdmin(): void {
+function setOrgAdmin(): void {
   mocks.setOrgAdmin("org-test");
+}
+
+function setMember(): void {
+  mocks.setMember("org-test");
 }
 
 function cacheRequest(urlPath: string, method: "GET" | "POST" = "GET"): Request {
@@ -102,12 +107,21 @@ describe("admin cache routes", () => {
   });
 
   describe("GET /cache/stats", () => {
-    it("returns 403 for regular admin (non-platform_admin)", async () => {
-      setRegularAdmin();
+    it("returns 403 for non-admin members (#2167 — admin gate, not member)", async () => {
+      setMember();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
       expect(res.status).toBe(403);
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("forbidden_role");
+    });
+
+    it("returns 200 for org admin (#2167 — was 403 under platform-only gate)", async () => {
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.enabled).toBe(true);
+      expect(body.hits).toBe(42);
     });
 
     it("returns cache stats with correct shape for platform admin", async () => {
@@ -164,12 +178,22 @@ describe("admin cache routes", () => {
   });
 
   describe("POST /cache/flush", () => {
-    it("returns 403 for regular admin (non-platform_admin)", async () => {
-      setRegularAdmin();
+    it("returns 403 for non-admin members (#2167 — admin gate, not member)", async () => {
+      setMember();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
       expect(res.status).toBe(403);
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("forbidden_role");
+    });
+
+    it("flushes cache successfully for org admin (#2167 — was 403 under platform-only gate)", async () => {
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.ok).toBe(true);
+      expect(body.flushed).toBe(15);
+      expect(mockFlushCache).toHaveBeenCalledTimes(1);
     });
 
     it("flushes cache successfully for platform admin", async () => {

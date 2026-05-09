@@ -9,6 +9,7 @@ export * from "./connection";
 export * from "./custom-domain";
 export * from "./integrations";
 export * from "./mcp-prompts";
+export * from "./mcp-usage";
 export * from "./platform";
 export * from "./residency";
 export * from "./security";

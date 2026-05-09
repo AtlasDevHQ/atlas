@@ -916,6 +916,10 @@ Not all tools are equal. The bucket is debited per dispatch by the tool's weight
 
 A 60/min budget admits roughly **12 `executeSQL` calls** or **60 `listEntities` calls** per minute. Mixing tools costs the sum of their weights.
 
+#### Live usage in Settings → AI Agents
+
+The same weighted total is surfaced per agent at **Settings → AI Agents** as a small `used/ceiling` chip on every connected client row. The chip flips to amber at 80% of the ceiling and red at 100% so users see they're approaching the limit before a 429 lands. The chip refreshes every 10 seconds while the page is foregrounded and pauses while the tab is hidden — there's no SSE / WebSocket push today (a v1.5+ concern). The same per-tool weighting drives both the chip and the limiter, so the math agrees with what the agent will see.
+
 #### When the bucket empties
 
 The dispatch returns the standard MCP error envelope ([#2030](https://github.com/AtlasDevHQ/atlas/issues/2030)) as the tool result text:

@@ -395,6 +395,21 @@ export const ADMIN_ACTIONS = {
      */
     rateLimited: "mcp_session.rate_limited",
     /**
+     * Per-user read of live rate-limit bucket state (#2216). Emitted
+     * once per call to `GET /api/v1/me/mcp-usage` — the endpoint that
+     * powers the Settings → AI Agents usage chip ("this agent has used
+     * 35/60 weighted requests this minute"). Volume is bounded by the
+     * page's 10s polling cadence (and only while foregrounded), so the
+     * row count for a given user is at most ~6/min, ~360/hour. Lives
+     * under `mcp_session` so a single retention policy + dashboard
+     * filter (`actorKind=mcp` or domain prefix `mcp_session.*`) covers
+     * every rate-limit observability event without forking on a new
+     * `mcp_usage` domain. Metadata: `{ clientIds, count }` — list of
+     * peeked client ids and the integer count, sized by the user's
+     * own client roster (so it scales with the row, not the workspace).
+     */
+    usageRead: "mcp_session.usage_read",
+    /**
      * Workspace-admission denial on the hosted MCP edge (#2073). Emitted
      * for every cross_workspace_denied response AND for the 500-class
      * branch where the grants/membership lookup itself threw — without

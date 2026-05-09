@@ -298,6 +298,20 @@ try {
   );
 }
 
+// Per-user live MCP rate-limit usage (#2216). Powers the Settings → AI
+// Agents usage chip — visibility-gated 10s polling on the page reads
+// this endpoint to render "35/60 weighted requests this minute" before
+// the limiter middleware lands a 429. Informational only.
+try {
+  const { meMcpUsage } = await import("./routes/me-mcp-usage");
+  app.route("/api/v1/me/mcp-usage", meMcpUsage);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load me-mcp-usage routes — Settings → AI Agents usage chip will be unavailable",
+  );
+}
+
 // Admin routes — always available (auth-gated to admin role).
 // Wrapped in try/catch so a missing dependency (e.g. js-yaml) doesn't crash the entire server.
 try {

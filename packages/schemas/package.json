@@ -21,6 +21,7 @@
     "./custom-domain": "./src/custom-domain.ts",
     "./integrations": "./src/integrations.ts",
     "./mcp-prompts": "./src/mcp-prompts.ts",
+    "./mcp-usage": "./src/mcp-usage.ts",
     "./platform": "./src/platform.ts",
     "./residency": "./src/residency.ts",
     "./sla": "./src/sla.ts"

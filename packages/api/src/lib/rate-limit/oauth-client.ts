@@ -327,6 +327,83 @@ export async function resolveRateLimitFor(
   return resolved;
 }
 
+// ── Read-only peek (UI surfacing — #2216) ──────────────────────────
+
+/**
+ * In-window weighted-request total + ceiling for a `(orgId, clientId)`.
+ * Surfaced by `/api/v1/me/mcp-usage` so the Settings → AI Agents page
+ * can show "this agent has used 35/60 weighted requests this minute"
+ * before the bucket trips a 429.
+ *
+ * The shape carries three numbers the limiter has on hand
+ * (`currentMinuteWeightedRequests`, `ceiling`, `resetAt`); the route
+ * layer derives `percentUsed` from these so the limiter stays free
+ * of presentation concerns. `resetAt` is absolute milliseconds (epoch)
+ * so the UI can render either an ETA countdown or a wall-clock time
+ * without re-deriving from `Date.now()` — both surfaces would
+ * otherwise have to share an extra clock skew assumption that isn't
+ * present today.
+ */
+export interface ClientUsageView {
+  /** Sum of weights for entries inside the current sliding window. */
+  readonly currentMinuteWeightedRequests: number;
+  /** Resolved per-minute quota — cached override if present, otherwise default. */
+  readonly ceiling: number;
+  /**
+   * Epoch-ms moment the oldest in-window entry rolls out of the window.
+   * With no entries, equals the current clock so callers render
+   * "available now" instead of subtracting from a stale anchor.
+   */
+  readonly resetAt: number;
+}
+
+/**
+ * Side-effect-free read of the live bucket. Used by the Settings → AI
+ * Agents page (#2216) and any future operator surface that wants to
+ * display "live usage" without debiting the bucket.
+ *
+ * Two invariants the route layer relies on:
+ *
+ *   1. **No bucket mutation.** Filtering expired entries is left to
+ *      the next {@link checkClientRateLimit} on the same key — peeking
+ *      must not insert an empty array (that would defeat the bucket
+ *      map's natural self-cleaning property and grow the map by one
+ *      entry per unique polling client).
+ *
+ *   2. **No LRU promotion.** A polling Settings tab firing every 10s
+ *      must NOT keep stale `(orgId, clientId)` overrides warm in the
+ *      LRU. Reads go through the raw `Map.get` so the recency queue
+ *      tracks actual rate-limit checks, not informational peeks.
+ *
+ * Both invariants are pinned by `usage-read.test.ts`.
+ */
+export function getClientUsage(
+  orgId: string,
+  clientId: string,
+): ClientUsageView {
+  const t = now();
+  const key = bucketKey(orgId, clientId);
+
+  // Raw `.get` — no `touchLimitsEntry` (peek must not promote the LRU).
+  const ceiling = limits.get(key)?.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE;
+
+  const cutoff = t - WINDOW_MS;
+  const stored = buckets.get(key);
+  // `.filter` returns a new array — the original entries on the map
+  // (if any) are not modified. The next `checkClientRateLimit` will
+  // run the same filter and persist the cleanup.
+  const inWindow = stored ? stored.filter((e) => e.ts > cutoff) : [];
+
+  const currentMinuteWeightedRequests = inWindow.reduce(
+    (sum, e) => sum + e.weight,
+    0,
+  );
+  const oldest = inWindow[0];
+  const resetAt = oldest ? oldest.ts + WINDOW_MS : t;
+
+  return { currentMinuteWeightedRequests, ceiling, resetAt };
+}
+
 // ── Test helpers ───────────────────────────────────────────────────
 
 /** @internal — test-only. Drop all bucket and override state. */

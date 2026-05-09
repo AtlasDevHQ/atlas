@@ -20,15 +20,25 @@
  * so non-admin users don't need a second admin-gated roundtrip.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useVisibilityGatedPoll } from "@/ui/hooks/use-visibility-gated-poll";
 import {
   MeOAuthClientsResponseSchema,
+  MeMcpUsageResponseSchema,
+  type McpUsageEntry,
   type OAuthClient,
 } from "@/ui/lib/me-schemas";
+import { UsageChip } from "@/ui/components/settings/usage-chip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -84,6 +94,47 @@ export default function AIAgentsPage() {
   // null — non-SaaS surfaces don't render the connect CTA.
   const deployMode = listData?.deployMode ?? "self-hosted";
   const isSaas = deployMode === "saas";
+
+  // Live MCP rate-limit usage (#2216). Separate fetch from the
+  // clients list so the 10s poll doesn't refetch the heavier clients
+  // query. `usageError` is destructured and surfaced below — without
+  // it, a flaky `/me/mcp-usage` would freeze the chip on its last
+  // good value with no signal to the user (CLAUDE.md "Prefer errors
+  // over silent fallbacks").
+  const {
+    data: usageData,
+    error: usageError,
+    refetch: refetchUsage,
+  } = useAdminFetch("/api/v1/me/mcp-usage", {
+    schema: MeMcpUsageResponseSchema,
+  });
+
+  // `useVisibilityGatedPoll` widens its parameter to `() => void |
+  // Promise<unknown>`, so TanStack's `refetch` (already query-stable)
+  // can be passed directly without a `useCallback` wrapper.
+  useVisibilityGatedPoll(refetchUsage, 10_000);
+
+  // Map the usage rows by clientId for O(1) lookup in the row
+  // renderer. The chip falls back to neutral 0/60 when the entry is
+  // absent — first-paint, missing entry for a brand-new client, or
+  // poll error.
+  const usageById: Map<string, McpUsageEntry> = new Map(
+    (usageData?.clients ?? []).map((u) => [u.clientId, u]),
+  );
+
+  // Surface a poll-loop failure once per error transition. The chip
+  // fallback (neutral 0/60) is the visual cue; the structured warn
+  // line is the operator-facing trail so a flaky `/me/mcp-usage`
+  // doesn't go invisible. We only fire on `usageError` flipping
+  // truthy — a sustained error wouldn't burn console rows.
+  useEffect(() => {
+    if (usageError) {
+      console.warn(
+        "[ai-agents] /me/mcp-usage poll failed — usage chip showing fallback",
+        usageError.message,
+      );
+    }
+  }, [usageError]);
 
   const revokeMutation = useAdminMutation<{
     success: boolean;
@@ -221,6 +272,7 @@ export default function AIAgentsPage() {
                 >
                   <AIAgentShell
                     client={client}
+                    usage={usageById.get(client.clientId)}
                     onRevoke={requestRevoke}
                     onToggleScope={toggleWorkspaceScope}
                     onRevokeWorkspaceGrant={revokeWorkspaceGrant}
@@ -373,6 +425,7 @@ function presentTokenState(tokenState: OAuthClient["tokenState"]): {
 
 function AIAgentShell({
   client,
+  usage,
   onRevoke,
   onToggleScope,
   onRevokeWorkspaceGrant,
@@ -380,6 +433,14 @@ function AIAgentShell({
   grantMutating,
 }: {
   client: OAuthClient;
+  /**
+   * Live MCP rate-limit usage for this client (#2216). Optional —
+   * absent on first paint and on the brief race when a brand-new
+   * client lands in the list before the next usage poll. The chip
+   * tolerates `undefined` by rendering a neutral 0/<ceiling>
+   * placeholder so the visual scaffolding is stable.
+   */
+  usage: McpUsageEntry | undefined;
   onRevoke: (client: OAuthClient) => void;
   onToggleScope: (client: OAuthClient) => void;
   onRevokeWorkspaceGrant: (client: OAuthClient, workspaceId: string) => void;
@@ -428,15 +489,53 @@ function AIAgentShell({
     </Badge>
   ) : undefined;
 
-  const titleBadge =
-    scopeBadge && stateBadge ? (
-      <span className="flex items-center gap-1.5">
-        {scopeBadge}
-        {stateBadge}
-      </span>
-    ) : (
-      scopeBadge ?? stateBadge
-    );
+  // The 60 fallback ceiling matches `DEFAULT_REQUESTS_PER_MINUTE` —
+  // first-paint and poll-error states show the same neutral chip the
+  // API returns for an idle client. The chip stays visible on revoked
+  // rows so a saturated bucket is observable during the audit window
+  // before the user removes the row.
+  const usageBadge = (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center">
+            <UsageChip
+              used={usage?.currentMinuteWeightedRequests ?? 0}
+              ceiling={usage?.ceiling ?? 60}
+            />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs text-xs leading-snug">
+          <p>
+            Weighted MCP request usage this minute. <code>executeSQL</code>{" "}
+            and <code>explore</code> count 5×; <code>runMetric</code> 3×;
+            others 1×.
+          </p>
+          <p className="mt-1.5">
+            <a
+              href="https://docs.useatlas.dev/guides/mcp#per-tool-weights"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2"
+            >
+              Read the per-tool weights
+            </a>
+          </p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+
+  // Shell's `titleBadge` slot accepts a single ReactNode. Wrap the
+  // three badges in one element so the slot's flex layout treats them
+  // as a unit (scope first, state next, usage last).
+  const titleBadge = (
+    <span className="flex items-center gap-1.5">
+      {scopeBadge}
+      {stateBadge}
+      {usageBadge}
+    </span>
+  );
 
   return (
     <Shell

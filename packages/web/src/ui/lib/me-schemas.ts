@@ -110,6 +110,26 @@ export const MeOAuthClientsResponseSchema = z.object({
 
 export type MeOAuthClientsResponse = z.infer<typeof MeOAuthClientsResponseSchema>;
 
+// Per-OAuth-client live MCP rate-limit usage (#2216) — schemas are
+// sourced from `@useatlas/schemas/mcp-usage` so the route layer and
+// this web client derive from one Zod definition. A wire-bound change
+// is a one-place edit and drift surfaces as a TS error in every
+// consumer rather than a runtime "version mismatch" banner. Mirrors
+// the `mcp-prompts` precedent above.
+import {
+  McpUsageEntrySchema,
+  MeMcpUsageResponseSchema,
+  type McpUsageEntry,
+  type MeMcpUsageResponse,
+} from "@useatlas/schemas/mcp-usage";
+
+export {
+  McpUsageEntrySchema,
+  MeMcpUsageResponseSchema,
+  type McpUsageEntry,
+  type MeMcpUsageResponse,
+};
+
 export const RevokeOAuthClientResponseSchema = z.object({
   success: z.boolean(),
   tokensRevoked: z.number().int().nonnegative(),

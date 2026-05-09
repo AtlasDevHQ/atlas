@@ -115,10 +115,9 @@ describe("PromptListEntrySchema", () => {
 
   test("accepts canonical/semantic/library entries with empty arguments", () => {
     for (const source of ["canonical", "semantic", "library"] as const) {
-      // Cast through unknown — the discriminated union infers
-      // `arguments: []` (empty tuple) on the non-builtin arm, so the
-      // spread-then-override-with-`[]` literal needs the explicit shape
-      // to satisfy the empty-tuple type.
+      // `[] as []` annotates the override as the empty-tuple type;
+      // without it, TS widens the literal to `never[]` after the spread
+      // and the union's empty-tuple arm rejects the assignment.
       const entry = { ...sampleEntry, source, arguments: [] as [] };
       expect(PromptListEntrySchema.parse(entry)).toEqual(entry);
     }
@@ -135,10 +134,6 @@ describe("PromptListEntrySchema", () => {
     ).toThrow();
   });
 
-  // Discriminated union enforces "only source: builtin ever has args" at
-  // the parse boundary — canonical / semantic / library entries with
-  // non-empty args must fail at runtime (and at the type level — see
-  // the @ts-expect-error sites below).
   test.each(["canonical", "semantic", "library"] as const)(
     "rejects %s entries that smuggle in non-empty arguments",
     (source) => {
@@ -149,8 +144,8 @@ describe("PromptListEntrySchema", () => {
 
   test("type-level: canonical entries with non-empty args are unrepresentable", () => {
     // Compile-time witnesses for the discriminated-union shape — if a
-    // future regression flattens the union, these `@ts-expect-error`s
-    // become unused and `tsgo --noEmit` fails the build.
+    // future regression flattens the union, these `@ts-expect-error`
+    // directives become unused and the type-check fails.
 
     // @ts-expect-error — canonical arm forbids non-empty arguments.
     const _illegalCanonical: PromptListEntry = {

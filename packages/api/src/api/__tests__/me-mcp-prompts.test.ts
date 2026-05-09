@@ -170,6 +170,19 @@ describe("GET /api/v1/me/mcp-prompts", () => {
       semantic: 1,
       library: 1,
     });
+
+    // Discriminated-union arms reach the wire: the builtin entry keeps
+    // its arg metadata, every derived entry lands as `arguments: []`.
+    // A regression that flattened the route's narrowing would surface
+    // here as `arguments: undefined` on the derived arms.
+    const builtin = body.prompts.find((p) => p.source === "builtin");
+    expect(builtin?.arguments).toEqual([
+      { name: "period", description: "p", required: true },
+    ]);
+    for (const source of ["canonical", "semantic", "library"] as const) {
+      const entry = body.prompts.find((p) => p.source === source);
+      expect(entry?.arguments).toEqual([]);
+    }
   });
 
   it("forwards the caller's active workspace id to listMcpPrompts", async () => {

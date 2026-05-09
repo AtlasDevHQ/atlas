@@ -20,6 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useTourContext } from "./guided-tour";
 import { OrgSwitcher } from "@/ui/components/org-switcher";
+import { UserMenu } from "@/ui/components/user-menu";
 
 interface NavBarProps {
   /** Whether the current user has admin role. */
@@ -78,8 +79,8 @@ export function NavBar({ isAdmin }: NavBarProps) {
         })}
       </div>
 
-      <div className="flex items-center gap-1">
-        <OrgSwitcher />
+      <div className="flex items-center gap-2">
+        <OrgSwitcher variant="inline" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -100,6 +101,7 @@ export function NavBar({ isAdmin }: NavBarProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <UserMenu />
       </div>
     </nav>
   );

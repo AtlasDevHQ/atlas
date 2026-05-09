@@ -12,14 +12,31 @@
 import { describe, test, expect, mock } from "bun:test";
 import { Effect, Exit, Layer } from "effect";
 
+// Recording logger mock — captures every `log.warn` / `log.error` call
+// so #2252 regression tests can assert the warn-only branches surface
+// the cause instead of dropping it. Reset between tests via
+// `loggerCalls.length = 0`.
+interface LoggerCall {
+  readonly level: "error" | "warn" | "info" | "debug";
+  readonly arg: unknown;
+  readonly message?: string;
+}
+const loggerCalls: LoggerCall[] = [];
+function makeRecordingLogger() {
+  return {
+    error: (arg: unknown, message?: string) =>
+      loggerCalls.push({ level: "error", arg, ...(message !== undefined && { message }) }),
+    warn: (arg: unknown, message?: string) =>
+      loggerCalls.push({ level: "warn", arg, ...(message !== undefined && { message }) }),
+    info: (arg: unknown, message?: string) =>
+      loggerCalls.push({ level: "info", arg, ...(message !== undefined && { message }) }),
+    debug: (arg: unknown, message?: string) =>
+      loggerCalls.push({ level: "debug", arg, ...(message !== undefined && { message }) }),
+  };
+}
 mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    error: () => {},
-    warn: () => {},
-    info: () => {},
-    debug: () => {},
-  }),
-  getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
+  createLogger: makeRecordingLogger,
+  getLogger: () => ({ ...makeRecordingLogger(), level: "info" }),
   setLogLevel: () => true,
   getRequestContext: () => undefined,
 }));
@@ -191,6 +208,41 @@ describe("PluginConfigGuardLive", () => {
         ),
       );
       expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // #2252: the warn-only validator-throw branch must log the cause —
+  // dropping it on the floor was the silent-failure-hunter finding.
+  test("#2252 — warn-only validator throw logs cause at warn level", async () => {
+    await withCleanEnv(async () => {
+      loggerCalls.length = 0;
+      const cause = new Error("third-party plugin getConfigSchema() blew up");
+      mockValidator({ kind: "throws", error: cause });
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            PluginConfigGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+
+      // Assert at least one warn call carrying the cause and naming
+      // the issue refs (#1988 / #2252) so a future refactor can't
+      // silently drop the log without tripping this test.
+      const warnsCarryingCause = loggerCalls.filter(
+        (c) =>
+          c.level === "warn" &&
+          typeof c.arg === "object" &&
+          c.arg !== null &&
+          "err" in c.arg &&
+          (c.arg as { err: unknown }).err === cause,
+      );
+      expect(warnsCarryingCause.length).toBeGreaterThan(0);
+      const messages = warnsCarryingCause.map((c) => c.message ?? "").join(" ");
+      expect(messages).toContain("#2252");
     });
   });
 

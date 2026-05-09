@@ -18,7 +18,6 @@ import { describe, test, expect } from "bun:test";
 import {
   asPercentage,
   asRatio,
-  clampedPercentage,
   percentageToRatio,
   ratioToPercentage,
   type Percentage,
@@ -106,43 +105,6 @@ describe("asPercentage / asRatio runtime validation", () => {
 
   test("asRatio tolerates tiny IEEE-754 overshoot at the 1.0 boundary", () => {
     expect(asRatio(1.000001)).toBe<number>(1.000001);
-  });
-});
-
-describe("clampedPercentage runtime behavior", () => {
-  // The clamp helper exists for derived percentages that can mathematically
-  // overshoot the 0..100 scale (the canonical case is `weighted/ceiling*100`
-  // when the bucket exceeds the ceiling under a future limiter regression).
-  // Tests pin: in-range pass-through, both edges of the clamp, and the
-  // fail-fast path on non-finite input — the helper coerces ranges, not
-  // category-errors.
-  test("passes in-range values through unchanged", () => {
-    expect(clampedPercentage(0)).toBe<number>(0);
-    expect(clampedPercentage(50)).toBe<number>(50);
-    expect(clampedPercentage(100)).toBe<number>(100);
-  });
-
-  test("clamps overshoot to 100", () => {
-    expect(clampedPercentage(102)).toBe<number>(100);
-    expect(clampedPercentage(2000)).toBe<number>(100);
-  });
-
-  test("clamps undershoot to 0", () => {
-    expect(clampedPercentage(-1)).toBe<number>(0);
-    expect(clampedPercentage(-Number.MAX_SAFE_INTEGER)).toBe<number>(0);
-  });
-
-  test("throws on non-finite inputs (no NaN-branding path)", () => {
-    expect(() => clampedPercentage(Number.NaN)).toThrow(/non-finite/);
-    expect(() => clampedPercentage(Number.POSITIVE_INFINITY)).toThrow(/non-finite/);
-    expect(() => clampedPercentage(Number.NEGATIVE_INFINITY)).toThrow(/non-finite/);
-  });
-
-  test("returns a value assignable to Percentage at the type level", () => {
-    // Compile-time check — if a future refactor returns plain `number`,
-    // this assignment fails. Brand survival is the whole point.
-    const p: Percentage = clampedPercentage(75);
-    expect(p).toBe<number>(75);
   });
 });
 

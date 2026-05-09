@@ -53,7 +53,20 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const metricsCalls: Array<{ counter: string; value: number; attrs: Record<string, unknown> }> = [];
+const noopCounter = { add: () => {} };
+const noopHistogram = { record: () => {} };
+// Mock every named export from `@atlas/api/lib/metrics` so a transitive
+// import in another test file in the same isolated worker doesn't pick
+// up an `undefined` symbol (the bun-test partial-mock failure mode).
+// Only the two rate-limit counters need real capture; the rest are
+// no-op stubs matching the OpenTelemetry surface.
 mock.module("@atlas/api/lib/metrics", () => ({
+  abuseEscalations: noopCounter,
+  mcpToolCalls: noopCounter,
+  mcpToolLatency: noopHistogram,
+  mcpActivations: noopCounter,
+  oauthTokenRefresh: noopCounter,
+  mcpPromptCalls: noopCounter,
   rateLimitAuditDropped: {
     add: (value: number, attrs: Record<string, unknown> = {}) => {
       metricsCalls.push({ counter: "rate_limit.audit_dropped", value, attrs });
@@ -66,6 +79,30 @@ mock.module("@atlas/api/lib/metrics", () => ({
   },
 }));
 
+// Capture pino calls from the rate-limit middleware so the visibility
+// pair (counter + log.error) can be asserted as a single contract.
+// `createLogger` returns a child logger; the mock records every level
+// the middleware uses (`warn`, `error`).
+const logCalls: Array<{
+  level: "warn" | "error" | "info";
+  obj: Record<string, unknown>;
+  msg: string;
+}> = [];
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => ({
+    warn: (obj: Record<string, unknown>, msg: string) =>
+      logCalls.push({ level: "warn", obj, msg }),
+    error: (obj: Record<string, unknown>, msg: string) =>
+      logCalls.push({ level: "error", obj, msg }),
+    info: (obj: Record<string, unknown>, msg: string) =>
+      logCalls.push({ level: "info", obj, msg }),
+    debug: () => {},
+    trace: () => {},
+    fatal: () => {},
+  }),
+  getRequestContext: () => undefined,
+}));
+
 beforeEach(() => {
   auditCalls.length = 0;
   auditThrows = false;
@@ -73,6 +110,7 @@ beforeEach(() => {
   _circuitOpen = false;
   _internalQueryThrows = false;
   metricsCalls.length = 0;
+  logCalls.length = 0;
   delete process.env.ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED;
   _resetClientRateLimitsForTests();
 });
@@ -173,7 +211,7 @@ describe("enforceClientRateLimit", () => {
     expect(auditCalls).toHaveLength(0);
   });
 
-  // ── #2183 item 4: optional fail-closed loader mode ──────────────────
+  // ── Optional fail-closed loader mode ────────────────────────────────
 
   it("fail-open by default — a loader DB outage falls through to DEFAULT_REQUESTS_PER_MINUTE and increments the fail_open counter", async () => {
     _hasInternalDB = true;
@@ -223,6 +261,34 @@ describe("enforceClientRateLimit", () => {
     );
   });
 
+  it("propagates a non-tagged loader throw — must not silently fail-open", async () => {
+    // The fail-closed catch arm filters strictly on
+    // `instanceof RateLimitLoaderFailedError`. Anything else (a
+    // programming bug in the limiter, a panic in a custom loader, a
+    // future refactor that leaks an unrelated error) must propagate
+    // unchanged. A regression that converted the `else throw err` to
+    // `else return { kind: "ok" }` would silently fail-open on every
+    // unrelated error class — exactly the failure mode the tagged
+    // error exists to prevent.
+    const { enforceClientRateLimit } = await import("../middleware");
+    const buggyLoader = async () => {
+      throw new Error("synthetic programmer bug");
+    };
+    await expect(
+      enforceClientRateLimit(baseInput, buggyLoader),
+    ).rejects.toThrow(/synthetic programmer bug/);
+
+    // The unexpected-failure path must still emit forensic context
+    // before re-throwing. The denial path logs richly; the propagate
+    // path should not be poorer.
+    const errorLog = logCalls.find(
+      (c) => c.level === "error" && /unexpected error/i.test(c.msg),
+    );
+    expect(errorLog).toBeDefined();
+    expect(errorLog?.obj.clientId).toBe("client_x");
+    expect(errorLog?.obj.tool).toBe("executeSQL");
+  });
+
   it("fail-closed denial still emits an audit row so the forensic trail captures the degradation", async () => {
     process.env.ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED = "true";
     _hasInternalDB = true;
@@ -239,7 +305,7 @@ describe("enforceClientRateLimit", () => {
     expect(meta.reason).toBe("loader_failure");
   });
 
-  // ── #2183 item 3: audit row silent-drop visibility ──────────────────
+  // ── Audit row silent-drop visibility ────────────────────────────────
 
   it("emits the audit-dropped counter + log.error when the internal-DB circuit is open on denial", async () => {
     // Surface the visibility gap the silent-failure-hunter Finding #5
@@ -270,6 +336,17 @@ describe("enforceClientRateLimit", () => {
         }),
       }),
     );
+
+    // The visibility pair: counter + log.error. A regression that drops
+    // the log line (e.g. a refactor that conditionalizes only the
+    // counter) would silently cripple the dashboard side. Pin both.
+    const errorLog = logCalls.find(
+      (c) => c.level === "error" && c.obj.reason === "circuit_open",
+    );
+    expect(errorLog).toBeDefined();
+    expect(errorLog?.obj.clientId).toBe("client_x");
+    expect(errorLog?.obj.tool).toBe("executeSQL");
+    expect(errorLog?.msg).toMatch(/circuit breaker open/i);
   });
 
   it("does NOT emit audit-dropped when the circuit is closed (the row is presumed written)", async () => {

@@ -90,11 +90,21 @@ describe("checkClientRateLimit", () => {
     const allowed = checkClientRateLimit(baseCtx);
     // The allowed branch must NOT carry retryAfterSec — its presence in
     // the legacy flat shape with value 0 was the original ambiguity that
-    // motivated the union refactor (#2183 item 1). A regression that
+    // motivated the union refactor. A regression that
     // re-introduces the field on the allowed branch would let callers
     // treat `verdict.retryAfterSec === 0` as a sentinel again.
     expect(allowed.allowed).toBe(true);
     expect("retryAfterSec" in allowed).toBe(false);
+
+    if (allowed.allowed) {
+      // Compile-time check: accessing `retryAfterSec` on the narrowed
+      // `allowed: true` branch must be a TS error. `@ts-expect-error`
+      // forces the build to fail if a future refactor widens the type
+      // — which is the correctness contract the runtime check above
+      // can only approximate.
+      // @ts-expect-error retryAfterSec must not exist on the allowed branch
+      void allowed.retryAfterSec;
+    }
 
     const denied = checkClientRateLimit(baseCtx);
     expect(denied.allowed).toBe(false);
@@ -310,7 +320,7 @@ describe("resolveRateLimitFor", () => {
   });
 });
 
-// ── Map-level eviction (#2183 item 2) ────────────────────────────────
+// ── Map-level eviction ────────────────────────────────────────────────
 
 describe("eviction — buckets self-clean", () => {
   it("drops the bucket key once all in-window entries expire", () => {
@@ -362,19 +372,28 @@ describe("eviction — limits LRU bound", () => {
     for (let i = 0; i < 100; i++) {
       setClientRateLimit("org_x", `client_${i}`, { requestsPerMinute: 60 });
     }
-    // Touch client_0 — checkClientRateLimit re-inserts the entry, which
-    // should move it to the most-recent end of the iteration order.
-    checkClientRateLimit({
-      orgId: "org_x",
-      clientId: "client_0",
-      userId: "user_1",
-      toolName: "listEntities",
-    });
-    // Adding one new entry would normally evict client_0 (the LRU). After
-    // the touch above, client_1 is the LRU instead.
-    setClientRateLimit("org_x", "client_overflow", { requestsPerMinute: 60 });
+    // Touch BOTH ends of the LRU queue — a regression that lookup-only
+    // reads (without re-insert) would keep client_0 as the LRU and the
+    // assertion below would still pass for client_50. Touching both
+    // means the recency refresh has to actually move two entries to the
+    // most-recent end for the test to remain green.
+    for (const id of ["client_0", "client_50"]) {
+      checkClientRateLimit({
+        orgId: "org_x",
+        clientId: id,
+        userId: "user_1",
+        toolName: "listEntities",
+      });
+    }
+    // Two new inserts evict the two LRU entries — which now should be
+    // client_1 and client_2 (not client_0 / client_50, which we just
+    // promoted).
+    setClientRateLimit("org_x", "client_overflow_a", { requestsPerMinute: 60 });
+    setClientRateLimit("org_x", "client_overflow_b", { requestsPerMinute: 60 });
     expect(_hasCachedLimitForTests("org_x", "client_0")).toBe(true);
+    expect(_hasCachedLimitForTests("org_x", "client_50")).toBe(true);
     expect(_hasCachedLimitForTests("org_x", "client_1")).toBe(false);
+    expect(_hasCachedLimitForTests("org_x", "client_2")).toBe(false);
   });
 
   it("clamps a sub-100 ATLAS_MCP_RATE_LIMIT_MAX_KEYS to a 100 floor", () => {
@@ -410,7 +429,7 @@ describe("eviction — limits LRU bound", () => {
   });
 });
 
-// ── Docs table lockstep (#2183 item 5) ───────────────────────────────
+// ── Docs table lockstep ──────────────────────────────────────────────
 
 describe("TOOL_WEIGHTS docs sync", () => {
   it("apps/docs/content/docs/guides/mcp.mdx weights table matches TOOL_WEIGHTS exactly", () => {
@@ -455,6 +474,8 @@ describe("TOOL_WEIGHTS docs sync", () => {
  * Parse the "Per-tool weights" table out of the hosted-MCP guide. The
  * markdown shape is:
  *
+ *     #### Per-tool weights
+ *     ...
  *     | Tool                                  | Weight |
  *     | ------------------------------------- | ------ |
  *     | `executeSQL`, `explore`               | 5      |
@@ -464,19 +485,34 @@ describe("TOOL_WEIGHTS docs sync", () => {
  * Each row may list multiple comma-separated tools sharing a weight.
  * Tools are wrapped in backticks; the parser strips them. Returns a
  * map for direction-agnostic comparison.
+ *
+ * The parser anchors on the `#### Per-tool weights` heading rather than
+ * the first `| Tool` it finds — anchoring on the table header alone
+ * would silently bind to an unrelated table (e.g. an "OAuth Client
+ * Tool Permissions" table) if one is added earlier in the guide. The
+ * cell-count check throws on shape drift (e.g. a future doc edit
+ * adding a "Notes" column) instead of silently skipping rows, which
+ * would yield a misleading mismatch error far from the real cause.
  */
 function parseToolWeightsTable(mdx: string): Map<string, number> {
-  const headerIdx = mdx.indexOf("| Tool");
+  const SECTION_HEADING = "#### Per-tool weights";
+  const sectionIdx = mdx.indexOf(SECTION_HEADING);
+  if (sectionIdx < 0) {
+    throw new Error(
+      `weights table section not found in mcp.mdx — expected "${SECTION_HEADING}" anchor`,
+    );
+  }
+  const fromSection = mdx.slice(sectionIdx);
+  const headerIdx = fromSection.indexOf("| Tool");
   if (headerIdx < 0) {
     throw new Error(
-      "weights table not found in mcp.mdx — did the heading move? (#2183 item 5)",
+      `weights table not found after "${SECTION_HEADING}" — did the heading move?`,
     );
   }
   // Skip the header row and the separator row (`| --- | --- |`).
-  const fromHeader = mdx.slice(headerIdx);
+  const fromHeader = fromSection.slice(headerIdx);
   const lines = fromHeader.split("\n");
   const out = new Map<string, number>();
-  // Start from the first data row (skip 2 header lines).
   for (let i = 2; i < lines.length; i++) {
     const line = lines[i];
     if (!line.startsWith("|")) break;
@@ -484,10 +520,18 @@ function parseToolWeightsTable(mdx: string): Map<string, number> {
       .split("|")
       .map((c) => c.trim())
       .filter((c) => c.length > 0);
-    if (cells.length !== 2) continue;
+    if (cells.length !== 2) {
+      throw new Error(
+        `weights table shape drifted at line "${line}" — expected exactly 2 cells (Tool, Weight), got ${cells.length}. Refresh the parser if a column was added.`,
+      );
+    }
     const [toolsCell, weightCell] = cells;
     const weight = Number.parseInt(weightCell, 10);
-    if (!Number.isFinite(weight)) continue;
+    if (!Number.isFinite(weight)) {
+      throw new Error(
+        `weights table contains non-numeric weight "${weightCell}" at line "${line}"`,
+      );
+    }
     for (const raw of toolsCell.split(",")) {
       const tool = raw.trim().replace(/^`|`$/g, "");
       if (tool.length > 0) out.set(tool, weight);

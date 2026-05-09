@@ -178,10 +178,8 @@ test.describe("Admin OAuth Clients — rate limit override @llm", () => {
       page.locator("h1", { hasText: "OAuth clients" }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Row 1: no override — default 60/min. Scope by the row's stable
-    // `data-testid` rather than a "section/div with hasText" wrapper
-    // selector — the latter resolves to whichever ancestor contains the
-    // text first and breaks every time the layout reshapes (#2183 item 6).
+    // Row 1: no override — default 60/min. Scope by stable `data-testid`
+    // so this stays robust to admin-row layout reshaping.
     const defaultRow = page.getByTestId("oauth-client-row-claude-desktop");
     await expect(defaultRow).toBeVisible();
     await expect(defaultRow.getByText(/60\/min/)).toBeVisible();

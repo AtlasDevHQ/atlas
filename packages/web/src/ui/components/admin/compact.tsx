@@ -187,11 +187,10 @@ export function Shell({
   children?: ReactNode;
   actions?: ReactNode;
   panelRef?: RefObject<HTMLElement | null>;
-  /** Stable testing hook for Playwright specs that need to scope row-level
-   *  assertions without depending on hasText layout selectors. Surfaces as
-   *  `data-testid` on the underlying section element so callers can
-   *  `page.getByTestId(...)` rather than the brittle wrapper-text pattern
-   *  flagged by pr-test-analyzer (#2183 item 6). */
+  /** Stable testing hook for Playwright. Surfaces as `data-testid` on
+   *  the underlying section element so specs can scope row-level
+   *  assertions via `getByTestId(...)` instead of brittle hasText
+   *  wrapper selectors. */
   dataTestId?: string;
 }) {
   const ariaTitle =

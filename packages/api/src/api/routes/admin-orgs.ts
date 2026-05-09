@@ -608,9 +608,8 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
     if (workspace.workspace_status === "suspended") return c.json({ error: "conflict", message: "Workspace is already suspended." }, 409);
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "suspended"));
-    // Drop the cached workspace row immediately so the next user-facing
-    // request reflects the suspension instead of the 60s-stale active
-    // entry from `getCachedWorkspace` (#2165).
+    // Drop the cached `getCachedWorkspace` entry so the next user-side
+    // request sees the new status within its TTL window (#2165).
     invalidatePlanCache(orgId);
     // Audit the mutation commit BEFORE the pool drain — a transient
     // `drainOrg` rejection must not silently drop the audit row after
@@ -645,10 +644,7 @@ adminOrgs.openapi(activateOrgRoute, async (c) => {
     if (workspace.workspace_status === "active") return c.json({ error: "conflict", message: "Workspace is already active." }, 409);
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "active"));
-    // Drop the cached workspace row so the user-facing path picks up
-    // "active" on the next request rather than serving a stale
-    // "suspended" entry until the cache TTL expires (#2165).
-    invalidatePlanCache(orgId);
+    invalidatePlanCache(orgId); // #2165 — see suspend handler above
     log.info({ orgId, requestId, admin: user?.id }, "Workspace activated");
     // Canonical action_type is `workspace.unsuspend` (not
     // `workspace.activate`) — the endpoint path deliberately differs
@@ -707,10 +703,7 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
       try: () => updateWorkspaceStatus(orgId, "deleted"),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
-    // Drop the cached workspace row so the user-facing path returns
-    // 404/deleted on the next request instead of serving the cached
-    // pre-delete state (#2165).
-    invalidatePlanCache(orgId);
+    invalidatePlanCache(orgId); // #2165 — see suspend handler above
 
     log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings }, "Workspace soft-deleted with cascading cleanup");
     // `cleanup` mirrors platform-admin.ts. `poolsDrained`/`warnings`

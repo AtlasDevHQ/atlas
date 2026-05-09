@@ -155,6 +155,9 @@ mock.module("@atlas/api/lib/db/internal", () => {
     assignWorkspaceRegion: notUsed("assignWorkspaceRegion"),
     isWorkspaceMigrating: async () => false,
     closeInternalDB: async () => undefined,
+    // The hosted-MCP rate-limit middleware reads the circuit-breaker
+    // state to differentiate audit-row drops; closed in this fixture.
+    isInternalCircuitOpen: () => false,
   };
 });
 

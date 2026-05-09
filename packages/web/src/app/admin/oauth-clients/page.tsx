@@ -366,6 +366,7 @@ function OAuthClientShell({
     <Shell
       icon={KeyRound}
       title={displayName}
+      dataTestId={`oauth-client-row-${client.clientId}`}
       description={
         client.disabled
           ? "Disabled — revoke to remove from the list"

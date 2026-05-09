@@ -164,6 +164,7 @@ export function Shell({
   children,
   actions,
   panelRef,
+  dataTestId,
 }: {
   id?: string;
   icon: ComponentType<{ className?: string }>;
@@ -186,6 +187,11 @@ export function Shell({
   children?: ReactNode;
   actions?: ReactNode;
   panelRef?: RefObject<HTMLElement | null>;
+  /** Stable testing hook for Playwright. Surfaces as `data-testid` on
+   *  the underlying section element so specs can scope row-level
+   *  assertions via `getByTestId(...)` instead of brittle hasText
+   *  wrapper selectors. */
+  dataTestId?: string;
 }) {
   const ariaTitle =
     titleText ?? (typeof title === "string" ? title : "Item");
@@ -213,6 +219,7 @@ export function Shell({
     <section
       id={id}
       ref={panelRef}
+      data-testid={dataTestId}
       aria-label={
         status === "connected" || status === "unhealthy"
           ? `${ariaTitle}: ${statusLabel ?? STATUS_LABEL[status]}`

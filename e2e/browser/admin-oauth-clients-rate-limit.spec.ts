@@ -178,18 +178,15 @@ test.describe("Admin OAuth Clients — rate limit override @llm", () => {
       page.locator("h1", { hasText: "OAuth clients" }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Row 1: no override — default 60/min.
-    const defaultRow = page
-      .locator("section, div", { hasText: "Claude Desktop" })
-      .first();
+    // Row 1: no override — default 60/min. Scope by stable `data-testid`
+    // so this stays robust to admin-row layout reshaping.
+    const defaultRow = page.getByTestId("oauth-client-row-claude-desktop");
     await expect(defaultRow).toBeVisible();
     await expect(defaultRow.getByText(/60\/min/)).toBeVisible();
     await expect(defaultRow.getByText(/override/)).toHaveCount(0);
 
     // Row 2: explicit override at 240.
-    const overrideRow = page
-      .locator("section, div", { hasText: "Premium Agent" })
-      .first();
+    const overrideRow = page.getByTestId("oauth-client-row-premium-agent");
     await expect(overrideRow.getByText(/240\/min/)).toBeVisible();
     await expect(overrideRow.getByText(/override/i).first()).toBeVisible();
   });
@@ -198,9 +195,7 @@ test.describe("Admin OAuth Clients — rate limit override @llm", () => {
     const { patchRequests } = await installMocks(page, buildFixture());
     await page.goto("/admin/oauth-clients");
 
-    const claudeRow = page
-      .locator("section, div", { hasText: "Claude Desktop" })
-      .first();
+    const claudeRow = page.getByTestId("oauth-client-row-claude-desktop");
 
     // Open the edit dialog.
     await claudeRow

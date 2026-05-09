@@ -696,6 +696,26 @@ export function _resetCircuitBreaker(): void {
 }
 
 /**
+ * True when fire-and-forget writes are being dropped by the circuit
+ * breaker. Read this *before* enqueueing a security-control audit row
+ * (e.g. a rate-limit denial) so the call site can light up a
+ * differentiated metric + `log.error` on drop. The fire-and-forget
+ * `internalExecute` only logs an aggregate "Internal DB circuit breaker
+ * open" once on open and a per-write debug line; without an exposed
+ * predicate, security-control callers can't tell their row was dropped
+ * (#2183 item 3).
+ */
+export function isInternalCircuitOpen(): boolean {
+  return _circuitOpen;
+}
+
+/** @internal — test seam. Force the circuit-breaker state for fault-injection
+ *  tests that exercise the security-control drop telemetry path. */
+export function _setInternalCircuitOpenForTests(open: boolean): void {
+  _circuitOpen = open;
+}
+
+/**
  * Log a warning when DATABASE_URL and ATLAS_DATASOURCE_URL resolve to the
  * same Postgres database. Internal tables (auth, audit, settings) will
  * share the public schema with analytics data.

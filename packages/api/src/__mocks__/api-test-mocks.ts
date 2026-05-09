@@ -338,6 +338,8 @@ export function createApiTestMocks(
     loadSavedConnections: mock(async () => 0),
     _resetPool: mock(() => {}),
     _resetCircuitBreaker: mock(() => {}),
+    isInternalCircuitOpen: () => false,
+    _setInternalCircuitOpenForTests: mock(() => {}),
     encryptUrl: (url: string) => url,
     decryptUrl: (url: string) => url,
     getEncryptionKey: () => null,

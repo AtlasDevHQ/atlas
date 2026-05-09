@@ -119,6 +119,53 @@ export const oauthTokenRefresh: Counter = meter.createCounter(
 );
 
 /**
+ * `atlas.rate_limit.audit_dropped` — incremented every time a per-OAuth-client
+ * rate-limit denial audit row would have been written but was dropped
+ * because the internal-DB fire-and-forget circuit breaker is open
+ * (#2183 item 3). Pairs with a `log.error` line emitted at the same call
+ * site so dashboards and the log stream both surface the visibility gap.
+ *
+ * Attributes:
+ *   - `reason`        — currently always `circuit_open` (single drop
+ *                       cause today; reserved for future drop modes).
+ *   - `client.id`     — the OAuth client whose denial row was lost.
+ *   - `tool.name`     — the dispatch tool — the per-client denial signal
+ *                       is more actionable when split by tool.
+ *   - `deploy.mode`   — `self-hosted` / `saas`. Operators of the SaaS
+ *                       region care most about non-zero values here.
+ */
+export const rateLimitAuditDropped: Counter = meter.createCounter(
+  "atlas.rate_limit.audit_dropped",
+  {
+    description:
+      "Per-client rate-limit denial audit rows dropped by the internal-DB circuit breaker (#2183 item 3)",
+  },
+);
+
+/**
+ * `atlas.rate_limit.loader_failures` — incremented every time the
+ * per-OAuth-client rate-limit DB loader (`oauth_client_rate_limits`
+ * lookup) raises an error and the limiter falls back to its configured
+ * disposition (#2183 item 4).
+ *
+ * Attributes:
+ *   - `disposition`   — `fail_open` (the legacy default — caller served
+ *                       at the workspace default quota) or `fail_closed`
+ *                       (caller denied with `code: rate_limited`).
+ *   - `deploy.mode`   — `self-hosted` / `saas`.
+ *
+ * Use this counter to alert when an override-DB outage is silently
+ * widening the effective quota in a fail-open region.
+ */
+export const rateLimitLoaderFailures: Counter = meter.createCounter(
+  "atlas.rate_limit.loader_failures",
+  {
+    description:
+      "Per-client rate-limit override loader failures by disposition (fail_open / fail_closed)",
+  },
+);
+
+/**
  * `atlas.mcp.prompts.calls` — every `prompts/list` and `prompts/get`
  * request, attributed to the resolving prompt source so operators can
  * tell which prompts library agents actually pull (#2076).

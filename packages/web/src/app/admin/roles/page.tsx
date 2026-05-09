@@ -229,19 +229,32 @@ function RoleDialog({
                 <div key={group} className="space-y-2">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{group}</p>
                   <div className="space-y-1.5">
-                    {perms.filter((p) => allPermissions.includes(p)).map((perm) => (
-                      <label
-                        key={perm}
-                        className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50 cursor-pointer"
-                      >
-                        <Checkbox
-                          checked={selectedPerms.includes(perm)}
-                          onCheckedChange={() => togglePermission(perm)}
-                        />
-                        <span className="text-sm">{PERMISSION_LABELS[perm] ?? perm}</span>
-                        <span className="text-xs text-muted-foreground font-mono ml-auto">{perm}</span>
-                      </label>
-                    ))}
+                    {perms.filter((p) => allPermissions.includes(p)).map((perm) => {
+                      const checkboxId = `perm-${perm}`;
+                      // Don't wrap <Checkbox> in <label> — Radix Checkbox is a button, and
+                      // a wrapping label dispatches a synthetic click on its labelable
+                      // descendant when the descendant itself is clicked, double-firing
+                      // onCheckedChange and net-toggling back. Use htmlFor instead. (#2170)
+                      return (
+                        <div
+                          key={perm}
+                          className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50"
+                        >
+                          <Checkbox
+                            id={checkboxId}
+                            checked={selectedPerms.includes(perm)}
+                            onCheckedChange={() => togglePermission(perm)}
+                          />
+                          <label
+                            htmlFor={checkboxId}
+                            className="flex flex-1 items-center gap-2 cursor-pointer select-none"
+                          >
+                            <span className="text-sm">{PERMISSION_LABELS[perm] ?? perm}</span>
+                            <span className="text-xs text-muted-foreground font-mono ml-auto">{perm}</span>
+                          </label>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ))}

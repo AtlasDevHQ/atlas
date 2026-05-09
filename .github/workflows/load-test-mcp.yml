@@ -1,0 +1,194 @@
+name: MCP Load Test
+
+# Drives the hosted MCP load profile end-to-end (#2129). Manual-only for
+# now (`workflow_dispatch`) — promoting to a cron is a separate change
+# once we trust the pipeline against prod.
+#
+# What this runs:
+#   1. Install k6 + jq.
+#   2. Sign in as `LOADTEST_ADMIN_EMAIL` against the chosen `BASE_URL`,
+#      mint an MCP-scoped JWT via `POST /api/v1/me/load-test/mcp-token`,
+#      and run the selected k6 scenario(s). All three steps are wrapped
+#      by `eval/load-tests/mcp/loadtest.sh`; the workflow is a thin
+#      orchestrator on top.
+#   3. Build a markdown summary table from each scenario's
+#      `--summary-export` JSON and push it to $GITHUB_STEP_SUMMARY.
+#   4. Upload the per-run summary.json + .log files as workflow
+#      artifacts (30-day retention).
+#
+# Required repo secrets (configure in Settings → Secrets and variables → Actions):
+#   - LOADTEST_ADMIN_EMAIL    — email of the load-test workspace member
+#   - LOADTEST_ADMIN_PASSWORD — that user's password
+#
+# The minted bearer is bound to the user's active workspace; no
+# `WORKSPACE_ID` secret is required (the self-mint endpoint reads it
+# from the session). When `ATLAS_LOADTEST_ALLOWED_ORGS` is set on the
+# target API region, the workspace must be in that allowlist or the
+# mint endpoint returns 404.
+#
+# Workflow-injection notes (per the GitHub Actions hardening guide):
+#   - Trigger is `workflow_dispatch` only, so `inputs.*` come from
+#     authenticated maintainers, not anonymous PR/issue actors. Even so,
+#     every input is forwarded through an `env:` binding and never
+#     spliced directly into a `run:` string. Job-level interpolation
+#     points (`name`, `concurrency.group`, `if:`) are GH-evaluated
+#     metadata and not shell-executed.
+#   - No `github.event.*` fields from PR/issue/comment surfaces are
+#     read anywhere; the `${{ }}` interpolations on this workflow are
+#     all `inputs.*` (workflow_dispatch) or `secrets.*`.
+#   - Tooling versions templated into `run:` come from this workflow's
+#     own `env:` block — repo-controlled, not attacker-controlled.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Target MCP base URL"
+        type: choice
+        default: "https://mcp.useatlas.dev"
+        options:
+          - "https://mcp.useatlas.dev"
+          - "https://mcp-eu.useatlas.dev"
+          - "https://mcp-apac.useatlas.dev"
+      scenarios:
+        description: "Which scenarios to run"
+        type: choice
+        default: "all"
+        options:
+          - "all"
+          - "cold-start"
+          - "concurrent-sessions"
+          - "tool-call-mix"
+      stages:
+        description: "Override STAGES for concurrent-sessions (comma list, e.g. '1,5'). Blank = default 1,10,50,100,200."
+        type: string
+        default: ""
+      stage_seconds:
+        description: "Override STAGE_SECONDS (default 300). Use a small value (e.g. 30) for a smoke run."
+        type: string
+        default: ""
+      mix_duration:
+        description: "Override DURATION for tool-call-mix (default 5m)."
+        type: string
+        default: ""
+      ttl_seconds:
+        description: "Override the minted bearer TTL in seconds (default 1800)."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# Prevent two concurrent runs against the same target — they'd compete
+# for the per-caller mint rate-limit budget (10/min) and produce
+# overlapping load against the same workspace.
+concurrency:
+  group: load-test-mcp-${{ inputs.base_url }}
+  cancel-in-progress: false
+
+jobs:
+  load-test:
+    name: load-test (${{ inputs.scenarios }} → ${{ inputs.base_url }})
+    runs-on: ubuntu-latest
+    # Generous ceiling: full ladder is 5 stages × 5 min + ramps, plus
+    # 5 min mix + ~2 min cold-start + install. 90 min absorbs slack.
+    timeout-minutes: 90
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+      LOADTEST_ADMIN_EMAIL: ${{ secrets.LOADTEST_ADMIN_EMAIL }}
+      LOADTEST_ADMIN_PASSWORD: ${{ secrets.LOADTEST_ADMIN_PASSWORD }}
+      # Scenario tuning knobs. Empty strings fall through to the
+      # script's defaults — bash truthiness on `${VAR:-}` covers it.
+      STAGES: ${{ inputs.stages }}
+      STAGE_SECONDS: ${{ inputs.stage_seconds }}
+      DURATION: ${{ inputs.mix_duration }}
+      TTL_SECONDS: ${{ inputs.ttl_seconds }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify required secrets are configured
+        # Surface a clean actionable failure when the secrets aren't
+        # wired up yet (the most likely failure mode on first invocation
+        # against a fresh repo). Without this guard the run would fail
+        # 90s later inside loadtest.sh with a less-targeted error.
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${LOADTEST_ADMIN_EMAIL:-}" ] || missing+=("LOADTEST_ADMIN_EMAIL")
+          [ -n "${LOADTEST_ADMIN_PASSWORD:-}" ] || missing+=("LOADTEST_ADMIN_PASSWORD")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing repo secrets: ${missing[*]}"
+            echo "::error::Configure under Settings → Secrets and variables → Actions."
+            echo "::error::See eval/load-tests/mcp/README.md for the load-test workspace + token requirements."
+            exit 1
+          fi
+
+      - name: Install k6 + jq
+        # k6 from the upstream stable apt repo; jq is preinstalled on
+        # ubuntu-latest but pinning the install line keeps the workflow
+        # resilient to runner image changes. The keyserver + fingerprint
+        # match the manual install path documented in
+        # `eval/load-tests/mcp/README.md` so a CI run reproduces what an
+        # operator runs locally.
+        run: |
+          set -euo pipefail
+          sudo gpg -k
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends k6 jq
+          k6 version
+          jq --version
+
+      - name: Run cold-start
+        if: ${{ inputs.scenarios == 'all' || inputs.scenarios == 'cold-start' }}
+        # `continue-on-error: true` so a single scenario's failure
+        # doesn't drop the artifacts for the others. The summary step
+        # below renders whatever ran; the upload step grabs everything
+        # in `results/` regardless of pass/fail.
+        continue-on-error: true
+        run: ./eval/load-tests/mcp/loadtest.sh cold-start
+
+      - name: Run concurrent-sessions
+        if: ${{ inputs.scenarios == 'all' || inputs.scenarios == 'concurrent-sessions' }}
+        continue-on-error: true
+        run: ./eval/load-tests/mcp/loadtest.sh concurrent-sessions
+
+      - name: Run tool-call-mix
+        if: ${{ inputs.scenarios == 'all' || inputs.scenarios == 'tool-call-mix' }}
+        continue-on-error: true
+        run: ./eval/load-tests/mcp/loadtest.sh tool-call-mix
+
+      - name: Build step summary
+        if: always()
+        run: |
+          set -euo pipefail
+          summaries=(eval/load-tests/mcp/results/*.json)
+          if [ ! -e "${summaries[0]}" ]; then
+            {
+              echo "## MCP load test"
+              echo
+              echo "_No \`summary.json\` files were produced. Check the per-scenario step logs._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "**Target:** \`$BASE_URL\`"
+            echo
+            ./eval/load-tests/mcp/summarize.sh "${summaries[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload load-test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-load-test-results
+          path: |
+            eval/load-tests/mcp/results/*.json
+            eval/load-tests/mcp/results/*.log
+          if-no-files-found: warn
+          retention-days: 30

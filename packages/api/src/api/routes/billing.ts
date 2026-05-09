@@ -31,6 +31,7 @@ import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } fro
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { BillingStatusSchema } from "@useatlas/schemas";
+import { ADMIN_ROLES, type AdminRole } from "@useatlas/types/auth";
 import { ErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -456,9 +457,13 @@ billing.openapi(toggleByotRoute, async (c) => {
       return c.json({ error: "not_available", message: "Billing is not available." }, 404);
     }
 
-    // Require admin or owner role for BYOT toggle
-    if (mode !== "none" && (!user || (user.role !== "admin" && user.role !== "owner"))) {
-      return c.json({ error: "forbidden_role", message: "Admin or owner role required to change BYOT setting.", requestId }, 403);
+    // Require admin, owner, or platform_admin role for BYOT toggle. The
+    // outer `adminAuth` already accepts the same set, but BYOT historically
+    // re-asserted the gate inline and forgot platform_admin (#2240) — keep
+    // the source of truth on `ADMIN_ROLES` so future role additions don't
+    // need to find every duplicated literal.
+    if (mode !== "none" && (!user || !user.role || !ADMIN_ROLES.includes(user.role as AdminRole))) {
+      return c.json({ error: "forbidden_role", message: "Admin, owner, or platform admin role required to change BYOT setting.", requestId }, 403);
     }
 
     if (!orgId) {

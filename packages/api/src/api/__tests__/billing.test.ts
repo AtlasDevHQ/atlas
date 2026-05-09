@@ -471,5 +471,43 @@ describe("billing routes", () => {
       });
       expect(res.status).toBe(403);
     });
+
+    // #2240 — platform_admin (system-wide superuser) was getting 403 because
+    // the inline gate was hardcoded to {admin, owner}. The outer adminAuth
+    // already accepts platform_admin, so the inner check now needs to match.
+    it("allows platform_admin to toggle BYOT", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "user-1", mode: "simple-key", label: "User", role: "platform_admin", activeOrganizationId: "org-1" },
+        }),
+      );
+      const res = await request("/api/v1/billing/byot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.byot).toBe(true);
+    });
+
+    it("allows owner role to toggle BYOT", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "user-1", mode: "simple-key", label: "User", role: "owner", activeOrganizationId: "org-1" },
+        }),
+      );
+      const res = await request("/api/v1/billing/byot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: false }),
+      });
+      expect(res.status).toBe(200);
+    });
   });
 });

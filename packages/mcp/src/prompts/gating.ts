@@ -25,6 +25,7 @@
  */
 
 import type { CanonicalToggle } from "@useatlas/types/mcp";
+import type { CanonicalGateReason } from "@useatlas/schemas/mcp-prompts";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 
@@ -44,12 +45,13 @@ export interface ShouldExposeCanonicalOpts {
 }
 
 /**
- * UI-facing reason key for why the canonical-gate is closed. The HTTP
- * endpoint `/api/v1/me/mcp-prompts` (#2179) surfaces these so the
- * Settings → AI Agents preview block can render the right banner copy.
- * Distinct from the boolean the SDK list handler needs because the
- * SDK simply hides closed-gate prompts; the workspace UI needs to
- * *explain* the absence.
+ * UI-facing reason key for why the canonical-gate is closed. Re-exported
+ * from `@useatlas/schemas/mcp-prompts` so callers that import from
+ * `gating.ts` keep a stable identifier; the canonical const tuple +
+ * Zod enum live in the schemas package alongside the rest of the
+ * MCP-prompts wire shape (#2192). The HTTP endpoint
+ * `/api/v1/me/mcp-prompts` (#2179) surfaces these so the Settings →
+ * AI Agents preview block can render the right banner copy.
  *
  * Three closed-gate paths:
  *   - `toggle-never`        — admin opted out at Admin → Settings → MCP.
@@ -66,18 +68,8 @@ export interface ShouldExposeCanonicalOpts {
  *                             workspace") and operators dogfooding the
  *                             SaaS need an in-product signal that
  *                             something is broken.
- *
- * Mirrored as a Zod enum at:
- *   - `packages/api/src/api/routes/me-mcp-prompts.ts` (route response)
- *   - `packages/web/src/ui/lib/me-schemas.ts` (web client parse)
- * Keep all three lockstep; there is no shared schema module yet (see
- * the `@useatlas/types` value-export caveat documented at
- * `packages/web/src/app/admin/settings/mcp/page.tsx:34-42`).
  */
-export type CanonicalGateReason =
-  | "toggle-never"
-  | "no-demo-signal"
-  | "signal-unavailable";
+export type { CanonicalGateReason };
 
 /**
  * Discriminated union encoding the invariant `exposed=true ⇒ reason=null`

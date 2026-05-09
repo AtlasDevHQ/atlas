@@ -34,31 +34,21 @@ import {
   evaluateCanonicalGate,
   type CanonicalGateResult,
 } from "./gating.js";
+// Wire-shape types come from `@useatlas/schemas/mcp-prompts` so the
+// listing pipeline, the route layer (`me-mcp-prompts.ts`), and the
+// web client (`me-schemas.ts`) all derive from one Zod source. See
+// the schemas module header for the dependency-direction rationale.
+import type {
+  PromptSource,
+  PromptArgumentSpec,
+  PromptListEntry,
+} from "@useatlas/schemas/mcp-prompts";
+
+export type { PromptSource, PromptArgumentSpec, PromptListEntry };
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
-
-export type PromptSource = "builtin" | "canonical" | "semantic" | "library";
-
-export interface PromptArgumentSpec {
-  readonly name: string;
-  readonly description: string;
-  readonly required: boolean;
-}
-
-/**
- * Workspace-shaped prompt list entry. `source` is what lets the
- * Settings → AI Agents preview block bucket and count without
- * round-tripping a name-prefix heuristic; the SDK `prompts/list`
- * shape strips this field at the surface.
- */
-export interface PromptListEntry {
-  readonly name: string;
-  readonly description?: string;
-  readonly arguments: ReadonlyArray<PromptArgumentSpec>;
-  readonly source: PromptSource;
-}
 
 export interface PromptListing {
   readonly prompts: ReadonlyArray<PromptListEntry>;

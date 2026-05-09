@@ -117,67 +117,49 @@ export const RevokeOAuthClientResponseSchema = z.object({
 
 // ---------------------------------------------------------------------------
 // MCP prompts preview (#2179) — Settings → AI Agents
+//
+// Schemas are sourced from `@useatlas/schemas/mcp-prompts` (#2192) so the
+// listing pipeline (`@atlas/mcp/prompts/listing`), the route layer
+// (`packages/api/src/api/routes/me-mcp-prompts.ts`), and this web client
+// derive from one Zod definition. The local `Mcp*` aliases below stay so
+// existing component imports (`@/ui/lib/me-schemas`) keep working without
+// a sweeping rename.
 // ---------------------------------------------------------------------------
 
-/**
- * Mirrors the API route's `PromptListEntrySchema`. The Settings → AI
- * Agents preview block buckets by `source` to show "Built-in (5) ·
- * Canonical (20) · Semantic (12) · Library (3)"; reading `source` off
- * each entry avoids name-prefix pattern-matching at the UI layer.
- */
-export const McpPromptArgumentSchema = z.object({
-  name: z.string().min(1),
-  description: z.string(),
-  required: z.boolean(),
-});
+import {
+  PromptArgumentSchema,
+  PromptSourceSchema,
+  PromptListEntrySchema,
+  CanonicalGateSchema,
+  McpPromptsResponseSchema as CanonicalMcpPromptsResponseSchema,
+  type PromptListEntry,
+  type PromptSource,
+  type CanonicalGateWire,
+  type McpPromptsResponse as CanonicalMcpPromptsResponse,
+} from "@useatlas/schemas/mcp-prompts";
 
-export const McpPromptSourceSchema = z.enum([
-  "builtin",
-  "canonical",
-  "semantic",
-  "library",
-]);
-
-export const McpPromptListEntrySchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-  arguments: z.array(McpPromptArgumentSchema),
-  source: McpPromptSourceSchema,
-});
+export const McpPromptArgumentSchema = PromptArgumentSchema;
+export const McpPromptSourceSchema = PromptSourceSchema;
+export const McpPromptListEntrySchema = PromptListEntrySchema;
 
 /**
- * Canonical-prompts gate envelope. `exposed=false` means the canonical
- * eval prompts are hidden; `reason` tells the UI which banner to render:
- *   - "toggle-never"        — admin opted out at Admin → Settings → MCP
- *   - "no-demo-signal"      — toggle=auto, this isn't a demo workspace
- *   - "signal-unavailable"  — toggle=auto, internal-DB connections probe
- *                             failed AND no industry signal could
- *                             confirm demo status (operator-facing
- *                             outage signal — distinct from the
- *                             confirmed-not-demo case so the user gets
- *                             accurate advice)
- *
- * `.catch(null)` on the reason enum so a forward-compatible reason
- * value during a multi-PR rollout degrades to the "unknown reason"
- * banner branch instead of failing the entire response parse and
- * blanking the preview block. Mirrors `CanonicalGateReason` in
- * `packages/mcp/src/prompts/gating.ts` — keep both in sync.
+ * Web-client copy of the canonical-gate schema with `.catch(null)` on
+ * the reason enum so a forward-compatible reason value during a
+ * multi-PR rollout degrades to the "unknown reason" banner branch
+ * instead of failing the entire response parse and blanking the
+ * preview block. The route's strict schema (no `.catch`) still rejects
+ * a malformed value at the API boundary; the tolerance lives at the
+ * read side, not in the canonical wire definition.
  */
-export const McpCanonicalGateSchema = z.object({
-  exposed: z.boolean(),
-  toggle: z.enum(["always", "never", "auto"]),
-  reason: z
-    .enum(["toggle-never", "no-demo-signal", "signal-unavailable"])
-    .nullable()
-    .catch(null),
+export const McpCanonicalGateSchema = CanonicalGateSchema.extend({
+  reason: CanonicalGateSchema.shape.reason.catch(null),
 });
 
-export const McpPromptsResponseSchema = z.object({
-  prompts: z.array(McpPromptListEntrySchema),
+export const McpPromptsResponseSchema = CanonicalMcpPromptsResponseSchema.extend({
   canonicalGate: McpCanonicalGateSchema,
 });
 
-export type McpPromptListEntry = z.infer<typeof McpPromptListEntrySchema>;
-export type McpPromptSource = z.infer<typeof McpPromptSourceSchema>;
-export type McpCanonicalGate = z.infer<typeof McpCanonicalGateSchema>;
-export type McpPromptsResponse = z.infer<typeof McpPromptsResponseSchema>;
+export type McpPromptListEntry = PromptListEntry;
+export type McpPromptSource = PromptSource;
+export type McpCanonicalGate = CanonicalGateWire;
+export type McpPromptsResponse = CanonicalMcpPromptsResponse;

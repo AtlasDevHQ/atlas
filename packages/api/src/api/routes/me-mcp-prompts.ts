@@ -24,9 +24,10 @@
  */
 
 import { Effect } from "effect";
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
+import { McpPromptsResponseSchema } from "@useatlas/schemas/mcp-prompts";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -45,49 +46,10 @@ async function loadListingModule() {
   return await import(/* turbopackIgnore: true */ "@atlas/mcp/prompts/listing");
 }
 
-// ---------------------------------------------------------------------------
-// Schemas — mirror the shape returned by `listMcpPrompts` in
-// `@atlas/mcp/prompts/listing` so the preview block has a stable contract
-// regardless of how the underlying source loaders evolve.
-// ---------------------------------------------------------------------------
-
-const PromptArgumentSchema = z.object({
-  name: z.string().min(1),
-  description: z.string(),
-  required: z.boolean(),
-});
-
-const PromptSourceSchema = z.enum([
-  "builtin",
-  "canonical",
-  "semantic",
-  "library",
-]);
-
-const PromptListEntrySchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-  arguments: z.array(PromptArgumentSchema),
-  source: PromptSourceSchema,
-});
-
-// Reason enum mirrors `CanonicalGateReason` in
-// `packages/mcp/src/prompts/gating.ts` — keep all three (gating.ts,
-// route schema, web schema) in lockstep. There is no shared schema
-// module yet because `@useatlas/types` is type-only (see the
-// scaffold-CI caveat documented in `admin/settings/mcp/page.tsx`).
-const CanonicalGateSchema = z.object({
-  exposed: z.boolean(),
-  toggle: z.enum(["always", "never", "auto"]),
-  reason: z
-    .enum(["toggle-never", "no-demo-signal", "signal-unavailable"])
-    .nullable(),
-});
-
-const McpPromptsResponseSchema = z.object({
-  prompts: z.array(PromptListEntrySchema),
-  canonicalGate: CanonicalGateSchema,
-});
+// Wire schemas live in `@useatlas/schemas/mcp-prompts` so the route, the
+// listing pipeline (`@atlas/mcp/prompts/listing`), and the web client
+// (`packages/web/src/ui/lib/me-schemas.ts`) derive from one Zod source.
+// `McpPromptsResponseSchema` is imported above.
 
 // ---------------------------------------------------------------------------
 // Route

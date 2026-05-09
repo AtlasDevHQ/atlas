@@ -25,6 +25,7 @@
     "@atlas/ee": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@useatlas/mcp": "workspace:*",
+    "@useatlas/schemas": "workspace:*",
     "@useatlas/types": "workspace:*",
     "better-auth": "^1.6.9",
     "effect": "^3.21.0",

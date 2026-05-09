@@ -47,8 +47,6 @@ const mockGenerateChangeSummary = mock((): Promise<string | null> => Promise.res
 const SEMANTIC_ENTITY_STATUSES = ["published", "draft", "draft_delete", "archived"] as const;
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  // #2150: `listEntityRows` is the DB-row export the whitelist consumes;
-  // the consolidated `listEntities` is the caller-facing summary.
   listEntityRows: mockListEntities,
   listEntities: mock(async () => []),
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,

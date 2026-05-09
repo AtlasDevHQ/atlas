@@ -29,6 +29,7 @@ import { Effect, Duration } from "effect";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { getSemanticRoot } from "./files";
 import { scanEntities } from "./scanner";
+import { EntityShape } from "./shapes";
 
 const log = createLogger("semantic-entities");
 
@@ -190,8 +191,7 @@ export async function deleteDraftEntity(
  * inspect lifecycle state can do so without a second query.
  *
  * Use this when you need the row-level data; reach for `listEntities`
- * (the consolidated summary export) when you only need name/table/
- * description for display or discovery.
+ * when you only need name/table/description for display or discovery.
  *
  * @param statusFilter - When provided, adds `AND status = $N` to the query.
  *   Use `"published"` in published mode to hide draft/archived rows.
@@ -250,17 +250,27 @@ export async function listEntityRows(
  * List entities as caller-facing summaries — the single export every
  * surface-level "what entities exist?" question should reach for.
  *
- * Branches the data source explicitly:
+ * Data source is selected by `orgId`:
  *
- * - `orgId` provided AND internal DB configured → reads per-org rows
- *   from `semantic_entities` (delegates to `listEntityRows(orgId, "entity")`)
- *   and projects each row to the summary shape. SaaS / multi-tenant
- *   callers always take this branch, so MCP tool discovery sees the same
- *   universe `executeSQL` whitelists from (kills the #2142 class).
+ * - `orgId` provided AND internal DB configured → reads per-org rows from
+ *   `semantic_entities`, validates each row through the same `EntityShape`
+ *   the SQL whitelist uses, and projects to the summary shape. SaaS /
+ *   multi-tenant callers always take this branch, so MCP tool discovery
+ *   sees the same universe `executeSQL` whitelists from.
  *
- * - `orgId` undefined OR no internal DB → falls back to scanning the
- *   on-disk semantic root. This is the self-hosted stdio + boot-time
+ * - No internal DB configured → falls back to scanning the on-disk
+ *   semantic root. This is the self-hosted stdio + boot-time
  *   semantic-discovery surface.
+ *
+ * **SaaS guard:** when the internal DB IS configured but `orgId` is
+ * missing, we throw rather than silently fall through to disk — disk on
+ * a SaaS pod points at the image's baked-in fixture and would leak
+ * across tenants. Self-hosted (no internal DB) is unaffected.
+ *
+ * **Mode handling:** `mode === "developer"` reads the draft+published
+ * overlay (drafts supersede, tombstones hide). Default and `"published"`
+ * filter to `status = 'published'` so MCP discovery cannot surface a
+ * draft entity that the published-mode whitelist would reject.
  *
  * `filter` is a case-insensitive substring match against name, table,
  * and description; applied identically in both branches.
@@ -270,8 +280,17 @@ export async function listEntities(
     readonly orgId?: string;
     readonly filter?: string;
     readonly semanticRoot?: string;
+    readonly mode?: "published" | "developer";
   } = {},
 ): Promise<EntityListEntry[]> {
+  // SaaS misroute guard — see function header.
+  if (hasInternalDB() && !opts.orgId) {
+    throw new Error(
+      "listEntities requires `orgId` when an internal DB is configured. " +
+        "Pass orgId explicitly; disk fallback on a multi-tenant deployment would leak the pod's baked-in fixture across tenants.",
+    );
+  }
+
   const filter = opts.filter?.trim().toLowerCase() ?? "";
   const matchesFilter = (entry: EntityListEntry): boolean => {
     if (!filter) return true;
@@ -280,7 +299,9 @@ export async function listEntities(
   };
 
   if (opts.orgId && hasInternalDB()) {
-    const rows = await listEntityRows(opts.orgId, "entity");
+    const rows = opts.mode === "developer"
+      ? await listEntitiesWithOverlay(opts.orgId, "entity")
+      : await listEntityRows(opts.orgId, "entity", "published");
     const summaries: EntityListEntry[] = [];
     for (const row of rows) {
       const summary = rowToEntry(row);
@@ -292,13 +313,17 @@ export async function listEntities(
   return scanDiskEntities(opts.semanticRoot, matchesFilter);
 }
 
+/**
+ * Project a DB row to the summary shape, validating the YAML through the
+ * same `EntityShape` predicate `loadOrgWhitelist` uses. Returns `null` for
+ * rows that fail validation (logged at warn) so the caller skips them —
+ * matches whitelist-load semantics so MCP discovery and the SQL whitelist
+ * cannot drift on what counts as "surfaceable" (#2142 class invariant).
+ */
 function rowToEntry(row: SemanticEntityRow): EntityListEntry | null {
-  let parsed: Record<string, unknown> | null = null;
+  let raw: unknown;
   try {
-    const loaded = yaml.load(row.yaml_content);
-    if (loaded && typeof loaded === "object") {
-      parsed = loaded as Record<string, unknown>;
-    }
+    raw = yaml.load(row.yaml_content);
   } catch (err) {
     log.warn(
       { orgId: row.org_id, name: row.name, err: err instanceof Error ? err.message : String(err) },
@@ -307,19 +332,22 @@ function rowToEntry(row: SemanticEntityRow): EntityListEntry | null {
     return null;
   }
 
-  // The DB row shape is the source of truth for `name` and connection
-  // even when the YAML omits or contradicts them.
-  const tableField = parsed?.table;
-  const table = typeof tableField === "string" && tableField ? tableField : row.name;
-  const nameField = parsed?.name;
-  const name = typeof nameField === "string" && nameField ? nameField : table;
-  const descField = parsed?.description;
-  const description = typeof descField === "string" && descField ? descField : null;
+  const parsed = EntityShape.safeParse(raw);
+  if (!parsed.success || !parsed.data.table) {
+    log.warn(
+      { orgId: row.org_id, name: row.name, err: parsed.success ? "empty table" : parsed.error.message },
+      "listEntities: row failed EntityShape validation — skipping",
+    );
+    return null;
+  }
 
+  const data = parsed.data as Record<string, unknown>;
+  const nameField = data.name;
+  const descField = data.description;
   return {
-    name,
-    table,
-    description,
+    name: typeof nameField === "string" && nameField ? nameField : parsed.data.table,
+    table: parsed.data.table,
+    description: typeof descField === "string" && descField ? descField : null,
     source: row.connection_id ?? "default",
   };
 }
@@ -329,10 +357,19 @@ function scanDiskEntities(
   matchesFilter: (entry: EntityListEntry) => boolean,
 ): EntityListEntry[] {
   const root = semanticRoot ?? getSemanticRoot();
-  // The scanner reads through `fs` lazily — guard against a missing root
-  // so self-hosted boot before semantic init returns an empty list rather
-  // than throwing.
-  if (!fs.existsSync(root)) return [];
+  // We only reach this branch when no internal DB is configured (the SaaS
+  // guard in `listEntities` rejects the DB-configured-but-no-orgId case).
+  // A missing root in a no-DB deploy means either the self-hosted boot
+  // hasn't initialized yet, or ATLAS_SEMANTIC_ROOT is misconfigured —
+  // we can't tell which, so log warn (visible in operator logs without
+  // tripping every test that runs before semantic init).
+  if (!fs.existsSync(root)) {
+    log.warn(
+      { root },
+      "scanDiskEntities: semantic root missing — returning empty list. Check ATLAS_SEMANTIC_ROOT if this is a configured deployment.",
+    );
+    return [];
+  }
 
   const { entities } = scanEntities(root);
   const results: EntityListEntry[] = [];

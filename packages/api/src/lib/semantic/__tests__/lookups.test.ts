@@ -1,7 +1,25 @@
-import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+
+// Force the disk branch even when the test env has DATABASE_URL set —
+// the consolidated `listEntities` requires `orgId` whenever an internal
+// DB is configured, and these cases test the disk fallback explicitly.
+mock.module("@atlas/api/lib/db/internal", () => ({
+  hasInternalDB: () => false,
+  internalQuery: async () => [],
+  internalExecute: async () => {},
+  encryptUrl: (u: string) => u,
+  decryptUrl: (u: string) => u,
+  encryptSecret: (s: string) => s,
+  decryptSecret: (s: string) => s,
+  getInternalDB: () => {
+    throw new Error("not configured");
+  },
+  _resetPool: () => {},
+}));
+
 import {
   getEntityByName,
   loadGlossaryTerms,
@@ -9,10 +27,9 @@ import {
   loadMetricDefinitions,
   findMetricById,
 } from "../lookups";
-// #2150: the disk-only `listEntities` was consolidated into entities.ts.
-// We import the canonical export here so the disk-side cases (filter,
-// source tagging, defensive coercion, malformed-file resilience) keep
-// regression coverage through the new entry point.
+// `listEntities` lives in `entities.ts`; we import it here so the disk-
+// side cases (filter, source tagging, defensive coercion, malformed-file
+// resilience) keep coverage through the canonical entry point.
 import { listEntities } from "../entities";
 // `beforeAll` / `afterAll` already imported at the top from "bun:test".
 

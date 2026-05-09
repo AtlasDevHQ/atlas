@@ -414,8 +414,6 @@ export function createApiTestMocks(
   }));
 
   mock.module("@atlas/api/lib/semantic/entities", () => ({
-    // #2150: `listEntityRows` returns DB row shape; the consolidated
-    // `listEntities(opts)` returns the caller-facing summary.
     listEntityRows: mock(() => Promise.resolve([])),
     listEntities: mock(() => Promise.resolve([])),
     getEntity: mock(() => Promise.resolve(null)),

@@ -41,11 +41,9 @@ const CrossSourceJoinShape = z.object({
 
 type CrossSourceJoinRelationship = z.infer<typeof CrossSourceJoinShape>["relationship"];
 
-/** Core entity shape — validates table name and connection only. */
-const EntityShape = z.object({
-  table: z.string(),
-  connection: z.string().optional(),
-}).passthrough();
+// `EntityShape` lives in `./shapes` so the consolidated `listEntities`
+// in `entities.ts` validates rows with the same predicate (#2150).
+import { EntityShape } from "./shapes";
 
 export interface CrossSourceJoin {
   fromSource: string;

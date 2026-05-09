@@ -107,8 +107,6 @@ mock.module("@atlas/api/lib/settings", () => ({
 // packages/api/src/lib/semantic/entities.ts — update together.
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   // existing mocks still need to be present (mock.module replaces all exports)
-  // #2150: DB-row export is `listEntityRows`; consolidated `listEntities`
-  // returns summaries.
   listEntityRows: mock(() => Promise.resolve([])),
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mock(() => Promise.resolve(null)),

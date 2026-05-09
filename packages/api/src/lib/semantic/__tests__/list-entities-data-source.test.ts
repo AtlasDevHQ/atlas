@@ -4,19 +4,17 @@
  * Pins the data-source-per-call shape so the two formerly-parallel
  * `listEntities` exports can never re-emerge:
  *
- * - When `orgId` is bound AND the internal DB is configured →
- *   reads per-org rows from `semantic_entities` and projects to the
- *   summary shape. This is the SaaS / multi-tenant call shape; it
- *   matches what `loadOrgWhitelist` and `executeSQL` see, so MCP
- *   tool discovery can never drift away from execution again
- *   (the #2142 class).
- * - When `orgId` is undefined OR no internal DB is configured →
- *   falls back to the on-disk YAML scanner. This is the self-hosted
- *   stdio + boot-time semantic-discovery surface.
+ * - `orgId` bound + internal DB → reads per-org rows from
+ *   `semantic_entities` and projects to the summary shape. SaaS /
+ *   multi-tenant call shape; matches what `loadOrgWhitelist` and
+ *   `executeSQL` see (kills the #2142 class).
+ * - No internal DB → falls back to the on-disk YAML scanner. The
+ *   self-hosted stdio + boot-time semantic-discovery surface.
+ * - Internal DB configured BUT no orgId → throws (the SaaS guard).
+ *   Disk fallback would leak the pod's baked-in fixture across tenants.
  *
- * The return shape is the same `EntityListEntry[]` summary regardless
- * of source — callers that need the full DB row (yaml_content,
- * status, timestamps) keep using the explicit `listEntityRows` export.
+ * Also pins the published-mode default so MCP discovery cannot surface
+ * a draft entity that the published-mode SQL whitelist would reject.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from "bun:test";
@@ -36,11 +34,10 @@ type InternalRow = {
   connection_id?: string | null;
 };
 let internalRows: InternalRow[] = [];
+let lastQueryParams: unknown[] = [];
 
 const mockInternalQuery = mock(async (_sql: string, params: unknown[]) => {
-  // listEntityRows passes [orgId, entityType?, statusFilter?]; we don't
-  // care about scoping here, just return whatever the test set up.
-  void params;
+  lastQueryParams = params;
   return internalRows.map((r) => ({
     id: `id-${r.name}`,
     org_id: "org-1",
@@ -71,7 +68,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Disk fixture — exercised by the no-orgId / no-DB branches
+// Disk fixture — exercised by the no-DB / no-orgId branches
 // ---------------------------------------------------------------------------
 
 let tmpRoot: string;
@@ -96,21 +93,43 @@ afterAll(() => {
 beforeEach(() => {
   internalDBAvailable = true;
   internalRows = [];
+  lastQueryParams = [];
   mockInternalQuery.mockClear();
 });
 
-// Cache-bust the SUT after the mocks are installed.
 const entitiesMod = (await import(
   `../entities.ts?t=${Date.now()}`
 )) as typeof import("../entities");
 const listEntities = entitiesMod.listEntities;
 
 // ---------------------------------------------------------------------------
-// Contract — data-source selection
+// SaaS misroute guard — DB configured + missing orgId → throw
+// ---------------------------------------------------------------------------
+
+describe("listEntities — SaaS guard", () => {
+  it("throws when internal DB is configured but orgId is missing", async () => {
+    internalDBAvailable = true;
+    await expect(listEntities({ semanticRoot: tmpRoot })).rejects.toThrow(
+      /listEntities requires `orgId`/,
+    );
+    // Must not have hit the DB or the disk before the throw.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("does not guard when no internal DB is configured (disk-only deploy)", async () => {
+    internalDBAvailable = false;
+    await expect(listEntities({ semanticRoot: tmpRoot })).resolves.toEqual(
+      expect.any(Array),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Data-source selection
 // ---------------------------------------------------------------------------
 
 describe("listEntities — data-source selection", () => {
-  it("orgId provided + internal DB configured → reads per-org from DB", async () => {
+  it("orgId bound + internal DB → reads per-org from DB", async () => {
     internalDBAvailable = true;
     internalRows = [
       { name: "Customer", table: "customers", description: "DB customers" },
@@ -128,8 +147,8 @@ describe("listEntities — data-source selection", () => {
     expect(result.find((e) => e.table === "users")).toBeUndefined();
   });
 
-  it("orgId undefined → reads from disk YAML (no DB hit)", async () => {
-    internalDBAvailable = true;
+  it("no internal DB → reads from disk YAML", async () => {
+    internalDBAvailable = false;
     internalRows = [{ name: "Should not appear", table: "shadow" }];
 
     const result = await listEntities({ semanticRoot: tmpRoot });
@@ -139,7 +158,7 @@ describe("listEntities — data-source selection", () => {
     expect(tables).toEqual(["orders", "users"]);
   });
 
-  it("orgId provided BUT no internal DB → falls back to disk", async () => {
+  it("orgId bound + no internal DB → falls back to disk", async () => {
     internalDBAvailable = false;
     internalRows = [{ name: "Should not appear", table: "shadow" }];
 
@@ -153,6 +172,53 @@ describe("listEntities — data-source selection", () => {
     expect(tables).toEqual(["orders", "users"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mode handling — published mode default kills the #2142 drift class
+// ---------------------------------------------------------------------------
+
+describe("listEntities — mode handling", () => {
+  it("default applies published-only status filter so drafts cannot leak", async () => {
+    internalDBAvailable = true;
+    internalRows = [{ name: "Customer", table: "customers" }];
+
+    await listEntities({ orgId: "org-1", semanticRoot: tmpRoot });
+
+    // `listEntityRows(orgId, "entity", "published")` → params [orgId, "entity", "published"]
+    expect(lastQueryParams).toEqual(["org-1", "entity", "published"]);
+  });
+
+  it("explicit mode='published' applies the same filter", async () => {
+    internalDBAvailable = true;
+    internalRows = [{ name: "Customer", table: "customers" }];
+
+    await listEntities({
+      orgId: "org-1",
+      mode: "published",
+      semanticRoot: tmpRoot,
+    });
+
+    expect(lastQueryParams).toEqual(["org-1", "entity", "published"]);
+  });
+
+  it("mode='developer' routes through the overlay query (drafts visible)", async () => {
+    internalDBAvailable = true;
+    internalRows = [{ name: "Customer", table: "customers" }];
+
+    await listEntities({
+      orgId: "org-1",
+      mode: "developer",
+      semanticRoot: tmpRoot,
+    });
+
+    // listEntitiesWithOverlay → params [orgId, "entity"] (no statusFilter)
+    expect(lastQueryParams).toEqual(["org-1", "entity"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Return shape — same EntityListEntry from both branches
+// ---------------------------------------------------------------------------
 
 describe("listEntities — return shape is consistent across sources", () => {
   it("DB branch returns the same EntityListEntry summary shape as disk", async () => {
@@ -173,7 +239,6 @@ describe("listEntities — return shape is consistent across sources", () => {
 
     expect(dbResult).toHaveLength(1);
     const entry = dbResult[0];
-    // Caller-facing fields — same as disk-side EntityListEntry.
     expect(typeof entry.name).toBe("string");
     expect(typeof entry.table).toBe("string");
     expect(entry.description === null || typeof entry.description === "string").toBe(true);
@@ -197,6 +262,10 @@ describe("listEntities — return shape is consistent across sources", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Filter applies in both branches
+// ---------------------------------------------------------------------------
+
 describe("listEntities — filter applies in both branches", () => {
   it("filter narrows DB results", async () => {
     internalDBAvailable = true;
@@ -215,11 +284,71 @@ describe("listEntities — filter applies in both branches", () => {
   });
 
   it("filter narrows disk results", async () => {
+    internalDBAvailable = false;
     const result = await listEntities({
       filter: "ORDER",
       semanticRoot: tmpRoot,
     });
 
     expect(result.map((e) => e.table)).toEqual(["orders"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EntityShape parity with loadOrgWhitelist — drops rows the whitelist drops
+// ---------------------------------------------------------------------------
+
+describe("listEntities — EntityShape parity with loadOrgWhitelist", () => {
+  it("drops a DB row whose YAML has no `table` field (matches whitelist behavior)", async () => {
+    internalDBAvailable = true;
+    // Override mock to return a row with no `table` field in the YAML.
+    mockInternalQuery.mockImplementationOnce(async () => [
+      {
+        id: "id-broken",
+        org_id: "org-1",
+        entity_type: "entity",
+        name: "broken",
+        yaml_content: "description: missing table field\n",
+        connection_id: null,
+        status: "published",
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+    ]);
+
+    const result = await listEntities({
+      orgId: "org-1",
+      semanticRoot: tmpRoot,
+    });
+
+    // Without the EntityShape gate, `rowToEntry` would fall back to
+    // `row.name` and surface a phantom "broken" entity that executeSQL
+    // would reject. With the gate, the row is dropped (#2142 class).
+    expect(result.find((e) => e.name === "broken")).toBeUndefined();
+    expect(result).toHaveLength(0);
+  });
+
+  it("drops a DB row whose YAML fails to parse", async () => {
+    internalDBAvailable = true;
+    mockInternalQuery.mockImplementationOnce(async () => [
+      {
+        id: "id-malformed",
+        org_id: "org-1",
+        entity_type: "entity",
+        name: "malformed",
+        yaml_content: "table: orders\ndimensions:\n  - {invalid",
+        connection_id: null,
+        status: "published",
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+    ]);
+
+    const result = await listEntities({
+      orgId: "org-1",
+      semanticRoot: tmpRoot,
+    });
+
+    expect(result).toHaveLength(0);
   });
 });

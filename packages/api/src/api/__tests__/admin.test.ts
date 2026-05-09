@@ -327,8 +327,6 @@ const mockGetVersion: Mock<(...args: unknown[]) => Promise<unknown>> = mock(() =
 const mockGenerateChangeSummary: Mock<(oldYaml: string | null, newYaml: string) => Promise<string | null>> = mock(() => Promise.resolve("Initial version"));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  // #2150: the admin "list entities" route uses the DB-row export
-  // (`listEntityRows`); the consolidated `listEntities` returns summaries.
   listEntityRows: mockListEntitiesAdmin,
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mockGetEntityAdmin,

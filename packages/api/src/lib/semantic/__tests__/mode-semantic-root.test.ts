@@ -27,8 +27,6 @@ const mockListEntities = mock(async (_orgId: string, _type?: string, status?: st
 const mockListEntitiesWithOverlay = mock(async () => [...publishedRows, ...overlayRows]);
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  // #2150: DB-row export is `listEntityRows`; consolidated `listEntities`
-  // returns summaries — stubbed here.
   listEntityRows: mockListEntities,
   listEntities: async () => [],
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,

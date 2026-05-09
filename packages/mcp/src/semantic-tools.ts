@@ -178,11 +178,15 @@ export function registerSemanticTools(
                 toolName: "listEntities",
               });
               if (limited) return limited;
-              // #2150: pass `orgId` so MCP tool discovery reads from the
-              // same per-org `semantic_entities` table the executeSQL
-              // whitelist sees. Self-hosted stdio without an internal DB
-              // falls back to disk inside `listEntities`.
-              const entities = await listEntities({ orgId: workspaceId, filter });
+              // Bind orgId + published mode so MCP discovery reads the same
+              // universe `executeSQL`'s published-mode whitelist sees.
+              // External MCP clients never run as developer-mode admins,
+              // so a draft entity surfacing here would be uncallable.
+              const entities = await listEntities({
+                orgId: workspaceId,
+                mode: "published",
+                filter,
+              });
               return toJsonContent({ count: entities.length, entities });
             } catch (err) {
               const message = errorMessage(err, "listEntities tool failed");

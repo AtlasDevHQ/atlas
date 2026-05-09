@@ -282,12 +282,12 @@ describe("MCP semantic tools", () => {
       name: "listEntities",
       arguments: { filter: "ord" },
     });
-    // #2150: MCP now binds the workspace id so DB-backed deployments read
-    // per-org entities (the same set executeSQL whitelists from). The
-    // disk-fallback inside `listEntities` still kicks in when no internal
-    // DB is configured, so self-hosted stdio behaviour is preserved.
+    // MCP binds workspace id + published mode so the discovery surface
+    // matches the published-mode whitelist `executeSQL` consults. Drafts
+    // never leak to external clients regardless of caller workspace mode.
     expect(mockListEntities).toHaveBeenCalledWith({
       orgId: TEST_ACTOR.activeOrganizationId,
+      mode: "published",
       filter: "ord",
     });
   });

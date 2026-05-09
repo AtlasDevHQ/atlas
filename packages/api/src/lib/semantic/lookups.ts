@@ -18,12 +18,7 @@ import { RESERVED_DIRS, scanEntities, readEntityYaml, getEntityDirs } from "./sc
 const log = createLogger("semantic-lookups");
 
 // ---------------------------------------------------------------------------
-// Entities
-//
-// Note (#2150): the old disk-only `listEntities` export lived here and
-// returned `EntityListEntry[]`. It was consolidated into
-// `semantic/entities.ts` so both data sources (DB-per-org and disk YAML)
-// share one entry point. The `EntityListEntry` type now lives there too.
+// Entities (per-name lookup; bulk listing lives in `./entities.ts`)
 // ---------------------------------------------------------------------------
 
 /**

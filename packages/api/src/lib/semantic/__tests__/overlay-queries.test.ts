@@ -196,8 +196,6 @@ describe("loadOrgWhitelist — developer mode uses overlay", () => {
   const mockListEntitiesWithOverlay = mock(async () => [] as Record<string, unknown>[]);
 
   mock.module("@atlas/api/lib/semantic/entities", () => ({
-    // #2150: DB-row export is `listEntityRows`; consolidated `listEntities`
-    // returns summaries — stubbed here.
     listEntityRows: mockListEntities,
     listEntities: mock(async () => []),
     listEntitiesWithOverlay: mockListEntitiesWithOverlay,

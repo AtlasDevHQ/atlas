@@ -29,8 +29,6 @@ const mockCountEntities = mock((): Promise<number> => Promise.resolve(0));
 const mockBulkUpsertEntities = mock((): Promise<number> => Promise.resolve(0));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  // #2150: DB-row export is `listEntityRows`; consolidated `listEntities`
-  // returns summaries — stubbed here.
   listEntityRows: mockListEntities,
   listEntities: mock(async () => []),
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,

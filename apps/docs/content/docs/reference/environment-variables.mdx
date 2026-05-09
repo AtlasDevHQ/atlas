@@ -337,12 +337,17 @@ See [Rate Limiting & Retry](/guides/rate-limiting) for client-side handling, SDK
 | `ATLAS_ABUSE_ERROR_RATE` | `0.5` | Max error rate (0–1) before escalation |
 | `ATLAS_ABUSE_UNIQUE_TABLES` | `50` | Max unique tables accessed per window |
 | `ATLAS_ABUSE_THROTTLE_DELAY_MS` | `2000` | Delay injected for throttled workspaces (ms) |
+| `ATLAS_LOADTEST_ALLOWED_ORGS` | _unset_ | Comma-separated workspace IDs designated for load testing. Listed workspaces (a) may mint MCP load-test JWTs via `POST /api/v1/me/load-test/mcp-token` (see [MCP load-test tokens](/platform-ops/mcp-load-test-tokens)) and (b) bypass abuse-prevention escalation so a load run can't auto-suspend the workspace it's running against. Operator escape hatch — never a substitute for raising thresholds. |
 
 ```bash
 # Stricter abuse detection for production
 ATLAS_ABUSE_QUERY_RATE=100
 ATLAS_ABUSE_ERROR_RATE=0.3
 ATLAS_ABUSE_THROTTLE_DELAY_MS=5000
+
+# Allowlist a load-test workspace — same env var that gates the
+# MCP load-test JWT mint endpoint
+ATLAS_LOADTEST_ALLOWED_ORGS=ws_dharma_uuid,ws_canary_uuid
 ```
 
 See [Abuse Prevention](/platform-ops/abuse-prevention) for details on graduated response and admin reinstatement.

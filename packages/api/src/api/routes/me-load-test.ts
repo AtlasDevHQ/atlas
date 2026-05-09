@@ -42,6 +42,7 @@ import {
   LOAD_TEST_TOKEN_MAX_TTL_SECONDS,
   LOAD_TEST_TOKEN_MIN_TTL_SECONDS,
 } from "@atlas/api/lib/auth/load-test-tokens";
+import { getLoadTestAllowlist } from "@atlas/api/lib/auth/load-test-allowlist";
 import { validationHook } from "./validation-hook";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -109,6 +110,11 @@ function clock(): number {
 }
 
 // ── Org allowlist ──────────────────────────────────────────────────
+// Lives in `lib/auth/load-test-allowlist.ts` — the abuse-prevention
+// skip in `lib/security/abuse.ts` (#2166) shares the same allowlist so
+// load-test workspaces don't auto-suspend themselves while running
+// scenarios that legitimately push past the rate limits. Single source
+// of truth for `ATLAS_LOADTEST_ALLOWED_ORGS`.
 //
 // SaaS hardening: even though /me self-mint is functionally
 // equivalent to a workspace member completing the OAuth ceremony
@@ -132,16 +138,6 @@ function clock(): number {
 // hash lookup, and matching the rate-limiter pattern in this file
 // keeps the surface uniform. An operator can edit the allowlist on
 // Railway and the next request picks it up without a redeploy.
-
-function loadTestAllowlist(): ReadonlySet<string> | null {
-  const raw = process.env.ATLAS_LOADTEST_ALLOWED_ORGS?.trim();
-  if (!raw) return null;
-  const ids = raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return ids.length === 0 ? null : new Set(ids);
-}
 
 // ── Schemas ─────────────────────────────────────────────────────────
 
@@ -329,7 +325,7 @@ meLoadTest.openapi(
       // unmounted route — so probing customers can't even confirm the
       // endpoint exists. Don't audit on this rejection: the would-be
       // attacker should have no signal that the route is real.
-      const allowlist = loadTestAllowlist();
+      const allowlist = getLoadTestAllowlist();
       if (allowlist !== null && !allowlist.has(workspaceId)) {
         log.warn(
           { requestId, workspaceId, actorId: user.id },

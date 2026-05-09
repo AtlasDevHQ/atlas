@@ -3,10 +3,12 @@
 /**
  * `/settings/profile` → Identity section.
  *
- * Read + edit the signed-in user's display name. Email is shown read-only —
- * Better Auth's `changeEmail` flow ships a verification email that we don't
- * have the SMTP plumbing for in every deploy mode, so we punt on email change
- * until that's wired up.
+ * Read + edit the signed-in user's display name. Email is intentionally
+ * read-only — Atlas is B2B; email is the org-managed account anchor (often
+ * SSO / SCIM-provisioned, always the audit trail key). Letting end-users
+ * mutate their own email is a consumer pattern that breaks org provisioning
+ * and forensic queries. If a workspace genuinely needs an email rotation it
+ * goes through admin tooling, not self-service.
  *
  * Name persistence goes through Better Auth's `authClient.updateUser({ name })`
  * — same path the admin user-edit flow uses; the session refetches automatically
@@ -105,11 +107,7 @@ export function IdentitySection() {
             disabled
             readOnly
             className="text-muted-foreground"
-            aria-describedby="profile-email-help"
           />
-          <p id="profile-email-help" className="text-xs text-muted-foreground">
-            Email changes aren&apos;t available yet. Contact an admin to update it.
-          </p>
         </div>
 
         {error && (

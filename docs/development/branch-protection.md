@@ -6,7 +6,7 @@
 
 | Setting | Value |
 | --- | --- |
-| Required status checks (strict, must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Scaffold (docker)`, `Scaffold (vercel)`, `Standalone Example Build`, `Analyze (javascript-typescript)` |
+| Required status checks (strict, must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)` |
 | `strict` (branch must be up to date with `main` before merge) | `true` |
 | Required pull request reviews | none |
 | Enforce on admins | `false` |
@@ -15,7 +15,13 @@
 
 `strict: true` means a PR built against an outdated `main` must rebase or merge `main` and re-run CI before the merge button enables. This catches the "two PRs each green in isolation but conflicting at integration" class of failure.
 
-`Scaffold (docker)`, `Scaffold (vercel)`, and `Standalone Example Build` are gated by `Detect scaffold-relevant changes` in `.github/workflows/deploy-validation.yml` and skip when no scaffold-relevant paths change. GitHub treats skipped jobs as passed for required-status purposes, so a docs-only PR is not blocked by them.
+### The `Deploy Validation` umbrella
+
+Scaffold smoke (`Scaffold (docker)` / `Scaffold (vercel)`), `Standalone Example Build`, and `Config & Deploy Mode` live in `.github/workflows/deploy-validation.yml`. The matrix scaffold job is gated by a `Detect scaffold-relevant changes` job and skips on PRs that don't touch templates, examples, or `packages/{api,web,types,cli}/...`.
+
+Naïvely listing those four contexts as required does **not** work. GitHub Actions emits a single check named `Scaffold (${{ matrix.platform }})` (the literal, un-substituted template) when the entire matrix job is skipped, so `Scaffold (docker)` and `Scaffold (vercel)` never appear in `check-runs` for docs-only PRs. Required-context names that don't appear leave `mergeStateStatus: BLOCKED` forever — the original config in this PR hit exactly that. (Single-non-matrix conditional jobs like `Standalone Example Build` *do* report their literal name when skipped, so the bug is matrix-specific.)
+
+The fix is the umbrella job `deploy-validation-required` (`name: Deploy Validation`) at the bottom of the workflow. It uses `needs: [changes, scaffold-smoke, standalone-build, config-validation]` and `if: always()` so it runs on every PR, then asserts each dependency completed with `success` or `skipped`. Branch protection requires only this single name; the conditional jobs vary freely underneath.
 
 ## Why this list
 
@@ -23,8 +29,7 @@ The list is the minimum set of checks that demonstrably catches the failure mode
 
 - `ci` — runs `check-dockerfile-workspace.sh`, `check-railway-watch.sh`, `check-template-drift.sh`, `check-security-headers-drift.sh`, `check-schema-drift.sh`, `check-oauth-helper-drift.sh`, type-check, lint, non-api tests, and the e2e integration tier. The #2206 incident (PR #2198 broke Railway because `check-dockerfile-workspace.sh` hadn't finished when the merge fired) is the canonical reason this gate must be required, not optional
 - `api-tests (1/4)`–`(4/4)` — sharded `@atlas/api` test suite, including the real-Postgres migration smoke (`migrate-pg.test.ts`). Migration regressions like #2221 (the broken `keepers` CTE in 0054) only surface against a real database
-- `Scaffold (docker)`, `Scaffold (vercel)` — end-to-end scaffold + install-from-registry + build for the create-atlas templates. Catches "template drift" classes of bug where a published `@useatlas/*` package version is referenced before it exists on npm
-- `Standalone Example Build` — `examples/nextjs-standalone` build. Frontend regressions that don't break monorepo build but break the standalone import surface
+- `Deploy Validation` — umbrella over `scaffold-smoke` (`docker` + `vercel`), `standalone-build`, and `config-validation` (see "The `Deploy Validation` umbrella" above). Catches scaffold-template drift, standalone-build regressions, and Docker/deploy-mode misconfigurations
 - `Analyze (javascript-typescript)` — CodeQL. Static security analysis we want enforced, not advisory
 
 ## Why required reviews are off
@@ -70,9 +75,7 @@ The protection was applied via `gh api PUT repos/AtlasDevHQ/atlas/branches/main/
       "api-tests (2/4)",
       "api-tests (3/4)",
       "api-tests (4/4)",
-      "Scaffold (docker)",
-      "Scaffold (vercel)",
-      "Standalone Example Build",
+      "Deploy Validation",
       "Analyze (javascript-typescript)"
     ]
   },

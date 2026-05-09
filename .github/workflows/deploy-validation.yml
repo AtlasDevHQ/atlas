@@ -16,9 +16,15 @@ jobs:
   # Detect whether scaffold-relevant paths changed so the expensive jobs
   # (npm install from the registry + full Next.js / Docker builds) can skip
   # when a PR doesn't touch templates, examples, or the workflow itself.
-  # GitHub treats skipped jobs as passed for required-check purposes, so
-  # gating here (vs. workflow-level paths:) keeps config-validation running
-  # on every PR without tripping branch protection.
+  #
+  # GitHub treats *skipped* (job-level if: false) jobs as passing for
+  # required-check purposes, BUT this only works for non-matrix jobs. When
+  # an entire matrix job is skipped, GitHub emits a single check with the
+  # un-substituted template name (e.g. `Scaffold (${{ matrix.platform }})`)
+  # instead of the per-matrix names (`Scaffold (docker)`, `Scaffold (vercel)`).
+  # That mismatch breaks branch protection that requires the substituted
+  # names. The `deploy-validation-required` job below sidesteps this by
+  # collapsing all dependent jobs into one always-running umbrella check.
   changes:
     name: Detect scaffold-relevant changes
     runs-on: ubuntu-latest
@@ -150,3 +156,47 @@ jobs:
             exit 1
           fi
           echo "Deploy mode check passed — all templates default to self-hosted"
+
+  # Umbrella required-check for branch protection.
+  #
+  # Always runs (`if: always()`) so the check is present on every PR, even
+  # when the matrix-skip-name-mismatch (see comment on `changes:` above)
+  # would otherwise leave Scaffold (docker)/(vercel) absent from check-runs.
+  # Branch protection on `main` requires this single context name and lets
+  # the conditional jobs vary freely.
+  #
+  # Passes iff every dependency completed with `success` or `skipped`. Any
+  # failure or cancellation propagates here and blocks the merge.
+  deploy-validation-required:
+    name: Deploy Validation
+    needs: [changes, scaffold-smoke, standalone-build, config-validation]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all dependent jobs succeeded or were skipped
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          SCAFFOLD_RESULT: ${{ needs.scaffold-smoke.result }}
+          STANDALONE_RESULT: ${{ needs.standalone-build.result }}
+          CONFIG_RESULT: ${{ needs.config-validation.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          # `changes` must succeed — it gates everything else and is never
+          # skipped (no `if:` on the job itself).
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "::error::changes job result was '$CHANGES_RESULT' (expected 'success')"
+            fail=1
+          fi
+          # The conditional jobs may legitimately skip when no scaffold-relevant
+          # paths changed; success or skipped both count as a pass.
+          for pair in "scaffold-smoke=$SCAFFOLD_RESULT" "standalone-build=$STANDALONE_RESULT" "config-validation=$CONFIG_RESULT"; do
+            name=${pair%%=*}
+            result=${pair#*=}
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "::error::$name job result was '$result' (expected 'success' or 'skipped')"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "All deploy-validation gates passed (or properly skipped)."

@@ -198,27 +198,39 @@ jobs:
 
       - name: Probe /api/health (90s budget)
         run: |
-          # The probe verifies the SaaS boot guards passed and the HTTP
-          # listener is up — NOT that downstream dependencies (LLM API
-          # key, populated DB) are healthy. Any HTTP response from
-          # /api/health (200 or 503) means boot succeeded; connection
-          # refused / curl error means boot failed.
-          #
-          # Why not check for 200: in CI the fixture intentionally lacks
-          # an LLM provider key (would require a paid secret) and may
-          # have other downstream gaps, so /api/health legitimately
-          # returns 503 with status="error". A SaaS boot-guard failure
-          # exits the process before HTTP starts — the gate would then
-          # see connection-refused, which is the real signal.
+          # The probe verifies the SaaS boot guards passed AND the
+          # health route still resolves at /api/health — NOT that
+          # downstream dependencies (LLM API key, populated DB) are
+          # healthy. /api/health returns:
+          #   - 200 for status="ok"|"degraded" (boot succeeded; some
+          #     non-essential components may be down)
+          #   - 503 for status="error" (boot succeeded but a critical
+          #     component is unreachable — expected in CI because the
+          #     fixture lacks an LLM provider key, so provider is "down")
+          # Any other status (404 path drift, 405 verb mismatch, 502
+          # proxy-but-app-dead) means the listener bound but health
+          # routing or the runtime has regressed — the exact class of
+          # boot-time bug this gate catches. Connection-refused / curl
+          # error means the SaaS guards failed and the process exited
+          # before HTTP started — the other class.
           set +e
           for i in $(seq 1 45); do
             status=$(curl -sS -o /tmp/health-body.json -w "%{http_code}" \
               --max-time 5 http://127.0.0.1:3001/api/health 2>/dev/null)
-            if [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 600 ]; then
+            if [ "$status" = "200" ] || [ "$status" = "503" ]; then
               echo "Boot smoke passed on attempt $i (~$(( i * 2 ))s) — HTTP $status"
               echo "──── /api/health response body ────"
               cat /tmp/health-body.json 2>/dev/null || echo "(empty)"
               exit 0
+            fi
+            if [ -n "$status" ] && [ "$status" != "000" ]; then
+              # Listener is up but returning an unexpected status — fail
+              # immediately. This is a boot-time regression (route drift,
+              # method mismatch, runtime crash behind a proxy).
+              echo "::error::Unexpected HTTP $status from /api/health — listener is up but health route regressed"
+              echo "──── /api/health response body ────"
+              cat /tmp/health-body.json 2>/dev/null || echo "(empty)"
+              exit 1
             fi
             sleep 2
           done

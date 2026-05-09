@@ -10,8 +10,10 @@
  *      compile time by the `_ExhaustiveCheck` clause AND at runtime
  *      here.
  *   2. Per-field fixture values satisfy the parser-level requirements
- *      that each guard reads (`ATLAS_RATE_LIMIT_RPM` parses to ≥ 1,
- *      `BETTER_AUTH_SECRET` ≥ 32 chars, etc.).
+ *      each value flows through (`ATLAS_RATE_LIMIT_RPM` parses to ≥ 1
+ *      per `RateLimitGuardLive`; `BETTER_AUTH_SECRET` ≥ 32 chars per
+ *      `parseAuthSecret` in `lib/auth/server.ts` — that one is not
+ *      a Atlas guard, but the API process exits at boot if it fails).
  *
  * Guard-level acceptance — does the fixture actually pass each guard's
  * `Effect.fail` branch? — is the boot-smoke workflow's job; running
@@ -112,5 +114,44 @@ describe("makeBootSmokeFixture", () => {
     });
     expect(fixture.ATLAS_RATE_LIMIT_RPM).toBe("1200");
     expect(fixture.RESEND_API_KEY).toBeUndefined();
+  });
+});
+
+describe("indirect-read drift guard", () => {
+  // The contract claim in saas-env.ts is that the fixture covers every
+  // SaaS-required env var, including reads outside `effect/`. These
+  // tests pin that claim by walking the indirect-read sites' source
+  // and asserting every `process.env.X` they read is listed in
+  // SAAS_ENV_KEYS — so a rename in either file (or a new read added
+  // to either file) trips this test before reaching CI's boot smoke.
+  // The discovery is via static-text grep, not runtime: the import
+  // graph for these modules pulls in the full server, which the test
+  // file deliberately avoids.
+
+  async function readProcessEnvKeys(relativePath: string): Promise<Set<string>> {
+    const fs = await import("fs/promises");
+    const path = await import("path");
+    // Resolve from packages/api/src/. import.meta.dir is the test
+    // dir (lib/effect/__tests__) — three `..` walks back to src/.
+    const abs = path.resolve(import.meta.dir, "..", "..", "..", relativePath);
+    const src = await fs.readFile(abs, "utf8");
+    const matches = src.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g);
+    return new Set([...matches].map((m) => m[1] as string));
+  }
+
+  test("every process.env.X in lib/email/dpa-guard.ts is in SAAS_ENV_KEYS", async () => {
+    const reads = await readProcessEnvKeys("lib/email/dpa-guard.ts");
+    expect(reads.size).toBeGreaterThan(0); // sanity: file did read at least one env var
+    for (const key of reads) {
+      expect(SAAS_ENV_KEYS).toContain(key as (typeof SAAS_ENV_KEYS)[number]);
+    }
+  });
+
+  test("every process.env.X in lib/db/encryption-keys.ts is in SAAS_ENV_KEYS", async () => {
+    const reads = await readProcessEnvKeys("lib/db/encryption-keys.ts");
+    expect(reads.size).toBeGreaterThan(0);
+    for (const key of reads) {
+      expect(SAAS_ENV_KEYS).toContain(key as (typeof SAAS_ENV_KEYS)[number]);
+    }
   });
 });

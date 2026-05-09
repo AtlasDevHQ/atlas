@@ -9,11 +9,10 @@
  * workflow edit, no separate env wiring.
  *
  * The shape is a typed view of `process.env` restricted to the
- * SaaS-required keys. Guards in `saas-guards.ts` and the boot-time
- * `MigrationGuardLive` short-circuit in `layers.ts` read via
- * {@link readSaasEnv} instead of free-standing `process.env.X` so a
- * future contributor adding a field touches one place rather than
- * chasing references.
+ * SaaS-required keys. Guards in `saas-guards.ts` plus `DpaGuardLive`
+ * and `MigrationGuardLive` in `layers.ts` read via {@link readSaasEnv}
+ * instead of free-standing `process.env.X` so a future contributor
+ * adding a field touches one place rather than chasing references.
  *
  * Indirect reads (`getEncryptionKeyset()` reads `ATLAS_ENCRYPTION_KEYS`
  * inside `lib/db/encryption-keys.ts`; `dpa-guard.ts` reads
@@ -55,9 +54,21 @@ export interface SaasEnv {
   readonly ATLAS_SMTP_URL: string | undefined;
   readonly RESEND_API_KEY: string | undefined;
 
-  // Better Auth public URL — required by the OAuth-provider plugin at
-  // boot (`URL("")` throws inside `runPluginInit` when unset). Read by
-  // `lib/auth/server.ts` via `env.BETTER_AUTH_URL` for callback URLs.
+  // Boot-survival keys (not guard-enforced — required for the API
+  // process to start in managed-auth + SaaS mode, but no Atlas guard
+  // explicitly verifies them).
+  //
+  // BETTER_AUTH_URL — Better Auth's library boot path constructs
+  // `new URL(baseURL)` inside its plugin init (verified locally:
+  // `runPluginInit` in `node_modules/better-auth/dist/context/helpers.mjs`
+  // throws `TypeError: "" cannot be parsed as a URL.` when unset under
+  // the OAuth-provider plugin Atlas registers). Read separately by
+  // `lib/auth/server.ts` for callback URL rewriting.
+  //
+  // BETTER_AUTH_TRUSTED_ORIGINS — read by `lib/auth/server.ts` to
+  // anchor verification + password-reset link redirects to the web
+  // app origin; missing-only emits a warn at boot, but a stale value
+  // would silently land users on the API host instead of the web app.
   readonly BETTER_AUTH_URL: string | undefined;
   readonly BETTER_AUTH_TRUSTED_ORIGINS: string | undefined;
 }
@@ -95,6 +106,9 @@ export const SAAS_ENV_KEYS = [
 // SaasEnv but not appended to SAAS_ENV_KEYS.
 type _ExhaustiveCheck = Exclude<keyof SaasEnv, (typeof SAAS_ENV_KEYS)[number]>;
 const _exhaustive: _ExhaustiveCheck extends never ? true : false = true;
+// `void` is load-bearing — silences `noUnusedLocals` without disabling
+// the compile-time check. Do not delete `_exhaustive` even though it
+// looks dead; the assignment is the gate.
 void _exhaustive;
 
 /** Read `process.env` (or an injected env object) into a typed `SaasEnv`. */
@@ -123,7 +137,19 @@ export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
 export interface BootSmokeFixtureOptions {
   /** Postgres URL applied to internal DB, datasource, and every region. */
   readonly databaseUrl?: string;
-  /** Per-key overrides — useful for testing specific failure modes. */
+  /**
+   * Per-key overrides — useful for testing specific failure modes.
+   *
+   * Setting a key to an explicit `undefined` (e.g. `{ RESEND_API_KEY:
+   * undefined }`) **drops** the fixture default and emits no value for
+   * that key, which lets callers probe the failure path of a guard
+   * that requires the key to be set. Omitting the key entirely leaves
+   * the fixture default in place. The drop-on-`undefined` behavior is
+   * implemented via spread (`{ ...fixture, ...overrides }`) and
+   * pinned by `__tests__/saas-env.test.ts :: overrides win`. Note that
+   * this depends on `exactOptionalPropertyTypes` being unset in the
+   * project tsconfig — flipping that flag would break this contract.
+   */
   readonly overrides?: Partial<SaasEnv>;
 }
 

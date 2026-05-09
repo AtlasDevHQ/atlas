@@ -274,8 +274,13 @@ async function seedPromptLibrary(pool: Queryable): Promise<void> {
 
   for (let ci = 0; ci < collections.length; ci++) {
     const collection = collections[ci];
+    // Scope the existence probe to the global namespace (org_id IS NULL).
+    // Pre-#2169 deployments could have org-scoped builtin copies with the
+    // same name; without this filter, those would short-circuit the insert
+    // and the global builtin would never get seeded on a fresh install
+    // that runs alongside legacy data.
     const existing = await pool.query(
-      "SELECT id FROM prompt_collections WHERE name = $1 AND is_builtin = true",
+      "SELECT id FROM prompt_collections WHERE name = $1 AND is_builtin = true AND org_id IS NULL",
       [collection.name],
     );
     if (existing.rows.length > 0) continue;

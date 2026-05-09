@@ -8838,8 +8838,7 @@
                       "items": {
                         "type": "string",
                         "enum": [
-                          "demo_industry_setting",
-                          "demo_prompt_collections"
+                          "demo_industry_setting"
                         ]
                       }
                     }

@@ -491,6 +491,13 @@ export const promptCollections = pgTable(
     index("idx_prompt_collections_org").on(t.orgId),
     index("idx_prompt_collections_builtin").on(t.isBuiltin).where(sql`is_builtin = true`),
     check("chk_prompt_collections_status", sql`status IN ('published', 'draft', 'archived')`),
+    // #2169: collapse org_id NULL into a single bucket so globals can't
+    // duplicate, and lower-case the name so casing variants can't coexist
+    // within the same workspace. See migration 0054.
+    uniqueIndex("prompt_collections_org_name_uniq").on(
+      sql`COALESCE(${t.orgId}, '')`,
+      sql`lower(${t.name})`,
+    ),
   ],
 );
 

@@ -104,15 +104,20 @@ export function IdentitySection() {
             autoComplete="name"
           />
         </div>
+        {/*
+          Render email as a key/value pair, not a disabled `<Input>`. A
+          greyed-out field with the address as a placeholder reads as
+          "missing data" — but email is the immutable account anchor, not
+          a field that's temporarily unavailable.
+        */}
         <div className="space-y-1.5">
-          <Label htmlFor="profile-email">Email</Label>
-          <Input
-            id="profile-email"
-            value={user.email ?? ""}
-            disabled
-            readOnly
-            className="text-muted-foreground"
-          />
+          <span className="block text-sm font-medium leading-none">Email</span>
+          <p
+            className="rounded-md border border-dashed bg-muted/30 px-3 py-2 text-sm text-foreground"
+            aria-label="Email"
+          >
+            {user.email ?? "—"}
+          </p>
         </div>
 
         {error && (

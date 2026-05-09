@@ -52,8 +52,13 @@ export type AdminRole = (typeof ADMIN_ROLES)[number];
 // a single source of truth for auth client shapes.
 
 /**
- * Duck-typed interface that matches better-auth's client shape.
- * Components like ManagedAuthCard call signIn/signUp/signOut and useSession().
+ * Duck-typed interface that matches better-auth's client shape. Only the
+ * fields Atlas actually reads or calls are declared — adding a new
+ * better-auth API to the surface is a deliberate edit here, which is the
+ * right friction for an external dependency.
+ *
+ * Recurring `as unknown as { ... }` casts at call sites mean a field is
+ * missing from this surface — widen here instead of widening one consumer.
  */
 export interface AtlasAuthClient {
   signIn: {
@@ -63,7 +68,34 @@ export interface AtlasAuthClient {
     email: (opts: { email: string; password: string; name: string }) => Promise<{ error?: { message?: string } | null }>;
   };
   signOut: () => Promise<unknown>;
-  useSession: () => { data?: { user?: { email?: string; role?: string } } | null; isPending: boolean };
+  /**
+   * Update the signed-in user's profile fields. Better Auth ships more
+   * keys than `name`; declare only the ones Atlas actually writes.
+   */
+  updateUser?: (opts: { name?: string }) => Promise<{ error?: { message?: string } | null }>;
+  useSession: () => {
+    data?: {
+      user?: {
+        email?: string;
+        role?: string;
+        /** Display name — present at runtime, not always populated. */
+        name?: string;
+        /** True when TOTP is enrolled — surfaced by the two-factor plugin. */
+        twoFactorEnabled?: boolean;
+      };
+      session?: {
+        /** Session row id — used to identify "this session" in revoke flows. */
+        id?: string;
+        /** Active organization id — set by the organization plugin. */
+        activeOrganizationId?: string;
+        /** Active organization name — fallback when the org list hasn't loaded. */
+        activeOrganizationName?: string;
+      };
+    } | null;
+    isPending: boolean;
+    /** Imperative refetch — better-auth exposes this on the React hook. */
+    refetch?: () => unknown;
+  };
 }
 
 /** Auth helpers passed to action approval cards via context. */

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
 import { LogOut, Monitor, Moon, Sun } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -24,10 +25,7 @@ const THEME_OPTIONS = [
   { value: "system", label: "System", icon: Monitor },
 ] as const satisfies readonly { value: ThemeMode; label: string; icon: typeof Sun }[];
 
-/**
- * Derive 1–2 character initials for the avatar fallback.
- * Falls back to email when name is missing, and to "?" when both are blank.
- */
+/** Falls through name → email → "?" so the avatar always renders something. */
 export function deriveInitials(name?: string | null, email?: string | null): string {
   const source = (name || email || "").trim();
   if (!source) return "?";
@@ -38,10 +36,6 @@ export function deriveInitials(name?: string | null, email?: string | null): str
   return source.charAt(0).toUpperCase();
 }
 
-/**
- * Avatar dropdown showing the signed-in user with theme picker + sign-out.
- * Renders nothing when no user is in the session.
- */
 export function UserMenu() {
   const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
@@ -51,12 +45,7 @@ export function UserMenu() {
   const user = session.data?.user;
   if (!user) return null;
 
-  // Better Auth's runtime user object carries `name`, but the duck-typed
-  // `AtlasAuthClient` interface only declares the fields Atlas needs everywhere
-  // (email + role). Cast through Record to access optional name without
-  // widening the shared interface for one consumer.
-  const userRecord = user as Record<string, unknown>;
-  const name = typeof userRecord.name === "string" ? userRecord.name : null;
+  const name = user.name ?? null;
   const email = user.email ?? null;
   const initials = deriveInitials(name, email);
 
@@ -67,7 +56,9 @@ export function UserMenu() {
       await authClient.signOut();
       window.location.assign("/login");
     } catch (err) {
-      console.error("Sign out failed:", err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("Sign out failed:", message);
+      toast.error("Sign out failed. Try again.");
       setSigningOut(false);
     }
   }

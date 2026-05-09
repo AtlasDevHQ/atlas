@@ -12,13 +12,10 @@ import {
 export interface NavSubItem {
   href: string;
   label: string;
-  /** When true, only highlight on exact pathname match (no prefix matching). */
+  /** When true, exact-match only (no prefix). Needed for parent routes that share a prefix with a child (e.g. `/admin/settings` vs `/admin/settings/mcp`). */
   exact?: boolean;
-  /** When set, only users with this role see this item. */
   requiredRole?: "platform_admin";
-  /** When true, this item is hidden in SaaS deploy mode. */
   selfHostedOnly?: boolean;
-  /** When set, shows a numeric badge next to the label. */
   badge?: number;
 }
 
@@ -123,17 +120,11 @@ export const navGroups: NavGroup[] = [
 ];
 
 export interface AdminBreadcrumb {
-  /** Section name (matches a NavGroup.title) — `undefined` on the `/admin` overview. */
   section?: string;
-  /** Page label (matches a NavSubItem.label) — `undefined` when only a section is active. */
   page?: string;
 }
 
-/**
- * Resolve the active section + page labels for a `/admin/*` pathname using the
- * shared `navGroups` registry. Used by the top-bar breadcrumb so both sidebar
- * and breadcrumb derive labels from a single source of truth.
- */
+/** Single source of truth so sidebar + breadcrumb labels can never drift. */
 export function resolveAdminBreadcrumb(pathname: string): AdminBreadcrumb {
   if (pathname === "/admin") return {};
 

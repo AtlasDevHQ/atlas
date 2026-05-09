@@ -18,14 +18,9 @@ const THEME_OPTIONS = [
 ] as const satisfies readonly { value: ThemeMode; label: string; icon: typeof Sun }[];
 
 export interface ThemeToggleProps {
-  /** Optional className passed to the trigger button. */
   className?: string;
 }
 
-/**
- * Theme picker dropdown — light / dark / system. Used in both the chat header
- * and the admin top bar so both surfaces share a single trigger and behavior.
- */
 export function ThemeToggle({ className }: ThemeToggleProps) {
   const mode = useThemeMode();
   const CurrentIcon = mode === "dark" ? Moon : mode === "light" ? Sun : Monitor;

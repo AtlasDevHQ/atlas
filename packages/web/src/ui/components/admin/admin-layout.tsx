@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useEffect } from "react";
+import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
@@ -92,7 +93,15 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
             <Button
               variant="ghost"
               className="w-full"
-              onClick={() => authClient.signOut().then(() => window.location.assign("/login"))}
+              onClick={() => {
+                authClient.signOut()
+                  .then(() => window.location.assign("/login"))
+                  .catch((err: unknown) => {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    console.error("Sign out failed:", msg);
+                    toast.error("Sign out failed. Try again.");
+                  });
+              }}
             >
               Sign in as a different user
             </Button>

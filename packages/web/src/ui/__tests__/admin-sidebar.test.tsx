@@ -62,11 +62,6 @@ mock.module("@/components/ui/collapsible", () => ({
   CollapsibleContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
 }));
 
-// Mock org-switcher
-mock.module("@/ui/components/org-switcher", () => ({
-  OrgSwitcher: () => React.createElement("div", { "data-testid": "org-switcher" }),
-}));
-
 // Mock shadcn separator
 mock.module("@/components/ui/separator", () => {
 

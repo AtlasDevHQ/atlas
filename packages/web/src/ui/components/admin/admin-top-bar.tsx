@@ -16,20 +16,10 @@ import { OrgSwitcher } from "@/ui/components/org-switcher";
 import { UserMenu } from "@/ui/components/user-menu";
 import { resolveAdminBreadcrumb } from "@/ui/components/admin/admin-nav";
 
-/**
- * Persistent top bar shared by every `/admin/*` route.
- *
- * Layout (left → right):
- *   [sidebar trigger] | [org ▾] / Admin [/ section [/ page]]      [avatar ▾]
- *
- * The org switcher is rendered as the breadcrumb root so the most
- * navigationally-significant concept (workspace) sits at the top of the page
- * tree on every admin surface — matching the chat top-right pattern.
- */
+/** Org switcher anchors the breadcrumb root so workspace context heads every admin page. */
 export function AdminTopBar() {
   const pathname = usePathname();
-  const { section, page } = resolveAdminBreadcrumb(pathname);
-  const isOverview = !section;
+  const crumb = resolveAdminBreadcrumb(pathname);
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background px-4 transition-[height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
@@ -43,31 +33,27 @@ export function AdminTopBar() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              {isOverview ? (
-                <BreadcrumbPage>Admin Console</BreadcrumbPage>
-              ) : (
+              {crumb.section ? (
                 <BreadcrumbLink asChild>
                   <Link href="/admin">Admin</Link>
                 </BreadcrumbLink>
+              ) : (
+                <BreadcrumbPage>Admin Console</BreadcrumbPage>
               )}
             </BreadcrumbItem>
-            {section && (
+            {crumb.section && (
               <>
                 <BreadcrumbSeparator />
                 <BreadcrumbItem>
-                  {page ? (
-                    <span className="text-sm text-muted-foreground">{section}</span>
-                  ) : (
-                    <BreadcrumbPage>{section}</BreadcrumbPage>
-                  )}
+                  <span className="text-sm text-muted-foreground">{crumb.section}</span>
                 </BreadcrumbItem>
               </>
             )}
-            {page && (
+            {crumb.page && (
               <>
                 <BreadcrumbSeparator />
                 <BreadcrumbItem>
-                  <BreadcrumbPage className="max-w-[14rem] truncate">{page}</BreadcrumbPage>
+                  <BreadcrumbPage className="max-w-[14rem] truncate">{crumb.page}</BreadcrumbPage>
                 </BreadcrumbItem>
               </>
             )}
@@ -75,9 +61,7 @@ export function AdminTopBar() {
         </Breadcrumb>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1">
-        <UserMenu />
-      </div>
+      <UserMenu />
     </header>
   );
 }

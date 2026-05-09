@@ -110,6 +110,34 @@ export const MeOAuthClientsResponseSchema = z.object({
 
 export type MeOAuthClientsResponse = z.infer<typeof MeOAuthClientsResponseSchema>;
 
+/**
+ * Per-OAuth-client live MCP rate-limit usage view (#2216 — Settings →
+ * AI Agents). Returned by `/api/v1/me/mcp-usage`. The schema is pinned
+ * here so the page's `useAdminFetch` parses the wire shape at the
+ * boundary; mismatched fields surface as a one-line "version mismatch"
+ * banner instead of rendering a broken chip silently.
+ *
+ * `percentUsed` is server-side clamped to 0..100 and integer-rounded;
+ * the chip's display layer also clamps so a hypothetical regression
+ * that widened the wire range can't paint past the visual cap. Both
+ * clamps must agree — the route's `usage-chip.test.tsx` and the
+ * server-side `me-mcp-usage.test.ts` pin each side.
+ */
+export const McpUsageEntrySchema = z.object({
+  clientId: z.string().min(1),
+  currentMinuteWeightedRequests: z.number().int().nonnegative(),
+  ceiling: z.number().int().positive(),
+  percentUsed: z.number().int().min(0).max(100),
+  resetAt: z.string().datetime(),
+});
+
+export const MeMcpUsageResponseSchema = z.object({
+  clients: z.array(McpUsageEntrySchema),
+});
+
+export type McpUsageEntry = z.infer<typeof McpUsageEntrySchema>;
+export type MeMcpUsageResponse = z.infer<typeof MeMcpUsageResponseSchema>;
+
 export const RevokeOAuthClientResponseSchema = z.object({
   success: z.boolean(),
   tokensRevoked: z.number().int().nonnegative(),

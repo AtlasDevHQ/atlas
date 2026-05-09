@@ -20,15 +20,25 @@
  * so non-admin users don't need a second admin-gated roundtrip.
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useVisibilityGatedPoll } from "@/ui/hooks/use-visibility-gated-poll";
 import {
   MeOAuthClientsResponseSchema,
+  MeMcpUsageResponseSchema,
+  type McpUsageEntry,
   type OAuthClient,
 } from "@/ui/lib/me-schemas";
+import { UsageChip } from "@/ui/components/settings/usage-chip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -84,6 +94,37 @@ export default function AIAgentsPage() {
   // null — non-SaaS surfaces don't render the connect CTA.
   const deployMode = listData?.deployMode ?? "self-hosted";
   const isSaas = deployMode === "saas";
+
+  // Live MCP rate-limit usage (#2216). Separate fetch so the poll
+  // cadence below doesn't refetch the heavier clients query (which
+  // already has its own SWR semantics in TanStack). The schema parse
+  // surfaces wire drift as a banner via useAdminFetch's
+  // `code: "schema_mismatch"` path rather than a broken chip.
+  const { data: usageData, refetch: refetchUsage } = useAdminFetch(
+    "/api/v1/me/mcp-usage",
+    { schema: MeMcpUsageResponseSchema },
+  );
+
+  // Stable refetch ref for the visibility-gated poll. `useCallback`
+  // here is a correctness aid (TanStack Query's `refetch` is already
+  // stable per query instance, but the hook's effect depends on its
+  // identity), not a perf optimization — see CLAUDE.md "React Compiler
+  // handles memoization" carve-out for stability cases.
+  const refetchUsageStable = useCallback(() => {
+    void refetchUsage();
+  }, [refetchUsage]);
+  // Poll every 10s while foregrounded; refetch immediately on
+  // visibility return; do nothing while hidden. Acceptance criterion
+  // from #2216 — verifiable via the e2e DevTools Network observation.
+  useVisibilityGatedPoll(refetchUsageStable, 10_000);
+
+  // Build a client-id → usage map up front so the row renderer doesn't
+  // walk the array per agent. Empty map (no usage data yet) is the
+  // first-paint state — the chip renders a neutral 0/60 placeholder
+  // until the first fetch lands.
+  const usageById: Map<string, McpUsageEntry> = new Map(
+    (usageData?.clients ?? []).map((u) => [u.clientId, u]),
+  );
 
   const revokeMutation = useAdminMutation<{
     success: boolean;
@@ -221,6 +262,7 @@ export default function AIAgentsPage() {
                 >
                   <AIAgentShell
                     client={client}
+                    usage={usageById.get(client.clientId)}
                     onRevoke={requestRevoke}
                     onToggleScope={toggleWorkspaceScope}
                     onRevokeWorkspaceGrant={revokeWorkspaceGrant}
@@ -373,6 +415,7 @@ function presentTokenState(tokenState: OAuthClient["tokenState"]): {
 
 function AIAgentShell({
   client,
+  usage,
   onRevoke,
   onToggleScope,
   onRevokeWorkspaceGrant,
@@ -380,6 +423,14 @@ function AIAgentShell({
   grantMutating,
 }: {
   client: OAuthClient;
+  /**
+   * Live MCP rate-limit usage for this client (#2216). Optional —
+   * absent on first paint and on the brief race when a brand-new
+   * client lands in the list before the next usage poll. The chip
+   * tolerates `undefined` by rendering a neutral 0/<ceiling>
+   * placeholder so the visual scaffolding is stable.
+   */
+  usage: McpUsageEntry | undefined;
   onRevoke: (client: OAuthClient) => void;
   onToggleScope: (client: OAuthClient) => void;
   onRevokeWorkspaceGrant: (client: OAuthClient, workspaceId: string) => void;
@@ -428,15 +479,60 @@ function AIAgentShell({
     </Badge>
   ) : undefined;
 
-  const titleBadge =
-    scopeBadge && stateBadge ? (
-      <span className="flex items-center gap-1.5">
-        {scopeBadge}
-        {stateBadge}
-      </span>
-    ) : (
-      scopeBadge ?? stateBadge
-    );
+  // Live usage chip — informational, not enforcement. Renders on every
+  // row (revoked clients included so a saturated bucket on a revoked
+  // client is still visible during the brief audit window before the
+  // user removes the row). The chip's `aria-label` carries the percent
+  // context so screen readers get the same warning sighted users do
+  // from the tone. The "?" tooltip explains the per-tool weighting and
+  // points to the canonical source so a user querying their bucket
+  // doesn't have to reverse-engineer the math. The default ceiling
+  // (60) matches the limiter's `DEFAULT_REQUESTS_PER_MINUTE` so the
+  // first-paint placeholder agrees with what the API will return.
+  const usageBadge = (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center">
+            <UsageChip
+              used={usage?.currentMinuteWeightedRequests ?? 0}
+              ceiling={usage?.ceiling ?? 60}
+            />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs text-xs leading-snug">
+          <p>
+            Weighted MCP request usage this minute. <code>executeSQL</code>{" "}
+            and <code>explore</code> count 5×; <code>runMetric</code> 3×;
+            others 1×.
+          </p>
+          <p className="mt-1.5">
+            <a
+              href="https://docs.useatlas.dev/guides/mcp#per-tool-weights"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2"
+            >
+              Read the per-tool weights
+            </a>
+          </p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+
+  // Compose the title-row badges: scope first (cross-workspace flag),
+  // then state (Reconnect / Revoked / public type), then usage. Wrapping
+  // in a single `<span>` keeps the Shell's titleBadge slot's flex math
+  // happy when more than one is present.
+  const composedBadges = (
+    <span className="flex items-center gap-1.5">
+      {scopeBadge}
+      {stateBadge}
+      {usageBadge}
+    </span>
+  );
+  const titleBadge = composedBadges;
 
   return (
     <Shell

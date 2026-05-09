@@ -38,3 +38,5 @@ docs/superpowers/
 # Lighthouse CLI dumps Chrome's profile dir into cwd as a Windows-shaped path
 # under WSL2. Pre-empt it so `git add` doesn't sweep ~50KB of garbage in.
 C:\\Users\\*
+
+# branch-protection test marker (will be reverted; PR closed without merge — see #2206)

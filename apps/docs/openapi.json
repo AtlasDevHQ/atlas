@@ -15297,6 +15297,141 @@
         "operationId": "getMeMcpPrompts"
       }
     },
+    "/api/v1/me/mcp-usage": {
+      "get": {
+        "tags": [
+          "Me — MCP Usage"
+        ],
+        "summary": "Live MCP rate-limit usage for your connected AI agents",
+        "description": "Returns per-OAuth-client usage against the hosted MCP per-minute weighted-request budget. Powers the Settings → AI Agents usage chip — informational, not enforcement (the actual 429 still comes from the limiter middleware on tool dispatch). Clients with zero in-window traffic still appear so the chip is visible on every row.",
+        "responses": {
+          "200": {
+            "description": "Per-client usage view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "clients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "clientId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "currentMinuteWeightedRequests": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "ceiling": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          },
+                          "percentUsed": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "resetAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "clientId",
+                          "currentMinuteWeightedRequests",
+                          "ceiling",
+                          "percentUsed",
+                          "resetAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "clients"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getMeMcpUsage"
+      }
+    },
     "/api/v1/admin/organizations": {
       "get": {
         "tags": [
@@ -66090,6 +66225,9 @@
     },
     {
       "name": "Me — MCP Prompts"
+    },
+    {
+      "name": "Me — MCP Usage"
     },
     {
       "name": "Me — OAuth Clients"

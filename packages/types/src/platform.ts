@@ -41,6 +41,15 @@ export interface PlatformWorkspace {
   region: string | null;
   regionAssignedAt: string | null;
   createdAt: string;
+  /**
+   * True when the workspace ID is in `ATLAS_LOADTEST_ALLOWED_ORGS` — the
+   * env-driven allowlist that lets designated load-test workspaces
+   * bypass abuse-prevention escalation (#2166) and mint MCP load-test
+   * JWTs. Optional + additive: omitted on consumers that haven't picked
+   * up this @useatlas/types release yet, treated as `false` in the UI.
+   * Source of truth: `lib/auth/load-test-allowlist.ts:isLoadTestWorkspace`.
+   */
+  neverSuspend?: boolean;
 }
 
 export interface PlatformWorkspaceDetail {

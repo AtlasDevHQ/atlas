@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -412,7 +413,28 @@ function PlatformPageContent() {
                   ) : (
                     filtered.map((ws) => (
                       <TableRow key={ws.id}>
-                        <TableCell className="font-medium">{ws.name}</TableCell>
+                        <TableCell className="font-medium">
+                          <span className="flex items-center gap-2">
+                            {ws.name}
+                            {ws.neverSuspend ? (
+                              <TooltipProvider delayDuration={150}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Badge
+                                      variant="outline"
+                                      className="border-blue-500 text-blue-600 text-[10px] uppercase tracking-wide"
+                                    >
+                                      Load-test
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Allowlisted via <code>ATLAS_LOADTEST_ALLOWED_ORGS</code> — abuse-prevention escalation skipped.
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            ) : null}
+                          </span>
+                        </TableCell>
                         <TableCell>{planBadge(ws.planTier as PlanTier)}</TableCell>
                         <TableCell>{statusBadge(ws.status as WorkspaceStatus)}</TableCell>
                         <TableCell>{ws.members}</TableCell>
@@ -575,7 +597,18 @@ function PlatformPageContent() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <span className="text-sm text-muted-foreground">Name</span>
-                  <p className="font-medium">{detailData.workspace.name}</p>
+                  <p className="font-medium flex items-center gap-2">
+                    {detailData.workspace.name}
+                    {detailData.workspace.neverSuspend ? (
+                      <Badge
+                        variant="outline"
+                        className="border-blue-500 text-blue-600 text-[10px] uppercase tracking-wide"
+                        title="Allowlisted via ATLAS_LOADTEST_ALLOWED_ORGS — abuse-prevention escalation skipped."
+                      >
+                        Load-test
+                      </Badge>
+                    ) : null}
+                  </p>
                 </div>
                 <div>
                   <span className="text-sm text-muted-foreground">Slug</span>

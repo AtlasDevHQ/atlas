@@ -231,3 +231,74 @@ describe("GET /api/v1/platform/stats — MRR calculation", () => {
     expect(mockLogWarn.mock.calls.length).toBe(2);
   });
 });
+
+// #2249 — `neverSuspend` flag reflects ATLAS_LOADTEST_ALLOWED_ORGS
+// membership on every list-route row. The flag is what the platform-
+// admin orgs page reads to render the "Load-test" badge — drift here
+// silently un-badges allowlisted workspaces.
+describe("GET /api/v1/platform/workspaces — neverSuspend flag (#2249)", () => {
+  beforeEach(() => {
+    mocks.setPlatformAdmin();
+    mocks.hasInternalDB = true;
+    mockLogWarn.mockClear();
+  });
+
+  function mockListWorkspaces(rows: Array<{ id: string; slug: string }>): void {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization o")) {
+        return rows.map((r) => ({
+          id: r.id,
+          name: r.id,
+          slug: r.slug,
+          workspace_status: "active",
+          plan_tier: "starter",
+          byot: false,
+          stripe_customer_id: null,
+          trial_ends_at: null,
+          suspended_at: null,
+          deleted_at: null,
+          region: "us",
+          region_assigned_at: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          members: 1,
+          conversations: 0,
+          queries_last_24h: 0,
+          connections: 0,
+          scheduled_tasks: 0,
+        }));
+      }
+      return [];
+    });
+  }
+
+  it("flips neverSuspend=true for workspaces in ATLAS_LOADTEST_ALLOWED_ORGS", async () => {
+    mockListWorkspaces([{ id: "ws-loadtest", slug: "loadtest" }, { id: "ws-normal", slug: "normal" }]);
+    const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+    process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-loadtest";
+    try {
+      const res = await app.fetch(platformRequest("GET", "/api/v1/platform/workspaces"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { workspaces: Array<{ id: string; neverSuspend: boolean }> };
+      const lookup = Object.fromEntries(body.workspaces.map((w) => [w.id, w.neverSuspend]));
+      expect(lookup["ws-loadtest"]).toBe(true);
+      expect(lookup["ws-normal"]).toBe(false);
+    } finally {
+      if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+    }
+  });
+
+  it("returns neverSuspend=false for every workspace when env var is unset", async () => {
+    mockListWorkspaces([{ id: "ws-a", slug: "a" }, { id: "ws-b", slug: "b" }]);
+    const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+    delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+    try {
+      const res = await app.fetch(platformRequest("GET", "/api/v1/platform/workspaces"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { workspaces: Array<{ neverSuspend: boolean }> };
+      expect(body.workspaces.every((w) => w.neverSuspend === false)).toBe(true);
+    } finally {
+      if (original !== undefined) process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+    }
+  });
+});

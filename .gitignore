@@ -20,6 +20,10 @@ create-atlas/templates/*/src/
 create-atlas/templates/*/ee/
 create-atlas/templates/*/brand.css
 dist/
+# Vendored copy of @atlas/oauth-helper for @useatlas/mcp's runtime
+# loopback flow. Canonical source lives at packages/oauth-helper/src/;
+# the vendor script regenerates this on every `bun install`.
+plugins/mcp/src/_oauth-helper/
 packages/api/src/lib/db/migrations/meta/
 routeTree.gen.ts
 e2e/browser/storage-state.json

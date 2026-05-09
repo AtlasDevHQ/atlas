@@ -21,26 +21,52 @@
  * ── Tree-shaking ──────────────────────────────────────────────────
  *
  * This module imports nothing from `@modelcontextprotocol/sdk` — only
- * the standard browser/node OAuth + crypto primitives. Anyone who never
- * imports `mcp.ts` pays nothing.
+ * the standard browser/node OAuth + crypto primitives via the shared
+ * `@atlas/oauth-helper`, which is bundled into the SDK at build time
+ * (it is never resolved from npm). Anyone who never imports `mcp.ts`
+ * pays nothing.
  */
+
+import {
+  OAuthHelperError,
+  buildAuthorizationUrl,
+  decodeJwtPayload,
+  discover,
+  enforceIssuer,
+  exchangeCode,
+  generatePkce,
+  generateState,
+  register,
+  validateIssuerUrl,
+  validateTokenEndpoint,
+} from "@atlas/oauth-helper";
 
 // ── Errors ────────────────────────────────────────────────────────────
 
+/**
+ * SDK-specific error codes. The first eight values are 1:1 with
+ * `@atlas/oauth-helper`'s `OAuthHelperErrorCode` (re-declared inline,
+ * not re-exported, so the published `.d.ts` does not reference the
+ * internal-only helper package — consumers of `@useatlas/sdk` install
+ * cleanly without `@atlas/oauth-helper` in their dep graph). The
+ * remaining values are popup / callback-handling codes the SDK alone
+ * produces. The 1:1 alignment lets `liftHelper` re-throw a helper
+ * error with `err.code as AtlasMcpErrorCode` — no remap table to drift.
+ */
 export type AtlasMcpErrorCode =
   | "invalid_api_url"
   | "invalid_token_endpoint"
   | "discovery_failed"
   | "registration_failed"
+  | "token_exchange_failed"
+  | "issuer_mismatch"
+  | "malformed_jwt"
+  | "missing_workspace_claim"
   | "callback_state_mismatch"
   | "callback_state_missing"
   | "callback_missing_code"
   | "popup_blocked"
   | "popup_closed"
-  | "token_exchange_failed"
-  | "issuer_mismatch"
-  | "malformed_jwt"
-  | "missing_workspace_claim"
   | "grant_not_supported";
 
 export class AtlasMcpError extends Error {
@@ -52,13 +78,40 @@ export class AtlasMcpError extends Error {
   }
 }
 
+/**
+ * Wrap a helper call so any `OAuthHelperError` is re-thrown as an
+ * `AtlasMcpError` with the same code (the helper's codes are a strict
+ * subset of `AtlasMcpErrorCode`). Other throws propagate untouched.
+ */
+async function liftHelper<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof OAuthHelperError) {
+      throw new AtlasMcpError(err.message, err.code as AtlasMcpErrorCode, {
+        cause: err,
+      });
+    }
+    throw err;
+  }
+}
+
+function liftHelperSync<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof OAuthHelperError) {
+      throw new AtlasMcpError(err.message, err.code as AtlasMcpErrorCode, {
+        cause: err,
+      });
+    }
+    throw err;
+  }
+}
+
 // ── Constants ─────────────────────────────────────────────────────────
 
-const FETCH_TIMEOUT_MS = 30 * 1000;
-const DEFAULT_SCOPES: ReadonlyArray<string> = [
-  "mcp:read",
-  "offline_access",
-];
+const DEFAULT_SCOPES: ReadonlyArray<string> = ["mcp:read", "offline_access"];
 const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
 
 // ── Public types ──────────────────────────────────────────────────────
@@ -208,42 +261,45 @@ export async function beginConnect(
   options: BeginConnectOptions,
 ): Promise<BeginConnectResult> {
   const apiUrl = trimTrailingSlash(options.apiUrl);
-  validateApiUrl(apiUrl);
+  liftHelperSync(() => validateIssuerUrl(apiUrl));
   const fetchImpl = options.fetchImpl ?? fetch;
-  const randomBytes = options.randomBytesImpl ?? defaultRandomBytes;
+  const randomBytesImpl = options.randomBytesImpl;
   const scopes = options.scopes ?? DEFAULT_SCOPES;
 
-  const metadata = await discover(apiUrl, fetchImpl);
+  return liftHelper(async () => {
+    const metadata = await discover(apiUrl, { fetchImpl });
 
-  const state = encodeBase64Url(randomBytes(32));
-  const codeVerifier = encodeBase64Url(randomBytes(32));
-  const codeChallenge = await pkceChallenge(codeVerifier);
+    const state = generateState({ randomBytesImpl });
+    const { codeVerifier, codeChallenge } = await generatePkce({ randomBytesImpl });
 
-  const clientId = await register({
-    metadata,
-    redirectUri: options.redirectUri,
-    clientName: options.clientName,
-    scopes,
-    fetchImpl,
+    const clientId = await register(
+      metadata,
+      {
+        redirectUri: options.redirectUri,
+        clientName: options.clientName,
+        scopes,
+      },
+      { fetchImpl },
+    );
+
+    const authorizationUrl = buildAuthorizationUrl({
+      authorizationEndpoint: metadata.authorization_endpoint,
+      clientId,
+      redirectUri: options.redirectUri,
+      state,
+      codeChallenge,
+      scopes,
+    });
+
+    return {
+      authorizationUrl,
+      state,
+      codeVerifier,
+      clientId,
+      tokenEndpoint: metadata.token_endpoint,
+      issuer: metadata.issuer,
+    };
   });
-
-  const authorizationUrl = buildAuthorizeUrl({
-    authorizationEndpoint: metadata.authorization_endpoint,
-    clientId,
-    redirectUri: options.redirectUri,
-    state,
-    codeChallenge,
-    scopes,
-  });
-
-  return {
-    authorizationUrl,
-    state,
-    codeVerifier,
-    clientId,
-    tokenEndpoint: metadata.token_endpoint,
-    issuer: metadata.issuer,
-  };
 }
 
 // ── completeConnect ───────────────────────────────────────────────────
@@ -265,45 +321,51 @@ export async function completeConnect(
   }
 
   const apiUrl = trimTrailingSlash(options.apiUrl);
-  validateApiUrl(apiUrl);
+  liftHelperSync(() => validateIssuerUrl(apiUrl));
   const fetchImpl = options.fetchImpl ?? fetch;
 
-  let tokenEndpoint = options.tokenEndpoint;
-  let issuer = options.issuer;
-  if (!tokenEndpoint || !issuer) {
-    const metadata = await discover(apiUrl, fetchImpl);
-    tokenEndpoint = tokenEndpoint ?? metadata.token_endpoint;
-    issuer = issuer ?? metadata.issuer;
-  }
-  // The discovered or caller-supplied token endpoint must be https — a
-  // malicious DCR response can advertise `token_endpoint: "http://evil"`
-  // and smuggle the auth code + PKCE verifier over plaintext otherwise.
-  validateTokenEndpoint(tokenEndpoint);
+  return liftHelper(async () => {
+    let tokenEndpoint = options.tokenEndpoint;
+    let issuer = options.issuer;
+    if (!tokenEndpoint || !issuer) {
+      const metadata = await discover(apiUrl, { fetchImpl });
+      tokenEndpoint = tokenEndpoint ?? metadata.token_endpoint;
+      issuer = issuer ?? metadata.issuer;
+    }
+    // Defense-in-depth: a malicious DCR response can advertise a plain-
+    // http token endpoint. The helper validates internally inside
+    // `exchangeCode`, but checking here keeps the failure mode close to
+    // the caller's `tokenEndpoint` input — easier to debug a typo'd
+    // override than a deep stack from inside the exchange.
+    validateTokenEndpoint(tokenEndpoint);
 
-  const tokenResponse = await exchangeCode({
-    tokenEndpoint,
-    clientId: options.clientId,
-    redirectUri: options.redirectUri,
-    code: options.code,
-    codeVerifier: options.codeVerifier,
-    fetchImpl,
+    const tokenResponse = await exchangeCode(
+      {
+        tokenEndpoint,
+        clientId: options.clientId,
+        redirectUri: options.redirectUri,
+        code: options.code,
+        codeVerifier: options.codeVerifier,
+      },
+      { fetchImpl },
+    );
+
+    const claims = decodeJwtPayload(tokenResponse.access_token);
+    enforceIssuer(claims, issuer);
+    const workspaceId = extractWorkspaceClaim(claims);
+
+    const expiresIn =
+      typeof tokenResponse.expires_in === "number" && tokenResponse.expires_in > 0
+        ? tokenResponse.expires_in
+        : 3600;
+
+    return {
+      accessToken: tokenResponse.access_token,
+      refreshToken: tokenResponse.refresh_token ?? null,
+      expiresAt: Date.now() + expiresIn * 1000,
+      workspaceId,
+    };
   });
-
-  const claims = decodeJwtPayload(tokenResponse.access_token);
-  enforceIssuer(claims, issuer);
-  const workspaceId = extractWorkspaceClaim(claims);
-
-  const expiresIn =
-    typeof tokenResponse.expires_in === "number" && tokenResponse.expires_in > 0
-      ? tokenResponse.expires_in
-      : 3600;
-
-  return {
-    accessToken: tokenResponse.access_token,
-    refreshToken: tokenResponse.refresh_token ?? null,
-    expiresAt: Date.now() + expiresIn * 1000,
-    workspaceId,
-  };
 }
 
 // ── buildConfig ───────────────────────────────────────────────────────
@@ -373,335 +435,8 @@ export interface RevokeAgentResponse {
 
 // ── Internals ─────────────────────────────────────────────────────────
 
-interface AuthServerMetadata {
-  authorization_endpoint: string;
-  token_endpoint: string;
-  registration_endpoint: string;
-  issuer: string;
-}
-
-interface TokenResponse {
-  access_token: string;
-  refresh_token?: string;
-  token_type?: string;
-  expires_in?: number;
-  scope?: string;
-}
-
 function trimTrailingSlash(s: string): string {
   return s.replace(/\/+$/, "");
-}
-
-/**
- * Refuse anything other than `https://` (or `http://localhost` for
- * dev). Used by `beginConnect` for `apiUrl` AND by `completeConnect`
- * for the discovered `tokenEndpoint` — a malicious DCR response
- * pointing `token_endpoint` at `http://evil/token` would otherwise
- * smuggle the auth code + PKCE verifier over plaintext.
- */
-function validateHttpsUrl(input: string, code: "invalid_api_url" | "invalid_token_endpoint", label: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(input);
-  } catch (err) {
-    throw new AtlasMcpError(
-      `${label} is not a valid URL: ${input}`,
-      code,
-      { cause: err },
-    );
-  }
-  if (parsed.protocol === "https:") return;
-  if (
-    parsed.protocol === "http:" &&
-    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
-  ) {
-    return;
-  }
-  throw new AtlasMcpError(
-    `${label} must use https:// (or http://localhost for dev). Got: ${input}`,
-    code,
-  );
-}
-
-function validateApiUrl(apiUrl: string): void {
-  validateHttpsUrl(apiUrl, "invalid_api_url", "apiUrl");
-}
-
-function validateTokenEndpoint(tokenEndpoint: string): void {
-  validateHttpsUrl(tokenEndpoint, "invalid_token_endpoint", "tokenEndpoint");
-}
-
-async function discover(
-  apiUrl: string,
-  fetchImpl: typeof fetch,
-): Promise<AuthServerMetadata> {
-  const url = `${apiUrl}/.well-known/oauth-authorization-server/api/auth`;
-  let res: Response;
-  try {
-    res = await fetchImpl(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new AtlasMcpError(
-      `Could not reach Atlas auth discovery at ${url}: ${msg}`,
-      "discovery_failed",
-      { cause: err },
-    );
-  }
-  if (!res.ok) {
-    throw new AtlasMcpError(
-      `Atlas auth discovery returned ${res.status} for ${url}`,
-      "discovery_failed",
-    );
-  }
-  const body = (await res.json().catch((err) => {
-    throw new AtlasMcpError(
-      `Atlas auth discovery body was not JSON: ${err instanceof Error ? err.message : String(err)}`,
-      "discovery_failed",
-      { cause: err },
-    );
-  })) as Partial<AuthServerMetadata>;
-
-  if (
-    typeof body.authorization_endpoint !== "string" ||
-    typeof body.token_endpoint !== "string" ||
-    typeof body.registration_endpoint !== "string" ||
-    typeof body.issuer !== "string"
-  ) {
-    throw new AtlasMcpError(
-      `Atlas auth discovery is missing one of: authorization_endpoint, token_endpoint, registration_endpoint, issuer`,
-      "discovery_failed",
-    );
-  }
-  return {
-    authorization_endpoint: body.authorization_endpoint,
-    token_endpoint: body.token_endpoint,
-    registration_endpoint: body.registration_endpoint,
-    issuer: body.issuer,
-  };
-}
-
-interface RegisterArgs {
-  metadata: AuthServerMetadata;
-  redirectUri: string;
-  clientName: string;
-  scopes: ReadonlyArray<string>;
-  fetchImpl: typeof fetch;
-}
-
-async function register(args: RegisterArgs): Promise<string> {
-  // Public-client posture — `token_endpoint_auth_method: "none"` matches
-  // the CLI loopback flow; the server enforces PKCE.
-  const body = {
-    client_name: args.clientName,
-    redirect_uris: [args.redirectUri],
-    grant_types: ["authorization_code", "refresh_token"],
-    response_types: ["code"],
-    scope: args.scopes.join(" "),
-    token_endpoint_auth_method: "none",
-  };
-  let res: Response;
-  try {
-    res = await args.fetchImpl(args.metadata.registration_endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new AtlasMcpError(
-      `Dynamic Client Registration failed: ${msg}`,
-      "registration_failed",
-      { cause: err },
-    );
-  }
-  if (!res.ok) {
-    const detail = await describeErrorBody(res);
-    throw new AtlasMcpError(
-      `Dynamic Client Registration returned ${res.status}${detail ? `: ${detail}` : ""}`,
-      "registration_failed",
-    );
-  }
-  const data = (await res.json().catch((err) => {
-    throw new AtlasMcpError(
-      `Dynamic Client Registration response was not JSON: ${err instanceof Error ? err.message : String(err)}`,
-      "registration_failed",
-      { cause: err },
-    );
-  })) as Partial<{ client_id: string }>;
-  if (typeof data.client_id !== "string" || data.client_id.length === 0) {
-    throw new AtlasMcpError(
-      `Dynamic Client Registration response missing client_id`,
-      "registration_failed",
-    );
-  }
-  return data.client_id;
-}
-
-interface BuildAuthorizeUrlArgs {
-  authorizationEndpoint: string;
-  clientId: string;
-  redirectUri: string;
-  state: string;
-  codeChallenge: string;
-  scopes: ReadonlyArray<string>;
-}
-
-function buildAuthorizeUrl(args: BuildAuthorizeUrlArgs): string {
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: args.clientId,
-    redirect_uri: args.redirectUri,
-    scope: args.scopes.join(" "),
-    state: args.state,
-    code_challenge: args.codeChallenge,
-    code_challenge_method: "S256",
-  });
-  const sep = args.authorizationEndpoint.includes("?") ? "&" : "?";
-  return `${args.authorizationEndpoint}${sep}${params.toString()}`;
-}
-
-interface ExchangeArgs {
-  tokenEndpoint: string;
-  clientId: string;
-  redirectUri: string;
-  code: string;
-  codeVerifier: string;
-  fetchImpl: typeof fetch;
-}
-
-async function exchangeCode(args: ExchangeArgs): Promise<TokenResponse> {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: args.code,
-    redirect_uri: args.redirectUri,
-    client_id: args.clientId,
-    code_verifier: args.codeVerifier,
-  });
-  let res: Response;
-  try {
-    res = await args.fetchImpl(args.tokenEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-      },
-      body: body.toString(),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new AtlasMcpError(
-      `Token exchange failed: ${msg}`,
-      "token_exchange_failed",
-      { cause: err },
-    );
-  }
-  if (!res.ok) {
-    const detail = await describeErrorBody(res);
-    throw new AtlasMcpError(
-      `Token endpoint returned ${res.status}${detail ? `: ${detail}` : ""}`,
-      "token_exchange_failed",
-    );
-  }
-  const data = (await res.json().catch((err) => {
-    throw new AtlasMcpError(
-      `Token endpoint response was not JSON: ${err instanceof Error ? err.message : String(err)}`,
-      "token_exchange_failed",
-      { cause: err },
-    );
-  })) as Partial<TokenResponse>;
-  if (typeof data.access_token !== "string" || data.access_token.length === 0) {
-    throw new AtlasMcpError(
-      `Token endpoint response missing access_token`,
-      "token_exchange_failed",
-    );
-  }
-  return {
-    access_token: data.access_token,
-    refresh_token: typeof data.refresh_token === "string" ? data.refresh_token : undefined,
-    token_type: typeof data.token_type === "string" ? data.token_type : undefined,
-    expires_in: typeof data.expires_in === "number" ? data.expires_in : undefined,
-    scope: typeof data.scope === "string" ? data.scope : undefined,
-  };
-}
-
-async function describeErrorBody(res: Response): Promise<string> {
-  const raw = await res.text().catch(() => "");
-  if (!raw) return "";
-  try {
-    const parsed = JSON.parse(raw) as Partial<{
-      error: string;
-      error_description: string;
-      error_uri: string;
-    }>;
-    const parts: string[] = [];
-    if (typeof parsed.error === "string" && parsed.error.length > 0) parts.push(parsed.error);
-    if (typeof parsed.error_description === "string" && parsed.error_description.length > 0) {
-      parts.push(parsed.error_description);
-    }
-    if (typeof parsed.error_uri === "string" && parsed.error_uri.length > 0) {
-      parts.push(`see ${parsed.error_uri}`);
-    }
-    if (parts.length > 0) return parts.join(": ");
-  } catch {
-    // intentionally ignored: not JSON — fall through to raw-text branch.
-  }
-  return raw.length > 1024 ? `${raw.slice(0, 1024)}…` : raw;
-}
-
-/**
- * Decode a JWT payload WITHOUT verifying the signature. Safe here only
- * because both `apiUrl` and `tokenEndpoint` are validated as
- * `https://` (or loopback) before this is reached — and the surrounding
- * `enforceIssuer` rejects any token whose `iss` claim drifts from what
- * discovery returned. The hosted MCP endpoint re-verifies the signature
- * on every request via JWKS, so any tampering between here and there is
- * rejected server-side. Do NOT lift this helper out as a generic JWT
- * decoder — without the surrounding flow's TLS + issuer guarantees,
- * "decode without verify" is unsafe.
- */
-function decodeJwtPayload(jwtToken: string): Record<string, unknown> {
-  const parts = jwtToken.split(".");
-  if (parts.length !== 3) {
-    throw new AtlasMcpError(
-      `Access token is not a JWT (expected 3 parts, got ${parts.length})`,
-      "malformed_jwt",
-    );
-  }
-  try {
-    const json = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(json) as Record<string, unknown>;
-  } catch (err) {
-    throw new AtlasMcpError(
-      `Could not decode JWT payload: ${err instanceof Error ? err.message : String(err)}`,
-      "malformed_jwt",
-      { cause: err },
-    );
-  }
-}
-
-function enforceIssuer(payload: Record<string, unknown>, expectedIssuer: string): void {
-  const iss = payload.iss;
-  if (typeof iss !== "string" || iss.length === 0) {
-    throw new AtlasMcpError(
-      `Access token has no \`iss\` claim — refusing to trust an unsigned-issuer token.`,
-      "issuer_mismatch",
-    );
-  }
-  if (iss !== expectedIssuer) {
-    throw new AtlasMcpError(
-      `Access token issuer mismatch: discovered \`${expectedIssuer}\`, token claims \`${iss}\`.`,
-      "issuer_mismatch",
-    );
-  }
 }
 
 function extractWorkspaceClaim(payload: Record<string, unknown>): string {
@@ -713,22 +448,4 @@ function extractWorkspaceClaim(payload: Record<string, unknown>): string {
     );
   }
   return claim;
-}
-
-function defaultRandomBytes(length: number): Uint8Array {
-  const buf = new Uint8Array(length);
-  crypto.getRandomValues(buf);
-  return buf;
-}
-
-function encodeBase64Url(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function pkceChallenge(verifier: string): Promise<string> {
-  const data = new TextEncoder().encode(verifier);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return encodeBase64Url(new Uint8Array(digest));
 }

@@ -36,7 +36,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/"
+    "test": "bun test __tests__/",
+    "vendor:oauth-helper": "bash scripts/vendor-oauth-helper.sh",
+    "prepare": "bash scripts/vendor-oauth-helper.sh"
   },
   "keywords": [
     "atlas",
@@ -67,6 +69,7 @@
   },
   "devDependencies": {
     "@atlas/mcp": "workspace:*",
+    "@atlas/oauth-helper": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "hono": "^4.12.9",
     "zod": "^4.3.6",

@@ -253,11 +253,22 @@ describe("cli — serve fails cleanly when @atlas/mcp can't be resolved", () => 
       const pkg = join(root, "pkg");
       mkdirSync(join(pkg, "bin"), { recursive: true });
       mkdirSync(join(pkg, "src", "init"), { recursive: true });
+      mkdirSync(join(pkg, "src", "_oauth-helper"), { recursive: true });
 
       cpSync(CLI, join(pkg, "bin", "cli.ts"));
       cpSync(join(PKG_ROOT, "src", "init"), join(pkg, "src", "init"), {
         recursive: true,
       });
+      // The hosted init flow statically imports the vendored OAuth
+      // helper (`../_oauth-helper`). The published `@useatlas/mcp`
+      // ships this directory alongside `src/init/` — mirror that here
+      // so resolution doesn't trip on the helper before we reach the
+      // dynamic `@atlas/mcp/server` import this test pins.
+      cpSync(
+        join(PKG_ROOT, "src", "_oauth-helper"),
+        join(pkg, "src", "_oauth-helper"),
+        { recursive: true },
+      );
 
       // We never reach the @modelcontextprotocol/sdk import — the
       // @atlas/mcp/server resolution fails first — so an empty tree

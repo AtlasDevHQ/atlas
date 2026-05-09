@@ -238,6 +238,10 @@
         "zod": "^4.3.6",
       },
     },
+    "packages/oauth-helper": {
+      "name": "@atlas/oauth-helper",
+      "version": "0.0.0",
+    },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
       "version": "0.0.7",
@@ -330,6 +334,9 @@
       "version": "0.0.13",
       "dependencies": {
         "@useatlas/types": "^0.0.19",
+      },
+      "devDependencies": {
+        "@atlas/oauth-helper": "workspace:*",
       },
     },
     "packages/types": {
@@ -568,6 +575,7 @@
       },
       "devDependencies": {
         "@atlas/mcp": "workspace:*",
+        "@atlas/oauth-helper": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.28.0",
         "@useatlas/plugin-sdk": "workspace:*",
         "hono": "^4.12.9",
@@ -781,6 +789,8 @@
     "@atlas/mcp": ["@atlas/mcp@workspace:packages/mcp"],
 
     "@atlas/nextjs-standalone": ["@atlas/nextjs-standalone@workspace:examples/nextjs-standalone"],
+
+    "@atlas/oauth-helper": ["@atlas/oauth-helper@workspace:packages/oauth-helper"],
 
     "@atlas/sandbox-sidecar": ["@atlas/sandbox-sidecar@workspace:packages/sandbox-sidecar"],
 

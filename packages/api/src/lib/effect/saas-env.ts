@@ -4,9 +4,9 @@
  *
  * Adding a new SaaS guard means appending a field to {@link SaasEnv}
  * and a sane default to {@link makeBootSmokeFixture} — the boot-smoke
- * gate (`.github/workflows/ci.yml :: boot-smoke`) auto-picks up the
- * new value via `scripts/saas-env-fixture.ts`. No workflow edit, no
- * separate env wiring.
+ * gate (`.github/workflows/deploy-validation.yml :: boot-smoke`)
+ * auto-picks up the new value via `scripts/saas-env-fixture.ts`. No
+ * workflow edit, no separate env wiring.
  *
  * The shape is a typed view of `process.env` restricted to the
  * SaaS-required keys. Guards in `saas-guards.ts` and the boot-time
@@ -128,20 +128,22 @@ export interface BootSmokeFixtureOptions {
 }
 
 /**
- * Build a SaaS env block with sane defaults for the boot-smoke gate
- * and Effect tests that need a complete contract. The returned shape
- * is consumed two ways:
+ * Build a SaaS env block with sane defaults for the boot-smoke gate.
+ * The returned shape is consumed by:
  *
- *   1. `scripts/saas-env-fixture.ts` emits its `KEY=VALUE` form to the
- *      GitHub Actions workflow.
- *   2. Effect tests pass it to `withSaasEnv()` to populate
- *      `process.env` for a single test case.
+ *   1. `scripts/saas-env-fixture.ts`, which emits the `KEY=VALUE` form
+ *      to the GitHub Actions workflow.
+ *   2. `__tests__/saas-env.test.ts`, which pins per-field shape so a
+ *      future fixture tweak doesn't accidentally drop a required key.
  *
- * The encryption-key value is a fixed 44-char base64 string that
- * `getEncryptionKeyset()` accepts as well-formed (SHA-256 derives the
- * 32-byte AES key from any non-empty raw). It is *not* a secret — it
- * is identical across every CI run and intentionally documented as
- * such. Production keys are minted via `openssl rand -base64 32`.
+ * The `ATLAS_ENCRYPTION_KEYS` value is plain ASCII, not base64 —
+ * `getEncryptionKeyset()` SHA-256s any non-empty raw entry to derive
+ * the 32-byte AES key, so the format-level requirement is "non-empty
+ * after the `v<N>:` prefix" (no character-set constraint). It is *not*
+ * a secret — it is identical across every CI run and intentionally
+ * documented as such. Production keys are minted via
+ * `openssl rand -base64 32`, which is where the more restrictive
+ * "44-char base64" shape comes from.
  */
 export function makeBootSmokeFixture(
   opts: BootSmokeFixtureOptions = {},

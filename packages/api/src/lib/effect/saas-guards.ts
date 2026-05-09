@@ -556,7 +556,7 @@ export const RegionGuardLive: Layer.Layer<never, RegionMisconfiguredError, Confi
 
     const regionEntry = regions[claimedRegion] as { databaseUrl?: unknown } | undefined;
     if (!isPlausiblePostgresUrl(regionEntry?.databaseUrl)) {
-      yield* Effect.fail(
+      return yield* Effect.fail(
         new RegionMisconfiguredError({
           claimedRegion,
           availableRegions,

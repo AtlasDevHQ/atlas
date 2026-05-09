@@ -3,16 +3,22 @@
  *
  * `SaasEnv` enumerates every env var the SaaS-mode boot guards read.
  * `makeBootSmokeFixture()` returns a complete shape with sane CI
- * defaults. These tests pin the contract so:
+ * defaults. These tests pin shape-level invariants:
  *
  *   1. Adding a field to `SaasEnv` without appending it to
  *      `SAAS_ENV_KEYS` (the exhaustiveness array) is caught at
  *      compile time by the `_ExhaustiveCheck` clause AND at runtime
  *      here.
- *   2. The fixture passes every guard in saas-guards.ts when fed
- *      to a stripped process.env. This is the tier the boot-smoke
- *      gate relies on — if any guard rejects the fixture, the
- *      workflow can't be green.
+ *   2. Per-field fixture values satisfy the parser-level requirements
+ *      that each guard reads (`ATLAS_RATE_LIMIT_RPM` parses to ≥ 1,
+ *      `BETTER_AUTH_SECRET` ≥ 32 chars, etc.).
+ *
+ * Guard-level acceptance — does the fixture actually pass each guard's
+ * `Effect.fail` branch? — is the boot-smoke workflow's job; running
+ * every guard against the fixture would duplicate that integration
+ * coverage at unit level. If a guard tightens a parser-level rule
+ * (e.g. requires `ATLAS_RATE_LIMIT_RPM` ≥ 60), update both the per-field
+ * assertion below and the fixture default.
  */
 
 import { describe, test, expect } from "bun:test";

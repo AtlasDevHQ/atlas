@@ -366,6 +366,10 @@ function OAuthClientShell({
     <Shell
       icon={KeyRound}
       title={displayName}
+      // Stable Playwright hook — use `getByTestId(\`oauth-client-row-${id}\`)`
+      // rather than the brittle "section/div with hasText" locator pattern
+      // (#2183 item 6).
+      dataTestId={`oauth-client-row-${client.clientId}`}
       description={
         client.disabled
           ? "Disabled — revoke to remove from the list"

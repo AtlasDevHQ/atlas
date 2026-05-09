@@ -12,6 +12,8 @@
  */
 
 import { describe, it, expect, afterEach } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   checkClientRateLimit,
   setClientRateLimit,
@@ -22,11 +24,14 @@ import {
   WINDOW_MS,
   _resetClientRateLimitsForTests,
   _setClockForTests,
+  _getRateLimitMapSizesForTests,
+  _hasCachedLimitForTests,
 } from "../oauth-client";
 
 afterEach(() => {
   _resetClientRateLimitsForTests();
   _setClockForTests(null);
+  delete process.env.ATLAS_MCP_RATE_LIMIT_MAX_KEYS;
 });
 
 const baseCtx = {
@@ -77,8 +82,24 @@ describe("checkClientRateLimit", () => {
   it("allows the first request", () => {
     const verdict = checkClientRateLimit(baseCtx);
     expect(verdict.allowed).toBe(true);
-    expect(verdict.retryAfterSec).toBe(0);
     expect(verdict.limit).toBe(DEFAULT_REQUESTS_PER_MINUTE);
+  });
+
+  it("the discriminated union narrows retryAfterSec onto the denied branch only", () => {
+    setClientRateLimit("org_a", "client_x", { requestsPerMinute: 1 });
+    const allowed = checkClientRateLimit(baseCtx);
+    // The allowed branch must NOT carry retryAfterSec — its presence in
+    // the legacy flat shape with value 0 was the original ambiguity that
+    // motivated the union refactor (#2183 item 1). A regression that
+    // re-introduces the field on the allowed branch would let callers
+    // treat `verdict.retryAfterSec === 0` as a sentinel again.
+    expect(allowed.allowed).toBe(true);
+    expect("retryAfterSec" in allowed).toBe(false);
+
+    const denied = checkClientRateLimit(baseCtx);
+    expect(denied.allowed).toBe(false);
+    if (denied.allowed) throw new Error("type-narrow checkpoint");
+    expect(typeof denied.retryAfterSec).toBe("number");
   });
 
   it("denies once the bucket is full", () => {
@@ -90,6 +111,7 @@ describe("checkClientRateLimit", () => {
 
     const denied = checkClientRateLimit(baseCtx);
     expect(denied.allowed).toBe(false);
+    if (denied.allowed) throw new Error("expected denied verdict");
     expect(denied.retryAfterSec).toBeGreaterThan(0);
     expect(denied.retryAfterSec).toBeLessThanOrEqual(60);
   });
@@ -99,6 +121,7 @@ describe("checkClientRateLimit", () => {
     checkClientRateLimit(baseCtx);
     const denied = checkClientRateLimit(baseCtx);
     expect(denied.allowed).toBe(false);
+    if (denied.allowed) throw new Error("expected denied verdict");
     expect(Number.isInteger(denied.retryAfterSec)).toBe(true);
     expect(denied.retryAfterSec).toBeGreaterThanOrEqual(1);
     expect(denied.retryAfterSec).toBeLessThanOrEqual(60);
@@ -180,6 +203,7 @@ describe("checkClientRateLimit", () => {
     const heavy = { ...baseCtx, toolName: "executeSQL" };
     const denied = checkClientRateLimit(heavy);
     expect(denied.allowed).toBe(false);
+    if (denied.allowed) throw new Error("expected denied verdict");
     expect(denied.retryAfterSec).toBe(60);
   });
 
@@ -285,3 +309,189 @@ describe("resolveRateLimitFor", () => {
     expect(checkClientRateLimit(light).allowed).toBe(false);
   });
 });
+
+// ── Map-level eviction (#2183 item 2) ────────────────────────────────
+
+describe("eviction — buckets self-clean", () => {
+  it("drops the bucket key once all in-window entries expire", () => {
+    setClientRateLimit("org_a", "client_x", { requestsPerMinute: 1 });
+    _setClockForTests(1_000_000);
+    expect(checkClientRateLimit(baseCtx).allowed).toBe(true);
+    expect(_getRateLimitMapSizesForTests().buckets).toBe(1);
+
+    // Slide past the window — the next read filters every entry out.
+    _setClockForTests(1_000_000 + WINDOW_MS + 1);
+    expect(checkClientRateLimit(baseCtx).allowed).toBe(true);
+    // The bucket has one fresh entry now (the request we just admitted).
+    expect(_getRateLimitMapSizesForTests().buckets).toBe(1);
+  });
+
+  it("drops the bucket key on a single-weight-exceeds-limit denial of a fresh client", () => {
+    // weight=5 (executeSQL) against limit=1 — we never push, and there
+    // were no prior entries, so the key should not stick around in the
+    // map. A regression that always re-set an empty array would leak a
+    // bucket entry per fresh hostile client.
+    setClientRateLimit("org_a", "client_x", { requestsPerMinute: 1 });
+    _resetClientRateLimitsForTests();
+    setClientRateLimit("org_a", "client_x", { requestsPerMinute: 1 });
+    expect(_getRateLimitMapSizesForTests().buckets).toBe(0);
+    const denied = checkClientRateLimit({ ...baseCtx, toolName: "executeSQL" });
+    expect(denied.allowed).toBe(false);
+    expect(_getRateLimitMapSizesForTests().buckets).toBe(0);
+  });
+});
+
+describe("eviction — limits LRU bound", () => {
+  it("evicts the least-recently-used cached override when the cap is exceeded", async () => {
+    process.env.ATLAS_MCP_RATE_LIMIT_MAX_KEYS = "100"; // clamped floor
+    // Force a small effective bound by using setClientRateLimit, which
+    // honors the cap on insert.
+    for (let i = 0; i < 100; i++) {
+      setClientRateLimit("org_x", `client_${i}`, { requestsPerMinute: 60 });
+    }
+    expect(_getRateLimitMapSizesForTests().limits).toBe(100);
+    // Adding one more triggers eviction of the first (LRU).
+    setClientRateLimit("org_x", "client_overflow", { requestsPerMinute: 60 });
+    expect(_getRateLimitMapSizesForTests().limits).toBe(100);
+    expect(_hasCachedLimitForTests("org_x", "client_0")).toBe(false);
+    expect(_hasCachedLimitForTests("org_x", "client_overflow")).toBe(true);
+  });
+
+  it("read activity refreshes LRU position so an active client survives newer churn", async () => {
+    process.env.ATLAS_MCP_RATE_LIMIT_MAX_KEYS = "100";
+    for (let i = 0; i < 100; i++) {
+      setClientRateLimit("org_x", `client_${i}`, { requestsPerMinute: 60 });
+    }
+    // Touch client_0 — checkClientRateLimit re-inserts the entry, which
+    // should move it to the most-recent end of the iteration order.
+    checkClientRateLimit({
+      orgId: "org_x",
+      clientId: "client_0",
+      userId: "user_1",
+      toolName: "listEntities",
+    });
+    // Adding one new entry would normally evict client_0 (the LRU). After
+    // the touch above, client_1 is the LRU instead.
+    setClientRateLimit("org_x", "client_overflow", { requestsPerMinute: 60 });
+    expect(_hasCachedLimitForTests("org_x", "client_0")).toBe(true);
+    expect(_hasCachedLimitForTests("org_x", "client_1")).toBe(false);
+  });
+
+  it("clamps a sub-100 ATLAS_MCP_RATE_LIMIT_MAX_KEYS to a 100 floor", () => {
+    process.env.ATLAS_MCP_RATE_LIMIT_MAX_KEYS = "5"; // typo; clamped to 100
+    for (let i = 0; i < 100; i++) {
+      setClientRateLimit("org_x", `client_${i}`, { requestsPerMinute: 60 });
+    }
+    // Below the floor we'd see a map size of 5; with the floor we see 100.
+    expect(_getRateLimitMapSizesForTests().limits).toBe(100);
+  });
+
+  it("ignores a malformed ATLAS_MCP_RATE_LIMIT_MAX_KEYS and falls back to the default", () => {
+    process.env.ATLAS_MCP_RATE_LIMIT_MAX_KEYS = "not-a-number";
+    // Just verify a basic insert works — exercising the full default
+    // (10_000) would burn time without buying coverage. The contract is
+    // that the cache stays usable.
+    setClientRateLimit("org_x", "client_0", { requestsPerMinute: 60 });
+    expect(_getRateLimitMapSizesForTests().limits).toBe(1);
+  });
+
+  it("resolveRateLimitFor caches into the LRU and respects the bound", async () => {
+    process.env.ATLAS_MCP_RATE_LIMIT_MAX_KEYS = "100";
+    const loader = async () => 90;
+    for (let i = 0; i < 105; i++) {
+      await resolveRateLimitFor("org_x", `client_${i}`, loader);
+    }
+    expect(_getRateLimitMapSizesForTests().limits).toBe(100);
+    // The 5 oldest must have been evicted.
+    expect(_hasCachedLimitForTests("org_x", "client_0")).toBe(false);
+    expect(_hasCachedLimitForTests("org_x", "client_4")).toBe(false);
+    expect(_hasCachedLimitForTests("org_x", "client_5")).toBe(true);
+    expect(_hasCachedLimitForTests("org_x", "client_104")).toBe(true);
+  });
+});
+
+// ── Docs table lockstep (#2183 item 5) ───────────────────────────────
+
+describe("TOOL_WEIGHTS docs sync", () => {
+  it("apps/docs/content/docs/guides/mcp.mdx weights table matches TOOL_WEIGHTS exactly", () => {
+    // The hosted-MCP guide hardcodes a parallel table to keep operator
+    // copy readable. This test pins the lockstep so a single-side edit
+    // (rename a tool, change a weight, add a tool) trips CI before the
+    // docs and the runtime drift. A regression where the docs say
+    // `executeSQL: 3` while the limiter charges 5 would mislead every
+    // operator setting a quota off the docs.
+    const docsPath = join(
+      import.meta.dir,
+      "..",
+      "..",
+      "..",
+      "..",
+      "..",
+      "..",
+      "apps",
+      "docs",
+      "content",
+      "docs",
+      "guides",
+      "mcp.mdx",
+    );
+    const mdx = readFileSync(docsPath, "utf-8");
+    const docsWeights = parseToolWeightsTable(mdx);
+
+    // Both directions: every tool in the source constant appears in the
+    // docs at the documented weight, and every tool the docs claims is
+    // actually in the source constant. Ordering is irrelevant — the
+    // tables are unordered key/value sets.
+    for (const [tool, weight] of Object.entries(TOOL_WEIGHTS)) {
+      expect(docsWeights.get(tool)).toBe(weight);
+    }
+    for (const [tool, weight] of docsWeights) {
+      expect((TOOL_WEIGHTS as Record<string, number>)[tool]).toBe(weight);
+    }
+  });
+});
+
+/**
+ * Parse the "Per-tool weights" table out of the hosted-MCP guide. The
+ * markdown shape is:
+ *
+ *     | Tool                                  | Weight |
+ *     | ------------------------------------- | ------ |
+ *     | `executeSQL`, `explore`               | 5      |
+ *     | `runMetric`                           | 3      |
+ *     | `listEntities`, `describeEntity`, ... | 1      |
+ *
+ * Each row may list multiple comma-separated tools sharing a weight.
+ * Tools are wrapped in backticks; the parser strips them. Returns a
+ * map for direction-agnostic comparison.
+ */
+function parseToolWeightsTable(mdx: string): Map<string, number> {
+  const headerIdx = mdx.indexOf("| Tool");
+  if (headerIdx < 0) {
+    throw new Error(
+      "weights table not found in mcp.mdx — did the heading move? (#2183 item 5)",
+    );
+  }
+  // Skip the header row and the separator row (`| --- | --- |`).
+  const fromHeader = mdx.slice(headerIdx);
+  const lines = fromHeader.split("\n");
+  const out = new Map<string, number>();
+  // Start from the first data row (skip 2 header lines).
+  for (let i = 2; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.startsWith("|")) break;
+    const cells = line
+      .split("|")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
+    if (cells.length !== 2) continue;
+    const [toolsCell, weightCell] = cells;
+    const weight = Number.parseInt(weightCell, 10);
+    if (!Number.isFinite(weight)) continue;
+    for (const raw of toolsCell.split(",")) {
+      const tool = raw.trim().replace(/^`|`$/g, "");
+      if (tool.length > 0) out.set(tool, weight);
+    }
+  }
+  return out;
+}

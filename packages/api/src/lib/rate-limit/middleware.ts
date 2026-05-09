@@ -24,12 +24,49 @@
 import type { AtlasMcpToolError } from "@useatlas/types/mcp";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import {
+  hasInternalDB,
+  internalQuery,
+  isInternalCircuitOpen,
+} from "@atlas/api/lib/db/internal";
+import {
+  rateLimitAuditDropped,
+  rateLimitLoaderFailures,
+} from "@atlas/api/lib/metrics";
 import {
   checkClientRateLimit,
   resolveRateLimitFor,
+  DEFAULT_REQUESTS_PER_MINUTE,
+  toolWeight,
   type RateLimitLoader,
 } from "./oauth-client";
+
+/**
+ * Tagged error thrown by `defaultLoader` when the override-DB query
+ * fails AND `ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED=true`. The middleware
+ * catches this specific error and synthesizes a fail-closed denied
+ * outcome so the caller sees the override-degradation hint instead of
+ * the workspace default. A regular `Error` here would be ambiguous with
+ * unrelated failures bubbling up from the loader.
+ */
+export class RateLimitLoaderFailedError extends Error {
+  readonly cause: Error;
+  constructor(cause: unknown) {
+    const causeErr = cause instanceof Error ? cause : new Error(String(cause));
+    super(`rate-limit loader failed: ${causeErr.message}`);
+    this.name = "RateLimitLoaderFailedError";
+    this.cause = causeErr;
+  }
+}
+
+/**
+ * Retry-after value for fail-closed loader denials. 30s lines up with
+ * the recovery exponential-backoff floor of the internal-DB circuit
+ * breaker (see `lib/db/internal.ts`) — agents that politely back off
+ * for that long observe at most one fail-closed reply per recovery
+ * window. Whole-second value safe to drop into `Retry-After`.
+ */
+const LOADER_FAIL_CLOSED_RETRY_AFTER_SEC = 30;
 
 const log = createLogger("mcp-rate-limit");
 
@@ -68,7 +105,20 @@ export async function enforceClientRateLimit(
   // intentionally exposes this as a separate step so the hot path stays
   // synchronous — multiple tool dispatches in one MCP session pay the
   // DB roundtrip exactly once.
-  await resolveRateLimitFor(input.orgId, input.clientId, loader);
+  try {
+    await resolveRateLimitFor(input.orgId, input.clientId, loader);
+  } catch (err: unknown) {
+    if (err instanceof RateLimitLoaderFailedError) {
+      // Fail-closed mode (#2183 item 4): the loader propagated a DB
+      // outage instead of falling back to the default. Synthesize a
+      // denied outcome with the override-degraded hint so the caller
+      // never reaches the bucket logic — a hardened threat model
+      // explicitly prefers temporary unavailability over serving an
+      // attacker the default quota when the override surface is down.
+      return buildLoaderFailedOutcome(input, err);
+    }
+    throw err;
+  }
 
   const verdict = checkClientRateLimit({
     orgId: input.orgId,
@@ -109,6 +159,62 @@ export async function enforceClientRateLimit(
   };
 }
 
+// ── Fail-closed loader-failure path (#2183 item 4) ─────────────────
+
+function isFailClosedMode(): boolean {
+  return process.env.ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED === "true";
+}
+
+function buildLoaderFailedOutcome(
+  input: EnforceClientRateLimitInput,
+  err: RateLimitLoaderFailedError,
+): EnforceClientRateLimitOutcome {
+  const limit = DEFAULT_REQUESTS_PER_MINUTE;
+  const weight = toolWeight(input.toolName);
+  const retryAfterSec = LOADER_FAIL_CLOSED_RETRY_AFTER_SEC;
+
+  rateLimitLoaderFailures.add(1, {
+    disposition: "fail_closed",
+    "deploy.mode": process.env.ATLAS_DEPLOY_MODE ?? "self-hosted",
+  });
+  log.error(
+    {
+      err: err.cause.message,
+      orgId: input.orgId,
+      clientId: input.clientId,
+      tool: input.toolName,
+    },
+    "rate_limit fail-closed denial — override loader degraded; serving 429",
+  );
+
+  emitRateLimitAudit({
+    clientId: input.clientId,
+    userId: input.userId,
+    orgId: input.orgId,
+    toolName: input.toolName,
+    limit,
+    weight,
+    retryAfterSec,
+    remaining: 0,
+    reason: "loader_failure",
+  });
+
+  const envelope: AtlasMcpToolError = {
+    code: "rate_limited",
+    message: rateLimitedMessage(input.clientId, limit),
+    hint: "override service degraded; retry shortly",
+    retry_after: retryAfterSec,
+  };
+
+  return {
+    kind: "denied",
+    retryAfterSec,
+    limit,
+    weight,
+    envelope,
+  };
+}
+
 // ── Default DB-backed loader ───────────────────────────────────────
 
 const SELECT_OVERRIDE_SQL = `
@@ -138,10 +244,21 @@ async function defaultLoader(
     if (!Number.isFinite(parsed) || parsed < 1) return null;
     return parsed;
   } catch (err) {
-    // Loader failure must not fail-open or fail-closed silently. We
-    // log at warn so a Postgres outage surfaces, and return null so the
-    // limiter falls back to the documented default — which keeps
-    // legitimate traffic served while the override surface is degraded.
+    // Loader failure must not fail-open or fail-closed silently. The
+    // disposition is governed by `ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED`
+    // (#2183 item 4): fail-open is the legacy default — log a warning
+    // and serve the workspace default while the override surface is
+    // degraded. Fail-closed throws a tagged error the middleware
+    // translates into a 429 with the override-degraded hint, so a
+    // hardened threat model never serves the default quota during a
+    // Postgres outage.
+    if (isFailClosedMode()) {
+      throw new RateLimitLoaderFailedError(err);
+    }
+    rateLimitLoaderFailures.add(1, {
+      disposition: "fail_open",
+      "deploy.mode": process.env.ATLAS_DEPLOY_MODE ?? "self-hosted",
+    });
     log.warn(
       {
         err: err instanceof Error ? err.message : String(err),
@@ -165,9 +282,42 @@ interface RateLimitAuditMetadata {
   readonly weight: number;
   readonly retryAfterSec: number;
   readonly remaining: number;
+  /** Optional cause label so the audit row can pivot on `bucket_overflow`
+   *  (the default — bucket exhausted) vs `loader_failure` (the
+   *  fail-closed override-degraded path from #2183 item 4). Defaults to
+   *  `bucket_overflow` when omitted so existing callers stay unchanged. */
+  readonly reason?: "bucket_overflow" | "loader_failure";
 }
 
 function emitRateLimitAudit(meta: RateLimitAuditMetadata): void {
+  // Security-control visibility (#2183 item 3): the audit row IS the
+  // forensic signal for a rate-limit denial. When the internal-DB
+  // fire-and-forget circuit breaker is open, `logAdminAction` writes
+  // the pino line but the DB row is dropped. Without the explicit
+  // `log.error` + counter here, an operator scanning the audit table
+  // for `mcp_session.rate_limited` rows during an outage window would
+  // see a misleading dip in denials. Differentiating the log line
+  // (different message string, error level) lets the log stream pivot
+  // pick up the dropped rows separately from successful audits.
+  if (hasInternalDB() && isInternalCircuitOpen()) {
+    rateLimitAuditDropped.add(1, {
+      reason: "circuit_open",
+      "client.id": meta.clientId,
+      "tool.name": meta.toolName,
+      "deploy.mode": process.env.ATLAS_DEPLOY_MODE ?? "self-hosted",
+    });
+    log.error(
+      {
+        clientId: meta.clientId,
+        userId: meta.userId,
+        tool: meta.toolName,
+        limit: meta.limit,
+        retryAfterSec: meta.retryAfterSec,
+        reason: "circuit_open",
+      },
+      "rate_limit audit row dropped — internal DB circuit breaker open; pino line is the only trail",
+    );
+  }
   logAdminAction({
     actionType: ADMIN_ACTIONS.mcp_session.rateLimited,
     targetType: "mcp_session",
@@ -176,6 +326,7 @@ function emitRateLimitAudit(meta: RateLimitAuditMetadata): void {
       clientId: meta.clientId,
       userId: meta.userId,
       tool: meta.toolName,
+      reason: meta.reason ?? "bucket_overflow",
       ratelimitState: {
         limit: meta.limit,
         weight: meta.weight,

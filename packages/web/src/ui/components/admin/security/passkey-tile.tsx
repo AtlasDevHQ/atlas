@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Passkey enrollment tile, mounted inside `/admin/settings/security` next to
+ * Passkey enrollment tile, mounted inside `/admin/security` next to
  * the TOTP and backup-codes tiles.
  *
  * Click flow:
@@ -443,7 +443,7 @@ function PasskeyReauthDialog({
       // TOTP enabled. Re-auth via password alone won't refresh the session
       // in that case — Better Auth issues the new session only after the
       // 2FA challenge clears. Send the user to /login/two-factor with a
-      // callbackURL so they bounce straight back to /admin/settings/security
+      // callbackURL so they bounce straight back to /admin/security
       // after the challenge clears (see `two-factor/page.tsx` for the
       // same-origin allowlist on the redirect target).
       //
@@ -453,7 +453,7 @@ function PasskeyReauthDialog({
       if ((res.data as { twoFactorRedirect?: boolean } | null)?.twoFactorRedirect) {
         setPassword("");
         setBusy(false);
-        window.location.assign("/login/two-factor?callbackURL=/admin/settings/security");
+        window.location.assign("/login/two-factor?callbackURL=/admin/security");
         return;
       }
       setPassword("");

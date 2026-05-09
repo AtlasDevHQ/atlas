@@ -21,7 +21,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SecurityBuckets } from "../lib/admin-schemas";
 
 mock.module("next/navigation", () => ({
-  usePathname: () => "/admin/settings/security",
+  usePathname: () => "/admin/security",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));

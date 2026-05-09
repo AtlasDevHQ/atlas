@@ -89,14 +89,14 @@ describe("extractFetchError", () => {
     const res = mockResponse(403, {
       error: "mfa_enrollment_required",
       message: "Two-factor required.",
-      enrollmentUrl: "/admin/settings/security",
+      enrollmentUrl: "/admin/security",
     });
     const err = await extractFetchError(res);
     expect(err).toEqual({
       message: "Two-factor required.",
       status: 403,
       code: "mfa_enrollment_required",
-      enrollmentUrl: "/admin/settings/security",
+      enrollmentUrl: "/admin/security",
     });
   });
 

@@ -38,7 +38,7 @@ function GateTrigger({ enrollmentUrl }: { enrollmentUrl: string }) {
   return null;
 }
 
-function renderDialog(enrollmentUrl = "/admin/settings/security") {
+function renderDialog(enrollmentUrl = "/admin/security") {
   return render(
     <AtlasProvider
       config={{
@@ -86,7 +86,7 @@ describe("MfaEnrollmentDialog", () => {
   });
 
   test('"Set up second factor" routes to enrollmentUrl and clears gate state', async () => {
-    const { container } = renderDialog("/admin/settings/security");
+    const { container } = renderDialog("/admin/security");
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Set up second factor");
@@ -101,7 +101,7 @@ describe("MfaEnrollmentDialog", () => {
       fireEvent.click(enrollBtn!);
     });
 
-    expect(routerPush).toHaveBeenCalledWith("/admin/settings/security");
+    expect(routerPush).toHaveBeenCalledWith("/admin/security");
 
     // After click, dialog should close (gate.state cleared).
     await waitFor(() => {
@@ -148,7 +148,7 @@ describe("MfaEnrollmentDialog", () => {
           }}
         >
           <MfaGateProvider>
-            <GateTrigger enrollmentUrl="/admin/settings/security" />
+            <GateTrigger enrollmentUrl="/admin/security" />
             <MfaEnrollmentDialog />
           </MfaGateProvider>
         </AtlasProvider>,

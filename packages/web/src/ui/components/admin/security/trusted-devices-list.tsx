@@ -2,7 +2,7 @@
 
 /**
  * Per-user trust-grant list rendered below the passkey list on
- * `/admin/settings/security`. Driven off `GET /api/v1/admin/me/trusted-devices`
+ * `/admin/security`. Driven off `GET /api/v1/admin/me/trusted-devices`
  * via {@link useAdminFetch}; revoke fans out through {@link useAdminMutation}.
  *
  * Each row shows the derived label ("Mac · Safari"), a "This browser" badge

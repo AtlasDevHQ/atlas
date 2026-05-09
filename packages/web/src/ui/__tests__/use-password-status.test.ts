@@ -84,7 +84,7 @@ describe("usePasswordStatus discriminated result", () => {
   test('403 mfa_enrollment_required → kind: "mfa-required" with enrollmentUrl', async () => {
     globalThis.fetch = mockResp(403, {
       error: "mfa_enrollment_required",
-      enrollmentUrl: "/admin/settings/security",
+      enrollmentUrl: "/admin/security",
     });
 
     const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
@@ -92,7 +92,7 @@ describe("usePasswordStatus discriminated result", () => {
 
     expect(result.current.data).toEqual({
       kind: "mfa-required",
-      enrollmentUrl: "/admin/settings/security",
+      enrollmentUrl: "/admin/security",
     });
   });
 
@@ -115,7 +115,7 @@ describe("usePasswordStatus discriminated result", () => {
 
     expect(result.current.data).toEqual({
       kind: "mfa-required",
-      enrollmentUrl: "/admin/settings/security",
+      enrollmentUrl: "/admin/security",
     });
   });
 

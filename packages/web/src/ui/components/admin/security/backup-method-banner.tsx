@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Backup-method banner — top of `/admin/settings/security`.
+ * Backup-method banner — top of `/admin/security`.
  *
  * Renders when the calling user matches the lockout-risk profile:
  * exactly one passkey, no password, no TOTP. Losing the only

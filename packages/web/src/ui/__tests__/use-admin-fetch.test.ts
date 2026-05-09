@@ -693,7 +693,7 @@ describe("useAdminFetch → MfaGate dispatch", () => {
           JSON.stringify({
             error: "mfa_enrollment_required",
             message: "Two-factor required.",
-            enrollmentUrl: "/admin/settings/security",
+            enrollmentUrl: "/admin/security",
           }),
           { status: 403, headers: { "Content-Type": "application/json" } },
         ),
@@ -707,7 +707,7 @@ describe("useAdminFetch → MfaGate dispatch", () => {
     });
 
     expect(result.current.gate.state).not.toBeNull();
-    expect(result.current.gate.state!.enrollmentUrl).toBe("/admin/settings/security");
+    expect(result.current.gate.state!.enrollmentUrl).toBe("/admin/security");
     expect(result.current.fetched.error?.code).toBe("mfa_enrollment_required");
   });
 
@@ -730,7 +730,7 @@ describe("useAdminFetch → MfaGate dispatch", () => {
       expect(result.current.fetched.loading).toBe(false);
     });
 
-    expect(result.current.gate.state!.enrollmentUrl).toBe("/admin/settings/security");
+    expect(result.current.gate.state!.enrollmentUrl).toBe("/admin/security");
   });
 
   test("does NOT open the gate on non-MFA 403 (forbidden_role)", async () => {

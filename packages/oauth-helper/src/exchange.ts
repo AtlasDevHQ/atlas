@@ -41,6 +41,11 @@ export async function exchangeCode(
   params: ExchangeCodeParams,
   options?: ExchangeCodeOptions,
 ): Promise<TokenResponse> {
+  // Run the https guard BEFORE resolving the fetch impl. The validation
+  // is intrinsic to the helper's contract, not contingent on the wire
+  // layer — a test passing a stub `fetchImpl` for an `http://evil`
+  // endpoint should still get `invalid_token_endpoint`, not a synthetic
+  // happy-path 200 from the stub.
   validateTokenEndpoint(params.tokenEndpoint);
   const fetchImpl = options?.fetchImpl ?? fetch;
   const body = new URLSearchParams({

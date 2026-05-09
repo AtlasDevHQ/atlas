@@ -5,7 +5,10 @@ export interface PkceCodeChallenge {
   codeVerifier: string;
   /** SHA-256 of `codeVerifier`, base64url-encoded. Sent on `/authorize`. */
   codeChallenge: string;
-  /** Always `S256` — RFC 7636 §4.3 plain is forbidden by OAuth 2.1. */
+  /**
+   * Always `S256`. RFC 7636 §4.2 defines both `plain` and `S256`;
+   * OAuth 2.1 §4.1.1 forbids `plain` for new deployments.
+   */
   method: "S256";
 }
 

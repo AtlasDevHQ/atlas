@@ -23,8 +23,10 @@
  * This module imports nothing from `@modelcontextprotocol/sdk` — only
  * the standard browser/node OAuth + crypto primitives via the shared
  * `@atlas/oauth-helper`, which is bundled into the SDK at build time
- * (it is never resolved from npm). Anyone who never imports `mcp.ts`
- * pays nothing.
+ * (it is never resolved from npm). The published `.d.ts` does not
+ * import or re-export the helper package — the JSDoc references it,
+ * but TypeScript doesn't resolve those. Anyone who never imports
+ * `mcp.ts` pays nothing.
  */
 
 import {
@@ -39,19 +41,20 @@ import {
   register,
   validateIssuerUrl,
   validateTokenEndpoint,
+  type OAuthHelperErrorCode,
 } from "@atlas/oauth-helper";
 
 // ── Errors ────────────────────────────────────────────────────────────
 
 /**
- * SDK-specific error codes. The first eight values are 1:1 with
- * `@atlas/oauth-helper`'s `OAuthHelperErrorCode` (re-declared inline,
- * not re-exported, so the published `.d.ts` does not reference the
- * internal-only helper package — consumers of `@useatlas/sdk` install
- * cleanly without `@atlas/oauth-helper` in their dep graph). The
- * remaining values are popup / callback-handling codes the SDK alone
- * produces. The 1:1 alignment lets `liftHelper` re-throw a helper
- * error with `err.code as AtlasMcpErrorCode` — no remap table to drift.
+ * Error codes carried by `AtlasMcpError`. The first eight values are
+ * 1:1 with `@atlas/oauth-helper`'s `OAuthHelperErrorCode` (re-declared
+ * inline so the published `.d.ts` doesn't import the internal-only
+ * helper package). The next three (`callback_*`) are produced inside
+ * the SDK proper. The remaining popup codes (`popup_blocked`,
+ * `popup_closed`) are reserved for the React popup driver in
+ * `@useatlas/react`'s `use-mcp-connect`, which throws against this
+ * union; the SDK proper never throws those itself.
  */
 export type AtlasMcpErrorCode =
   | "invalid_api_url"
@@ -69,6 +72,19 @@ export type AtlasMcpErrorCode =
   | "popup_closed"
   | "grant_not_supported";
 
+/**
+ * Compile-time witness that `OAuthHelperErrorCode ⊂ AtlasMcpErrorCode`.
+ * If a future helper code arm doesn't exist on `AtlasMcpErrorCode`,
+ * `_HelperCodeIsSubset` resolves to `never` and the assignment fails
+ * the type check. Catches the drift class the `liftHelper` casts below
+ * implicitly assume.
+ */
+type _HelperCodeIsSubset = OAuthHelperErrorCode extends AtlasMcpErrorCode
+  ? true
+  : never;
+const _atlasMcpErrorCodeWitness: _HelperCodeIsSubset = true;
+void _atlasMcpErrorCodeWitness;
+
 export class AtlasMcpError extends Error {
   readonly code: AtlasMcpErrorCode;
   constructor(message: string, code: AtlasMcpErrorCode, options?: ErrorOptions) {
@@ -80,17 +96,22 @@ export class AtlasMcpError extends Error {
 
 /**
  * Wrap a helper call so any `OAuthHelperError` is re-thrown as an
- * `AtlasMcpError` with the same code (the helper's codes are a strict
- * subset of `AtlasMcpErrorCode`). Other throws propagate untouched.
+ * `AtlasMcpError` with the same code. The `_atlasMcpErrorCodeWitness`
+ * above proves the cast at compile time.
+ *
+ * Non-`OAuthHelperError` throws (e.g. a misconfigured `fetchImpl`
+ * panicking with a `TypeError`) bypass the typed-error contract by
+ * design — the helper layer is the only legitimate source of
+ * `OAuthHelperError`, so anything else is a programmer error worth
+ * surfacing with its original stack rather than coerced into a fake
+ * `AtlasMcpErrorCode`.
  */
 async function liftHelper<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
     if (err instanceof OAuthHelperError) {
-      throw new AtlasMcpError(err.message, err.code as AtlasMcpErrorCode, {
-        cause: err,
-      });
+      throw new AtlasMcpError(err.message, err.code, { cause: err });
     }
     throw err;
   }
@@ -101,9 +122,7 @@ function liftHelperSync<T>(fn: () => T): T {
     return fn();
   } catch (err) {
     if (err instanceof OAuthHelperError) {
-      throw new AtlasMcpError(err.message, err.code as AtlasMcpErrorCode, {
-        cause: err,
-      });
+      throw new AtlasMcpError(err.message, err.code, { cause: err });
     }
     throw err;
   }
@@ -175,9 +194,16 @@ export interface CompleteConnectOptions {
   clientId: string;
   /** Same `redirect_uri` you passed to `beginConnect`. */
   redirectUri: string;
-  /** From `beginConnect.tokenEndpoint` — skips a re-discover roundtrip. */
+  /**
+   * From `beginConnect.tokenEndpoint` — skips a re-discover roundtrip.
+   * Pass alongside `issuer`; passing only one re-discovers and ignores
+   * the partial input.
+   */
   tokenEndpoint?: string;
-  /** From `beginConnect.issuer` — used to verify the JWT's `iss` claim. */
+  /**
+   * From `beginConnect.issuer` — used to verify the JWT's `iss` claim.
+   * Pass alongside `tokenEndpoint`.
+   */
   issuer?: string;
   /** Test seam. */
   fetchImpl?: typeof fetch;
@@ -336,7 +362,9 @@ export async function completeConnect(
     // http token endpoint. The helper validates internally inside
     // `exchangeCode`, but checking here keeps the failure mode close to
     // the caller's `tokenEndpoint` input — easier to debug a typo'd
-    // override than a deep stack from inside the exchange.
+    // override than a deep stack from inside the exchange. Lives inside
+    // the outer `liftHelper(async () => …)` block so its sync throw is
+    // translated by the surrounding try/catch.
     validateTokenEndpoint(tokenEndpoint);
 
     const tokenResponse = await exchangeCode(
@@ -381,12 +409,27 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
     url,
     headers: { Authorization: `Bearer ${options.accessToken}` },
   };
-
-  if (options.client === "generic") {
-    return { kind: "bare", url: block.url, headers: block.headers };
-  }
   const name = options.serverName ?? SERVER_NAME_DEFAULT;
-  return { kind: "wrapped", mcpServers: { [name]: block } };
+
+  // Exhaustive switch on the discriminator — adding a new client to
+  // `McpClientId` without extending this dispatch fails compilation
+  // via `assertNever` rather than silently falling into the wrapped
+  // branch with the wrong shape.
+  switch (options.client) {
+    case "generic":
+      return { kind: "bare", url: block.url, headers: block.headers };
+    case "claude-desktop":
+    case "cursor":
+    case "continue":
+    case "chatgpt":
+      return { kind: "wrapped", mcpServers: { [name]: block } };
+    default:
+      return assertNever(options.client);
+  }
+}
+
+function assertNever(x: never): never {
+  throw new Error(`Unhandled MCP client id: ${String(x)}`);
 }
 
 // ── connectMachineToMachine ──────────────────────────────────────────
@@ -395,8 +438,9 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
  * Server-to-server flow using the OAuth `client_credentials` grant.
  *
  * Throws `AtlasMcpError(code: "grant_not_supported")` until the Atlas
- * OAuth provider exposes the grant. When the provider lands it, swap
- * this body for the live exchange — the public surface is fixed.
+ * OAuth provider exposes the grant. The public surface is fixed; when
+ * the provider lands the grant (tracking issue: see roadmap), swap
+ * this body for the live exchange without changing the type.
  */
 export async function connectMachineToMachine(
   _options: ConnectMachineToMachineOptions,

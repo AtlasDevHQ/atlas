@@ -1,6 +1,6 @@
 /**
  * `init --hosted` flow: OAuth 2.1 authorization-code-with-PKCE against the
- * hosted Atlas MCP endpoint (#2024 PR E).
+ * hosted Atlas MCP endpoint.
  *
  * ── Why loopback (RFC 8252) over device code (RFC 8628) ────────────────
  *
@@ -34,7 +34,7 @@
  * ── Where the protocol lives ───────────────────────────────────────────
  *
  * Discovery, DCR, PKCE, authorization-URL construction, token exchange,
- * the HTTPS-only token-endpoint guard (#2198), JWT-payload decode, and
+ * the HTTPS-only token-endpoint guard, JWT-payload decode, and
  * issuer enforcement are all in `@atlas/oauth-helper` — vendored into
  * `./_oauth-helper/` at install time so the published `@useatlas/mcp`
  * carries a self-contained copy. This file owns the loopback transport
@@ -54,7 +54,6 @@
  *   - `openBrowserImpl`      — browser launch (returns success/failure)
  *   - `serveImpl`            — loopback listener factory
  *   - `randomBytesImpl`      — PKCE verifier + state (deterministic asserts)
- *   - `nowImpl`              — for the 5-minute timeout
  *   - `consoleImpl`          — captures user-facing output
  */
 
@@ -69,6 +68,8 @@ import {
   generateState,
   register,
   validateIssuerUrl,
+  type Bearer,
+  type OAuthHelperErrorCode,
 } from "../_oauth-helper";
 
 // ── External shape contracts (test seams) ──────────────────────────────
@@ -131,13 +132,11 @@ export interface HostedFlowOptions {
 }
 
 /**
- * Branded `string` for OAuth bearer credentials. The brand carries no
- * runtime cost; its purpose is to surface bearer-handling code in code
- * review (`accessToken: Bearer` next to a `console.log` is a smell) and
- * to keep the secret-vs-non-secret distinction visible in the type, not
- * just in trailing comments.
+ * Re-exported from `@atlas/oauth-helper` so existing CLI consumers
+ * importing `Bearer` from this module keep working — the canonical
+ * brand now lives in the helper, shared with `@useatlas/sdk`.
  */
-export type Bearer = string & { readonly __brand: "Bearer" };
+export type { Bearer };
 
 export interface HostedFlowResult {
   /** OAuth 2.1 access token (signed JWT). Treat as a credential. */
@@ -147,7 +146,7 @@ export interface HostedFlowResult {
   /** The `https://atlas.useatlas.dev/workspace_id` claim from the JWT. */
   workspaceId: string;
   /**
-   * The `https://atlas.useatlas.dev/workspace_ids` plural claim (#2073),
+   * The `https://atlas.useatlas.dev/workspace_ids` plural claim,
    * if present in the JWT. Atlas mints this for users belonging to more
    * than one workspace; the CLI uses it to decide whether to prompt for
    * single-vs-multi-workspace setup at write time. Empty array (or
@@ -161,14 +160,13 @@ export interface HostedFlowResult {
 // ── Errors ─────────────────────────────────────────────────────────────
 
 /**
- * Stable error code for tests + exit-code mapping. The first ten values
- * are 1:1 with `@atlas/oauth-helper`'s `OAuthHelperErrorCode` (the
- * helper layer maps to `invalid_token_endpoint` — new in #2203 — and
- * to the eight protocol primitives' codes; the CLI surfaces all of
- * them under `HostedFlowError` so the exit-code switch in
- * `bin/cli.ts` and the existing test suite continue to operate on a
- * single union). The remaining values are loopback / browser / callback
- * codes the CLI alone produces.
+ * Stable error code for tests + exit-code mapping. The first eight
+ * values are 1:1 with `@atlas/oauth-helper`'s `OAuthHelperErrorCode`
+ * — the helper's HTTPS-only token-endpoint guard surfaces here as
+ * `invalid_token_endpoint` so the CLI's exit-code switch and the
+ * existing test suite continue to operate on a single union. The
+ * remaining values are loopback / browser / callback codes the CLI
+ * alone produces.
  */
 export type HostedFlowErrorCode =
   | "invalid_api_url"
@@ -187,6 +185,19 @@ export type HostedFlowErrorCode =
   | "callback_oauth_error"
   | "callback_method_not_allowed";
 
+/**
+ * Compile-time witness that `OAuthHelperErrorCode ⊂ HostedFlowErrorCode`.
+ * If a future helper code arm doesn't exist on `HostedFlowErrorCode`,
+ * `_HelperCodeIsSubset` resolves to `never` and the assignment fails
+ * the type check. Catches the drift class the `liftHelper` casts below
+ * implicitly assume.
+ */
+type _HelperCodeIsSubset = OAuthHelperErrorCode extends HostedFlowErrorCode
+  ? true
+  : never;
+const _hostedFlowErrorCodeWitness: _HelperCodeIsSubset = true;
+void _hostedFlowErrorCodeWitness;
+
 export class HostedFlowError extends Error {
   constructor(
     message: string,
@@ -200,18 +211,23 @@ export class HostedFlowError extends Error {
 
 /**
  * Re-throw any `OAuthHelperError` as a `HostedFlowError` carrying the
- * same code. The helper's codes are a strict subset of
- * `HostedFlowErrorCode`, so the cast is safe — the exhaustive union
- * above is the compile-time witness. Other throws propagate untouched.
+ * same code. `_hostedFlowErrorCodeWitness` above proves the cast at
+ * compile time.
+ *
+ * Non-`OAuthHelperError` throws (e.g. a misconfigured `fetchImpl` or
+ * `serveImpl` panicking with a `TypeError`) bypass the typed-error
+ * contract by design — the helper layer is the only legitimate source
+ * of `OAuthHelperError`, so anything else is a programmer error worth
+ * surfacing with its original stack rather than coerced into a fake
+ * `HostedFlowErrorCode`. The CLI's outer catch in `bin/cli.ts` prints
+ * the raw stack in that branch.
  */
 async function liftHelper<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
     if (err instanceof OAuthHelperError) {
-      throw new HostedFlowError(err.message, err.code as HostedFlowErrorCode, {
-        cause: err,
-      });
+      throw new HostedFlowError(err.message, err.code, { cause: err });
     }
     throw err;
   }
@@ -222,9 +238,7 @@ function liftHelperSync<T>(fn: () => T): T {
     return fn();
   } catch (err) {
     if (err instanceof OAuthHelperError) {
-      throw new HostedFlowError(err.message, err.code as HostedFlowErrorCode, {
-        cause: err,
-      });
+      throw new HostedFlowError(err.message, err.code, { cause: err });
     }
     throw err;
   }
@@ -332,10 +346,10 @@ export async function runHostedAuthFlow(
     const code = await callbackResolver.promise;
 
     // Step 6 — exchange the code. The helper validates the token
-    // endpoint as https-or-loopback (#2198 hardening) before posting,
-    // so a malicious DCR response advertising `token_endpoint:
-    // "http://evil/token"` cannot smuggle the auth code over plaintext
-    // — that protection now reaches the CLI for free as part of #2203.
+    // endpoint as https-or-loopback before posting, so a malicious DCR
+    // response advertising `token_endpoint: "http://evil/token"` cannot
+    // smuggle the auth code over plaintext — the guard lives in the
+    // helper, so both consumers (SDK + CLI) are covered identically.
     const tokenResponse = await liftHelper(() =>
       exchangeCode(
         {
@@ -359,7 +373,7 @@ export async function runHostedAuthFlow(
     );
     liftHelperSync(() => enforceIssuer(claims, metadata.issuer));
     const workspaceId = extractWorkspaceClaim(claims);
-    const workspaceIds = extractWorkspacesClaim(claims);
+    const workspaceIds = extractWorkspacesClaim(claims, cli);
 
     return {
       accessToken: tokenResponse.access_token as Bearer,
@@ -398,21 +412,38 @@ function extractWorkspaceClaim(payload: Record<string, unknown>): string {
 }
 
 /**
- * Extract the optional plural workspace claim (#2073). Returns an empty
- * array when the claim is missing, malformed, or contains non-string
- * entries. Unlike the singular claim, this one is OPTIONAL — Atlas only
- * mints it for users belonging to more than one workspace, so its
- * absence is the common case (single-workspace users) and not a fatal
- * error. Malformed values silently degrade to empty rather than
- * `missing_workspace_claim`, since the CLI's worst case under "no plural
- * claim" is "skip the prompt" — strictly safer than failing the install.
+ * Extract the optional plural workspace claim. Returns an empty array
+ * when the claim is missing entirely (single-workspace users — Atlas
+ * only mints it for users belonging to more than one workspace, so
+ * its absence is the common case and not a fatal error). When the
+ * claim is *present but malformed* (not an array, or entries that
+ * aren't non-empty strings), we degrade to empty too — failing the
+ * install over a server-side schema bug is strictly worse than skipping
+ * the multi-workspace prompt — but we surface a warning via `cli.error`
+ * so a degraded run leaves a diagnostic breadcrumb instead of a silent
+ * downgrade.
  */
-function extractWorkspacesClaim(payload: Record<string, unknown>): string[] {
+function extractWorkspacesClaim(
+  payload: Record<string, unknown>,
+  cli: ConsoleImpl,
+): string[] {
   const raw = payload[WORKSPACES_CLAIM];
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    cli.error(
+      `[atlas-mcp init] ${WORKSPACES_CLAIM} claim was present but not an array (got ${typeof raw}); falling back to single-workspace setup.`,
+    );
+    return [];
+  }
+  const filtered = raw.filter(
     (entry): entry is string => typeof entry === "string" && entry.length > 0,
   );
+  if (filtered.length !== raw.length) {
+    cli.error(
+      `[atlas-mcp init] ${WORKSPACES_CLAIM} claim contained ${raw.length - filtered.length} non-string or empty entr${raw.length - filtered.length === 1 ? "y" : "ies"}; using only the ${filtered.length} valid entr${filtered.length === 1 ? "y" : "ies"}.`,
+    );
+  }
+  return filtered;
 }
 
 // ── Loopback listener — handler factory + default Bun.serve impl ───────
@@ -537,6 +568,10 @@ function createCallbackResolver(
   };
 
   const cancel = () => {
+    // After a happy-path `resolve(code)`, `cancel()` is a no-op
+    // (`settled` is already true from `resolve`). The reject below
+    // only fires on the genuine abort path — an early failure in
+    // register/exchange/extract that throws before the callback arrives.
     if (settled) return;
     settled = true;
     clearTimeout(timer);

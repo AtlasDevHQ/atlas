@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./errors": "./src/errors.ts",
+    "./brands": "./src/brands.ts",
     "./discover": "./src/discover.ts",
     "./register": "./src/register.ts",
     "./pkce": "./src/pkce.ts",

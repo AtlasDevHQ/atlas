@@ -3,16 +3,10 @@
 /**
  * `/settings/profile` → Identity section.
  *
- * Read + edit the signed-in user's display name. Email is intentionally
- * read-only — Atlas is B2B; email is the org-managed account anchor (often
- * SSO / SCIM-provisioned, always the audit trail key). Letting end-users
- * mutate their own email is a consumer pattern that breaks org provisioning
- * and forensic queries. If a workspace genuinely needs an email rotation it
- * goes through admin tooling, not self-service.
- *
- * Name persistence goes through Better Auth's `authClient.updateUser({ name })`
- * — same path the admin user-edit flow uses; the session refetches automatically
- * after success so the avatar dropdown picks up the new name without a reload.
+ * Email is intentionally read-only — Atlas is B2B; email is the org-managed
+ * account anchor (often SSO / SCIM-provisioned, always the audit trail key).
+ * Letting end-users mutate their own email is a consumer pattern that breaks
+ * org provisioning and forensic queries.
  */
 
 import { useEffect, useState } from "react";
@@ -39,16 +33,25 @@ export function IdentitySection() {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // Sync local input with session state on first load + remote updates
-  // (e.g. switching org refetches the session).
-  useEffect(() => {
-    if (user?.name != null && !saving) {
-      setName(user.name);
-    }
-  }, [user?.name, saving]);
-
   const trimmed = name.trim();
   const dirty = trimmed.length > 0 && trimmed !== (user?.name ?? "").trim();
+
+  // Resync from session ONLY when the user isn't actively editing — `!dirty`
+  // (vs. `!saving`) prevents an unrelated session refetch landing mid-edit
+  // from clobbering what they're typing.
+  useEffect(() => {
+    if (user?.name != null && !dirty && !saving) {
+      setName(user.name);
+    }
+  }, [user?.name, dirty, saving]);
+
+  function handleNameChange(value: string) {
+    setName(value);
+    // Editing dismisses any stale success/error banner so the form's state
+    // always reflects the *current* unsubmitted draft.
+    if (error) setError(null);
+    if (savedAt != null) setSavedAt(null);
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -58,9 +61,9 @@ export function IdentitySection() {
     setError(null);
     setSavedAt(null);
     try {
-      // `updateUser` is part of Better Auth's core React client surface but
-      // isn't on the duck-typed AtlasAuthClient interface. Cast through the
-      // narrow shape we actually call with.
+      // Cast: `updateUser` exists on Better Auth's client but isn't on
+      // AtlasAuthClient's duck-typed surface and the plugin-wrapped client
+      // erases the inferred shape.
       const updateUser = (authClient as unknown as {
         updateUser: (opts: { name: string }) => Promise<UpdateUserResult>;
       }).updateUser;
@@ -73,7 +76,9 @@ export function IdentitySection() {
       session.refetch?.();
       setSavedAt(Date.now());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[settings] updateUser threw", message);
+      setError(message);
     } finally {
       setSaving(false);
     }
@@ -93,7 +98,7 @@ export function IdentitySection() {
           <Input
             id="profile-name"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => handleNameChange(e.target.value)}
             placeholder="Add a display name"
             maxLength={120}
             autoComplete="name"

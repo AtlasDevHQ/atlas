@@ -3,13 +3,11 @@
 /**
  * `/settings/profile` → Change password section.
  *
- * Posts to the existing self-service `POST /api/v1/admin/me/password` endpoint
- * — same handler the forced-change `<ChangePasswordDialog>` uses, but rendered
- * inline as a user-initiated form (no current-password prefill, no force-open).
- *
  * Hidden when auth mode is anything but managed: simple-key / byot users
- * authenticate without a Better Auth password row, so the change-password
- * call would always 404.
+ * have no Better Auth password row, so the change-password call would 404.
+ * Probe `/api/v1/admin/me/password-status` once on mount and short-circuit
+ * to nothing on a non-managed reply rather than render a form that always
+ * errors.
  */
 
 import { useState } from "react";
@@ -18,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAtlasConfig } from "@/ui/context";
+import { usePasswordStatus } from "@/ui/hooks/use-password-status";
 import { SectionHeading } from "@/ui/components/admin/compact";
 
 const MIN_PASSWORD = 8;
@@ -25,6 +24,15 @@ const MIN_PASSWORD = 8;
 export function PasswordSection() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+
+  // The probe returns { kind: "allowed" } in managed auth and 404s in
+  // simple-key / byot deployments — render nothing in either non-allowed
+  // case rather than a form that can't succeed. `mfa-required` is treated
+  // as allowed: the user still needs to be able to rotate their password
+  // even while their MFA enrollment is pending.
+  const passwordStatus = usePasswordStatus(true);
+  const canChangePassword =
+    passwordStatus.data?.kind === "allowed" || passwordStatus.data?.kind === "mfa-required";
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -70,27 +78,31 @@ export function PasswordSection() {
         body: JSON.stringify({ currentPassword, newPassword }),
       });
       if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as {
-          message?: string;
-          error?: string;
-        };
-        if (res.status === 404) {
-          setError(
-            "Password changes aren't available in this auth mode. Contact your administrator.",
-          );
-        } else {
-          setError(data.message ?? `Failed to change password (HTTP ${res.status}).`);
-        }
+        // Server may return non-JSON for some error paths (HTML pages,
+        // empty bodies). Fall back to the generic HTTP-status message but
+        // log the parse failure so flaky upstream replies aren't invisible.
+        const data = (await res.json().catch((err) => {
+          console.warn("[settings] password error body parse failed", err);
+          return {};
+        })) as { message?: string };
+        setError(data.message ?? `Failed to change password (HTTP ${res.status}).`);
         return;
       }
       reset();
       setSavedAt(Date.now());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[settings] change-password threw", message);
+      setError(message);
     } finally {
       setSaving(false);
     }
   }
+
+  // Defer render until the auth-mode probe resolves — a flash of "change
+  // password" that disappears on the next render is worse than waiting.
+  if (passwordStatus.isPending) return null;
+  if (!canChangePassword) return null;
 
   return (
     <section>

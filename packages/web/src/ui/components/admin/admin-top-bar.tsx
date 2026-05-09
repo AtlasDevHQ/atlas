@@ -23,16 +23,16 @@ export function AdminTopBar() {
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background px-4 transition-[height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <SidebarTrigger className="-ml-1" />
         <Separator orientation="vertical" className="mr-1 h-4" />
-        <Breadcrumb>
+        <Breadcrumb className="min-w-0 flex-1">
           <BreadcrumbList className="flex-nowrap">
-            <BreadcrumbItem>
+            <BreadcrumbItem className="shrink-0">
               <OrgSwitcher variant="inline" />
             </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
+            <BreadcrumbSeparator className="shrink-0" />
+            <BreadcrumbItem className="shrink-0">
               {crumb.section ? (
                 <BreadcrumbLink asChild>
                   <Link href="/admin">Admin</Link>
@@ -41,19 +41,27 @@ export function AdminTopBar() {
                 <BreadcrumbPage>Admin Console</BreadcrumbPage>
               )}
             </BreadcrumbItem>
+            {/*
+              Mobile (< sm): hide the intermediate section crumb so the
+              page label has room next to the avatar. The "Admin" link
+              still gets users back to the overview, and the active
+              sidebar item supplies the section context.
+            */}
             {crumb.section && (
               <>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem>
+                <BreadcrumbSeparator className="hidden shrink-0 sm:flex" />
+                <BreadcrumbItem className="hidden shrink-0 sm:flex">
                   <span className="text-sm text-muted-foreground">{crumb.section}</span>
                 </BreadcrumbItem>
               </>
             )}
             {crumb.page && (
               <>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem>
-                  <BreadcrumbPage className="max-w-[14rem] truncate">{crumb.page}</BreadcrumbPage>
+                <BreadcrumbSeparator className="shrink-0" />
+                <BreadcrumbItem className="min-w-0">
+                  <BreadcrumbPage className="block max-w-[8rem] truncate sm:max-w-[14rem]">
+                    {crumb.page}
+                  </BreadcrumbPage>
                 </BreadcrumbItem>
               </>
             )}

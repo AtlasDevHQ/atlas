@@ -105,18 +105,19 @@ export function AdminSidebar() {
     .filter((group) => group.items.length > 0);
 
   const showCustomLogo = branding?.logoUrl;
-  const headerTitle = branding?.hideAtlasBranding
-    ? (branding.logoText || "Admin")
-    : (branding?.logoText || "Atlas");
-  const headerSubtitle = branding?.hideAtlasBranding ? "" : "Admin Console";
 
   return (
     <Sidebar collapsible="icon">
+      {/*
+        Header is logo-only — workspace name + "Admin Console" surface live
+        in the top-bar breadcrumb (#2176). Duplicating them here was the
+        redundancy the redesign was meant to remove.
+      */}
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
-              <Link href="/admin">
+            <SidebarMenuButton size="lg" asChild tooltip="Admin home">
+              <Link href="/admin" aria-label="Admin home">
                 {showCustomLogo ? (
                   <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-muted">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -133,10 +134,6 @@ export function AdminSidebar() {
                     </svg>
                   </div>
                 )}
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-semibold">{headerTitle}</span>
-                  {headerSubtitle && <span className="truncate text-xs">{headerSubtitle}</span>}
-                </div>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

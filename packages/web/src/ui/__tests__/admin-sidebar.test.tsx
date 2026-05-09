@@ -103,10 +103,14 @@ describe("AdminSidebar", () => {
     expect(container.textContent).toContain("Back to Chat");
   });
 
-  test("renders Atlas branding", () => {
+  test("sidebar header renders the logo affordance, not duplicated workspace text", () => {
+    // Workspace name + "Admin Console" live in the top-bar breadcrumb now
+    // (#2176). The sidebar header is logo-only — the link still navigates
+    // home but doesn't repeat the labels.
     const { container } = render(<AdminSidebar />, { wrapper: Wrapper });
-    expect(container.textContent).toContain("Atlas");
-    expect(container.textContent).toContain("Admin Console");
+    const homeLink = container.querySelector('a[aria-label="Admin home"]');
+    expect(homeLink).not.toBeNull();
+    expect(homeLink?.getAttribute("href")).toBe("/admin");
   });
 
   test("renders overview and back-to-chat hrefs", () => {

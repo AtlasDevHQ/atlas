@@ -3,19 +3,14 @@
 /**
  * `/settings/profile` → Active sessions section.
  *
- * Lists the signed-in user's own sessions via `GET /api/v1/sessions` (the
- * user-scoped self-service route, distinct from the admin-wide
- * `/api/v1/admin/sessions` which is org-wide). Per-row revoke calls
- * `DELETE /api/v1/sessions/:id`; "Sign out everywhere" iterates the
- * non-current rows so a single network failure on one session doesn't
- * abandon the rest.
- *
- * The current session is identified by `session.data.session.id`. Better
- * Auth doesn't return whether a row is the current one in the list payload,
- * so the comparison happens client-side.
+ * Lists the signed-in user's own sessions via `GET /api/v1/sessions` (user-
+ * scoped; distinct from the org-wide `/api/v1/admin/sessions`). Bulk
+ * sign-out uses `Promise.allSettled` so one failed revoke doesn't abandon
+ * the rest. Better Auth doesn't flag the current session in the list, so
+ * the comparison is client-side against `session.data.session.id`.
  */
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,9 +35,9 @@ import { SectionHeading } from "@/ui/components/admin/compact";
 
 const SessionRowSchema = z.object({
   id: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  expiresAt: z.string(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
   ipAddress: z.string().nullable(),
   userAgent: z.string().nullable(),
 });
@@ -65,46 +60,49 @@ function formatDate(value: string): string {
   });
 }
 
+// Order matters: Edge before Chrome (Edge UA contains "Chrome"); Chrome
+// before Safari (Chrome UA contains "Safari").
+const BROWSER_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/Edg\//, "Edge"],
+  [/Firefox\//, "Firefox"],
+  [/Chrome\//, "Chrome"],
+  [/Safari\//, "Safari"],
+];
+
+const OS_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/iPhone|iPad|iPod/, "iOS"],
+  [/Android/, "Android"],
+  [/Windows/, "Windows"],
+  [/Mac OS X/, "macOS"],
+  [/Linux/, "Linux"],
+];
+
 /**
- * Pull a friendly device label out of the user-agent string.
- * Browser detection is intentionally narrow — we only care about the most
- * common four (Safari, Chrome, Firefox, Edge); anything else falls through
- * to "Browser" so we don't render a wall of UA cruft.
+ * Friendly device label from a user-agent. Detection is intentionally
+ * narrow — anything outside the common four browsers / five OSes falls
+ * through to "Browser" / "Unknown" so the list never renders raw UA cruft.
  */
 export function summarizeUserAgent(ua: string | null): string {
   if (!ua) return "Unknown device";
-  const browser = (() => {
-    if (/Edg\//.test(ua)) return "Edge";
-    if (/Firefox\//.test(ua)) return "Firefox";
-    if (/Chrome\//.test(ua) && !/Edg\//.test(ua)) return "Chrome";
-    if (/Safari\//.test(ua) && !/Chrome\//.test(ua)) return "Safari";
-    return "Browser";
-  })();
-  const os = (() => {
-    if (/iPhone|iPad|iPod/.test(ua)) return "iOS";
-    if (/Android/.test(ua)) return "Android";
-    if (/Windows/.test(ua)) return "Windows";
-    if (/Mac OS X/.test(ua)) return "macOS";
-    if (/Linux/.test(ua)) return "Linux";
-    return "Unknown";
-  })();
+  const browser = BROWSER_PATTERNS.find(([re]) => re.test(ua))?.[1] ?? "Browser";
+  const os = OS_PATTERNS.find(([re]) => re.test(ua))?.[1] ?? "Unknown";
   return `${os} · ${browser}`;
 }
 
 export function SessionsSection() {
   const session = authClient.useSession();
-  // The session payload carries a `session.id` field at runtime; cast to
-  // read it without widening AtlasAuthClient. May be undefined while the
-  // session is still loading.
+  // Better Auth's typed session covers `id` as a base field, but the
+  // plugin-wrapped client occasionally erases the inferred shape — narrow
+  // here without leaking the cast across the file.
   const currentSessionId = (session.data?.session as { id?: string } | undefined)?.id;
 
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/sessions", {
     schema: SessionsResponseSchema,
   });
 
-  const sessions = useMemo<SessionRow[]>(() => data?.sessions ?? [], [data]);
+  const sessions: SessionRow[] = data?.sessions ?? [];
 
-  const { mutate: revokeMutate, error: revokeError } = useAdminMutation<{
+  const { mutate: revokeMutate, errorFor } = useAdminMutation<{
     success: boolean;
   }>({
     method: "DELETE",
@@ -132,8 +130,11 @@ export function SessionsSection() {
       const results = await Promise.allSettled(
         targets.map((s) => revokeMutate({ path: `/api/v1/sessions/${s.id}`, itemId: s.id })),
       );
+      // `useAdminMutation.mutate()` resolves with `{ ok: false }` on HTTP
+      // failure rather than rejecting — Promise.allSettled would otherwise
+      // count every failure as a fulfilled (success) entry.
       const failed = results.filter(
-        (r): r is PromiseRejectedResult => r.status === "rejected",
+        (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok),
       ).length;
       if (failed > 0) {
         setBulkError(`Couldn't sign out ${failed} of ${targets.length} sessions.`);
@@ -175,55 +176,61 @@ export function SessionsSection() {
               {sessions.map((s) => {
                 const isCurrent = s.id === currentSessionId;
                 const isRevoking = revokingId === s.id;
+                const rowError = errorFor(s.id);
                 return (
                   <li
                     key={s.id}
-                    className="flex items-start justify-between gap-3 px-3 py-3"
+                    className="flex flex-col gap-1 px-3 py-3"
                   >
-                    <div className="flex min-w-0 items-start gap-3">
-                      <Monitor className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
-                      <div className="min-w-0 space-y-0.5">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium">
-                            {summarizeUserAgent(s.userAgent)}
-                          </span>
-                          {isCurrent && (
-                            <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
-                              This session
-                            </Badge>
-                          )}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <Monitor className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">
+                              {summarizeUserAgent(s.userAgent)}
+                            </span>
+                            {isCurrent && (
+                              <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
+                                This session
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {s.ipAddress ?? "Unknown IP"} · last active {formatDate(s.updatedAt)}
+                          </p>
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          {s.ipAddress ?? "Unknown IP"} · last active {formatDate(s.updatedAt)}
-                        </p>
                       </div>
+                      {!isCurrent && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => { void handleRevoke(s.id); }}
+                          disabled={isRevoking}
+                          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          aria-label={`Revoke ${summarizeUserAgent(s.userAgent)}`}
+                        >
+                          {isRevoking ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="size-3.5" />
+                          )}
+                        </Button>
+                      )}
                     </div>
-                    {!isCurrent && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => { void handleRevoke(s.id); }}
-                        disabled={isRevoking}
-                        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        aria-label={`Revoke ${summarizeUserAgent(s.userAgent)}`}
+                    {rowError && (
+                      <p
+                        role="alert"
+                        className="ml-7 text-xs text-destructive"
                       >
-                        {isRevoking ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="size-3.5" />
-                        )}
-                      </Button>
+                        {rowError.message ?? "Couldn't revoke this session."}
+                      </p>
                     )}
                   </li>
                 );
               })}
             </ul>
 
-            {revokeError && (
-              <p role="alert" className="text-sm text-destructive">
-                {revokeError.message ?? "Couldn't revoke session."}
-              </p>
-            )}
             {bulkError && (
               <p role="alert" className="text-sm text-destructive">
                 {bulkError}

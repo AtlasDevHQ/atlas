@@ -88,9 +88,15 @@ export interface PasskeyTileProps {
   hasPasskey: boolean;
   /** Called after a successful addPasskey + name persistence so the parent can refetch the list. */
   onChange?: () => void;
+  /** Where to bounce after a 2FA challenge during re-auth. Defaults to `/admin/security` for back-compat; `/settings/profile` should pass its own path so non-admins don't land on a 403 page. */
+  reauthRedirectTo?: string;
 }
 
-export function PasskeyTile({ hasPasskey, onChange }: PasskeyTileProps) {
+export function PasskeyTile({
+  hasPasskey,
+  onChange,
+  reauthRedirectTo = "/admin/security",
+}: PasskeyTileProps) {
   const support = useWebAuthnSupported();
   const session = authClient.useSession();
   const userEmail =
@@ -340,6 +346,7 @@ export function PasskeyTile({ hasPasskey, onChange }: PasskeyTileProps) {
       <PasskeyReauthDialog
         open={reauthOpen}
         email={userEmail}
+        reauthRedirectTo={reauthRedirectTo}
         onCancel={() => setReauthOpen(false)}
         onSuccess={handleReauthSuccess}
       />
@@ -372,11 +379,13 @@ export function PasskeyTile({ hasPasskey, onChange }: PasskeyTileProps) {
 function PasskeyReauthDialog({
   open,
   email,
+  reauthRedirectTo,
   onCancel,
   onSuccess,
 }: {
   open: boolean;
   email: string | null;
+  reauthRedirectTo: string;
   onCancel: () => void;
   onSuccess: () => Promise<void> | void;
 }) {
@@ -443,9 +452,9 @@ function PasskeyReauthDialog({
       // TOTP enabled. Re-auth via password alone won't refresh the session
       // in that case — Better Auth issues the new session only after the
       // 2FA challenge clears. Send the user to /login/two-factor with a
-      // callbackURL so they bounce straight back to /admin/security
-      // after the challenge clears (see `two-factor/page.tsx` for the
-      // same-origin allowlist on the redirect target).
+      // callbackURL so they bounce straight back where they started after
+      // the challenge clears (see `two-factor/page.tsx` for the same-origin
+      // allowlist on the redirect target).
       //
       // Reset busy/password BEFORE assigning so a navigation that gets
       // blocked (popup blocker, CSP, an extension intercepting) doesn't
@@ -453,7 +462,7 @@ function PasskeyReauthDialog({
       if ((res.data as { twoFactorRedirect?: boolean } | null)?.twoFactorRedirect) {
         setPassword("");
         setBusy(false);
-        window.location.assign("/login/two-factor?callbackURL=/admin/security");
+        window.location.assign(`/login/two-factor?callbackURL=${encodeURIComponent(reauthRedirectTo)}`);
         return;
       }
       setPassword("");

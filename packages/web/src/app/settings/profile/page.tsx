@@ -1,24 +1,9 @@
 "use client";
 
 /**
- * Settings → Profile (#2255).
- *
- * User-scoped settings page surfaced from the avatar dropdown on both the chat
- * and admin surfaces. Every section is per-user (no admin role required) — the
- * MFA tiles reuse the same components as `/admin/security` because the
- * underlying endpoints (`/api/v1/admin/me/*`, `/api/v1/sessions`) are
- * authenticated-only, not admin-gated.
- *
- * Sections, top to bottom:
- *
- *   1. Identity     — display name + email
- *   2. Password     — change password (managed-auth only)
- *   3. Security     — passkeys, TOTP, backup codes, trusted devices
- *   4. Sessions     — active sessions + sign-out-everywhere
- *
- * The MFA wrapper here intentionally leans on the same components admins see
- * on `/admin/security` so a feature added there shows up for end-users too,
- * without a parallel maintenance surface.
+ * Per-user settings (no admin role required). MFA tiles reuse
+ * /admin/security components — the underlying endpoints are auth-only,
+ * not admin-gated, so a feature added there shows up here for free.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -128,7 +113,11 @@ export default function ProfilePage() {
             <BackupMethodBanner onAddPasskey={handleEnrollSecondPasskey} />
 
             <div ref={passkeyTileRef}>
-              <PasskeyTile hasPasskey={hasPasskey} onChange={handlePasskeyChange} />
+              <PasskeyTile
+                hasPasskey={hasPasskey}
+                onChange={handlePasskeyChange}
+                reauthRedirectTo="/settings/profile"
+              />
             </div>
 
             <TwoFactorSetup enabled={totpEnabled} onChange={handleTotpChange} />

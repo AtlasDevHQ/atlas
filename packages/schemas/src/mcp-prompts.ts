@@ -96,17 +96,61 @@ export const PromptArgumentSchema = z.object({
 export type PromptArgumentSpec = z.infer<typeof PromptArgumentSchema>;
 
 /**
- * Workspace-shaped prompt list entry. `source` lets the preview block
- * bucket by origin without a name-prefix heuristic; the SDK
- * `prompts/list` shape strips the field at the surface.
+ * Workspace-shaped prompt list entry. Modeled as a discriminated union
+ * to lift the producer-side invariant "only `source: \"builtin\"` ever
+ * has args" (enforced today by the four private constructors in
+ * `packages/mcp/src/prompts/listing.ts`) to a compile-time fact.
+ *
+ * Two non-obvious choices to flag:
+ *
+ *   - `arguments: z.tuple([])` on the derived arm rather than
+ *     `z.array(PromptArgumentSchema).max(0)`. Only the tuple form
+ *     infers the TS type as `[]` (empty tuple); `.max(0)` keeps
+ *     `PromptArgumentSpec[]` and would let `arguments: [{...}]`
+ *     type-check while only failing at runtime — defeating the lift.
+ *   - Two arms (one literal `"builtin"`, one `z.enum([...derived])`)
+ *     instead of four single-literal arms. Three sources share an
+ *     identical structural shape (no caller-supplied parameters), so
+ *     collapsing avoids quadruplicating `name` / `description`. The
+ *     `_SourcesCovered` witness below pins the second arm's enum
+ *     against `PROMPT_SOURCES` so a 5th source fails type-check, not
+ *     runtime parse.
+ *
+ * JSON payloads accepted by the previous flat schema still validate
+ * (the producer always honored the invariant). The OpenAPI extraction
+ * does change — flat object → `oneOf` — which is a strict improvement
+ * for clients generated from the spec.
  */
-export const PromptListEntrySchema = z.object({
+const PromptListEntryBuiltinSchema = z.object({
+  source: z.literal("builtin"),
   name: z.string().min(1),
   description: z.string().optional(),
   arguments: z.array(PromptArgumentSchema),
-  source: PromptSourceSchema,
 });
+
+const PromptListEntryDerivedSchema = z.object({
+  source: z.enum(["canonical", "semantic", "library"]),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  arguments: z.tuple([]),
+});
+
+export const PromptListEntrySchema = z.discriminatedUnion("source", [
+  PromptListEntryBuiltinSchema,
+  PromptListEntryDerivedSchema,
+]);
 export type PromptListEntry = z.infer<typeof PromptListEntrySchema>;
+
+// Bidirectional drift guard: every value in `PROMPT_SOURCES` must be
+// representable by some arm of the discriminated union. Adding
+// `"plugin"` (or any other 5th source) to `PROMPT_SOURCES` without
+// extending the derived arm's enum (or adding a third arm) fails this
+// assignment at type-check time — same posture as `_TogglesArrayCovers`
+// above. Without this witness, the new value would only surface at
+// runtime parse via `safeParse` failure on the route boundary.
+type _SourcesCovered = PromptSource extends PromptListEntry["source"] ? true : never;
+const _sourcesCovered: _SourcesCovered = true;
+void _sourcesCovered;
 
 /**
  * Canonical-prompts gate envelope. Modelled as a flat `ZodObject`

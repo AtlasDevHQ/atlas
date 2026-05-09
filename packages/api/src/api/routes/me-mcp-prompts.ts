@@ -109,17 +109,33 @@ meMcpPrompts.openapi(listMcpPromptsRoute, async (c) => {
         listMcpPrompts({ workspaceId }),
       );
 
-      // Spread to drop the listing module's `readonly` shape — Hono's
-      // `c.json` types want mutable arrays. The copy is one shallow
-      // allocation; entries are already plain objects.
+      // Two concerns combined in this rebuild:
+      //   1. `c.json` wants mutable arrays — the listing module returns
+      //      `readonly` shapes, so a per-entry shallow allocation drops
+      //      the readonly wrapping.
+      //   2. The response schema is a discriminated union — narrowing
+      //      on `p.source` preserves the discriminator so the produced
+      //      JSON satisfies the matching arm. A flat rebuild that
+      //      reused `p.source` directly would widen `arguments` back
+      //      to `PromptArgumentSpec[]` on the derived arm and TS would
+      //      reject the payload against the response schema.
       return c.json(
         {
-          prompts: result.prompts.map((p) => ({
-            name: p.name,
-            description: p.description,
-            arguments: p.arguments.map((a) => ({ ...a })),
-            source: p.source,
-          })),
+          prompts: result.prompts.map((p) =>
+            p.source === "builtin"
+              ? {
+                  source: "builtin" as const,
+                  name: p.name,
+                  description: p.description,
+                  arguments: p.arguments.map((a) => ({ ...a })),
+                }
+              : {
+                  source: p.source,
+                  name: p.name,
+                  description: p.description,
+                  arguments: [] as [],
+                },
+          ),
           canonicalGate: { ...result.canonicalGate },
         },
         200,

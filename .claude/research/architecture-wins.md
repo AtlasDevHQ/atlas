@@ -1363,3 +1363,31 @@ A new contract test at `__tests__/list-entities-data-source.test.ts` pins the da
 - **One contract test pins it forever.** `list-entities-data-source.test.ts` asserts the branching invariants directly, so a future "we'll just add a third path" attempt fails CI immediately.
 
 **Category:** Module-deepening refactor that collapsed a same-name-different-shape footgun into a single explicit interface. Sibling to win #46 (boot-guard family) in spirit — the architectural commitment is "make the wrong thing impossible to reach for," not "rename the dangerous thing and audit." The DB-row callers' migration to `listEntityRows` is the deliberate seam: when a future caller types `listEntities`, they get the summary; when they type `listEntityRows`, they get the rows. The compiler arbitrates intent.
+
+---
+
+## 50. `PromptListEntry`: flat source enum → per-source discriminated union (#2193)
+
+**Date:** 2026-05-08
+**Issue:** #2193
+**Milestone:** 1.4.1 — MCP: Bringing It All Together (Theme F follow-up)
+
+**Before:** `@useatlas/schemas/mcp-prompts` modeled `PromptListEntry` as a flat `z.object` — `name`, `description?`, `arguments: PromptArgumentSpec[]`, `source: "builtin" | "canonical" | "semantic" | "library"`. The hidden invariant ("only `source: \"builtin\"` ever populates `arguments`") was enforced privately by the four constructors in `packages/mcp/src/prompts/listing.ts` (`builtinEntry` / `canonicalEntry` / `semanticEntry` / `libraryEntry`) — `canonicalEntry`, `semanticEntry`, `libraryEntry` all hardcoded `arguments: []`. The constructors made the invariant unfalsifiable in production code, but it lived nowhere in the type system: a future contributor adding a fifth entry path could route around the constructors and the schema would happily accept `{ source: "library", arguments: [{...}, {...}] }`. Consumers iterating `entry.arguments` had to defensively assume any source could carry args.
+
+**The win:** `PromptListEntrySchema` is now `z.discriminatedUnion("source", [builtinSchema, hardcodedEmptyArgsSchema])`:
+- The `builtin` arm carries `arguments: z.array(PromptArgumentSchema)`.
+- The `canonical | semantic | library` arm carries `arguments: z.tuple([])` — TypeScript infers `[]` (empty tuple), so non-empty args are unrepresentable on those sources both at parse time AND at the type level.
+
+The four private constructors in `listing.ts` satisfy the union directly with no `as` casts — `canonicalEntry` returning `{ source: "canonical", arguments: [], ... }` lands on the empty-args arm by virtue of the discriminator. The route hand-off in `packages/api/src/api/routes/me-mcp-prompts.ts` now narrows on `source` before re-building the wire payload so the JSON `c.json` produces matches the matching union arm — a flat re-build would lose the empty-tuple type and TS rejects the payload against the response schema. The web read schema (`McpPromptsResponseSchema` in `packages/web/src/ui/lib/me-schemas.ts`) inherits the discriminated narrowing for free.
+
+**What got unbundled:**
+- **The "empty args is a constructor convention" invariant became a compile-time fact.** A contributor adding a fifth source cannot smuggle non-empty args past the type checker — they have to either widen the empty-args arm (visible diff) or extend the union with a new arm (visible diff). Defensive iteration in consumers becomes type-safe narrowing.
+- **The route boundary preserves the narrowing.** Before this change the route's `c.json` re-built every entry with the union-widening `source` field, which would have erased the discriminator post-conversion. The narrowed re-build (`p.source === "builtin" ? ... : ...`) keeps the wire payload typed as the union, so downstream consumers (web client, SDK round-trips) read the same narrowed shape.
+- **Wire shape unchanged.** Every payload that satisfied the old flat schema is still accepted — the producers always honored the invariant. The OpenAPI extraction renders `oneOf` instead of a single object now, which is a structural change but not a semantic one (the union covers the same set of valid payloads).
+
+**Impact:**
+- **`PromptListEntrySchema` rejects illegal `{source: "canonical", arguments: [{...}]}` at both parse-time AND compile-time.** The `safeParse` returns `success: false` at runtime; the TS type assignment fails at compile-time (witness tests in `packages/schemas/src/__tests__/mcp-prompts.test.ts` use `@ts-expect-error` directives that fail the type-check if the union is ever flattened back).
+- **A `PROMPT_SOURCES` ↔ union-arms drift witness pins exhaustiveness at the schema layer.** Same posture as the `_TogglesArrayCovers` pattern: adding a 5th source to `PROMPT_SOURCES` without extending the derived arm fails at compile-time, not at runtime parse failure on the wire.
+- **No change to MCP `prompts/list` SDK output.** The MCP server's `prompts/list` handler in `registry.ts` builds its response from the SDK's `Prompt` type (independent from `PromptListEntry`), so the agent-facing wire shape is unchanged. JSON payloads accepted by the previous `/api/v1/me/mcp-prompts` schema still validate; the OpenAPI extraction does shift from a flat object to `oneOf`, which is a strict improvement for clients generated from the spec.
+
+**Category:** Type-system tightening that lifts a private-constructor invariant to a compile-time guarantee. Same family as wins #41 (`ApprovalRule` discriminated union) and #42 (`RegionMigration` discriminated union) — every "you can't construct this state" rule belongs in the type, not in the constructor's docstring.

@@ -345,3 +345,72 @@ describe("listMcpPrompts — ordering", () => {
     expect(firstSemantic).toBeLessThan(firstLibrary);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Producer ↔ schema contract — every entry the listing pipeline emits must
+// round-trip through `PromptListEntrySchema`. Without this, the four private
+// constructors could drift from the discriminated union (e.g. a future
+// refactor sneaks `arguments: undefined` into `semanticEntry`) and the
+// regression would only surface at the route boundary at runtime.
+// ---------------------------------------------------------------------------
+
+describe("listMcpPrompts — producer ↔ schema contract", () => {
+  it("every emitted entry round-trips through PromptListEntrySchema", async () => {
+    const { PromptListEntrySchema } = await import(
+      "@useatlas/schemas/mcp-prompts"
+    );
+
+    const canonicalDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "listing-contract-canonical-"),
+    );
+    fs.writeFileSync(
+      path.join(canonicalDir, "questions.yml"),
+      [
+        "questions:",
+        '  - id: cq-001',
+        '    mode: metric',
+        '    metric_id: monthly_revenue',
+        '    category: simple_metric',
+        "    question: What was last month's revenue?",
+      ].join("\n"),
+    );
+    process.env.ATLAS_CANONICAL_QUESTIONS_PATH = path.join(
+      canonicalDir,
+      "questions.yml",
+    );
+
+    mockScannedEntities = [
+      {
+        filePath: "/tmp/entities/orders.yml",
+        sourceName: "default",
+        raw: {
+          table: "orders",
+          query_patterns: [{ name: "monthly", description: "Monthly revenue" }],
+        },
+      },
+    ];
+    mockHasInternalDB = true;
+    mockInternalQueryRows = [
+      {
+        id: "lib-1",
+        question: "Adoption?",
+        description: "Adoption summary",
+        collection_name: "Adoption",
+      },
+    ];
+    mockSettings = { ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS: "always" };
+
+    const result = await listMcpPrompts({ workspaceId: "org-1" });
+    const sources = new Set(result.prompts.map((p) => p.source));
+    // All four constructors exercised — every arm of the discriminated
+    // union round-trips through the schema below.
+    expect(sources).toEqual(
+      new Set(["builtin", "canonical", "semantic", "library"]),
+    );
+
+    for (const entry of result.prompts) {
+      const parsed = PromptListEntrySchema.safeParse(entry);
+      expect(parsed.success).toBe(true);
+    }
+  });
+});

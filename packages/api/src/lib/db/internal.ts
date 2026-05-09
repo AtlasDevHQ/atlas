@@ -762,9 +762,11 @@ function warnIfSharedDatabase(): void {
  * covers any Better Auth–dependent table including `user` / `session`
  * (#2117). Renaming follow-up to make the intent explicit.
  */
-const MANAGED_AUTH_MIGRATIONS = [
+export const MANAGED_AUTH_MIGRATIONS = [
   "0027_organization_saas_columns.sql",
   "0042_audit_retention_default.sql",
+  // Foreign key to Better Auth's "user" table.
+  "0048_trusted_device.sql",
   // Backfill against Better Auth's "user" + "session" tables.
   "0050_backfill_email_verified_grandfathered.sql",
 ];

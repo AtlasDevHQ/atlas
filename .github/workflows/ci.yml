@@ -123,4 +123,31 @@ jobs:
 
       - name: Test @atlas/api (shard ${{ matrix.shard }}/4)
         working-directory: packages/api
+        env:
+          # Postgres service container exposed on localhost:5432 — the
+          # migration smoke test (`migrate-pg.test.ts`) runs every
+          # migration end-to-end against a real Postgres so SQL
+          # semantic errors (the 0054 class) fail CI instead of prod
+          # boot. Tests skip cleanly when this env var is unset, so
+          # local-dev runs without `bun run db:up` are unaffected.
+          TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
         run: bun run scripts/test-isolated.ts --shard ${{ matrix.shard }}/4
+    services:
+      # Postgres for the migration smoke test. The other 3 shards see
+      # the same service (matrix shares the `services` block), which is
+      # fine — only one shard at a time runs the migrate-pg test, and
+      # it scopes its writes to a per-test schema so concurrent shards
+      # don't trample each other.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atlas"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10

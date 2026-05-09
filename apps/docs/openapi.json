@@ -49457,7 +49457,7 @@
           "Admin — Cache"
         ],
         "summary": "Cache statistics",
-        "description": "Returns cache hit/miss statistics. Platform admin only.",
+        "description": "Returns cache hit/miss statistics.",
         "responses": {
           "200": {
             "description": "Cache stats",
@@ -49482,7 +49482,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — platform admin role required",
+            "description": "Forbidden — admin/owner role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -49538,7 +49538,7 @@
           "Admin — Cache"
         ],
         "summary": "Flush cache",
-        "description": "Flushes all cache entries. Platform admin only.",
+        "description": "Flushes all cache entries.",
         "responses": {
           "200": {
             "description": "Cache flushed",
@@ -49578,7 +49578,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — platform admin role required",
+            "description": "Forbidden — admin/owner role required",
             "content": {
               "application/json": {
                 "schema": {

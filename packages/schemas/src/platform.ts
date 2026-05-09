@@ -70,6 +70,9 @@ export const PlatformWorkspaceSchema = z.object({
   region: z.string().nullable(),
   regionAssignedAt: z.string().nullable(),
   createdAt: z.string(),
+  // #2249 — optional + additive so older consumers that haven't picked
+  // up this @useatlas/schemas release don't reject the response.
+  neverSuspend: z.boolean().optional(),
 }) satisfies z.ZodType<PlatformWorkspace>;
 
 export const PlatformWorkspaceUserSchema = z.object({

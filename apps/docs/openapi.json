@@ -57604,6 +57604,9 @@
                           },
                           "createdAt": {
                             "type": "string"
+                          },
+                          "neverSuspend": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -57813,6 +57816,9 @@
                         },
                         "createdAt": {
                           "type": "string"
+                        },
+                        "neverSuspend": {
+                          "type": "boolean"
                         }
                       },
                       "required": [

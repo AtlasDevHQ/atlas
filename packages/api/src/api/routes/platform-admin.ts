@@ -45,6 +45,7 @@ import {
 } from "@useatlas/types";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import { getLoadTestAllowlist } from "@atlas/api/lib/auth/load-test-allowlist";
 import {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
@@ -303,6 +304,9 @@ function toWorkspaceResponse(
     region: row.region,
     regionAssignedAt: row.region_assigned_at,
     createdAt: row.createdAt,
+    // #2249 — surface the load-test allowlist override so the detail
+    // page renders the same badge as the list view.
+    neverSuspend: getLoadTestAllowlist()?.has(row.id) ?? false,
   };
 }
 
@@ -385,6 +389,10 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
        ORDER BY o."createdAt" DESC`,
     );
 
+    // #2249 — read the load-test allowlist once per request rather
+    // than re-parsing the env var inside the per-row map.
+    const allowlist = getLoadTestAllowlist();
+
     const workspaces = rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -404,6 +412,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       region: row.region,
       regionAssignedAt: row.region_assigned_at,
       createdAt: row.createdAt,
+      neverSuspend: allowlist?.has(row.id) ?? false,
     }));
 
     return c.json({ workspaces }, 200);

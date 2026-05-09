@@ -47,8 +47,7 @@ async function loadListingModule() {
 }
 
 // Wire schemas live in `@useatlas/schemas/mcp-prompts` so the route, the
-// listing pipeline (`@atlas/mcp/prompts/listing`), and the web client
-// (`packages/web/src/ui/lib/me-schemas.ts`) derive from one Zod source.
+// listing pipeline, and the web client derive from one Zod source.
 // `McpPromptsResponseSchema` is imported above.
 
 // ---------------------------------------------------------------------------

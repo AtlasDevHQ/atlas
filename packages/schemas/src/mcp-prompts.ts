@@ -1,21 +1,16 @@
 /**
- * MCP-prompts wire-format schemas (#2192).
+ * MCP-prompts wire-format schemas — single source of truth for the
+ * `/api/v1/me/mcp-prompts` response shape, used by the listing pipeline,
+ * the route layer, and the web client.
  *
- * Single source of truth for the `/api/v1/me/mcp-prompts` response shape.
- * Three surfaces previously kept parallel definitions in lockstep by hand:
+ * The Zod schemas are authoritative; TS shapes are `z.infer<>` of the
+ * schemas, so a new `CanonicalGateReason` / `PromptSource` / `CanonicalToggle`
+ * value is a one-place change and drift surfaces as a TS error in every
+ * consumer.
  *
- *   1. `packages/mcp/src/prompts/listing.ts`        — TS interfaces
- *   2. `packages/api/src/api/routes/me-mcp-prompts.ts` — route Zod
- *   3. `packages/web/src/ui/lib/me-schemas.ts`         — web parse Zod
- *
- * They are now derived from this module: the Zod schemas are authoritative,
- * the TS shapes are `z.infer<>` of the schemas. Adding a future
- * `CanonicalGateReason` value or `PromptSource` value is a one-place change
- * here — drift surfaces as a TS error in every consumer.
- *
- * Why `@useatlas/schemas` and not `@atlas/mcp` (the issue's option B): the
- * mcp package depends on `@atlas/api`, so if `@atlas/web` imported its
- * Zod entry point the frontend would transitively pull `@atlas/api` —
+ * Why these schemas live in `@useatlas/schemas` and not in `@atlas/mcp`:
+ * the mcp package depends on `@atlas/api`, so a Zod entry point exported
+ * from there would transitively pull `@atlas/api` into any web caller —
  * a violation of the "frontend never imports from `@atlas/api`" rule
  * documented in CLAUDE.md. `@useatlas/schemas` sits below `@atlas/*` (an
  * ESLint `no-restricted-imports` rule scoped to `packages/schemas/**`
@@ -72,12 +67,21 @@ export const CanonicalGateReasonSchema = z.enum(CANONICAL_GATE_REASONS);
  * Tri-state setting from `@useatlas/types/mcp`. The matching const tuple
  * lives here (not in `@useatlas/types`) because adding a value export to
  * the published `@useatlas/types` package breaks scaffold-CI smoke
- * tests; see the caveat at
- * `packages/web/src/app/admin/settings/mcp/page.tsx:34-42`. Schemas is
- * private/workspace-internal and free of that constraint.
+ * tests. Schemas is private/workspace-internal and free of that
+ * constraint.
+ *
+ * Bidirectional drift guard:
+ *   - `satisfies` checks the array is a subset of the type.
+ *   - `_TogglesArrayCovers` checks the type is a subset of the array.
+ * Together they fail at compile-time if a value is added to one side
+ * but not the other.
  */
 export const CANONICAL_TOGGLES = ["always", "never", "auto"] as const satisfies
   readonly CanonicalToggle[];
+type _TogglesArrayCovers =
+  CanonicalToggle extends (typeof CANONICAL_TOGGLES)[number] ? true : never;
+const _togglesArrayCovers: _TogglesArrayCovers = true;
+void _togglesArrayCovers;
 export const CanonicalToggleSchema = z.enum(CANONICAL_TOGGLES);
 
 // ---------------------------------------------------------------------------
@@ -105,16 +109,19 @@ export const PromptListEntrySchema = z.object({
 export type PromptListEntry = z.infer<typeof PromptListEntrySchema>;
 
 /**
- * Canonical-prompts gate envelope. The TS-side discriminated-union
- * invariant (`exposed=true ⇒ reason=null`) is enforced at the producer
- * in `@atlas/mcp/prompts/gating.ts`; the wire schema validates only
- * field presence/shape so the OpenAPI extractor keeps a flat object.
+ * Canonical-prompts gate envelope. Modelled as a flat `ZodObject` (rather
+ * than a `z.discriminatedUnion("exposed", ...)`) because the OpenAPI
+ * extractor emits a richer schema for a flat object than for a `oneOf`
+ * union, and downstream TS consumers narrow on the producer-side
+ * discriminated union from `gating.ts` rather than on the wire shape.
  *
- * Web parse uses `.catch(null)` on the reason so a forward-compatible
- * value during a multi-PR rollout degrades to the "unknown reason"
- * banner branch instead of failing the entire response. That tolerance
- * is applied at the consumer site, not here, so the route's strict
- * schema still rejects a malformed value at the API boundary.
+ * Kept as a raw `ZodObject` so consumers can `.extend({...})` it (the
+ * web layer overlays a `.catch(null)` on the reason for forward-compat —
+ * `.extend()` is unavailable on `ZodEffects`). The cross-field invariant
+ * `exposed=true ⇔ reason=null` is bolted on via the
+ * `RefinedCanonicalGateSchema` wrapper below — used by routes and web
+ * for parse-time validation; the raw object is what surfaces in
+ * OpenAPI.
  */
 export const CanonicalGateSchema = z.object({
   exposed: z.boolean(),
@@ -123,8 +130,41 @@ export const CanonicalGateSchema = z.object({
 });
 export type CanonicalGateWire = z.infer<typeof CanonicalGateSchema>;
 
+/**
+ * Raw refinement function so a consumer that re-builds the schema with
+ * `.catch(null)` (web parse path) can re-apply the same invariant. The
+ * route layer uses `RefinedCanonicalGateSchema` directly; the web layer
+ * applies `addCanonicalGateRefinement` to its tolerant variant.
+ */
+export function addCanonicalGateRefinement<T extends z.ZodType<CanonicalGateWire>>(schema: T): T {
+  return schema.superRefine((gate, ctx) => {
+    if (gate.exposed && gate.reason !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "reason must be null when exposed=true",
+      });
+    }
+    if (!gate.exposed && gate.reason === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "reason must be set when exposed=false",
+      });
+    }
+  });
+}
+
+/**
+ * Strict gate parser used by the route response schema — accepts only
+ * the producer-side invariant `exposed=true ⇔ reason=null`. The web
+ * client re-applies the same invariant on its `.catch(null)` variant
+ * via `addCanonicalGateRefinement`.
+ */
+export const RefinedCanonicalGateSchema = addCanonicalGateRefinement(CanonicalGateSchema);
+
 export const McpPromptsResponseSchema = z.object({
   prompts: z.array(PromptListEntrySchema),
-  canonicalGate: CanonicalGateSchema,
+  canonicalGate: RefinedCanonicalGateSchema,
 });
 export type McpPromptsResponse = z.infer<typeof McpPromptsResponseSchema>;

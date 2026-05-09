@@ -48,10 +48,9 @@ export interface ShouldExposeCanonicalOpts {
  * UI-facing reason key for why the canonical-gate is closed. Re-exported
  * from `@useatlas/schemas/mcp-prompts` so callers that import from
  * `gating.ts` keep a stable identifier; the canonical const tuple +
- * Zod enum live in the schemas package alongside the rest of the
- * MCP-prompts wire shape (#2192). The HTTP endpoint
- * `/api/v1/me/mcp-prompts` (#2179) surfaces these so the Settings →
- * AI Agents preview block can render the right banner copy.
+ * Zod enum live alongside the rest of the MCP-prompts wire shape. The
+ * HTTP endpoint `/api/v1/me/mcp-prompts` (#2179) surfaces these so the
+ * Settings → AI Agents preview block can render the right banner copy.
  *
  * Three closed-gate paths:
  *   - `toggle-never`        — admin opted out at Admin → Settings → MCP.

@@ -35,9 +35,9 @@ import {
   type CanonicalGateResult,
 } from "./gating.js";
 // Wire-shape types come from `@useatlas/schemas/mcp-prompts` so the
-// listing pipeline, the route layer (`me-mcp-prompts.ts`), and the
-// web client (`me-schemas.ts`) all derive from one Zod source. See
-// the schemas module header for the dependency-direction rationale.
+// listing pipeline, the route layer, and the web client all derive
+// from one Zod source. See the schemas module header for the
+// dependency-direction rationale.
 import type {
   PromptSource,
   PromptArgumentSpec,

@@ -25,6 +25,7 @@ import {
   CanonicalGateSchema,
   CanonicalGateReasonSchema,
   CanonicalToggleSchema,
+  RefinedCanonicalGateSchema,
   McpPromptsResponseSchema,
   CANONICAL_GATE_REASONS,
   CANONICAL_TOGGLES,
@@ -123,17 +124,10 @@ describe("PromptListEntrySchema", () => {
   });
 });
 
-describe("CanonicalGateSchema", () => {
+describe("CanonicalGateSchema (raw object — used by .extend)", () => {
   test("accepts exposed=true with reason=null", () => {
     const gate = { exposed: true, toggle: "always" as const, reason: null };
     expect(CanonicalGateSchema.parse(gate)).toEqual(gate);
-  });
-
-  test("accepts exposed=false with each closed-gate reason", () => {
-    for (const reason of CANONICAL_GATE_REASONS) {
-      const gate = { exposed: false, toggle: "auto" as const, reason };
-      expect(CanonicalGateSchema.parse(gate)).toEqual(gate);
-    }
   });
 
   test("rejects unknown reason at the canonical (route) boundary", () => {
@@ -144,6 +138,40 @@ describe("CanonicalGateSchema", () => {
         reason: "future-signal",
       }),
     ).toThrow();
+  });
+});
+
+describe("RefinedCanonicalGateSchema (route response parser)", () => {
+  test("accepts exposed=true with reason=null", () => {
+    const gate = { exposed: true, toggle: "always" as const, reason: null };
+    expect(RefinedCanonicalGateSchema.parse(gate)).toEqual(gate);
+  });
+
+  test("accepts exposed=false with each closed-gate reason", () => {
+    for (const reason of CANONICAL_GATE_REASONS) {
+      const gate = { exposed: false, toggle: "auto" as const, reason };
+      expect(RefinedCanonicalGateSchema.parse(gate)).toEqual(gate);
+    }
+  });
+
+  test("rejects representable-but-illegal {exposed:true, reason:set}", () => {
+    expect(() =>
+      RefinedCanonicalGateSchema.parse({
+        exposed: true,
+        toggle: "always",
+        reason: "toggle-never",
+      }),
+    ).toThrow(/reason must be null when exposed=true/);
+  });
+
+  test("rejects representable-but-illegal {exposed:false, reason:null}", () => {
+    expect(() =>
+      RefinedCanonicalGateSchema.parse({
+        exposed: false,
+        toggle: "auto",
+        reason: null,
+      }),
+    ).toThrow(/reason must be set when exposed=false/);
   });
 });
 

@@ -116,14 +116,12 @@ export const RevokeOAuthClientResponseSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// MCP prompts preview (#2179) — Settings → AI Agents
+// MCP prompts preview — Settings → AI Agents
 //
-// Schemas are sourced from `@useatlas/schemas/mcp-prompts` (#2192) so the
-// listing pipeline (`@atlas/mcp/prompts/listing`), the route layer
-// (`packages/api/src/api/routes/me-mcp-prompts.ts`), and this web client
-// derive from one Zod definition. The local `Mcp*` aliases below stay so
-// existing component imports (`@/ui/lib/me-schemas`) keep working without
-// a sweeping rename.
+// Schemas are sourced from `@useatlas/schemas/mcp-prompts` so the listing
+// pipeline, the route layer, and this web client derive from one Zod
+// definition. The local `Mcp*` aliases below stay so existing component
+// imports keep working without a sweeping rename.
 // ---------------------------------------------------------------------------
 
 import {
@@ -131,11 +129,10 @@ import {
   PromptSourceSchema,
   PromptListEntrySchema,
   CanonicalGateSchema,
-  McpPromptsResponseSchema as CanonicalMcpPromptsResponseSchema,
+  CanonicalGateReasonSchema,
   type PromptListEntry,
   type PromptSource,
   type CanonicalGateWire,
-  type McpPromptsResponse as CanonicalMcpPromptsResponse,
 } from "@useatlas/schemas/mcp-prompts";
 
 export const McpPromptArgumentSchema = PromptArgumentSchema;
@@ -143,23 +140,37 @@ export const McpPromptSourceSchema = PromptSourceSchema;
 export const McpPromptListEntrySchema = PromptListEntrySchema;
 
 /**
- * Web-client copy of the canonical-gate schema with `.catch(null)` on
- * the reason enum so a forward-compatible reason value during a
- * multi-PR rollout degrades to the "unknown reason" banner branch
- * instead of failing the entire response parse and blanking the
- * preview block. The route's strict schema (no `.catch`) still rejects
- * a malformed value at the API boundary; the tolerance lives at the
- * read side, not in the canonical wire definition.
+ * Web-client copy of the canonical-gate schema with `.catch` on the
+ * reason enum so a forward-compatible reason value during a multi-PR
+ * rollout degrades to the "unknown reason" banner branch instead of
+ * blanking the preview block. The canonical wire schema (used by the
+ * route) is strict — the tolerance lives only at the read side and
+ * fires `console.warn` so wire drift stays visible in dev tools rather
+ * than silently masked.
+ *
+ * The cross-field invariant (`exposed=true ⇔ reason=null`) is
+ * intentionally NOT re-applied here because `.catch` coerces a
+ * malformed reason to `null`, and combining the two would re-reject
+ * the very case `.catch` exists to absorb (`{exposed:false,
+ * reason:"future-signal"}` → coerce to null → invariant rejects). The
+ * route's strict schema is the boundary that catches drift.
  */
 export const McpCanonicalGateSchema = CanonicalGateSchema.extend({
-  reason: CanonicalGateSchema.shape.reason.catch(null),
+  reason: CanonicalGateReasonSchema.nullable().catch((ctx) => {
+    console.warn(
+      "[mcp-prompts] canonical gate reason failed to parse — coercing to null",
+      ctx.issues,
+    );
+    return null;
+  }),
 });
 
-export const McpPromptsResponseSchema = CanonicalMcpPromptsResponseSchema.extend({
+export const McpPromptsResponseSchema = z.object({
+  prompts: z.array(PromptListEntrySchema),
   canonicalGate: McpCanonicalGateSchema,
 });
 
 export type McpPromptListEntry = PromptListEntry;
 export type McpPromptSource = PromptSource;
 export type McpCanonicalGate = CanonicalGateWire;
-export type McpPromptsResponse = CanonicalMcpPromptsResponse;
+export type McpPromptsResponse = z.infer<typeof McpPromptsResponseSchema>;

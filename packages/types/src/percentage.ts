@@ -110,6 +110,33 @@ export function asRatio(n: number): Ratio {
   return n as Ratio;
 }
 
+/**
+ * Clamp a raw number to `[0, 100]` and brand it as `Percentage`. Use
+ * when the input is a derived value that can mathematically overshoot
+ * the scale (e.g. `weighted / ceiling * 100` where the bucket can
+ * exceed the ceiling under a future limiter regression) and the
+ * caller's contract is "render the saturated chip rather than throw".
+ *
+ * Distinct from {@link asPercentage} — `asPercentage` rejects
+ * out-of-range input as a defect (the caller is asserting the value
+ * is on-scale). `clampedPercentage` accepts any finite number and
+ * coerces; non-finite inputs (NaN, Infinity) still throw because
+ * branding "not a number" is never the right call.
+ *
+ * The helper exists to remove the repeated
+ * `asPercentage(Math.max(0, Math.min(100, n)))` idiom from call sites
+ * — without it, deleting the manual clamp during a future refactor
+ * would shift the failure mode from "saturated chip" to "500 from
+ * `asPercentage`'s range guard," which is a worse user experience
+ * for a presentation-only value.
+ */
+export function clampedPercentage(n: number): Percentage {
+  if (!Number.isFinite(n)) {
+    throw new Error(`clampedPercentage: non-finite input (${n})`);
+  }
+  return Math.max(0, Math.min(100, n)) as Percentage;
+}
+
 /** Convert `50` (as Percentage) → `0.5` (as Ratio). */
 export function percentageToRatio(p: Percentage): Ratio {
   return (p / 100) as Ratio;

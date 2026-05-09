@@ -76,12 +76,14 @@ describe("UsageChip", () => {
     expect(container.textContent).toContain("5/0");
   });
 
-  test("rounds to a whole number — no fractional percent label leaks", () => {
-    // 11 / 60 = 18.33% — the chip displays a whole-percent in its
-    // accessible label. A regression that wrote 18.333333% would slip
-    // through the visible text but would surface in the aria-label test.
+  test("rounds the aria-label percent to a whole number", () => {
+    // 11 / 60 = 18.33%. The chip's visible text is `used/ceiling`,
+    // not the percent — only the `aria-label` carries the percent
+    // context for screen readers, so this test pins integer rounding
+    // there. Both 18 (floor) and 19 (round) are accepted to stay
+    // robust under either rounding convention.
     const { container } = render(<UsageChip used={11} ceiling={60} />);
     const root = container.querySelector("[role='img']");
-    expect(root?.getAttribute("aria-label")).toMatch(/(18|19)% used/);
+    expect(root?.getAttribute("aria-label")).toMatch(/^(18|19)% used /);
   });
 });

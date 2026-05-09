@@ -335,13 +335,14 @@ export async function resolveRateLimitFor(
  * can show "this agent has used 35/60 weighted requests this minute"
  * before the bucket trips a 429.
  *
- * The shape mirrors the four numbers an end-user actually wants to see
- * — `percentUsed` is derived at the route layer rather than baked in
- * here so the limiter stays free of presentation concerns. `resetAt`
- * is absolute milliseconds (epoch) so the UI can render either an ETA
- * countdown or a wall-clock time without re-deriving from `Date.now()`
- * — both surfaces would otherwise have to share an extra clock skew
- * assumption that isn't present today.
+ * The shape carries three numbers the limiter has on hand
+ * (`currentMinuteWeightedRequests`, `ceiling`, `resetAt`); the route
+ * layer derives `percentUsed` from these so the limiter stays free
+ * of presentation concerns. `resetAt` is absolute milliseconds (epoch)
+ * so the UI can render either an ETA countdown or a wall-clock time
+ * without re-deriving from `Date.now()` — both surfaces would
+ * otherwise have to share an extra clock skew assumption that isn't
+ * present today.
  */
 export interface ClientUsageView {
   /** Sum of weights for entries inside the current sliding window. */
@@ -397,8 +398,8 @@ export function getClientUsage(
     (sum, e) => sum + e.weight,
     0,
   );
-  const oldestTs = inWindow[0]?.ts;
-  const resetAt = oldestTs !== undefined ? oldestTs + WINDOW_MS : t;
+  const oldest = inWindow[0];
+  const resetAt = oldest ? oldest.ts + WINDOW_MS : t;
 
   return { currentMinuteWeightedRequests, ceiling, resetAt };
 }

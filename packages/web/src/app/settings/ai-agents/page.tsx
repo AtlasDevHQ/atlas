@@ -20,7 +20,7 @@
  * so non-admin users don't need a second admin-gated roundtrip.
  */
 
-import { useCallback, useState } from "react";
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -95,36 +95,46 @@ export default function AIAgentsPage() {
   const deployMode = listData?.deployMode ?? "self-hosted";
   const isSaas = deployMode === "saas";
 
-  // Live MCP rate-limit usage (#2216). Separate fetch so the poll
-  // cadence below doesn't refetch the heavier clients query (which
-  // already has its own SWR semantics in TanStack). The schema parse
-  // surfaces wire drift as a banner via useAdminFetch's
-  // `code: "schema_mismatch"` path rather than a broken chip.
-  const { data: usageData, refetch: refetchUsage } = useAdminFetch(
-    "/api/v1/me/mcp-usage",
-    { schema: MeMcpUsageResponseSchema },
-  );
+  // Live MCP rate-limit usage (#2216). Separate fetch from the
+  // clients list so the 10s poll doesn't refetch the heavier clients
+  // query. `usageError` is destructured and surfaced below — without
+  // it, a flaky `/me/mcp-usage` would freeze the chip on its last
+  // good value with no signal to the user (CLAUDE.md "Prefer errors
+  // over silent fallbacks").
+  const {
+    data: usageData,
+    error: usageError,
+    refetch: refetchUsage,
+  } = useAdminFetch("/api/v1/me/mcp-usage", {
+    schema: MeMcpUsageResponseSchema,
+  });
 
-  // Stable refetch ref for the visibility-gated poll. `useCallback`
-  // here is a correctness aid (TanStack Query's `refetch` is already
-  // stable per query instance, but the hook's effect depends on its
-  // identity), not a perf optimization — see CLAUDE.md "React Compiler
-  // handles memoization" carve-out for stability cases.
-  const refetchUsageStable = useCallback(() => {
-    void refetchUsage();
-  }, [refetchUsage]);
-  // Poll every 10s while foregrounded; refetch immediately on
-  // visibility return; do nothing while hidden. Acceptance criterion
-  // from #2216 — verifiable via the e2e DevTools Network observation.
-  useVisibilityGatedPoll(refetchUsageStable, 10_000);
+  // `useVisibilityGatedPoll` widens its parameter to `() => void |
+  // Promise<unknown>`, so TanStack's `refetch` (already query-stable)
+  // can be passed directly without a `useCallback` wrapper.
+  useVisibilityGatedPoll(refetchUsage, 10_000);
 
-  // Build a client-id → usage map up front so the row renderer doesn't
-  // walk the array per agent. Empty map (no usage data yet) is the
-  // first-paint state — the chip renders a neutral 0/60 placeholder
-  // until the first fetch lands.
+  // Map the usage rows by clientId for O(1) lookup in the row
+  // renderer. The chip falls back to neutral 0/60 when the entry is
+  // absent — first-paint, missing entry for a brand-new client, or
+  // poll error.
   const usageById: Map<string, McpUsageEntry> = new Map(
     (usageData?.clients ?? []).map((u) => [u.clientId, u]),
   );
+
+  // Surface a poll-loop failure once per error transition. The chip
+  // fallback (neutral 0/60) is the visual cue; the structured warn
+  // line is the operator-facing trail so a flaky `/me/mcp-usage`
+  // doesn't go invisible. We only fire on `usageError` flipping
+  // truthy — a sustained error wouldn't burn console rows.
+  useEffect(() => {
+    if (usageError) {
+      console.warn(
+        "[ai-agents] /me/mcp-usage poll failed — usage chip showing fallback",
+        usageError.message,
+      );
+    }
+  }, [usageError]);
 
   const revokeMutation = useAdminMutation<{
     success: boolean;
@@ -479,16 +489,11 @@ function AIAgentShell({
     </Badge>
   ) : undefined;
 
-  // Live usage chip — informational, not enforcement. Renders on every
-  // row (revoked clients included so a saturated bucket on a revoked
-  // client is still visible during the brief audit window before the
-  // user removes the row). The chip's `aria-label` carries the percent
-  // context so screen readers get the same warning sighted users do
-  // from the tone. The "?" tooltip explains the per-tool weighting and
-  // points to the canonical source so a user querying their bucket
-  // doesn't have to reverse-engineer the math. The default ceiling
-  // (60) matches the limiter's `DEFAULT_REQUESTS_PER_MINUTE` so the
-  // first-paint placeholder agrees with what the API will return.
+  // The 60 fallback ceiling matches `DEFAULT_REQUESTS_PER_MINUTE` —
+  // first-paint and poll-error states show the same neutral chip the
+  // API returns for an idle client. The chip stays visible on revoked
+  // rows so a saturated bucket is observable during the audit window
+  // before the user removes the row.
   const usageBadge = (
     <TooltipProvider delayDuration={150}>
       <Tooltip>
@@ -521,18 +526,16 @@ function AIAgentShell({
     </TooltipProvider>
   );
 
-  // Compose the title-row badges: scope first (cross-workspace flag),
-  // then state (Reconnect / Revoked / public type), then usage. Wrapping
-  // in a single `<span>` keeps the Shell's titleBadge slot's flex math
-  // happy when more than one is present.
-  const composedBadges = (
+  // Shell's `titleBadge` slot accepts a single ReactNode. Wrap the
+  // three badges in one element so the slot's flex layout treats them
+  // as a unit (scope first, state next, usage last).
+  const titleBadge = (
     <span className="flex items-center gap-1.5">
       {scopeBadge}
       {stateBadge}
       {usageBadge}
     </span>
   );
-  const titleBadge = composedBadges;
 
   return (
     <Shell

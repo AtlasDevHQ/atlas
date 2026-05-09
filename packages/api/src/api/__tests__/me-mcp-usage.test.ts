@@ -31,6 +31,13 @@ interface CapturedListCall {
   scope: { kind: "user"; userId: string; orgId: string };
 }
 
+interface CapturedAuditEntry {
+  actionType: string;
+  targetType?: string;
+  targetId?: string;
+  metadata?: Record<string, unknown>;
+}
+
 interface MockOAuthClientRow {
   clientId: string;
   clientName: string | null;
@@ -51,7 +58,7 @@ const listCalls: CapturedListCall[] = [];
 let mockListResult: MockOAuthClientRow[] = [];
 let mockListThrow: Error | null = null;
 
-const auditCalls: Array<{ actionType: string; metadata?: Record<string, unknown> }> = [];
+const auditCalls: CapturedAuditEntry[] = [];
 
 // Mock the oauth-clients helper module wholesale (CLAUDE.md "Mock all
 // exports" — listOAuthClients is one of several exports the route layer
@@ -74,26 +81,37 @@ mock.module("@atlas/api/lib/auth/oauth-clients", () => ({
   MAX_OAUTH_CLIENT_RPM: 3600,
 }));
 
-// Re-export ADMIN_ACTIONS verbatim from the catalog module so the spy
-// preserves the catalog-as-source-of-truth contract — adding a new
-// action only ever requires editing actions.ts. The spy itself
-// captures action-type + metadata for the usage_read assertion.
+// Re-export ADMIN_ACTIONS, errorMessage, and causeToError from the
+// canonical audit module so this mock factory stays in lockstep with
+// the real one — me-load-test.ts (and any future module loaded by
+// the test app boot) imports `errorMessage` from the same path, and
+// a partial mock would surface as a `SyntaxError: Export named
+// 'errorMessage' not found` (CLAUDE.md "Mock all exports").
 import { ADMIN_ACTIONS } from "../../lib/audit/actions";
+import { errorMessage, causeToError } from "../../lib/audit/error-scrub";
+
+interface CapturableAuditEntry {
+  actionType: string;
+  targetType?: string;
+  targetId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+function capture(entry: CapturableAuditEntry): void {
+  auditCalls.push({
+    actionType: entry.actionType,
+    targetType: entry.targetType,
+    targetId: entry.targetId,
+    metadata: entry.metadata,
+  });
+}
 
 mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS,
-  logAdminAction: (entry: {
-    actionType: string;
-    metadata?: Record<string, unknown>;
-  }) => {
-    auditCalls.push({ actionType: entry.actionType, metadata: entry.metadata });
-  },
-  logAdminActionAwait: async (entry: {
-    actionType: string;
-    metadata?: Record<string, unknown>;
-  }) => {
-    auditCalls.push({ actionType: entry.actionType, metadata: entry.metadata });
-  },
+  errorMessage,
+  causeToError,
+  logAdminAction: (entry: CapturableAuditEntry) => capture(entry),
+  logAdminActionAwait: async (entry: CapturableAuditEntry) => capture(entry),
 }));
 
 const mocks = createApiTestMocks({
@@ -298,6 +316,12 @@ describe("GET /api/v1/me/mcp-usage", () => {
       (c) => c.actionType === "mcp_session.usage_read",
     );
     expect(usageRows).toHaveLength(1);
+    // Forensic-pivot fields: a refactor that swapped `targetId` to
+    // the org id (a plausible "improvement") would silently break the
+    // "show me every per-user usage peek" admin query that filters on
+    // `target_type = 'mcp_session' AND actor_id = target_id`.
+    expect(usageRows[0]?.targetType).toBe("mcp_session");
+    expect(usageRows[0]?.targetId).toBe("user-1");
     expect(usageRows[0]?.metadata?.count).toBe(2);
     expect(usageRows[0]?.metadata?.clientIds).toEqual([
       "claude-desktop",

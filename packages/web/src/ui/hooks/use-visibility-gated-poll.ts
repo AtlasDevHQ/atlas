@@ -20,11 +20,20 @@ import { useEffect } from "react";
  * doesn't need them; a focused hook keeps the contract narrow and
  * keeps the wrapper's signature stable for the rest of the app.
  *
- * Tests: e2e covers the visibility-gated path end-to-end (the chip
- * stops fetching when the tab hides, resumes on visibility change).
+ * `refetch` may return `void` (sync) or a Promise (e.g.
+ * TanStack Query's `refetch` returns a `Promise<QueryObserverResult>`).
+ * The hook accepts both shapes and routes any rejection through
+ * `console.warn` — without that, a flaky endpoint would surface as an
+ * unhandled-promise-rejection in the browser console with no
+ * actionable signal, and the chip would silently freeze on its last
+ * good value. The TanStack error state is still available to callers
+ * via the `useAdminFetch` `error` field; this hook's logging is the
+ * second-line backstop.
  */
+export type VisibilityGatedRefetch = () => void | Promise<unknown>;
+
 export function useVisibilityGatedPoll(
-  refetch: () => void,
+  refetch: VisibilityGatedRefetch,
   intervalMs: number,
 ): void {
   useEffect(() => {
@@ -32,13 +41,39 @@ export function useVisibilityGatedPoll(
 
     let intervalId: ReturnType<typeof setInterval> | null = null;
 
+    // Centralized refetch invocation — guards against synchronous
+    // throws AND promise rejections so the visibility listener / the
+    // setInterval callback can never abort the loop. A regression
+    // that fires a sync throw without this guard would deregister the
+    // listener on its own, leaving the chip stuck after one bad
+    // refetch. The `console.warn` is structured so a future log
+    // pivot can recognize the source.
+    const safeRefetch = () => {
+      try {
+        const ret = refetch();
+        if (ret && typeof (ret as Promise<unknown>).then === "function") {
+          (ret as Promise<unknown>).catch((err) => {
+            console.warn(
+              "[useVisibilityGatedPoll] refetch rejected — chip may be stale",
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        }
+      } catch (err) {
+        console.warn(
+          "[useVisibilityGatedPoll] refetch threw synchronously — chip may be stale",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    };
+
     const start = () => {
       if (intervalId !== null) return;
       // We do NOT fire `refetch` here — the parent hook already fetched
       // on mount. Calling refetch immediately on every visibility change
       // would double-fire (once for visibilitychange, once more on the
       // first interval tick when the user returns within `intervalMs`).
-      intervalId = setInterval(refetch, intervalMs);
+      intervalId = setInterval(safeRefetch, intervalMs);
     };
 
     const stop = () => {
@@ -54,7 +89,7 @@ export function useVisibilityGatedPoll(
         // fresh state immediately on return — the visible interval
         // tick after a long invisibility could otherwise show stale
         // data for up to `intervalMs`.
-        refetch();
+        safeRefetch();
         start();
       } else {
         stop();

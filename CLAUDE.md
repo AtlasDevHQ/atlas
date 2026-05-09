@@ -96,6 +96,12 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Deploy mode is enterprise-gated** — `ATLAS_DEPLOY_MODE=saas` requires `/ee`. Without enterprise enabled, deploy mode always resolves to `self-hosted`. The frontend reads `deployMode` from the API to branch admin UX
 - [ ] **No competing SaaS** — The commercial license (`ee/LICENSE`) prohibits using `/ee` in a competing product. This is the business model: self-hosted is free (AGPL), the hosted SaaS and enterprise features are the commercial offering
 
+### Merge discipline
+- [ ] **Branch protection is on for `main`** — Required status checks: `ci`, `api-tests (1/4)`–`(4/4)`, `Scaffold (docker)`, `Scaffold (vercel)`, `Standalone Example Build`, `Analyze (javascript-typescript)`. `strict: true` (branch must be up to date). Force-push and deletion blocked. `enforce_admins: false` so the override below works in genuine emergencies. See `docs/development/branch-protection.md`
+- [ ] **Wait for the gate, never `--admin` through pending checks** — `gh pr merge` should be called only after `gh pr checks <PR> --watch` reports green on the head SHA being merged. The #2206 incident: PR #2198 was merged at 22:50:38Z while `ci` was still running; `ci` failed 19s later and broke Railway boot. Without protection there was no gate. With protection the merge is refused — never override
+- [ ] **`--admin` is reserved for a broken gate, not a slow one** — The only legitimate use of `gh pr merge --admin` is when the required check itself is broken (e.g. GitHub-actions outage stuck in `queued`, or a check pinned to a SHA that no longer reflects the PR's content). Document the reason in the merge commit when you do override. "Tests are slow" is not a broken gate. "I'm impatient" is not a broken gate. If you're tempted to `--admin` because the check has been pending for an unusual amount of time, first verify the workflow run actually started and isn't stuck — only override after confirming the gate cannot complete
+- [ ] **Required reviews are intentionally off** — Solo developer + parallel-claude workflow. Don't enable `required_pull_request_reviews` without rethinking the model
+
 ---
 
 ## Project Overview

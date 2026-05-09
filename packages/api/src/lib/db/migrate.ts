@@ -278,7 +278,11 @@ async function seedPromptLibrary(pool: Queryable): Promise<void> {
     // Pre-#2169 deployments could have org-scoped builtin copies with the
     // same name; without this filter, those would short-circuit the insert
     // and the global builtin would never get seeded on a fresh install
-    // that runs alongside legacy data.
+    // that runs alongside legacy data. Note that the unique index added
+    // in migration 0054 (`prompt_collections_org_name_uniq`) makes a
+    // future regression here impossible to silently introduce — a
+    // duplicate-creating loosening of this filter would fail-fast on
+    // INSERT instead of producing two visible rows.
     const existing = await pool.query(
       "SELECT id FROM prompt_collections WHERE name = $1 AND is_builtin = true AND org_id IS NULL",
       [collection.name],

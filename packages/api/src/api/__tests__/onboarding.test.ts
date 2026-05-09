@@ -912,7 +912,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     ).toBe(false);
   });
 
-  it("does NOT seed org-scoped builtin prompt collections (#2169 — globals are visible to org-with-demo via the listing query)", async () => {
+  it("does NOT seed org-scoped builtin prompt collections — globals are visible to org-with-demo via the listing query", async () => {
     // /use-demo previously copied each global builtin (org_id IS NULL,
     // is_builtin = true) into the calling org's namespace. The
     // `org-with-demo` listing query already returns global builtins

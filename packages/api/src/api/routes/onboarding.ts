@@ -804,7 +804,7 @@ onboarding.openapi(
         }),
       );
 
-      const partialFailures: ("demo_industry_setting")[] = settingResult.ok ? [] : [settingResult.step];
+      const partialFailures = settingResult.ok ? [] : [settingResult.step];
 
       _resetWhitelists();
 

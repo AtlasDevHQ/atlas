@@ -2,8 +2,10 @@
 --
 -- The reported repro: /admin/prompts on a freshly /use-demo-seeded SaaS
 -- workspace shows two "E-commerce KPIs" libraries side by side. Cause:
---   1. `runSeeds()` at startup inserts the global built-in collections
---      (org_id IS NULL, is_builtin = true) — one row per industry.
+--   1. `seedPromptLibrary()` at startup (called from `runSeeds()` in
+--      packages/api/src/lib/db/migrate.ts) inserts the global built-in
+--      collections (org_id IS NULL, is_builtin = true) — one row per
+--      industry.
 --   2. The pre-#2169 /use-demo handler (`seedDemoPromptCollections`)
 --      then *copied* every global builtin matching the demo industry
 --      into the calling org's namespace (org_id = <orgId>, is_builtin =
@@ -30,14 +32,19 @@
 -- ---------------------------------------------------------------------------
 --
 -- The cascade on prompt_items.collection_id (FK ON DELETE CASCADE) drops
--- the per-org copies of the items along with their parent. The user
--- still sees the items via the global collection's items, returned by
--- the same `org-with-demo` listing query.
+-- the per-org copies of the items along with their parent. We do NOT
+-- reparent items here (unlike step 2 below) because the items being
+-- dropped are themselves verbatim copies of the global collection's
+-- items — the global parent is still present, and the `org-with-demo`
+-- listing query already returns its items, so the user observes no
+-- semantic loss.
 --
 -- Match key: (lower(name), industry). `is_builtin = true` rows are
--- read-only at the admin layer (admin-prompts.ts returns 403 on edits),
+-- read-only at the admin layer (admin-prompts.ts returns 403 on edits
+-- to is_builtin = true rows; see lines 556, 602, 625, 667, 716, 745),
 -- so the org-scoped copy can never have diverged from the global —
--- dropping it is lossless.
+-- dropping it is lossless. If a future schema change opens edits on
+-- builtin copies, this step needs to gain a reparent before the delete.
 DELETE FROM prompt_collections org_copy
 USING prompt_collections global
 WHERE org_copy.org_id IS NOT NULL

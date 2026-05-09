@@ -493,7 +493,12 @@ export const promptCollections = pgTable(
     check("chk_prompt_collections_status", sql`status IN ('published', 'draft', 'archived')`),
     // #2169: collapse org_id NULL into a single bucket so globals can't
     // duplicate, and lower-case the name so casing variants can't coexist
-    // within the same workspace. See migration 0054.
+    // within the same workspace. The `COALESCE(org_id, '')` form is
+    // load-bearing — a plain `(org_id, lower(name))` would let multiple
+    // global rows (org_id IS NULL) share a name, since SQL treats NULLs
+    // as distinct in unique indexes. Removing this index reopens the
+    // duplicate-libraries bug. See migration 0054 for the dedup +
+    // index-creation migration.
     uniqueIndex("prompt_collections_org_name_uniq").on(
       sql`COALESCE(${t.orgId}, '')`,
       sql`lower(${t.name})`,

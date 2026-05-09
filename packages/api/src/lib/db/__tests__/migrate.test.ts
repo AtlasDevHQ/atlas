@@ -777,6 +777,12 @@ describe("runSeeds", () => {
     // Should check for existing collections
     const selectPrompt = queries.find((q) => q.includes("SELECT id FROM prompt_collections"));
     expect(selectPrompt).toBeDefined();
+    // Existence probe is scoped to the global namespace (#2169). Pinned
+    // here so a future refactor can't loosen the filter back to a bare
+    // `name = $1 AND is_builtin = true` — that form would short-circuit
+    // the global insert if a workspace with leftover org-scoped builtin
+    // copies (predating migration 0054) had run runSeeds again.
+    expect(selectPrompt).toContain("org_id IS NULL");
 
     // Should insert 3 built-in collections
     const inserts = queries.filter((q) => q.includes("INSERT INTO prompt_collections"));

@@ -22,6 +22,11 @@ const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 
+// Per-test timeout — the full migration set is 50+ statements, and shared
+// CI runners can take 6-10s for the end-to-end run vs ~2s on local hardware.
+// 5s (bun-test default) was causing intermittent failures on shard 4 (#2229).
+const PG_TEST_TIMEOUT_MS = 30_000;
+
 describeIfPg("migrate-pg (real Postgres)", () => {
   let pool: Pool;
   const schemaName = `boot_smoke_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
@@ -68,7 +73,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // attached. The exact count drifts as new migrations land, so we
     // don't pin it.
     expect(count).toBeGreaterThan(0);
-  });
+  }, PG_TEST_TIMEOUT_MS);
 
   it("is idempotent — re-running the migration set is a no-op", async () => {
     // Migrations are recorded in `__atlas_migrations` so a second
@@ -78,5 +83,5 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     const count = await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
 
     expect(count).toBe(0);
-  });
+  }, PG_TEST_TIMEOUT_MS);
 });

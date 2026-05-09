@@ -41,7 +41,7 @@ import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { listOAuthClients } from "@atlas/api/lib/auth/oauth-clients";
 import { getClientUsage } from "@atlas/api/lib/rate-limit/oauth-client";
-import { clampedPercentage, type Percentage } from "@useatlas/types";
+import { asPercentage, type Percentage } from "@useatlas/types";
 import { MeMcpUsageResponseSchema } from "@useatlas/schemas/mcp-usage";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
@@ -146,18 +146,17 @@ meMcpUsage.openapi(listMyMcpUsageRoute, async (c) => {
 
       const usage = clients.map((client) => {
         const view = getClientUsage(orgId, client.clientId);
-        // `clampedPercentage` performs the saturate-and-brand in one
-        // step: a hypothetical bucket-overshoot regression cannot make
-        // the chip render past 100%, and the brand survives a future
-        // refactor of the manual clamp idiom that would otherwise
-        // shift the failure mode from "saturated chip" to "500 from
-        // `asPercentage`'s range guard". Integer-rounded so the chip's
-        // whole-percent label and `aria-label` agree on one number.
+        // Saturate to [0, 100] before branding so a hypothetical
+        // bucket-overshoot regression renders as a saturated chip
+        // rather than a 500 from asPercentage's range guard. Integer
+        // rounded so the chip's whole-percent label and aria-label
+        // agree on one number.
         const rawPct =
           view.ceiling > 0
             ? Math.round((view.currentMinuteWeightedRequests / view.ceiling) * 100)
             : 0;
-        const percentUsed: Percentage = clampedPercentage(rawPct);
+        const saturatedPct = Math.min(100, Math.max(0, rawPct));
+        const percentUsed: Percentage = asPercentage(saturatedPct);
         return {
           clientId: client.clientId,
           currentMinuteWeightedRequests: view.currentMinuteWeightedRequests,

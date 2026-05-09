@@ -142,7 +142,7 @@ There's no terraform infra in the repo today. Adding terraform purely for this O
 - Issue: [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069)
 - Replica cap rationale: [`deploy/README.md`](../../deploy/README.md) — "Replica cap (read before scaling)" subsection
 - Contract test: [`e2e/integration/mcp-multi-replica.test.ts`](../../e2e/integration/mcp-multi-replica.test.ts)
-- Hosted MCP guide (user-facing): [`apps/docs/content/docs/guides/mcp-hosted.mdx`](../../apps/docs/content/docs/guides/mcp-hosted.mdx) — "Operational notes" section
+- Hosted MCP guide (user-facing): [`apps/docs/content/docs/guides/mcp.mdx`](../../apps/docs/content/docs/guides/mcp.mdx) — "Operational notes" section under "Hosted protocol reference"
 - OpenStatus dashboard: [app.openstatus.dev](https://app.openstatus.dev) — status page ID `4478`, slug `atlas`, current monitor ID `9230`
 - Public status page: [atlas.openstatus.dev](https://atlas.openstatus.dev/)
 - OpenAPI spec (source of truth for capability claims): <https://api.openstatus.dev/openapi.yaml>

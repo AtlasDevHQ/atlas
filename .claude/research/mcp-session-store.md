@@ -34,7 +34,7 @@ Three phases, with explicit trigger conditions for each transition.
 - In-process `Map<sessionId, SSEServerTransport>` — unchanged from #2024's shape
 - `MultiReplicaGuardLive` boot Layer (#2069 revised scope) hard-fails the api at startup if `RAILWAY_REPLICA_COUNT > 1` without `ATLAS_MCP_SESSION_STORE` configured
 - OpenStatus synthetic monitor sends sequential MCP frames against prod and alerts on `404 unknown_session` — catches accidental drift past single-replica
-- `apps/docs/content/docs/guides/mcp-hosted.mdx` accurately reflects the constraint (no false claim of "sticky routing required")
+- `apps/docs/content/docs/guides/mcp.mdx` (hosted protocol reference → operational notes) accurately reflects the constraint (no false claim of "sticky routing required")
 
 ### Phase 1 — durable Postgres-backed session store
 

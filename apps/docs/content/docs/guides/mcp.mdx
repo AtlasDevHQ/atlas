@@ -1,19 +1,171 @@
 ---
 title: MCP Server
-description: Use Atlas as a Model Context Protocol server in Claude Desktop, Cursor, and other MCP clients.
+description: Connect Claude Desktop, Claude Code, Cursor, Continue, ChatGPT, or VS Code to Atlas — hosted (OAuth 2.1 + DCR + PKCE) or self-hosted (stdio).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
-Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that gives any MCP-compatible client access to your semantic layer and validated SQL execution.
+Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, Continue, ChatGPT, VS Code — query your data through Atlas's semantic layer and validated SQL pipeline. The agent reads your entity YAMLs, picks the right tables, writes a query, and Atlas runs it through the same 4-layer SQL validation, RLS, and audit pipeline as the chat UI.
 
-## Install in one command
+There are two ways to run the server. **Hosted** (`mcp.useatlas.dev`) speaks Streamable HTTP with OAuth 2.1 + Dynamic Client Registration + PKCE — the standard MCP authorization flow that Claude Desktop, ChatGPT, and Cursor implement out of the box. **Self-hosted** runs as a local stdio process pointed at your own datasource and inherits whatever shell/env you launch it under. Same agent, same tools, same semantic layer — different transport and identity model.
+
+## What an MCP-connected agent can see
+
+Atlas's MCP tools execute with your workspace's read permissions. A connected agent can query the data your account can query — and only that. Atlas enforces SELECT-only at the [SQL validation layer](/security/sql-validation), so even a misbehaving agent cannot mutate data, drop tables, or escape the table whitelist defined by your semantic layer. You can revoke any agent at any time from **Settings → AI Agents** (your account) or **Admin → OAuth Clients** (workspace-wide) — revocation is atomic and immediate.
+
+---
+
+## Install
+
+<Tabs items={["Hosted (mcp.useatlas.dev)", "Self-hosted (stdio)"]}>
+<Tab value="Hosted (mcp.useatlas.dev)">
+
+The hosted endpoint at `mcp.useatlas.dev` is the default for Atlas SaaS users since 1.4.0. There are three onboarding paths that all end at the same place: a workspace-scoped OAuth token in your agent's MCP config and a row in **Settings → AI Agents**.
+
+### Path A — In-product wizard (recommended)
+
+Sign into Atlas, open **Settings → AI Agents**, and click **Connect new agent**. The 3-step wizard:
+
+1. Pick your agent (Claude Desktop, Cursor, Continue, ChatGPT, or **Other / Generic MCP** for Claude Code, VS Code, or any other spec-compliant client — the per-client subsections below show where to paste the resulting block)
+2. Review what the agent will request — scopes default to workspace-read
+3. Copy the JSON config block, paste it into your agent's MCP settings, and restart the agent
+
+When the agent first connects it bootstraps via DCR + PKCE, opens your browser to approve, and stores the resulting JWT. The new agent shows up in **Settings → AI Agents** with last-use timestamp and a per-agent **Revoke** button. No admin involvement required.
+
+### Path B — CLI installer (one command)
+
+```bash
+bunx @useatlas/mcp init --hosted --write
+```
+
+The installer discovers Atlas's authorization server, registers itself via DCR, opens your browser for PKCE-protected consent (same shape as `gh auth login`), and merges a workspace-scoped server block into your detected MCP client config at mode `0600`. A `.bak` of any prior config is written first.
+
+```bash
+# Print to stdout instead of writing
+bunx @useatlas/mcp init --hosted
+
+# Force a specific client + override the API region
+bunx @useatlas/mcp init --hosted --client cursor --api-url https://mcp-eu.useatlas.dev --write
+```
+
+The resulting block looks like:
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "headers": { "Authorization": "Bearer eyJhbGciOiJSUzI1NiIs…" }
+    }
+  }
+}
+```
+
+The `code_verifier` and registered `client_id` stay in memory — only the JWT is persisted, and only inside your client's config file.
+
+### Path C — Direct from the agent (zero install)
+
+Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor, Gemini, Anthropic agents) can connect directly without the wizard or the CLI — they bootstrap via DCR + PKCE on their own. Just point the agent at your workspace MCP URL:
+
+```
+https://mcp.useatlas.dev/mcp/{workspace_id}/sse
+```
+
+The agent does discovery, registration, and the OAuth dance unattended. This is the right path if your agent vendor publishes "paste an MCP URL" UX.
+
+<Callout type="info">
+Whichever path you pick, your connected agents land in the same **Settings → AI Agents** view in Atlas — list, last-use timestamp, outstanding-token count, per-agent revoke. Workspace admins additionally see *every* agent registered in the workspace at **Admin → OAuth Clients**.
+</Callout>
+
+### Per-client setup
+
+Each subsection shows where your agent stores its MCP config. Whether you used the wizard, the CLI, or pasted the URL directly, the block ends up in the locations below.
+
+#### Claude Desktop
+
+Open `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows). Merge this block into the top-level `mcpServers` object, then restart Claude Desktop:
+
+```jsonc
+{
+  "mcpServers": {
+    "atlas": {
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "headers": { "Authorization": "Bearer <jwt>" }
+    }
+  }
+}
+```
+
+Claude Desktop also supports DCR natively — point it at the URL alone and it will bootstrap the OAuth flow. Once connected, you can [validate the install](#after-you-connect) with the NovaMart prompts below.
+
+#### Claude Code
+
+The CLI ships an `mcp add` subcommand that writes to the right scope automatically:
+
+```bash
+claude mcp add atlas --scope user \
+  --url https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse \
+  --header "Authorization: Bearer <jwt>"
+```
+
+`--scope user` makes the server visible across every project. Use `--scope project` to scope it to the current repo. Run `claude mcp list` to verify, then start a Claude Code session — `/mcp` lists every connected server. Continue to the [validation prompts](#after-you-connect).
+
+#### Cursor
+
+Open Cursor → **Settings → Cursor Settings → MCP**, click **Add new MCP server**, and paste the wizard's block. Cursor reloads its MCP servers without a restart. Ask it any of the [NovaMart questions below](#after-you-connect) to confirm the tools are wired.
+
+#### Continue
+
+Open `~/.continue/config.json` and add the wizard's `mcpServers.atlas` block under the top-level `mcpServers` key:
+
+```jsonc
+{
+  "mcpServers": {
+    "atlas": {
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "headers": { "Authorization": "Bearer <jwt>" }
+    }
+  }
+}
+```
+
+Continue picks up the change on its next reload — no restart needed. Validate with the [NovaMart prompts](#after-you-connect).
+
+#### ChatGPT
+
+In ChatGPT's **Settings → Connectors / MCP servers** panel, click **Add server** and paste the URL portion of the wizard's config block — ChatGPT performs DCR + PKCE on its own when you first invoke a tool, so you don't need to paste the bearer header manually. Once the consent screen returns to ChatGPT, ask one of the [NovaMart questions](#after-you-connect) to confirm.
+
+#### VS Code
+
+VS Code's GitHub Copilot Chat reads `.vscode/mcp.json` from the workspace root (or your user-level config). Create or extend it with:
+
+```jsonc
+{
+  "servers": {
+    "atlas": {
+      "type": "http",
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "headers": { "Authorization": "Bearer <jwt>" }
+    }
+  }
+}
+```
+
+Reload the window after saving — Copilot Chat picks up the new server on next start. Validate with the [NovaMart prompts](#after-you-connect).
+
+</Tab>
+<Tab value="Self-hosted (stdio)">
+
+Self-hosted Atlas exposes MCP over the **stdio** transport — the agent spawns Atlas as a subprocess and sends JSON-RPC frames on stdin / stdout. Identity comes from whatever shell/env you launch the process under. There is no OAuth; the assumption is the developer running the agent on their own machine *is* the trusted operator. Set `ATLAS_MCP_USER_ID` + `ATLAS_MCP_ORG_ID` in the env block if you want approval-rule and audit attribution to work the same way it does for chat — see [actor binding](#actor-binding-governed-vs-trusted-transport) below.
+
+### One-command install
 
 ```bash
 bunx @useatlas/mcp init --local
 ```
 
-This auto-detects Claude Desktop, Cursor, or Continue and prints a paste-ready config. Add `--write` to merge it directly into the detected client's config (a `.bak` is written first):
+Auto-detects Claude Desktop, Cursor, or Continue and prints a paste-ready config. Add `--write` to merge it into the detected client's config (a `.bak` is written first):
 
 ```bash
 bunx @useatlas/mcp init --local --write
@@ -21,27 +173,25 @@ bunx @useatlas/mcp init --local --write
 
 If `ATLAS_DATASOURCE_URL` is unset, the installer points at a bundled accounts/companies/people SQLite fixture so the install works zero-config. If a local Atlas is running at `http://localhost:3001` (override via `ATLAS_API_URL`), the installer leaves the datasource env blank so the MCP server inherits your shell env.
 
-> Hosted mode against Atlas SaaS is live. Run `bunx @useatlas/mcp init --hosted --write` to authorize via OAuth 2.1 (browser-based loopback flow — same shape as `gh auth login`) and merge a workspace-scoped server block into your MCP client config. Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor) can also connect directly using Dynamic Client Registration — see the [hosted endpoint reference](/guides/mcp-hosted).
-
 <Callout title="Prerequisites">
-- An MCP-compatible client (Claude Desktop, Cursor, Continue, or any stdio/SSE client)
-- LLM provider API key configured in the **client** (the MCP server itself does not call an LLM)
+- An MCP-compatible client (Claude Desktop, Claude Code, Cursor, Continue, or any stdio/SSE-capable client)
+- LLM provider API key configured in the **client** — the MCP server itself does not call an LLM
 - For real datasources beyond the demo fixture: `ATLAS_DATASOURCE_URL` exported in your shell, or a running Atlas at `localhost:3001`
 </Callout>
 
-## Manual setup (monorepo / advanced)
+### Manual setup (monorepo / advanced)
 
 ```bash
 bun run mcp              # Start MCP server on stdio
-bun run dev:mcp           # Start with hot reload
-bun run atlas -- mcp      # Same as bun run mcp
+bun run dev:mcp          # Start with hot reload
+bun run atlas -- mcp     # Same as `bun run mcp`
 ```
 
----
+### Per-client setup
 
-## Claude Desktop
+#### Claude Desktop
 
-Add Atlas to your Claude Desktop configuration at `~/.claude/claude_desktop_config.json`:
+Add Atlas to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```jsonc
 {
@@ -49,43 +199,103 @@ Add Atlas to your Claude Desktop configuration at `~/.claude/claude_desktop_conf
     "atlas": {
       "command": "bun",
       "args": ["run", "mcp"],
-      "cwd": "/path/to/your/atlas/project",  // Must point to your Atlas project root
+      "cwd": "/path/to/your/atlas/project",
       "env": {
         "ATLAS_DATASOURCE_URL": "postgresql://user:pass@host:5432/db",
         "ATLAS_PROVIDER": "anthropic",
-        "ANTHROPIC_API_KEY": "sk-ant-..."     // Your LLM provider API key
+        "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     }
   }
 }
 ```
 
----
+Restart Claude Desktop. Validate with the [NovaMart prompts](#after-you-connect).
 
-## Cursor
+#### Claude Code
 
-In Cursor settings, add an MCP server with:
+The CLI knows how to launch a stdio server by command + args:
+
+```bash
+claude mcp add atlas --scope user \
+  -- bun run mcp \
+  --env ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db \
+  --env ATLAS_PROVIDER=anthropic \
+  --env ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Run from inside your Atlas project root so the implicit `cwd` resolves the `mcp` script. `--scope user` makes Atlas available across every project; `--scope project` scopes to the current repo.
+
+#### Cursor
+
+In Cursor → **Settings → Cursor Settings → MCP**, click **Add new MCP server** and configure:
 
 - **Command:** `bun`
 - **Args:** `["run", "mcp"]`
 - **Working directory:** Your Atlas project root
+- **Env:** `ATLAS_DATASOURCE_URL`, `ATLAS_PROVIDER`, your provider API key
 
----
+Cursor reloads MCP servers without a restart.
 
-## Other MCP Clients
+#### Continue
 
-Any client that supports the stdio transport can use Atlas. The server reads JSON-RPC on stdin and writes responses to stdout. Logs go to stderr.
+Edit `~/.continue/config.json`:
 
----
+```jsonc
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "bun",
+      "args": ["run", "mcp"],
+      "cwd": "/path/to/your/atlas/project",
+      "env": {
+        "ATLAS_DATASOURCE_URL": "postgresql://user:pass@host:5432/db",
+        "ATLAS_PROVIDER": "anthropic",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
 
-## SSE Transport
+Continue picks up the change on its next reload.
 
-For remote or containerized setups, use the SSE (Server-Sent Events) transport:
+#### ChatGPT
+
+ChatGPT does not currently support stdio MCP servers — it speaks HTTP-only. To connect ChatGPT, use the [hosted endpoint](#install) instead.
+
+#### VS Code
+
+VS Code's Copilot Chat supports stdio MCP servers via `.vscode/mcp.json`:
+
+```jsonc
+{
+  "servers": {
+    "atlas": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["run", "mcp"],
+      "cwd": "/path/to/your/atlas/project",
+      "env": {
+        "ATLAS_DATASOURCE_URL": "postgresql://user:pass@host:5432/db",
+        "ATLAS_PROVIDER": "anthropic",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+Reload the window after saving.
+
+### SSE transport (remote / containerized stdio)
+
+For remote or containerized self-hosted setups, swap stdio for Server-Sent Events:
 
 ```bash
-# Start SSE transport on default port 8080
+# Default port 8080
 bun ./packages/mcp/bin/serve.ts --transport sse
-# Custom port for SSE transport
+# Custom port
 bun ./packages/mcp/bin/serve.ts --transport sse --port 9090
 # Restrict CORS to a specific origin (default: *)
 bun ./packages/mcp/bin/serve.ts --transport sse --cors-origin "https://example.com"
@@ -97,11 +307,45 @@ bun ./packages/mcp/bin/serve.ts --transport sse --cors-origin "https://example.c
 | `--port` | `8080` | Port for SSE transport |
 | `--cors-origin` | `*` (or `ATLAS_CORS_ORIGIN`) | CORS allowed origin |
 
-The SSE endpoint is available at `http://localhost:8080/mcp`.
+The SSE endpoint is at `http://localhost:8080/mcp`. This is *not* the same as the hosted Streamable HTTP endpoint — SSE here is a self-hosted convenience for piping the same stdio surface over the network without OAuth. If you want the OAuth-protected hosted shape on your own infrastructure, see the [Hosted MCP](#install) tab.
+
+</Tab>
+</Tabs>
 
 ---
 
-## Available Tools
+## After you connect
+
+Atlas ships with a NovaMart demo dataset (orders, customers, sellers, returns) — every workspace gets it on first sign-up, and every self-hosted install can opt in via `ATLAS_DEMO_INDUSTRY=ecommerce`. These five questions exercise the full agent loop and should all answer cleanly within seconds:
+
+1. **"What's our GMV this quarter?"** — Tests the canonical `total-gmv` metric path. The agent should call `runMetric` with `id: "total-gmv"` (no SQL hand-rolled).
+2. **"Top 5 customers by revenue last quarter."** — Exercises `executeSQL` with a `JOIN`, `WHERE` on a date dimension, `GROUP BY`, and `ORDER BY ... LIMIT 5`.
+3. **"Monthly order volume trend over the past 6 months."** — `executeSQL` with `date_trunc('month', ...)` and a 6-month window.
+4. **"Show me revenue last quarter."** — `revenue` is `status: ambiguous` in the demo glossary, so the agent should call `searchGlossary`, see the `ambiguous_term` envelope, and ask **which** definition you mean (GMV vs net revenue vs seller revenue) before running anything.
+5. **"What are our most common return reasons?"** — Tests `describeEntity('returns')` → `executeSQL` with `GROUP BY reason ORDER BY count DESC`.
+
+If your agent doesn't see the Atlas tools at all, **restart the client** — most MCP clients only re-read their config at startup.
+
+---
+
+## Client status
+
+Honest support matrix as of v1.4.1. "Tested" means the eval harness or a maintainer has run the full NovaMart loop end-to-end against this client. "Should work via DCR" means the client implements the MCP spec's authorization flow but we haven't run a full eval pass yet. "Untested" means we haven't tried it at all.
+
+| Client | Hosted | Self-hosted (stdio) | Notes |
+|--------|--------|---------------------|-------|
+| Claude Desktop | ✅ tested | ✅ tested | Native DCR support; restart after config change |
+| Claude Code | ✅ tested | ✅ tested | `mcp add` is the canonical install path |
+| Cursor | ✅ tested | ✅ tested | Reloads MCP servers without a restart |
+| Continue | ⏳ should work via DCR | ✅ tested | Stdio path is the validated one |
+| ChatGPT | ⏳ should work via DCR | ⚠️ not supported | ChatGPT speaks HTTP only — no stdio path |
+| VS Code (Copilot Chat) | ⏳ should work via DCR | ⏳ should work | `.vscode/mcp.json` shape recently stabilized |
+
+If you connect a client not listed here and it works (or it doesn't), [open an issue](https://github.com/AtlasDevHQ/atlas/issues/new) — we'd love to update the table.
+
+---
+
+## Available tools
 
 The MCP server exposes six tools — two general-purpose and four typed accessors over the semantic layer. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
 
@@ -115,7 +359,7 @@ command: "grep -r revenue entities/"
 command: "ls entities/"
 ```
 
-This is the same `explore` tool the agent uses -- read-only, path-traversal protected.
+This is the same `explore` tool the agent uses — read-only, path-traversal protected.
 
 ### executeSQL
 
@@ -278,7 +522,7 @@ if (result.isError) {
 
 ---
 
-## Prompt Templates
+## Prompt templates
 
 The MCP server exposes prompt templates via `prompts/list` and `prompts/get`, making Atlas discoverable in MCP clients where users can browse curated query patterns. Four sources are merged into a single list (in this order):
 
@@ -345,7 +589,7 @@ If an internal database (`DATABASE_URL`) is configured with the prompt library t
 
 ---
 
-## Available Resources
+## Available resources
 
 The MCP server exposes the semantic layer as read-only resources:
 
@@ -356,7 +600,7 @@ The MCP server exposes the semantic layer as read-only resources:
 | `atlas://semantic/entities/{name}` | Entity schema (e.g., `entities/orders.yml`) |
 | `atlas://semantic/metrics/{name}` | Metric definitions (e.g., `metrics/orders.yml`) |
 
-Entity and metric resources are listable -- clients can discover all available files.
+Entity and metric resources are listable — clients can discover all available files.
 
 ---
 
@@ -423,9 +667,320 @@ If approval rules are later enabled in the internal DB, MCP fails to boot on the
 | Governed | yes — matched against the bound user | bound user id |
 | Trusted | no — no rules in the deployment | `system:mcp` |
 
+### Hosted transport
+
+The hosted endpoint binds actor identity from the OAuth bearer's verified `sub` claim — there's no env-var configuration. Approval rules apply automatically; audit attributes every call to the user who minted the JWT.
+
 ---
 
-## Programmatic Usage
+## Hosted protocol reference
+
+This section is hosted-only. Self-hosted stdio installs don't speak HTTP, so URL patterns, OAuth flows, and per-region routing don't apply.
+
+### URL pattern
+
+```
+https://mcp.useatlas.dev/mcp/{workspace_id}/sse
+```
+
+The brand `mcp.useatlas.dev` hostname is the canonical surface every client config writes against. Per-region siblings exist for cross-region targeting:
+
+| Region | Brand hostname | Underlying api host |
+|--------|----------------|---------------------|
+| US | `mcp.useatlas.dev` | `api.useatlas.dev` |
+| EU | `mcp-eu.useatlas.dev` | `api-eu.useatlas.dev` |
+| APAC | `mcp-apac.useatlas.dev` | `api-apac.useatlas.dev` |
+
+Each `mcp*` hostname is a Railway custom domain fronting the same regional service as its `api.*` sibling — DNS, SSL, and routing are identical. Tokens issued post-cutover bind to the brand audience; the underlying `api.*` audience stays accepted for backward compatibility (one issuer, two audiences) so a token in flight at the moment of the flip never breaks. New clients should always write the brand URL.
+
+Hit any region with a workspace assigned to a different region and you'll get a `421 Misdirected Request` (see [Cross-region routing](#cross-region-routing) below). Use the workspace's home region.
+
+The single endpoint accepts:
+
+- `POST` — JSON-RPC frames (`initialize`, `tools/list`, `tools/call`, etc.)
+- `GET` — SSE notifications stream
+- `DELETE` — explicit session termination
+
+The MCP SDK handles dispatch automatically — clients pointed at the URL above just work.
+
+### Authentication
+
+Atlas's authorization server lives at `/api/auth`. Three discovery documents drive the OAuth flow:
+
+| Document | URL |
+|----------|-----|
+| Authorization-server metadata (RFC 8414) | `/.well-known/oauth-authorization-server/api/auth` |
+| OIDC discovery | `/.well-known/openid-configuration/api/auth` |
+| Protected-resource metadata (RFC 9728) | `/.well-known/oauth-protected-resource/mcp/{workspace_id}` |
+
+A standards-compliant MCP client:
+
+1. Hits the resource URL `/mcp/{workspace_id}/sse` without a bearer
+2. Receives a `401` with `WWW-Authenticate: Bearer realm="Atlas MCP", resource_metadata="…"` pointing at the protected-resource document
+3. Reads the document, finds Atlas's `/api/auth` issuer
+4. Registers as a public OAuth client via `POST /api/auth/oauth2/register` (DCR — no admin pre-issuance required)
+5. Sends the user through `/api/auth/oauth2/authorize` with PKCE + `scope=openid mcp:read offline_access`
+6. The user signs in (if needed), reviews and approves on `/oauth2/consent`
+7. Client exchanges the code at `/api/auth/oauth2/token` and gets a JWT access token + refresh token
+8. Reconnects to `/mcp/{workspace_id}/sse` with `Authorization: Bearer <jwt>`
+
+```http
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs…
+```
+
+#### Scopes
+
+| Scope | Grants |
+|-------|--------|
+| `openid` | The user's Atlas identity (`sub` claim) |
+| `profile` | Name and avatar |
+| `email` | Email address |
+| `offline_access` | A refresh token so the client doesn't have to send the user back through the browser |
+| `mcp:read` | Query workspace data through the MCP endpoint — required for any agent that wants to use Atlas as a data source |
+| `mcp:write` | Reserved for future write paths (run mutations, edit semantic layer). Currently the hosted MCP surface is read-only, so a token without `mcp:write` works for every shipping MCP tool |
+
+#### Audience
+
+Tokens are bound to a per-region resource audience (`https://mcp.useatlas.dev/mcp`, or `https://mcp-eu.useatlas.dev/mcp`, etc.). A token issued at `mcp.useatlas.dev` won't verify at `mcp-eu.useatlas.dev` — audience mismatch is the first line of residency defense. The protected-resource metadata advertises the correct audience for each workspace. The issuer additionally accepts the underlying regional `api.*.useatlas.dev/mcp` audience for backward compatibility with tokens minted before the brand-hostname cutover; new clients always bind to the brand audience.
+
+#### Workspace claim
+
+Every issued JWT carries a custom claim `https://atlas.useatlas.dev/workspace_id` set to the workspace the user authenticated against. The hosted MCP route verifies this claim matches the `{workspace_id}` path segment — mismatch is `403 cross_workspace_denied`. The server never reveals whether a given workspace exists.
+
+For users who belong to more than one workspace, the JWT also carries a plural `https://atlas.useatlas.dev/workspace_ids` claim listing every workspace the user is a member of. The CLI installer reads this at write-time to offer the **multi-workspace** setup flow described below; the runtime authorization layer ignores the plural claim and does a live DB check against `member` + `oauth_client_workspace_grants` so workspace-membership revocation takes effect immediately rather than waiting for token refresh.
+
+### Workspace scoping
+
+Atlas supports two scoping modes per OAuth client:
+
+#### Single-workspace (default)
+
+The agent is bound to its origin workspace. The path workspace MUST match the JWT's singular `workspace_id` claim:
+
+```http
+GET /mcp/org_b/sse                 ← path workspace
+Authorization: Bearer <jwt>        ← workspace_id claim = org_a
+→ 403 cross_workspace_denied
+```
+
+This guards against probing: a user authenticated against workspace A cannot pivot to workspace B by URL.
+
+#### Multi-workspace ([#2073](https://github.com/AtlasDevHQ/atlas/issues/2073))
+
+Users with access to multiple workspaces can opt one OAuth client into **cross-workspace** operation: a single install serves every workspace they're a member of. The runtime resolves the workspace per request via this priority chain (highest first):
+
+1. `X-Atlas-Workspace: <id>` — explicit per-request override (use this if your agent framework supports custom headers)
+2. `X-Atlas-Default-Workspace: <id>` — bridged from the agent's `ATLAS_DEFAULT_WORKSPACE` env at the framework boundary (forward-compat: today no MCP client framework auto-bridges the env, but operators wiring their own wrapper can set it once and have every request inherit it)
+3. Path workspace (`{workspace_id}` in the URL) — the install-time default
+
+After resolution, the request is admitted only if both:
+
+- An entry exists in `oauth_client_workspace_grants` for `(client_id, resolved_workspace)` (admin policy: which workspaces did the user opt this agent into?)
+- The user is currently a member of `resolved_workspace` (org policy: live check, no 1-hour token-refresh delay)
+
+Either check failing returns `403 cross_workspace_denied` with an actionable hint distinguishing the two failure modes.
+
+##### Enabling multi-workspace
+
+When you run `bunx @useatlas/mcp init --hosted --write` from a multi-workspace account, the installer prompts:
+
+```
+You belong to 3 workspaces. Configure this agent for:
+  [1] Just org_a (active workspace, default)
+  [2] All your workspaces (workspace-aware via X-Atlas-Workspace)
+Choice [1]:
+```
+
+Picking `[2]` writes the same `mcpServers.atlas.url` (pinned to your active workspace) plus an `env.ATLAS_DEFAULT_WORKSPACE` block as a forward-compat marker. After the install, open **Settings → AI Agents** to grant this agent access to your other workspaces — that's where the `oauth_client_workspace_grants` rows are written. The "Multi-workspace" toggle next to each agent flips the scope between `single` and `multi`; per-workspace revoke removes a single grant without touching the others.
+
+Single-workspace clients continue to work unchanged after this feature shipped — the legacy code path is preserved for OAuth clients that have no row in `oauth_client_workspace_scope`.
+
+### Cross-region routing
+
+Atlas guarantees data residency from 1.0.0 onward. The MCP endpoint enforces this strictly: a request for an EU workspace that lands on the US instance returns `421 Misdirected Request`, even when the API is configured for graceful (non-strict) routing on the data path.
+
+```json
+{
+  "error": "misdirected_request",
+  "message": "MCP requests for this workspace must be directed to the eu-west region.",
+  "correctApiUrl": "https://mcp-eu.useatlas.dev",
+  "expectedRegion": "eu-west",
+  "actualRegion": "us-east",
+  "requestId": "…"
+}
+```
+
+MCP clients do not follow HTTP redirects by default, so the response body carries the correct URL. Clients should read `correctApiUrl` and reconnect against that hostname.
+
+### Sessions and identity
+
+A POST without the `mcp-session-id` header is treated as a session-init request — the SDK creates a fresh server-side MCP session bound to the bearer's verified identity and returns the new session id in the response header. Subsequent frames send the header back and route to the same session. POSTs with an unknown session id return `404 unknown_session`; the client recovers by re-initializing.
+
+The session lives in memory on the API instance that handled init. The hosted deployment runs each regional API service (`api`, `api-eu`, `api-apac`) pinned to a single replica because Railway's load balancer does not support sticky sessions; horizontal scale is achieved by adding regions, not by adding replicas within a region.
+
+`DELETE` on the URL (with the `mcp-session-id` header) tears the session down. Sessions are also garbage-collected when the underlying connection drops.
+
+### Audit
+
+A `mcp_session.start` row is written to the workspace's admin action log when a session is established — once per session, not per JSON-RPC frame. The row metadata carries `sessionId`, `orgId`, `clientId` (the registered OAuth client — e.g. `claude-desktop` or a DCR-allocated UUID), and `region`.
+
+OAuth client lifecycle (register, rotate, delete) and token lifecycle (issue, revoke) are recorded by Better Auth's `oauthProvider` plugin in its own tables (`oauthClient`, `oauthAccessToken`, `oauthRefreshToken`, `oauthConsent`).
+
+### Inspecting and revoking clients
+
+Two surfaces, same data. Pick the one that fits the situation.
+
+#### Settings → AI Agents (per-user)
+
+Any workspace user can see **their own** connected agents at **Settings → AI Agents** (`/settings/ai-agents`). Each row shows the registered name, redirect URIs, registration date, last-use timestamp, and outstanding token count. The per-row **Revoke** invalidates every access token, refresh token, and consent record for that (client, user) pair — the agent will re-register cleanly via DCR on its next authorization attempt.
+
+Use this when you want to manage your own agents without bothering an admin: a laptop you don't use anymore, an agent you're done experimenting with, or a quick "rotate everything" before lending the device.
+
+#### Admin → OAuth Clients (workspace-wide)
+
+Workspace admins additionally see **every** OAuth client registered against the workspace at **Admin → Users & Access → OAuth Clients** (`/admin/oauth-clients`). Same per-row Revoke; same atomic revocation semantics. An `oauth_client.revoke` row lands in the admin action log carrying the per-table revocation counts (and identifying whether the actor was a user revoking their own client or an admin revoking someone else's).
+
+Use this when:
+
+- A laptop running an authorized MCP client is lost and the user can't sign in to revoke from their own settings
+- A teammate offboards and every agent they registered should be invalidated
+- A registered client name no longer matches the agent it was issued to (clean it up — DCR will re-register fresh)
+
+### Token refresh contract
+
+Atlas's auth server issues both **access tokens** and **refresh tokens** when a client authorizes with the `offline_access` scope (the standard MCP install path requests it). SDK consumers should expect the following contract — Atlas will not change it without a major version bump.
+
+#### Default lifetimes
+
+| Token | Default | Override |
+|---|---|---|
+| Access token (JWT) | **1 hour** | `ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS` |
+| Refresh token (opaque) | **30 days** | `ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS` |
+| Authorization code | 10 minutes | inherits Better Auth default; no Atlas env override |
+
+The lifetimes are global per Atlas instance — they do not vary by workspace, scope, or client. The `expires_in` field in every token response carries the absolute remaining seconds for the access token; clients should refresh before that window closes.
+
+#### Refresh path (the happy case)
+
+A standards-compliant MCP SDK refreshes transparently. When the access token's `exp` claim has passed, the next `tools/call` frame returns `401`; the SDK exchanges the refresh token at the auth server's `/api/auth/oauth2/token` endpoint with `grant_type=refresh_token`, receives a fresh access token, and replays the frame. The user observes no interruption.
+
+Each successful refresh increments the `atlas.oauth.token_refresh` OTel counter (attributes: `client.id`, `deploy.mode`) and writes an `oauth_token.refresh` row to the workspace's admin action log. Operators who want a per-agent rotation cadence dashboard wire those signals to whichever observability stack they run.
+
+Refresh-token rotation per [RFC 6749 §6](https://datatracker.ietf.org/doc/html/rfc6749#section-6) is **not** enabled — the same refresh token survives across exchanges until it expires or is revoked. This matches Better Auth's `oauth-provider` plugin defaults and the MCP spec's deployment notes; SDK authors who want strict rotation must wrap the underlying refresh response themselves.
+
+#### Refresh failure (the recovery contract)
+
+When the refresh exchange itself returns `400 invalid_grant`, the refresh token has expired or been revoked. The next `tools/call` frame against the resource server returns `401` with a `WWW-Authenticate` header pointing back at the auth-server resource-metadata endpoint:
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="Atlas",
+                  error="invalid_token",
+                  error_description="The access token expired",
+                  resource_metadata="https://api.useatlas.dev/.well-known/oauth-protected-resource"
+```
+
+The contract for the client is:
+
+1. Read `resource_metadata` from the header.
+2. Fetch it (or look up the cached copy) to discover the auth server's authorization endpoint.
+3. Re-run Dynamic Client Registration if the `client_id` was deleted on the server side (e.g. an admin or the user revoked the OAuth client). Otherwise re-run the standard authorization-code + PKCE dance against the existing `client_id`.
+
+Atlas does **not** leak the underlying revocation reason in the response body. A revoked OAuth client and a naturally-expired refresh token return the same `401` envelope — the client cannot distinguish them and should treat both as "re-authorize." The `oauth_client.revoke` audit row carries the actor; the user can see what happened from the workspace's admin log.
+
+#### Token-state on the per-user listing
+
+`GET /api/v1/me/oauth-clients` carries a `tokenState` field per client:
+
+| State | Meaning | UI affordance |
+|---|---|---|
+| `active` | Enabled client with at least one outstanding non-expired access or refresh token | Status dot, no badge |
+| `reconnect_required` | Enabled client with no usable token left — the next frame will 401 with `WWW-Authenticate` | Amber badge + Reconnect CTA |
+| `revoked` | The client row is `disabled = true`. **Reserved for a future soft-revoke flow** — v1.4.1 revoke performs a hard `DELETE`, so this state is never produced by current code paths. The UI rendering exists so the contract is pinned for the next iteration. | Dimmed row, deletion is the next step |
+
+The Settings → AI Agents page renders these three states verbatim. Ops queries should pivot on `tokenState` rather than re-deriving it from `disabled` + `tokenCount`.
+
+### Per-client rate limiting
+
+The hosted MCP endpoint enforces a **per-OAuth-client** weighted request quota. Default is **60 weighted requests/minute** per registered client, scoped by `(workspace_id, client_id)` so one greedy agent (an experimental polling loop, a runaway script) cannot starve siblings registered against the same workspace.
+
+#### Per-tool weights
+
+Not all tools are equal. The bucket is debited per dispatch by the tool's weight:
+
+| Tool                                  | Weight |
+| ------------------------------------- | ------ |
+| `executeSQL`, `explore`               | 5      |
+| `runMetric`                           | 3      |
+| `listEntities`, `describeEntity`, `searchGlossary` | 1 |
+
+A 60/min budget admits roughly **12 `executeSQL` calls** or **60 `listEntities` calls** per minute. Mixing tools costs the sum of their weights.
+
+#### When the bucket empties
+
+The dispatch returns the standard MCP error envelope ([#2030](https://github.com/AtlasDevHQ/atlas/issues/2030)) as the tool result text:
+
+```json
+{
+  "code": "rate_limited",
+  "message": "OAuth client \"<id>\" exceeded its hosted-MCP quota (60 weighted requests/min).",
+  "hint": "Wait <N>s before retrying. The admin can raise this client's quota in Settings → OAuth Clients.",
+  "retry_after": 12
+}
+```
+
+`retry_after` is whole seconds; agents should branch on `code === "rate_limited"` and back off for that long. The body of an outer 429 (when one is emitted at the HTTP boundary) carries the same value in the `Retry-After` header. Every denied dispatch writes an `mcp_session.rate_limited` row to the audit log so admins can pivot on `actorKind=mcp` to see which client is hitting the limit and how often.
+
+#### Admin override per client
+
+Admins can raise or lower the per-client quota at **Settings → OAuth Clients** (the "Rate" button on each row). Bound: 1..3600 requests/minute. A client without an explicit override uses the workspace default. Override changes write `oauth_client.rate_limit_update` to the audit log with the previous → new delta.
+
+The override is also addressable directly:
+
+```bash
+# Raise claude-desktop's quota to 300/min
+curl -X PATCH \
+  -H "Authorization: Bearer <admin_session_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"requestsPerMinute": 300}' \
+  https://api.useatlas.dev/api/v1/admin/oauth-clients/claude-desktop/rate-limit
+
+# Reset to the workspace default
+curl -X PATCH \
+  -H "Authorization: Bearer <admin_session_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"requestsPerMinute": null}' \
+  https://api.useatlas.dev/api/v1/admin/oauth-clients/claude-desktop/rate-limit
+```
+
+#### What's not covered (yet)
+
+- **Cross-region reconciliation.** Each regional API has its own in-process buckets. A determined attacker holding tokens in `us`, `eu`, and `apac` can hit each region's quota independently, so the effective ceiling is `regions × per-client quota` rather than a single global one. Tracked as out-of-scope on [#2071](https://github.com/AtlasDevHQ/atlas/issues/2071).
+- **Multi-replica cache staleness.** Within a single region, the limiter cache is in-process. The `numReplicas: 1` pin documented above (under "Operational notes") means there's only one replica per regional service today, so an admin override invalidates the live cache immediately. If a future deployment lifts that pin (paired with the work tracked in [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069)), expect a brief staleness window after a `PATCH .../rate-limit` until the other replicas's caches expire — for now the override surface and the running limiter are pinned to the same process.
+- **Override DB outage.** If the internal database is unreachable when the limiter first sees a `(workspace, client)` pair, the loader logs a warning and the bucket falls back to the workspace default until the cache is refilled. This is fail-open by design (legitimate traffic keeps flowing during a DB blip), but an admin who set a low quota for an abusive client should know the override is bypassed during such a window. Operators paged on `oauth_client_rate_limits lookup failed` log lines have the signal to act.
+- **Tiered pricing.** The override mechanism is admin-only today; no usage-based billing tier consumes it. Will fold in alongside the v1.5 billing work.
+
+### Operational notes
+
+- **Max sessions per instance** is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100). Hitting the cap returns `503 too_many_sessions`. The cap counts both registered sessions and in-flight initializations.
+- **Single replica per regional service.** Sessions are in-process — a frame routed to a different replica than the one that ran `initialize` returns `404 unknown_session`. Railway's load balancer does not support sticky sessions ([Railway docs](https://docs.railway.com/reference/scaling)), so each regional API service (`api`, `api-eu`, `api-apac`) is pinned to `numReplicas: 1` in `deploy/<service>/railway.json`. Atlas's hosted deployment scales horizontally by adding regions, not replicas-within-region. The path to lifting the cap (move sessions out of memory into the existing internal Postgres) is tracked in [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069); raising `numReplicas` before that ships will silently break every active MCP session on every reroute.
+- **Region failure mode**: residency is fail-closed. If the region of the workspace cannot be looked up (internal DB unreachable), this surface returns `503 region_unavailable` rather than serving traffic that might cross residency.
+- **Unauthenticated DCR** is enabled by default to support standard MCP clients. Operators with stricter threat models can opt out via `ATLAS_OAUTH_ALLOW_UNAUTH_DCR=false` — but doing so prevents Claude Desktop / ChatGPT / Cursor from onboarding without manual client provisioning.
+- **`mcp.useatlas.dev` brand hostnames are the canonical surface.** `mcp.useatlas.dev`, `mcp-eu.useatlas.dev`, and `mcp-apac.useatlas.dev` are the URLs every client config and registry entry writes against — the protected-resource metadata advertises them, the CLI installer defaults to them, and OAuth tokens minted post-cutover bind to the brand audience (`https://mcp.useatlas.dev/mcp`). The underlying regional `api.*` hostnames stay reachable and the issuer keeps accepting the regional audience for backward compatibility, but new clients should always walk forward to the brand URL.
+
+### Migrating from the v1.4.0-dev `mcp_tokens` bearer
+
+PR A of #2024 introduced a custom `mcp_tokens` table for admin-minted bearers. PR C replaced it with OAuth 2.1 access tokens before v1.4.0 shipped — there are no production tokens to migrate. Self-hosted dev DBs that ran migration `0046_mcp_tokens.sql` get the table dropped by `0047_drop_mcp_tokens.sql` automatically.
+
+If you'd built a script against the legacy `/api/v1/admin/mcp-tokens` endpoints, replace it with:
+
+- `POST /api/auth/oauth2/register` for client registration (RFC 7591 / DCR)
+- `POST /api/auth/oauth2/token` with the `client_credentials` grant for machine-to-machine
+- `POST /api/auth/oauth2/revoke` for revocation (RFC 7009)
+
+---
+
+## Programmatic usage
 
 Create an MCP server instance in your own code:
 
@@ -437,7 +992,7 @@ const server = await createAtlasMcpServer();
 // Connect to any transport: server.connect(stdioTransport) or server.connect(sseTransport)
 ```
 
-> `@atlas/mcp` is an internal monorepo package — this snippet only resolves from inside the Atlas repo (or via the `@useatlas/mcp` plugin, which wraps it). Use the [stdio entry point](#quick-start) for external integrations.
+> `@atlas/mcp` is an internal monorepo package — this snippet only resolves from inside the Atlas repo (or via the `@useatlas/mcp` plugin, which wraps it). Use the [stdio entry point](#install) for external integrations.
 
 The server factory initializes configuration, registers tools, resources, and prompt templates, and returns a ready-to-use `McpServer` instance. Connect it to any transport (stdio, SSE, or custom).
 
@@ -445,26 +1000,38 @@ The server factory initializes configuration, registers tools, resources, and pr
 
 ## Troubleshooting
 
-**"ATLAS_DATASOURCE_URL is not set"** -- The MCP server requires the same environment variables as the main API. Set them in your MCP client config's `env` block or ensure they're available in the shell.
+**Tools not appearing in your client** — Restart the client after changing its config; most MCP clients only re-read config at startup. Then verify the tool list with whatever discovery UI your client exposes (Claude Desktop's "Search and tools" toggle, Cursor's MCP servers panel, ChatGPT's connector list).
 
-**Tools not appearing in Claude Desktop** -- Restart Claude Desktop after changing `claude_desktop_config.json`. Check the `cwd` path points to your Atlas project root (where `package.json` and `semantic/` live).
+**"ATLAS_DATASOURCE_URL is not set"** (self-hosted) — The MCP server requires the same environment variables as the main API. Set them in your MCP client config's `env` block or ensure they're available in the shell.
 
-**SSE connection refused** -- The MCP server defaults to stdio, not SSE. Verify you started with `--transport sse` (e.g., `bun packages/mcp/bin/serve.ts --transport sse`). Check the port is not already in use (default 8080) and firewall rules allow the connection.
+**`cwd` errors in Claude Desktop** (self-hosted) — Verify the `cwd` path points to your Atlas project root (where `package.json` and `semantic/` live).
+
+**SSE connection refused** (self-hosted) — The MCP server defaults to stdio, not SSE. Verify you started with `--transport sse` (e.g., `bun packages/mcp/bin/serve.ts --transport sse`). Check the port is not already in use (default 8080) and firewall rules allow the connection.
+
+**`401` with `WWW-Authenticate: Bearer` after months of working** (hosted) — Your refresh token expired (default 30 days) or your OAuth client was revoked. Re-run the install path that issued it; standards-compliant clients re-bootstrap via DCR + PKCE automatically.
+
+**`421 Misdirected Request`** (hosted) — Your workspace lives in a different region than the URL you hit. Read `correctApiUrl` from the response body and reconnect there.
+
+**`403 cross_workspace_denied`** (hosted) — The bearer is for a different workspace than the path. Either fix the URL to match the JWT's `workspace_id` claim, or grant this OAuth client access to the requested workspace at **Settings → AI Agents** (multi-workspace flow).
 
 See [Troubleshooting](/guides/troubleshooting) for general diagnostic steps.
 
 ---
 
-## Atlas MCP vs Raw Database MCP
+## Atlas MCP vs raw database MCP
 
 Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop directly to your database with a tool like DBHub? Atlas's MCP server routes every query through the [SQL validation pipeline](/security/sql-validation) and gives the AI your semantic layer for context — not just raw schema metadata. See [Atlas vs Raw MCP](/comparisons/raw-mcp) for a full comparison.
 
 ---
 
-## See Also
+## See also
 
 - [CLI Reference](/reference/cli#mcp) — `atlas mcp` command flags and transport options
 - [Environment Variables](/reference/environment-variables) — Variables used by the MCP server
 - [SQL Validation Pipeline](/security/sql-validation) — How queries from MCP clients are validated
 - [Sandbox Architecture](/architecture/sandbox) — Design doc for code execution isolation across platforms
 - [Troubleshooting](/guides/troubleshooting) — General diagnostic steps
+- [MCP authorization spec (2025-03-26)](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization)
+- [OAuth 2.1 (draft)](https://datatracker.ietf.org/doc/draft-ietf-oauth-v2-1/)
+- [RFC 7591 — Dynamic Client Registration](https://datatracker.ietf.org/doc/html/rfc7591)
+- [RFC 9728 — Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)

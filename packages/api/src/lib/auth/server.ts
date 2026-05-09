@@ -78,6 +78,31 @@ const log = createLogger("auth:server");
 const billingLog = createLogger("billing");
 
 /**
+ * Role gate for SCIM token generation. SCIM tokens are bearer tokens an
+ * external IdP uses to provision/deprovision users in the workspace, so
+ * minting one is an admin-level action.
+ *
+ * Mirrors the canonical `ADMIN_ROLES` triple used by every other admin
+ * gate (middleware.ts:adminAuth, admin-auth.ts:requireAdminAuth,
+ * admin-router.ts:createAdminRouter). #2242 — pre-fix this set was
+ * {admin, platform_admin} which bombed org owners with "Only admin users
+ * can generate SCIM tokens" even though they could manage SCIM
+ * connections at `/api/v1/admin/scim/*`.
+ *
+ * Note: SCIM token-generation lives on Better Auth's catch-all
+ * (`POST /api/auth/scim/generate-token`), NOT under `createAdminRouter()`
+ * — so the `beforeSCIMTokenGenerated` hook that calls this predicate IS
+ * the role gate, not a defense-in-depth guard.
+ *
+ * Hardcoded literal (not imported from `@useatlas/types/auth:ADMIN_ROLES`)
+ * because this file is template-synced to create-atlas; see the same
+ * pattern in `api/routes/middleware.ts`.
+ */
+export function canMintSCIMToken(role: unknown): boolean {
+  return role === "admin" || role === "owner" || role === "platform_admin";
+}
+
+/**
  * Promote the org creator's user-level role to "admin" so Better Auth's
  * admin plugin APIs (list users, manage roles, etc.) work. Without this,
  * org owners have user.role="member" and Better Auth blocks admin
@@ -1197,14 +1222,12 @@ export function buildPlugins() {
       scim({
         storeSCIMToken: "encrypted",
         async beforeSCIMTokenGenerated(data) {
-          // Only admins can generate SCIM tokens — enforced via Better Auth hook.
-          // The admin check is done upstream by the admin route preamble;
-          // this hook acts as a defense-in-depth guard.
-          // Cast needed: the admin plugin adds `role` to the user object but the
-          // SCIM plugin's hook type only includes base user fields.
+          // Cast needed: the admin plugin adds `role` to the user
+          // object but the SCIM plugin's hook type only includes base
+          // user fields.
           const user = data.user as Record<string, unknown> | undefined;
-          if (user?.role !== "admin" && user?.role !== "platform_admin") {
-            throw new Error("Only admin users can generate SCIM tokens.");
+          if (!canMintSCIMToken(user?.role)) {
+            throw new Error("Only admin, owner, or platform-admin users can generate SCIM tokens.");
           }
         },
       }),

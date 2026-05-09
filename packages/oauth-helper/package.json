@@ -1,0 +1,28 @@
+{
+  "name": "@atlas/oauth-helper",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "Transport-agnostic OAuth 2.1 + DCR + PKCE primitives shared by @useatlas/sdk and @useatlas/mcp. Internal-only — not published to npm.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./errors": "./src/errors.ts",
+    "./brands": "./src/brands.ts",
+    "./discover": "./src/discover.ts",
+    "./register": "./src/register.ts",
+    "./pkce": "./src/pkce.ts",
+    "./authorize-url": "./src/authorize-url.ts",
+    "./exchange": "./src/exchange.ts",
+    "./validate": "./src/validate.ts",
+    "./jwt": "./src/jwt.ts"
+  },
+  "scripts": {
+    "test": "bun test __tests__/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/oauth-helper"
+  }
+}

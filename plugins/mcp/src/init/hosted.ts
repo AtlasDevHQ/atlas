@@ -1,6 +1,6 @@
 /**
  * `init --hosted` flow: OAuth 2.1 authorization-code-with-PKCE against the
- * hosted Atlas MCP endpoint (#2024 PR E).
+ * hosted Atlas MCP endpoint.
  *
  * ── Why loopback (RFC 8252) over device code (RFC 8628) ────────────────
  *
@@ -31,6 +31,19 @@
  * only artifact written is the JWT access token (and optional refresh
  * token), inside the user's MCP client config file at mode 0o600.
  *
+ * ── Where the protocol lives ───────────────────────────────────────────
+ *
+ * Discovery, DCR, PKCE, authorization-URL construction, token exchange,
+ * the HTTPS-only token-endpoint guard, JWT-payload decode, and
+ * issuer enforcement are all in `@atlas/oauth-helper` — vendored into
+ * `./_oauth-helper/` at install time so the published `@useatlas/mcp`
+ * carries a self-contained copy. This file owns the loopback transport
+ * (browser launch, listener, callback resolver, plural-claim extraction)
+ * and translates helper errors into `HostedFlowError` for the CLI's
+ * exit-code mapping. Spec quirks and security hardenings land in the
+ * helper once and reach both `@useatlas/sdk` and `@useatlas/mcp` at the
+ * same time.
+ *
  * ── Test seams ─────────────────────────────────────────────────────────
  *
  * Every external dependency is overrideable so the unit tests in
@@ -41,9 +54,23 @@
  *   - `openBrowserImpl`      — browser launch (returns success/failure)
  *   - `serveImpl`            — loopback listener factory
  *   - `randomBytesImpl`      — PKCE verifier + state (deterministic asserts)
- *   - `nowImpl`              — for the 5-minute timeout
  *   - `consoleImpl`          — captures user-facing output
  */
+
+import {
+  OAuthHelperError,
+  buildAuthorizationUrl,
+  decodeJwtPayload,
+  discover,
+  enforceIssuer,
+  exchangeCode,
+  generatePkce,
+  generateState,
+  register,
+  validateIssuerUrl,
+  type Bearer,
+  type OAuthHelperErrorCode,
+} from "../_oauth-helper";
 
 // ── External shape contracts (test seams) ──────────────────────────────
 
@@ -105,13 +132,11 @@ export interface HostedFlowOptions {
 }
 
 /**
- * Branded `string` for OAuth bearer credentials. The brand carries no
- * runtime cost; its purpose is to surface bearer-handling code in code
- * review (`accessToken: Bearer` next to a `console.log` is a smell) and
- * to keep the secret-vs-non-secret distinction visible in the type, not
- * just in trailing comments.
+ * Re-exported from `@atlas/oauth-helper` so existing CLI consumers
+ * importing `Bearer` from this module keep working — the canonical
+ * brand now lives in the helper, shared with `@useatlas/sdk`.
  */
-export type Bearer = string & { readonly __brand: "Bearer" };
+export type { Bearer };
 
 export interface HostedFlowResult {
   /** OAuth 2.1 access token (signed JWT). Treat as a credential. */
@@ -121,7 +146,7 @@ export interface HostedFlowResult {
   /** The `https://atlas.useatlas.dev/workspace_id` claim from the JWT. */
   workspaceId: string;
   /**
-   * The `https://atlas.useatlas.dev/workspace_ids` plural claim (#2073),
+   * The `https://atlas.useatlas.dev/workspace_ids` plural claim,
    * if present in the JWT. Atlas mints this for users belonging to more
    * than one workspace; the CLI uses it to decide whether to prompt for
    * single-vs-multi-workspace setup at write time. Empty array (or
@@ -132,53 +157,46 @@ export interface HostedFlowResult {
   mcpUrl: string;
 }
 
-// ── OAuth 2.1 metadata + DCR shapes ────────────────────────────────────
-//
-// Restricted to fields we actually consume. Better Auth's discovery doc
-// includes more (e.g. `userinfo_endpoint`, `revocation_endpoint`) but
-// nothing else is load-bearing for the loopback flow.
-
-interface AuthServerMetadata {
-  authorization_endpoint: string;
-  token_endpoint: string;
-  registration_endpoint: string;
-  issuer: string;
-}
-
-interface RegistrationResponse {
-  client_id: string;
-}
-
-interface TokenResponse {
-  access_token: string;
-  refresh_token?: string;
-  token_type?: string;
-  expires_in?: number;
-  scope?: string;
-}
-
 // ── Errors ─────────────────────────────────────────────────────────────
 
 /**
- * Stable error code for tests + exit-code mapping. Exported as a named
- * union so call sites can `satisfies HostedFlowErrorCode` against the
- * full set (e.g. an exhaustive switch over CLI exit codes).
+ * Stable error code for tests + exit-code mapping. The first eight
+ * values are 1:1 with `@atlas/oauth-helper`'s `OAuthHelperErrorCode`
+ * — the helper's HTTPS-only token-endpoint guard surfaces here as
+ * `invalid_token_endpoint` so the CLI's exit-code switch and the
+ * existing test suite continue to operate on a single union. The
+ * remaining values are loopback / browser / callback codes the CLI
+ * alone produces.
  */
 export type HostedFlowErrorCode =
   | "invalid_api_url"
+  | "invalid_token_endpoint"
   | "discovery_failed"
   | "issuer_mismatch"
   | "registration_failed"
+  | "token_exchange_failed"
+  | "malformed_jwt"
+  | "missing_workspace_claim"
   | "loopback_bind_failed"
   | "browser_failed"
   | "callback_timeout"
   | "callback_state_mismatch"
   | "callback_missing_code"
   | "callback_oauth_error"
-  | "callback_method_not_allowed"
-  | "token_exchange_failed"
-  | "malformed_jwt"
-  | "missing_workspace_claim";
+  | "callback_method_not_allowed";
+
+/**
+ * Compile-time witness that `OAuthHelperErrorCode ⊂ HostedFlowErrorCode`.
+ * If a future helper code arm doesn't exist on `HostedFlowErrorCode`,
+ * `_HelperCodeIsSubset` resolves to `never` and the assignment fails
+ * the type check. Catches the drift class the `liftHelper` casts below
+ * implicitly assume.
+ */
+type _HelperCodeIsSubset = OAuthHelperErrorCode extends HostedFlowErrorCode
+  ? true
+  : never;
+const _hostedFlowErrorCodeWitness: _HelperCodeIsSubset = true;
+void _hostedFlowErrorCodeWitness;
 
 export class HostedFlowError extends Error {
   constructor(
@@ -191,11 +209,51 @@ export class HostedFlowError extends Error {
   }
 }
 
+/**
+ * Re-throw any `OAuthHelperError` as a `HostedFlowError` carrying the
+ * same code. `_hostedFlowErrorCodeWitness` above proves the cast at
+ * compile time.
+ *
+ * Non-`OAuthHelperError` throws (e.g. a misconfigured `fetchImpl` or
+ * `serveImpl` panicking with a `TypeError`) bypass the typed-error
+ * contract by design — the helper layer is the only legitimate source
+ * of `OAuthHelperError`, so anything else is a programmer error worth
+ * surfacing with its original stack rather than coerced into a fake
+ * `HostedFlowErrorCode`. The CLI's outer catch in `bin/cli.ts` prints
+ * the raw stack in that branch.
+ */
+async function liftHelper<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof OAuthHelperError) {
+      throw new HostedFlowError(err.message, err.code, { cause: err });
+    }
+    throw err;
+  }
+}
+
+function liftHelperSync<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof OAuthHelperError) {
+      throw new HostedFlowError(err.message, err.code, { cause: err });
+    }
+    throw err;
+  }
+}
+
 // ── Constants ──────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 30 * 1000;
-const REQUESTED_SCOPE = "openid profile email mcp:read offline_access";
+const REQUESTED_SCOPES: ReadonlyArray<string> = [
+  "openid",
+  "profile",
+  "email",
+  "mcp:read",
+  "offline_access",
+];
 const CLIENT_NAME = "Atlas MCP CLI";
 const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
 const WORKSPACES_CLAIM = "https://atlas.useatlas.dev/workspace_ids";
@@ -214,11 +272,11 @@ export async function runHostedAuthFlow(
   options: HostedFlowOptions,
 ): Promise<HostedFlowResult> {
   const apiUrl = options.apiUrl.replace(/\/+$/, "");
-  validateApiUrl(apiUrl);
+  liftHelperSync(() => validateIssuerUrl(apiUrl));
   const fetchImpl = options.fetchImpl ?? fetch;
   const serveImpl = options.serveImpl ?? defaultServeImpl;
   const openBrowserImpl = options.openBrowserImpl ?? defaultOpenBrowserImpl;
-  const randomBytes = options.randomBytesImpl ?? defaultRandomBytes;
+  const randomBytesImpl = options.randomBytesImpl;
   const cli: ConsoleImpl = options.consoleImpl ?? {
     log: (m) => console.log(m),
     error: (m) => console.error(m),
@@ -226,15 +284,14 @@ export async function runHostedAuthFlow(
   const timeoutMs = options.callbackTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   // Step 1 — discovery
-  const metadata = await discover(apiUrl, fetchImpl);
+  const metadata = await liftHelper(() => discover(apiUrl, { fetchImpl }));
 
   // Step 2 — generate PKCE + state and start the loopback listener BEFORE
   // registering, so we know the redirect_uri the OS picked. RFC 8252
   // §7.3 says clients SHOULD bind to 127.0.0.1 with port 0 and use
   // whatever port they get back.
-  const state = encodeBase64Url(randomBytes(32));
-  const codeVerifier = encodeBase64Url(randomBytes(32));
-  const codeChallenge = await pkceChallenge(codeVerifier);
+  const state = generateState({ randomBytesImpl });
+  const { codeVerifier, codeChallenge } = await generatePkce({ randomBytesImpl });
 
   const callbackResolver = createCallbackResolver(state, timeoutMs);
   // intentionally ignored: the outer `finally` calls `cancel()`, which
@@ -251,18 +308,29 @@ export async function runHostedAuthFlow(
     const redirectUri = `http://127.0.0.1:${server.port}/callback`;
 
     // Step 3 — register a public client via DCR
-    const clientId = await register(metadata, redirectUri, fetchImpl);
+    const clientId = await liftHelper(() =>
+      register(
+        metadata,
+        {
+          redirectUri,
+          clientName: CLIENT_NAME,
+          scopes: REQUESTED_SCOPES,
+        },
+        { fetchImpl },
+      ),
+    );
 
     // Step 4 — open the browser. Failure is non-fatal: print the URL
     // (already printed before the launch attempt) and continue waiting.
     // In headless / CI shells the user will hit `callback_timeout`
     // instead — the message there links back to the printed URL above.
-    const authorizeUrl = buildAuthorizeUrl({
+    const authorizeUrl = buildAuthorizationUrl({
       authorizationEndpoint: metadata.authorization_endpoint,
       clientId,
       redirectUri,
       state,
       codeChallenge,
+      scopes: REQUESTED_SCOPES,
     });
     cli.log(`Opening your browser to authorize Atlas MCP CLI…`);
     cli.log(`If it doesn't open automatically, visit:`);
@@ -277,25 +345,35 @@ export async function runHostedAuthFlow(
     // Step 5 — wait for the callback
     const code = await callbackResolver.promise;
 
-    // Step 6 — exchange the code
-    const tokenResponse = await exchangeCode({
-      tokenEndpoint: metadata.token_endpoint,
-      clientId,
-      redirectUri,
-      code,
-      codeVerifier,
-      fetchImpl,
-    });
+    // Step 6 — exchange the code. The helper validates the token
+    // endpoint as https-or-loopback before posting, so a malicious DCR
+    // response advertising `token_endpoint: "http://evil/token"` cannot
+    // smuggle the auth code over plaintext — the guard lives in the
+    // helper, so both consumers (SDK + CLI) are covered identically.
+    const tokenResponse = await liftHelper(() =>
+      exchangeCode(
+        {
+          tokenEndpoint: metadata.token_endpoint,
+          clientId,
+          redirectUri,
+          code,
+          codeVerifier,
+        },
+        { fetchImpl },
+      ),
+    );
 
     // Step 7 — extract + verify claims. We don't verify the JWT
     // signature (the hosted MCP endpoint re-verifies on every request via
     // JWKS) but we DO check `iss` matches the issuer we discovered, so a
     // hostile auth server pretending to be Atlas can't slip a token past
     // us at write-time.
-    const claims = decodeJwtPayload(tokenResponse.access_token);
-    enforceIssuer(claims, metadata.issuer);
+    const claims = liftHelperSync(() =>
+      decodeJwtPayload(tokenResponse.access_token),
+    );
+    liftHelperSync(() => enforceIssuer(claims, metadata.issuer));
     const workspaceId = extractWorkspaceClaim(claims);
-    const workspaceIds = extractWorkspacesClaim(claims);
+    const workspaceIds = extractWorkspacesClaim(claims, cli);
 
     return {
       accessToken: tokenResponse.access_token as Bearer,
@@ -320,319 +398,7 @@ export async function runHostedAuthFlow(
   }
 }
 
-/**
- * `apiUrl` ends up driving discovery, the redirect target, and the
- * eventual MCP URL written to disk. A typo'd or hostile env var
- * (`ATLAS_PUBLIC_API_URL=http://evil.example.com`) would drive the user
- * through a fake authorize page and ship a foreign-issued JWT into their
- * MCP client config. Reject anything that isn't `https://`, except for
- * documented localhost dev URLs.
- */
-function validateApiUrl(apiUrl: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(apiUrl);
-  } catch (err) {
-    throw new HostedFlowError(
-      `--api-url is not a valid URL: ${apiUrl}`,
-      "invalid_api_url",
-      { cause: err },
-    );
-  }
-  if (parsed.protocol === "https:") return;
-  if (
-    parsed.protocol === "http:" &&
-    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
-  ) {
-    return;
-  }
-  throw new HostedFlowError(
-    `--api-url must use https:// (or http://localhost for dev). Got: ${apiUrl}`,
-    "invalid_api_url",
-  );
-}
-
-// ── Step implementations ───────────────────────────────────────────────
-
-/**
- * Surface OAuth 2.1 error responses as `error: error_description` when
- * the body parses as the standard `{error,error_description,error_uri}`
- * shape (RFC 6749 §5.2). Falls back to the raw text (truncated to 1KiB)
- * when the body is empty / not JSON / not the canonical shape, so we
- * never silently lose upstream signal.
- */
-async function describeErrorBody(res: Response): Promise<string> {
-  const raw = await res.text().catch(() => "");
-  if (!raw) return "";
-  try {
-    const parsed = JSON.parse(raw) as Partial<{
-      error: string;
-      error_description: string;
-      error_uri: string;
-    }>;
-    const parts: string[] = [];
-    if (typeof parsed.error === "string" && parsed.error.length > 0) {
-      parts.push(parsed.error);
-    }
-    if (typeof parsed.error_description === "string" && parsed.error_description.length > 0) {
-      parts.push(parsed.error_description);
-    }
-    if (typeof parsed.error_uri === "string" && parsed.error_uri.length > 0) {
-      parts.push(`see ${parsed.error_uri}`);
-    }
-    if (parts.length > 0) return parts.join(": ");
-  } catch {
-    // intentionally ignored: not JSON — fall through to raw-text branch.
-  }
-  return raw.length > 1024 ? `${raw.slice(0, 1024)}…` : raw;
-}
-
-async function discover(
-  apiUrl: string,
-  fetchImpl: typeof fetch,
-): Promise<AuthServerMetadata> {
-  const url = `${apiUrl}/.well-known/oauth-authorization-server/api/auth`;
-  let res: Response;
-  try {
-    res = await fetchImpl(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new HostedFlowError(
-      `Could not reach Atlas auth discovery at ${url}: ${msg}`,
-      "discovery_failed",
-      { cause: err },
-    );
-  }
-  if (!res.ok) {
-    throw new HostedFlowError(
-      `Atlas auth discovery returned ${res.status} for ${url}`,
-      "discovery_failed",
-    );
-  }
-  const body = (await res.json().catch((err) => {
-    throw new HostedFlowError(
-      `Atlas auth discovery body was not JSON: ${err instanceof Error ? err.message : String(err)}`,
-      "discovery_failed",
-      { cause: err },
-    );
-  })) as Partial<AuthServerMetadata>;
-  if (
-    typeof body.authorization_endpoint !== "string" ||
-    typeof body.token_endpoint !== "string" ||
-    typeof body.registration_endpoint !== "string" ||
-    typeof body.issuer !== "string"
-  ) {
-    throw new HostedFlowError(
-      `Atlas auth discovery is missing one of: authorization_endpoint, token_endpoint, registration_endpoint, issuer`,
-      "discovery_failed",
-    );
-  }
-  return {
-    authorization_endpoint: body.authorization_endpoint,
-    token_endpoint: body.token_endpoint,
-    registration_endpoint: body.registration_endpoint,
-    issuer: body.issuer,
-  };
-}
-
-async function register(
-  metadata: AuthServerMetadata,
-  redirectUri: string,
-  fetchImpl: typeof fetch,
-): Promise<string> {
-  // Public client — no `client_secret`. `token_endpoint_auth_method: "none"`
-  // matches the public-client posture; the server enforces PKCE.
-  const body = {
-    client_name: CLIENT_NAME,
-    redirect_uris: [redirectUri],
-    grant_types: ["authorization_code", "refresh_token"],
-    response_types: ["code"],
-    scope: REQUESTED_SCOPE,
-    token_endpoint_auth_method: "none",
-  };
-  let res: Response;
-  try {
-    res = await fetchImpl(metadata.registration_endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new HostedFlowError(
-      `Dynamic Client Registration failed: ${msg}`,
-      "registration_failed",
-      { cause: err },
-    );
-  }
-  if (!res.ok) {
-    const detail = await describeErrorBody(res);
-    throw new HostedFlowError(
-      `Dynamic Client Registration returned ${res.status}${detail ? `: ${detail}` : ""}`,
-      "registration_failed",
-    );
-  }
-  const data = (await res.json().catch((err) => {
-    throw new HostedFlowError(
-      `Dynamic Client Registration response was not JSON: ${err instanceof Error ? err.message : String(err)}`,
-      "registration_failed",
-      { cause: err },
-    );
-  })) as Partial<RegistrationResponse>;
-  if (typeof data.client_id !== "string" || data.client_id.length === 0) {
-    throw new HostedFlowError(
-      `Dynamic Client Registration response missing client_id`,
-      "registration_failed",
-    );
-  }
-  return data.client_id;
-}
-
-interface BuildAuthorizeUrlArgs {
-  authorizationEndpoint: string;
-  clientId: string;
-  redirectUri: string;
-  state: string;
-  codeChallenge: string;
-}
-
-function buildAuthorizeUrl(args: BuildAuthorizeUrlArgs): string {
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: args.clientId,
-    redirect_uri: args.redirectUri,
-    scope: REQUESTED_SCOPE,
-    state: args.state,
-    code_challenge: args.codeChallenge,
-    code_challenge_method: "S256",
-  });
-  const sep = args.authorizationEndpoint.includes("?") ? "&" : "?";
-  return `${args.authorizationEndpoint}${sep}${params.toString()}`;
-}
-
-interface ExchangeArgs {
-  tokenEndpoint: string;
-  clientId: string;
-  redirectUri: string;
-  code: string;
-  codeVerifier: string;
-  fetchImpl: typeof fetch;
-}
-
-async function exchangeCode(args: ExchangeArgs): Promise<TokenResponse> {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: args.code,
-    redirect_uri: args.redirectUri,
-    client_id: args.clientId,
-    code_verifier: args.codeVerifier,
-  });
-  let res: Response;
-  try {
-    res = await args.fetchImpl(args.tokenEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-      },
-      body: body.toString(),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new HostedFlowError(
-      `Token exchange failed: ${msg}`,
-      "token_exchange_failed",
-      { cause: err },
-    );
-  }
-  if (!res.ok) {
-    const detail = await describeErrorBody(res);
-    throw new HostedFlowError(
-      `Token endpoint returned ${res.status}${detail ? `: ${detail}` : ""}`,
-      "token_exchange_failed",
-    );
-  }
-  const data = (await res.json().catch((err) => {
-    throw new HostedFlowError(
-      `Token endpoint response was not JSON: ${err instanceof Error ? err.message : String(err)}`,
-      "token_exchange_failed",
-      { cause: err },
-    );
-  })) as Partial<TokenResponse>;
-  if (typeof data.access_token !== "string" || data.access_token.length === 0) {
-    throw new HostedFlowError(
-      `Token endpoint response missing access_token`,
-      "token_exchange_failed",
-    );
-  }
-  return {
-    access_token: data.access_token,
-    refresh_token: typeof data.refresh_token === "string" ? data.refresh_token : undefined,
-    token_type: typeof data.token_type === "string" ? data.token_type : undefined,
-    expires_in: typeof data.expires_in === "number" ? data.expires_in : undefined,
-    scope: typeof data.scope === "string" ? data.scope : undefined,
-  };
-}
-
-/**
- * Decode a JWT payload WITHOUT verifying the signature. Safe here only
- * because we just minted the token through a TLS-protected OAuth flow
- * against an issuer we discovered ourselves (`validateApiUrl` +
- * `enforceIssuer`). The hosted MCP endpoint re-verifies the signature
- * on every request via JWKS, so any tampering between here and there is
- * rejected server-side.
- *
- * Do NOT lift this helper out as a generic JWT decoder — without the
- * surrounding flow's TLS + issuer guarantees, "decode without verify" is
- * unsafe.
- */
-function decodeJwtPayload(jwt: string): Record<string, unknown> {
-  const parts = jwt.split(".");
-  if (parts.length !== 3) {
-    throw new HostedFlowError(
-      `Access token is not a JWT (expected 3 parts, got ${parts.length})`,
-      "malformed_jwt",
-    );
-  }
-  try {
-    const json = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(json) as Record<string, unknown>;
-  } catch (err) {
-    throw new HostedFlowError(
-      `Could not decode JWT payload: ${err instanceof Error ? err.message : String(err)}`,
-      "malformed_jwt",
-      { cause: err },
-    );
-  }
-}
-
-/**
- * Defense-in-depth: if the discovered issuer doesn't match the JWT's
- * `iss` claim, the auth server returned a token "for" a different
- * issuer. That's either a server bug or a discovery-redirection attack;
- * either way, refuse to write it to disk.
- */
-function enforceIssuer(payload: Record<string, unknown>, expectedIssuer: string): void {
-  const iss = payload.iss;
-  if (typeof iss !== "string" || iss.length === 0) {
-    throw new HostedFlowError(
-      `Access token has no \`iss\` claim — refusing to trust an unsigned-issuer token.`,
-      "issuer_mismatch",
-    );
-  }
-  if (iss !== expectedIssuer) {
-    throw new HostedFlowError(
-      `Access token issuer mismatch: discovered \`${expectedIssuer}\`, token claims \`${iss}\`.`,
-      "issuer_mismatch",
-    );
-  }
-}
+// ── Workspace-claim extraction (CLI-specific — not in the helper) ──────
 
 function extractWorkspaceClaim(payload: Record<string, unknown>): string {
   const claim = payload[WORKSPACE_CLAIM];
@@ -646,21 +412,38 @@ function extractWorkspaceClaim(payload: Record<string, unknown>): string {
 }
 
 /**
- * Extract the optional plural workspace claim (#2073). Returns an empty
- * array when the claim is missing, malformed, or contains non-string
- * entries. Unlike the singular claim, this one is OPTIONAL — Atlas only
- * mints it for users belonging to more than one workspace, so its
- * absence is the common case (single-workspace users) and not a fatal
- * error. Malformed values silently degrade to empty rather than
- * `missing_workspace_claim`, since the CLI's worst case under "no plural
- * claim" is "skip the prompt" — strictly safer than failing the install.
+ * Extract the optional plural workspace claim. Returns an empty array
+ * when the claim is missing entirely (single-workspace users — Atlas
+ * only mints it for users belonging to more than one workspace, so
+ * its absence is the common case and not a fatal error). When the
+ * claim is *present but malformed* (not an array, or entries that
+ * aren't non-empty strings), we degrade to empty too — failing the
+ * install over a server-side schema bug is strictly worse than skipping
+ * the multi-workspace prompt — but we surface a warning via `cli.error`
+ * so a degraded run leaves a diagnostic breadcrumb instead of a silent
+ * downgrade.
  */
-function extractWorkspacesClaim(payload: Record<string, unknown>): string[] {
+function extractWorkspacesClaim(
+  payload: Record<string, unknown>,
+  cli: ConsoleImpl,
+): string[] {
   const raw = payload[WORKSPACES_CLAIM];
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    cli.error(
+      `[atlas-mcp init] ${WORKSPACES_CLAIM} claim was present but not an array (got ${typeof raw}); falling back to single-workspace setup.`,
+    );
+    return [];
+  }
+  const filtered = raw.filter(
     (entry): entry is string => typeof entry === "string" && entry.length > 0,
   );
+  if (filtered.length !== raw.length) {
+    cli.error(
+      `[atlas-mcp init] ${WORKSPACES_CLAIM} claim contained ${raw.length - filtered.length} non-string or empty entr${raw.length - filtered.length === 1 ? "y" : "ies"}; using only the ${filtered.length} valid entr${filtered.length === 1 ? "y" : "ies"}.`,
+    );
+  }
+  return filtered;
 }
 
 // ── Loopback listener — handler factory + default Bun.serve impl ───────
@@ -785,6 +568,10 @@ function createCallbackResolver(
   };
 
   const cancel = () => {
+    // After a happy-path `resolve(code)`, `cancel()` is a no-op
+    // (`settled` is already true from `resolve`). The reject below
+    // only fires on the genuine abort path — an early failure in
+    // register/exchange/extract that throws before the callback arrives.
     if (settled) return;
     settled = true;
     clearTimeout(timer);
@@ -914,23 +701,3 @@ const defaultOpenBrowserImpl: OpenBrowserImpl = async (url) => {
     return { ok: false, detail: msg };
   }
 };
-
-// ── Crypto helpers ─────────────────────────────────────────────────────
-
-function defaultRandomBytes(length: number): Uint8Array {
-  const buf = new Uint8Array(length);
-  crypto.getRandomValues(buf);
-  return buf;
-}
-
-function encodeBase64Url(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function pkceChallenge(verifier: string): Promise<string> {
-  const data = new TextEncoder().encode(verifier);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return encodeBase64Url(new Uint8Array(digest));
-}

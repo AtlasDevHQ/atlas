@@ -587,6 +587,288 @@ describe("runHostedAuthFlow — failure modes", () => {
   });
 });
 
+// ── lift translation + helper-guard pinning ───────────────────────────
+//
+// Covers the contract that every helper-originated error surfaces as a
+// `HostedFlowError` (not the underlying `OAuthHelperError`) and that
+// the helper's HTTPS-only token-endpoint guard reaches the CLI for free
+// (a malicious DCR response advertising `http://` token_endpoint must
+// be rejected BEFORE the flow posts to it).
+
+import { HostedFlowError } from "../../src/init/hosted.js";
+
+describe("runHostedAuthFlow — helper-error → HostedFlowError translation", () => {
+  it("discovery_failed surfaces as a HostedFlowError instance", async () => {
+    const { serve } = fakeServe({});
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        discovery: () => new Response("not found", { status: 404 }),
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    let caught: unknown;
+    try {
+      await pending;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HostedFlowError);
+    expect((caught as HostedFlowError).code).toBe("discovery_failed");
+  });
+
+  it("invalid_api_url (sync lift) surfaces as a HostedFlowError instance", async () => {
+    const { serve } = fakeServe({});
+    let caught: unknown;
+    try {
+      await runHostedAuthFlow({
+        apiUrl: "http://evil.example.com",
+        fetchImpl: fakeFetch({}),
+        serveImpl: serve,
+        openBrowserImpl: async () => ({ ok: true }),
+        randomBytesImpl: deterministicRandom,
+        callbackTimeoutMs: 5000,
+        consoleImpl: { log: () => {}, error: () => {} },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HostedFlowError);
+    expect((caught as HostedFlowError).code).toBe("invalid_api_url");
+  });
+
+  it("registration_failed surfaces as a HostedFlowError instance", async () => {
+    const { serve } = fakeServe({});
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        registration: () =>
+          new Response(JSON.stringify({ error: "invalid_redirect_uri" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    let caught: unknown;
+    try {
+      await pending;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HostedFlowError);
+    expect((caught as HostedFlowError).code).toBe("registration_failed");
+  });
+
+  it("token_exchange_failed surfaces as a HostedFlowError instance", async () => {
+    const { serve, controller } = fakeServe({});
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        token: () =>
+          new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+    let caught: unknown;
+    try {
+      await pending;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HostedFlowError);
+    expect((caught as HostedFlowError).code).toBe("token_exchange_failed");
+  });
+
+  it("issuer_mismatch + missing_workspace_claim + malformed_jwt surface as HostedFlowError", async () => {
+    type CodeUnderTest = HostedFlowError["code"];
+    const cases: Array<{ token: unknown; code: CodeUnderTest }> = [
+      {
+        token: { access_token: "not-a-jwt", refresh_token: "r" },
+        code: "malformed_jwt",
+      },
+      {
+        token: {
+          access_token: jwt({
+            sub: "u",
+            iss: "https://evil.example.com/api/auth",
+            "https://atlas.useatlas.dev/workspace_id": "ws",
+          }),
+          refresh_token: "r",
+        },
+        code: "issuer_mismatch",
+      },
+      {
+        token: {
+          access_token: jwt({ sub: "u", iss: DISCOVERY_BODY.issuer }),
+          refresh_token: "r",
+        },
+        code: "missing_workspace_claim",
+      },
+    ];
+    for (const c of cases) {
+      const { serve, controller } = fakeServe({});
+      const pending = runHostedAuthFlow({
+        apiUrl: FAKE_API,
+        fetchImpl: fakeFetch({ token: c.token }),
+        serveImpl: serve,
+        openBrowserImpl: async () => ({ ok: true }),
+        randomBytesImpl: deterministicRandom,
+        callbackTimeoutMs: 5000,
+        consoleImpl: { log: () => {}, error: () => {} },
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+      let caught: unknown;
+      try {
+        await pending;
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(HostedFlowError);
+      expect((caught as HostedFlowError).code).toBe(c.code);
+    }
+  });
+});
+
+describe("runHostedAuthFlow — HTTPS-only token-endpoint guard reaches the CLI", () => {
+  it("rejects a malicious http token_endpoint advertised in DCR before posting", async () => {
+    const tokenCalls: string[] = [];
+    const { serve, controller } = fakeServe({});
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: (async (input: string | URL | Request) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url.includes("/.well-known/oauth-authorization-server")) {
+          // Discovery advertises a plain-http token endpoint — the
+          // helper's `validateTokenEndpoint` MUST reject before any
+          // POST goes out.
+          return new Response(
+            JSON.stringify({
+              ...DISCOVERY_BODY,
+              token_endpoint: "http://evil.example.com/oauth2/token",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/register")) {
+          return new Response(JSON.stringify({ client_id: "cid" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("evil.example.com")) {
+          tokenCalls.push(url);
+          return new Response("should never reach here", { status: 200 });
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch,
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: () => {} },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+    let caught: unknown;
+    try {
+      await pending;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HostedFlowError);
+    expect((caught as HostedFlowError).code).toBe("invalid_token_endpoint");
+    // The auth code + PKCE verifier must NOT have been sent to the
+    // malicious endpoint.
+    expect(tokenCalls.length).toBe(0);
+  });
+});
+
+describe("extractWorkspacesClaim — malformed claim leaves a diagnostic", () => {
+  it("logs via cli.error when workspace_ids is present but not an array", async () => {
+    const { serve, controller } = fakeServe({});
+    const errors: string[] = [];
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        token: {
+          access_token: jwt({
+            sub: "u",
+            iss: DISCOVERY_BODY.issuer,
+            "https://atlas.useatlas.dev/workspace_id": "ws_alpha",
+            "https://atlas.useatlas.dev/workspace_ids": { scrambled: true },
+          }),
+          refresh_token: "r",
+        },
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: (m) => errors.push(m) },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+    const result = await pending;
+    expect(result.workspaceId).toBe("ws_alpha");
+    expect(result.workspaceIds).toEqual([]);
+    expect(errors.join("\n")).toMatch(/workspace_ids/);
+    expect(errors.join("\n")).toMatch(/not an array/);
+  });
+
+  it("logs via cli.error when workspace_ids contains non-string entries", async () => {
+    const { serve, controller } = fakeServe({});
+    const errors: string[] = [];
+    const pending = runHostedAuthFlow({
+      apiUrl: FAKE_API,
+      fetchImpl: fakeFetch({
+        token: {
+          access_token: jwt({
+            sub: "u",
+            iss: DISCOVERY_BODY.issuer,
+            "https://atlas.useatlas.dev/workspace_id": "ws_alpha",
+            "https://atlas.useatlas.dev/workspace_ids": ["good", 42, "", "alsogood"],
+          }),
+          refresh_token: "r",
+        },
+      }),
+      serveImpl: serve,
+      openBrowserImpl: async () => ({ ok: true }),
+      randomBytesImpl: deterministicRandom,
+      callbackTimeoutMs: 5000,
+      consoleImpl: { log: () => {}, error: (m) => errors.push(m) },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller().invoke(new URLSearchParams({ code: "abc", state: EXPECTED_STATE }));
+    const result = await pending;
+    expect(result.workspaceIds).toEqual(["good", "alsogood"]);
+    expect(errors.join("\n")).toMatch(/non-string or empty/);
+  });
+});
+
 // ── runInit({ mode: "hosted" }) integration ───────────────────────────
 
 describe("runInit --hosted (print-only)", () => {

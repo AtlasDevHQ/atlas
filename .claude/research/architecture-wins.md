@@ -1391,3 +1391,46 @@ The four private constructors in `listing.ts` satisfy the union directly with no
 - **No change to MCP `prompts/list` SDK output.** The MCP server's `prompts/list` handler in `registry.ts` builds its response from the SDK's `Prompt` type (independent from `PromptListEntry`), so the agent-facing wire shape is unchanged. JSON payloads accepted by the previous `/api/v1/me/mcp-prompts` schema still validate; the OpenAPI extraction does shift from a flat object to `oneOf`, which is a strict improvement for clients generated from the spec.
 
 **Category:** Type-system tightening that lifts a private-constructor invariant to a compile-time guarantee. Same family as wins #41 (`ApprovalRule` discriminated union) and #42 (`RegionMigration` discriminated union) — every "you can't construct this state" rule belongs in the type, not in the constructor's docstring.
+
+---
+
+## 51. Extract shared OAuth 2.1 + DCR + PKCE helper (`@atlas/oauth-helper`) — #2203
+
+**Date:** 2026-05-08
+**Issue:** #2203
+**Milestone:** 1.4.1 — MCP: Bringing It All Together (Theme F follow-up; architecture-tagged)
+
+**Before:** Two parallel implementations of the same OAuth protocol orchestration, one each in `@useatlas/sdk` and `@useatlas/mcp`.
+- `packages/sdk/src/mcp.ts` (734 LOC; programmatic browser flow shipped in #2079 / PR #2198) — discovery, DCR, PKCE generation, authorization-URL construction, token exchange, JWT-payload decode, issuer enforcement, plus the HTTPS-only token-endpoint guard added in #2198.
+- `plugins/mcp/src/init/hosted.ts` (936 LOC; CLI loopback flow shipped in #2059) — same primitives plus the loopback transport (browser launch, 127.0.0.1 listener, callback resolver, callback page).
+
+The two files were near-identical for the protocol primitives, with one drift point that proved the case: the HTTPS-only token-endpoint validation that landed in #2198 lived only in the SDK. A malicious DCR response advertising `token_endpoint: "http://evil/token"` was caught at the popup-flow callsite and silently ignored at the CLI loopback callsite for several releases. Two copies meant two places to fix every OAuth spec quirk and every security hardening.
+
+**The win:** one canonical `packages/oauth-helper/` package — `@atlas/oauth-helper` — owns every protocol primitive transport-agnostically.
+- `discover(apiUrl, opts)` → `AuthServerMetadata` (RFC 8414 metadata fetch + parse)
+- `register(metadata, params, opts)` → `client_id` (RFC 7591 DCR with public-client posture)
+- `generatePkce(opts)` → `{ codeVerifier, codeChallenge, method: "S256" }`
+- `generateState(opts)` → base64url-encoded anti-CSRF nonce
+- `buildAuthorizationUrl(params)` → consent URL (pure URL construction)
+- `exchangeCode(params, opts)` → `TokenResponse` — re-validates the token endpoint as `https://` (loopback dev OK) at the helper boundary so a malicious DCR response cannot smuggle the auth code over plaintext, regardless of consumer
+- `validateIssuerUrl(apiUrl)` / `validateTokenEndpoint(tokenEndpoint)` — HTTPS-only guards extracted into one shared helper
+- `decodeJwtPayload(jwt)` / `enforceIssuer(payload, expectedIssuer)` — payload decode + iss-claim enforcement
+
+The helper throws a single `OAuthHelperError` whose codes (`invalid_api_url` / `invalid_token_endpoint` / `discovery_failed` / …) are a strict subset of both consumer error unions. Each consumer wraps helper calls in a `liftHelper` that re-throws the helper error as the consumer's domain error class with `err.code as ConsumerCode` — no remap table to drift, the union is the compile-time witness.
+
+**Internal-only on purpose.** The helper is `private: true` and does not publish to npm. The SDK (which builds via `bun build`) bundles the helper into its `dist/` output by switching from `--packages external` to `--external '@useatlas/types'` (only `@useatlas/types` stays external; the helper inlines). The published `@useatlas/sdk` `dist/` references zero `@atlas/oauth-helper` symbols, and consumers install the SDK without the helper anywhere in their dep graph. The `.d.ts` export was hand-written to re-declare the helper's `OAuthHelperErrorCode` inline as `AtlasMcpErrorCode`'s first eight arms, so the published types also stay free of the internal package reference.
+
+`@useatlas/mcp` ships TypeScript source raw (no build artifact) and runs via `bunx`, so bundling isn't an option there. Instead, a `prepare` script (`scripts/vendor-oauth-helper.sh`) copies `packages/oauth-helper/src/` into `plugins/mcp/src/_oauth-helper/` on every `bun install` and on `npm publish`. The vendored directory is gitignored — the canonical source lives in `packages/oauth-helper/src/`. `plugins/mcp/src/init/hosted.ts` imports via a relative `../_oauth-helper` path, which resolves identically at dev/test time and at runtime in the published package.
+
+**What got unbundled:**
+- **Protocol primitives became transport-agnostic.** The CLI's loopback transport (browser launch, 127.0.0.1 listener, callback resolver, callback page) stayed in `hosted.ts`. The SDK's popup / redirect / new-tab decision lives in the consumer (it's just a URL the caller opens). Neither transport pollutes the helper.
+- **The HTTPS-only token-endpoint guard reaches both consumers automatically.** `exchangeCode` calls `validateTokenEndpoint(params.tokenEndpoint)` internally; any consumer that uses the helper inherits the #2198 hardening for free. The CLI's `HostedFlowErrorCode` gained `invalid_token_endpoint` as a new arm without manual code duplication.
+- **Consumer error classes stay domain-specific.** `AtlasMcpError` still carries the SDK-only popup codes (`callback_state_mismatch`, `popup_blocked`, `popup_closed`); `HostedFlowError` still carries the CLI-only loopback codes (`loopback_bind_failed`, `browser_failed`, `callback_oauth_error`, etc.). Only the protocol-level codes overlap, and the overlap is exactly the helper's surface.
+
+**Impact:**
+- **Two implementations → one.** `packages/sdk/src/mcp.ts` dropped from 734 → 451 LOC (–283). `plugins/mcp/src/init/hosted.ts` dropped from 936 → 668 LOC (–268). Net –551 LOC removed from the consumer files; +553 LOC added in `packages/oauth-helper/src/` (a single source of truth for the protocol). The line-count budget is roughly flat, but the architectural commitment is "every spec quirk and security fix lives in one file" — drift-class extinction, not raw line removal.
+- **#2198 HTTPS-only validation reaches the CLI.** The CLI loopback flow re-validates `token_endpoint` before posting; a malicious DCR response pointing at `http://evil/token` fails with `invalid_token_endpoint` instead of leaking the auth code over plaintext. Tests in `packages/oauth-helper/__tests__/exchange.test.ts` pin the contract.
+- **Helper-package unit tests pin every primitive.** 48 tests across 7 files cover discovery, registration, PKCE, authorization URL, code exchange, validate, JWT decode + iss enforcement. The SDK's existing `mcp.test.ts` (47 tests) and the CLI's existing `hosted.test.ts` (31 tests) continue to pass without behavior changes — only their import paths shifted.
+- **Future OAuth grants land once.** The `client_credentials` grant deferred in #2024 will be added to the helper, not to two consumer files. The multi-workspace SDK shape tracked in #2196 will exercise `discover` / `register` / `exchangeCode` without re-deriving them.
+
+**Category:** Module-deepening refactor that collapsed two parallel implementations of the same protocol into one shared helper, with deliberate publish-shape engineering (bundle for SDK, vendor for `@useatlas/mcp`) so the helper stays internal-only without forcing either consumer to take a runtime npm dependency. Sibling to wins #1 (`useAdminMutation` consolidation) and #2 (`createEEMock`) — every "two callers doing the same thing" gets one home, one test surface, and one place to harden.

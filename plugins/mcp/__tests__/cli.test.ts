@@ -19,6 +19,7 @@ import {
   writeFileSync,
   cpSync,
   realpathSync,
+  existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -253,9 +254,30 @@ describe("cli — serve fails cleanly when @atlas/mcp can't be resolved", () => 
       const pkg = join(root, "pkg");
       mkdirSync(join(pkg, "bin"), { recursive: true });
       mkdirSync(join(pkg, "src", "init"), { recursive: true });
+      mkdirSync(join(pkg, "src", "_oauth-helper"), { recursive: true });
 
       cpSync(CLI, join(pkg, "bin", "cli.ts"));
       cpSync(join(PKG_ROOT, "src", "init"), join(pkg, "src", "init"), {
+        recursive: true,
+      });
+      // The hosted init flow statically imports the vendored OAuth
+      // helper (`../_oauth-helper`). The published `@useatlas/mcp`
+      // ships this directory alongside `src/init/` — mirror that here
+      // so resolution doesn't trip on the helper before we reach the
+      // dynamic `@atlas/mcp/server` import this test pins. Surface a
+      // clear error if the vendored copy hasn't been generated yet
+      // (fresh clone without `bun install`) — the raw `cpSync` ENOENT
+      // would otherwise blame the test infrastructure rather than the
+      // missing prepare-hook output.
+      const oauthHelperSrc = join(PKG_ROOT, "src", "_oauth-helper");
+      if (!existsSync(oauthHelperSrc)) {
+        throw new Error(
+          `Vendored _oauth-helper missing at ${oauthHelperSrc}. ` +
+            `Run \`bun install\` from the repo root or ` +
+            `\`bash plugins/mcp/scripts/vendor-oauth-helper.sh\` directly.`,
+        );
+      }
+      cpSync(oauthHelperSrc, join(pkg, "src", "_oauth-helper"), {
         recursive: true,
       });
 

@@ -11,6 +11,7 @@ SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh  # Template drift
 bash scripts/check-security-headers-drift.sh  # Scaffold next.config.ts security-header parity
 bash scripts/check-railway-watch.sh  # Railway watchPatterns cover Dockerfile COPY sources
 bash scripts/check-schema-drift.sh   # Drizzle schema.ts ↔ migrations parity
+bash scripts/check-oauth-helper-drift.sh  # plugins/mcp/src/_oauth-helper ↔ packages/oauth-helper/src parity
 ```
 
 Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration loop. For iteration, use `cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests whose source graph your branch touched — typical 10–60s vs 225s full).
@@ -26,6 +27,7 @@ Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration
 | Template drift | `Template drift check passed` |
 | Railway watch | `all deploy Dockerfile COPY sources are covered` |
 | Schema drift | `Schema drift check passed` (every migration table is in `packages/api/src/lib/db/schema.ts`) |
+| OAuth helper drift | `vendored _oauth-helper matches canonical packages/oauth-helper/src` |
 
 **If any gate fails:**
 

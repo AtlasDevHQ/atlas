@@ -15,6 +15,7 @@ COPY packages/web/package.json packages/web/package.json
 COPY packages/cli/package.json packages/cli/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
 COPY packages/sandbox-sidecar/package.json packages/sandbox-sidecar/package.json
+COPY packages/oauth-helper/package.json packages/oauth-helper/package.json
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
 COPY packages/react/package.json packages/react/package.json

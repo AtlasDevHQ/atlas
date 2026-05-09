@@ -1434,3 +1434,32 @@ The helper throws a single `OAuthHelperError` whose codes (`invalid_api_url` / `
 - **Future OAuth grants land once.** The `client_credentials` grant deferred in #2024 will be added to the helper, not to two consumer files. The multi-workspace SDK shape tracked in #2196 will exercise `discover` / `register` / `exchangeCode` without re-deriving them.
 
 **Category:** Module-deepening refactor that collapsed two parallel implementations of the same protocol into one shared helper, with deliberate publish-shape engineering (bundle for SDK, vendor for `@useatlas/mcp`) so the helper stays internal-only without forcing either consumer to take a runtime npm dependency. Sibling to wins #1 (`useAdminMutation` consolidation) and #2 (`createEEMock`) — every "two callers doing the same thing" gets one home, one test surface, and one place to harden.
+
+---
+
+## 52. `CanonicalPrompt`: parallel `sourceMode`/`evalMode` fields → discriminated union (#2185)
+
+**Date:** 2026-05-09
+**Issue:** #2185
+**Milestone:** 1.4.2 — End-user shakeout
+
+**Before:** `packages/mcp/src/prompts/canonical.ts` modeled `CanonicalPrompt` as a flat interface with `sourceMode: string` and `evalMode: "deterministic" | "llm"` as parallel fields. The invariant `sourceMode === "glossary"` ↔ `evalMode === "llm"` was enforced privately by `toCanonicalPrompt` (one ternary at construction time) but lived nowhere in the type system. `sourceMode: string` accepted any literal — a future contributor adding a fifth YAML mode could land `{ sourceMode: "weird_new_mode", evalMode: "llm" }` and the constructor's invariant was the only thing standing in the way. The hidden contract was a docstring sentence, not a compiler check.
+
+**The win:** `CanonicalPrompt` is now a discriminated union over `sourceMode`:
+
+- The glossary arm pairs `sourceMode: "glossary"` with `evalMode: "llm"`.
+- The non-glossary arm pairs `sourceMode: "metric" | "pattern" | "virtual" | "other"` with `evalMode: "deterministic"`.
+
+`sourceMode` itself moved from `string` to a closed union (`CANONICAL_SOURCE_MODES` tuple of five literals). Unknown YAML modes normalize to `"other"` via `normalizeSourceMode` so the constructor stays total — no row is dropped, but the type stays closed. The constructor returns each arm directly without a cast: the `if (sourceMode === "glossary")` branch satisfies arm 1, the fall-through satisfies arm 2 by elimination. For unknown modes (mapped to `"other"`), the description label preserves the raw YAML value rather than collapsing to the literal `"other"` — only the type discriminator narrows.
+
+**What got unbundled:**
+- **The invariant became a compile-time fact.** A contributor cannot construct `{ sourceMode: "metric", evalMode: "llm" }` past TS — the metric arm requires `evalMode: "deterministic"`. The constructor's runtime check stays as defense-in-depth, but the type system now arbitrates intent.
+- **Three `@ts-expect-error` witness tests pin the union forever.** The new tests in `packages/mcp/src/__tests__/prompts/canonical.test.ts` use `@ts-expect-error` directives that fail the type-check if the arms are ever flattened back. Pair-wise: glossary+deterministic, metric+llm, and unknown sourceMode literal. A future "we'll just add a `widening: true` flag" attempt would erase the discriminator and trip the witnesses.
+- **A runtime-invariant assertion against the real YAML.** A new test loads all 20 questions from `eval/canonical-questions/questions.yml` and asserts every `(sourceMode, evalMode)` pair satisfies the invariant. Catches the case where a YAML drift introduces a new mode but the closed union doesn't get extended.
+
+**Impact:**
+- **No behavior change in `prompts/list` or `prompts/get`.** The 13 existing unit tests pass without modification — the constructor's runtime logic was already correct, the type system was the gap. Net +172 / −15 LOC, mostly in the new test surface and the discriminated arms.
+- **No regression in #2193 / `PromptListEntry`.** `registry.ts` and `listing.ts` consume `CanonicalPrompt` only via `name` / `description` / `question` (the discriminator-free fields). Tightening `sourceMode` to the closed union didn't propagate breakage to consumers — the discriminated narrowing is opt-in.
+- **Description label fidelity preserved for unknown modes.** `category ?? (sourceMode === "other" ? q.mode : sourceMode)` — when `sourceMode` normalizes to `"other"`, the raw YAML value still surfaces in the human-facing description prefix. Only the type discriminator collapses to `"other"`.
+
+**Category:** Type-system tightening that lifts a private-constructor invariant to a compile-time guarantee. Same family as wins #41 (`ApprovalRule` discriminated union), #42 (`RegionMigration` discriminated union), and #50 (`PromptListEntry` per-source discriminated union, #2193) — every "you can't construct this state" rule belongs in the type, not in the constructor's docstring. The closed-but-extensible `sourceMode` union (with `"other"` as the explicit catch-all) keeps the door open for a future YAML mode without forcing the type system to widen.

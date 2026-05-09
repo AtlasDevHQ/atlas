@@ -64,24 +64,21 @@ WHERE org_copy.org_id IS NOT NULL
 -- created_at; reparent prompt_items belonging to newer rows so we don't
 -- cascade-delete them; then drop the newer rows.
 --
--- The CTE picks the keeper per (org_id, lower(name)) bucket. Rows where
--- org_id IS NULL collapse into the same NULL bucket — there should only
--- ever be one global row per name, but we belt-and-suspenders this so
--- the unique index below can't be tripped by a stray duplicate global.
+-- DISTINCT ON (bucket-key) returns one keeper per bucket per the
+-- trailing ORDER BY (oldest created_at, id tiebreak). Rows where
+-- org_id IS NULL collapse into a single NULL bucket via COALESCE —
+-- there should only ever be one global row per name, but the
+-- belt-and-suspenders keeps the unique index below safe from a stray
+-- duplicate global. Single-row buckets are emitted too; the UPDATE
+-- excludes self-matches via `dup.id <> keepers.keeper_id`, so they
+-- become no-ops.
 WITH keepers AS (
-  SELECT
+  SELECT DISTINCT ON (COALESCE(org_id, ''), lower(name))
+    id AS keeper_id,
     COALESCE(org_id, '') AS org_key,
-    lower(name) AS name_key,
-    (
-      SELECT id FROM prompt_collections inner_pc
-      WHERE COALESCE(inner_pc.org_id, '') = COALESCE(outer_pc.org_id, '')
-        AND lower(inner_pc.name) = lower(outer_pc.name)
-      ORDER BY inner_pc.created_at ASC, inner_pc.id ASC
-      LIMIT 1
-    ) AS keeper_id
-  FROM prompt_collections outer_pc
-  GROUP BY COALESCE(org_id, ''), lower(name)
-  HAVING COUNT(*) > 1
+    lower(name) AS name_key
+  FROM prompt_collections
+  ORDER BY COALESCE(org_id, ''), lower(name), created_at ASC, id ASC
 )
 UPDATE prompt_items
 SET collection_id = keepers.keeper_id

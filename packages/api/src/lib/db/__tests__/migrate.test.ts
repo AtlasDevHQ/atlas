@@ -954,4 +954,30 @@ describe("0054_prompt_collections_dedup_unique.sql", () => {
     // deterministically with a tiebreaker on id.
     expect(sql).toMatch(/ORDER BY[\s\S]*?created_at\s+ASC/i);
   });
+
+  it("keepers CTE uses DISTINCT ON rather than GROUP BY + correlated subquery", () => {
+    // The first version of this CTE used `GROUP BY COALESCE(org_id, ''),
+    // lower(name) HAVING COUNT(*) > 1` with a correlated subquery that
+    // referenced bare `outer_pc.org_id` / `outer_pc.name`. Postgres
+    // rejects that at plan time with `subquery uses ungrouped column
+    // from outer query` — every API container failed to boot until the
+    // CTE was rewritten.
+    //
+    // Pin the working shape (DISTINCT ON over the bucket key) and
+    // explicitly forbid the broken shape so a future "simplification"
+    // can't reintroduce the planning error.
+    const sql = stripComments(fs.readFileSync(filePath, "utf-8"));
+
+    expect(sql).toMatch(
+      /WITH\s+keepers\s+AS\s*\(\s*SELECT\s+DISTINCT\s+ON\s*\(\s*COALESCE\s*\(\s*org_id\s*,\s*''\s*\)\s*,\s*lower\s*\(\s*name\s*\)\s*\)/i,
+    );
+
+    // No GROUP BY anywhere in the keepers CTE — the structural mistake
+    // was specifically grouping by expressions and then referencing the
+    // bare column from a correlated subquery. Forbidding GROUP BY in
+    // the CTE precludes that whole class.
+    const keepersBlock = sql.match(/WITH\s+keepers\s+AS\s*\([\s\S]*?\)/i)?.[0] ?? "";
+    expect(keepersBlock).not.toMatch(/\bGROUP\s+BY\b/i);
+    expect(keepersBlock).not.toMatch(/\bouter_pc\b/i);
+  });
 });

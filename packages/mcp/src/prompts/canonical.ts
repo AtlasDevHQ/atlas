@@ -40,20 +40,47 @@ export const CANONICAL_PROMPT_PREFIX = "canonical-";
 export type CanonicalEvalMode = "deterministic" | "llm";
 
 /**
- * Stable shape consumed by the prompts registry. `question` is the
- * verbatim text the agent receives on `prompts/get`; `description` is
- * the human-facing summary shown in `prompts/list`.
+ * Closed union of source modes. The YAML at `eval/canonical-questions/`
+ * uses the four named modes; anything else (a future / typo'd mode)
+ * normalizes to `"other"` so the type stays closed without dropping
+ * the row from the prompts surface.
  */
-export interface CanonicalPrompt {
+export const CANONICAL_SOURCE_MODES = [
+  "metric",
+  "pattern",
+  "virtual",
+  "glossary",
+  "other",
+] as const;
+export type CanonicalSourceMode = (typeof CANONICAL_SOURCE_MODES)[number];
+
+interface CanonicalPromptBase {
   readonly name: string;
   readonly description: string;
   readonly question: string;
-  readonly evalMode: CanonicalEvalMode;
   /** Source category (e.g. `simple_metric`, `join`, `glossary`). */
   readonly category: string | null;
-  /** Source mode from the YAML (`metric` / `pattern` / `virtual` / `glossary`). */
-  readonly sourceMode: string;
 }
+
+/**
+ * Stable shape consumed by the prompts registry. `question` is the
+ * verbatim text the agent receives on `prompts/get`; `description` is
+ * the human-facing summary shown in `prompts/list`.
+ *
+ * Discriminated by `sourceMode` so the invariant
+ * `sourceMode === "glossary"` ↔ `evalMode === "llm"` is enforced at
+ * the type level — previously the constructor enforced it but the
+ * type system allowed nonsensical combinations (#2185).
+ */
+export type CanonicalPrompt =
+  | (CanonicalPromptBase & {
+      readonly sourceMode: "glossary";
+      readonly evalMode: "llm";
+    })
+  | (CanonicalPromptBase & {
+      readonly sourceMode: "metric" | "pattern" | "virtual" | "other";
+      readonly evalMode: "deterministic";
+    });
 
 interface RawQuestion {
   id?: unknown;
@@ -187,18 +214,41 @@ function toCanonicalPrompt(q: RawQuestion): CanonicalPrompt | null {
   const slug = slugFor(q as RawQuestion & { id: string });
   const category =
     typeof q.category === "string" && q.category ? q.category : null;
-  const evalMode: CanonicalEvalMode =
-    q.mode === "glossary" ? "llm" : "deterministic";
-  const description = `[canonical:${category ?? q.mode} · ${evalMode}] ${q.question}`;
-
-  return {
+  const sourceMode = normalizeSourceMode(q.mode);
+  // The category-or-mode label keeps using the raw YAML mode when
+  // category is missing — for unknown modes (which normalize to
+  // "other") the raw value still surfaces in the description rather
+  // than being collapsed to the literal "other".
+  const labelMode = category ?? (sourceMode === "other" ? q.mode : sourceMode);
+  const base: CanonicalPromptBase = {
     name: `${CANONICAL_PROMPT_PREFIX}${slug}`,
-    description,
+    description: "",
     question: q.question,
-    evalMode,
     category,
-    sourceMode: q.mode,
   };
+
+  // Build the description+arm in lockstep so the discriminated union
+  // doesn't have to be re-narrowed at the call site.
+  if (sourceMode === "glossary") {
+    return {
+      ...base,
+      description: `[canonical:${labelMode} · llm] ${q.question}`,
+      sourceMode: "glossary",
+      evalMode: "llm",
+    };
+  }
+  return {
+    ...base,
+    description: `[canonical:${labelMode} · deterministic] ${q.question}`,
+    sourceMode,
+    evalMode: "deterministic",
+  };
+}
+
+function normalizeSourceMode(raw: string): CanonicalSourceMode {
+  return (CANONICAL_SOURCE_MODES as readonly string[]).includes(raw)
+    ? (raw as CanonicalSourceMode)
+    : "other";
 }
 
 function slugFor(q: RawQuestion & { id: string }): string {

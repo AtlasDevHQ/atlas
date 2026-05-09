@@ -15,6 +15,7 @@ import * as path from "path";
 import {
   loadCanonicalPrompts,
   CANONICAL_PROMPT_PREFIX,
+  type CanonicalPrompt,
 } from "../../prompts/canonical.js";
 
 let tmpRoot: string;
@@ -205,5 +206,111 @@ questions:
     for (const p of result) {
       expect(p.name.startsWith(CANONICAL_PROMPT_PREFIX)).toBe(true);
     }
+  });
+
+  // #2185 — runtime invariant check that mirrors the type-level
+  // discrimination. Every prompt loaded from the real YAML must satisfy
+  // `sourceMode === "glossary"` ↔ `evalMode === "llm"`.
+  it("every loaded prompt satisfies the sourceMode↔evalMode invariant", () => {
+    const result = loadCanonicalPrompts();
+    expect(result.length).toBeGreaterThan(0);
+    for (const p of result) {
+      if (p.sourceMode === "glossary") {
+        expect(p.evalMode).toBe("llm");
+      } else {
+        expect(p.evalMode).toBe("deterministic");
+      }
+    }
+  });
+
+  // #2185 — narrowing on `sourceMode` at the consumer side compiles only
+  // because the type is a discriminated union. If a future refactor
+  // collapses the arms, the `evalMode` literal narrowing here will fail
+  // type-check rather than silently re-widen.
+  it("narrowing on sourceMode produces a literal evalMode (compile-time)", () => {
+    function narrow(p: CanonicalPrompt): "llm" | "deterministic" {
+      if (p.sourceMode === "glossary") {
+        // Type system narrows evalMode to the literal "llm" here. The
+        // explicit annotation documents the narrowing — collapsing the
+        // discriminated union back to a flat shape would fail this line.
+        const evalMode: "llm" = p.evalMode;
+        return evalMode;
+      }
+      const evalMode: "deterministic" = p.evalMode;
+      return evalMode;
+    }
+    const [first] = loadCanonicalPrompts();
+    if (first) {
+      const result = narrow(first);
+      expect(["llm", "deterministic"]).toContain(result);
+    }
+  });
+});
+
+describe("CanonicalPrompt discriminated union (#2185)", () => {
+  // Helper that forces TS to check the value against the full union — a
+  // bare `const x: CanonicalPrompt = {...}` lets contextual typing widen
+  // and sometimes admits invalid combinations; passing through a typed
+  // parameter keeps the union check strict.
+  function asPrompt(p: CanonicalPrompt): CanonicalPrompt {
+    return p;
+  }
+
+  it("rejects mismatched sourceMode + evalMode at compile time", () => {
+    // glossary must pair with llm.
+    // @ts-expect-error — deterministic evalMode on the glossary arm violates the union.
+    asPrompt({
+      name: "x",
+      description: "x",
+      question: "x",
+      category: null,
+      sourceMode: "glossary",
+      evalMode: "deterministic",
+    });
+
+    // metric (and any non-glossary mode) must pair with deterministic.
+    // @ts-expect-error — llm evalMode on the non-glossary arm violates the union.
+    asPrompt({
+      name: "x",
+      description: "x",
+      question: "x",
+      category: null,
+      sourceMode: "metric",
+      evalMode: "llm",
+    });
+
+    // The closed sourceMode union rejects unknown literals — the
+    // constructor normalizes to "other", so a bare unknown string in
+    // a typed literal must not compile.
+    asPrompt({
+      name: "x",
+      description: "x",
+      question: "x",
+      category: null,
+      // @ts-expect-error — "exotic_future_mode" is not a member of CanonicalSourceMode.
+      sourceMode: "exotic_future_mode",
+      evalMode: "deterministic",
+    });
+
+    // The well-formed arms compile without error — sanity-check the
+    // negative tests above by exercising both arms positively.
+    const glossary = asPrompt({
+      name: "x",
+      description: "x",
+      question: "x",
+      category: null,
+      sourceMode: "glossary",
+      evalMode: "llm",
+    });
+    const metric = asPrompt({
+      name: "x",
+      description: "x",
+      question: "x",
+      category: null,
+      sourceMode: "metric",
+      evalMode: "deterministic",
+    });
+    expect(glossary.evalMode).toBe("llm");
+    expect(metric.evalMode).toBe("deterministic");
   });
 });

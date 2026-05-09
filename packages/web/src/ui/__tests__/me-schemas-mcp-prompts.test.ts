@@ -19,13 +19,19 @@ describe("McpCanonicalGateSchema (web tolerant variant)", () => {
     }
   });
 
-  test("known-good reason values still parse strictly", () => {
-    const parsed = McpCanonicalGateSchema.parse({
-      exposed: false,
-      toggle: "auto",
-      reason: "no-demo-signal",
-    });
-    expect(parsed.reason).toBe("no-demo-signal");
+  test("known-good reason values still parse strictly without firing the warn", () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const parsed = McpCanonicalGateSchema.parse({
+        exposed: false,
+        toggle: "auto",
+        reason: "no-demo-signal",
+      });
+      expect(parsed.reason).toBe("no-demo-signal");
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

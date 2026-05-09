@@ -109,19 +109,22 @@ export const PromptListEntrySchema = z.object({
 export type PromptListEntry = z.infer<typeof PromptListEntrySchema>;
 
 /**
- * Canonical-prompts gate envelope. Modelled as a flat `ZodObject` (rather
- * than a `z.discriminatedUnion("exposed", ...)`) because the OpenAPI
- * extractor emits a richer schema for a flat object than for a `oneOf`
+ * Canonical-prompts gate envelope. Modelled as a flat `ZodObject`
+ * (rather than `z.discriminatedUnion("exposed", ...)`) because the
+ * OpenAPI extractor emits a richer flat-object schema than a `oneOf`
  * union, and downstream TS consumers narrow on the producer-side
  * discriminated union from `gating.ts` rather than on the wire shape.
  *
- * Kept as a raw `ZodObject` so consumers can `.extend({...})` it (the
- * web layer overlays a `.catch(null)` on the reason for forward-compat —
- * `.extend()` is unavailable on `ZodEffects`). The cross-field invariant
- * `exposed=true ⇔ reason=null` is bolted on via the
- * `RefinedCanonicalGateSchema` wrapper below — used by routes and web
- * for parse-time validation; the raw object is what surfaces in
- * OpenAPI.
+ * Kept as a raw `ZodObject` so callers can `.extend({...})` it — the
+ * web layer overlays a `.catch(null)` on the reason for forward-compat,
+ * and `.extend()` is unavailable on `ZodEffects` (the type
+ * `superRefine` returns).
+ *
+ * The cross-field invariant `exposed=true ⇔ reason=null` is enforced
+ * by `RefinedCanonicalGateSchema` (parse-time only — the OpenAPI
+ * extractor reads through the refinement to this inner object so the
+ * spec stays a flat object with `null` permitted on `reason`; the
+ * runtime `parse()` rejects the illegal pair).
  */
 export const CanonicalGateSchema = z.object({
   exposed: z.boolean(),
@@ -131,10 +134,18 @@ export const CanonicalGateSchema = z.object({
 export type CanonicalGateWire = z.infer<typeof CanonicalGateSchema>;
 
 /**
- * Raw refinement function so a consumer that re-builds the schema with
- * `.catch(null)` (web parse path) can re-apply the same invariant. The
- * route layer uses `RefinedCanonicalGateSchema` directly; the web layer
- * applies `addCanonicalGateRefinement` to its tolerant variant.
+ * Re-usable cross-field refinement. Today's only caller is
+ * `RefinedCanonicalGateSchema` below (the strict route boundary). The
+ * web layer (`packages/web/src/ui/lib/me-schemas.ts`) deliberately
+ * does NOT apply this refinement on top of its `.catch(null)` variant:
+ * the catch coerces a malformed reason to `null`, and combining both
+ * would re-reject the very `{exposed:false, reason:"future-signal"}`
+ * case the catch exists to absorb. The route's strict path is the
+ * boundary that validates the invariant.
+ *
+ * Kept exported anyway — a future caller (e.g. an SDK consumer
+ * round-tripping a serialized response) may want strict semantics
+ * without re-implementing the predicate.
  */
 export function addCanonicalGateRefinement<T extends z.ZodType<CanonicalGateWire>>(schema: T): T {
   return schema.superRefine((gate, ctx) => {
@@ -156,10 +167,11 @@ export function addCanonicalGateRefinement<T extends z.ZodType<CanonicalGateWire
 }
 
 /**
- * Strict gate parser used by the route response schema — accepts only
- * the producer-side invariant `exposed=true ⇔ reason=null`. The web
- * client re-applies the same invariant on its `.catch(null)` variant
- * via `addCanonicalGateRefinement`.
+ * Strict gate parser used by the route response schema — rejects
+ * `{exposed:true, reason:set}` and `{exposed:false, reason:null}` at
+ * `parse()` time. The OpenAPI spec sees the inner `CanonicalGateSchema`
+ * (the extractor doesn't render Zod refinements as JSON-schema
+ * constraints), so the cross-field check is runtime-only.
  */
 export const RefinedCanonicalGateSchema = addCanonicalGateRefinement(CanonicalGateSchema);
 

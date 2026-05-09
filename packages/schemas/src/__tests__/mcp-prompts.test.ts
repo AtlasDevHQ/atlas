@@ -18,6 +18,7 @@
  * web parse ever sees the bad shape.
  */
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import {
   PromptArgumentSchema,
   PromptSourceSchema,
@@ -26,10 +27,12 @@ import {
   CanonicalGateReasonSchema,
   CanonicalToggleSchema,
   RefinedCanonicalGateSchema,
+  addCanonicalGateRefinement,
   McpPromptsResponseSchema,
   CANONICAL_GATE_REASONS,
   CANONICAL_TOGGLES,
   PROMPT_SOURCES,
+  type CanonicalGateWire,
 } from "../mcp-prompts";
 
 const sampleEntry = {
@@ -190,5 +193,82 @@ describe("McpPromptsResponseSchema", () => {
       },
     };
     expect(McpPromptsResponseSchema.parse(empty)).toEqual(empty);
+  });
+});
+
+// Every shape `evaluateCanonicalGate` (in `packages/mcp/src/prompts/gating.ts`)
+// can produce, captured as a fixture so a future producer branch that adds
+// a 6th case has to either match an existing tuple or extend this array
+// (and the route's strict schema gets exercised against it).
+const PRODUCER_OUTCOMES: CanonicalGateWire[] = [
+  // toggle=always
+  { exposed: true, toggle: "always", reason: null },
+  // toggle=never
+  { exposed: false, toggle: "never", reason: "toggle-never" },
+  // toggle=auto + probe-active OR industry signal
+  { exposed: true, toggle: "auto", reason: null },
+  // toggle=auto + probe-errored + no industry
+  { exposed: false, toggle: "auto", reason: "signal-unavailable" },
+  // toggle=auto + probe-inactive + no industry
+  { exposed: false, toggle: "auto", reason: "no-demo-signal" },
+];
+
+describe("Producer→route round-trip", () => {
+  test.each(PRODUCER_OUTCOMES)(
+    "RefinedCanonicalGateSchema accepts producer outcome %p",
+    (outcome) => {
+      expect(RefinedCanonicalGateSchema.parse(outcome)).toEqual(outcome);
+    },
+  );
+});
+
+describe("addCanonicalGateRefinement (programmatic application)", () => {
+  // A schema overlay representative of what an SDK consumer might build:
+  // start from the canonical wire shape, layer a `.catch` on the reason
+  // (mirrors the web pattern), then apply the refinement on top. Confirms
+  // the refinement composes through `.extend` without a TypeScript bend.
+  const tolerantThenRefined = addCanonicalGateRefinement(
+    CanonicalGateSchema.extend({
+      reason: CanonicalGateReasonSchema.nullable().catch(null),
+    }),
+  );
+
+  test("known-good values pass", () => {
+    const gate = { exposed: true, toggle: "always" as const, reason: null };
+    expect(tolerantThenRefined.parse(gate)).toEqual(gate);
+  });
+
+  test("invariant still rejects exposed=true with reason=set", () => {
+    expect(() =>
+      tolerantThenRefined.parse({
+        exposed: true,
+        toggle: "always",
+        reason: "toggle-never",
+      }),
+    ).toThrow(/reason must be null/);
+  });
+
+  test("a forward-compat reason is coerced to null then re-rejected by the invariant", () => {
+    // The `.catch` coerces `"future"` → `null`, then the refinement runs
+    // with `{exposed:false, reason:null}` which is illegal. This is the
+    // documented reason the web layer does NOT compose `.catch` with the
+    // refinement — the test pins that interaction so the doc stays
+    // honest.
+    expect(() =>
+      tolerantThenRefined.parse({
+        exposed: false,
+        toggle: "auto",
+        reason: "future",
+      }),
+    ).toThrow(/reason must be set/);
+  });
+
+  test("addCanonicalGateRefinement returns the same schema type (zod superRefine returns this)", () => {
+    // Compile-time witness — if a future Zod bump makes superRefine
+    // return ZodEffects, the type assertion below fails compile.
+    const refined = addCanonicalGateRefinement(CanonicalGateSchema);
+    const _typeCheck: typeof CanonicalGateSchema = refined;
+    void _typeCheck;
+    expect(refined).toBeInstanceOf(z.ZodObject);
   });
 });

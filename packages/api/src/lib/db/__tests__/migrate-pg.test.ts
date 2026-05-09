@@ -84,4 +84,24 @@ describeIfPg("migrate-pg (real Postgres)", () => {
 
     expect(count).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+
+  // #2184 — audit_log.auth_mode CHECK constraint. Inserts that pass
+  // the canonical AuthMode tuple succeed; an insert with an unknown
+  // mode rejects with PostgreSQL error code 23514 (check_violation),
+  // which is the failure mode the DB-side guard is meant to catch.
+  it("rejects non-canonical audit_log.auth_mode with 23514", async () => {
+    // Sanity: a canonical value writes cleanly.
+    await pool.query(
+      `INSERT INTO audit_log (auth_mode, sql, duration_ms, success)
+       VALUES ('managed', 'SELECT 1', 0, true)`,
+    );
+
+    // The drift case from #2182 — literal 'mcp' written by a regression.
+    await expect(
+      pool.query(
+        `INSERT INTO audit_log (auth_mode, sql, duration_ms, success)
+         VALUES ('mcp', 'SELECT 1', 0, true)`,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
 });

@@ -99,13 +99,40 @@ export type PromptArgumentSpec = z.infer<typeof PromptArgumentSchema>;
  * Workspace-shaped prompt list entry. `source` lets the preview block
  * bucket by origin without a name-prefix heuristic; the SDK
  * `prompts/list` shape strips the field at the surface.
+ *
+ * Modeled as a `z.discriminatedUnion("source", …)` so the invariant
+ * "only `source: \"builtin\"` ever has args" — enforced today by the
+ * private constructors in `packages/mcp/src/prompts/listing.ts` — is
+ * lifted to a compile-time fact: the canonical / semantic / library
+ * arms type `arguments` as `[]`, so a future contributor can't smuggle
+ * a non-empty arg list past the type checker (and runtime
+ * `safeParse` rejects the same shape with the same parse error every
+ * other arm catches). Consumers narrow on `entry.source` to get the
+ * right shape instead of defensively iterating `entry.arguments` on
+ * every entry.
+ *
+ * The wire shape is unchanged from the pre-discriminated flat object —
+ * same fields, same JSON, just typed tighter — so the OpenAPI
+ * extraction and the route's `c.json` payload stay byte-identical.
  */
-export const PromptListEntrySchema = z.object({
+const PromptListEntryBuiltinSchema = z.object({
+  source: z.literal("builtin"),
   name: z.string().min(1),
   description: z.string().optional(),
   arguments: z.array(PromptArgumentSchema),
-  source: PromptSourceSchema,
 });
+
+const PromptListEntryHardcodedEmptyArgsSchema = z.object({
+  source: z.enum(["canonical", "semantic", "library"]),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  arguments: z.tuple([]),
+});
+
+export const PromptListEntrySchema = z.discriminatedUnion("source", [
+  PromptListEntryBuiltinSchema,
+  PromptListEntryHardcodedEmptyArgsSchema,
+]);
 export type PromptListEntry = z.infer<typeof PromptListEntrySchema>;
 
 /**

@@ -33,6 +33,7 @@ import {
   CANONICAL_TOGGLES,
   PROMPT_SOURCES,
   type CanonicalGateWire,
+  type PromptListEntry,
 } from "../mcp-prompts";
 
 const sampleEntry = {
@@ -50,7 +51,7 @@ const sampleResponse = {
     {
       name: "entity-orders-monthly-revenue",
       description: "[orders] Aggregate revenue by month",
-      arguments: [],
+      arguments: [] as [],
       source: "semantic" as const,
     },
   ],
@@ -108,9 +109,17 @@ describe("PromptArgumentSchema", () => {
 });
 
 describe("PromptListEntrySchema", () => {
-  test("accepts every source bucket", () => {
-    for (const source of PROMPT_SOURCES) {
-      const entry = { ...sampleEntry, source };
+  test("accepts a builtin entry with non-empty arguments", () => {
+    expect(PromptListEntrySchema.parse(sampleEntry)).toEqual(sampleEntry);
+  });
+
+  test("accepts canonical/semantic/library entries with empty arguments", () => {
+    for (const source of ["canonical", "semantic", "library"] as const) {
+      // Cast through unknown — the discriminated union infers
+      // `arguments: []` (empty tuple) on the non-builtin arm, so the
+      // spread-then-override-with-`[]` literal needs the explicit shape
+      // to satisfy the empty-tuple type.
+      const entry = { ...sampleEntry, source, arguments: [] as [] };
       expect(PromptListEntrySchema.parse(entry)).toEqual(entry);
     }
   });
@@ -124,6 +133,61 @@ describe("PromptListEntrySchema", () => {
     expect(() =>
       PromptListEntrySchema.parse({ ...sampleEntry, source: "rogue" }),
     ).toThrow();
+  });
+
+  // Discriminated union enforces "only source: builtin ever has args" at
+  // the parse boundary — canonical / semantic / library entries with
+  // non-empty args must fail at runtime (and at the type level — see
+  // the @ts-expect-error sites below).
+  test.each(["canonical", "semantic", "library"] as const)(
+    "rejects %s entries that smuggle in non-empty arguments",
+    (source) => {
+      const illegal = { ...sampleEntry, source };
+      expect(() => PromptListEntrySchema.parse(illegal)).toThrow();
+    },
+  );
+
+  test("type-level: canonical entries with non-empty args are unrepresentable", () => {
+    // Compile-time witnesses for the discriminated-union shape — if a
+    // future regression flattens the union, these `@ts-expect-error`s
+    // become unused and `tsgo --noEmit` fails the build.
+
+    // @ts-expect-error — canonical arm forbids non-empty arguments.
+    const _illegalCanonical: PromptListEntry = {
+      source: "canonical",
+      name: "x",
+      description: "y",
+      arguments: [{ name: "a", description: "b", required: true }],
+    };
+    void _illegalCanonical;
+
+    // @ts-expect-error — semantic arm forbids non-empty arguments.
+    const _illegalSemantic: PromptListEntry = {
+      source: "semantic",
+      name: "x",
+      description: "y",
+      arguments: [{ name: "a", description: "b", required: true }],
+    };
+    void _illegalSemantic;
+
+    // @ts-expect-error — library arm forbids non-empty arguments.
+    const _illegalLibrary: PromptListEntry = {
+      source: "library",
+      name: "x",
+      description: "y",
+      arguments: [{ name: "a", description: "b", required: true }],
+    };
+    void _illegalLibrary;
+
+    // Sanity — the legal builtin shape still satisfies the union.
+    const _legalBuiltin: PromptListEntry = {
+      source: "builtin",
+      name: "x",
+      description: "y",
+      arguments: [{ name: "a", description: "b", required: true }],
+    };
+    void _legalBuiltin;
+    expect(true).toBe(true);
   });
 });
 

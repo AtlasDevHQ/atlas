@@ -111,15 +111,28 @@ meMcpPrompts.openapi(listMcpPromptsRoute, async (c) => {
 
       // Spread to drop the listing module's `readonly` shape — Hono's
       // `c.json` types want mutable arrays. The copy is one shallow
-      // allocation; entries are already plain objects.
+      // allocation; entries are already plain objects. Narrow on
+      // `source` so the discriminated `PromptListEntry` union (only
+      // `builtin` carries args) lands on the wire as the matching arm —
+      // a flat re-build would lose the `arguments: []` literal type
+      // and TS would reject the payload against the response schema.
       return c.json(
         {
-          prompts: result.prompts.map((p) => ({
-            name: p.name,
-            description: p.description,
-            arguments: p.arguments.map((a) => ({ ...a })),
-            source: p.source,
-          })),
+          prompts: result.prompts.map((p) =>
+            p.source === "builtin"
+              ? {
+                  source: "builtin" as const,
+                  name: p.name,
+                  description: p.description,
+                  arguments: p.arguments.map((a) => ({ ...a })),
+                }
+              : {
+                  source: p.source,
+                  name: p.name,
+                  description: p.description,
+                  arguments: [] as [],
+                },
+          ),
           canonicalGate: { ...result.canonicalGate },
         },
         200,

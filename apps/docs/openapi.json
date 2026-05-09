@@ -15126,52 +15126,82 @@
                     "prompts": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "description": {
-                            "type": "string"
-                          },
-                          "arguments": {
-                            "type": "array",
-                            "items": {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "description": {
-                                  "type": "string"
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                }
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "builtin"
+                                ]
                               },
-                              "required": [
-                                "name",
-                                "description",
-                                "required"
-                              ]
-                            }
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "arguments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "required": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "description",
+                                    "required"
+                                  ]
+                                }
+                              }
+                            },
+                            "required": [
+                              "source",
+                              "name",
+                              "arguments"
+                            ]
                           },
-                          "source": {
-                            "type": "string",
-                            "enum": [
-                              "builtin",
-                              "canonical",
-                              "semantic",
-                              "library"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "canonical",
+                                  "semantic",
+                                  "library"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "arguments": {
+                                "type": "array",
+                                "prefixItems": []
+                              }
+                            },
+                            "required": [
+                              "source",
+                              "name",
+                              "arguments"
                             ]
                           }
-                        },
-                        "required": [
-                          "name",
-                          "arguments",
-                          "source"
                         ]
                       }
                     },

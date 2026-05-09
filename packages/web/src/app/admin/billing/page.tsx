@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { z } from "zod";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -31,8 +33,11 @@ import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { formatDate, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BillingStatus } from "@useatlas/schemas";
+import { WorkspaceModelConfigSchema } from "@useatlas/schemas";
 import {
+  AlertTriangle,
   Bot,
+  Check,
   Coins,
   CreditCard,
   DollarSign,
@@ -528,6 +533,17 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
 
 // ── BYOT row (inline switch) ──────────────────────────────────────
 
+const ModelConfigResponseSchema = z.object({
+  config: WorkspaceModelConfigSchema.nullable(),
+});
+
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  "azure-openai": "Azure OpenAI",
+  custom: "Custom",
+};
+
 function ByotRow({
   data,
   onToggled,
@@ -543,6 +559,14 @@ function ByotRow({
     method: "POST",
     invalidates: onToggled,
   });
+
+  // The BYOT toggle just flips the plan flag — the actual provider+key lives
+  // in /admin/model-config. Fetch that here so we can tell the user when the
+  // toggle is on but no key has been pasted yet.
+  const { data: modelConfig } = useAdminFetch("/api/v1/admin/model-config", {
+    schema: ModelConfigResponseSchema,
+  });
+  const configuredKey = modelConfig?.config ?? null;
 
   async function handleToggle(enabled: boolean) {
     await mutate({ body: { enabled } });
@@ -573,7 +597,81 @@ function ByotRow({
           </div>
         }
       />
+      <ByotKeyStatus
+        byot={data.plan.byot}
+        configuredKey={configuredKey}
+      />
       <MutationErrorSurface error={error} feature="BYOT" variant="inline" />
     </div>
+  );
+}
+
+// Presenter for the BYOT key state (#2172). Pure, prop-driven so it can be
+// tested without spinning up the network plumbing in `ByotRow`.
+export function ByotKeyStatus({
+  byot,
+  configuredKey,
+}: {
+  byot: boolean;
+  configuredKey: { provider: string; model: string } | null;
+}) {
+  if (!byot) return null;
+  return (
+    <>
+      {!configuredKey ? (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-50/60 px-4 py-3 dark:bg-amber-950/20"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+                BYOT enabled, but no API key configured yet
+              </p>
+              <p className="text-xs text-amber-800/80 dark:text-amber-300/80">
+                Atlas supports Anthropic, OpenAI, Azure OpenAI, and OpenAI-compatible endpoints.
+                Until a key is saved, chat keeps using the platform default.
+              </p>
+            </div>
+          </div>
+          <Button asChild variant="outline" size="sm" className="shrink-0">
+            <Link href="/admin/model-config">
+              Add your API key
+              <ExternalLink className="ml-1.5 size-3" />
+            </Link>
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-4 py-2.5">
+          <div className="flex items-center gap-2 text-xs">
+            <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-muted-foreground">
+              Using your{" "}
+              <span className="font-medium text-foreground">
+                {PROVIDER_LABEL[configuredKey.provider] ?? configuredKey.provider}
+              </span>{" "}
+              key{" "}
+              <span className="font-mono text-[11px] text-muted-foreground/80">
+                ({configuredKey.model})
+              </span>
+            </span>
+          </div>
+          <Button asChild variant="ghost" size="sm" className="shrink-0">
+            <Link href="/admin/model-config">Manage</Link>
+          </Button>
+        </div>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        <a
+          href="https://docs.useatlas.dev/guides/billing-and-plans#byot-bring-your-own-token"
+          target="_blank"
+          rel="noreferrer"
+          className="underline-offset-2 hover:underline"
+        >
+          Learn about BYOT
+        </a>
+      </p>
+    </>
   );
 }

@@ -74,6 +74,7 @@ export const auditLog = pgTable(
       .where(sql`actor_kind IS NOT NULL`),
     index("idx_audit_log_client_id").on(t.clientId).where(sql`client_id IS NOT NULL`),
     check("chk_audit_log_actor_kind", sql`actor_kind IS NULL OR actor_kind IN ('human', 'agent', 'mcp', 'scheduler')`),
+    check("chk_audit_log_auth_mode", sql`auth_mode IN ('none', 'simple-key', 'managed', 'byot')`),
   ],
 );
 

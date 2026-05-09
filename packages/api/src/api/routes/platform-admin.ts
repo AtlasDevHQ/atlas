@@ -44,6 +44,7 @@ import {
   type PlatformWorkspace,
 } from "@useatlas/types";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
+import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
@@ -503,6 +504,10 @@ platformAdmin.openapi(suspendWorkspaceRoute, async (c) => {
     }
 
     yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "suspended"));
+    // Drop the cached workspace row immediately so the next user-facing
+    // request reflects the suspension instead of the 60s-stale active
+    // entry from `getCachedWorkspace` (#2165).
+    invalidatePlanCache(workspaceId);
     log.info({ workspaceId, requestId }, "Workspace suspended by platform admin");
 
     logAdminAction({
@@ -539,6 +544,10 @@ platformAdmin.openapi(unsuspendWorkspaceRoute, async (c) => {
     }
 
     yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "active"));
+    // Drop the cached workspace row so the user-facing path picks up
+    // "active" on the next request rather than serving a stale
+    // "suspended" entry until the cache TTL expires (#2165).
+    invalidatePlanCache(workspaceId);
     log.info({ workspaceId, requestId }, "Workspace unsuspended by platform admin");
 
     logAdminAction({
@@ -584,6 +593,10 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
       try: () => updateWorkspaceStatus(workspaceId, "deleted"),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
+    // Drop the cached workspace row so the user-facing path returns
+    // 404/deleted on the next request instead of serving the cached
+    // pre-delete state (#2165).
+    invalidatePlanCache(workspaceId);
 
     log.info({ workspaceId, cleanup, requestId }, "Workspace deleted by platform admin");
 
@@ -684,20 +697,10 @@ platformAdmin.openapi(changePlanRoute, async (c) => {
       return c.json({ error: "not_found", message: "Workspace not found.", requestId }, 404);
     }
 
-    // Invalidate the billing enforcement cache for this org
-    yield* Effect.tryPromise({
-      try: async () => {
-        const { invalidatePlanCache } = await import("@atlas/api/lib/billing/enforcement");
-        invalidatePlanCache(workspaceId);
-      },
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      log.warn(
-        { err: err.message, workspaceId, requestId },
-        "Failed to invalidate plan cache after tier change — stale limits may persist until cache expires",
-      );
-      return Effect.void;
-    }));
+    // Drop the cached workspace row so the new plan tier takes effect
+    // immediately. `invalidatePlanCache` is a synchronous Map.delete —
+    // no need to wrap in Effect.tryPromise.
+    invalidatePlanCache(workspaceId);
 
     log.info({ workspaceId, planTier, previousTier: workspace.plan_tier, requestId }, "Workspace plan changed by platform admin");
 

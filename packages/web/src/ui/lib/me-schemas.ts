@@ -116,68 +116,61 @@ export const RevokeOAuthClientResponseSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// MCP prompts preview (#2179) — Settings → AI Agents
+// MCP prompts preview — Settings → AI Agents
+//
+// Schemas are sourced from `@useatlas/schemas/mcp-prompts` so the listing
+// pipeline, the route layer, and this web client derive from one Zod
+// definition. The local `Mcp*` aliases below stay so existing component
+// imports keep working without a sweeping rename.
 // ---------------------------------------------------------------------------
 
-/**
- * Mirrors the API route's `PromptListEntrySchema`. The Settings → AI
- * Agents preview block buckets by `source` to show "Built-in (5) ·
- * Canonical (20) · Semantic (12) · Library (3)"; reading `source` off
- * each entry avoids name-prefix pattern-matching at the UI layer.
- */
-export const McpPromptArgumentSchema = z.object({
-  name: z.string().min(1),
-  description: z.string(),
-  required: z.boolean(),
-});
+import {
+  PromptArgumentSchema,
+  PromptSourceSchema,
+  PromptListEntrySchema,
+  CanonicalGateSchema,
+  CanonicalGateReasonSchema,
+  type PromptListEntry,
+  type PromptSource,
+  type CanonicalGateWire,
+} from "@useatlas/schemas/mcp-prompts";
 
-export const McpPromptSourceSchema = z.enum([
-  "builtin",
-  "canonical",
-  "semantic",
-  "library",
-]);
-
-export const McpPromptListEntrySchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-  arguments: z.array(McpPromptArgumentSchema),
-  source: McpPromptSourceSchema,
-});
+export const McpPromptArgumentSchema = PromptArgumentSchema;
+export const McpPromptSourceSchema = PromptSourceSchema;
+export const McpPromptListEntrySchema = PromptListEntrySchema;
 
 /**
- * Canonical-prompts gate envelope. `exposed=false` means the canonical
- * eval prompts are hidden; `reason` tells the UI which banner to render:
- *   - "toggle-never"        — admin opted out at Admin → Settings → MCP
- *   - "no-demo-signal"      — toggle=auto, this isn't a demo workspace
- *   - "signal-unavailable"  — toggle=auto, internal-DB connections probe
- *                             failed AND no industry signal could
- *                             confirm demo status (operator-facing
- *                             outage signal — distinct from the
- *                             confirmed-not-demo case so the user gets
- *                             accurate advice)
+ * Web-client copy of the canonical-gate schema with `.catch` on the
+ * reason enum so a forward-compatible reason value during a multi-PR
+ * rollout degrades to the "unknown reason" banner branch instead of
+ * blanking the preview block. The canonical wire schema (used by the
+ * route) is strict — the tolerance lives only at the read side and
+ * fires `console.warn` so wire drift stays visible in dev tools rather
+ * than silently masked.
  *
- * `.catch(null)` on the reason enum so a forward-compatible reason
- * value during a multi-PR rollout degrades to the "unknown reason"
- * banner branch instead of failing the entire response parse and
- * blanking the preview block. Mirrors `CanonicalGateReason` in
- * `packages/mcp/src/prompts/gating.ts` — keep both in sync.
+ * The cross-field invariant (`exposed=true ⇔ reason=null`) is
+ * intentionally NOT re-applied here because `.catch` coerces a
+ * malformed reason to `null`, and combining the two would re-reject
+ * the very case `.catch` exists to absorb (`{exposed:false,
+ * reason:"future-signal"}` → coerce to null → invariant rejects). The
+ * route's strict schema is the boundary that catches drift.
  */
-export const McpCanonicalGateSchema = z.object({
-  exposed: z.boolean(),
-  toggle: z.enum(["always", "never", "auto"]),
-  reason: z
-    .enum(["toggle-never", "no-demo-signal", "signal-unavailable"])
-    .nullable()
-    .catch(null),
+export const McpCanonicalGateSchema = CanonicalGateSchema.extend({
+  reason: CanonicalGateReasonSchema.nullable().catch((ctx) => {
+    console.warn(
+      "[mcp-prompts] canonical gate reason failed to parse — coercing to null",
+      ctx.issues,
+    );
+    return null;
+  }),
 });
 
 export const McpPromptsResponseSchema = z.object({
-  prompts: z.array(McpPromptListEntrySchema),
+  prompts: z.array(PromptListEntrySchema),
   canonicalGate: McpCanonicalGateSchema,
 });
 
-export type McpPromptListEntry = z.infer<typeof McpPromptListEntrySchema>;
-export type McpPromptSource = z.infer<typeof McpPromptSourceSchema>;
-export type McpCanonicalGate = z.infer<typeof McpCanonicalGateSchema>;
+export type McpPromptListEntry = PromptListEntry;
+export type McpPromptSource = PromptSource;
+export type McpCanonicalGate = CanonicalGateWire;
 export type McpPromptsResponse = z.infer<typeof McpPromptsResponseSchema>;

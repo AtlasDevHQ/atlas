@@ -2,9 +2,9 @@
 
 import type { ReactNode } from "react";
 import { useEffect } from "react";
+import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
-import { Separator } from "@/components/ui/separator";
+import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,6 +16,7 @@ import {
 import { ShieldX } from "lucide-react";
 import Link from "next/link";
 import { AdminSidebar } from "./admin-sidebar";
+import { AdminTopBar } from "./admin-top-bar";
 import { useAtlasConfig } from "@/ui/context";
 import { LoadingState } from "./loading-state";
 import { ChangePasswordDialog } from "./change-password-dialog";
@@ -92,7 +93,15 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
             <Button
               variant="ghost"
               className="w-full"
-              onClick={() => authClient.signOut().then(() => window.location.assign("/login"))}
+              onClick={() => {
+                authClient.signOut()
+                  .then(() => window.location.assign("/login"))
+                  .catch((err: unknown) => {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    console.error("Sign out failed:", msg);
+                    toast.error("Sign out failed. Try again.");
+                  });
+              }}
             >
               Sign in as a different user
             </Button>
@@ -106,13 +115,7 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
     <SidebarProvider className="!min-h-0 h-full">
       <AdminSidebar />
       <SidebarInset id="main" tabIndex={-1}>
-        <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
-          <div className="flex items-center gap-2 px-4">
-            <SidebarTrigger className="-ml-1" />
-            <Separator orientation="vertical" className="mr-2 h-4" />
-            <span className="text-sm font-medium text-muted-foreground">Admin Console</span>
-          </div>
-        </header>
+        <AdminTopBar />
         <ScrollArea className="flex-1">{children}</ScrollArea>
       </SidebarInset>
 

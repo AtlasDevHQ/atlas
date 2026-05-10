@@ -8,6 +8,7 @@ import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard, type PythonProgressData } from "./python-result-card";
+import { ProposeDashboardCard } from "./propose-dashboard-card";
 import type { PreviousExecution } from "../notebook/types";
 
 /** Extract the tool invocation ID from an AI SDK tool part. */
@@ -51,6 +52,8 @@ export const ToolPart = memo(function ToolPart({
       const events = invocationId ? pythonProgress?.get(invocationId) : undefined;
       return <PythonResultCard part={part} progressEvents={events} />;
     }
+    case "proposeDashboard":
+      return <ProposeDashboardCard part={part} />;
     default: {
       const result = getToolResult(part);
       if (isActionToolResult(result)) {

@@ -110,6 +110,87 @@ function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   }
 }
 
+type UserQueryOutcomeResponse = {
+  body: Record<string, unknown>;
+  status: 200 | 400 | 401 | 403 | 409 | 429 | 500 | 503;
+};
+
+function userQueryOutcomeToResponse(
+  outcome: import("@atlas/api/lib/tools/sql").UserQueryOutcome,
+  requestId: string,
+): UserQueryOutcomeResponse {
+  switch (outcome.kind) {
+    case "ok":
+      return {
+        body: {
+          columns: outcome.columns,
+          rows: outcome.rows,
+          rowCount: outcome.rowCount,
+          executionMs: outcome.executionMs,
+          truncated: outcome.truncated,
+          maskingApplied: outcome.maskingApplied,
+        },
+        status: 200,
+      };
+    case "validation_failed":
+      return { body: { error: "invalid_sql", message: outcome.message, requestId }, status: 400 };
+    case "plugin_rejected":
+      return { body: { error: "plugin_rejected", message: outcome.message, requestId }, status: 400 };
+    case "query_failed":
+      return { body: { error: "query_failed", message: outcome.message, requestId }, status: 400 };
+    case "rls_failed":
+      return { body: { error: "rls_blocked", message: outcome.message, requestId }, status: 403 };
+    case "approval_required":
+      return {
+        body: {
+          error: "approval_required",
+          approvalRequestId: outcome.approvalRequestId,
+          matchedRules: outcome.matchedRules,
+          message: outcome.message,
+          requestId,
+        },
+        status: 409,
+      };
+    case "approval_identity_missing":
+      return { body: { error: "auth_required", message: outcome.message, requestId }, status: 401 };
+    case "approval_unavailable":
+      return { body: { error: "approval_unavailable", message: outcome.message, requestId }, status: 503 };
+    case "rate_limited":
+      return {
+        body: {
+          error: "rate_limited",
+          message: outcome.message,
+          ...("retryAfterMs" in outcome && outcome.retryAfterMs != null && { retryAfterMs: outcome.retryAfterMs }),
+          requestId,
+        },
+        status: 429,
+      };
+    case "concurrency_limited":
+      return { body: { error: "concurrency_limited", message: outcome.message, requestId }, status: 429 };
+    case "connection_unavailable":
+      return {
+        body: {
+          error: "connection_unavailable",
+          message: outcome.message,
+          connectionId: outcome.connectionId,
+          requestId,
+        },
+        status: 503,
+      };
+    case "no_datasource":
+      return { body: { error: "no_datasource", message: outcome.message, requestId }, status: 503 };
+    case "pool_exhausted":
+      return { body: { error: "pool_exhausted", message: outcome.message, requestId }, status: 503 };
+    default: {
+      const _exhaustive: never = outcome;
+      return {
+        body: { error: "internal_error", message: `Unhandled outcome: ${(_exhaustive as { kind: string }).kind}`, requestId },
+        status: 500,
+      };
+    }
+  }
+}
+
 function sharedDashboardFailResponse(reason: SharedDashboardFailReason) {
   switch (reason) {
     case "expired":
@@ -322,12 +403,38 @@ const removeCardRoute = createRoute({
   },
 });
 
+const PreviewCardSchema = z.object({
+  sql: z.string().min(1),
+  connectionId: z.string().nullable().optional(),
+});
+
+const previewCardRoute = createRoute({
+  method: "post",
+  path: "/preview-card",
+  tags: ["Dashboards"],
+  summary: "Preview a card query without saving",
+  description:
+    "Validates and executes SQL against the analytics datasource through the full Atlas pipeline (validation, approval, RLS, auto-LIMIT, audit, masking). Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires admin role.",
+  request: { body: { content: { "application/json": { schema: PreviewCardSchema } }, required: true } },
+  responses: {
+    200: { description: "Query results", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid SQL, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    409: { description: "Approval required before execution", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
+    429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const refreshCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/refresh",
   tags: ["Dashboards"],
   summary: "Refresh a card",
-  description: "Re-executes the card's SQL and updates cached results. Requires admin role.",
+  description: "Re-executes the card's SQL through the full Atlas pipeline and updates cached results. Requires admin role.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -337,11 +444,14 @@ const refreshCardRoute = createRoute({
   responses: {
     200: { description: "Card refreshed with new data", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     204: { description: "Refresh succeeded (re-fetch failed)" },
-    400: { description: "Invalid ID or SQL validation failure", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid ID, SQL validation failure, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Approval required before execution", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -746,6 +856,32 @@ authed.openapi(removeCardRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /preview-card — run SQL for canvas preview through the full Atlas
+// pipeline (validation, approval, RLS, auto-LIMIT, audit, masking).
+// ---------------------------------------------------------------------------
+
+authed.openapi(previewCardRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { sql, connectionId } = c.req.valid("json");
+
+    const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
+    const outcome = yield* Effect.promise(() =>
+      runUserQueryPipeline({
+        sql,
+        ...(connectionId && { connectionId }),
+        explanation: "Dashboard card preview",
+      }),
+    );
+    const { body, status } = userQueryOutcomeToResponse(outcome, requestId);
+    // The OpenAPI route response is typed per-status; the helper's body
+    // shape is guaranteed by its switch but TS can't narrow across the
+    // status-set, so cast at the boundary.
+    return c.json(body as never, status);
+  }), { label: "preview card" });
+});
+
+// ---------------------------------------------------------------------------
 // POST /:id/cards/:cardId/refresh — refresh single card
 // ---------------------------------------------------------------------------
 
@@ -764,54 +900,34 @@ authed.openapi(refreshCardRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
 
-    // Get the card to find its SQL
     const cardResult = yield* Effect.promise(() => getCard(cardId, id));
     if (!cardResult.ok) {
       return c.json({ error: "not_found", message: "Card not found." }, 404);
     }
 
-    // Validate SQL before execution — card SQL could have been stored before whitelist changes
-    const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
-    const validation = yield* Effect.promise(() => validateSQL(cardResult.data.sql, cardResult.data.connectionId ?? undefined));
-    if (!validation.valid) {
-      return c.json({ error: "invalid_sql", message: `Card SQL failed validation: ${validation.error}`, requestId }, 400);
-    }
+    const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
+    const outcome = yield* Effect.promise(() =>
+      runUserQueryPipeline({
+        sql: cardResult.data.sql,
+        ...(cardResult.data.connectionId && { connectionId: cardResult.data.connectionId }),
+        explanation: `Dashboard card refresh: ${cardResult.data.title}`,
+      }),
+    );
 
-    // Execute the card's SQL against the analytics datasource
-    const { connections } = yield* Effect.promise(() => import("@atlas/api/lib/db/connection"));
-    let db: import("@atlas/api/lib/db/connection").DBConnection;
-    try {
-      db = cardResult.data.connectionId
-        ? connections.get(cardResult.data.connectionId)
-        : connections.getDefault();
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), cardId, dashboardId: id, connectionId: cardResult.data.connectionId }, "Connection not available for card refresh");
-      return c.json({ error: "not_available", message: "No database connection available.", requestId }, 500);
-    }
-
-    const queryResult = yield* Effect.tryPromise({
-      try: () => db.query(cardResult.data.sql, 30000),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      log.error({ err, cardId, dashboardId: id }, "Card refresh query failed");
-      return Effect.succeed(null);
-    }));
-
-    if (!queryResult) {
-      return c.json({ error: "query_failed", message: "Failed to execute card SQL. The query may have timed out or be invalid.", requestId }, 500);
+    if (outcome.kind !== "ok") {
+      const { body, status } = userQueryOutcomeToResponse(outcome, requestId);
+      return c.json(body as never, status);
     }
 
     const refreshResult = yield* Effect.promise(() => refreshCard(cardId, id, {
-      columns: queryResult.columns,
-      rows: queryResult.rows as Record<string, unknown>[],
+      columns: outcome.columns,
+      rows: outcome.rows,
     }));
-
     if (!refreshResult.ok) {
       const fail = crudFailResponse(refreshResult.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
-    // Return updated card
     const updated = yield* Effect.promise(() => getCard(cardId, id));
     if (!updated.ok) return c.body(null, 204);
     return c.json(updated.data, 200);
@@ -837,43 +953,53 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
 
-    const { connections } = yield* Effect.promise(() => import("@atlas/api/lib/db/connection"));
-    const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
+    const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const cards = dashResult.data.cards;
     let refreshed = 0;
     let failed = 0;
+    const errors: Array<{ cardId: string; cardTitle: string; reason: string; message: string }> = [];
 
-    // Refresh cards sequentially to avoid overloading the DB
+    // Sequential to avoid overloading the source. Each card flows through
+    // the full pipeline (validation + approval + RLS + audit) — the bulk
+    // entry point is not a license to skip per-query governance.
     for (const card of cards) {
-      yield* Effect.tryPromise({
-        try: async () => {
-          // Validate SQL before execution
-          const validation = await validateSQL(card.sql, card.connectionId ?? undefined);
-          if (!validation.valid) {
-            log.warn({ cardId: card.id, error: validation.error }, "Bulk refresh: card SQL failed validation");
-            failed++;
-            return;
-          }
-          const db = card.connectionId
-            ? connections.get(card.connectionId)
-            : connections.getDefault();
-          const queryResult = await db.query(card.sql, 30000);
-          const result = await refreshCard(card.id, id, {
-            columns: queryResult.columns,
-            rows: queryResult.rows as Record<string, unknown>[],
-          });
-          if (result.ok) refreshed++;
-          else failed++;
-        },
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(Effect.catchAll((err) => {
-        log.warn({ err: err.message, cardId: card.id }, "Bulk refresh: card query failed");
+      const outcome = yield* Effect.promise(() =>
+        runUserQueryPipeline({
+          sql: card.sql,
+          ...(card.connectionId && { connectionId: card.connectionId }),
+          explanation: `Dashboard bulk refresh: ${card.title}`,
+        }),
+      );
+
+      if (outcome.kind !== "ok") {
         failed++;
-        return Effect.void;
+        errors.push({
+          cardId: card.id,
+          cardTitle: card.title,
+          reason: outcome.kind,
+          message: outcome.message,
+        });
+        continue;
+      }
+
+      const result = yield* Effect.promise(() => refreshCard(card.id, id, {
+        columns: outcome.columns,
+        rows: outcome.rows,
       }));
+      if (result.ok) {
+        refreshed++;
+      } else {
+        failed++;
+        errors.push({
+          cardId: card.id,
+          cardTitle: card.title,
+          reason: "persist_failed",
+          message: result.reason,
+        });
+      }
     }
 
-    return c.json({ refreshed, failed, total: cards.length }, 200);
+    return c.json({ refreshed, failed, total: cards.length, errors }, 200);
   }), { label: "refresh all cards" });
 });
 

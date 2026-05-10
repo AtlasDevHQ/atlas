@@ -1,13 +1,3 @@
-/**
- * Tool registry for the Atlas agent.
- *
- * Decouples tool definitions from the agent loop so tool sets can be
- * composed dynamically. Each tool's {@link AtlasTool.description} is
- * injected into the agent's system prompt via {@link ToolRegistry.describe}.
- * The default registry contains the core tools (explore, executeSQL)
- * with their workflow descriptions extracted from the system prompt.
- */
-
 import type { ToolSet } from "ai";
 import { type AtlasAction, isAction } from "@atlas/api/lib/action-types";
 import { explore } from "./explore";
@@ -118,7 +108,7 @@ export class ToolRegistry {
   }
 }
 
-// --- Workflow descriptions (extracted from the system prompt) ---
+// --- Workflow descriptions ---
 
 export const EXPLORE_DESCRIPTION = `### 2. Explore the Semantic Layer
 Use the explore tool to run bash commands against the semantic/ directory:

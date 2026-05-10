@@ -158,6 +158,7 @@ describe("defaultRegistry", () => {
     const text = defaultRegistry.describe();
     expect(text).toContain("### 2. Explore the Semantic Layer");
     expect(text).toContain("### 3. Write and Execute SQL");
+    expect(text).toContain("### Propose a Dashboard");
   });
 
   it("is frozen — cannot register additional tools", () => {

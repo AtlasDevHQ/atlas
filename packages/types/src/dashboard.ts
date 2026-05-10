@@ -72,3 +72,44 @@ export interface DashboardSuggestion {
   chartConfig: DashboardChartConfig;
   reason: string;
 }
+
+// ---------------------------------------------------------------------------
+// Proposed dashboards (chat-side canvas — agent emits, user previews + saves)
+// ---------------------------------------------------------------------------
+
+export interface ProposedCard {
+  title: string;
+  sql: string;
+  chartConfig: DashboardChartConfig;
+  layout?: DashboardCardLayout;
+  connectionId?: string;
+}
+
+export interface ProposedDashboardSpec {
+  title: string;
+  description?: string;
+  cards: ProposedCard[];
+}
+
+export interface ProposedCardValidationError {
+  cardIndex: number;
+  cardTitle: string;
+  error: string;
+}
+
+export type ProposeDashboardResult =
+  | {
+      kind: "ok";
+      spec: ProposedDashboardSpec;
+      validation: { allValid: boolean; errors: ProposedCardValidationError[] };
+    }
+  | { kind: "err"; error: string };
+
+/** Wire shape returned by POST /api/v1/dashboards/preview-card. */
+export interface PreviewCardResponse {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  truncated: boolean;
+  rowCount: number;
+  executionMs: number;
+}

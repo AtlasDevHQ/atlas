@@ -1,32 +1,27 @@
 import { create } from "zustand";
-import type { ChartType } from "@useatlas/types";
+import type { ProposedDashboardSpec } from "@useatlas/types";
 
-export interface ProposedCard {
-  title: string;
-  sql: string;
-  chartConfig: { type: ChartType; categoryColumn: string; valueColumns: string[] };
-  layout?: { x: number; y: number; w: number; h: number };
-}
+export type { ProposedDashboardSpec, ProposedCard } from "@useatlas/types";
 
-export interface ProposedDashboardSpec {
-  title: string;
-  description?: string;
-  cards: ProposedCard[];
-}
+type CanvasView =
+  | { kind: "closed" }
+  | { kind: "open"; spec: ProposedDashboardSpec; version: number };
 
 interface CanvasState {
-  open: boolean;
-  spec: ProposedDashboardSpec | null;
-  /** Bump whenever the agent re-emits, so subscribers re-execute even if the spec is structurally equal. */
-  version: number;
+  view: CanvasView;
   setSpec: (spec: ProposedDashboardSpec) => void;
   close: () => void;
 }
 
 export const useDashboardCanvasStore = create<CanvasState>()((set) => ({
-  open: false,
-  spec: null,
-  version: 0,
-  setSpec: (spec) => set((s) => ({ open: true, spec, version: s.version + 1 })),
-  close: () => set({ open: false }),
+  view: { kind: "closed" },
+  setSpec: (spec) =>
+    set((s) => ({
+      view: {
+        kind: "open",
+        spec,
+        version: s.view.kind === "open" ? s.view.version + 1 : 1,
+      },
+    })),
+  close: () => set({ view: { kind: "closed" } }),
 }));

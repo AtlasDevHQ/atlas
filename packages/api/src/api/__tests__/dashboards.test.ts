@@ -254,11 +254,26 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   getActiveSandboxPluginId: () => null,
 }));
 
+type UserQueryOutcomeMock = import("@atlas/api/lib/tools/sql").UserQueryOutcome;
+const mockRunUserQueryPipeline: Mock<(opts: { sql: string; connectionId?: string; explanation: string }) => Promise<UserQueryOutcomeMock>> = mock(
+  async () =>
+    ({
+      kind: "ok" as const,
+      columns: ["month", "total"],
+      rows: [{ month: "Jan", total: 1000 }],
+      rowCount: 1,
+      executionMs: 5,
+      truncated: false,
+      maskingApplied: false,
+    }) as UserQueryOutcomeMock,
+);
+
 mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: mock(async () => ({ valid: true, classification: { type: "select" } })),
   extractClassification: mock(() => ({ type: "select" })),
   parserDatabase: mock(() => "PostgreSQL"),
   executeSQL: {},
+  runUserQueryPipeline: mockRunUserQueryPipeline,
 }));
 
 mock.module("@atlas/api/lib/auth/detect", () => ({
@@ -345,6 +360,16 @@ describe("dashboard routes", () => {
     mockGetShareStatus.mockResolvedValue({ ok: true, data: { shared: false, token: null, expiresAt: null, shareMode: "public" } });
     mockGetSharedDashboard.mockReset();
     mockGetSharedDashboard.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockRunUserQueryPipeline.mockReset();
+    mockRunUserQueryPipeline.mockResolvedValue({
+      kind: "ok",
+      columns: ["month", "total"],
+      rows: [{ month: "Jan", total: 1000 }],
+      rowCount: 1,
+      executionMs: 5,
+      truncated: false,
+      maskingApplied: false,
+    });
   });
 
   afterEach(() => {
@@ -612,6 +637,182 @@ describe("dashboard routes", () => {
   });
 
   // -------------------------------------------------------------------------
+  // POST /api/v1/dashboards/preview-card — chat-canvas preview
+  // -------------------------------------------------------------------------
+
+  describe("POST /api/v1/dashboards/preview-card", () => {
+    it("returns 200 with columns + rows for a valid SELECT", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT month, total FROM revenue" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { columns: string[]; rowCount: number };
+      expect(body.columns).toEqual(["month", "total"]);
+      expect(body.rowCount).toBe(1);
+    });
+
+    it("returns 401 when unauthenticated", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "none" as const,
+        status: 401 as const,
+        error: "Authentication required.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 403 when authenticated but not admin", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: { id: "u1", label: "test@test.com", mode: "simple-key" as const, role: "member" as const, activeOrganizationId: "org-1" },
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it("returns 400 invalid_sql when the pipeline rejects mutation SQL", async () => {
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "validation_failed",
+        message: "SQL must be SELECT-only — found INSERT/UPDATE/DELETE/DDL keyword.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "DROP TABLE companies" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string; message: string };
+      expect(body.error).toBe("invalid_sql");
+      expect(body.message).toContain("SELECT-only");
+    });
+
+    it("returns 400 invalid_sql when a non-whitelisted table is referenced", async () => {
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "validation_failed",
+        message: 'Table "secret_audit" is not in the semantic layer for connection "default".',
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT * FROM secret_audit" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_sql");
+    });
+
+    it("returns 400 invalid_sql on semicolon-chained statements", async () => {
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "validation_failed",
+        message: "Multiple SQL statements detected — only one statement per query.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1; DROP TABLE companies" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_sql");
+    });
+
+    it("returns 409 approval_required when the pipeline gates the query", async () => {
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "approval_required",
+        approvalRequestId: "req-123",
+        matchedRules: ["Finance — read"],
+        message: 'Approval required. Rule: "Finance — read".',
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT * FROM revenue" }),
+        }),
+      );
+      expect(response.status).toBe(409);
+      const body = (await response.json()) as { error: string; approvalRequestId: string };
+      expect(body.error).toBe("approval_required");
+      expect(body.approvalRequestId).toBe("req-123");
+    });
+
+    it("returns 503 connection_unavailable when the source is offline", async () => {
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "connection_unavailable",
+        connectionId: "default",
+        message: "Connection \"default\" is not registered.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("connection_unavailable");
+    });
+
+    it("returns 429 when the source rate limit is hit", async () => {
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "rate_limited",
+        message: "Rate limit exceeded for connection \"default\".",
+        retryAfterMs: 1500,
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(429);
+      const body = (await response.json()) as { error: string; retryAfterMs: number };
+      expect(body.error).toBe("rate_limited");
+      expect(body.retryAfterMs).toBe(1500);
+    });
+
+    it("threads connectionId through to the pipeline", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1", connectionId: "analytics-replica" }),
+        }),
+      );
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+      const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(callArgs).toMatchObject({ sql: "SELECT 1", connectionId: "analytics-replica" });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // POST /api/v1/dashboards/:id/cards/:cardId/refresh — refresh card
   // -------------------------------------------------------------------------
 
@@ -641,7 +842,7 @@ describe("dashboard routes", () => {
   // -------------------------------------------------------------------------
 
   describe("POST /api/v1/dashboards/:id/refresh", () => {
-    it("returns 200 with refresh summary", async () => {
+    it("returns 200 with refresh summary including empty errors[]", async () => {
       mockGetDashboard.mockResolvedValueOnce({
         ok: true,
         data: { ...mockDashboardData, cards: [mockCardData] },
@@ -652,8 +853,44 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(200);
-      const body = (await response.json()) as { refreshed: number; failed: number; total: number };
+      const body = (await response.json()) as {
+        refreshed: number; failed: number; total: number; errors: { cardId: string }[];
+      };
       expect(body.total).toBe(1);
+      expect(body.refreshed).toBe(1);
+      expect(body.failed).toBe(0);
+      expect(body.errors).toEqual([]);
+    });
+
+    it("surfaces per-card errors in the response payload when a card fails", async () => {
+      mockGetDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: { ...mockDashboardData, cards: [mockCardData, { ...mockCardData, id: "c2", title: "Bad card" }] },
+      });
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "ok",
+        columns: ["x"], rows: [], rowCount: 0, executionMs: 1, truncated: false, maskingApplied: false,
+      });
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "validation_failed",
+        message: 'Table "deprecated_table" is not in the semantic layer.',
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        refreshed: number; failed: number; total: number;
+        errors: { cardId: string; cardTitle: string; reason: string; message: string }[];
+      };
+      expect(body.total).toBe(2);
+      expect(body.refreshed).toBe(1);
+      expect(body.failed).toBe(1);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].cardTitle).toBe("Bad card");
+      expect(body.errors[0].reason).toBe("validation_failed");
     });
   });
 

@@ -968,6 +968,309 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
   }
 }
 
+// ── Shared user-query pipeline ──────────────────────────────────────
+//
+// Mirrors the executeSQL pipeline (validation → org-scoped connection →
+// approval → source-slot → plugin beforeQuery → RLS → auto-LIMIT →
+// execute + audit + mask + plugin afterQuery) but returns a discriminated
+// outcome instead of the agent-flavored success/error envelope. Used by
+// the dashboard canvas preview, single-card refresh, and bulk refresh —
+// every site that runs user-authored SQL but isn't the agent tool itself.
+//
+// executeSQL keeps its own copy of the pipeline for now to avoid churn
+// against its ~3,000-line test surface; collapsing both onto this helper
+// is a planned architecture-wins follow-up.
+
+export type UserQueryOutcome =
+  | {
+      readonly kind: "ok";
+      readonly columns: string[];
+      readonly rows: Record<string, unknown>[];
+      readonly rowCount: number;
+      readonly executionMs: number;
+      readonly truncated: boolean;
+      readonly maskingApplied: boolean;
+    }
+  | { readonly kind: "validation_failed"; readonly message: string }
+  | {
+      readonly kind: "approval_required";
+      readonly approvalRequestId: string;
+      readonly matchedRules: string[];
+      readonly message: string;
+    }
+  | { readonly kind: "approval_unavailable"; readonly message: string }
+  | { readonly kind: "approval_identity_missing"; readonly message: string }
+  | { readonly kind: "rate_limited"; readonly message: string; readonly retryAfterMs?: number }
+  | { readonly kind: "concurrency_limited"; readonly message: string }
+  | { readonly kind: "connection_unavailable"; readonly message: string; readonly connectionId: string }
+  | { readonly kind: "no_datasource"; readonly message: string }
+  | { readonly kind: "pool_exhausted"; readonly message: string }
+  | { readonly kind: "rls_failed"; readonly message: string }
+  | { readonly kind: "plugin_rejected"; readonly message: string }
+  | { readonly kind: "query_failed"; readonly message: string };
+
+export interface RunUserQueryOpts {
+  readonly sql: string;
+  readonly connectionId?: string;
+  /** Audit + approval surface description (e.g. "Dashboard preview: Weekly signups"). */
+  readonly explanation: string;
+}
+
+/**
+ * Run user-authored SQL through the production pipeline and return a
+ * discriminated outcome. See the comment block above for which steps run.
+ */
+export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryOutcome> {
+  const { sql, explanation } = opts;
+  const connId = opts.connectionId ?? "default";
+
+  const pipeline: Effect.Effect<UserQueryOutcome, PipelineError> = Effect.gen(function* () {
+    const reqCtx = getRequestContext();
+    const orgId = connections.isOrgPoolingEnabled()
+      ? reqCtx?.user?.activeOrganizationId
+      : undefined;
+    const authOrgId = reqCtx?.user?.activeOrganizationId;
+    const atlasMode = reqCtx?.atlasMode ?? "published";
+
+    const { db, dbType } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
+
+    const targetHost = connections.getTargetHost(connId);
+    const customValidator = connections.getValidator(connId);
+    const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
+
+    const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator);
+    if (!initial.ok) {
+      logQueryAudit({
+        sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+        error: initial.auditError, sourceId: connId, sourceType: dbType,
+      });
+      return { kind: "validation_failed" as const, message: initial.error };
+    }
+    const classification = initial.classification;
+
+    // Approval gate — fail closed.
+    if (classification) {
+      const approvalOutcome = yield* Effect.tryPromise({
+        try: async (): Promise<UserQueryOutcome | null> => {
+          let approvalMatch:
+            | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean };
+          try {
+            const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
+            const checkReqCtx = getRequestContext();
+            const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+            const checkUserId = checkReqCtx?.user?.id;
+            const checkSurface = checkReqCtx?.approvalSurface;
+            approvalMatch = await Effect.runPromise(checkApprovalRequired(
+              checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+              {
+                ...(checkUserId ? { requesterId: checkUserId } : {}),
+                ...(checkSurface ? { surface: checkSurface } : {}),
+              },
+            ));
+          } catch (err) {
+            log.error(
+              { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+              "Approval check failed — blocking query (fail-closed)",
+            );
+            return {
+              kind: "approval_unavailable" as const,
+              message: "Approval system unavailable — query blocked. Contact your administrator.",
+            };
+          }
+
+          if (approvalMatch?.required) {
+            const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
+            const reqCtxForApproval = getRequestContext();
+            const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
+            const userId = reqCtxForApproval?.user?.id;
+            const userEmail = reqCtxForApproval?.user?.label ?? null;
+
+            if (!userId || !approvalOrgId) {
+              log.warn(
+                { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
+                "Approval required but user identity unavailable — blocking query",
+              );
+              return {
+                kind: "approval_identity_missing" as const,
+                message: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+              };
+            }
+
+            const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql));
+            if (!alreadyApproved) {
+              const firstRule = approvalMatch.matchedRules[0];
+              const approvalReq = await Effect.runPromise(createApprovalRequest({
+                orgId: approvalOrgId,
+                ruleId: firstRule.id,
+                ruleName: firstRule.name,
+                requesterId: userId,
+                requesterEmail: userEmail,
+                querySql: normalizedSql,
+                explanation,
+                connectionId: connId,
+                tablesAccessed: classification.tablesAccessed,
+                columnsAccessed: classification.columnsAccessed,
+                surface: reqCtxForApproval?.approvalSurface ?? null,
+              }));
+              logQueryAudit({
+                sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                error: `Approval required: ${firstRule.name}`,
+                sourceId: connId, sourceType: dbType, targetHost,
+              });
+              return {
+                kind: "approval_required" as const,
+                approvalRequestId: approvalReq.id,
+                matchedRules: approvalMatch.matchedRules.map((r) => r.name),
+                message:
+                  `This query requires approval before execution. Rule: "${firstRule.name}". ` +
+                  `An approval request has been submitted (ID: ${approvalReq.id}).`,
+              };
+            }
+          }
+          return null;
+        },
+        catch: (err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log.error({ err, connectionId: connId }, "Approval workflow failed — blocking query");
+          return new QueryExecutionError({ message: `Approval workflow failed: ${message}` });
+        },
+      });
+      if (approvalOutcome !== null) return approvalOutcome;
+    }
+
+    // Source-slot wrapper: plugin beforeQuery → re-validate → RLS → LIMIT → execute.
+    const slotResult = yield* withSourceSlot(
+      connId,
+      Effect.gen(function* () {
+        const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
+          try: () => import("@atlas/api/lib/plugins/hooks"),
+          catch: (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
+            return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
+          },
+        });
+        const hookMetadata: Record<string, unknown> = {};
+        const hookCtx = { sql, connectionId: connId, metadata: hookMetadata };
+        const mutatedSql = yield* Effect.tryPromise({
+          try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
+          catch: (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            return new PluginRejectedError({
+              message: `Query rejected by plugin: ${message}`,
+              connectionId: connId,
+            });
+          },
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.sync(() =>
+              logQueryAudit({
+                sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                error: `Plugin rejected: ${error.message}`,
+                sourceId: connId, sourceType: dbType, targetHost,
+              }),
+            ),
+          ),
+        );
+
+        let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
+        if (normalizedMutated !== normalizedSql) {
+          const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator);
+          if (!revalidation.ok) {
+            logQueryAudit({
+              sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+              error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
+              sourceId: connId, sourceType: dbType, targetHost,
+            });
+            return { kind: "validation_failed" as const, message: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
+          }
+        }
+
+        if (!customValidator) {
+          normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost);
+        }
+
+        const rowLimit = getRowLimit();
+        const queryTimeout = getQueryTimeout();
+        let querySql = normalizedMutated;
+        if (!customValidator && !/\bLIMIT\b/i.test(querySql)) {
+          querySql += ` LIMIT ${rowLimit}`;
+        }
+
+        const result = yield* executeAndAuditEffect({
+          db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
+          rowLimit, explanation, classification, cacheKey: null,
+          hookMetadata, dispatchHook,
+        });
+        return {
+          kind: "ok" as const,
+          columns: result.columns as string[],
+          rows: result.rows as Record<string, unknown>[],
+          rowCount: result.row_count as number,
+          executionMs: result.executionMs as number,
+          truncated: result.truncated as boolean,
+          maskingApplied: result.maskingApplied as boolean,
+        };
+      }),
+    ).pipe(
+      Effect.tapError((error) => {
+        if (error._tag === "RateLimitExceededError" || error._tag === "ConcurrencyLimitError") {
+          return Effect.sync(() =>
+            logQueryAudit({
+              sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+              error: `Rate limited: ${error.message}`,
+              sourceId: connId, sourceType: dbType, targetHost,
+            }),
+          );
+        }
+        return Effect.void;
+      }),
+    );
+
+    return slotResult;
+  });
+
+  return Effect.runPromise(
+    pipeline.pipe(
+      Effect.catchAll((error: PipelineError): Effect.Effect<UserQueryOutcome, never> => {
+        switch (error._tag) {
+          case "RateLimitExceededError":
+            return Effect.succeed({
+              kind: "rate_limited",
+              message: error.message,
+              ...(error.retryAfterMs != null && { retryAfterMs: error.retryAfterMs }),
+            });
+          case "ConcurrencyLimitError":
+            return Effect.succeed({ kind: "concurrency_limited", message: error.message });
+          case "ConnectionNotFoundError":
+            return Effect.succeed({
+              kind: "connection_unavailable",
+              message: error.message,
+              connectionId: connId,
+            });
+          case "NoDatasourceError":
+            return Effect.succeed({ kind: "no_datasource", message: error.message });
+          case "PoolExhaustedError":
+            return Effect.succeed({ kind: "pool_exhausted", message: error.message });
+          case "RLSError":
+            return Effect.succeed({ kind: "rls_failed", message: error.message });
+          case "PluginRejectedError":
+            return Effect.succeed({ kind: "plugin_rejected", message: error.message });
+          case "QueryExecutionError":
+            return Effect.succeed({ kind: "query_failed", message: error.message });
+          default: {
+            const _exhaustive: never = error;
+            return Effect.succeed({
+              kind: "query_failed",
+              message: `Unknown pipeline error: ${(_exhaustive as { message: string }).message}`,
+            });
+          }
+        }
+      }),
+    ),
+  );
+}
+
 export const executeSQL = tool({
   description: EXECUTE_SQL_TOOL_DESCRIPTION,
 

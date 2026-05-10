@@ -134,12 +134,16 @@ function ChatPage() {
   const { messages, setMessages, sendMessage, status, error: chatError } = useChat({ transport });
 
   const setCanvasSpec = useDashboardCanvasStore((s) => s.setSpec);
-  const canvasOpen = useDashboardCanvasStore((s) => s.open);
-  const lastConsumedProposalRef = useRef<string | null>(null);
+  const canvasOpen = useDashboardCanvasStore((s) => s.view.kind === "open");
+  // Tracks tool-invocation ids we've already pushed into the canvas. A Set
+  // (vs. a single ref) means an older proposal re-rendering after a newer one
+  // can never overwrite the newer one — both ids stay marked consumed.
+  const consumedProposalsRef = useRef<Set<string>>(new Set());
 
-  // Push the most recent completed proposeDashboard result into the canvas store.
-  // Identity is the tool invocation id, so once a proposal is consumed we don't
-  // re-trigger when unrelated parts of `messages` re-render.
+  // Push the latest completed, well-formed proposeDashboard result into the
+  // canvas store. Parts without a stable `toolInvocationId` are skipped (and
+  // logged) — synthesizing one from message indices would silently match
+  // unrelated parts after list mutations.
   useEffect(() => {
     for (let m = messages.length - 1; m >= 0; m--) {
       const msg = messages[m];
@@ -149,18 +153,26 @@ function ChatPage() {
         if (!isToolUIPart(part)) continue;
         if (getToolName(part) !== "proposeDashboard") continue;
         if (!isToolComplete(part)) continue;
-        const invocationId =
-          (part as { toolInvocationId?: unknown }).toolInvocationId;
-        const id = typeof invocationId === "string" ? invocationId : `${m}-${p}`;
-        if (lastConsumedProposalRef.current === id) return;
-        const result = getToolResult(part) as
-          | { spec?: ProposedDashboardSpec; error?: string }
-          | null;
-        if (result?.spec) {
-          lastConsumedProposalRef.current = id;
-          setCanvasSpec(result.spec);
+
+        const invocationId = (part as { toolInvocationId?: unknown }).toolInvocationId;
+        if (typeof invocationId !== "string" || invocationId.length === 0) {
+          console.warn("[chat] proposeDashboard part missing toolInvocationId — skipping canvas push");
+          return;
         }
-        return; // we found the most recent — don't keep scanning
+        if (consumedProposalsRef.current.has(invocationId)) return;
+
+        const raw = getToolResult(part) as unknown;
+        if (
+          typeof raw === "object" &&
+          raw !== null &&
+          (raw as { kind?: unknown }).kind === "ok" &&
+          typeof (raw as { spec?: unknown }).spec === "object" &&
+          (raw as { spec?: unknown }).spec !== null
+        ) {
+          consumedProposalsRef.current.add(invocationId);
+          setCanvasSpec((raw as { spec: ProposedDashboardSpec }).spec);
+        }
+        return; // most recent proposal found — even if it was an error, don't push older ones
       }
     }
   }, [messages, setCanvasSpec]);

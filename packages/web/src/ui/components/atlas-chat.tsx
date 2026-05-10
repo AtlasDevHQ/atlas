@@ -6,7 +6,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { PythonProgressData } from "./chat/python-result-card";
 import { useAtlasConfig } from "../context";
-import { useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
+import { ThemeToggle } from "./theme-toggle";
+import { UserMenu } from "./user-menu";
 import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
@@ -25,18 +26,12 @@ import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
-import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send, Pin } from "lucide-react";
+import { Star, TableProperties, BookOpen, Send, Pin } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
 import { StarterPromptList } from "./chat/starter-prompt-list";
 import type { StarterPrompt } from "@useatlas/types/starter-prompt";
 import { useContextWarnings } from "../hooks/use-context-warnings";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -57,40 +52,6 @@ const AtlasLogo = (
     <circle cx="128" cy="28" r="16" fill="currentColor"/>
   </svg>
 );
-
-const THEME_OPTIONS = [
-  { value: "light", label: "Light", icon: Sun },
-  { value: "dark", label: "Dark", icon: Moon },
-  { value: "system", label: "System", icon: Monitor },
-] as const satisfies readonly { value: ThemeMode; label: string; icon: typeof Sun }[];
-
-function ThemeToggle() {
-  const mode = useThemeMode();
-  const CurrentIcon = mode === "dark" ? Moon : mode === "light" ? Sun : Monitor;
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400">
-          <CurrentIcon className="size-4" />
-          <span className="sr-only">Toggle theme</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
-          <DropdownMenuItem
-            key={value}
-            onClick={() => setTheme(value)}
-            className={mode === value ? "bg-accent" : ""}
-          >
-            <Icon className="mr-2 size-4" />
-            {label}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
 
 function SaveButton({
   conversationId,
@@ -568,28 +529,8 @@ export function AtlasChat() {
                   >
                     <TableProperties className="size-4" />
                   </Button>
-                  <ThemeToggle />
-                  {isSignedIn && (
-                    <>
-                      <span className="hidden text-xs text-zinc-500 sm:inline dark:text-zinc-400">
-                        {managedSession.data?.user?.email}
-                      </span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          authClient.signOut().catch((err: unknown) => {
-                            console.error("Sign out failed:", err instanceof Error ? err.message : String(err));
-                            setTransientWarning("Sign out failed. Please try again.");
-                            setTimeout(() => setTransientWarning(""), 5000);
-                          });
-                        }}
-                        className="text-xs text-zinc-500 dark:text-zinc-400"
-                      >
-                        Sign out
-                      </Button>
-                    </>
-                  )}
+                  <ThemeToggle className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400" />
+                  {isSignedIn && <UserMenu />}
                 </div>
               </div>
             </header>

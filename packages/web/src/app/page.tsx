@@ -30,6 +30,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Send, TableProperties, BookOpen, Menu } from "lucide-react";
 import { useUiStore } from "@/lib/stores/ui-store";
+import { useDashboardCanvasStore, type ProposedDashboardSpec } from "@/lib/stores/dashboard-canvas-store";
+import { DashboardCanvas } from "@/ui/components/dashboards/dashboard-canvas";
+import { getToolResult, isToolComplete } from "@/ui/lib/helpers";
 
 const OPENSTATUS_SLUG = process.env.NEXT_PUBLIC_OPENSTATUS_SLUG;
 const STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL;
@@ -129,6 +132,38 @@ function ChatPage() {
   }, [authMode, convos.fetchList]);
 
   const { messages, setMessages, sendMessage, status, error: chatError } = useChat({ transport });
+
+  const setCanvasSpec = useDashboardCanvasStore((s) => s.setSpec);
+  const canvasOpen = useDashboardCanvasStore((s) => s.open);
+  const lastConsumedProposalRef = useRef<string | null>(null);
+
+  // Push the most recent completed proposeDashboard result into the canvas store.
+  // Identity is the tool invocation id, so once a proposal is consumed we don't
+  // re-trigger when unrelated parts of `messages` re-render.
+  useEffect(() => {
+    for (let m = messages.length - 1; m >= 0; m--) {
+      const msg = messages[m];
+      if (msg.role !== "assistant" || !msg.parts) continue;
+      for (let p = msg.parts.length - 1; p >= 0; p--) {
+        const part = msg.parts[p];
+        if (!isToolUIPart(part)) continue;
+        if (getToolName(part) !== "proposeDashboard") continue;
+        if (!isToolComplete(part)) continue;
+        const invocationId =
+          (part as { toolInvocationId?: unknown }).toolInvocationId;
+        const id = typeof invocationId === "string" ? invocationId : `${m}-${p}`;
+        if (lastConsumedProposalRef.current === id) return;
+        const result = getToolResult(part) as
+          | { spec?: ProposedDashboardSpec; error?: string }
+          | null;
+        if (result?.spec) {
+          lastConsumedProposalRef.current = id;
+          setCanvasSpec(result.spec);
+        }
+        return; // we found the most recent — don't keep scanning
+      }
+    }
+  }, [messages, setCanvasSpec]);
 
   const isLoading = status === "streaming" || status === "submitted";
 
@@ -322,7 +357,13 @@ function ChatPage() {
             />
           )}
 
-          <main id="main" className="flex flex-1 flex-col overflow-hidden">
+          <main
+            id="main"
+            className={cn(
+              "flex flex-1 flex-col overflow-hidden",
+              canvasOpen && "min-w-0",
+            )}
+          >
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
               {/* Toolbar */}
               <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
@@ -559,6 +600,12 @@ function ChatPage() {
               </form>
             </div>
           </main>
+
+          <DashboardCanvas
+            apiUrl={getApiUrl()}
+            getHeaders={getHeaders}
+            getCredentials={getCredentials}
+          />
         </div>
       </div>
 

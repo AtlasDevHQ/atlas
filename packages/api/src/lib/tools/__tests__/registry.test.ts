@@ -143,14 +143,15 @@ describe("ToolRegistry", () => {
 });
 
 describe("defaultRegistry", () => {
-  it("contains all 2 core tools", () => {
+  it("contains all core tools", () => {
     expect(defaultRegistry.get("explore")).toBeDefined();
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
+    expect(defaultRegistry.get("proposeDashboard")).toBeDefined();
   });
 
-  it("getAll returns exactly the 2 core tools", () => {
+  it("getAll returns exactly the core tools", () => {
     const all = defaultRegistry.getAll();
-    expect(Object.keys(all).sort()).toEqual(["executeSQL", "explore"]);
+    expect(Object.keys(all).sort()).toEqual(["executeSQL", "explore", "proposeDashboard"]);
   });
 
   it("describe produces the expected workflow text", () => {
@@ -194,7 +195,7 @@ describe("buildRegistry", () => {
       process.env.ATLAS_SANDBOX_URL = "http://localhost:8080";
       const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
-      expect(names).toEqual(["executePython", "executeSQL", "explore"]);
+      expect(names).toEqual(["executePython", "executeSQL", "explore", "proposeDashboard"]);
       expect(registry.describe()).toContain("### 4. Analyze Data with Python");
     } finally {
       if (saved.enabled !== undefined) process.env.ATLAS_PYTHON_ENABLED = saved.enabled;
@@ -204,19 +205,20 @@ describe("buildRegistry", () => {
     }
   });
 
-  it("returns 2 core tools by default", async () => {
+  it("returns core tools by default", async () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
-    expect(names).toEqual(["executeSQL", "explore"]);
+    expect(names).toEqual(["executeSQL", "explore", "proposeDashboard"]);
   });
 
-  it("with includeActions returns 4 tools including createJiraTicket and sendEmailReport", async () => {
+  it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
       "createJiraTicket",
       "executeSQL",
       "explore",
+      "proposeDashboard",
       "sendEmailReport",
     ]);
   });

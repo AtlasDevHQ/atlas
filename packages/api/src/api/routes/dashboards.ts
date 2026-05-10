@@ -322,6 +322,29 @@ const removeCardRoute = createRoute({
   },
 });
 
+const PreviewCardSchema = z.object({
+  sql: z.string().min(1),
+  connectionId: z.string().nullable().optional(),
+});
+
+const previewCardRoute = createRoute({
+  method: "post",
+  path: "/preview-card",
+  tags: ["Dashboards"],
+  summary: "Preview a card query without saving",
+  description:
+    "Validates and executes SQL against the analytics datasource, returning columns + rows. Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires admin role.",
+  request: { body: { content: { "application/json": { schema: PreviewCardSchema } }, required: true } },
+  responses: {
+    200: { description: "Query results", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid SQL or request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const refreshCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/refresh",
@@ -743,6 +766,52 @@ authed.openapi(removeCardRoute, async (c) => {
     }
     return c.body(null, 204);
   }), { label: "remove card" });
+});
+
+// ---------------------------------------------------------------------------
+// POST /preview-card — execute SQL for canvas preview without persisting
+// ---------------------------------------------------------------------------
+
+authed.openapi(previewCardRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { sql, connectionId } = c.req.valid("json");
+
+    const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
+    const validation = yield* Effect.promise(() => validateSQL(sql, connectionId ?? undefined));
+    if (!validation.valid) {
+      return c.json({ error: "invalid_sql", message: `SQL failed validation: ${validation.error}`, requestId }, 400);
+    }
+
+    const { connections } = yield* Effect.promise(() => import("@atlas/api/lib/db/connection"));
+    let db: import("@atlas/api/lib/db/connection").DBConnection;
+    try {
+      db = connectionId ? connections.get(connectionId) : connections.getDefault();
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), connectionId },
+        "Connection not available for preview-card",
+      );
+      return c.json({ error: "not_available", message: "No database connection available.", requestId }, 500);
+    }
+
+    const queryResult = yield* Effect.tryPromise({
+      try: () => db.query(sql, 30000),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.warn({ err, requestId }, "preview-card query failed");
+      return Effect.succeed(null);
+    }));
+
+    if (!queryResult) {
+      return c.json({ error: "query_failed", message: "Failed to execute SQL. The query may have timed out or be invalid.", requestId }, 500);
+    }
+
+    return c.json({
+      columns: queryResult.columns,
+      rows: queryResult.rows as Record<string, unknown>[],
+    }, 200);
+  }), { label: "preview card" });
 });
 
 // ---------------------------------------------------------------------------

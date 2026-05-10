@@ -12,6 +12,7 @@ import type { ToolSet } from "ai";
 import { type AtlasAction, isAction } from "@atlas/api/lib/action-types";
 import { explore } from "./explore";
 import { executeSQL } from "./sql";
+import { proposeDashboard } from "./propose-dashboard";
 
 export type { AtlasAction };
 export { isAction };
@@ -152,6 +153,15 @@ Use the executePython tool for analysis that SQL alone cannot handle:
 
 Do NOT use executePython for simple aggregations, GROUP BY, or filtering — executeSQL handles those.`;
 
+export const PROPOSE_DASHBOARD_DESCRIPTION = `### Propose a Dashboard
+Use the proposeDashboard tool when the user wants a dashboard, not just a single chart:
+- Call AFTER executeSQL has confirmed each card's column names — chartConfig.categoryColumn and valueColumns must match the SQL output
+- Each card needs: title, sql, chartConfig ({ type, categoryColumn, valueColumns })
+- chart types: bar, line, pie, area, scatter, table
+- Layout is optional — omit it and the canvas auto-arranges
+- The tool returns a spec; the user sees a live preview in a side canvas and clicks Save
+- To iterate ("make card 2 a bar chart"), call proposeDashboard again — the canvas state is replaced`;
+
 // --- Default registry ---
 
 const defaultRegistry = new ToolRegistry();
@@ -166,6 +176,12 @@ defaultRegistry.register({
   name: "executeSQL",
   description: EXECUTE_SQL_DESCRIPTION,
   tool: executeSQL,
+});
+
+defaultRegistry.register({
+  name: "proposeDashboard",
+  description: PROPOSE_DASHBOARD_DESCRIPTION,
+  tool: proposeDashboard,
 });
 
 defaultRegistry.freeze();
@@ -200,6 +216,12 @@ export async function buildRegistry(options?: {
     name: "executeSQL",
     description: EXECUTE_SQL_DESCRIPTION,
     tool: executeSQL,
+  });
+
+  registry.register({
+    name: "proposeDashboard",
+    description: PROPOSE_DASHBOARD_DESCRIPTION,
+    tool: proposeDashboard,
   });
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {

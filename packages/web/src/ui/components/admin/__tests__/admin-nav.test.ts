@@ -6,9 +6,9 @@ describe("resolveAdminBreadcrumb", () => {
     expect(resolveAdminBreadcrumb("/admin")).toEqual({});
   });
 
-  test("matches an exact-mode item without prefix-matching its children", () => {
-    // /admin/semantic is exact:true so /admin/semantic/improve must not collapse
-    // into the Semantic-Layer entry.
+  test("default is exact-match — siblings with a shared prefix don't collapse", () => {
+    // Semantic Layer parent + Improve Layer child share `/admin/semantic`.
+    // Default-exact means each resolves to its own leaf entry.
     expect(resolveAdminBreadcrumb("/admin/semantic")).toEqual({
       section: "Data",
       page: "Semantic Layer",
@@ -19,14 +19,50 @@ describe("resolveAdminBreadcrumb", () => {
     });
   });
 
-  test("matches a prefix-mode item for nested routes", () => {
-    expect(resolveAdminBreadcrumb("/admin/audit")).toEqual({
-      section: "Monitoring",
-      page: "Audit Log",
+  test("#2176 regression — /admin/settings does not collapse /admin/settings/mcp", () => {
+    // /admin/settings and /admin/settings/mcp are sibling leaves; if the
+    // parent ever opts into prefixMatch this test fails — that's exactly
+    // the bug #2176 shipped.
+    expect(resolveAdminBreadcrumb("/admin/settings")).toEqual({
+      section: "Configuration",
+      page: "Settings",
     });
-    expect(resolveAdminBreadcrumb("/admin/audit/123")).toEqual({
+    expect(resolveAdminBreadcrumb("/admin/settings/mcp")).toEqual({
+      section: "Configuration",
+      page: "MCP",
+    });
+  });
+
+  test("prefixMatch respects segment boundaries — sibling routes sharing a prefix don't collapse", () => {
+    // Guards the trailing "/" in `pathname.startsWith(item.href + "/")`. Without
+    // it, /admin/users would prefix-match any sibling whose path happens to
+    // begin with the same letters. A future refactor that drops the "+ "/""
+    // would silently reintroduce a #2176-class regression under a new name.
+    expect(resolveAdminBreadcrumb("/admin/usersearch")).toEqual({});
+    expect(resolveAdminBreadcrumb("/admin/scheduled-tasks-archive")).toEqual({});
+  });
+
+  test("prefixMatch: true items match nested child routes", () => {
+    // /admin/users has prefixMatch:true so the [id] detail page resolves to
+    // the Users entry rather than dropping off the sidebar.
+    expect(resolveAdminBreadcrumb("/admin/users")).toEqual({
+      section: "Users & Access",
+      page: "Users",
+    });
+    expect(resolveAdminBreadcrumb("/admin/users/abc-123")).toEqual({
+      section: "Users & Access",
+      page: "Users",
+    });
+  });
+
+  test("prefixMatch on /admin/scheduled-tasks resolves the /runs subpage", () => {
+    expect(resolveAdminBreadcrumb("/admin/scheduled-tasks")).toEqual({
       section: "Monitoring",
-      page: "Audit Log",
+      page: "Scheduled Tasks",
+    });
+    expect(resolveAdminBreadcrumb("/admin/scheduled-tasks/runs")).toEqual({
+      section: "Monitoring",
+      page: "Scheduled Tasks",
     });
   });
 

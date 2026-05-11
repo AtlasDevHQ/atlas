@@ -386,7 +386,7 @@ describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
   }
 
   it("returns abuseLevel='suspended' for a workspace the abuse detector flagged, even when status='active'", async () => {
-    // The route reads `checkAbuseStatus` per row. We stub a "suspended"
+    // The route reads `checkAbuseStatus` per row. Stub a "suspended"
     // verdict for ws-dharma via `abuseStatusByWorkspace` so the test
     // mirrors a production escalation without depending on the real
     // counter/escalation machinery (covered separately in abuse.test.ts).
@@ -397,15 +397,14 @@ describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       workspaces: Array<{ id: string; status: string; abuseLevel?: string }>;
+      abuseRestoreStatus?: string;
     };
     const lookup = Object.fromEntries(body.workspaces.map((w) => [w.id, w]));
     expect(lookup["ws-dharma"].status).toBe("active");
     expect(lookup["ws-dharma"].abuseLevel).toBe("suspended");
     expect(lookup["ws-clean"].abuseLevel).toBe("none");
+    // The route surfaces the boot-time rehydrate outcome so the page
+    // can banner when enforcement is dark. Mock returns "ok".
+    expect(body.abuseRestoreStatus).toBe("ok");
   });
-
-  // Detail-route surfacing through the same `toWorkspaceResponse`
-  // helper (the list route was refactored to call it directly, so the
-  // detail-via-helper test isn't needed any more — the list assertion
-  // above exercises the shared code path).
 });

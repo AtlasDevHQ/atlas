@@ -14,6 +14,7 @@
  * `packages/schemas/README.md`.
  */
 import { z } from "zod";
+import { ABUSE_RESTORE_STATUSES } from "@useatlas/types";
 import {
   BackupEntrySchema,
   CustomDomainSchema,
@@ -84,6 +85,10 @@ export {
 
 export const PlatformWorkspacesResponseSchema = z.object({
   workspaces: z.array(PlatformWorkspaceSchema),
+  // Optional + additive — older API doesn't include this field; the
+  // platform-admin page treats absence as `"ok"` (the conservative
+  // "everything's fine" default). Sourced from `getAbuseRestoreStatus()`.
+  abuseRestoreStatus: z.enum(ABUSE_RESTORE_STATUSES).optional(),
 });
 
 export const PlatformNeighborsResponseSchema = z.object({

@@ -21,12 +21,16 @@ export function normalizeAbuseLevel(level: AbuseLevel | undefined | null): Abuse
   return level ?? "none";
 }
 
-const LEVEL_RANK: Record<AbuseLevel, number> = {
-  none: 0,
-  warning: 1,
-  throttled: 2,
-  suspended: 3,
-};
+// Derive the rank directly from the tuple's position so the escalation
+// ladder has a single source of truth — adding a level in `ABUSE_LEVELS`
+// (e.g. inserting `"emergency_stop"` before `"suspended"`) re-ranks
+// every consumer without a second edit. A hand-written object literal
+// would let `{ warning: 5, throttled: 1 }` typecheck against
+// `Record<AbuseLevel, number>` despite breaking the ordering invariant
+// that `compareAbuseLevel` depends on.
+const LEVEL_RANK = Object.fromEntries(
+  ABUSE_LEVELS.map((level, i) => [level, i] as const),
+) as Record<AbuseLevel, number>;
 
 /**
  * Three-way compare on the `none < warning < throttled < suspended`
@@ -42,7 +46,7 @@ export function compareAbuseLevel(a: AbuseLevel, b: AbuseLevel): number {
  * at call sites that branch on a severity threshold.
  */
 export function isAbuseLevelAtLeast(level: AbuseLevel, floor: AbuseLevel): boolean {
-  return LEVEL_RANK[level] >= LEVEL_RANK[floor];
+  return compareAbuseLevel(level, floor) >= 0;
 }
 
 /** Which anomaly detector triggered the abuse event. */
@@ -154,6 +158,30 @@ export interface AbuseInstance {
   peakLevel: AbuseLevel;
   events: readonly AbuseEvent[];
 }
+
+/**
+ * Boot outcome of the abuse-state rehydrate. Lives on the wire so the
+ * platform-admin page can surface a destructive banner when in-memory
+ * enforcement was lost — without this, a `load_failed` rehydrate leaves
+ * every workspace rendering `abuseLevel: "none"` despite enforcement
+ * being effectively off. Mirrors `AbuseEventsStatus` for parity.
+ *
+ *   - `pending`        — `restoreAbuseState` has not run yet. Transient
+ *                        during boot only.
+ *   - `ok`             — last run completed; in-memory state matches DB.
+ *   - `db_unavailable` — `hasInternalDB()` returned false. Expected on
+ *                        a self-hosted deploy without `DATABASE_URL`.
+ *   - `load_failed`    — the SQL read threw. UI must show a banner —
+ *                        every `checkAbuseStatus` will return `"none"`
+ *                        until the next escalation or boot.
+ */
+export const ABUSE_RESTORE_STATUSES = [
+  "pending",
+  "ok",
+  "db_unavailable",
+  "load_failed",
+] as const;
+export type AbuseRestoreStatus = (typeof ABUSE_RESTORE_STATUSES)[number];
 
 /**
  * Diagnostic channel for the `events` payload on `AbuseDetail` (#1682).

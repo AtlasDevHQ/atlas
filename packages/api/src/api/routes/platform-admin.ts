@@ -46,7 +46,11 @@ import {
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { getLoadTestAllowlist } from "@atlas/api/lib/auth/load-test-allowlist";
-import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
+import {
+  ABUSE_RESTORE_STATUSES,
+  checkAbuseStatus,
+  getAbuseRestoreStatus,
+} from "@atlas/api/lib/security/abuse";
 import {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
@@ -88,7 +92,19 @@ const listWorkspacesRoute = createRoute({
   responses: {
     200: {
       description: "Workspaces list",
-      content: { "application/json": { schema: z.object({ workspaces: z.array(PlatformWorkspaceSchema) }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            workspaces: z.array(PlatformWorkspaceSchema),
+            // Boot-time abuse rehydrate outcome. When `load_failed`, the
+            // engine started with empty in-memory state — every
+            // workspace's `abuseLevel` will render as `"none"` even
+            // though enforcement is effectively off. The web banner
+            // reads this and surfaces the divergence loudly.
+            abuseRestoreStatus: z.enum(ABUSE_RESTORE_STATUSES),
+          }),
+        },
+      },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -438,7 +454,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       ),
     );
 
-    return c.json({ workspaces }, 200);
+    return c.json({ workspaces, abuseRestoreStatus: getAbuseRestoreStatus() }, 200);
   }), { label: "list workspaces" });
 });
 

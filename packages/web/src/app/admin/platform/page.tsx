@@ -325,6 +325,25 @@ function PlatformPageContent() {
 
         {/* ── Workspaces Tab ────────────────────────────────────── */}
         <TabsContent value="workspaces" className="space-y-4">
+          {wsData?.abuseRestoreStatus === "load_failed" ? (
+            // Boot-time abuse rehydrate failed — every workspace will
+            // render `abuseLevel: "none"` even though in-memory state
+            // is empty and enforcement is effectively off. Operator
+            // must restart or investigate before trusting the badges.
+            <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm">
+              <AlertTriangle className="mt-0.5 size-4 text-destructive shrink-0" />
+              <div className="space-y-1">
+                <p className="font-medium text-destructive">
+                  Abuse-state rehydrate failed on boot.
+                </p>
+                <p className="text-destructive/90">
+                  In-memory enforcement is empty — every workspace below renders
+                  &quot;Active&quot; regardless of past escalations. Check the API logs for the
+                  rehydrate error and restart the API once resolved.
+                </p>
+              </div>
+            </div>
+          ) : null}
           <div className="flex items-center gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />

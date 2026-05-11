@@ -42,12 +42,12 @@ const log = createLogger("admin-orgs");
 
 const OrgIdParamSchema = createIdParamSchema("org_abc123");
 
-// Optional + additive — older consumers omit and the UI treats missing
-// as `"none"`. Independent of `workspaceStatus` (DB column flipped by
-// admin actions); sourced from `checkAbuseStatus` so the abuse-
-// suspension divergence visible on `/admin/platform` (#2269) is visible
-// on `/admin/organizations` too.
-const AbuseLevelEnum = z.enum(ABUSE_LEVELS);
+// In-memory abuse-detector verdict from `checkAbuseStatus`. Independent
+// of `workspaceStatus` (DB column flipped by admin actions) — that
+// divergence is the bug this field exists to surface (#2269). Default
+// `"none"` consolidates the missing-field coercion at the Zod boundary
+// so consumers don't each re-derive "missing == none."
+const AbuseLevelEnum = z.enum(ABUSE_LEVELS).default("none");
 
 const OrgSummarySchema = z.object({
   id: z.string(),
@@ -61,7 +61,7 @@ const OrgSummarySchema = z.object({
   planTier: z.string(),
   suspendedAt: z.string().nullable(),
   deletedAt: z.string().nullable(),
-  abuseLevel: AbuseLevelEnum.optional(),
+  abuseLevel: AbuseLevelEnum,
 });
 
 const OrgDetailSchema = z.object({
@@ -75,7 +75,7 @@ const OrgDetailSchema = z.object({
   planTier: z.string(),
   suspendedAt: z.string().nullable(),
   deletedAt: z.string().nullable(),
-  abuseLevel: AbuseLevelEnum.optional(),
+  abuseLevel: AbuseLevelEnum,
 });
 
 const MemberSchema = z.object({

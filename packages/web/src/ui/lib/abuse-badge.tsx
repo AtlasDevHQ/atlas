@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { AlertTriangle } from "lucide-react";
 import type { AbuseLevel } from "@/ui/lib/types";
@@ -70,9 +71,9 @@ export function AbuseDivergenceBanner({ level }: { level: AbuseLevel | undefined
         <p className="text-amber-800 dark:text-amber-200">
           This is independent of the workspace status above — chat &amp; query
           requests are being blocked even if status reads &quot;active&quot;.{" "}
-          <a href="/admin/abuse" className="underline underline-offset-2">
+          <Link href="/admin/abuse" className="underline underline-offset-2">
             Open Abuse Console
-          </a>{" "}
+          </Link>{" "}
           to reinstate.
         </p>
       </div>

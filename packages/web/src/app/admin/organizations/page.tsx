@@ -83,7 +83,9 @@ interface Org {
   planTier: string;
   suspendedAt: string | null;
   deletedAt: string | null;
-  /** Optional — older API/web pair omits; UI treats missing as "none". */
+  // Server always emits a value (zod `.default("none")`); declare
+  // optional here to keep the parse resilient if an older API ever
+  // ships without the field.
   abuseLevel?: AbuseLevel;
 }
 

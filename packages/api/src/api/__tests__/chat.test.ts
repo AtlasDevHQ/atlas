@@ -187,12 +187,9 @@ const mockCheckPlanLimits: Mock<() => Promise<PlanCheckMockResult>> = mock(
   () => Promise.resolve({ allowed: true } as PlanCheckMockResult),
 );
 
-// Residency migration check fires before the abuse gate when a request
-// carries `activeOrganizationId` (chat.ts:~510). The #2269 regression
-// test below seeds an org id; without this mock the dynamic import
-// inside `Effect.tryPromise` fails closed with a 503 and shadows the
-// abuse-gate signal. Default to "not migrating" so the abuse branch is
-// the only one that can produce a non-200 response in that test.
+// Residency precheck (chat.ts:~510) fires before the abuse gate when a
+// request carries `activeOrganizationId`. Default to "not migrating" so
+// the abuse branch is the only non-200 source in the #2269 test below.
 mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: mock(async () => false),
 }));
@@ -1517,31 +1514,18 @@ describe("POST /api/v1/chat", () => {
     });
   });
 
-  // ---------------------------------------------------------------------
-  // #2269 — abuse-suspended workspace, lifted by the loadtest allowlist
-  //
-  // End-to-end pinning for the bug the PR fixed at the lib layer: an
-  // allowlisted workspace whose in-memory abuse state is stale-suspended
-  // must NOT 403 with `workspace_suspended`. The lib-level allowlist
-  // guard inside `checkAbuseStatus` (covered by abuse.test.ts) is what
-  // makes that work; this test asserts the chat route honors the
-  // verdict end-to-end — a future regression that re-reads `state.level`
-  // directly (bypassing the allowlist short-circuit) would fail here
-  // even though the unit-level test still passes.
-  // ---------------------------------------------------------------------
-
+  // Asserts the chat route honors the lib-level allowlist guard
+  // end-to-end. A regression that re-reads `state.level` directly
+  // (bypassing the `checkAbuseStatus` short-circuit) passes the unit
+  // test in abuse.test.ts but fails here.
   describe("#2269 — allowlisted-with-stale-suspended workspace", () => {
     it("returns non-403 when checkAbuseStatus is shadowed by the allowlist", async () => {
       const origAllowlist = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
-      // Real abuse module — no mock.module() override at the top of this
-      // file — so we drive the in-memory ladder via the same `recordQueryEvent`
-      // entry point production uses, then add the workspace to the allowlist.
       const abuse = await import("@atlas/api/lib/security/abuse");
       abuse._resetAbuseState();
       try {
-        // Drive to suspended *without* the allowlist set so the ladder
-        // actually escalates (recordQueryEvent short-circuits on
-        // allowlist membership, so order matters here).
+        // Order matters: drive suspended BEFORE allowlisting, since
+        // recordQueryEvent short-circuits on allowlist membership.
         delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
         const config = abuse.getAbuseConfig();
         for (let i = 0; i <= config.queryRateLimit + 5; i++) {
@@ -1549,10 +1533,6 @@ describe("POST /api/v1/chat", () => {
         }
         expect(abuse.checkAbuseStatus("ws-loadtest-stale").level).toBe("suspended");
 
-        // Allowlist the workspace. The read-time guard inside
-        // `checkAbuseStatus` collapses the stored "suspended" to "none",
-        // and the chat route's `abuse.level === "suspended"` branch
-        // must therefore NOT fire.
         process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-loadtest-stale";
         mockAuthenticateRequest.mockResolvedValue({
           authenticated: true as const,
@@ -1568,10 +1548,9 @@ describe("POST /api/v1/chat", () => {
         });
 
         const response = await app.fetch(makeRequest());
-        // Happy path streams 200; the only assertion that matters for
-        // the regression is "not 403". Pin both so a future refactor
-        // that returns 503 (or anything not 200) for a different reason
-        // still flags clearly.
+        // Both assertions on purpose — `not.toBe(403)` is the regression
+        // guard; `.toBe(200)` keeps a refactor that returns 503 (or any
+        // non-200) for a different reason from passing vacuously.
         expect(response.status).not.toBe(403);
         expect(response.status).toBe(200);
       } finally {

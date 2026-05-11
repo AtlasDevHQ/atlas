@@ -19,8 +19,10 @@ import { isLoadTestWorkspace } from "@atlas/api/lib/auth/load-test-allowlist";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
+  ABUSE_RESTORE_STATUSES,
   asRatio,
   type AbuseLevel,
+  type AbuseRestoreStatus,
   type AbuseTrigger,
   type AbuseEvent,
   type AbuseEventsStatus,
@@ -28,6 +30,12 @@ import {
   type AbuseThresholdConfig,
   type AbuseDetail,
 } from "@useatlas/types";
+
+// Re-export so existing `@atlas/api/lib/security/abuse` consumers keep
+// the same import surface — the tuple/type just moved to the shared
+// types package so the web bundle can use them too (admin-schemas.ts
+// needs the same enum for runtime validation).
+export { ABUSE_RESTORE_STATUSES, type AbuseRestoreStatus };
 
 /**
  * A non-`"none"` abuse level — exactly the states a reinstate can lift
@@ -153,30 +161,12 @@ const workspaceState = new Map<string, WorkspaceAbuseState>();
  */
 const warnedLoadTestSkip = new Set<string>();
 
-/**
- * Outcome of the last `restoreAbuseState` boot call. Surfaced to the
- * platform-admin response so an operator who's looking at a workspace
- * that confidently renders `abuseLevel: "none"` can tell the difference
- * between "actually clean" and "rehydration failed — in-memory state
- * never got loaded, enforcement is effectively off." Mirrors the
- * `AbuseEventsStatus` pattern (#1682) for the detail panel's events
- * payload — same three-state status surface, same UI affordance.
- *
- *   - `pending`        — `restoreAbuseState` has not run yet (boot
- *                        in progress, or no `DATABASE_URL`).
- *   - `ok`             — last run completed; in-memory state matches DB.
- *   - `db_unavailable` — `hasInternalDB()` returned false; no rehydrate
- *                        was attempted. Expected for self-hosted deploys.
- *   - `load_failed`    — the SQL read threw and the engine started with
- *                        empty state. UI must show a destructive banner.
- */
-export const ABUSE_RESTORE_STATUSES = [
-  "pending",
-  "ok",
-  "db_unavailable",
-  "load_failed",
-] as const;
-export type AbuseRestoreStatus = (typeof ABUSE_RESTORE_STATUSES)[number];
+// `AbuseRestoreStatus` doc lives in @useatlas/types/abuse.ts (the wire
+// boundary). Single-process: `_restoreStatus` reflects the boot
+// outcome of *this* Node process. Atlas's deployment model is
+// long-lived API processes (Railway/Docker), so this is the right
+// granularity. A multi-replica deploy that splits state across
+// isolates would need a per-replica surface; not a current concern.
 let _restoreStatus: AbuseRestoreStatus = "pending";
 
 /** Read the last `restoreAbuseState` outcome. */
@@ -764,8 +754,19 @@ export async function restoreAbuseState(): Promise<void> {
     }
     _restoreStatus = "ok";
   } catch (err) {
+    // Clear any partial state — if the SQL read threw mid-iteration we
+    // would otherwise leave a polluted in-memory map (some workspaces
+    // rehydrated, the rest missing) under a `load_failed` status that
+    // implies "engine started with empty state." Restoring the
+    // invariant here means `load_failed` is honest.
+    workspaceState.clear();
     _restoreStatus = "load_failed";
-    log.warn(
+    // `log.error` (not `warn`) — a boot-time enforcement-state loss is
+    // compliance-significant: every `checkAbuseStatus` will return
+    // `"none"` until either the next escalation lands a new in-memory
+    // row, or the next boot succeeds. Mirrors the `persistAbuseEvent`
+    // catch which is `log.error` for the same audit-trail reason.
+    log.error(
       { err: err instanceof Error ? err.message : String(err) },
       "Failed to restore abuse state from DB — starting with empty state",
     );

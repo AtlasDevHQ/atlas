@@ -15804,7 +15804,8 @@
                               "warning",
                               "throttled",
                               "suspended"
-                            ]
+                            ],
+                            "default": "none"
                           }
                         },
                         "required": [
@@ -16002,7 +16003,8 @@
                             "warning",
                             "throttled",
                             "suspended"
-                          ]
+                          ],
+                          "default": "none"
                         }
                       },
                       "required": [
@@ -58134,10 +58136,20 @@
                           "createdAt"
                         ]
                       }
+                    },
+                    "abuseRestoreStatus": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "ok",
+                        "db_unavailable",
+                        "load_failed"
+                      ]
                     }
                   },
                   "required": [
-                    "workspaces"
+                    "workspaces",
+                    "abuseRestoreStatus"
                   ]
                 }
               }

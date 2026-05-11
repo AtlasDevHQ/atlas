@@ -805,12 +805,14 @@ function healthToStatus(
 /**
  * Tooltip text when editing a demo row is blocked in published mode.
  *
- * Edit mutates the shared `__global__/__demo__` URL across every tenant, so
- * it stays gated by developer mode. Delete is per-org — it inserts an archived
- * tombstone that hides the global from this workspace only — so it is *not*
- * gated and the button stays enabled regardless of mode.
+ * The backend's PUT handler returns 403 `demo_readonly` when atlas mode is
+ * published and id is `__demo__` — the UI gate mirrors that so the form
+ * doesn't lead the admin into a 403. Delete is treated differently because
+ * the DELETE handler implements demo-hide as a per-org `archived` row that
+ * shadows the canonical demo from this workspace; no shared mutation, so the
+ * mode gate doesn't apply.
  */
-const DEMO_EDIT_READONLY_TOOLTIP = "Switch to developer mode to edit the shared demo connection";
+const DEMO_EDIT_READONLY_TOOLTIP = "Switch to developer mode to edit the demo connection";
 
 /**
  * Tooltip text when add/connect CTAs are blocked while a demo is active in
@@ -1195,12 +1197,13 @@ function ConnectionCard({
       ? "Unhealthy"
       : "Live";
   const isDemo = conn.id === DEMO_CONNECTION_ID;
-  // Edit-only gate: PUT mutates the shared __global__/__demo__ URL across
-  // every tenant, so it stays gated to developer mode. Delete is a per-org
-  // archived-tombstone insert (admin-connections.ts:1000-1015) — no shared
-  // state mutation — so it must remain enabled in published mode too;
-  // otherwise dogfood tenants get stuck unable to hide the demo
-  // (the dev-mode toggle then traps them behind PublishedContextWrapper).
+  // Edit-only gate: PUT on `__demo__` returns 403 `demo_readonly` in
+  // published mode (matched by the backend's `demoReadonly` check), so the
+  // UI gate mirrors that. Delete uses a per-org `archived` tombstone insert
+  // — no shared mutation — so it stays enabled in both modes. Without that
+  // split, dogfood tenants got stuck unable to hide the demo: published
+  // mode disabled the button and the dev-mode toggle then trapped them
+  // behind the `<PublishedContextWrapper>` overlay.
   const editReadOnly = demoReadOnly && isDemo;
   const isDraft = conn.status === "draft";
   const isDefault = conn.id === "default";

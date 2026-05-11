@@ -112,6 +112,7 @@ export const navGroups: NavGroup[] = [
       { href: "/platform/residency", label: "Data Residency" },
       { href: "/platform/domains", label: "Custom Domains" },
       { href: "/platform/settings", label: "Settings" },
+      { href: "/platform/users", label: "Users (All Tenants)" },
       { href: "/platform/plugins", label: "Plugin Catalog", selfHostedOnly: true },
       { href: "/platform/plugin-registry", label: "Plugin Registry", selfHostedOnly: true },
       { href: "/platform/model-config", label: "AI Provider" },

@@ -44,7 +44,7 @@ describe("anthropic-catalog", () => {
   test("normalizes a live /v1/models payload", async () => {
     globalThis.fetch = mockFetchOk({
       data: [
-        { type: "model", id: "claude-opus-4-6", display_name: "Claude Opus 4.6" },
+        { type: "model", id: "claude-opus-4-7", display_name: "Claude Opus 4.7" },
         { type: "model", id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
         // Entry without id is dropped.
         { type: "model", display_name: "Phantom" },
@@ -54,8 +54,8 @@ describe("anthropic-catalog", () => {
     const res = await getAnthropicCatalog(ORG_A, KEY);
     expect(res.source).toBe("fresh");
     expect(res.models).toHaveLength(2);
-    const opus = res.models.find((m) => m.id === "claude-opus-4-6");
-    expect(opus?.name).toBe("Claude Opus 4.6");
+    const opus = res.models.find((m) => m.id === "claude-opus-4-7");
+    expect(opus?.name).toBe("Claude Opus 4.7");
     expect(opus?.provider).toBe("anthropic");
     expect(opus?.type).toBe("language");
     expect(opus?.recommended).toBe(true);
@@ -136,7 +136,7 @@ describe("anthropic-catalog", () => {
   test("caches a successful fetch per orgId", async () => {
     const fetchMock = mock(
       async () =>
-        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-6" }] }), {
+        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-7" }] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -153,7 +153,7 @@ describe("anthropic-catalog", () => {
   test("cache is scoped per orgId", async () => {
     const fetchMock = mock(
       async () =>
-        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-6" }] }), {
+        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-7" }] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -168,7 +168,7 @@ describe("anthropic-catalog", () => {
   test("opts.refresh bypasses the cache", async () => {
     const fetchMock = mock(
       async () =>
-        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-6" }] }), {
+        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-7" }] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -184,7 +184,7 @@ describe("anthropic-catalog", () => {
   test("invalidateAnthropicCatalog forces a re-fetch on next call", async () => {
     const fetchMock = mock(
       async () =>
-        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-6" }] }), {
+        new Response(JSON.stringify({ data: [{ id: "claude-opus-4-7" }] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -209,7 +209,7 @@ describe("anthropic-catalog", () => {
 
     // Resolve the in-flight fetch once; both callers must share the result.
     (pending.resolve as ResolveBody)(
-      new Response(JSON.stringify({ data: [{ id: "claude-opus-4-6" }] }), {
+      new Response(JSON.stringify({ data: [{ id: "claude-opus-4-7" }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
@@ -217,13 +217,13 @@ describe("anthropic-catalog", () => {
 
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(slowFetch).toHaveBeenCalledTimes(1);
-    expect(r1.models[0].id).toBe("claude-opus-4-6");
-    expect(r2.models[0].id).toBe("claude-opus-4-6");
+    expect(r1.models[0].id).toBe("claude-opus-4-7");
+    expect(r2.models[0].id).toBe("claude-opus-4-7");
   });
 
   test("recommended set is non-empty and stable", () => {
     const ids = __getRecommendedAnthropicIdsForTests();
     expect(ids.size).toBeGreaterThan(0);
-    expect(ids.has("claude-opus-4-6")).toBe(true);
+    expect(ids.has("claude-opus-4-7")).toBe(true);
   });
 });

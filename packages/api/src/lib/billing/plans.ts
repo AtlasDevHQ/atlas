@@ -85,7 +85,11 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     name: "trial",
     displayName: "Starter Trial",
     pricePerSeat: 0,
-    defaultModel: "claude-haiku-4-5",
+    // Gateway-canonical IDs (slash+dot) — SaaS resolves models through
+    // Vercel AI Gateway and the gateway expects this format. The older
+    // hyphen format (`claude-haiku-4-5`) is migrated lazily by the
+    // billing-page alias map for any legacy `ATLAS_MODEL` settings.
+    defaultModel: "anthropic/claude-haiku-4.5",
     overagePerMillionTokens: 0,
     trialDays: TRIAL_DAYS,
     limits: {
@@ -99,7 +103,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     name: "starter",
     displayName: "Starter",
     pricePerSeat: 29,
-    defaultModel: "claude-haiku-4-5",
+    defaultModel: "anthropic/claude-haiku-4.5",
     overagePerMillionTokens: 1.0,
     limits: {
       tokenBudgetPerSeat: 2_000_000,
@@ -112,7 +116,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     name: "pro",
     displayName: "Pro",
     pricePerSeat: 59,
-    defaultModel: "claude-sonnet-4-6",
+    defaultModel: "anthropic/claude-sonnet-4.6",
     overagePerMillionTokens: 1.0,
     limits: {
       tokenBudgetPerSeat: 5_000_000,
@@ -130,7 +134,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     name: "business",
     displayName: "Business",
     pricePerSeat: 99,
-    defaultModel: "claude-sonnet-4-6",
+    defaultModel: "anthropic/claude-sonnet-4.6",
     overagePerMillionTokens: 1.0,
     limits: {
       tokenBudgetPerSeat: 15_000_000,

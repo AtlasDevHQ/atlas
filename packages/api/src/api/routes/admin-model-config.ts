@@ -12,6 +12,7 @@ import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import {
   getWorkspaceModelConfig,
+  getWorkspaceModelConfigRaw,
   setWorkspaceModelConfig,
   deleteWorkspaceModelConfig,
   testModelConfig,
@@ -20,6 +21,12 @@ import {
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
+import {
+  AnthropicCatalogRateLimited,
+  AnthropicCatalogUnauthorized,
+  AnthropicCatalogUnavailable,
+  getAnthropicCatalog,
+} from "@atlas/api/lib/anthropic-catalog";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
@@ -163,18 +170,33 @@ const testConfigRoute = createRoute({
   },
 });
 
+const CatalogQuerySchema = z.object({
+  provider: z.enum(["gateway", "anthropic"]).optional().openapi({
+    description:
+      "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns the workspace's catalog from api.anthropic.com/v1/models using the saved BYOT key — requires a saved Anthropic configuration.",
+    example: "anthropic",
+  }),
+  refresh: z.enum(["1", "true"]).optional().openapi({
+    description: "Bypass the catalog cache and force a fresh upstream fetch.",
+  }),
+});
+
 const catalogRoute = createRoute({
   method: "get",
   path: "/catalog",
   tags: ["Admin — Model Config"],
-  summary: "Vercel AI Gateway model catalog",
+  summary: "BYOT model catalog",
   description:
-    "Returns the catalog of models available via the Vercel AI Gateway, grouped by provider. Cached server-side; the `fallback` field is true when the live fetch failed and a bundled subset was returned.",
+    "Returns a model catalog for the requested provider. With no `?provider` (or `?provider=gateway`), returns the Vercel AI Gateway catalog (server-cached; `fallback: true` when the live fetch failed and a bundled subset was returned). With `?provider=anthropic`, returns Anthropic /v1/models for the workspace using its saved BYOT key — requires a saved Anthropic provider configuration.",
+  request: { query: CatalogQuerySchema },
   responses: {
-    200: { description: "Gateway catalog", content: { "application/json": { schema: GatewayCatalogResponseSchema } } },
-    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    200: { description: "Provider catalog", content: { "application/json": { schema: GatewayCatalogResponseSchema } } },
+    400: { description: "Missing BYOT key for the requested provider", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required — or upstream rejected the BYOT key", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    422: { description: "Stored BYOT key cannot be decrypted (likely key-rotation drift)", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limited — by Atlas or by upstream provider", content: { "application/json": { schema: AuthErrorSchema } } },
+    503: { description: "Upstream provider unavailable", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -381,15 +403,174 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
   }), { label: "test model config", domainErrors: [modelConfigDomainError] });
 });
 
-// GET /catalog — Vercel AI Gateway model catalog (server-cached)
+// GET /catalog — BYOT model catalog (server-cached). Defaults to gateway
+// (anonymous); `?provider=anthropic` returns the workspace's Anthropic
+// /v1/models catalog using the stored BYOT key.
 adminModelConfig.openapi(catalogRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const catalog = yield* Effect.tryPromise({
-      try: () => getGatewayCatalog(),
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+    const { provider: requestedProvider, refresh: refreshRaw } = c.req.valid("query");
+    const provider = requestedProvider ?? "gateway";
+    const refresh = refreshRaw === "1" || refreshRaw === "true";
+
+    if (provider === "gateway") {
+      const catalog = yield* Effect.tryPromise({
+        try: () => getGatewayCatalog(),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+      return c.json(catalog, 200);
+    }
+
+    // Anthropic BYOT catalog — requires a saved anthropic configuration.
+    if (!orgId) {
+      return c.json(
+        { error: "bad_request", message: "No active organization. Set an active org first.", requestId },
+        400,
+      );
+    }
+
+    // Decrypt errors surface as 422 with a clear "re-enter the key" message
+    // rather than as a generic 500. Catch inline so the response shape is
+    // colocated with the rest of this route's envelopes.
+    const rawConfigOrDecryptError = yield* getWorkspaceModelConfigRaw(orgId).pipe(
+      Effect.map((cfg) => ({ ok: true as const, cfg })),
+      Effect.catchTag("ModelConfigDecryptError", (err) =>
+        Effect.succeed({ ok: false as const, err }),
+      ),
+    );
+
+    if (!rawConfigOrDecryptError.ok) {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+        targetType: "model_config",
+        targetId: orgId,
+        status: "failure",
+        metadata: { provider: "anthropic", error: "decrypt_failed" },
+      });
+      return c.json(
+        {
+          error: "decrypt_failed",
+          message:
+            "The stored API key could not be decrypted (likely a key-rotation drift). Re-enter the key on the AI Provider page.",
+          requestId,
+        },
+        422,
+      );
+    }
+    const rawConfig = rawConfigOrDecryptError.cfg;
+
+    if (!rawConfig || rawConfig.provider !== "anthropic" || !rawConfig.apiKey) {
+      return c.json(
+        {
+          error: "missing_byot_key",
+          message:
+            "Save an Anthropic API key on this workspace before refreshing the catalog.",
+          requestId,
+        },
+        400,
+      );
+    }
+
+    // Discovery fetches against an external provider are credentialed
+    // operations: same audit threat model as `model_config.test`. Log the
+    // fetch outcome (never the apiKey). The provider-specific exceptions
+    // are caught inside the promise so the Effect channel carries a clean
+    // discriminated result rather than tunneling through `Effect.tryPromise`'s
+    // generic catch (which becomes "unmapped tagged error" at the bridge).
+    type CatalogResult =
+      | { kind: "ok"; models: typeof rawConfig extends never ? never : Awaited<ReturnType<typeof getAnthropicCatalog>>["models"]; fetchedAt: string; source: "cache" | "fresh" }
+      | { kind: "byot_key_invalid"; message: string }
+      | { kind: "byot_provider_rate_limited"; message: string; retryAfter: number | null }
+      | { kind: "byot_provider_unavailable"; message: string };
+
+    const catalogResult = yield* Effect.tryPromise({
+      try: async (): Promise<CatalogResult> => {
+        try {
+          const cat = await getAnthropicCatalog(orgId, rawConfig.apiKey ?? "", {
+            refresh,
+          });
+          return {
+            kind: "ok",
+            models: cat.models,
+            fetchedAt: cat.fetchedAt,
+            source: cat.source,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (err instanceof AnthropicCatalogUnauthorized) {
+            return { kind: "byot_key_invalid", message };
+          }
+          if (err instanceof AnthropicCatalogRateLimited) {
+            return {
+              kind: "byot_provider_rate_limited",
+              message,
+              retryAfter: err.retryAfterSeconds,
+            };
+          }
+          if (err instanceof AnthropicCatalogUnavailable) {
+            return { kind: "byot_provider_unavailable", message };
+          }
+          throw err;
+        }
+      },
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
-    return c.json(catalog, 200);
-  }), { label: "get gateway catalog", domainErrors: [modelConfigDomainError] });
+
+    if (catalogResult.kind === "ok") {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+        targetType: "model_config",
+        targetId: orgId,
+        metadata: {
+          provider: "anthropic",
+          modelCount: catalogResult.models.length,
+          source: catalogResult.source,
+        },
+      });
+
+      return c.json(
+        {
+          models: catalogResult.models,
+          fetchedAt: catalogResult.fetchedAt,
+          // Anthropic discovery has no curated fallback — upstream failures
+          // surface as the matching HTTP envelope above. `fallback` stays
+          // false for shape parity with the gateway response.
+          fallback: false,
+        },
+        200,
+      );
+    }
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+      targetType: "model_config",
+      targetId: orgId,
+      status: "failure",
+      metadata: {
+        provider: "anthropic",
+        error: catalogResult.kind,
+        detail: catalogResult.message,
+      },
+    });
+
+    if (catalogResult.kind === "byot_key_invalid") {
+      return c.json({ error: "byot_key_invalid", message: catalogResult.message, requestId }, 401);
+    }
+    if (catalogResult.kind === "byot_provider_rate_limited") {
+      if (catalogResult.retryAfter !== null) {
+        c.header("Retry-After", String(catalogResult.retryAfter));
+      }
+      return c.json(
+        { error: "byot_provider_rate_limited", message: catalogResult.message, requestId },
+        429,
+      );
+    }
+    return c.json(
+      { error: "byot_provider_unavailable", message: catalogResult.message, requestId },
+      503,
+    );
+  }), { label: "get model catalog", domainErrors: [modelConfigDomainError] });
 });
 
 export { adminModelConfig };

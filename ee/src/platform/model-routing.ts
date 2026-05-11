@@ -22,6 +22,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
+import { invalidateAnthropicCatalog } from "@atlas/api/lib/anthropic-catalog";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ApiKeyStatus,
@@ -372,6 +373,16 @@ export const setWorkspaceModelConfig = (
       { orgId, provider: config.provider, model: config.model },
       "Workspace model config saved",
     );
+
+    // BYOT discovery caches are keyed per (org, provider) and outlast a
+    // single save — flush the matching cache entry so a key rotation or
+    // provider switch doesn't serve a stale catalog from the previous
+    // shape. Each provider owns its own invalidator; gateway has no
+    // per-org cache so it gets no hook.
+    if (config.provider === "anthropic") {
+      invalidateAnthropicCatalog(orgId);
+    }
+
     return rowToConfig(rows[0]);
   });
 

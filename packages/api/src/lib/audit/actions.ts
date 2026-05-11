@@ -584,6 +584,15 @@ export const ADMIN_ACTIONS = {
     update: "model_config.update",
     delete: "model_config.delete",
     test: "model_config.test",
+    /**
+     * BYOT discovery refresh (#2271) — workspace's saved provider key is used
+     * to fetch the upstream model catalog (Anthropic /v1/models, etc.).
+     * Metadata carries `{ provider, modelCount, source: 'cache' | 'fresh' }`;
+     * the apiKey is never logged. Audited because the discovery call exercises
+     * the stored credential server-side and a misconfigured key (401) is the
+     * same forensic signal as a `model_config.test` failure.
+     */
+    catalogRefresh: "model_config.catalog_refresh",
   },
   /**
    * Workspace white-label branding. Enterprise-gated. Without these entries

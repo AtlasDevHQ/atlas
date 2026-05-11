@@ -121,9 +121,9 @@ export default function ModelConfigPage() {
     { schema: ModelConfigResponseSchema },
   );
 
-  // Catalog only matters when the user is on or considering the gateway
-  // provider, but fetching it eagerly keeps the picker responsive on first
-  // toggle. The endpoint is server-cached so the cost is one cold hit.
+  // Gateway catalog (anonymous, server-cached) — fetched eagerly so the
+  // picker is responsive on first toggle. The endpoint is server-cached so
+  // the cost is one cold hit per pod.
   const {
     data: catalog,
     loading: catalogLoading,
@@ -131,6 +131,27 @@ export default function ModelConfigPage() {
   } = useAdminFetch(
     "/api/v1/admin/model-config/catalog",
     { schema: GatewayCatalogResponseSchema },
+  );
+
+  // Anthropic BYOT catalog (#2271) — only fetched when the workspace has a
+  // saved Anthropic configuration with a healthy key. Without these
+  // preconditions the endpoint would return 400 `missing_byot_key` on every
+  // page load, which would surface as a noisy error banner. Gating with
+  // `enabled` keeps the request firmly tied to the picker's render gate.
+  const existingConfigForGate = data?.config ?? null;
+  const anthropicCatalogEnabled =
+    existingConfigForGate?.provider === "anthropic" &&
+    existingConfigForGate.apiKeyStatus === "masked";
+  const {
+    data: anthropicCatalog,
+    loading: anthropicCatalogLoading,
+    refetch: refetchAnthropicCatalog,
+  } = useAdminFetch(
+    "/api/v1/admin/model-config/catalog?provider=anthropic",
+    {
+      schema: GatewayCatalogResponseSchema,
+      enabled: anthropicCatalogEnabled,
+    },
   );
 
   // Billing drives the BYOT gate + the platform-default label. 404 means
@@ -290,6 +311,13 @@ export default function ModelConfigPage() {
 
   const currentProvider = form.watch("provider");
   const isGateway = currentProvider === "gateway";
+  // Anthropic picker requires the saved config to also be anthropic — we use
+  // the workspace's stored BYOT key for the discovery call. Switching the
+  // form to anthropic without saving falls back to the free-text input.
+  const showAnthropicPicker =
+    currentProvider === "anthropic" &&
+    existingConfig?.provider === "anthropic" &&
+    existingConfig?.apiKeyStatus === "masked";
   const saveDisabled =
     saving ||
     !form.watch("model").trim() ||
@@ -575,6 +603,14 @@ export default function ModelConfigPage() {
                                   fallback={catalog?.fallback}
                                   onRetry={refetchCatalog}
                                 />
+                              ) : showAnthropicPicker ? (
+                                <GatewayModelPicker
+                                  models={anthropicCatalog?.models ?? []}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  loading={anthropicCatalogLoading}
+                                  onRetry={refetchAnthropicCatalog}
+                                />
                               ) : (
                                 <Input
                                   placeholder={
@@ -589,6 +625,18 @@ export default function ModelConfigPage() {
                                 />
                               )}
                             </FormControl>
+                            {showAnthropicPicker && anthropicCatalog && (
+                              <CatalogFreshness
+                                fetchedAt={anthropicCatalog.fetchedAt}
+                                onRefresh={refetchAnthropicCatalog}
+                                refreshing={anthropicCatalogLoading}
+                              />
+                            )}
+                            {currentProvider === "anthropic" && !showAnthropicPicker && (
+                              <FormDescription>
+                                Save your Anthropic API key first to pick from the live model catalog.
+                              </FormDescription>
+                            )}
                             <FormMessage />
                           </FormItem>
                         )}
@@ -701,4 +749,46 @@ export default function ModelConfigPage() {
       </ErrorBoundary>
     </div>
   );
+}
+
+// Picker freshness footer — surfaces "last refreshed N hours ago" + a manual
+// refresh action for BYOT catalogs (#2271). The discovery cache TTLs at 6h
+// server-side; this gives admins a way to force a fresh fetch when they've
+// rotated keys or seen a new model land upstream.
+function CatalogFreshness({
+  fetchedAt,
+  onRefresh,
+  refreshing,
+}: {
+  fetchedAt: string;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const relative = relativeTime(fetchedAt);
+  return (
+    <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+      <span>Last refreshed {relative}</span>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={refreshing}
+        className="inline-flex items-center gap-1 font-medium underline-offset-2 hover:underline disabled:opacity-50"
+      >
+        {refreshing && <Loader2 className="size-3 animate-spin" />}
+        Refresh now
+      </button>
+    </div>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return "just now";
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }

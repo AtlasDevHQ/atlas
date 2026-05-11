@@ -343,11 +343,20 @@ function escalate(
 /**
  * Check the current abuse level for a workspace.
  * Returns the current level and throttle delay if applicable.
+ *
+ * Allowlisted workspaces (`ATLAS_LOADTEST_ALLOWED_ORGS`) always report
+ * `level: "none"` regardless of stored state. `recordQueryEvent` already
+ * short-circuits for these workspaces, but pre-allowlist suspensions
+ * (in-memory or rehydrated from `abuse_events`) would otherwise keep
+ * blocking chat/query indefinitely — the never-suspend semantics need to
+ * apply at *read* time too, not just at escalation time.
  */
 export function checkAbuseStatus(workspaceId: string): {
   level: AbuseLevel;
   throttleDelayMs?: number;
 } {
+  if (isLoadTestWorkspace(workspaceId)) return { level: "none" };
+
   const state = workspaceState.get(workspaceId);
   if (!state || state.level === "none" || state.level === "warning") {
     return { level: state?.level ?? "none" };
@@ -651,6 +660,7 @@ export async function restoreAbuseState(): Promise<void> {
     );
 
     let driftSkipped = 0;
+    let allowlistSkipped = 0;
     for (const row of rows) {
       const { level, trigger, levelDrifted } = coerceAbuseEnums(
         row.workspace_id,
@@ -666,6 +676,16 @@ export async function restoreAbuseState(): Promise<void> {
         continue;
       }
       if (level === "none") continue; // Already reinstated
+      // Never rehydrate a suspension/throttle/warning for an allowlisted
+      // workspace — `checkAbuseStatus` would short-circuit it to "none"
+      // anyway, but leaving the in-memory ladder primed means the moment
+      // the workspace is removed from `ATLAS_LOADTEST_ALLOWED_ORGS` it
+      // would snap back to suspended without any new escalation. Count
+      // skips so operators can see the historical-state churn.
+      if (isLoadTestWorkspace(row.workspace_id)) {
+        allowlistSkipped++;
+        continue;
+      }
 
       const state = getState(row.workspace_id);
       state.level = level;
@@ -677,12 +697,13 @@ export async function restoreAbuseState(): Promise<void> {
     }
 
     const restored = [...workspaceState.values()].filter((s) => s.level !== "none").length;
-    if (restored > 0 || driftSkipped > 0) {
+    if (restored > 0 || driftSkipped > 0 || allowlistSkipped > 0) {
       log.info(
-        { count: restored, driftSkipped },
-        "Restored abuse state for %d workspaces (%d skipped due to enum drift)",
+        { count: restored, driftSkipped, allowlistSkipped },
+        "Restored abuse state for %d workspaces (%d skipped due to enum drift, %d skipped via allowlist)",
         restored,
         driftSkipped,
+        allowlistSkipped,
       );
     }
   } catch (err) {

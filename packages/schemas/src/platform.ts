@@ -31,6 +31,7 @@ import {
   PLAN_TIERS,
   NOISY_NEIGHBOR_METRICS,
   ATLAS_ROLES,
+  ABUSE_LEVELS,
   type PlatformStats,
   type PlatformWorkspace,
   type PlatformWorkspaceUser,
@@ -41,6 +42,7 @@ const WorkspaceStatusEnum = z.enum(WORKSPACE_STATUSES);
 const PlanTierEnum = z.enum(PLAN_TIERS);
 const NoisyMetricEnum = z.enum(NOISY_NEIGHBOR_METRICS);
 const AtlasRoleEnum = z.enum(ATLAS_ROLES);
+const AbuseLevelEnum = z.enum(ABUSE_LEVELS);
 
 export const PlatformStatsSchema = z.object({
   totalWorkspaces: z.number(),
@@ -73,6 +75,10 @@ export const PlatformWorkspaceSchema = z.object({
   // #2249 — optional + additive so older consumers that haven't picked
   // up this @useatlas/schemas release don't reject the response.
   neverSuspend: z.boolean().optional(),
+  // Optional + additive — missing on older API/web pairs (treated as
+  // "none" by the UI). Sourced from `checkAbuseStatus`, independent of
+  // the `status` column.
+  abuseLevel: AbuseLevelEnum.optional(),
 }) satisfies z.ZodType<PlatformWorkspace>;
 
 export const PlatformWorkspaceUserSchema = z.object({

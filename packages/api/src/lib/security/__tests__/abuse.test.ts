@@ -217,6 +217,74 @@ describe("Abuse Prevention Engine", () => {
       }
     });
 
+    // Regression for the platform-admin "looks fine while chat is blocked"
+    // bug — a workspace that escalated to suspended *before* it was added
+    // to ATLAS_LOADTEST_ALLOWED_ORGS must report `none` once allowlisted,
+    // even though the in-memory state still says `suspended`. Without this
+    // guard, `recordQueryEvent` would skip new events but the chat path
+    // would keep reading the stale `suspended` level forever.
+    it("checkAbuseStatus returns 'none' for allowlisted workspaces even with stale suspended state", () => {
+      const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      // Drive the workspace to suspended *without* the allowlist set.
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+        recordQueryEvent("ws-late-allowlist", { success: true });
+      }
+      expect(checkAbuseStatus("ws-late-allowlist").level).toBe("suspended");
+
+      // Now add to the allowlist — read-time guard must lift the suspension.
+      process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-late-allowlist";
+      try {
+        expect(checkAbuseStatus("ws-late-allowlist").level).toBe("none");
+        // Throttled state would also be reported as `none` — same code path,
+        // but worth a quick sanity check that no `throttleDelayMs` leaks out.
+        expect(checkAbuseStatus("ws-late-allowlist").throttleDelayMs).toBeUndefined();
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+      }
+    });
+
+    // Companion to the read-time guard above: a fresh process restarting
+    // with persisted `abuse_events` rows for an allowlisted workspace must
+    // skip rehydration. Otherwise a later `delete ATLAS_LOADTEST_ALLOWED_ORGS`
+    // would snap the workspace back to suspended without any new escalation.
+    it("restoreAbuseState skips workspaces in the allowlist", async () => {
+      const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-rehydrate-skip";
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          workspace_id: "ws-rehydrate-skip",
+          level: "suspended",
+          trigger_type: "query_rate",
+          message: "old suspension",
+          created_at: "2026-04-01T00:00:00Z",
+        },
+        {
+          workspace_id: "ws-rehydrate-keep",
+          level: "suspended",
+          trigger_type: "query_rate",
+          message: "should still rehydrate",
+          created_at: "2026-04-01T00:00:00Z",
+        },
+      ]);
+      try {
+        await restoreAbuseState();
+        expect(checkAbuseStatus("ws-rehydrate-skip").level).toBe("none");
+        expect(checkAbuseStatus("ws-rehydrate-keep").level).toBe("suspended");
+        // Restore log includes the allowlistSkipped count so operators can
+        // see the churn without grepping for per-row warnings.
+        const restoreLog = infoCalls.find((c) =>
+          c.msg.includes("Restored abuse state"),
+        );
+        expect(restoreLog?.ctx.allowlistSkipped).toBe(1);
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+      }
+    });
+
     it("isLoadTestWorkspace reflects env-var changes without restart", () => {
       const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
       try {

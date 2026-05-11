@@ -6,6 +6,7 @@
  */
 
 import type { AtlasRole } from "./auth";
+import type { AbuseLevel } from "./abuse";
 
 /** Resolved deploy mode — binary value after auto-detection. */
 export type DeployMode = "saas" | "self-hosted";
@@ -50,6 +51,17 @@ export interface PlatformWorkspace {
    * Source of truth: `lib/auth/load-test-allowlist.ts:isLoadTestWorkspace`.
    */
   neverSuspend?: boolean;
+  /**
+   * Current in-memory abuse level for the workspace, sourced from
+   * `lib/security/abuse.ts:checkAbuseStatus`. Independent of
+   * `status` (the `workspace_status` DB column flipped by admin
+   * actions) — a workspace can be DB-active but abuse-suspended,
+   * which is exactly the divergence this field exists to expose so
+   * `/admin/platform` no longer looks healthy while chat is blocked
+   * by the abuse path. Optional + additive: omitted on consumers
+   * pre-dating this release; treat missing as `"none"`.
+   */
+  abuseLevel?: AbuseLevel;
 }
 
 export interface PlatformWorkspaceDetail {

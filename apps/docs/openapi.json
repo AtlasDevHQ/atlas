@@ -58084,6 +58084,15 @@
                           },
                           "neverSuspend": {
                             "type": "boolean"
+                          },
+                          "abuseLevel": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "warning",
+                              "throttled",
+                              "suspended"
+                            ]
                           }
                         },
                         "required": [
@@ -58296,6 +58305,15 @@
                         },
                         "neverSuspend": {
                           "type": "boolean"
+                        },
+                        "abuseLevel": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "warning",
+                            "throttled",
+                            "suspended"
+                          ]
                         }
                       },
                       "required": [

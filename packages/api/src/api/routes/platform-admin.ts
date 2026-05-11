@@ -46,6 +46,7 @@ import {
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { getLoadTestAllowlist } from "@atlas/api/lib/auth/load-test-allowlist";
+import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
 import {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
@@ -280,7 +281,11 @@ const noisyNeighborsRoute = createRoute({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Build a PlatformWorkspace from a WorkspaceRow + health counts. */
+/**
+ * Build a PlatformWorkspace from a WorkspaceRow + health counts.
+ * Re-exported as `_toWorkspaceResponseForTest` below so test suites can
+ * exercise the abuseLevel surfacing without standing up the full DB mock.
+ */
 function toWorkspaceResponse(
   row: WorkspaceRow,
   health: { members: number; conversations: number; queriesLast24h: number; connections: number; scheduledTasks: number },
@@ -307,6 +312,13 @@ function toWorkspaceResponse(
     // #2249 — surface the load-test allowlist override so the detail
     // page renders the same badge as the list view.
     neverSuspend: getLoadTestAllowlist()?.has(row.id) ?? false,
+    // Surface the in-memory abuse level so `/admin/platform` no longer
+    // shows "Active" while the chat path is blocked by
+    // `checkAbuseStatus`. `workspace_status` (the `status` field above)
+    // is the admin-mutation column — it does not reflect auto-escalation
+    // from the abuse detector. The allowlist guard inside
+    // `checkAbuseStatus` keeps never-suspend workspaces at "none" here too.
+    abuseLevel: checkAbuseStatus(row.id).level,
   };
 }
 
@@ -413,6 +425,9 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       regionAssignedAt: row.region_assigned_at,
       createdAt: row.createdAt,
       neverSuspend: allowlist?.has(row.id) ?? false,
+      // Same rationale as `toWorkspaceResponse` — list view must agree
+      // with the detail panel about whether chat is blocked by abuse.
+      abuseLevel: checkAbuseStatus(row.id).level,
     }));
 
     return c.json({ workspaces }, 200);
@@ -863,3 +878,7 @@ platformAdmin.openapi(noisyNeighborsRoute, async (c) => {
 });
 
 export { platformAdmin };
+
+// Test-only re-export. Keeping it underscore-prefixed makes the
+// "do-not-import-in-prod" signal obvious at every call site.
+export { toWorkspaceResponse as _toWorkspaceResponseForTest };

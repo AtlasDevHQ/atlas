@@ -32,6 +32,34 @@ const mocks = createApiTestMocks();
 // Top-level ADMIN_ACTIONS import in platform-admin.ts requires a module
 // mock before the app is imported below.
 import { mock } from "bun:test";
+// Programmable abuse status — re-register the abuse module mock so the
+// `abuseLevel` surfacing tests below can dictate per-workspace levels
+// without driving the real escalation ladder. `createApiTestMocks` pins
+// `checkAbuseStatus` to a constant `{ level: "none" }`; that fixture is
+// fine for the existing suites but blocks the regression test for the
+// "platform-admin says active while chat is suspended" bug.
+const abuseStatusByWorkspace = new Map<string, "none" | "warning" | "throttled" | "suspended">();
+mock.module("@atlas/api/lib/security/abuse", () => ({
+  listFlaggedWorkspaces: mock(() => []),
+  reinstateWorkspace: mock(() => "warning" as const),
+  getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
+  getAbuseConfig: mock(() => ({
+    queryRateLimit: 200,
+    queryRateWindowSeconds: 300,
+    errorRateThreshold: 0.5,
+    uniqueTablesLimit: 50,
+    throttleDelayMs: 2000,
+  })),
+  getAbuseDetail: mock(async () => null),
+  checkAbuseStatus: mock((workspaceId: string) => ({
+    level: abuseStatusByWorkspace.get(workspaceId) ?? "none",
+  })),
+  recordQueryEvent: mock(() => {}),
+  restoreAbuseState: mock(async () => {}),
+  _resetAbuseState: mock(() => abuseStatusByWorkspace.clear()),
+  abuseCleanupTick: mock(() => {}),
+  ABUSE_CLEANUP_INTERVAL_MS: 300_000,
+}));
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
   logAdminActionAwait: mock(async () => {}),
@@ -300,5 +328,105 @@ describe("GET /api/v1/platform/workspaces — neverSuspend flag (#2249)", () => 
     } finally {
       if (original !== undefined) process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
     }
+  });
+});
+
+// abuseLevel surfacing — workspace_status (DB column) and the in-memory
+// abuse level are independent. Before this field, a workspace that the
+// abuse detector had auto-suspended via `recordQueryEvent` would still
+// render "Active" on /admin/platform because the platform-admin route
+// only echoed `workspace_status`. Operators saw a healthy workspace
+// while chat returned `workspace_suspended` — the exact divergence this
+// suite is the regression floor for.
+describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
+  beforeEach(() => {
+    mocks.setPlatformAdmin();
+    mocks.hasInternalDB = true;
+    mockLogWarn.mockClear();
+  });
+
+  function mockListWorkspaces(rows: Array<{ id: string; slug: string }>): void {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization o")) {
+        return rows.map((r) => ({
+          id: r.id,
+          name: r.id,
+          slug: r.slug,
+          workspace_status: "active",
+          plan_tier: "starter",
+          byot: false,
+          stripe_customer_id: null,
+          trial_ends_at: null,
+          suspended_at: null,
+          deleted_at: null,
+          region: "us",
+          region_assigned_at: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          members: 1,
+          conversations: 0,
+          queries_last_24h: 0,
+          connections: 0,
+          scheduled_tasks: 0,
+        }));
+      }
+      return [];
+    });
+  }
+
+  it("returns abuseLevel='suspended' for a workspace the abuse detector flagged, even when status='active'", async () => {
+    // The route reads `checkAbuseStatus` per row. We stub a "suspended"
+    // verdict for ws-dharma via `abuseStatusByWorkspace` so the test
+    // mirrors a production escalation without depending on the real
+    // counter/escalation machinery (covered separately in abuse.test.ts).
+    abuseStatusByWorkspace.set("ws-dharma", "suspended");
+    mockListWorkspaces([{ id: "ws-dharma", slug: "dharma" }, { id: "ws-clean", slug: "clean" }]);
+
+    const res = await app.fetch(platformRequest("GET", "/api/v1/platform/workspaces"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      workspaces: Array<{ id: string; status: string; abuseLevel?: string }>;
+    };
+    const lookup = Object.fromEntries(body.workspaces.map((w) => [w.id, w]));
+    expect(lookup["ws-dharma"].status).toBe("active");
+    expect(lookup["ws-dharma"].abuseLevel).toBe("suspended");
+    expect(lookup["ws-clean"].abuseLevel).toBe("none");
+
+    abuseStatusByWorkspace.clear();
+  });
+
+  // The detail route uses `toWorkspaceResponse` (the helper) while the
+  // list route inlines its own mapper. Both must agree about
+  // `abuseLevel`. Direct helper coverage rather than going through
+  // `getWorkspaceDetails` (which is module-mocked deeper than this test
+  // can reach without re-registering the whole `db/internal` mock).
+  it("toWorkspaceResponse writes abuseLevel into the detail-route shape", async () => {
+    abuseStatusByWorkspace.set("ws-helper-flagged", "throttled");
+    const { _toWorkspaceResponseForTest } = await import("../routes/platform-admin");
+    const row = {
+      id: "ws-helper-flagged",
+      name: "Flagged",
+      slug: "flagged",
+      workspace_status: "active" as const,
+      plan_tier: "starter" as const,
+      byot: false,
+      stripe_customer_id: null,
+      trial_ends_at: null,
+      suspended_at: null,
+      deleted_at: null,
+      region: "us",
+      region_assigned_at: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const ws = _toWorkspaceResponseForTest(row, {
+      members: 1,
+      conversations: 0,
+      queriesLast24h: 0,
+      connections: 0,
+      scheduledTasks: 0,
+    });
+    expect(ws.status).toBe("active");
+    expect(ws.abuseLevel).toBe("throttled");
+
+    abuseStatusByWorkspace.clear();
   });
 });

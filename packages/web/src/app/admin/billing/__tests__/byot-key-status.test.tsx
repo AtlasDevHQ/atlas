@@ -31,7 +31,7 @@ describe("ByotKeyStatus", () => {
     expect(alert.textContent).toContain("no API key configured");
     expect(alert.textContent).toContain("platform default");
 
-    const cta = container.querySelector('a[href="/admin/model-config"]');
+    const cta = container.querySelector('a[href="/platform/model-config"]');
     expect(cta).toBeTruthy();
     expect(cta?.textContent).toContain("Add your API key");
 
@@ -49,7 +49,7 @@ describe("ByotKeyStatus", () => {
     expect(container.textContent).toContain("Anthropic");
     expect(container.textContent).toContain("claude-sonnet-4-6");
 
-    const manage = container.querySelector('a[href="/admin/model-config"]');
+    const manage = container.querySelector('a[href="/platform/model-config"]');
     expect(manage).toBeTruthy();
     expect(manage?.textContent).toContain("Manage");
 

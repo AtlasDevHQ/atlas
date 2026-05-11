@@ -38,20 +38,20 @@ describe("MfaGateProvider.trigger", () => {
     const { result } = renderHook(() => useMfaGate(), { wrapper: providerWrapper });
 
     act(() => {
-      result.current.trigger("/admin/security");
+      result.current.trigger("/admin/account-security");
     });
 
     expect(result.current.state).not.toBeNull();
-    expect(result.current.state!.enrollmentUrl).toBe("/admin/security");
+    expect(result.current.state!.enrollmentUrl).toBe("/admin/account-security");
     expect(window.sessionStorage.getItem(ORIGIN_PATH_KEY)).toBe("/admin/sandbox");
   });
 
   test("no-op when on the enrollment page", () => {
-    mockPathname = "/admin/security";
+    mockPathname = "/admin/account-security";
     const { result } = renderHook(() => useMfaGate(), { wrapper: providerWrapper });
 
     act(() => {
-      result.current.trigger("/admin/security");
+      result.current.trigger("/admin/account-security");
     });
 
     expect(result.current.state).toBeNull();
@@ -59,11 +59,11 @@ describe("MfaGateProvider.trigger", () => {
   });
 
   test("no-op on nested security page paths", () => {
-    mockPathname = "/admin/security/audit-log";
+    mockPathname = "/admin/account-security/audit-log";
     const { result } = renderHook(() => useMfaGate(), { wrapper: providerWrapper });
 
     act(() => {
-      result.current.trigger("/admin/security");
+      result.current.trigger("/admin/account-security");
     });
 
     expect(result.current.state).toBeNull();
@@ -76,7 +76,7 @@ describe("MfaGateProvider.trigger", () => {
     const { result } = renderHook(() => useMfaGate(), { wrapper: providerWrapper });
 
     act(() => {
-      result.current.trigger("/admin/security");
+      result.current.trigger("/admin/account-security");
     });
 
     const firstState = result.current.state;
@@ -90,7 +90,7 @@ describe("MfaGateProvider.trigger", () => {
       result.current.trigger("/admin/different-target");
     });
 
-    expect(result.current.state!.enrollmentUrl).toBe("/admin/security");
+    expect(result.current.state!.enrollmentUrl).toBe("/admin/account-security");
     expect(window.sessionStorage.getItem(ORIGIN_PATH_KEY)).toBe("/admin/users");
   });
 
@@ -98,7 +98,7 @@ describe("MfaGateProvider.trigger", () => {
     const { result } = renderHook(() => useMfaGate(), { wrapper: providerWrapper });
 
     act(() => {
-      result.current.trigger("/admin/security");
+      result.current.trigger("/admin/account-security");
     });
     expect(result.current.state).not.toBeNull();
 
@@ -162,7 +162,7 @@ describe("useMfaGateOptional without provider", () => {
       expect(result.current.state).toBeNull();
 
       act(() => {
-        result.current.trigger("/admin/security");
+        result.current.trigger("/admin/account-security");
       });
 
       expect(result.current.state).toBeNull();

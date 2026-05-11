@@ -46,4 +46,31 @@ describe("resolveAdminBreadcrumb", () => {
       }
     }
   });
+
+  test("every nav href has a matching page.tsx on disk (#2305 + #2306)", async () => {
+    // Guards against typo'd sidebar entries — a 404 in production from
+    // a sidebar link is invisible to CI without this check. PR3 + PR4
+    // moved 4 routes (`/platform/users`, `/platform/model-config`,
+    // `/platform/plugin-registry`, `/admin/account-security`,
+    // `/admin/action-log`) plus the existing 11-entry Platform group;
+    // single typo'd entry like `/platform/plugins-registry` would slip
+    // past every other test today.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const appDir = path.resolve(__dirname, "../../../../app");
+    for (const group of navGroups) {
+      for (const item of group.items) {
+        const pagePath = path.join(appDir, item.href.replace(/^\//, ""), "page.tsx");
+        // Use existsSync + the assertion message so a failure points at
+        // the exact href + label rather than just "expected true".
+        const exists = fs.existsSync(pagePath);
+        if (!exists) {
+          throw new Error(
+            `nav href ${item.href} (${item.label}, group "${group.title}") has no page.tsx at ${pagePath}`,
+          );
+        }
+        expect(exists).toBe(true);
+      }
+    }
+  });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Passkey enrollment tile, mounted inside `/admin/security` next to
+ * Passkey enrollment tile, mounted inside `/admin/account-security` next to
  * the TOTP and backup-codes tiles.
  *
  * Click flow:
@@ -88,14 +88,14 @@ export interface PasskeyTileProps {
   hasPasskey: boolean;
   /** Called after a successful addPasskey + name persistence so the parent can refetch the list. */
   onChange?: () => void;
-  /** Where to bounce after a 2FA challenge during re-auth. Defaults to `/admin/security` for back-compat; `/settings/profile` should pass its own path so non-admins don't land on a 403 page. */
+  /** Where to bounce after a 2FA challenge during re-auth. Defaults to `/admin/account-security`; `/settings/profile` should pass its own path so non-admins don't land on a 403 page. */
   reauthRedirectTo?: string;
 }
 
 export function PasskeyTile({
   hasPasskey,
   onChange,
-  reauthRedirectTo = "/admin/security",
+  reauthRedirectTo = "/admin/account-security",
 }: PasskeyTileProps) {
   const support = useWebAuthnSupported();
   const session = authClient.useSession();

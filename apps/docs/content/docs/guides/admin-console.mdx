@@ -225,9 +225,9 @@ Token data is recorded automatically for every agent interaction (chat and query
 
 ## Plugins
 
-**Route:** `/admin/plugins`
+**Route:** `/platform/plugin-registry`
 
-Manage installed plugins — enable/disable, health checks, and configuration.
+Manage installed plugins — enable/disable, health checks, and configuration. Lifted from `/admin/plugins` to the platform tier in #2305 because the backing API uses `createPlatformRouter()` — workspace admins receive 403.
 
 In **SaaS mode**, the page includes a tabbed interface with **Installed** and **Available** tabs, providing a full plugin marketplace for browsing, installing, configuring, and uninstalling plugins. See [Plugin Marketplace](/guides/plugin-marketplace) for the full guide.
 
@@ -288,7 +288,7 @@ See [Workspace Settings](/guides/workspace-settings) for the full guide.
 
 ### Platform Settings
 
-**Route:** `/admin/platform/settings`
+**Route:** `/platform/settings`
 
 <Callout type="info">
 Requires the `platform_admin` role. In self-hosted deployments, the first user to sign up is automatically assigned `platform_admin`.
@@ -467,7 +467,7 @@ Non-admin users can manage their own sessions via `GET /api/v1/sessions` and `DE
 
 ## Admin Action Audit
 
-**Route:** `/admin/admin-actions`
+**Route:** `/admin/action-log`
 
 Tracks all admin mutations — settings changes, connection edits, user role changes, plugin installs, and other write operations performed through the admin console. Provides transparency into who changed what and when.
 
@@ -527,7 +527,7 @@ Full user management with stats and controls:
 
 ## Workspace Management
 
-**Route:** `/admin/organizations`
+**Route:** `/platform/organizations`
 
 <Callout type="info">
 Requires managed auth with an internal database (`DATABASE_URL`). Platform-wide view — admins see all organizations, not just their own.

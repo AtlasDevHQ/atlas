@@ -1,7 +1,7 @@
 import { parseAsString, parseAsStringLiteral } from "nuqs";
 
 /**
- * URL state for /admin/abuse.
+ * URL state for /platform/abuse.
  *
  * `level` — filter chips (all / warning / throttled / suspended). The list
  * endpoint returns all non-"none" flagged workspaces — filtering happens

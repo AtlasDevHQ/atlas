@@ -47,8 +47,8 @@ describe("AdminTopBar breadcrumb", () => {
     expect(container.textContent).not.toContain("Admin /");
   });
 
-  test("/admin/security renders [org] / Admin / Security / MFA & Sessions", () => {
-    mockedPath = "/admin/security";
+  test("/admin/account-security renders [org] / Admin / Security / MFA & Sessions", () => {
+    mockedPath = "/admin/account-security";
     cleanup();
     const { container } = render(<AdminTopBar />, { wrapper: Wrapper });
     expect(container.textContent).toContain("Acme");

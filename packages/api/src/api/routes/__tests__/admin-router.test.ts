@@ -290,7 +290,7 @@ describe("mfaRequired is wired into createAdminRouter / createPlatformRouter", (
     expect(res.status).toBe(403);
     const body = (await res.json()) as { error: string; enrollmentUrl: string };
     expect(body.error).toBe("mfa_enrollment_required");
-    expect(body.enrollmentUrl).toBe("/admin/security");
+    expect(body.enrollmentUrl).toBe("/admin/account-security");
 
     // Reset for siblings.
     mockAuthResult = { authenticated: true, mode: "none", user: undefined };

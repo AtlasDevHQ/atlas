@@ -22,7 +22,7 @@ The admin console renders only the **Installed** list today — there is no Avai
 
 ## Accessing the plugins page
 
-Navigate to **Admin → Plugins** (`/admin/plugins`). The page lists every plugin loaded in your workspace (from `atlas.config.ts` and, on SaaS, any plugins installed by a platform admin on your behalf). Each row shows the plugin's name, type badge, enable/disable state, and a toggle to expand configuration and health details.
+Navigate to **Platform → Plugin Registry** (`/platform/plugin-registry`). The page lists every plugin loaded in your workspace (from `atlas.config.ts` and, on SaaS, any plugins installed by a platform admin on your behalf). Each row shows the plugin's name, type badge, enable/disable state, and a toggle to expand configuration and health details.
 
 ---
 
@@ -59,7 +59,7 @@ There is no self-service install UI today. Pick the path that matches your deplo
    });
    ```
 
-3. Restart the server. The plugin appears on `/admin/plugins`.
+3. Restart the server. The plugin appears on `/platform/plugin-registry`.
 
 See the [Plugin Authoring Guide](/plugins/authoring-guide) for the full `definePlugin()` API and the published plugins on [npm](https://www.npmjs.com/search?q=%40useatlas) for what's available.
 

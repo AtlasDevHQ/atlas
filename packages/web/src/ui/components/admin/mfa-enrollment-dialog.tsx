@@ -2,7 +2,7 @@
 
 /**
  * Modal that fires when an admin session hits an `mfa_enrollment_required`
- * 403 anywhere on `/admin/*` or `/admin/platform/*`. State lives in
+ * 403 anywhere on `/admin/*` or `/platform/*`. State lives in
  * {@link MfaGateContext}; the admin hooks dispatch the trigger and this
  * component renders the modal off the same context.
  *

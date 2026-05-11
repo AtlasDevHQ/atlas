@@ -586,7 +586,7 @@ function ByotRow({
   });
 
   // The BYOT toggle just flips the plan flag — the actual provider+key lives
-  // in /admin/model-config. Fetch that here so we can tell the user when the
+  // at /platform/model-config (platform-admin scope). Fetch that here so we can tell the user when the
   // toggle is on but no key has been pasted yet.
   const { data: modelConfig } = useAdminFetch("/api/v1/admin/model-config", {
     schema: ModelConfigResponseSchema,
@@ -661,7 +661,7 @@ export function ByotKeyStatus({
             </div>
           </div>
           <Button asChild variant="outline" size="sm" className="shrink-0">
-            <Link href="/admin/model-config">
+            <Link href="/platform/model-config">
               Add your API key
               <ExternalLink className="ml-1.5 size-3" />
             </Link>
@@ -683,7 +683,7 @@ export function ByotKeyStatus({
             </span>
           </div>
           <Button asChild variant="ghost" size="sm" className="shrink-0">
-            <Link href="/admin/model-config">Manage</Link>
+            <Link href="/platform/model-config">Manage</Link>
           </Button>
         </div>
       )}

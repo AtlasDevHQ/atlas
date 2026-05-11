@@ -16,10 +16,13 @@
  */
 import { z } from "zod";
 import {
+  GATEWAY_MODEL_TYPES,
   MASKING_STRATEGIES,
   MODEL_CONFIG_PROVIDERS,
   PII_CATEGORIES,
   PII_CONFIDENCE_LEVELS,
+  type GatewayCatalogModel,
+  type GatewayCatalogResponse,
   type PIIColumnClassification,
   type SemanticDiffResponse,
   type WorkspaceBranding,
@@ -47,16 +50,61 @@ export const WorkspaceBrandingSchema = z.object({
 // Workspace model config
 // ---------------------------------------------------------------------------
 
-export const WorkspaceModelConfigSchema = z.object({
+export const API_KEY_STATUSES = ["masked", "platform_credits", "decrypt_failed"] as const;
+
+export const WorkspaceModelConfigSchema = z
+  .object({
+    id: z.string(),
+    orgId: z.string(),
+    provider: z.enum(MODEL_CONFIG_PROVIDERS),
+    model: z.string(),
+    baseUrl: z.string().nullable(),
+    apiKeyMasked: z.string().nullable(),
+    apiKeyStatus: z.enum(API_KEY_STATUSES),
+    createdAt: IsoTimestampSchema,
+    updatedAt: IsoTimestampSchema,
+  })
+  // Cross-field invariant: apiKeyMasked must be a non-null string iff status
+  // is `masked`. `platform_credits` and `decrypt_failed` both imply null.
+  .refine(
+    (c) => (c.apiKeyStatus === "masked") === (c.apiKeyMasked !== null),
+    {
+      message:
+        "apiKeyMasked must be non-null when apiKeyStatus='masked', and null otherwise",
+      path: ["apiKeyMasked"],
+    },
+  )
+  // `platform_credits` is only valid for the gateway provider — matches the
+  // DB-side `chk_model_provider_key` invariant.
+  .refine(
+    (c) => c.apiKeyStatus !== "platform_credits" || c.provider === "gateway",
+    {
+      message: "apiKeyStatus='platform_credits' is only valid for provider='gateway'",
+      path: ["apiKeyStatus"],
+    },
+  ) satisfies z.ZodType<WorkspaceModelConfig, unknown>;
+
+// ---------------------------------------------------------------------------
+// Gateway catalog
+// ---------------------------------------------------------------------------
+
+export const GatewayCatalogModelSchema = z.object({
   id: z.string(),
-  orgId: z.string(),
-  provider: z.enum(MODEL_CONFIG_PROVIDERS),
-  model: z.string(),
-  baseUrl: z.string().nullable(),
-  apiKeyMasked: z.string(),
-  createdAt: IsoTimestampSchema,
-  updatedAt: IsoTimestampSchema,
-}) satisfies z.ZodType<WorkspaceModelConfig, unknown>;
+  name: z.string(),
+  provider: z.string(),
+  type: z.enum(GATEWAY_MODEL_TYPES),
+  contextWindow: z.number().nullable(),
+  maxOutputTokens: z.number().nullable(),
+  inputPrice: z.string().nullable(),
+  outputPrice: z.string().nullable(),
+  recommended: z.boolean(),
+}) satisfies z.ZodType<GatewayCatalogModel, unknown>;
+
+export const GatewayCatalogResponseSchema = z.object({
+  models: z.array(GatewayCatalogModelSchema),
+  fetchedAt: z.string(),
+  fallback: z.boolean(),
+}) satisfies z.ZodType<GatewayCatalogResponse, unknown>;
 
 // ---------------------------------------------------------------------------
 // PII classification

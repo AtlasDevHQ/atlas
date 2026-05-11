@@ -14,6 +14,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { createOpenAI, openai } from "@ai-sdk/openai";
 import { bedrock } from "@ai-sdk/amazon-bedrock";
 import { bedrockAnthropic } from "@ai-sdk/amazon-bedrock/anthropic";
+import { createGateway } from "@ai-sdk/gateway";
 import { gateway } from "ai";
 import type { LanguageModel } from "ai";
 import type { ModelConfigProvider } from "@useatlas/types";
@@ -216,6 +217,8 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
     case "azure-openai":
     case "custom":
       return "openai-compatible";
+    case "gateway":
+      return "gateway";
     default: {
       const _exhaustive: never = provider;
       throw new Error(`Unknown workspace provider: ${_exhaustive}`);
@@ -226,25 +229,38 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
 /**
  * Create a LanguageModel from a workspace-level model configuration.
  * Uses the provider's SDK with the workspace's own API key and settings.
+ *
+ * `apiKey` is `null` only for `provider='gateway'` on platform credits;
+ * every other provider requires a BYOT key (enforced upstream by the
+ * `chk_model_provider_key` constraint on `workspace_model_config`).
  */
 export function getModelFromWorkspaceConfig(config: {
   provider: ModelConfigProvider;
   model: string;
-  apiKey: string;
+  apiKey: string | null;
   baseUrl: string | null;
 }): LanguageModel {
   switch (config.provider) {
     case "anthropic": {
+      if (!config.apiKey) {
+        throw new Error("API key is required for the anthropic provider.");
+      }
       const client = createAnthropic({ apiKey: config.apiKey });
       return client(config.model);
     }
 
     case "openai": {
+      if (!config.apiKey) {
+        throw new Error("API key is required for the openai provider.");
+      }
       const client = createOpenAI({ apiKey: config.apiKey });
       return client(config.model);
     }
 
     case "azure-openai": {
+      if (!config.apiKey) {
+        throw new Error("API key is required for the azure-openai provider.");
+      }
       if (!config.baseUrl) {
         throw new Error("Base URL is required for the azure-openai provider.");
       }
@@ -256,6 +272,9 @@ export function getModelFromWorkspaceConfig(config: {
     }
 
     case "custom": {
+      if (!config.apiKey) {
+        throw new Error("API key is required for the custom provider.");
+      }
       if (!config.baseUrl) {
         throw new Error("Base URL is required for the custom provider.");
       }
@@ -264,6 +283,20 @@ export function getModelFromWorkspaceConfig(config: {
         baseURL: config.baseUrl,
       });
       return client(config.model);
+    }
+
+    case "gateway": {
+      if (config.apiKey) {
+        const client = createGateway({ apiKey: config.apiKey });
+        return client(config.model);
+      }
+      if (!process.env.AI_GATEWAY_API_KEY) {
+        throw new Error(
+          "Gateway provider on platform credits requires AI_GATEWAY_API_KEY in the API env. " +
+            "Set it on the deploy, or have the workspace supply its own gateway API key (BYOT).",
+        );
+      }
+      return gateway(config.model);
     }
 
     default: {

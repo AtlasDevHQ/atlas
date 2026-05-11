@@ -30,6 +30,7 @@ const validModelConfig = {
   model: "claude-opus-4-6",
   baseUrl: null,
   apiKeyMasked: "sk-ant-...abc",
+  apiKeyStatus: "masked" as const,
   createdAt: "2026-04-20T12:00:00.000Z",
   updatedAt: "2026-04-20T12:00:00.000Z",
 };
@@ -78,6 +79,55 @@ describe("WorkspaceBrandingSchema", () => {
 describe("WorkspaceModelConfigSchema", () => {
   test("parses a valid model config", () => {
     expect(WorkspaceModelConfigSchema.parse(validModelConfig)).toEqual(validModelConfig);
+  });
+
+  test("accepts gateway provider with null apiKeyMasked on platform credits", () => {
+    const gatewayConfig = {
+      ...validModelConfig,
+      provider: "gateway" as const,
+      model: "anthropic/claude-opus-4.6",
+      apiKeyMasked: null,
+      apiKeyStatus: "platform_credits" as const,
+    };
+    expect(WorkspaceModelConfigSchema.parse(gatewayConfig)).toEqual(gatewayConfig);
+  });
+
+  test("accepts gateway provider with BYOT key", () => {
+    const byotConfig = {
+      ...validModelConfig,
+      provider: "gateway" as const,
+      model: "anthropic/claude-opus-4.6",
+      apiKeyMasked: "*****abcd",
+      apiKeyStatus: "masked" as const,
+    };
+    expect(WorkspaceModelConfigSchema.parse(byotConfig)).toEqual(byotConfig);
+  });
+
+  test("accepts decrypt_failed status with null apiKeyMasked on any provider", () => {
+    const broken = {
+      ...validModelConfig,
+      apiKeyMasked: null,
+      apiKeyStatus: "decrypt_failed" as const,
+    };
+    expect(WorkspaceModelConfigSchema.parse(broken)).toEqual(broken);
+  });
+
+  test("rejects masked status with null apiKeyMasked", () => {
+    const broken = {
+      ...validModelConfig,
+      apiKeyMasked: null,
+      apiKeyStatus: "masked" as const,
+    };
+    expect(() => WorkspaceModelConfigSchema.parse(broken)).toThrow();
+  });
+
+  test("rejects non-gateway provider with platform_credits status", () => {
+    const wrong = {
+      ...validModelConfig,
+      apiKeyMasked: null,
+      apiKeyStatus: "platform_credits" as const,
+    };
+    expect(() => WorkspaceModelConfigSchema.parse(wrong)).toThrow();
   });
 });
 

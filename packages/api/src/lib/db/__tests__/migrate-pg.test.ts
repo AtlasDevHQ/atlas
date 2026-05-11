@@ -104,4 +104,50 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       ),
     ).rejects.toMatchObject({ code: "23514" });
   }, PG_TEST_TIMEOUT_MS);
+
+  // #2173 — workspace_model_config.chk_model_provider_key CHECK constraint
+  // is the DB-layer enforcement of "non-gateway must have a key". If this
+  // silently drops in a future migration, the BYOT contract breaks at the
+  // DB layer with no signal.
+  it("workspace_model_config: gateway provider accepts NULL api_key_encrypted", async () => {
+    const orgId = `org-gateway-platform-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted)
+       VALUES ($1, 'gateway', 'anthropic/claude-opus-4.6', NULL)`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ api_key_encrypted: string | null }>(
+      `SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(rows[0]?.api_key_encrypted).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_model_config: non-gateway provider with NULL api_key_encrypted rejects with 23514", async () => {
+    const orgId = `org-anthropic-noKey-${Date.now()}`;
+    await expect(
+      pool.query(
+        `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted)
+         VALUES ($1, 'anthropic', 'claude-opus-4-6', NULL)`,
+        [orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_model_config: chk_model_provider accepts 'gateway' as a provider value", async () => {
+    // Regression guard: 0056 drops and replaces chk_model_provider. If the
+    // replacement doesn't carry 'gateway' through, this insert fails with
+    // the old four-value CHECK.
+    const orgId = `org-gateway-byot-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted)
+       VALUES ($1, 'gateway', 'openai/gpt-4o', 'enc:v1:iv:tag:ciphertext')`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ provider: string }>(
+      `SELECT provider FROM workspace_model_config WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(rows[0]?.provider).toBe("gateway");
+  }, PG_TEST_TIMEOUT_MS);
 });

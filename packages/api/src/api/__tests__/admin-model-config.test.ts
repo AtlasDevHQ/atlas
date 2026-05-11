@@ -63,6 +63,7 @@ const mockSetWorkspaceModelConfig: Mock<(...args: unknown[]) => unknown> = mock(
       provider: "anthropic",
       model: "claude-opus-4-6",
       apiKeyMasked: "************7890",
+      apiKeyStatus: "masked",
       baseUrl: null,
       createdAt: "2026-04-23T00:00:00Z",
       updatedAt: "2026-04-23T00:00:00Z",
@@ -152,6 +153,7 @@ beforeEach(() => {
       provider: "anthropic",
       model: "claude-opus-4-6",
       apiKeyMasked: "************7890",
+      apiKeyStatus: "masked",
       baseUrl: null,
       createdAt: "2026-04-23T00:00:00Z",
       updatedAt: "2026-04-23T00:00:00Z",
@@ -245,6 +247,7 @@ describe("audit emission — PUT /api/v1/admin/model-config", () => {
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKeyMasked: "************7890",
+        apiKeyStatus: "masked",
         baseUrl: null,
         createdAt: "2026-04-23T00:00:00Z",
         updatedAt: "2026-04-23T00:00:00Z",
@@ -265,6 +268,84 @@ describe("audit emission — PUT /api/v1/admin/model-config", () => {
       model: "claude-opus-4-7",
       hasSecret: false,
     });
+  });
+
+  it("provider=gateway with no apiKey succeeds on initial create (platform credits)", async () => {
+    // The route gates "API key required" by `body.provider !== "gateway"`.
+    // Gateway-on-platform-credits is the one legitimate apiKey-less initial
+    // create — if this regresses, SaaS users lose access to platform credits.
+    mockGetWorkspaceModelConfig.mockImplementation(() => Effect.succeed(null));
+    mockSetWorkspaceModelConfig.mockImplementation(() =>
+      Effect.succeed({
+        id: "cfg-1",
+        orgId: "org-1",
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+        apiKeyMasked: null,
+        apiKeyStatus: "platform_credits",
+        baseUrl: null,
+        createdAt: "2026-04-23T00:00:00Z",
+        updatedAt: "2026-04-23T00:00:00Z",
+      }),
+    );
+
+    const res = await app.fetch(
+      adminRequest("PUT", "/api/v1/admin/model-config", {
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({
+      provider: "gateway",
+      model: "anthropic/claude-opus-4.6",
+      hasSecret: false,
+    });
+  });
+
+  it("provider=anthropic with no apiKey on initial create returns 400 (BYOT contract)", async () => {
+    mockGetWorkspaceModelConfig.mockImplementation(() => Effect.succeed(null));
+
+    const res = await app.fetch(
+      adminRequest("PUT", "/api/v1/admin/model-config", {
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+      }),
+    );
+    expect(res.status).toBe(400);
+    // Pre-handler rejection — no audit row.
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("provider=anthropic with no apiKey rejects when existing config is gateway-on-platform-credits", async () => {
+    // Provider-transition guard: existing row is gateway-null (no key to
+    // preserve). Switching to anthropic without supplying a key would COALESCE
+    // null forward and trip the chk_model_provider_key DB constraint with an
+    // opaque 23514 — route must surface a clean 400 instead.
+    mockGetWorkspaceModelConfig.mockImplementation(() =>
+      Effect.succeed({
+        id: "cfg-1",
+        orgId: "org-1",
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+        apiKeyMasked: null,
+        apiKeyStatus: "platform_credits",
+        baseUrl: null,
+        createdAt: "2026-04-23T00:00:00Z",
+        updatedAt: "2026-04-23T00:00:00Z",
+      }),
+    );
+
+    const res = await app.fetch(
+      adminRequest("PUT", "/api/v1/admin/model-config", {
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockSetWorkspaceModelConfig).not.toHaveBeenCalled();
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 
   it("emits model_config.update with status=failure when set throws", async () => {

@@ -301,6 +301,7 @@ describe("migrateAuthTables", () => {
             { name: "0053_oauth_client_workspace_grants.sql" },
             { name: "0054_prompt_collections_dedup_unique.sql" },
             { name: "0055_audit_log_auth_mode_check.sql" },
+            { name: "0056_workspace_model_config_gateway.sql" },
           ],
         };
       }

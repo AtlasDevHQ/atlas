@@ -63,6 +63,8 @@ export type {
   ModelConfigProvider,
   WorkspaceModelConfig,
   TestModelConfigResponse,
+  GatewayCatalogModel,
+  GatewayCatalogResponse,
 } from "@useatlas/types";
 export type {
   ApprovalRule,

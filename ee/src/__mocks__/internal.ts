@@ -53,6 +53,8 @@ export interface EEMock {
   setEnterpriseLicenseKey: (key: string | undefined) => void;
   /** Toggle hasInternalDB return value. */
   setHasInternalDB: (has: boolean) => void;
+  /** When true, the mocked `decryptUrl` throws to simulate key-rotation drift. */
+  setDecryptThrows: (throws: boolean) => void;
   /** Reset all mock state (call in beforeEach). */
   reset: () => void;
 }
@@ -66,6 +68,7 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
   let enterpriseEnabled = true;
   let enterpriseLicenseKey: string | undefined = "test-key";
   let hasInternalDB = true;
+  let decryptThrows = false;
   const mockRows: Record<string, unknown>[][] = [];
   let queryCallCount = 0;
   const capturedQueries: { sql: string; params: unknown[] }[] = [];
@@ -126,7 +129,10 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     },
     internalExecute: () => {},
     encryptUrl: (v: string) => `encrypted:${v}`,
-    decryptUrl: (v: string) => (v.startsWith("encrypted:") ? v.slice(10) : v),
+    decryptUrl: (v: string) => {
+      if (decryptThrows) throw new Error("mocked decrypt failure (key-rotation drift)");
+      return v.startsWith("encrypted:") ? v.slice(10) : v;
+    },
     getEncryptionKey: () => Buffer.from("test-key-32-bytes-long-enough!!!"),
     closeInternalDB: async () => {},
     migrateInternalDB: async () => {},
@@ -165,6 +171,10 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     hasInternalDB = has;
   }
 
+  function setDecryptThrows(throws: boolean) {
+    decryptThrows = throws;
+  }
+
   function reset() {
     mockRows.length = 0;
     queryCallCount = 0;
@@ -172,6 +182,7 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     enterpriseEnabled = true;
     enterpriseLicenseKey = "test-key";
     hasInternalDB = true;
+    decryptThrows = false;
   }
 
   return {
@@ -183,6 +194,7 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     setEnterpriseEnabled,
     setEnterpriseLicenseKey,
     setHasInternalDB,
+    setDecryptThrows,
     reset,
   };
 }

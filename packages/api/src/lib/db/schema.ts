@@ -811,15 +811,24 @@ export const workspaceModelConfig = pgTable(
     orgId: text("org_id").notNull().unique(),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
-    apiKeyEncrypted: text("api_key_encrypted").notNull(),
-    // F-47 key version for `api_key_encrypted`.
+    // Nullable for provider='gateway' on platform credits (no BYOT key).
+    apiKeyEncrypted: text("api_key_encrypted"),
+    // F-47 key version. When `api_key_encrypted` is NULL the version is unused —
+    // `decryptUrl` is never called against a null column.
     apiKeyKeyVersion: integer("api_key_key_version").notNull().default(1),
     baseUrl: text("base_url"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    check("chk_model_provider", sql`provider IN ('anthropic', 'openai', 'azure-openai', 'custom')`),
+    check(
+      "chk_model_provider",
+      sql`provider IN ('anthropic', 'openai', 'azure-openai', 'custom', 'gateway')`,
+    ),
+    check(
+      "chk_model_provider_key",
+      sql`provider = 'gateway' OR api_key_encrypted IS NOT NULL`,
+    ),
     index("idx_workspace_model_config_org").on(t.orgId),
   ],
 );

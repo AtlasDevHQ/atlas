@@ -5,7 +5,7 @@ description: Configure per-workspace LLM providers so enterprise customers can b
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas supports workspace-level model routing. Each workspace can configure its own LLM provider and API key, overriding the platform default. This enables enterprise customers to use their own Anthropic, OpenAI, Azure OpenAI, or custom OpenAI-compatible endpoints.
+Atlas supports workspace-level model routing. Each workspace can configure its own LLM provider, overriding the platform default. This enables enterprise customers to use their own Anthropic, OpenAI, Azure OpenAI, custom OpenAI-compatible endpoints, or the Vercel AI Gateway — either on platform credits (no key) or BYOT against their own gateway billing project.
 
 <Callout type="info" title="SaaS Feature">
   Model routing is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments configure the model provider globally via environment variables. This feature is part of the Atlas commercial offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate, license split, and `requireEnterprise("model-routing")` call sites.
@@ -36,16 +36,35 @@ When the agent loop starts a new conversation:
 
 | Provider | Value | Description |
 |----------|-------|-------------|
-| Anthropic | `anthropic` | Claude models via `api.anthropic.com` |
-| OpenAI | `openai` | GPT models via `api.openai.com` |
-| Azure OpenAI | `azure-openai` | Azure-hosted OpenAI models (requires base URL) |
-| Custom | `custom` | Any OpenAI-compatible endpoint (requires base URL) |
+| Anthropic | `anthropic` | Claude models via `api.anthropic.com` (BYOT key) |
+| OpenAI | `openai` | GPT models via `api.openai.com` (BYOT key) |
+| Azure OpenAI | `azure-openai` | Azure-hosted OpenAI models (BYOT key + base URL) |
+| Custom | `custom` | Any OpenAI-compatible endpoint (BYOT key + base URL) |
+| Vercel AI Gateway | `gateway` | Any gateway-supported model — omit `apiKey` for **platform credits** (SaaS only) or supply one for **BYOT gateway** billing |
+
+### Gateway model picker
+
+When `provider=gateway`, the admin UI swaps the free-form model input for a searchable picker over the live Vercel AI Gateway catalog. The picker:
+
+- Surfaces a curated **Recommended** group at the top (Claude Opus / Sonnet, GPT-4o family, Gemini 2.0 Flash) and groups the rest by provider
+- Searches across model ID, display name, provider, and context window — `claude opus 200k` matches `anthropic/claude-opus-4.6` with a 200K window
+- Falls back to a small bundled subset if the live catalog endpoint is unreachable; the picker surfaces a "showing a curated subset" banner with a retry button
+
+The catalog is fetched server-side (`GET https://ai-gateway.vercel.sh/v1/models`) and cached in-memory for the configured TTL — see [Configuration](#configuration).
 
 ### Security
 
 - API keys are encrypted at rest using AES-256-GCM (same pattern as connection URLs)
 - API keys are never returned in API responses — only a masked version (last 4 characters) is shown
-- The encryption key is derived from `ATLAS_ENCRYPTION_KEY` or `BETTER_AUTH_SECRET`
+- The encryption key is derived from `ATLAS_ENCRYPTION_KEYS` / `ATLAS_ENCRYPTION_KEY` / `BETTER_AUTH_SECRET`
+- The `chk_model_provider_key` CHECK constraint enforces that only `gateway` rows are allowed to have a NULL `api_key_encrypted`; every other provider must have a stored key
+
+## Configuration
+
+| Environment variable | Default | What it controls |
+|----------------------|---------|------------------|
+| `AI_GATEWAY_API_KEY` | none | Platform gateway key used when a workspace picks `provider=gateway` with no BYOT key. Required on SaaS deploys; self-hosted deploys can pick a single platform-wide key here or fall back to a BYOT-only model. |
+| `ATLAS_GATEWAY_CATALOG_TTL_MS` | `1800000` (30 min) | TTL on the in-memory gateway catalog cache. Lower values keep new gateway models visible sooner; higher values reduce upstream load. |
 
 ---
 
@@ -62,9 +81,9 @@ Navigate to **Admin > AI Provider** in the admin console. From here you can:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| Provider | Yes | One of: Anthropic, OpenAI, Azure OpenAI, Custom |
-| Model | Yes | Model identifier (e.g. `claude-opus-4-6`, `gpt-4o`) |
-| API Key | Yes | Provider API key (encrypted at rest) |
+| Provider | Yes | One of: Anthropic, OpenAI, Azure OpenAI, Custom, Vercel AI Gateway |
+| Model | Yes | Model identifier (e.g. `claude-opus-4-6`, `gpt-4o`, `anthropic/claude-opus-4.6` for gateway) |
+| API Key | BYOT providers | Provider API key (encrypted at rest). Omit for gateway-on-platform-credits. |
 | Base URL | For Azure/Custom | Endpoint URL for Azure OpenAI or custom providers |
 
 ---
@@ -135,7 +154,37 @@ Content-Type: application/json
 }
 ```
 
-Tests a model configuration by making a minimal API call to the provider. Does not save the configuration.
+Tests a model configuration by making a minimal API call to the provider. Does not save the configuration. For `provider=gateway` on platform credits, omit `apiKey` — the endpoint instead validates that the model ID is in the live gateway catalog (a free check that does not burn platform credits). BYOT gateway keys go through both the catalog check **and** a 1-token chat completion against the gateway's OpenAI-compatible endpoint.
+
+### Gateway catalog
+
+```http
+GET /api/v1/admin/model-config/catalog
+```
+
+Returns the cached Vercel AI Gateway model catalog (no authentication beyond the standard admin gate). Each entry includes provider, type, context window, max output tokens, and per-token pricing if surfaced by the upstream. The `fallback` field is `true` when the live fetch failed and a bundled curated subset was returned instead.
+
+**Response:**
+
+```json
+{
+  "models": [
+    {
+      "id": "anthropic/claude-opus-4.6",
+      "name": "Claude Opus 4.6",
+      "provider": "anthropic",
+      "type": "language",
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "inputPrice": "0.000015",
+      "outputPrice": "0.000075",
+      "recommended": true
+    }
+  ],
+  "fetchedAt": "2026-05-10T22:30:00.000Z",
+  "fallback": false
+}
+```
 
 **Response:**
 
@@ -159,10 +208,19 @@ CREATE TABLE workspace_model_config (
   org_id TEXT NOT NULL UNIQUE,
   provider TEXT NOT NULL,
   model TEXT NOT NULL,
-  api_key_encrypted TEXT NOT NULL,
+  -- Nullable for provider='gateway' on platform credits.
+  api_key_encrypted TEXT,
+  api_key_key_version INTEGER NOT NULL DEFAULT 1,
   base_url TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT chk_model_provider CHECK (
+    provider IN ('anthropic', 'openai', 'azure-openai', 'custom', 'gateway')
+  ),
+  -- Every non-gateway row must have an encrypted key. Gateway rows may not.
+  CONSTRAINT chk_model_provider_key CHECK (
+    provider = 'gateway' OR api_key_encrypted IS NOT NULL
+  )
 );
 ```
 

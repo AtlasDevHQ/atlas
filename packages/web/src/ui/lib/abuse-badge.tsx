@@ -71,7 +71,7 @@ export function AbuseDivergenceBanner({ level }: { level: AbuseLevel | undefined
         <p className="text-amber-800 dark:text-amber-200">
           This is independent of the workspace status above — chat &amp; query
           requests are being blocked even if status reads &quot;active&quot;.{" "}
-          <Link href="/admin/abuse" className="underline underline-offset-2">
+          <Link href="/platform/abuse" className="underline underline-offset-2">
             Open Abuse Console
           </Link>{" "}
           to reinstate.

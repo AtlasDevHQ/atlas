@@ -28,7 +28,7 @@ const NEXT_STEPS: NextStepDef[] = [
     description: "Add joins, measures, and descriptions so the agent gets answers right the first time.",
   },
   {
-    href: "/admin/organizations",
+    href: "/platform/organizations",
     icon: Users,
     title: "Invite your team",
     description: "Share workspaces with teammates and decide who can connect databases.",

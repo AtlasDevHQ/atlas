@@ -3,7 +3,7 @@
 /**
  * Two-factor (TOTP) enrollment for admin, owner, and platform_admin accounts.
  *
- * Mounted under `/admin/security`. The component renders three
+ * Mounted under `/admin/account-security`. The component renders three
  * top-level views, with the middle one stepping through password-confirm
  * and code-confirm sub-stages (see {@link EnrollStage}):
  *
@@ -282,10 +282,10 @@ export function TwoFactorSetup({ enabled, onChange }: TwoFactorSetupProps) {
     }
     reset();
     onChange?.();
-    // Skip self-redirects so a fresh enrollment from /admin/security
+    // Skip self-redirects so a fresh enrollment from /admin/account-security
     // doesn't no-op into a router.push to the same path.
     const origin = consumeOriginPath();
-    if (origin && !origin.startsWith("/admin/security")) {
+    if (origin && !origin.startsWith("/admin/account-security")) {
       router.push(origin);
     }
   }

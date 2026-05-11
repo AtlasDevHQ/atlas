@@ -75,14 +75,35 @@ function overageColor(status: string): string {
   }
 }
 
+// Values are Vercel AI Gateway model IDs (slash+dot) — SaaS resolves
+// through the gateway, so the picker must write IDs the gateway will
+// recognize. Older hyphen-format settings (`claude-opus-4-6`) are
+// migrated lazily by `modelLabel` and the equivalence check below so
+// existing workspaces don't lose their selection on first load.
 const MODEL_OPTIONS = [
-  { value: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, lowest cost" },
-  { value: "claude-sonnet-4-6", label: "Sonnet 4.6", hint: "balanced" },
-  { value: "claude-opus-4-6", label: "Opus 4.6", hint: "most capable" },
+  { value: "anthropic/claude-haiku-4.5", label: "Haiku 4.5", hint: "fastest, lowest cost" },
+  { value: "anthropic/claude-sonnet-4.6", label: "Sonnet 4.6", hint: "balanced" },
+  { value: "anthropic/claude-opus-4.7", label: "Opus 4.7", hint: "most capable" },
 ] as const;
 
+// Atlas previously stored model settings in the Anthropic-direct hyphen
+// format (`claude-opus-4-6`); the gateway accepts the slash+dot form
+// (`anthropic/claude-opus-4.6`). When we see a legacy hyphen value
+// stored in `ATLAS_MODEL`, map it to the canonical gateway ID so the
+// picker selects the right row and the agent loop sees a working ID.
+const LEGACY_MODEL_ALIASES: Record<string, string> = {
+  "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+  "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+  "claude-opus-4-6": "anthropic/claude-opus-4.7",
+};
+
+function canonicalizeModel(value: string): string {
+  return LEGACY_MODEL_ALIASES[value] ?? value;
+}
+
 function modelLabel(value: string): string {
-  return MODEL_OPTIONS.find((o) => o.value === value)?.label ?? value;
+  const canonical = canonicalizeModel(value);
+  return MODEL_OPTIONS.find((o) => o.value === canonical)?.label ?? canonical;
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -458,7 +479,11 @@ function ResourceValue({ count, max }: { count: number; max: number | null }) {
 // ── Model row (progressive disclosure) ────────────────────────────
 
 function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void }) {
-  const currentModel = data.currentModel ?? data.plan.defaultModel ?? "claude-sonnet-4-6";
+  // Canonicalize stored value through the legacy-hyphen alias map so an
+  // older `claude-sonnet-4-6` setting still highlights "Sonnet 4.6" in
+  // the dropdown and saves the new gateway-canonical ID on next change.
+  const storedModel = data.currentModel ?? data.plan.defaultModel ?? "anthropic/claude-sonnet-4.6";
+  const currentModel = canonicalizeModel(storedModel);
   const currentLabel = modelLabel(currentModel);
 
   const { mutate, saving, error, clearError } = useAdminMutation({

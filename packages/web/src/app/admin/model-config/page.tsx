@@ -109,6 +109,11 @@ const PLATFORM_MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5": "Haiku 4.5",
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-opus-4-6": "Opus 4.6",
+  "claude-opus-4-7": "Opus 4.7",
+  "anthropic/claude-haiku-4.5": "Haiku 4.5",
+  "anthropic/claude-sonnet-4.6": "Sonnet 4.6",
+  "anthropic/claude-opus-4.6": "Opus 4.6",
+  "anthropic/claude-opus-4.7": "Opus 4.7",
 };
 
 function platformModelLabel(value: string): string {
@@ -847,7 +852,7 @@ export default function ModelConfigPage() {
                                 <Input
                                   placeholder={
                                     currentProvider === "anthropic"
-                                      ? "claude-opus-4-6"
+                                      ? "claude-opus-4-7"
                                       : currentProvider === "openai"
                                         ? "gpt-4o"
                                         : "model-name"

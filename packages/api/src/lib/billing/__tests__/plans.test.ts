@@ -72,9 +72,9 @@ describe("billing/plans", () => {
       expect(getPlanDefinition("starter").pricePerSeat).toBe(29);
       expect(getPlanDefinition("pro").pricePerSeat).toBe(59);
       expect(getPlanDefinition("business").pricePerSeat).toBe(99);
-      expect(getPlanDefinition("starter").defaultModel).toBe("claude-haiku-4-5");
-      expect(getPlanDefinition("pro").defaultModel).toBe("claude-sonnet-4-6");
-      expect(getPlanDefinition("business").defaultModel).toBe("claude-sonnet-4-6");
+      expect(getPlanDefinition("starter").defaultModel).toBe("anthropic/claude-haiku-4.5");
+      expect(getPlanDefinition("pro").defaultModel).toBe("anthropic/claude-sonnet-4.6");
+      expect(getPlanDefinition("business").defaultModel).toBe("anthropic/claude-sonnet-4.6");
     });
 
     it("plan features are tier-appropriate", () => {

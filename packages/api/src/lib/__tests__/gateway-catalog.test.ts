@@ -37,8 +37,8 @@ describe("gateway-catalog", () => {
     globalThis.fetch = mockFetchOk({
       data: [
         {
-          id: "anthropic/claude-opus-4.6",
-          name: "Claude Opus 4.6",
+          id: "anthropic/claude-opus-4.7",
+          name: "Claude Opus 4.7",
           type: "language",
           context_window: 200_000,
           max_tokens: 32_000,
@@ -60,7 +60,7 @@ describe("gateway-catalog", () => {
     const res = await getGatewayCatalog();
     expect(res.fallback).toBe(false);
     expect(res.models).toHaveLength(2);
-    const claude = res.models.find((m) => m.id === "anthropic/claude-opus-4.6");
+    const claude = res.models.find((m) => m.id === "anthropic/claude-opus-4.7");
     expect(claude?.provider).toBe("anthropic");
     expect(claude?.contextWindow).toBe(200_000);
     expect(claude?.maxOutputTokens).toBe(32_000);

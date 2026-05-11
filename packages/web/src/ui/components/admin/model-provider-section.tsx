@@ -37,6 +37,7 @@ import {
   Shell,
 } from "@/ui/components/admin/compact";
 import {
+  AlertTriangle,
   KeyRound,
   Loader2,
   CheckCircle2,
@@ -113,14 +114,16 @@ const modelConfigSchema = z.object({
 
 export interface ModelProviderSectionProps {
   /**
-   * "page" renders the BYOT-required gate (with a link to billing) when BYOT
-   * is disabled. "billing" returns null in that state — the parent surface
-   * (billing's BYOT toggle row) already owns that affordance.
+   * Whether to render the "BYOT must be enabled on billing" gate row when
+   * the workspace plan has BYOT disabled. Defaults to `true` (standalone
+   * page mount). Set to `false` when the parent already owns that
+   * affordance — billing's BYOT toggle row is the gate there, so the
+   * inline mount suppresses this gate row to avoid double-prompting.
    */
-  mode: "page" | "billing";
+  showByotGate?: boolean;
 }
 
-export function ModelProviderSection({ mode }: ModelProviderSectionProps) {
+export function ModelProviderSection({ showByotGate = true }: ModelProviderSectionProps) {
   const [expanded, setExpanded] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState<TestModelConfigResponse | null>(null);
@@ -159,9 +162,10 @@ export function ModelProviderSection({ mode }: ModelProviderSectionProps) {
   // BYOT direct-provider catalogs — only fetched when the workspace has
   // a saved configuration on the matching provider with a healthy key.
   // Without these preconditions the endpoint would return 400
-  // `missing_byot_key` on every page load, surfacing as a noisy error
-  // banner. Gating with `enabled` keeps the request firmly
-  // tied to the picker's render gate.
+  // `missing_byot_key` every time this section mounts (on the dedicated
+  // page and inline on billing), surfacing as a noisy error banner.
+  // Gating with `enabled` keeps the request firmly tied to the picker's
+  // render gate.
   const existingConfigForGate = data?.config ?? null;
   const anthropicCatalogEnabled =
     existingConfigForGate?.provider === "anthropic" &&
@@ -256,6 +260,13 @@ export function ModelProviderSection({ mode }: ModelProviderSectionProps) {
   // changes — not on every background refetch. An unconditional reset would
   // clobber in-flight edits and dismiss mutation errors the user hasn't seen.
   //
+  // `apiKeyStatus` is in the key alongside `updatedAt` because it's derived
+  // at GET time from the decryptUrl outcome on the server — an encryption-key
+  // rotation can flip a workspace from `apiKeyStatus: "masked"` to
+  // `"decrypt_failed"` without writing to the row, so `updatedAt` alone
+  // wouldn't catch it and a stale `testResult: "passed"` could remain visible
+  // alongside a "decryption failed" DetailRow.
+  //
   // Deps intentionally exclude `form` and the `clear*Error` callbacks: the
   // `useForm` instance is stable across renders, and `useAdminMutation`
   // returns `clearError` as a stable `useCallback([])`. Including them would
@@ -264,7 +275,7 @@ export function ModelProviderSection({ mode }: ModelProviderSectionProps) {
   useEffect(() => {
     if (loading) return;
     const key = existingConfig
-      ? `${existingConfig.provider}|${existingConfig.model}|${existingConfig.updatedAt}`
+      ? `${existingConfig.provider}|${existingConfig.model}|${existingConfig.apiKeyStatus}|${existingConfig.updatedAt}`
       : "none";
     if (lastSyncedKey.current === key) return;
     lastSyncedKey.current = key;
@@ -564,10 +575,12 @@ export function ModelProviderSection({ mode }: ModelProviderSectionProps) {
         />
       )}
 
-      {/* BYOT disabled — only surface the gate UI on the dedicated page.
-          Billing already owns the toggle, so we render nothing there
-          when BYOT is off (parent's ByotRow is the affordance). */}
-      {byotRequired && mode === "page" && (
+      {/* BYOT disabled — surface the gate UI when the parent caller hasn't
+          opted out via `showByotGate={false}`. Billing passes `false` because
+          its toggle row already owns the affordance; the dedicated page (and
+          any other future embed that doesn't own a BYOT toggle) wants this
+          gate to make the path back to billing obvious. */}
+      {byotRequired && showByotGate && (
         <CompactRow
           icon={KeyRound}
           title="Bring your own provider"
@@ -584,19 +597,42 @@ export function ModelProviderSection({ mode }: ModelProviderSectionProps) {
         />
       )}
 
-      {/* BYOT permitted, no override, not yet expanded */}
+      {/* BYOT permitted, no override, not yet expanded.
+          The role="alert" warning preserves the explicit "chat keeps using
+          the platform default" signal that the deleted `ByotKeyStatus`
+          presenter used to surface on billing — without it, a user who flips
+          the BYOT toggle on and closes the page never learns that the toggle
+          alone doesn't redirect their traffic. This is the #2172 regression
+          class; keep the warning even if the "+ Add credentials" CompactRow
+          below it changes shape. */}
       {canOverride && !showEditor && (
-        <CompactRow
-          icon={KeyRound}
-          title="Bring your own provider"
-          description="Paste credentials to run this workspace against your own provider and model."
-          status="disconnected"
-          action={
-            <Button type="button" variant="outline" size="sm" onClick={() => setExpanded(true)}>
-              + Add credentials
-            </Button>
-          }
-        />
+        <>
+          <div
+            role="alert"
+            className="flex items-start gap-2.5 rounded-md border border-amber-500/40 bg-amber-50/60 px-4 py-3 dark:bg-amber-950/20"
+          >
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+                BYOT enabled, but no API key configured yet
+              </p>
+              <p className="text-xs text-amber-800/80 dark:text-amber-300/80">
+                Until a key is saved, chat keeps using the platform default.
+              </p>
+            </div>
+          </div>
+          <CompactRow
+            icon={KeyRound}
+            title="Bring your own provider"
+            description="Paste credentials to run this workspace against your own provider and model."
+            status="disconnected"
+            action={
+              <Button type="button" variant="outline" size="sm" onClick={() => setExpanded(true)}>
+                + Add credentials
+              </Button>
+            }
+          />
+        </>
       )}
 
       {/* BYOT permitted + editor visible (either has override or user expanded) */}

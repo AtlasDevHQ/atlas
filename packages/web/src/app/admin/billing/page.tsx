@@ -604,8 +604,15 @@ function ByotRow({
           the toggle — toggling on no longer hands the user off to a
           separate /admin/model-config page. The dedicated page still
           exists (sidebar destination, deep link) and mounts the same
-          component. */}
-      {data.plan.byot && <ModelProviderSection mode="billing" />}
+          component.
+          Parent-gated on `data.plan.byot` so the inline section never has
+          to render its own "Enable BYOT" gate row — `showByotGate={false}`
+          tells the section it can skip that affordance because this row's
+          toggle (above) is the affordance. Don't drop either half of this
+          contract: removing the `data.plan.byot &&` guard would surface
+          the form to users who haven't enabled BYOT; removing
+          `showByotGate={false}` would double-prompt them. */}
+      {data.plan.byot && <ModelProviderSection showByotGate={false} />}
       <p className="text-[11px] text-muted-foreground">
         <a
           href="https://docs.useatlas.dev/guides/billing-and-plans#byot-bring-your-own-token"

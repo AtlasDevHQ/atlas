@@ -4,16 +4,19 @@ import Link from "next/link";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { Button } from "@/components/ui/button";
 import {
   CompactRow,
   SectionHeading,
 } from "@/ui/components/admin/compact";
-import { Cpu, Lock } from "lucide-react";
+import { Cpu, Lock, XCircle } from "lucide-react";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
 
 // Partial by design — unknown model IDs fall back to the raw string so that
-// a new platform model ships without a UI change. Keep in sync with billing's
-// `MODEL_OPTIONS` only for the models you want humanized here.
+// a new platform model ships without a UI change. Keep in sync with
+// `MODEL_OPTIONS` in `packages/web/src/app/admin/billing/page.tsx` only for
+// the models you want humanized here. New entries should be added in both
+// places at the same time.
 const PLATFORM_MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5": "Haiku 4.5",
   "claude-sonnet-4-6": "Sonnet 4.6",
@@ -30,10 +33,16 @@ function platformModelLabel(value: string): string {
 }
 
 export default function ModelConfigPage() {
-  const { data: billing, error: billingError } = useAdminFetch("/api/v1/billing", {
-    schema: BillingStatusSchema,
-  });
+  const { data: billing, error: billingError, refetch: refetchBilling } = useAdminFetch(
+    "/api/v1/billing",
+    { schema: BillingStatusSchema },
+  );
   const billingMissing = billingError?.status === 404;
+  // Distinguish a real upstream failure from the self-hosted no-billing case
+  // so the platform-baseline row doesn't render a default-string fallback as
+  // if billing had returned successfully — that would hide a 500/network
+  // failure behind "Platform default" copy.
+  const billingFailed = !!billingError && !billingMissing;
   const platformModel = billing?.currentModel ?? billing?.plan.defaultModel ?? null;
 
   return (
@@ -55,34 +64,51 @@ export default function ModelConfigPage() {
               title="Platform baseline"
               description="Shared Atlas default. Used when this workspace has no override."
             />
-            <CompactRow
-              icon={Cpu}
-              title={platformModel ? platformModelLabel(platformModel) : "Platform default"}
-              description={
-                billingMissing
-                  ? "Managed via ATLAS_PROVIDER and ATLAS_MODEL settings."
-                  : platformModel
-                    ? `Every chat routes through ${platformModel} unless this workspace overrides it.`
-                    : "Every chat routes through the platform default unless this workspace overrides it."
-              }
-              status="disconnected"
-              action={
-                billingMissing ? (
-                  <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                    <Lock className="size-3" />
-                    Locked
-                  </span>
-                ) : (
-                  <Link
-                    href="/admin/billing"
-                    className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground"
-                  >
-                    <Lock className="size-3" />
-                    Managed on billing
-                  </Link>
-                )
-              }
-            />
+            {billingFailed ? (
+              <CompactRow
+                icon={XCircle}
+                title="Can't load platform baseline"
+                description={
+                  billingError?.message ??
+                  "Billing is temporarily unreachable. Retry, or try again shortly."
+                }
+                status="unavailable"
+                action={
+                  <Button type="button" size="sm" variant="outline" onClick={() => refetchBilling()}>
+                    Retry
+                  </Button>
+                }
+              />
+            ) : (
+              <CompactRow
+                icon={Cpu}
+                title={platformModel ? platformModelLabel(platformModel) : "Platform default"}
+                description={
+                  billingMissing
+                    ? "Managed via ATLAS_PROVIDER and ATLAS_MODEL settings."
+                    : platformModel
+                      ? `Every chat routes through ${platformModel} unless this workspace overrides it.`
+                      : "Every chat routes through the platform default unless this workspace overrides it."
+                }
+                status="disconnected"
+                action={
+                  billingMissing ? (
+                    <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                      <Lock className="size-3" />
+                      Locked
+                    </span>
+                  ) : (
+                    <Link
+                      href="/admin/billing"
+                      className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground"
+                    >
+                      <Lock className="size-3" />
+                      Managed on billing
+                    </Link>
+                  )
+                }
+              />
+            )}
           </section>
 
           <section>
@@ -90,7 +116,7 @@ export default function ModelConfigPage() {
               title="Workspace override"
               description="Your provider credentials. Applies to this workspace only."
             />
-            <ModelProviderSection mode="page" />
+            <ModelProviderSection />
           </section>
         </div>
       </ErrorBoundary>

@@ -64,7 +64,7 @@ const SetModelConfigBodySchema = z.object({
     example: "anthropic",
   }),
   model: z.string().min(1).openapi({
-    description: "Model identifier (e.g. claude-opus-4-6, gpt-4o, anthropic/claude-opus-4.6 for gateway, anthropic.claude-opus-4-v1:0 for bedrock).",
+    description: "Model identifier (e.g. claude-opus-4-7, gpt-4o, anthropic/claude-opus-4.7 for gateway, anthropic.claude-opus-4-7 for bedrock).",
     example: "claude-opus-4-6",
   }),
   apiKey: z.string().min(1).optional().openapi({

@@ -13,6 +13,12 @@
  */
 
 import type { GatewayCatalogModel } from "@useatlas/types";
+import {
+  deleteFromDB,
+  isFresh,
+  loadFromDB,
+  storeToDB,
+} from "./byot-catalog-store";
 import { createLogger } from "./logger";
 
 const log = createLogger("openai-catalog");
@@ -226,9 +232,17 @@ export async function getOpenAICatalog(
   opts: { refresh?: boolean } = {},
 ): Promise<OpenAICatalogResponse> {
   if (!opts.refresh) {
+    // L1: in-memory.
     const hit = cache.get(orgId);
     if (hit && hit.expiresAt > Date.now()) {
       return { models: hit.models, fetchedAt: hit.fetchedAt, source: "cache" };
+    }
+    // L2: DB-backed cache (#2274).
+    const fromDb = await loadFromDB(orgId, "openai");
+    if (fromDb && isFresh(fromDb, ttlMs())) {
+      const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
+      cache.set(orgId, { models: fromDb.models, fetchedAt: fromDb.fetchedAt, expiresAt });
+      return { models: fromDb.models, fetchedAt: fromDb.fetchedAt, source: "cache" };
     }
   }
 
@@ -243,6 +257,10 @@ export async function getOpenAICatalog(
         expiresAt: now + ttlMs(),
       };
       cache.set(orgId, entry);
+      await storeToDB(orgId, "openai", "", {
+        models: entry.models,
+        fetchedAt: entry.fetchedAt,
+      });
       return entry;
     })().finally(() => {
       inflight.delete(orgId);
@@ -254,11 +272,12 @@ export async function getOpenAICatalog(
 }
 
 /**
- * Drop the cached catalog for an org. Called from
+ * Drop the cached catalog for an org (L1 + L2). Called from
  * `setWorkspaceModelConfig` on a successful openai upsert.
  */
 export function invalidateOpenAICatalog(orgId: string): void {
   cache.delete(orgId);
+  void deleteFromDB(orgId, "openai");
 }
 
 /** Test-only: clear all cached entries. */

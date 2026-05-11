@@ -20,6 +20,12 @@
  */
 
 import type { GatewayCatalogModel } from "@useatlas/types";
+import {
+  deleteFromDB,
+  isFresh,
+  loadFromDB,
+  storeToDB,
+} from "./byot-catalog-store";
 import { createLogger } from "./logger";
 
 const log = createLogger("anthropic-catalog");
@@ -199,9 +205,17 @@ export async function getAnthropicCatalog(
   opts: { refresh?: boolean } = {},
 ): Promise<AnthropicCatalogResponse> {
   if (!opts.refresh) {
+    // L1: in-memory cache (per-pod, also the inflight-dedup substrate).
     const hit = cache.get(orgId);
     if (hit && hit.expiresAt > Date.now()) {
       return { models: hit.models, fetchedAt: hit.fetchedAt, source: "cache" };
+    }
+    // L2: DB-backed cache (#2274). Used on cold start + cross-pod hits.
+    const fromDb = await loadFromDB(orgId, "anthropic");
+    if (fromDb && isFresh(fromDb, ttlMs())) {
+      const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
+      cache.set(orgId, { models: fromDb.models, fetchedAt: fromDb.fetchedAt, expiresAt });
+      return { models: fromDb.models, fetchedAt: fromDb.fetchedAt, source: "cache" };
     }
   }
 
@@ -216,6 +230,11 @@ export async function getAnthropicCatalog(
         expiresAt: now + ttlMs(),
       };
       cache.set(orgId, entry);
+      // Best-effort L2 write — failure is logged inside `storeToDB`.
+      await storeToDB(orgId, "anthropic", "", {
+        models: entry.models,
+        fetchedAt: entry.fetchedAt,
+      });
       return entry;
     })().finally(() => {
       inflight.delete(orgId);
@@ -229,10 +248,13 @@ export async function getAnthropicCatalog(
 /**
  * Drop the cached catalog for an org. Called from
  * `setWorkspaceModelConfig` after a successful upsert so a key rotation
- * doesn't serve a stale catalog from before the rotation.
+ * doesn't serve a stale catalog from before the rotation. Flushes both
+ * L1 (in-memory) and L2 (DB) layers — the L2 delete is fire-and-forget
+ * so callers in synchronous Effect paths don't have to await it.
  */
 export function invalidateAnthropicCatalog(orgId: string): void {
   cache.delete(orgId);
+  void deleteFromDB(orgId, "anthropic");
 }
 
 /** Test-only: clear all cached entries. */

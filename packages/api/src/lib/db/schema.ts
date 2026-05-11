@@ -844,6 +844,41 @@ export const workspaceModelConfig = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// BYOT model catalog cache (#2274) — L2 to per-pod in-memory caches.
+//
+// Operational cache, not user-surfaced content — intentionally bypasses
+// the mode system. The `gateway` provider is excluded because that
+// catalog is anonymous + globally cached server-side.
+// ---------------------------------------------------------------------------
+
+export const workspaceModelCatalog = pgTable(
+  "workspace_model_catalog",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id").notNull(),
+    provider: text("provider").notNull(),
+    region: text("region").notNull().default(""),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_workspace_model_catalog_provider",
+      sql`provider IN ('anthropic', 'openai', 'bedrock')`,
+    ),
+    uniqueIndex("uq_workspace_model_catalog_org_provider_region").on(
+      t.orgId,
+      t.provider,
+      t.region,
+    ),
+    index("idx_workspace_model_catalog_org_provider").on(t.orgId, t.provider),
+    index("idx_workspace_model_catalog_fetched_at").on(t.fetchedAt),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Approval workflows
 // ---------------------------------------------------------------------------
 

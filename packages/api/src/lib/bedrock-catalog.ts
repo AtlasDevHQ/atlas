@@ -26,6 +26,12 @@ import {
 } from "@aws-sdk/client-bedrock";
 import type { GatewayCatalogModel } from "@useatlas/types";
 import type { BedrockRegion } from "@useatlas/types";
+import {
+  deleteFromDB,
+  isFresh,
+  loadFromDB,
+  storeToDB,
+} from "./byot-catalog-store";
 import { createLogger } from "./logger";
 
 const log = createLogger("bedrock-catalog");
@@ -236,6 +242,7 @@ export async function getBedrockCatalog(
 ): Promise<BedrockCatalogResponse> {
   const key = cacheKey(orgId, region);
   if (!opts.refresh) {
+    // L1: in-memory cache keyed per (orgId, region).
     const hit = cache.get(key);
     if (hit && hit.expiresAt > Date.now()) {
       return {
@@ -243,6 +250,23 @@ export async function getBedrockCatalog(
         fetchedAt: hit.fetchedAt,
         source: "cache",
         region: hit.region,
+      };
+    }
+    // L2: DB-backed cache (#2274). Region is part of the row key.
+    const fromDb = await loadFromDB(orgId, "bedrock", region);
+    if (fromDb && isFresh(fromDb, ttlMs())) {
+      const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
+      cache.set(key, {
+        models: fromDb.models,
+        fetchedAt: fromDb.fetchedAt,
+        expiresAt,
+        region,
+      });
+      return {
+        models: fromDb.models,
+        fetchedAt: fromDb.fetchedAt,
+        source: "cache",
+        region,
       };
     }
   }
@@ -259,6 +283,10 @@ export async function getBedrockCatalog(
         region,
       };
       cache.set(key, entry);
+      await storeToDB(orgId, "bedrock", region, {
+        models: entry.models,
+        fetchedAt: entry.fetchedAt,
+      });
       return entry;
     })().finally(() => {
       inflight.delete(key);
@@ -284,6 +312,8 @@ export function invalidateBedrockCatalog(orgId: string): void {
   for (const key of cache.keys()) {
     if (key.startsWith(`${orgId}:`)) cache.delete(key);
   }
+  // L2: deleting by (orgId, provider) flushes every region in one shot.
+  void deleteFromDB(orgId, "bedrock");
 }
 
 /** Test-only: clear the entire cache. */

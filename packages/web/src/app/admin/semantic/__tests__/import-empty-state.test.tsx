@@ -1,11 +1,14 @@
 /**
- * Regression guard for #2168: the Import-from-disk affordance must only
- * surface when the workspace has zero entities.
+ * The Import-from-disk affordance must only render when the workspace has
+ * zero entities. Otherwise it sits next to a fully populated tree and reads
+ * as "data is missing — recover here", which confuses users on a clean Demo.
  *
- * Once Demo populates the entity list, the toolbar button and the inline
- * empty-state both imply data is missing and confuse users. This test pins
- * both surfaces to `entities.length === 0` so a future toolbar refactor that
- * loosens the gate can't quietly reintroduce the prominent button.
+ * Pins three invariants:
+ *   1. populated → toolbar button AND empty-state both gone
+ *   2. empty + non-dev → toolbar button AND empty-state both present,
+ *      and the empty-state link drives the same mutation as the toolbar
+ *   3. empty + dev-mode-no-drafts → DeveloperEmptyState wins (routes the
+ *      admin to /admin/connections), the new SaaS empty-state must NOT render
  */
 
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
@@ -13,6 +16,20 @@ import { render, cleanup, waitFor, act, fireEvent } from "@testing-library/react
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
+
+// Controls `useDevModeNoDrafts` per test. The dev-mode branch in page.tsx
+// must take precedence over the new SaaS empty state — flipped here so the
+// precedence test can exercise the dev-mode branch without rewriting mocks.
+let devNoDraftsValue = false;
+
+// Shared spy used by `useAdminMutation` — every consumer (`mutateSave`,
+// `mutateDelete`, `mutateImport`) sees the same `mutate` fn, so a click on
+// the Sync link is verifiable via call count without entangling other paths
+// that aren't clicked in this suite.
+const mockMutate = mock(async () => ({
+  ok: true as const,
+  data: { imported: 0, skipped: 0, total: 0 },
+}));
 
 mock.module("next/navigation", () => ({
   usePathname: () => "/admin/semantic",
@@ -38,12 +55,12 @@ mock.module("@/ui/hooks/use-demo-readonly", () => ({
 }));
 
 mock.module("@/ui/hooks/use-dev-mode-no-drafts", () => ({
-  useDevModeNoDrafts: () => false,
+  useDevModeNoDrafts: () => devNoDraftsValue,
 }));
 
 mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
-    mutate: mock(async () => ({ ok: true, data: { imported: 0, skipped: 0, total: 0 } })),
+    mutate: mockMutate,
     saving: false,
     error: null,
     clearError: () => {},
@@ -52,7 +69,7 @@ mock.module("@/ui/hooks/use-admin-mutation", () => ({
 }));
 
 // Minimal stand-ins for nested admin surfaces — the page mounts them
-// regardless of the empty/populated branch, but they're not under test here.
+// regardless of branch, but they're not under test here.
 mock.module("@/ui/components/admin/semantic-health-widget", () => ({
   SemanticHealthWidget: () => null,
 }));
@@ -117,9 +134,11 @@ function findButtonByText(text: string): HTMLElement | null {
   );
 }
 
-describe("/admin/semantic — Import-from-disk gating (#2168)", () => {
+describe("/admin/semantic — Import-from-disk gating", () => {
   beforeEach(() => {
     globalThis.fetch = originalFetch;
+    devNoDraftsValue = false;
+    mockMutate.mockClear();
   });
 
   afterEach(() => {
@@ -138,8 +157,6 @@ describe("/admin/semantic — Import-from-disk gating (#2168)", () => {
     });
 
     await waitFor(() => {
-      // Page must reach the populated branch — file tree is the cheap signal
-      // that the fetch resolved and entities are non-empty.
       expect(document.querySelector('[data-testid="semantic-file-tree"]')).not.toBeNull();
     });
 
@@ -162,28 +179,12 @@ describe("/admin/semantic — Import-from-disk gating (#2168)", () => {
       ).not.toBeNull();
     });
 
-    // Prominent toolbar CTA remains discoverable when entities are missing.
     expect(findButtonByText("Import from disk")).not.toBeNull();
-    // Inline empty-state link mirrors the action for contextual recovery.
     expect(findButtonByText("Sync from disk")).not.toBeNull();
   });
 
-  test("empty-state Sync link triggers the same import mutation as the toolbar", async () => {
-    // Both surfaces must route through the same handler. If a future refactor
-    // wires the link to a different endpoint or no-ops, this catches it.
-    const calls: string[] = [];
-    globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = init?.method ?? "GET";
-      if (method === "POST" && url.includes("/api/v1/admin/semantic/org/import")) {
-        calls.push(url);
-        return Promise.resolve(jsonResponse({ imported: 0, skipped: 0, total: 0 }));
-      }
-      if (url.includes("/api/v1/admin/semantic")) {
-        return Promise.resolve(jsonResponse({ entities: [], glossary: [], metrics: [], catalog: null }));
-      }
-      return Promise.resolve(jsonResponse({}));
-    }) as unknown as typeof fetch;
+  test("empty-state Sync link drives the same import mutation as the toolbar", async () => {
+    mockSemanticApi([]);
 
     await act(async () => {
       render(createElement(SemanticPage), { wrapper });
@@ -195,13 +196,44 @@ describe("/admin/semantic — Import-from-disk gating (#2168)", () => {
       return b;
     });
 
+    const callsBefore = mockMutate.mock.calls.length;
     await act(async () => {
       fireEvent.click(syncBtn);
     });
 
-    // The hook is fully mocked in this suite, so we don't verify the POST
-    // fired — we verify the click handler is wired to a function (not a
-    // no-op `undefined` onClick that React silently accepts).
-    expect(syncBtn.onclick).not.toBeNull();
+    // A real spy call — not just a non-null `onclick`, which React doesn't
+    // populate on the DOM node under synthetic event delegation. A regression
+    // that wires the link to a no-op handler would leave the count flat.
+    expect(mockMutate.mock.calls.length).toBe(callsBefore + 1);
+  });
+
+  test("dev-mode-no-drafts empty state takes precedence over the SaaS empty state", async () => {
+    // Both `showDevNoDrafts && entities.length === 0` and `isSaas && entities.length === 0`
+    // can be true at once. The dev-mode branch sits first in the ternary because
+    // an admin with no drafts AND no published entities needs a connection first —
+    // a disk sync against an empty org dir is wasted motion. If the conditional
+    // ladder gets reordered, this case exposes the swap.
+    devNoDraftsValue = true;
+    mockSemanticApi([]);
+
+    await act(async () => {
+      render(createElement(SemanticPage), { wrapper });
+    });
+
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-testid="developer-empty-state"]'),
+      ).not.toBeNull();
+    });
+
+    expect(
+      document.querySelector('[data-testid="semantic-empty-state"]'),
+    ).toBeNull();
+    // `DeveloperEmptyState` renders its CTA as `<Button asChild><Link/></Button>`,
+    // so the anchor — not a `<button>` — carries the label.
+    const goLink = Array.from(document.querySelectorAll("a")).find((a) =>
+      a.textContent?.includes("Go to connections"),
+    );
+    expect(goLink).toBeDefined();
   });
 });

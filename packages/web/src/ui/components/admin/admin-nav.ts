@@ -54,7 +54,6 @@ export const navGroups: NavGroup[] = [
     icon: Users,
     items: [
       { href: "/admin/users", label: "Users" },
-      { href: "/admin/organizations", label: "Organizations", requiredRole: "platform_admin" },
       { href: "/admin/roles", label: "Roles" },
       { href: "/admin/sessions", label: "Sessions" },
       { href: "/admin/api-keys", label: "API Keys" },
@@ -69,7 +68,6 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/sso", label: "SSO" },
       { href: "/admin/scim", label: "SCIM" },
       { href: "/admin/ip-allowlist", label: "IP Allowlist" },
-      { href: "/admin/abuse", label: "Abuse Prevention", requiredRole: "platform_admin" },
       { href: "/admin/approval", label: "Approval Workflows" },
       { href: "/admin/compliance", label: "PII Compliance" },
     ],
@@ -107,8 +105,10 @@ export const navGroups: NavGroup[] = [
     requiredRole: "platform_admin",
     items: [
       { href: "/admin/platform", label: "Overview", exact: true },
+      { href: "/admin/organizations", label: "Organizations" },
       { href: "/admin/platform/actions", label: "Action Log" },
       { href: "/admin/platform/security", label: "Security Adoption" },
+      { href: "/admin/abuse", label: "Abuse Prevention" },
       { href: "/admin/platform/sla", label: "SLA Monitoring" },
       { href: "/admin/platform/backups", label: "Backups" },
       { href: "/admin/platform/residency", label: "Data Residency" },

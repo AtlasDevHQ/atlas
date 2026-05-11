@@ -2,6 +2,7 @@
 
 import { Fragment } from "react";
 import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -291,12 +292,15 @@ export function AbuseDetailPanel({
   });
 
   async function handleReinstate() {
-    // Errors surface via `reinstate.error` in the banner below. On success the
-    // parent's `onReinstated` refetch drops this workspace from the list and
-    // unmounts the panel.
-    await reinstate.mutate({
+    const workspaceLabel = data?.workspaceName ?? workspaceId;
+    const result = await reinstate.mutate({
       path: `/api/v1/admin/abuse/${encodeURIComponent(workspaceId)}/reinstate`,
     });
+    if (result.ok) {
+      toast.success(`Reinstated ${workspaceLabel}`);
+    } else {
+      toast.error(`Reinstate failed: ${friendlyError(result.error)}`);
+    }
   }
 
   if (loading && !data) {
@@ -367,15 +371,6 @@ export function AbuseDetailPanel({
       <div className="lg:col-span-2">
         <PriorInstancesSection instances={data.priorInstances} />
       </div>
-
-      {reinstate.error && (
-        <div
-          role="alert"
-          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive lg:col-span-2"
-        >
-          {friendlyError(reinstate.error)}
-        </div>
-      )}
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 lg:col-span-2">
         <p className="text-xs text-muted-foreground">

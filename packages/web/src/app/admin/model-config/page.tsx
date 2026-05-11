@@ -133,14 +133,18 @@ export default function ModelConfigPage() {
     { schema: GatewayCatalogResponseSchema },
   );
 
-  // Anthropic BYOT catalog (#2271) — only fetched when the workspace has a
-  // saved Anthropic configuration with a healthy key. Without these
-  // preconditions the endpoint would return 400 `missing_byot_key` on every
-  // page load, which would surface as a noisy error banner. Gating with
-  // `enabled` keeps the request firmly tied to the picker's render gate.
+  // BYOT direct-provider catalogs (#2271 anthropic, #2272 openai) — only
+  // fetched when the workspace has a saved configuration on the matching
+  // provider with a healthy key. Without these preconditions the endpoint
+  // would return 400 `missing_byot_key` on every page load, surfacing as
+  // a noisy error banner. Gating with `enabled` keeps the request firmly
+  // tied to the picker's render gate.
   const existingConfigForGate = data?.config ?? null;
   const anthropicCatalogEnabled =
     existingConfigForGate?.provider === "anthropic" &&
+    existingConfigForGate.apiKeyStatus === "masked";
+  const openaiCatalogEnabled =
+    existingConfigForGate?.provider === "openai" &&
     existingConfigForGate.apiKeyStatus === "masked";
   const {
     data: anthropicCatalog,
@@ -151,6 +155,17 @@ export default function ModelConfigPage() {
     {
       schema: GatewayCatalogResponseSchema,
       enabled: anthropicCatalogEnabled,
+    },
+  );
+  const {
+    data: openaiCatalog,
+    loading: openaiCatalogLoading,
+    refetch: refetchOpenaiCatalog,
+  } = useAdminFetch(
+    "/api/v1/admin/model-config/catalog?provider=openai",
+    {
+      schema: GatewayCatalogResponseSchema,
+      enabled: openaiCatalogEnabled,
     },
   );
 
@@ -311,12 +326,17 @@ export default function ModelConfigPage() {
 
   const currentProvider = form.watch("provider");
   const isGateway = currentProvider === "gateway";
-  // Anthropic picker requires the saved config to also be anthropic — we use
-  // the workspace's stored BYOT key for the discovery call. Switching the
-  // form to anthropic without saving falls back to the free-text input.
+  // BYOT picker requires the saved config to match the current form
+  // provider — we use the workspace's stored BYOT key for the discovery
+  // call. Switching the form to a provider without saving falls back to
+  // the free-text input.
   const showAnthropicPicker =
     currentProvider === "anthropic" &&
     existingConfig?.provider === "anthropic" &&
+    existingConfig?.apiKeyStatus === "masked";
+  const showOpenaiPicker =
+    currentProvider === "openai" &&
+    existingConfig?.provider === "openai" &&
     existingConfig?.apiKeyStatus === "masked";
   const saveDisabled =
     saving ||
@@ -611,6 +631,14 @@ export default function ModelConfigPage() {
                                   loading={anthropicCatalogLoading}
                                   onRetry={refetchAnthropicCatalog}
                                 />
+                              ) : showOpenaiPicker ? (
+                                <GatewayModelPicker
+                                  models={openaiCatalog?.models ?? []}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  loading={openaiCatalogLoading}
+                                  onRetry={refetchOpenaiCatalog}
+                                />
                               ) : (
                                 <Input
                                   placeholder={
@@ -632,9 +660,21 @@ export default function ModelConfigPage() {
                                 refreshing={anthropicCatalogLoading}
                               />
                             )}
+                            {showOpenaiPicker && openaiCatalog && (
+                              <CatalogFreshness
+                                fetchedAt={openaiCatalog.fetchedAt}
+                                onRefresh={refetchOpenaiCatalog}
+                                refreshing={openaiCatalogLoading}
+                              />
+                            )}
                             {currentProvider === "anthropic" && !showAnthropicPicker && (
                               <FormDescription>
                                 Save your Anthropic API key first to pick from the live model catalog.
+                              </FormDescription>
+                            )}
+                            {currentProvider === "openai" && !showOpenaiPicker && (
+                              <FormDescription>
+                                Save your OpenAI API key first to pick from the live model catalog.
                               </FormDescription>
                             )}
                             <FormMessage />

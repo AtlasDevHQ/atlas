@@ -189,6 +189,62 @@ mock.module("@atlas/api/lib/anthropic-catalog", () => ({
   AnthropicCatalogUnavailable: MockAnthropicCatalogUnavailable,
 }));
 
+// --- OpenAI catalog mocks (mirror Anthropic — same threat model + envelope). ---
+class MockOpenAICatalogUnauthorized extends Error {
+  readonly _tag = "OpenAICatalogUnauthorized" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenAICatalogUnauthorized";
+  }
+}
+class MockOpenAICatalogRateLimited extends Error {
+  readonly _tag = "OpenAICatalogRateLimited" as const;
+  readonly retryAfterSeconds: number | null;
+  constructor(message: string, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "OpenAICatalogRateLimited";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+class MockOpenAICatalogUnavailable extends Error {
+  readonly _tag = "OpenAICatalogUnavailable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenAICatalogUnavailable";
+  }
+}
+
+const mockGetOpenAICatalog: Mock<(...args: unknown[]) => unknown> = mock(
+  async () => ({
+    models: [
+      {
+        id: "gpt-4o",
+        name: "gpt-4o",
+        provider: "openai",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }),
+);
+const mockInvalidateOpenAICatalog: Mock<(orgId: string) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/openai-catalog", () => ({
+  getOpenAICatalog: mockGetOpenAICatalog,
+  invalidateOpenAICatalog: mockInvalidateOpenAICatalog,
+  OpenAICatalogUnauthorized: MockOpenAICatalogUnauthorized,
+  OpenAICatalogRateLimited: MockOpenAICatalogRateLimited,
+  OpenAICatalogUnavailable: MockOpenAICatalogUnavailable,
+}));
+
 // --- Import the app AFTER all mocks ---
 const { app } = await import("../index");
 
@@ -231,6 +287,25 @@ beforeEach(() => {
         id: "claude-opus-4-6",
         name: "Claude Opus 4.6",
         provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }));
+  mockGetOpenAICatalog.mockClear();
+  mockInvalidateOpenAICatalog.mockClear();
+  mockGetOpenAICatalog.mockImplementation(async () => ({
+    models: [
+      {
+        id: "gpt-4o",
+        name: "gpt-4o",
+        provider: "openai",
         type: "language",
         contextWindow: null,
         maxOutputTokens: null,
@@ -827,5 +902,147 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
     }
     expect(mockGetWorkspaceModelConfigRaw).not.toHaveBeenCalled();
     expect(mockGetAnthropicCatalog).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/model-config/catalog?provider=openai (#2272)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
+  it("returns the workspace's openai catalog using the stored BYOT key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: { id: string; provider: string }[];
+      fallback: boolean;
+    };
+    expect(body.models[0].id).toBe("gpt-4o");
+    expect(body.models[0].provider).toBe("openai");
+    expect(body.fallback).toBe(false);
+    expect(mockGetOpenAICatalog).toHaveBeenCalledTimes(1);
+    const args = mockGetOpenAICatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[1]).toBe("sk-oai-stored");
+    expect(args[2]).toEqual({ refresh: false });
+  });
+
+  it("returns 400 missing_byot_key when saved provider is not openai", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("missing_byot_key");
+    expect(body.message).toMatch(/openai/i);
+  });
+
+  it("returns 401 byot_key_invalid when OpenAI rejects the key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-rotten",
+        baseUrl: null,
+      }),
+    );
+    mockGetOpenAICatalog.mockImplementation(() => {
+      throw new MockOpenAICatalogUnauthorized("rejected by openai");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_key_invalid");
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({ provider: "openai", error: "byot_key_invalid" });
+    // apiKey must never appear in audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("sk-oai-rotten");
+  });
+
+  it("returns 429 with Retry-After when OpenAI rate-limits the workspace", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetOpenAICatalog.mockImplementation(() => {
+      throw new MockOpenAICatalogRateLimited("slow down", 90);
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("90");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_rate_limited");
+  });
+
+  it("returns 503 byot_provider_unavailable on upstream outage", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetOpenAICatalog.mockImplementation(() => {
+      throw new MockOpenAICatalogUnavailable("openai returned 503");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_unavailable");
+  });
+
+  it("emits model_config.catalog_refresh with provider:'openai' on success", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(200);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("model_config.catalog_refresh");
+    expect(entry.metadata).toEqual({
+      provider: "openai",
+      modelCount: 1,
+      source: "fresh",
+    });
+    expect(JSON.stringify(entry)).not.toContain("sk-oai-stored");
   });
 });

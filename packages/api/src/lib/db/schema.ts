@@ -813,7 +813,7 @@ export const workspaceModelConfig = pgTable(
     model: text("model").notNull(),
     // Nullable for provider='gateway' on platform credits (no BYOT key).
     // For provider='bedrock' this holds an encrypted JSON blob shaped as
-    // `{ accessKeyId, secretAccessKey, sessionToken? }` — see #2273.
+    // `{ accessKeyId, secretAccessKey, sessionToken? }`.
     apiKeyEncrypted: text("api_key_encrypted"),
     // F-47 key version. When `api_key_encrypted` is NULL the version is unused —
     // `decryptUrl` is never called against a null column.
@@ -823,7 +823,7 @@ export const workspaceModelConfig = pgTable(
     // provider (enforced by chk_model_provider_region); NULL for every
     // other provider.
     bedrockRegion: text("bedrock_region"),
-    // #2275 deprecation tracking. Flipped to 'deprecated' after a BYOT
+    // Deprecation tracking. Flipped to 'deprecated' after a BYOT
     // catalog refresh discovers the saved model is no longer surfaced
     // upstream. Reset to 'healthy' on every successful save.
     modelStatus: text("model_status").notNull().default("healthy"),
@@ -853,7 +853,7 @@ export const workspaceModelConfig = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// BYOT model catalog cache (#2274) — L2 to per-pod in-memory caches.
+// BYOT model catalog cache — L2 to per-pod in-memory caches.
 //
 // Operational cache, not user-surfaced content — intentionally bypasses
 // the mode system. The `gateway` provider is excluded because that

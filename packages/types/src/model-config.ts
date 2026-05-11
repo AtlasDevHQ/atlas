@@ -8,7 +8,7 @@
  * omit it to ride on the platform's gateway credentials (SaaS only), or
  * supply one to BYOT against your own gateway billing project.
  *
- * `bedrock` (#2273) takes IAM creds stored as a JSON blob in
+ * `bedrock` takes IAM creds stored as a JSON blob in
  * `api_key_encrypted` and a separate `bedrock_region` column. The
  * catalog is region-specific.
  */
@@ -103,8 +103,8 @@ export type ApiKeyStatus = "masked" | "platform_credits" | "decrypt_failed";
 
 /**
  * Tracks whether the saved `model` is still present in the upstream
- * provider's catalog. Updated server-side after a discovery refresh
- * (#2275): a missing model flips to `deprecated` + populates
+ * provider's catalog. Updated server-side after a discovery refresh:
+ * a missing model flips to `deprecated` + populates
  * `modelSuggestedReplacement`. The admin UI surfaces a warning row
  * with "Apply suggestion" / "Keep current" actions. Resetting the
  * model via `setWorkspaceModelConfig` flips status back to `healthy`.
@@ -136,18 +136,65 @@ export interface WorkspaceModelConfig {
   /**
    * Health of the saved `model` against the most recent provider catalog
    * refresh. `deprecated` when the upstream catalog no longer surfaces
-   * the saved ID (#2275). The admin UI surfaces a warning row.
+   * the saved ID. The admin UI surfaces a warning row.
    */
   modelStatus: ModelStatus;
   /**
    * Atlas's best-effort closest-match for the deprecated model, sourced
    * from the most recent provider catalog at refresh time. `null` when
-   * no close match was found (admin must pick manually) or when the
-   * status is `healthy`.
+   * `modelStatus === "healthy"` (enforced by the Zod refine + DB write
+   * gating), or when the suggestion algorithm couldn't find a confident
+   * match. Use the `isDeprecatedConfig` guard below to access this
+   * without a manual null check.
    */
   modelSuggestedReplacement: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// ── Narrowed views ──────────────────────────────────────────────────
+//
+// The Zod schema keeps the wire shape flat so consumers that just
+// stringify the row don't need to discriminate. These narrowed aliases
+// + type guards give code paths that DO care about the invariant a
+// compile-time-enforced view. Keeping `WorkspaceModelConfig` flat
+// preserves the `satisfies z.ZodType<WorkspaceModelConfig, unknown>`
+// check in `@useatlas/schemas` — a true discriminated union there
+// would need a `z.discriminatedUnion` rewrite, which is out of scope.
+
+/** Narrowed view: `bedrockRegion` is non-null. */
+export type BedrockModelConfig = WorkspaceModelConfig & {
+  provider: "bedrock";
+  bedrockRegion: BedrockRegion;
+};
+
+/** Narrowed view: provider is everything except bedrock; region is null. */
+export type NonBedrockModelConfig = WorkspaceModelConfig & {
+  provider: Exclude<ModelConfigProvider, "bedrock">;
+  bedrockRegion: null;
+};
+
+/** Narrowed view: status is `deprecated` (suggestion may still be null on inconclusive matches). */
+export type DeprecatedModelConfig = WorkspaceModelConfig & {
+  modelStatus: "deprecated";
+};
+
+/** Narrowed view: status is `healthy`; suggestion is null. */
+export type HealthyModelConfig = WorkspaceModelConfig & {
+  modelStatus: "healthy";
+  modelSuggestedReplacement: null;
+};
+
+export function isBedrockConfig(c: WorkspaceModelConfig): c is BedrockModelConfig {
+  return c.provider === "bedrock" && c.bedrockRegion !== null;
+}
+
+export function isDeprecatedConfig(c: WorkspaceModelConfig): c is DeprecatedModelConfig {
+  return c.modelStatus === "deprecated";
+}
+
+export function isHealthyConfig(c: WorkspaceModelConfig): c is HealthyModelConfig {
+  return c.modelStatus === "healthy";
 }
 
 // ── Request / response shapes ───────────────────────────────────────

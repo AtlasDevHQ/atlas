@@ -1,6 +1,6 @@
 /**
  * Suggest a closest-match replacement when a BYOT-saved model is gone
- * from the upstream catalog (#2275).
+ * from the upstream catalog.
  *
  * Edit-distance alone is too noisy for real deprecation patterns —
  * `claude-3-opus-20240229` and `claude-opus-4-6` look very different
@@ -50,10 +50,10 @@ const FAMILY_SECONDARY_WORDS: ReadonlySet<string> = new Set([
   "command",
 ]);
 
-function familyStem(id: string): string {
+function familyStem(id: string): string | null {
   const lower = id.toLowerCase();
   const segments = lower.split(/[^a-z]+/).filter((s) => s.length > 0);
-  if (segments.length === 0) return "";
+  if (segments.length === 0) return null;
   // Bedrock-style "anthropic.claude…" — anchor on the inner family word.
   if (
     segments.length >= 2 &&
@@ -112,7 +112,8 @@ function pickClosest(
 /**
  * Pick the closest match for `savedModelId` from `candidates`, biased
  * toward the same family stem + provider. Returns null when no
- * candidate is close enough to recommend confidently.
+ * candidate beats the 30% normalized-edit-distance threshold (Tier 2/3)
+ * or finds a same-stem match (Tier 1).
  */
 export function suggestModelReplacement(
   savedModelId: string,
@@ -127,7 +128,7 @@ export function suggestModelReplacement(
   // Tier 1: same provider + same family stem. Accept the closest match
   // outright — this is the high-confidence path (e.g.
   // `claude-3-opus-20240229` → `claude-opus-4-6`).
-  if (savedStem.length > 0) {
+  if (savedStem !== null) {
     const tier1 = candidates.filter(
       (c) => c.provider === savedProvider && familyStem(c.id) === savedStem,
     );

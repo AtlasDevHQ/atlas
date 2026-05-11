@@ -17,6 +17,7 @@ import {
   deleteWorkspaceModelConfig,
   testModelConfig,
   reconcileModelDeprecation,
+  parseBedrockCredentialBundle,
   ModelConfigError,
 } from "@atlas/ee/platform/model-routing";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
@@ -39,11 +40,13 @@ import {
   BedrockCatalogUnauthorized,
   BedrockCatalogUnavailable,
   getBedrockCatalog,
-  type BedrockDiscoveryCredentials,
 } from "@atlas/api/lib/bedrock-catalog";
 import { BEDROCK_REGIONS, type BedrockRegion, type GatewayCatalogModel } from "@useatlas/types";
+import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
+
+const log = createLogger("admin-model-config");
 
 const modelConfigDomainError = domainError(ModelConfigError, { validation: 400, not_found: 404, test_failed: 422 });
 
@@ -460,8 +463,9 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
     //      envelopes: 401 / 429 / 503.
     //
     // The dispatch table below keeps the per-provider knobs (fetcher,
-    // error classes, friendly provider name) in one place so adding
-    // a new direct-provider (e.g. Bedrock #2273) is a single entry.
+    // error classes, friendly provider name) in one place. Bedrock
+    // forks into a parallel inline flow because its cred shape is
+    // `(region, bundle)` instead of `(apiKey)`.
     if (!orgId) {
       return c.json(
         { error: "bad_request", message: "No active organization. Set an active org first.", requestId },
@@ -509,6 +513,16 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
         !rawConfig.apiKey ||
         !rawConfig.bedrockRegion
       ) {
+        // Audit the missing-key envelope to match the success path —
+        // forensic queries scanning catalog_refresh attempts shouldn't
+        // see silent 400s for misconfigured workspaces.
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+          targetType: "model_config",
+          targetId: orgId,
+          status: "failure",
+          metadata: { provider: "bedrock", error: "missing_byot_key" },
+        });
         return c.json(
           {
             error: "missing_byot_key",
@@ -519,35 +533,27 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
           400,
         );
       }
-      let bundle: BedrockDiscoveryCredentials;
-      try {
-        const parsed = JSON.parse(rawConfig.apiKey);
-        if (
-          !parsed ||
-          typeof parsed !== "object" ||
-          typeof parsed.accessKeyId !== "string" ||
-          typeof parsed.secretAccessKey !== "string"
-        ) {
-          throw new Error("malformed bundle");
-        }
-        bundle = {
-          accessKeyId: parsed.accessKeyId,
-          secretAccessKey: parsed.secretAccessKey,
-          ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
-            ? { sessionToken: parsed.sessionToken }
-            : {}),
-        };
-      } catch {
+      // Reuse the shared parser so the route and EE row mapper stay
+      // in lockstep. `null` is the malformed-bundle signal — distinct
+      // from a true decrypt failure (`decryptUrl` throwing), which
+      // would have already surfaced via `rowToConfig`'s
+      // `apiKeyStatus = "decrypt_failed"` path.
+      const bundle = parseBedrockCredentialBundle(rawConfig.apiKey);
+      if (!bundle) {
+        log.warn(
+          { orgId },
+          "Stored bedrock bundle decrypted but parsed as null — surfacing malformed_bedrock_bundle 422",
+        );
         logAdminAction({
           actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
           targetType: "model_config",
           targetId: orgId,
           status: "failure",
-          metadata: { provider: "bedrock", error: "decrypt_failed", detail: "malformed_bundle" },
+          metadata: { provider: "bedrock", error: "malformed_bedrock_bundle" },
         });
         return c.json(
           {
-            error: "decrypt_failed",
+            error: "malformed_bedrock_bundle",
             message:
               "Stored bedrock credentials are malformed. Re-enter the access key + secret on the AI Provider page.",
             requestId,
@@ -586,6 +592,20 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
             if (err instanceof BedrockCatalogUnavailable) {
               return { kind: "byot_provider_unavailable", message };
             }
+            // Unmapped error class — the three instanceof arms above
+            // cover every error the bedrock fetcher is documented to
+            // throw, but a future addition that forgets to add an arm
+            // would land here and bubble up as a generic 500 with the
+            // `_tag` lost. Log loudly so the gap is visible in prod
+            // before users hit it.
+            log.error(
+              {
+                err: err instanceof Error ? err.message : String(err),
+                errName: err instanceof Error ? err.name : "Unknown",
+                provider: "bedrock",
+              },
+              "Unmapped bedrock catalog error class — add an instanceof arm",
+            );
             throw err;
           }
         },
@@ -598,7 +618,18 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
           rawConfig.model,
           "bedrock",
           bedrockResult.models,
-        ).pipe(Effect.catchAll(() => Effect.succeed(null)));
+        ).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              const message = err instanceof Error ? err.message : String(err);
+              log.warn(
+                { orgId, provider: "bedrock", err: message },
+                "reconcileModelDeprecation failed — modelStatus may be stale until next refresh",
+              );
+              return null;
+            }),
+          ),
+        );
       }
 
       return finalizeByotCatalog(c, bedrockResult, {
@@ -637,30 +668,57 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
             return { kind: "byot_key_invalid", message };
           }
           if (err instanceof adapter.errors.RateLimited) {
-            // Both error classes carry `retryAfterSeconds: number | null`.
-            const retryAfter = (err as unknown as { retryAfterSeconds: number | null }).retryAfterSeconds;
-            return { kind: "byot_provider_rate_limited", message, retryAfter };
+            // The `RateLimited` discriminator types its instance with
+            // `retryAfterSeconds`, so this access type-narrows without
+            // a cast.
+            return {
+              kind: "byot_provider_rate_limited",
+              message,
+              retryAfter: err.retryAfterSeconds,
+            };
           }
           if (err instanceof adapter.errors.Unavailable) {
             return { kind: "byot_provider_unavailable", message };
           }
+          // Unmapped error class — see the parallel comment in the
+          // bedrock branch. Log so production sees the missing arm
+          // before the user-facing 500.
+          log.error(
+            {
+              err: err instanceof Error ? err.message : String(err),
+              errName: err instanceof Error ? err.name : "Unknown",
+              provider: adapter.providerKey,
+            },
+            "Unmapped catalog error class — add an instanceof arm",
+          );
           throw err;
         }
       },
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
 
-    // #2275 — reconcile the workspace's saved model against the fresh
-    // catalog. Best-effort: if the reconciliation fails we still serve
-    // the catalog. The deprecation marker shows up on the next
-    // workspace_model_config read.
     if (catalogResult.kind === "ok") {
+      // Best-effort reconciliation: a DB hiccup here leaves
+      // `model_status` stale until the next refresh. We log the failure
+      // explicitly so prod dashboards can spot a degraded reconcile
+      // pattern instead of silently divergent state.
       yield* reconcileModelDeprecation(
         orgId,
         rawConfig.model,
         adapter.providerKey,
         catalogResult.models,
-      ).pipe(Effect.catchAll(() => Effect.succeed(null)));
+      ).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            const message = err instanceof Error ? err.message : String(err);
+            log.warn(
+              { orgId, provider: adapter.providerKey, err: message },
+              "reconcileModelDeprecation failed — modelStatus may be stale until next refresh",
+            );
+            return null;
+          }),
+        ),
+      );
     }
 
     return finalizeByotCatalog(c, catalogResult, {
@@ -677,18 +735,28 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
 // Anthropic + OpenAI share an identical flow (config gate → fetch →
 // classified-error envelope). The adapter is the smallest surface that
 // captures the per-provider knobs without abstracting away the per-route
-// audit + envelope logic. Future direct providers (Bedrock #2273) plug in
-// by adding a single case to `byotAdapter`.
+// audit + envelope logic. A direct provider whose cred shape matches
+// `(orgId, apiKey)` plugs in by adding a single entry to `byotAdapter`;
+// providers with a different cred shape (Bedrock takes a region + a
+// bundle) get a parallel inline flow.
 // ---------------------------------------------------------------------------
 
 interface ByotErrorClasses {
-  readonly Unauthorized: new (...args: never[]) => Error;
-  readonly RateLimited: new (...args: never[]) => Error;
-  readonly Unavailable: new (...args: never[]) => Error;
+  // `abstract new (...args: never)` is the honest type for these — the
+  // adapter never constructs them, it only uses them as `instanceof`
+  // discriminators. `abstract` blocks `new adapter.errors.X(...)` calls
+  // (which would be wrong here) while keeping `instanceof` lawful, and
+  // typing `RateLimited`'s instance with `retryAfterSeconds` removes the
+  // `(err as unknown as …)` cast at the read site below.
+  readonly Unauthorized: abstract new (...args: never) => Error;
+  readonly RateLimited: abstract new (...args: never) => Error & {
+    readonly retryAfterSeconds: number | null;
+  };
+  readonly Unavailable: abstract new (...args: never) => Error;
 }
 
 // Wire-shape entry — kept structurally identical to `GatewayCatalogModel`
-// so deprecation reconciliation (#2275) can hand it directly to
+// so deprecation reconciliation hands it directly to
 // `suggestModelReplacement` without an adapter step. Stays mutable
 // because Hono's typed-response narrowing rejects ReadonlyArray here.
 type ByotCatalogEntry = GatewayCatalogModel;

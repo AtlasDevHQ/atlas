@@ -1,5 +1,5 @@
 /**
- * Bedrock BYOT discovery + per-workspace cache (#2273).
+ * Bedrock BYOT discovery + per-workspace cache.
  *
  * Discovery hits `ListFoundationModels` via the AWS SDK (`@aws-sdk/client-bedrock`).
  * The cache key is `${orgId}:${region}` because Bedrock surfaces a
@@ -230,19 +230,19 @@ async function fetchBedrockModels(
   }
 }
 
-/**
- * Return the workspace's cached Bedrock catalog if fresh, otherwise hit
- * `ListFoundationModels` with the supplied IAM creds.
- */
 export async function getBedrockCatalog(
   orgId: string,
   region: BedrockRegion,
   creds: BedrockDiscoveryCredentials,
-  opts: { refresh?: boolean } = {},
+  opts: { refresh?: boolean; persist?: boolean } = {},
 ): Promise<BedrockCatalogResponse> {
+  // `persist: false` is used by `testModelConfig` so cred-validation
+  // probes don't seed `workspace_model_catalog` with rows keyed under
+  // synthetic `__test:<accessKeyId>` orgIds — those rows would leak the
+  // public half of an AWS cred into the table and never be GC'd.
+  const persist = opts.persist !== false;
   const key = cacheKey(orgId, region);
   if (!opts.refresh) {
-    // L1: in-memory cache keyed per (orgId, region).
     const hit = cache.get(key);
     if (hit && hit.expiresAt > Date.now()) {
       return {
@@ -252,22 +252,23 @@ export async function getBedrockCatalog(
         region: hit.region,
       };
     }
-    // L2: DB-backed cache (#2274). Region is part of the row key.
-    const fromDb = await loadFromDB(orgId, "bedrock", region);
-    if (fromDb && isFresh(fromDb, ttlMs())) {
-      const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
-      cache.set(key, {
-        models: fromDb.models,
-        fetchedAt: fromDb.fetchedAt,
-        expiresAt,
-        region,
-      });
-      return {
-        models: fromDb.models,
-        fetchedAt: fromDb.fetchedAt,
-        source: "cache",
-        region,
-      };
+    if (persist) {
+      const fromDb = await loadFromDB(orgId, "bedrock", region);
+      if (fromDb && isFresh(fromDb, ttlMs())) {
+        const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
+        cache.set(key, {
+          models: fromDb.models,
+          fetchedAt: fromDb.fetchedAt,
+          expiresAt,
+          region,
+        });
+        return {
+          models: fromDb.models,
+          fetchedAt: fromDb.fetchedAt,
+          source: "cache",
+          region,
+        };
+      }
     }
   }
 
@@ -283,10 +284,12 @@ export async function getBedrockCatalog(
         region,
       };
       cache.set(key, entry);
-      await storeToDB(orgId, "bedrock", region, {
-        models: entry.models,
-        fetchedAt: entry.fetchedAt,
-      });
+      if (persist) {
+        await storeToDB(orgId, "bedrock", region, {
+          models: entry.models,
+          fetchedAt: entry.fetchedAt,
+        });
+      }
       return entry;
     })().finally(() => {
       inflight.delete(key);
@@ -309,8 +312,15 @@ export async function getBedrockCatalog(
  * orgId prefix.
  */
 export function invalidateBedrockCatalog(orgId: string): void {
+  // L1 + inflight are both keyed `${orgId}:${region}`; sweep by prefix
+  // so a multi-region workspace clears every region in one shot.
+  // Dropping inflight is what prevents a post-rotation cache restore —
+  // see anthropic-catalog for the race scenario.
   for (const key of cache.keys()) {
     if (key.startsWith(`${orgId}:`)) cache.delete(key);
+  }
+  for (const key of inflight.keys()) {
+    if (key.startsWith(`${orgId}:`)) inflight.delete(key);
   }
   // L2: deleting by (orgId, provider) flushes every region in one shot.
   void deleteFromDB(orgId, "bedrock");

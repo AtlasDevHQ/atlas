@@ -99,6 +99,31 @@ const mockReconcileModelDeprecation: Mock<(...args: unknown[]) => unknown> = moc
   () => Effect.succeed({ status: "healthy" as const, suggestion: null }),
 );
 
+// Match the real exported parser shape — used by the route's malformed-
+// bundle path. Returns the parsed bundle or null on shape mismatch.
+function mockParseBedrockCredentialBundle(raw: string) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.accessKeyId !== "string" ||
+      typeof parsed.secretAccessKey !== "string"
+    ) {
+      return null;
+    }
+    return {
+      accessKeyId: parsed.accessKeyId,
+      secretAccessKey: parsed.secretAccessKey,
+      ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
+        ? { sessionToken: parsed.sessionToken }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 mock.module("@atlas/ee/platform/model-routing", () => ({
   getWorkspaceModelConfig: mockGetWorkspaceModelConfig,
   getWorkspaceModelConfigRaw: mockGetWorkspaceModelConfigRaw,
@@ -106,6 +131,7 @@ mock.module("@atlas/ee/platform/model-routing", () => ({
   deleteWorkspaceModelConfig: mockDeleteWorkspaceModelConfig,
   testModelConfig: mockTestModelConfig,
   reconcileModelDeprecation: mockReconcileModelDeprecation,
+  parseBedrockCredentialBundle: mockParseBedrockCredentialBundle,
   ModelConfigError: MockModelConfigError,
   ModelConfigDecryptError: MockModelConfigDecryptError,
 }));
@@ -1219,7 +1245,10 @@ describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
     );
     expect(res.status).toBe(422);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toBe("decrypt_failed");
+    // The route now distinguishes malformed-bundle from true crypto
+    // failures (which surface earlier via rowToConfig's apiKeyStatus =
+    // 'decrypt_failed'). Bundle-shape failures map to `malformed_bedrock_bundle`.
+    expect(body.error).toBe("malformed_bedrock_bundle");
   });
 
   it("returns 401 byot_key_invalid when AWS rejects the IAM creds", async () => {

@@ -83,6 +83,26 @@ describe("openai-catalog", () => {
     expect(res.models.find((m) => m.id === "gpt-4o")?.recommended).toBe(true);
   });
 
+  test("forward-compat: unknown chat-prefixed IDs pass the filter", async () => {
+    // Future OpenAI model ID patterns we want to keep surfacing even
+    // without explicit knowledge of them. The filter is allowlist by
+    // prefix + denylist by substring; this confirms the allowlist
+    // dominates for novel `gpt-N-*` / `o*-N-*` ids and that omni
+    // variants tagged as audio/moderation/realtime still drop.
+    globalThis.fetch = mockFetchOk({
+      data: [
+        { id: "gpt-5-2027-08-mini", object: "model" },
+        { id: "o4-2027-preview", object: "model" },
+        { id: "chatgpt-5o-latest", object: "model" },
+        { id: "omni-moderation-2027", object: "model" }, // drop: moderation
+        { id: "gpt-5-audio-preview", object: "model" }, // drop: audio
+      ],
+    });
+    const res = await getOpenAICatalog(ORG_A, KEY);
+    const ids = res.models.map((m) => m.id).sort();
+    expect(ids).toEqual(["chatgpt-5o-latest", "gpt-5-2027-08-mini", "o4-2027-preview"]);
+  });
+
   test("401 surfaces OpenAICatalogUnauthorized", async () => {
     globalThis.fetch = mockFetchStatus(401);
     await expect(getOpenAICatalog(ORG_A, "bad-key")).rejects.toBeInstanceOf(

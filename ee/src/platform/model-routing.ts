@@ -79,7 +79,8 @@ interface ModelConfigRow {
   api_key_encrypted: string | null;
   base_url: string | null;
   bedrock_region: string | null;
-  model_status: string | null;
+  /** Default `'healthy'` enforced by `chk_model_status`; `null` only on pre-0059 rows. */
+  model_status: "healthy" | "deprecated" | null;
   model_suggested_replacement: string | null;
   created_at: string;
   updated_at: string;
@@ -93,7 +94,12 @@ interface ModelConfigRow {
  * AES-GCM wrapper that's content-agnostic). Returns null on malformed
  * input so the caller can surface a clean validation error.
  */
-function parseBedrockCredentialBundle(
+/**
+ * Parse a string-encoded Bedrock credential bundle. The route layer
+ * calls this directly to keep its malformed-bundle path consistent with
+ * the EE row mapper's `decrypt_failed` surfacing.
+ */
+export function parseBedrockCredentialBundle(
   raw: string,
 ): { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null {
   let parsed: unknown;
@@ -117,9 +123,6 @@ function parseBedrockCredentialBundle(
   };
 }
 
-export function __parseBedrockCredentialBundleForTests(raw: string) {
-  return parseBedrockCredentialBundle(raw);
-}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -153,13 +156,27 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
       if (row.provider === "bedrock") {
         // For bedrock, the decrypted blob is JSON. Show the accessKeyId
         // tail as the mask — the secretAccessKey half NEVER appears on
-        // the wire, not even masked.
+        // the wire, not even masked. A bundle that decrypts but fails
+        // to parse is functionally unusable (the AI Layer will reject
+        // it on next chat); surface it as `decrypt_failed` so the admin
+        // UI prompts re-entry and monitoring sees the same signal as a
+        // true crypto failure.
         const bundle = parseBedrockCredentialBundle(decrypted);
-        apiKeyMasked = bundle ? maskApiKey(bundle.accessKeyId) : "****";
+        if (bundle) {
+          apiKeyMasked = maskApiKey(bundle.accessKeyId);
+          apiKeyStatus = "masked";
+        } else {
+          log.error(
+            { configId: row.id },
+            "Decrypted bedrock bundle is malformed — surfacing decrypt_failed to UI",
+          );
+          apiKeyMasked = null;
+          apiKeyStatus = "decrypt_failed";
+        }
       } else {
         apiKeyMasked = maskApiKey(decrypted);
+        apiKeyStatus = "masked";
       }
-      apiKeyStatus = "masked";
     } catch (err) {
       log.error(
         { err: err instanceof Error ? err.message : String(err), configId: row.id },
@@ -397,7 +414,10 @@ export const getWorkspaceModelConfigRaw = (
       model: row.model,
       apiKey,
       baseUrl: row.base_url,
-      bedrockRegion: row.bedrock_region,
+      // Mirror `rowToConfig`: only bedrock rows are allowed to surface
+      // a region. A stray region from a pre-migration row or a future
+      // bug elsewhere doesn't leak into the AI Layer.
+      bedrockRegion: row.provider === "bedrock" ? row.bedrock_region : null,
     };
   });
 
@@ -550,11 +570,12 @@ export const deleteWorkspaceModelConfig = (
  * algorithm finds an acceptable match). If the model is present, flip
  * back to `healthy` and clear any prior suggestion.
  *
- * This is a best-effort write — failures are logged but don't break
- * the catalog response. Returns the resulting `{ status, suggestion }`
- * so the route can echo it back if the caller wants it.
- *
- * #2275.
+ * Best-effort: failures are logged but don't break the catalog
+ * response. Returns the resulting `{ status, suggestion }` so the route
+ * can echo it back if the caller wants it. Each UPDATE scopes by
+ * `(org_id, model)` — a concurrent `setWorkspaceModelConfig` that
+ * changed `model` mid-fetch is safe, because the WHERE doesn't match
+ * the new row and the next refresh reconciles against the new model.
  */
 export const reconcileModelDeprecation = (
   orgId: string,
@@ -570,14 +591,19 @@ export const reconcileModelDeprecation = (
       return { status: "healthy" as const, suggestion: null };
     }
     const ids = new Set(freshCatalog.map((m) => m.id));
+    // Race window: a concurrent `setWorkspaceModelConfig` may have already
+    // changed `model` since the catalog fetch started. Both UPDATEs scope
+    // by `(org_id, model)` so a stale reconcile can never clobber a
+    // freshly-saved row — if the WHERE doesn't match, nothing changes and
+    // the next refresh will reconcile against the new model.
     if (ids.has(savedModelId)) {
       yield* Effect.tryPromise({
         try: () =>
           internalQuery(
             `UPDATE workspace_model_config
              SET model_status = 'healthy', model_suggested_replacement = NULL, updated_at = now()
-             WHERE org_id = $1 AND model_status = 'deprecated'`,
-            [orgId],
+             WHERE org_id = $1 AND model = $2 AND model_status = 'deprecated'`,
+            [orgId, savedModelId],
           ),
         catch: promiseError,
       });
@@ -594,10 +620,10 @@ export const reconcileModelDeprecation = (
         internalQuery(
           `UPDATE workspace_model_config
            SET model_status = 'deprecated',
-               model_suggested_replacement = $2,
+               model_suggested_replacement = $3,
                updated_at = now()
-           WHERE org_id = $1`,
-          [orgId, suggestion],
+           WHERE org_id = $1 AND model = $2`,
+          [orgId, savedModelId, suggestion],
         ),
       catch: promiseError,
     });
@@ -785,13 +811,14 @@ export const testModelConfig = (
               // selection is saved.
               try {
                 const catalog = await getBedrockCatalog(
-                  // Use a synthetic orgId so the test doesn't poison the
-                  // cache that the workspace's saved config uses — the
-                  // catalog endpoint owns the workspace-scoped cache.
+                  // Synthetic orgId keeps the in-memory cache scoped
+                  // away from real workspaces; `persist: false` keeps the
+                  // L2 store (workspace_model_catalog) from accumulating
+                  // throwaway rows keyed by accessKeyId.
                   `__test:${bundle.accessKeyId}`,
                   config.bedrockRegion as BedrockRegion,
                   bundle as BedrockDiscoveryCredentials,
-                  { refresh: true },
+                  { refresh: true, persist: false },
                 );
                 const ids = new Set(catalog.models.map((m) => m.id));
                 if (!ids.has(config.model)) {

@@ -1,5 +1,5 @@
 /**
- * Postgres-backed L2 cache for BYOT discovery catalogs (#2274).
+ * Postgres-backed L2 cache for BYOT discovery catalogs.
  *
  * The per-provider catalog modules each maintain an in-memory L1 cache
  * scoped to a single pod. This module is the L2: cross-pod, survives
@@ -8,9 +8,8 @@
  * Per-provider modules call `loadFromDB` on cold start and `storeToDB`
  * after every fresh upstream fetch. The wire shape stored matches the
  * `GatewayCatalogModel[]` array each module produces — keeping the JSON
- * schema uniform across providers means the periodic refresh job
- * (and #2275 unknown-model handling later) can iterate every catalog
- * regardless of provider.
+ * uniform means a refresh job + the deprecation reconciler can iterate
+ * every catalog regardless of provider.
  *
  * Operational concerns:
  *   - This is the only DB-backed BYOT-cache surface. Read/write paths
@@ -26,11 +25,15 @@
 
 import { hasInternalDB, internalQuery } from "./db/internal";
 import { createLogger } from "./logger";
-import type { GatewayCatalogModel } from "@useatlas/types";
+import type { GatewayCatalogModel, ModelConfigProvider } from "@useatlas/types";
 
 const log = createLogger("byot-catalog-store");
 
-export type ByotProviderKey = "anthropic" | "openai" | "bedrock";
+// Sourced from `MODEL_CONFIG_PROVIDERS` via `Extract` so adding a new
+// direct-discovery provider (e.g. a hypothetical "google") to the
+// canonical tuple lights up here as a compile error if it's also a
+// BYOT-discovery target.
+export type ByotProviderKey = Extract<ModelConfigProvider, "anthropic" | "openai" | "bedrock">;
 
 export interface PersistedCatalog {
   models: GatewayCatalogModel[];
@@ -43,11 +46,10 @@ interface CatalogRow {
   [key: string]: unknown;
 }
 
-/**
- * Look up a previously-persisted catalog. Region defaults to the empty
- * string for providers that aren't region-scoped (anthropic, openai) so
- * the unique constraint stays simple.
- */
+// Region is "" for non-region-scoped providers (anthropic/openai) so
+// the unique constraint stays simple. A malformed row stays in DB —
+// the next successful `storeToDB` overwrites it via ON CONFLICT, so
+// corrupt-and-no-fetch is a noisy-but-safe terminal state.
 export async function loadFromDB(
   orgId: string,
   provider: ByotProviderKey,
@@ -85,11 +87,9 @@ export async function loadFromDB(
   }
 }
 
-/**
- * Persist a freshly-fetched catalog. Best-effort: a DB write failure is
- * logged but never thrown back to the caller — the L1 cache + return
- * value are still good, and the next request will retry the write.
- */
+// Best-effort: a DB write failure is logged but never thrown back —
+// the L1 cache + return value are still good, and the next request
+// will retry the write.
 export async function storeToDB(
   orgId: string,
   provider: ByotProviderKey,
@@ -121,11 +121,8 @@ export async function storeToDB(
   }
 }
 
-/**
- * Drop every persisted entry for an org. Called from the per-provider
- * cache invalidators on key rotation so the L2 layer is flushed in
- * lockstep with the L1 layer.
- */
+// Called from per-provider invalidators on key rotation so the L2
+// layer is flushed in lockstep with the L1 layer.
 export async function deleteFromDB(
   orgId: string,
   provider: ByotProviderKey,
@@ -144,11 +141,8 @@ export async function deleteFromDB(
   }
 }
 
-/**
- * Check whether a persisted entry has aged out vs. the supplied TTL.
- * Caller-owned freshness check so each per-provider module can keep its
- * own TTL knob (`ATLAS_BYOT_CATALOG_TTL_MS`).
- */
+// Caller-owned freshness check so each per-provider module reuses its
+// own `ATLAS_BYOT_CATALOG_TTL_MS` knob without binding the store to it.
 export function isFresh(persisted: PersistedCatalog, ttlMs: number): boolean {
   const fetched = Date.parse(persisted.fetchedAt);
   if (!Number.isFinite(fetched)) return false;

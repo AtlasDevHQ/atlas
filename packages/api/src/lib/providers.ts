@@ -18,6 +18,9 @@ import { createGateway } from "@ai-sdk/gateway";
 import { gateway } from "ai";
 import type { LanguageModel } from "ai";
 import type { ModelConfigProvider } from "@useatlas/types";
+import { createLogger } from "./logger";
+
+const log = createLogger("providers");
 
 /** Provider strings accepted in ATLAS_PROVIDER. */
 type ConfigProvider = "anthropic" | "openai" | "bedrock" | "ollama" | "openai-compatible" | "gateway";
@@ -334,9 +337,18 @@ export function getModelFromWorkspaceConfig(config: {
             ? { sessionToken: parsed.sessionToken }
             : {}),
         };
-      } catch {
+      } catch (err) {
+        // Capture the underlying parse failure (SyntaxError vs shape
+        // mismatch) for triage; the user-facing message stays generic
+        // because the AI Layer is mid-flight on a chat request and the
+        // admin's only actionable fix is re-entry.
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Workspace bedrock bundle parse failed at provider build",
+        );
         throw new Error(
           "Workspace bedrock credentials are malformed — re-enter the access key / secret on the AI Provider page.",
+          { cause: err },
         );
       }
       const client = createAmazonBedrock({

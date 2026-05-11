@@ -1,7 +1,7 @@
 /**
  * OpenAI BYOT `/v1/models` discovery + per-workspace cache.
  *
- * Mirrors `anthropic-catalog.ts` (#2271). OpenAI's `/v1/models` endpoint
+ * Mirrors `anthropic-catalog.ts`. OpenAI's `/v1/models` endpoint
  * returns the workspace's full model entitlement (chat + embeddings +
  * whisper + tts + dall-e + moderation + image), so we filter to
  * chat-capable models before surfacing them in the picker — non-chat
@@ -164,11 +164,15 @@ async function fetchOpenAIModels(apiKey: string): Promise<GatewayCatalogModel[]>
       );
     }
     if (res.status === 429) {
+      // RFC 9110 §10.2.3 — Retry-After is non-negative. Clamp to keep
+      // the response header lawful and avoid client-side immediate-retry
+      // bugs on negative values.
       const retryAfterRaw = res.headers.get("retry-after");
-      const retryAfterSeconds = retryAfterRaw ? Number.parseInt(retryAfterRaw, 10) : null;
+      const parsed = retryAfterRaw ? Number.parseInt(retryAfterRaw, 10) : NaN;
+      const retryAfterSeconds = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
       throw new OpenAICatalogRateLimited(
         "OpenAI rate-limited the catalog refresh. Try again shortly.",
-        Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : null,
+        retryAfterSeconds,
       );
     }
     if (!res.ok) {
@@ -229,20 +233,23 @@ async function fetchOpenAIModels(apiKey: string): Promise<GatewayCatalogModel[]>
 export async function getOpenAICatalog(
   orgId: string,
   apiKey: string,
-  opts: { refresh?: boolean } = {},
+  opts: { refresh?: boolean; persist?: boolean } = {},
 ): Promise<OpenAICatalogResponse> {
+  // See anthropic-catalog for `persist` rationale — synthetic-orgId
+  // probes pass `false` to keep L2 free of test-only rows.
+  const persist = opts.persist !== false;
   if (!opts.refresh) {
-    // L1: in-memory.
     const hit = cache.get(orgId);
     if (hit && hit.expiresAt > Date.now()) {
       return { models: hit.models, fetchedAt: hit.fetchedAt, source: "cache" };
     }
-    // L2: DB-backed cache (#2274).
-    const fromDb = await loadFromDB(orgId, "openai");
-    if (fromDb && isFresh(fromDb, ttlMs())) {
-      const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
-      cache.set(orgId, { models: fromDb.models, fetchedAt: fromDb.fetchedAt, expiresAt });
-      return { models: fromDb.models, fetchedAt: fromDb.fetchedAt, source: "cache" };
+    if (persist) {
+      const fromDb = await loadFromDB(orgId, "openai");
+      if (fromDb && isFresh(fromDb, ttlMs())) {
+        const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
+        cache.set(orgId, { models: fromDb.models, fetchedAt: fromDb.fetchedAt, expiresAt });
+        return { models: fromDb.models, fetchedAt: fromDb.fetchedAt, source: "cache" };
+      }
     }
   }
 
@@ -257,10 +264,12 @@ export async function getOpenAICatalog(
         expiresAt: now + ttlMs(),
       };
       cache.set(orgId, entry);
-      await storeToDB(orgId, "openai", "", {
-        models: entry.models,
-        fetchedAt: entry.fetchedAt,
-      });
+      if (persist) {
+        await storeToDB(orgId, "openai", "", {
+          models: entry.models,
+          fetchedAt: entry.fetchedAt,
+        });
+      }
       return entry;
     })().finally(() => {
       inflight.delete(orgId);
@@ -272,11 +281,14 @@ export async function getOpenAICatalog(
 }
 
 /**
- * Drop the cached catalog for an org (L1 + L2). Called from
- * `setWorkspaceModelConfig` on a successful openai upsert.
+ * Drop the cached catalog for an org (L1 + inflight + L2). Called from
+ * `setWorkspaceModelConfig` on a successful openai upsert. The inflight
+ * drop is what makes a key rotation safe under concurrent in-flight
+ * fetches — see anthropic-catalog for the race scenario.
  */
 export function invalidateOpenAICatalog(orgId: string): void {
   cache.delete(orgId);
+  inflight.delete(orgId);
   void deleteFromDB(orgId, "openai");
 }
 

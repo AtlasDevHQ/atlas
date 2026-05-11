@@ -138,11 +138,15 @@ async function fetchAnthropicModels(apiKey: string): Promise<GatewayCatalogModel
       );
     }
     if (res.status === 429) {
+      // Clamp Retry-After to a non-negative integer. RFC 9110 §10.2.3
+      // requires non-negative; emitting a negative seconds value
+      // confuses some clients (browsers retry immediately).
       const retryAfterRaw = res.headers.get("retry-after");
-      const retryAfterSeconds = retryAfterRaw ? Number.parseInt(retryAfterRaw, 10) : null;
+      const parsed = retryAfterRaw ? Number.parseInt(retryAfterRaw, 10) : NaN;
+      const retryAfterSeconds = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
       throw new AnthropicCatalogRateLimited(
         "Anthropic rate-limited the catalog refresh. Try again shortly.",
-        Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : null,
+        retryAfterSeconds,
       );
     }
     if (!res.ok) {
@@ -202,20 +206,25 @@ async function fetchAnthropicModels(apiKey: string): Promise<GatewayCatalogModel
 export async function getAnthropicCatalog(
   orgId: string,
   apiKey: string,
-  opts: { refresh?: boolean } = {},
+  opts: { refresh?: boolean; persist?: boolean } = {},
 ): Promise<AnthropicCatalogResponse> {
+  // `persist` defaults to true. Callers that fetch under synthetic
+  // orgIds (e.g. `testModelConfig` probes) pass `persist: false` so the
+  // L2 cache doesn't accumulate one row per probe attempt keyed by a
+  // throwaway identifier.
+  const persist = opts.persist !== false;
   if (!opts.refresh) {
-    // L1: in-memory cache (per-pod, also the inflight-dedup substrate).
     const hit = cache.get(orgId);
     if (hit && hit.expiresAt > Date.now()) {
       return { models: hit.models, fetchedAt: hit.fetchedAt, source: "cache" };
     }
-    // L2: DB-backed cache (#2274). Used on cold start + cross-pod hits.
-    const fromDb = await loadFromDB(orgId, "anthropic");
-    if (fromDb && isFresh(fromDb, ttlMs())) {
-      const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
-      cache.set(orgId, { models: fromDb.models, fetchedAt: fromDb.fetchedAt, expiresAt });
-      return { models: fromDb.models, fetchedAt: fromDb.fetchedAt, source: "cache" };
+    if (persist) {
+      const fromDb = await loadFromDB(orgId, "anthropic");
+      if (fromDb && isFresh(fromDb, ttlMs())) {
+        const expiresAt = Date.parse(fromDb.fetchedAt) + ttlMs();
+        cache.set(orgId, { models: fromDb.models, fetchedAt: fromDb.fetchedAt, expiresAt });
+        return { models: fromDb.models, fetchedAt: fromDb.fetchedAt, source: "cache" };
+      }
     }
   }
 
@@ -230,11 +239,12 @@ export async function getAnthropicCatalog(
         expiresAt: now + ttlMs(),
       };
       cache.set(orgId, entry);
-      // Best-effort L2 write — failure is logged inside `storeToDB`.
-      await storeToDB(orgId, "anthropic", "", {
-        models: entry.models,
-        fetchedAt: entry.fetchedAt,
-      });
+      if (persist) {
+        await storeToDB(orgId, "anthropic", "", {
+          models: entry.models,
+          fetchedAt: entry.fetchedAt,
+        });
+      }
       return entry;
     })().finally(() => {
       inflight.delete(orgId);
@@ -248,12 +258,15 @@ export async function getAnthropicCatalog(
 /**
  * Drop the cached catalog for an org. Called from
  * `setWorkspaceModelConfig` after a successful upsert so a key rotation
- * doesn't serve a stale catalog from before the rotation. Flushes both
- * L1 (in-memory) and L2 (DB) layers — the L2 delete is fire-and-forget
- * so callers in synchronous Effect paths don't have to await it.
+ * doesn't serve a stale catalog from before the rotation. Flushes L1,
+ * the inflight promise (any in-progress old-key fetch resolves into a
+ * cache it then re-fills — without dropping inflight, the post-rotation
+ * cache resurrects the pre-rotation catalog), and L2 (fire-and-forget
+ * so synchronous Effect callers don't await it).
  */
 export function invalidateAnthropicCatalog(orgId: string): void {
   cache.delete(orgId);
+  inflight.delete(orgId);
   void deleteFromDB(orgId, "anthropic");
 }
 

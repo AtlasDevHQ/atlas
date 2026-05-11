@@ -167,11 +167,11 @@ export default function ModelConfigPage() {
     { schema: GatewayCatalogResponseSchema },
   );
 
-  // BYOT direct-provider catalogs (#2271 anthropic, #2272 openai) — only
-  // fetched when the workspace has a saved configuration on the matching
-  // provider with a healthy key. Without these preconditions the endpoint
-  // would return 400 `missing_byot_key` on every page load, surfacing as
-  // a noisy error banner. Gating with `enabled` keeps the request firmly
+  // BYOT direct-provider catalogs — only fetched when the workspace has
+  // a saved configuration on the matching provider with a healthy key.
+  // Without these preconditions the endpoint would return 400
+  // `missing_byot_key` on every page load, surfacing as a noisy error
+  // banner. Gating with `enabled` keeps the request firmly
   // tied to the picker's render gate.
   const existingConfigForGate = data?.config ?? null;
   const anthropicCatalogEnabled =
@@ -1112,10 +1112,10 @@ export default function ModelConfigPage() {
   );
 }
 
-// Picker freshness footer — surfaces "last refreshed N hours ago" + a manual
-// refresh action for BYOT catalogs (#2271). The discovery cache TTLs at 6h
-// server-side; this gives admins a way to force a fresh fetch when they've
-// rotated keys or seen a new model land upstream.
+// Picker freshness footer — "last refreshed N hours ago" + a manual
+// refresh action. The discovery cache TTLs at 6h server-side; this is
+// how admins force a fresh fetch after a key rotation or when a new
+// upstream model lands.
 function CatalogFreshness({
   fetchedAt,
   onRefresh,

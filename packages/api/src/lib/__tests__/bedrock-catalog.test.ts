@@ -227,6 +227,37 @@ describe("bedrock-catalog", () => {
     expect(ids.has("anthropic.claude-opus-4-v1:0")).toBe(true);
   });
 
+  test("concurrent fetches for the same (orgId, region) dedupe to one AWS call", async () => {
+    // Replace the mock to delay completion so both calls observe an
+    // inflight promise. Parity with the anthropic + openai tests.
+    const pending = Promise.withResolvers<ListFoundationModelsResponse>();
+    sendCalls.length = 0;
+    const originalOutcome = nextOutcome;
+    nextOutcome = { kind: "ok", payload: { modelSummaries: [] } };
+
+    // Wire the mock client to await our pending promise.
+    const _origSend = MockBedrockClient.prototype.send;
+    MockBedrockClient.prototype.send = async function (command: MockListFoundationModelsCommand) {
+      sendCalls.push({ region: this.region, commandName: command.$name });
+      return pending.promise;
+    };
+
+    try {
+      const p1 = getBedrockCatalog(ORG_A, "us-east-1", CREDS);
+      const p2 = getBedrockCatalog(ORG_A, "us-east-1", CREDS);
+      pending.resolve({
+        modelSummaries: [{ modelId: "anthropic.claude-opus-4-v1:0", outputModalities: ["TEXT"] }],
+      });
+      const [r1, r2] = await Promise.all([p1, p2]);
+      expect(sendCalls).toHaveLength(1);
+      expect(r1.models[0].id).toBe("anthropic.claude-opus-4-v1:0");
+      expect(r2.models[0].id).toBe("anthropic.claude-opus-4-v1:0");
+    } finally {
+      MockBedrockClient.prototype.send = _origSend;
+      nextOutcome = originalOutcome;
+    }
+  });
+
   afterEach(() => {
     __resetBedrockCatalogCacheForTests();
   });

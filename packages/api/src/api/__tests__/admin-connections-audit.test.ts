@@ -138,7 +138,16 @@ beforeEach(() => {
   mocks.setPlatformAdmin("org-alpha");
   mockLogAdminAction.mockClear();
   mocks.mockInternalQuery.mockReset();
-  mocks.mockInternalQuery.mockImplementation(async () => []);
+  // The audit suite drives platform admin flows. After the platform_admin
+  // visibility bypass was removed (every caller now goes through
+  // `getVisibleConnectionIds`), the warehouse connection must be present in
+  // the visibility set or `/:id/test` and `/:id/drain` 404 before they emit.
+  mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+    if (typeof sql === "string" && sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+      return [{ id: "warehouse" }];
+    }
+    return [];
+  });
   mockConnectionList.mockClear();
   mockConnectionList.mockReturnValue(["warehouse"]);
   mockConnectionHas.mockClear();

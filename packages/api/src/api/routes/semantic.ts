@@ -14,14 +14,31 @@ import { RequestContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
-  getSemanticRoot,
+  getSemanticRoot as getBaseSemanticRoot,
   isValidEntityName,
   readYamlFile,
   discoverEntities,
   findEntityFile,
 } from "@atlas/api/lib/semantic/files";
+// Org-aware variant: returns `<base>/.orgs/<orgId>/` when an orgId is present
+// so SaaS workspaces read their own entities instead of the shipped demo.
+import { getSemanticRoot as getOrgSemanticRoot } from "@atlas/api/lib/semantic/sync";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+
+/**
+ * Resolve the semantic root for this request — org-scoped when the caller's
+ * session has an active org, base root otherwise (self-hosted single-tenant).
+ *
+ * The pre-fix behavior used the base root unconditionally, which meant every
+ * SaaS workspace saw the shipped demo entities (NovaMart) on the chat schema
+ * explorer regardless of their own org-scoped data on disk.
+ */
+function resolveRoot(c: { get: (k: "authResult") => { user?: { activeOrganizationId?: string } } | undefined }): string {
+  const authResult = c.get("authResult");
+  const orgId = authResult?.user?.activeOrganizationId;
+  return orgId ? getOrgSemanticRoot(orgId) : getBaseSemanticRoot();
+}
 
 const log = createLogger("semantic-routes");
 
@@ -136,7 +153,7 @@ semantic.use(requestContext);
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
 semantic.openapi(listEntitiesRoute, async (c) => {
   return runEffect(c, Effect.sync(() => {
-    const root = getSemanticRoot();
+    const root = resolveRoot(c);
     const discovered = discoverEntities(root);
     const entities = discovered.entities.map(({ table, description, columnCount, joinCount, type }) => ({
       table, description, columnCount, joinCount, type: type ?? "",
@@ -160,7 +177,7 @@ semantic.openapi(getEntityRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
     }
 
-    const root = getSemanticRoot();
+    const root = resolveRoot(c);
     const filePath = findEntityFile(root, name);
     if (!filePath) {
       return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);

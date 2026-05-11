@@ -167,6 +167,7 @@ export function makeWorkspaceAiModelLayer(config: {
   model: string;
   apiKey: string;
   baseUrl: string | null;
+  bedrockRegion?: string | null;
 }): Layer.Layer<AtlasAiModel, Error> {
   return Layer.effect(
     AtlasAiModel,

@@ -29,6 +29,9 @@ const validModelConfig = {
   provider: "anthropic" as const,
   model: "claude-opus-4-6",
   baseUrl: null,
+  // bedrockRegion is required by the cross-field refine for non-bedrock
+  // providers — it must be null when provider !== "bedrock".
+  bedrockRegion: null,
   apiKeyMasked: "sk-ant-...abc",
   apiKeyStatus: "masked" as const,
   createdAt: "2026-04-20T12:00:00.000Z",
@@ -128,6 +131,38 @@ describe("WorkspaceModelConfigSchema", () => {
       apiKeyStatus: "platform_credits" as const,
     };
     expect(() => WorkspaceModelConfigSchema.parse(wrong)).toThrow();
+  });
+
+  test("accepts bedrock provider with a region", () => {
+    const bedrockConfig = {
+      ...validModelConfig,
+      provider: "bedrock" as const,
+      model: "anthropic.claude-opus-4-v1:0",
+      bedrockRegion: "us-east-1" as const,
+      apiKeyMasked: "*****stored",
+      apiKeyStatus: "masked" as const,
+    };
+    expect(WorkspaceModelConfigSchema.parse(bedrockConfig)).toEqual(bedrockConfig);
+  });
+
+  test("rejects bedrock provider without a region", () => {
+    const noRegion = {
+      ...validModelConfig,
+      provider: "bedrock" as const,
+      model: "anthropic.claude-opus-4-v1:0",
+      bedrockRegion: null,
+      apiKeyMasked: "*****stored",
+      apiKeyStatus: "masked" as const,
+    };
+    expect(() => WorkspaceModelConfigSchema.parse(noRegion)).toThrow();
+  });
+
+  test("rejects non-bedrock provider that carries a region", () => {
+    const stray = {
+      ...validModelConfig,
+      bedrockRegion: "us-east-1" as const,
+    };
+    expect(() => WorkspaceModelConfigSchema.parse(stray)).toThrow();
   });
 });
 

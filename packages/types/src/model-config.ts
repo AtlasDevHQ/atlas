@@ -1,12 +1,16 @@
 /**
  * Workspace-level model configuration types shared across API, frontend, and SDK.
  *
- * Workspaces can configure their own LLM provider per workspace, overriding the
- * platform default. Two BYOT-only providers — anthropic, openai, azure-openai,
- * custom — always require an API key. The fifth provider, `gateway`, points at
- * the Vercel AI Gateway and accepts an optional key: omit it to ride on the
- * platform's gateway credentials (SaaS only), or supply one to BYOT against
- * your own gateway billing project.
+ * Workspaces can configure their own LLM provider per workspace, overriding
+ * the platform default. The BYOT-only providers (anthropic, openai,
+ * azure-openai, custom, bedrock) always require credentials. The `gateway`
+ * provider points at the Vercel AI Gateway and accepts an optional key:
+ * omit it to ride on the platform's gateway credentials (SaaS only), or
+ * supply one to BYOT against your own gateway billing project.
+ *
+ * `bedrock` (#2273) takes IAM creds stored as a JSON blob in
+ * `api_key_encrypted` and a separate `bedrock_region` column. The
+ * catalog is region-specific.
  */
 
 // ── Provider types ──────────────────────────────────────────────────
@@ -17,6 +21,7 @@ export const MODEL_CONFIG_PROVIDERS = [
   "azure-openai",
   "custom",
   "gateway",
+  "bedrock",
 ] as const;
 export type ModelConfigProvider = (typeof MODEL_CONFIG_PROVIDERS)[number];
 
@@ -32,7 +37,45 @@ export const PROVIDER_REQUIRES_KEY = {
   "azure-openai": true,
   custom: true,
   gateway: false,
+  // Bedrock stores an IAM cred blob in `api_key_encrypted` — the JSON shape
+  // is `{ accessKeyId, secretAccessKey, sessionToken? }`. The blob is
+  // required by the DB CHECK constraint just like every other BYOT row.
+  bedrock: true,
 } as const satisfies Record<ModelConfigProvider, boolean>;
+
+/**
+ * AWS regions that support Bedrock model invocation. The catalog differs
+ * by region — `ap-northeast-1` exposes a different set than `us-east-1`.
+ * The picker surfaces this list as a region dropdown; new regions land
+ * here when AWS GAs Bedrock there.
+ */
+export const BEDROCK_REGIONS = [
+  "us-east-1",
+  "us-east-2",
+  "us-west-2",
+  "eu-central-1",
+  "eu-west-1",
+  "eu-west-3",
+  "ap-northeast-1",
+  "ap-southeast-1",
+  "ap-southeast-2",
+  "ap-south-1",
+  "ca-central-1",
+  "sa-east-1",
+] as const;
+export type BedrockRegion = (typeof BEDROCK_REGIONS)[number];
+
+/**
+ * Bedrock-specific credential bundle. Stored as JSON in `api_key_encrypted`
+ * after `encryptUrl`; the helper round-trips a string, so callers stringify
+ * before encrypt and parse after decrypt.
+ */
+export interface BedrockCredentialBundle {
+  accessKeyId: string;
+  secretAccessKey: string;
+  /** Optional STS session token for federated / temporary creds. */
+  sessionToken?: string;
+}
 
 export function providerRequiresKey(provider: ModelConfigProvider): boolean {
   return PROVIDER_REQUIRES_KEY[provider];
@@ -66,8 +109,16 @@ export interface WorkspaceModelConfig {
   /** Base URL — required for azure-openai and custom providers. */
   baseUrl: string | null;
   /**
+   * AWS region for `bedrock` rows. `null` for every other provider (the
+   * DB-side `chk_model_provider_region` constraint enforces NOT NULL when
+   * `provider='bedrock'`).
+   */
+  bedrockRegion: BedrockRegion | null;
+  /**
    * API key masked to last 4 characters (never sent in full). `null` only
    * when `apiKeyStatus !== "masked"` — see `ApiKeyStatus` for the cases.
+   * For `bedrock` rows the masked value is the `accessKeyId` tail; the
+   * `secretAccessKey` half of the bundle is never echoed to the wire.
    */
   apiKeyMasked: string | null;
   /** See `ApiKeyStatus`. UI consumers branch on this rather than guessing from `apiKeyMasked`. */
@@ -84,11 +135,15 @@ export interface SetWorkspaceModelConfigRequest {
   /**
    * For BYOT providers: required on initial creation, omit to keep the
    * existing key on update. For `gateway`: omit (or pass empty) to use
-   * platform credits; pass a value to BYOT against your own gateway.
+   * platform credits; pass a value to BYOT against your own gateway. For
+   * `bedrock`: a JSON-encoded `BedrockCredentialBundle` (the helper
+   * stringifies before encrypting); the picker UI handles the encoding.
    */
   apiKey?: string;
   /** Required for azure-openai and custom providers. */
   baseUrl?: string;
+  /** Required when `provider='bedrock'`. AWS region for ListFoundationModels + Converse. */
+  bedrockRegion?: BedrockRegion;
 }
 
 export interface TestModelConfigRequest {
@@ -97,6 +152,8 @@ export interface TestModelConfigRequest {
   /** Omit for `gateway` on platform credits. Required for every other case. */
   apiKey?: string;
   baseUrl?: string;
+  /** Required when `provider='bedrock'`. AWS region for the Converse probe. */
+  bedrockRegion?: BedrockRegion;
 }
 
 export interface TestModelConfigResponse {

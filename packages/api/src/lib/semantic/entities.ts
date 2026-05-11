@@ -420,6 +420,20 @@ export async function listEntitiesWithOverlay(
   const baseSelect =
     "id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at";
 
+  // Connection visibility includes the org's own connections plus rows at
+  // `org_id = '__global__'` (the canonical-demo fallback added in #2303).
+  // Per-org entities tied to `connection_id = '__demo__'` would otherwise be
+  // filtered out once the per-org demo connection row was removed in favor of
+  // the shared global one. Keep this in sync with `getVisibleConnectionIds`.
+  const connectionVisibilitySql = `
+    connection_id IS NULL
+    OR connection_id IN (
+      SELECT id FROM connections
+      WHERE (org_id = $1 OR org_id = '__global__')
+        AND status IN ('published', 'draft')
+    )
+  `;
+
   if (entityType) {
     return internalQuery<SemanticEntityRow>(
       `WITH overlay AS (
@@ -428,13 +442,7 @@ export async function listEntitiesWithOverlay(
          WHERE org_id = $1
            AND entity_type = $2
            AND status IN ('published', 'draft', 'draft_delete')
-           AND (
-             connection_id IS NULL
-             OR connection_id IN (
-               SELECT id FROM connections
-               WHERE org_id = $1 AND status IN ('published', 'draft')
-             )
-           )
+           AND (${connectionVisibilitySql})
          ORDER BY org_id, name, connection_id,
            CASE status
              WHEN 'draft_delete' THEN 0
@@ -455,13 +463,7 @@ export async function listEntitiesWithOverlay(
        FROM semantic_entities
        WHERE org_id = $1
          AND status IN ('published', 'draft', 'draft_delete')
-         AND (
-           connection_id IS NULL
-           OR connection_id IN (
-             SELECT id FROM connections
-             WHERE org_id = $1 AND status IN ('published', 'draft')
-           )
-         )
+         AND (${connectionVisibilitySql})
        ORDER BY org_id, name, connection_id,
          CASE status
            WHEN 'draft_delete' THEN 0

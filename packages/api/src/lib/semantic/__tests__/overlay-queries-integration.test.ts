@@ -248,4 +248,17 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     const rows = await listEntitiesWithOverlay("org-1", "entity");
     expect(rows).toHaveLength(0);
   });
+
+  it("entities tied to a __global__ connection are visible to any org (#<PR2>)", async () => {
+    // The canonical `__demo__` lives at org_id = '__global__'. Per-org
+    // entities reference it via connection_id; the connection-visibility
+    // subquery now accepts `__global__` rows so those entities resolve.
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+    );
+    seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
+
+    const rows = await listEntitiesWithOverlay("org-1", "entity");
+    expect(rowsByName(rows)).toEqual({ novamart_orders: "published" });
+  });
 });

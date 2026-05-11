@@ -19,7 +19,6 @@ import { isLoadTestWorkspace } from "@atlas/api/lib/auth/load-test-allowlist";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
-  ABUSE_RESTORE_STATUSES,
   asRatio,
   type AbuseLevel,
   type AbuseRestoreStatus,
@@ -31,11 +30,18 @@ import {
   type AbuseDetail,
 } from "@useatlas/types";
 
-// Re-export so existing `@atlas/api/lib/security/abuse` consumers keep
-// the same import surface — the tuple/type just moved to the shared
-// types package so the web bundle can use them too (admin-schemas.ts
-// needs the same enum for runtime validation).
-export { ABUSE_RESTORE_STATUSES, type AbuseRestoreStatus };
+// Local literal tuple, not imported from `@useatlas/types`'s value
+// export — the scaffold template builds against the registry copy,
+// and a fresh value export there breaks scaffold CI until the next
+// types publish (see #useatlas/types-scaffold-gotcha). `satisfies`
+// pins this to the canonical union so a drift fails compile.
+export const ABUSE_RESTORE_STATUSES = [
+  "pending",
+  "ok",
+  "db_unavailable",
+  "load_failed",
+] as const satisfies readonly AbuseRestoreStatus[];
+export type { AbuseRestoreStatus };
 
 /**
  * A non-`"none"` abuse level — exactly the states a reinstate can lift

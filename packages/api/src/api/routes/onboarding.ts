@@ -797,7 +797,11 @@ onboarding.openapi(
         }));
         if (existing.length === 0) {
           log.error({ connectionId: id, orgId, requestId }, "Demo connection upsert returned 0 rows and no global row found");
-          return c.json({ error: "internal_error", message: "Failed to save connection — database did not confirm the write.", requestId }, 500);
+          return c.json({
+            error: "internal_error",
+            message: "Demo connection write may have succeeded but the database did not confirm. Retry the request — the operation is idempotent.",
+            requestId,
+          }, 500);
         }
       }
 

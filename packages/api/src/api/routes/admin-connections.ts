@@ -617,9 +617,12 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL).", requestId }, 404);
   }
 
-  // Enforce plan connection limit before proceeding
+  // Enforce plan connection limit before proceeding. Exclude archived
+  // rows so per-org delete-as-hide tombstones (the shadow rows for
+  // hidden `__global__` connections) don't count against the org's plan
+  // limit. A workspace that hides the demo shouldn't lose a slot for it.
   const connCountRows = await internalQuery<{ count: number }>(
-    `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`,
+    `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`,
     [orgId],
   );
   const connCount = connCountRows[0]?.count ?? 0;

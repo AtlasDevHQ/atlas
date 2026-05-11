@@ -1757,7 +1757,10 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
       countQuery(`SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`, [orgId]),
       countQuery(`SELECT COUNT(*)::int as count FROM conversations WHERE org_id = $1`, [orgId]),
       countQuery(`SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`, [orgId]),
-      countQuery(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`, [orgId]),
+      // Exclude archive tombstones for the same reason as the plan-limit
+      // and billing counts — hidden `__global__` connections shouldn't
+      // inflate workspace health summaries.
+      countQuery(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`, [orgId]),
       countQuery(`SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`, [orgId]),
     ], { concurrency: "unbounded" }).pipe(
       Effect.timeoutFail({

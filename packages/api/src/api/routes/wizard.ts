@@ -941,14 +941,17 @@ async function resolveConnectionUrl(
     }
   }
 
-  // Second try: internal DB only (connection not in runtime registry)
+  // Second try: internal DB only (connection not in runtime registry).
+  // Excludes archived rows so per-org delete-as-hide tombstones (whose
+  // `url = ''` placeholder would crash `decryptUrl` below) read as
+  // not-found here, mirroring the first-try filter at L907.
   if (hasInternalDB()) {
     const orgFilter = orgId ? " AND (org_id = $2 OR org_id = '__global__') ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1" : "";
     const params: unknown[] = [connectionId];
     if (orgId) params.push(orgId);
 
     const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-      `SELECT url, schema_name FROM connections WHERE id = $1${orgFilter}`,
+      `SELECT url, schema_name FROM connections WHERE id = $1 AND status != 'archived'${orgFilter}`,
       params,
     );
     if (rows.length > 0) {

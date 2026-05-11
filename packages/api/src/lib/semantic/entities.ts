@@ -204,19 +204,23 @@ export async function listEntityRows(
 ): Promise<SemanticEntityRow[]> {
   if (!hasInternalDB()) return [];
 
-  // When filtering to status='published' we apply a connection-visibility
-  // filter that mirrors `getVisibleConnectionIds` in *published* mode —
-  // i.e. only `status = 'published'` connections count, never drafts. The
-  // overlay variant in `listEntitiesWithOverlay` accepts drafts because
-  // it's developer-mode by construction. Pinning published mode here
-  // prevents the published-mode agent from surfacing an entity tied to a
-  // draft connection that the SQL whitelist would reject anyway.
+  // When filtering to status='published' we apply two visibility layers:
+  //
+  // 1. Entity-row `org_id` — own-org OR `__global__` so the canonical
+  //    demo entities migrated to `__global__` in 0060 stay visible (they
+  //    are otherwise stranded — invisible to every workspace).
+  // 2. Connection-level — mirrors `getVisibleConnectionIds` in *published*
+  //    mode (only `status='published'` connections count, never drafts).
+  //    Includes the connection-level shadow check so a tombstoned global
+  //    connection drops out of the visible set, which transitively hides
+  //    every entity tied to it.
   //
   // Other call sites (admin reads at status='draft', count queries) keep
   // the simpler org-scoped query — they intentionally see archive/draft
   // state.
   const visibilityClause = statusFilter === "published"
-    ? `AND (
+    ? `AND (org_id = $1 OR org_id = '__global__')
+       AND (
          connection_id IS NULL
          OR connection_id IN (
            SELECT id FROM connections WHERE org_id = $1 AND status = 'published'
@@ -232,12 +236,19 @@ export async function listEntityRows(
        )`
     : "";
 
+  // In published-mode branches, the org_id filter is folded into
+  // `visibilityClause` (own-org OR shadowed-global). Other branches
+  // keep the simpler `WHERE org_id = $1` because they intentionally
+  // see archive/draft state and don't need global fallback.
+  const isPublishedRead = statusFilter === "published";
+
   if (entityType) {
     if (statusFilter) {
+      const orgPredicate = isPublishedRead ? "" : "org_id = $1 AND ";
       return internalQuery<SemanticEntityRow>(
         `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
          FROM semantic_entities
-         WHERE org_id = $1 AND entity_type = $2 AND status = $3
+         WHERE ${orgPredicate}entity_type = $2 AND status = $3
            ${visibilityClause}
          ORDER BY name`,
         [orgId, entityType, statusFilter],
@@ -253,10 +264,11 @@ export async function listEntityRows(
   }
 
   if (statusFilter) {
+    const orgPredicate = isPublishedRead ? "" : "org_id = $1 AND ";
     return internalQuery<SemanticEntityRow>(
       `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
        FROM semantic_entities
-       WHERE org_id = $1 AND status = $2
+       WHERE ${orgPredicate}status = $2
          ${visibilityClause}
        ORDER BY entity_type, name`,
       [orgId, statusFilter],
@@ -478,12 +490,27 @@ export async function listEntitiesWithOverlay(
     )
   `;
 
+  // Entity-level OWN_OR_GLOBAL: an org sees its own entities and entities
+  // at `org_id = '__global__'`. Without this, entities at `__global__`
+  // (the canonical demo entities moved by migration 0060) are stranded —
+  // visible to no one — and the shipped demo's entity definitions
+  // disappear for every workspace.
+  //
+  // Entity-level shadow (per-org override of a same-name global entity)
+  // is intentionally NOT implemented here — no current onboarding flow
+  // creates a per-org entity with the same name as a global one, and
+  // pg-mem's CTE engine can't run the correlated subquery the shadow
+  // check would require. The connection-level shadow above already
+  // handles the main confusion case: tombstoning the connection drops
+  // every entity tied to it from the visibility set.
+  const entityOrgVisibilitySql = `org_id = $1 OR org_id = '__global__'`;
+
   if (entityType) {
     return internalQuery<SemanticEntityRow>(
       `WITH overlay AS (
          SELECT DISTINCT ON (org_id, name, connection_id) ${baseSelect}
          FROM semantic_entities
-         WHERE org_id = $1
+         WHERE (${entityOrgVisibilitySql})
            AND entity_type = $2
            AND status IN ('published', 'draft', 'draft_delete')
            AND (${connectionVisibilitySql})
@@ -505,7 +532,7 @@ export async function listEntitiesWithOverlay(
     `WITH overlay AS (
        SELECT DISTINCT ON (org_id, name, connection_id) ${baseSelect}
        FROM semantic_entities
-       WHERE org_id = $1
+       WHERE (${entityOrgVisibilitySql})
          AND status IN ('published', 'draft', 'draft_delete')
          AND (${connectionVisibilitySql})
        ORDER BY org_id, name, connection_id,
@@ -986,15 +1013,33 @@ export async function restoreSingleConnection(
   opts?: { demoIndustry?: string | null },
 ): Promise<RestoreConnectionResult> {
   const current = await client.query(
-    `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+    `SELECT status, url FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
     [orgId, connectionId],
   );
   if (current.rows.length === 0) {
     return { status: "not_found" };
   }
-  const row = current.rows[0] as { status: string };
+  const row = current.rows[0] as { status: string; url: string };
   if (row.status !== "archived") {
     return { status: "not_archived" };
+  }
+
+  // Tombstone rows (the per-org delete-as-hide shadow inserted by
+  // admin-connections.ts when an org hides a `__global__` connection
+  // from its workspace) carry `url = ''` as a marker — they're not real
+  // archived connections. Restoring them by flipping status='published'
+  // would expose the empty-string url to every read path that doesn't
+  // pre-filter `status='archived'`, and `decryptUrl('')` then crashes.
+  // The user-visible "restore" semantic on a tombstone is "un-hide" —
+  // delete the per-org row so the global connection becomes visible
+  // again via the connection-visibility fallback. No entity/prompt
+  // cascade because the tombstone never owned any.
+  if (row.url === "") {
+    await client.query(
+      `DELETE FROM connections WHERE org_id = $1 AND id = $2 AND status = 'archived' AND url = ''`,
+      [orgId, connectionId],
+    );
+    return { status: "restored", entities: 0, prompts: 0 };
   }
 
   await client.query(

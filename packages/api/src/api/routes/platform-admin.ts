@@ -488,8 +488,10 @@ platformAdmin.openapi(getWorkspaceRoute, async (c) => {
         `SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`,
         [workspaceId],
       ),
+      // Exclude archive tombstones — hidden `__global__` connections
+      // shouldn't inflate the platform org-list per-org connection count.
       internalQuery<{ count: number }>(
-        `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`,
+        `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`,
         [workspaceId],
       ),
       internalQuery<{ count: number }>(

@@ -97,10 +97,24 @@ const getModeRoute = createRoute({
   },
 });
 
+// "Demo is active for this org" if either:
+//   1. The org owns a published `__demo__` row (legacy pre-#2304 onboarding), OR
+//   2. The canonical `__global__/__demo__` exists AND the org hasn't
+//      tombstoned it (no per-org row of any status — matches the
+//      shadow-check semantics in `getVisibleConnectionIds`).
 const DEMO_ACTIVE_SQL = `
   SELECT EXISTS (
     SELECT 1 FROM connections
-    WHERE id = '__demo__' AND org_id = $1 AND status = 'published'
+    WHERE id = '__demo__' AND status = 'published'
+      AND (
+        org_id = $1
+        OR (
+          org_id = '__global__'
+          AND NOT EXISTS (
+            SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
+          )
+        )
+      )
   ) AS active
 `;
 

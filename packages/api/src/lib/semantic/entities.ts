@@ -204,12 +204,36 @@ export async function listEntityRows(
 ): Promise<SemanticEntityRow[]> {
   if (!hasInternalDB()) return [];
 
+  // When filtering to status='published' we apply the same connection-
+  // visibility filter as `listEntitiesWithOverlay` so the published-mode
+  // agent path doesn't surface entities tied to a connection the org
+  // archived (or to a `__global__` connection the org tombstoned). Other
+  // call sites (admin reads at status='draft', count queries) keep the
+  // simpler org-scoped query — they intentionally see archive/draft state.
+  const visibilityClause = statusFilter === "published"
+    ? `AND (
+         connection_id IS NULL
+         OR connection_id IN (
+           SELECT id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
+         )
+         OR (
+           connection_id IN (
+             SELECT id FROM connections WHERE org_id = '__global__' AND status IN ('published', 'draft')
+           )
+           AND connection_id NOT IN (
+             SELECT id FROM connections WHERE org_id = $1
+           )
+         )
+       )`
+    : "";
+
   if (entityType) {
     if (statusFilter) {
       return internalQuery<SemanticEntityRow>(
         `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
          FROM semantic_entities
          WHERE org_id = $1 AND entity_type = $2 AND status = $3
+           ${visibilityClause}
          ORDER BY name`,
         [orgId, entityType, statusFilter],
       );
@@ -228,6 +252,7 @@ export async function listEntityRows(
       `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
        FROM semantic_entities
        WHERE org_id = $1 AND status = $2
+         ${visibilityClause}
        ORDER BY entity_type, name`,
       [orgId, statusFilter],
     );
@@ -420,17 +445,30 @@ export async function listEntitiesWithOverlay(
   const baseSelect =
     "id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at";
 
-  // Connection visibility includes the org's own connections plus rows at
-  // `org_id = '__global__'` (the canonical-demo fallback added in #2303).
-  // Per-org entities tied to `connection_id = '__demo__'` would otherwise be
-  // filtered out once the per-org demo connection row was removed in favor of
-  // the shared global one. Keep this in sync with `getVisibleConnectionIds`.
+  // Connection visibility mirrors `getVisibleConnectionIds`:
+  //   1. The org's own non-archived connections.
+  //   2. PLUS `__global__` connections the org hasn't shadowed (any per-org
+  //      row of the same id — including an archived tombstone — masks the
+  //      global counterpart). This is what makes "delete the demo" work
+  //      end-to-end: tombstone the connection → global drops out of the
+  //      visible set → entities tied to that connection_id get filtered
+  //      out of the developer-mode overlay alongside it.
+  //
+  // Phrased without UNION / NOT EXISTS so pg-mem's overlay-queries
+  // integration suite can execute it; logically equivalent to the
+  // shadow-check pattern in `getVisibleConnectionIds`.
   const connectionVisibilitySql = `
     connection_id IS NULL
     OR connection_id IN (
-      SELECT id FROM connections
-      WHERE (org_id = $1 OR org_id = '__global__')
-        AND status IN ('published', 'draft')
+      SELECT id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
+    )
+    OR (
+      connection_id IN (
+        SELECT id FROM connections WHERE org_id = '__global__' AND status IN ('published', 'draft')
+      )
+      AND connection_id NOT IN (
+        SELECT id FROM connections WHERE org_id = $1
+      )
     )
   `;
 

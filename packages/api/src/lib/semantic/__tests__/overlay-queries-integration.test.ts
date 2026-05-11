@@ -261,4 +261,21 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     const rows = await listEntitiesWithOverlay("org-1", "entity");
     expect(rowsByName(rows)).toEqual({ novamart_orders: "published" });
   });
+
+  it("per-org tombstone hides entities tied to a `__global__` connection (#<PR2>)", async () => {
+    // The "delete the demo from my workspace" flow inserts a per-org
+    // archived row at the same id as the global. The shadow check excludes
+    // the global from the visible-connection set, so any entities the org
+    // owns at that connection_id drop out of the overlay alongside it.
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+    );
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', 'org-1', 'archived')`,
+    );
+    seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
+
+    const rows = await listEntitiesWithOverlay("org-1", "entity");
+    expect(rows).toHaveLength(0);
+  });
 });

@@ -91,6 +91,7 @@ const {
   getAbuseEvents,
   getAbuseDetail,
   restoreAbuseState,
+  getAbuseRestoreStatus,
   _resetAbuseState,
 } = await import("../abuse");
 
@@ -225,6 +226,10 @@ describe("Abuse Prevention Engine", () => {
     // would keep reading the stale `suspended` level forever.
     it("checkAbuseStatus returns 'none' for allowlisted workspaces even with stale suspended state", () => {
       const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      // Defensive — a prior test that forgot to restore the env could
+      // short-circuit the suspension setup below via `recordQueryEvent`'s
+      // allowlist guard, masking a regression as "still works."
+      delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
       // Drive the workspace to suspended *without* the allowlist set.
       const config = getAbuseConfig();
       for (let i = 0; i <= config.queryRateLimit + 5; i++) {
@@ -236,9 +241,43 @@ describe("Abuse Prevention Engine", () => {
       process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-late-allowlist";
       try {
         expect(checkAbuseStatus("ws-late-allowlist").level).toBe("none");
-        // Throttled state would also be reported as `none` — same code path,
-        // but worth a quick sanity check that no `throttleDelayMs` leaks out.
+        // No throttle delay leaks out when the underlying state was
+        // suspended (would be nonsensical) — covered separately for
+        // the throttled branch below.
         expect(checkAbuseStatus("ws-late-allowlist").throttleDelayMs).toBeUndefined();
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+      }
+    });
+
+    // Companion test: the throttled branch of `checkAbuseStatus` constructs a
+    // `throttleDelayMs` field that the suspended branch never builds. The
+    // prior `.throttleDelayMs).toBeUndefined()` assertion was tautological
+    // because the seed state was suspended. Pin the throttled-branch
+    // behavior explicitly so a refactor that drops the allowlist guard from
+    // the `throttled` arm doesn't silently leak the delay.
+    it("checkAbuseStatus returns 'none' (no throttleDelayMs) for an allowlisted-with-throttled workspace", () => {
+      const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      const config = getAbuseConfig();
+      // Drive through warning → throttled but stop short of suspended.
+      // Each call over the limit bumps escalations; the ladder hits
+      // throttled at the second escalation.
+      for (let i = 0; i <= config.queryRateLimit + 1; i++) {
+        recordQueryEvent("ws-throttle-allowlist", { success: true });
+      }
+      // Seed state should be throttled, not suspended.
+      expect(checkAbuseStatus("ws-throttle-allowlist").level).toBe("throttled");
+      expect(checkAbuseStatus("ws-throttle-allowlist").throttleDelayMs).toBe(
+        config.throttleDelayMs,
+      );
+
+      process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-throttle-allowlist";
+      try {
+        const status = checkAbuseStatus("ws-throttle-allowlist");
+        expect(status.level).toBe("none");
+        expect(status.throttleDelayMs).toBeUndefined();
       } finally {
         if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
         else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
@@ -273,16 +312,45 @@ describe("Abuse Prevention Engine", () => {
         await restoreAbuseState();
         expect(checkAbuseStatus("ws-rehydrate-skip").level).toBe("none");
         expect(checkAbuseStatus("ws-rehydrate-keep").level).toBe("suspended");
-        // Restore log includes the allowlistSkipped count so operators can
-        // see the churn without grepping for per-row warnings.
+        // Restore log includes both counts and the offending IDs so
+        // operators can recover from an env-var typo with logs alone
+        // (over-skip via a bare count is unrecoverable). Asserting
+        // both `restored` and `allowlistSkipped` together catches the
+        // symmetric regression: an over-skip would inflate
+        // `allowlistSkipped`, an under-skip would inflate `restored`.
         const restoreLog = infoCalls.find((c) =>
           c.msg.includes("Restored abuse state"),
         );
+        expect(restoreLog?.ctx.count).toBe(1);
         expect(restoreLog?.ctx.allowlistSkipped).toBe(1);
+        expect(restoreLog?.ctx.allowlistSkippedIds).toEqual(["ws-rehydrate-skip"]);
       } finally {
         if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
         else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
       }
+    });
+
+    // Companion to the rehydrate-skip test: the restore status getter
+    // surfaces the boot outcome so the platform-admin page can warn
+    // when in-memory state is empty because rehydration *failed*, not
+    // because the workspace is genuinely clean.
+    it("getAbuseRestoreStatus reports the last restoreAbuseState outcome", async () => {
+      expect(getAbuseRestoreStatus()).toBe("pending");
+
+      setInternalDB(true);
+      setInternalQuery(async () => []);
+      await restoreAbuseState();
+      expect(getAbuseRestoreStatus()).toBe("ok");
+
+      setInternalQuery(async () => {
+        throw new Error("simulated DB outage");
+      });
+      await restoreAbuseState();
+      expect(getAbuseRestoreStatus()).toBe("load_failed");
+
+      setInternalDB(false);
+      await restoreAbuseState();
+      expect(getAbuseRestoreStatus()).toBe("db_unavailable");
     });
 
     it("isLoadTestWorkspace reflects env-var changes without restart", () => {
@@ -393,6 +461,29 @@ describe("Abuse Prevention Engine", () => {
     it("excludes workspaces with level none", () => {
       recordQueryEvent("ws-ok", { success: true });
       expect(listFlaggedWorkspaces()).toEqual([]);
+    });
+
+    // Mirrors `checkAbuseStatus`'s read-time allowlist guard — without
+    // this filter, the abuse console keeps showing an allowlisted-
+    // suspended workspace forever even though every other read path
+    // (chat gate, platform-admin abuseLevel, etc.) reports it as none.
+    // A reinstate click on such a row would be a no-op.
+    it("filters out allowlisted workspaces even when in-memory state is non-none", () => {
+      const original = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-late-allow", { success: true });
+      }
+      expect(checkAbuseStatus("ws-late-allow").level).toBe("warning");
+
+      process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-late-allow";
+      try {
+        expect(listFlaggedWorkspaces()).toEqual([]);
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
+      }
     });
   });
 

@@ -54,9 +54,10 @@ import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PLAN_TIERS } from "@useatlas/types";
-import type { PlanTier } from "@useatlas/types";
+import type { PlanTier, AbuseLevel } from "@useatlas/types";
 import { OrgDetailSheet } from "./detail-sheet";
 import { planBadge, statusBadge } from "./statuses";
+import { abuseBadge } from "@/ui/lib/abuse-badge";
 import {
   Building2,
   Search,
@@ -82,6 +83,8 @@ interface Org {
   planTier: string;
   suspendedAt: string | null;
   deletedAt: string | null;
+  /** Optional — older API/web pair omits; UI treats missing as "none". */
+  abuseLevel?: AbuseLevel;
 }
 
 interface OrgListResponse {
@@ -199,10 +202,13 @@ export default function OrganizationsPage() {
       cell: ({ row }) => {
         const { Icon, className, label } = statusBadge(row.original.workspaceStatus);
         return (
-          <Badge variant="outline" className={className}>
-            <Icon className="mr-1 size-3" />
-            {label}
-          </Badge>
+          <span className="flex flex-wrap items-center gap-1">
+            <Badge variant="outline" className={className}>
+              <Icon className="mr-1 size-3" />
+              {label}
+            </Badge>
+            {abuseBadge(row.original.abuseLevel)}
+          </span>
         );
       },
     },

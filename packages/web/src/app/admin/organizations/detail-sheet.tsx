@@ -16,6 +16,8 @@ import { Mail, Users } from "lucide-react";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { roleBadge } from "./roles";
 import { planBadge, statusBadge } from "./statuses";
+import { abuseBadge, AbuseDivergenceBanner } from "@/ui/lib/abuse-badge";
+import type { AbuseLevel } from "@useatlas/types";
 
 interface OrgDetail {
   organization: {
@@ -28,6 +30,8 @@ interface OrgDetail {
     planTier: string;
     suspendedAt: string | null;
     deletedAt: string | null;
+    /** Optional — older API/web pair omits; UI treats missing as "none". */
+    abuseLevel?: AbuseLevel;
   };
   members: Array<{
     id: string;
@@ -88,11 +92,13 @@ function OrgDetailContent({ orgId }: { orgId: string }) {
 
   return (
     <div className="space-y-6 px-4">
+      <AbuseDivergenceBanner level={data.organization.abuseLevel} />
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline" className={status.className}>
           <StatusIcon className="mr-1 size-3" />
           {status.label}
         </Badge>
+        {abuseBadge(data.organization.abuseLevel)}
         <Badge variant="outline" className={plan.className}>
           <PlanIcon className="mr-1 size-3" />
           {plan.label}

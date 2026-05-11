@@ -15796,6 +15796,15 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "abuseLevel": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "warning",
+                              "throttled",
+                              "suspended"
+                            ]
                           }
                         },
                         "required": [
@@ -15984,6 +15993,15 @@
                           "type": [
                             "string",
                             "null"
+                          ]
+                        },
+                        "abuseLevel": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "warning",
+                            "throttled",
+                            "suspended"
                           ]
                         }
                       },

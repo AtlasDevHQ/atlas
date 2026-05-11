@@ -63,9 +63,9 @@ import type {
   PlatformWorkspace,
   WorkspaceStatus,
   PlanTier,
-  AbuseLevel,
 } from "@/ui/lib/types";
 import { WORKSPACE_STATUSES, PLAN_TIERS } from "@/ui/lib/types";
+import { abuseBadge, AbuseDivergenceBanner } from "@/ui/lib/abuse-badge";
 import { formatDate } from "@/lib/format";
 
 // Dynamic import for Recharts (heavy dependency)
@@ -106,39 +106,6 @@ function statusBadge(status: WorkspaceStatus) {
       return <Badge variant="outline" className="gap-1 border-amber-500 text-amber-600">Suspended</Badge>;
     case "deleted":
       return <Badge variant="secondary" className="gap-1">Deleted</Badge>;
-  }
-}
-
-/**
- * Badge for the in-memory abuse level — distinct from `statusBadge` which
- * reflects the `workspace_status` DB column flipped by admin actions.
- * The two can disagree (DB-active + abuse-suspended is the bug this badge
- * exists to expose), so always render both when `level` is non-`"none"`.
- * Returns `null` for `"none"` so the row stays uncluttered when there's
- * nothing to surface.
- */
-function abuseBadge(level: AbuseLevel) {
-  switch (level) {
-    case "none":
-      return null;
-    case "warning":
-      return (
-        <Badge variant="outline" className="border-yellow-500 text-yellow-600 gap-1">
-          Abuse: warning
-        </Badge>
-      );
-    case "throttled":
-      return (
-        <Badge variant="outline" className="border-orange-500 text-orange-600 gap-1">
-          Abuse: throttled
-        </Badge>
-      );
-    case "suspended":
-      return (
-        <Badge variant="destructive" className="gap-1">
-          Abuse: suspended
-        </Badge>
-      );
   }
 }
 
@@ -473,7 +440,7 @@ function PlatformPageContent() {
                         <TableCell>
                           <span className="flex flex-wrap items-center gap-1">
                             {statusBadge(ws.status as WorkspaceStatus)}
-                            {abuseBadge((ws.abuseLevel ?? "none") as AbuseLevel)}
+                            {abuseBadge(ws.abuseLevel)}
                           </span>
                         </TableCell>
                         <TableCell>{ws.members}</TableCell>
@@ -633,25 +600,7 @@ function PlatformPageContent() {
             <MutationErrorSurface error={detailError} feature="Platform Admin" />
           ) : detailData ? (
             <div className="space-y-4">
-              {detailData.workspace.abuseLevel && detailData.workspace.abuseLevel !== "none" ? (
-                <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm">
-                  <AlertTriangle className="mt-0.5 size-4 text-amber-600 shrink-0" />
-                  <div className="space-y-1">
-                    <p className="font-medium text-amber-900 dark:text-amber-100">
-                      Abuse detector reports{" "}
-                      <span className="font-mono">{detailData.workspace.abuseLevel}</span>.
-                    </p>
-                    <p className="text-amber-800 dark:text-amber-200">
-                      This is independent of the workspace status above — chat &amp; query
-                      requests are being blocked even if status reads &quot;active&quot;.{" "}
-                      <a href="/admin/abuse" className="underline underline-offset-2">
-                        Open Abuse Console
-                      </a>{" "}
-                      to reinstate.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
+              <AbuseDivergenceBanner level={detailData.workspace.abuseLevel} />
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <span className="text-sm text-muted-foreground">Name</span>
@@ -676,7 +625,7 @@ function PlatformPageContent() {
                   <span className="text-sm text-muted-foreground">Status</span>
                   <div className="flex flex-wrap items-center gap-1">
                     {statusBadge(detailData.workspace.status as WorkspaceStatus)}
-                    {abuseBadge((detailData.workspace.abuseLevel ?? "none") as AbuseLevel)}
+                    {abuseBadge(detailData.workspace.abuseLevel)}
                   </div>
                 </div>
                 <div>

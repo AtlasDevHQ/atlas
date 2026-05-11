@@ -236,4 +236,81 @@ describe("/api/v1/admin/organizations/** — F-08 platform-admin gate (#1750)", 
       });
     }
   });
+
+  // #2269 — `/admin/organizations` is a sibling surface to `/admin/platform`
+  // (different role bucket — workspace org-admin vs platform-admin) and
+  // hits the same `checkAbuseStatus` divergence. Closing the bug class on
+  // the platform-admin page without surfacing `abuseLevel` here would have
+  // shipped the same "DB-active + abuse-suspended renders as Active"
+  // confusion to admin-orgs. Both list + detail thread the field.
+  describe("abuseLevel surfacing", () => {
+    beforeEach(() => {
+      setPlatformAdmin();
+      mocks.hasInternalDB = true;
+    });
+
+    it("GET / threads checkAbuseStatus into every row", async () => {
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization") && !sql.includes("member")) {
+          return [
+            {
+              id: "org-clean",
+              name: "Clean",
+              slug: "clean",
+              logo: null,
+              metadata: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              workspace_status: "active",
+              plan_tier: "starter",
+              suspended_at: null,
+              deleted_at: null,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(orgsRequest("GET", "/api/v1/admin/organizations"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        organizations: Array<{ id: string; workspaceStatus: string; abuseLevel?: string }>;
+      };
+      expect(body.organizations[0].id).toBe("org-clean");
+      // `checkAbuseStatus` is mocked to a constant `{ level: "none" }` in
+      // api-test-mocks; a regression that drops the field returns
+      // `undefined` instead of `"none"`, which the assertion below
+      // catches.
+      expect(body.organizations[0].abuseLevel).toBe("none");
+    });
+
+    it("GET /:id threads checkAbuseStatus into the detail response", async () => {
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [
+            {
+              id: "org-target",
+              name: "Target",
+              slug: "target",
+              logo: null,
+              metadata: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              workspace_status: "active",
+              plan_tier: "starter",
+              suspended_at: null,
+              deleted_at: null,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(orgsRequest("GET", "/api/v1/admin/organizations/org-target"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        organization: { id: string; abuseLevel?: string };
+      };
+      expect(body.organization.id).toBe("org-target");
+      expect(body.organization.abuseLevel).toBe("none");
+    });
+  });
 });

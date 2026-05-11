@@ -18,10 +18,11 @@ import {
   it,
   expect,
   beforeEach,
+  afterEach,
   afterAll,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
-import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
+import { PLAN_TIERS, asRatio, type PlanTier, type AbuseLevel } from "@useatlas/types";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { createHash } from "node:crypto";
 
@@ -38,15 +39,18 @@ import { mock } from "bun:test";
 // `checkAbuseStatus` to a constant `{ level: "none" }`; that fixture is
 // fine for the existing suites but blocks the regression test for the
 // "platform-admin says active while chat is suspended" bug.
-const abuseStatusByWorkspace = new Map<string, "none" | "warning" | "throttled" | "suspended">();
+const abuseStatusByWorkspace = new Map<string, AbuseLevel>();
 mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mock(() => []),
   reinstateWorkspace: mock(() => "warning" as const),
   getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
+  // `asRatio` brands the threshold to match the real `getAbuseConfig`
+  // boundary — keeps this fixture in lockstep with the api-test-mocks
+  // shape so a future caller can swap between the two without a cast.
   getAbuseConfig: mock(() => ({
     queryRateLimit: 200,
     queryRateWindowSeconds: 300,
-    errorRateThreshold: 0.5,
+    errorRateThreshold: asRatio(0.5),
     uniqueTablesLimit: 50,
     throttleDelayMs: 2000,
   })),
@@ -56,6 +60,8 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   })),
   recordQueryEvent: mock(() => {}),
   restoreAbuseState: mock(async () => {}),
+  getAbuseRestoreStatus: mock(() => "ok" as const),
+  ABUSE_RESTORE_STATUSES: ["pending", "ok", "db_unavailable", "load_failed"] as const,
   _resetAbuseState: mock(() => abuseStatusByWorkspace.clear()),
   abuseCleanupTick: mock(() => {}),
   ABUSE_CLEANUP_INTERVAL_MS: 300_000,
@@ -345,6 +351,12 @@ describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
     mockLogWarn.mockClear();
   });
 
+  // Clear in afterEach (not end-of-body) so a thrown assertion doesn't
+  // leak `abuseStatusByWorkspace` entries into the next test.
+  afterEach(() => {
+    abuseStatusByWorkspace.clear();
+  });
+
   function mockListWorkspaces(rows: Array<{ id: string; slug: string }>): void {
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("FROM organization o")) {
@@ -390,43 +402,10 @@ describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
     expect(lookup["ws-dharma"].status).toBe("active");
     expect(lookup["ws-dharma"].abuseLevel).toBe("suspended");
     expect(lookup["ws-clean"].abuseLevel).toBe("none");
-
-    abuseStatusByWorkspace.clear();
   });
 
-  // The detail route uses `toWorkspaceResponse` (the helper) while the
-  // list route inlines its own mapper. Both must agree about
-  // `abuseLevel`. Direct helper coverage rather than going through
-  // `getWorkspaceDetails` (which is module-mocked deeper than this test
-  // can reach without re-registering the whole `db/internal` mock).
-  it("toWorkspaceResponse writes abuseLevel into the detail-route shape", async () => {
-    abuseStatusByWorkspace.set("ws-helper-flagged", "throttled");
-    const { _toWorkspaceResponseForTest } = await import("../routes/platform-admin");
-    const row = {
-      id: "ws-helper-flagged",
-      name: "Flagged",
-      slug: "flagged",
-      workspace_status: "active" as const,
-      plan_tier: "starter" as const,
-      byot: false,
-      stripe_customer_id: null,
-      trial_ends_at: null,
-      suspended_at: null,
-      deleted_at: null,
-      region: "us",
-      region_assigned_at: null,
-      createdAt: "2026-01-01T00:00:00.000Z",
-    };
-    const ws = _toWorkspaceResponseForTest(row, {
-      members: 1,
-      conversations: 0,
-      queriesLast24h: 0,
-      connections: 0,
-      scheduledTasks: 0,
-    });
-    expect(ws.status).toBe("active");
-    expect(ws.abuseLevel).toBe("throttled");
-
-    abuseStatusByWorkspace.clear();
-  });
+  // Detail-route surfacing through the same `toWorkspaceResponse`
+  // helper (the list route was refactored to call it directly, so the
+  // detail-via-helper test isn't needed any more — the list assertion
+  // above exercises the shared code path).
 });

@@ -153,10 +153,42 @@ const workspaceState = new Map<string, WorkspaceAbuseState>();
  */
 const warnedLoadTestSkip = new Set<string>();
 
+/**
+ * Outcome of the last `restoreAbuseState` boot call. Surfaced to the
+ * platform-admin response so an operator who's looking at a workspace
+ * that confidently renders `abuseLevel: "none"` can tell the difference
+ * between "actually clean" and "rehydration failed — in-memory state
+ * never got loaded, enforcement is effectively off." Mirrors the
+ * `AbuseEventsStatus` pattern (#1682) for the detail panel's events
+ * payload — same three-state status surface, same UI affordance.
+ *
+ *   - `pending`        — `restoreAbuseState` has not run yet (boot
+ *                        in progress, or no `DATABASE_URL`).
+ *   - `ok`             — last run completed; in-memory state matches DB.
+ *   - `db_unavailable` — `hasInternalDB()` returned false; no rehydrate
+ *                        was attempted. Expected for self-hosted deploys.
+ *   - `load_failed`    — the SQL read threw and the engine started with
+ *                        empty state. UI must show a destructive banner.
+ */
+export const ABUSE_RESTORE_STATUSES = [
+  "pending",
+  "ok",
+  "db_unavailable",
+  "load_failed",
+] as const;
+export type AbuseRestoreStatus = (typeof ABUSE_RESTORE_STATUSES)[number];
+let _restoreStatus: AbuseRestoreStatus = "pending";
+
+/** Read the last `restoreAbuseState` outcome. */
+export function getAbuseRestoreStatus(): AbuseRestoreStatus {
+  return _restoreStatus;
+}
+
 /** Reset all in-memory state. For tests. */
 export function _resetAbuseState(): void {
   workspaceState.clear();
   warnedLoadTestSkip.clear();
+  _restoreStatus = "pending";
 }
 
 /** Get or create workspace state. */
@@ -374,11 +406,23 @@ export function checkAbuseStatus(workspaceId: string): {
 // Admin operations
 // ---------------------------------------------------------------------------
 
-/** List all workspaces with non-"none" abuse levels. */
+/**
+ * List all workspaces with non-"none" abuse levels.
+ *
+ * Filters out allowlisted workspaces (`ATLAS_LOADTEST_ALLOWED_ORGS`) so
+ * the abuse console doesn't render stale-suspended rows for workspaces
+ * that every other read path (`checkAbuseStatus`, the platform-admin
+ * `abuseLevel` surface, the chat-route gate) reports as `none`. Without
+ * this filter, an admin would see a "suspended" workspace in the abuse
+ * list, click reinstate, and get back a noop — the in-memory state stays
+ * suspended but is shadowed by the allowlist guard, so the read & write
+ * paths diverge.
+ */
 export function listFlaggedWorkspaces(): AbuseStatus[] {
   const results: AbuseStatus[] = [];
   for (const [workspaceId, state] of workspaceState) {
     if (state.level === "none") continue;
+    if (isLoadTestWorkspace(workspaceId)) continue;
     results.push({
       workspaceId,
       workspaceName: null, // Resolved by the admin route
@@ -643,7 +687,10 @@ export async function getAbuseEvents(
 
 /** Restore in-memory state from DB on startup. */
 export async function restoreAbuseState(): Promise<void> {
-  if (!hasInternalDB()) return;
+  if (!hasInternalDB()) {
+    _restoreStatus = "db_unavailable";
+    return;
+  }
 
   try {
     // Get the latest event per workspace to restore current level
@@ -660,7 +707,7 @@ export async function restoreAbuseState(): Promise<void> {
     );
 
     let driftSkipped = 0;
-    let allowlistSkipped = 0;
+    const allowlistSkippedIds: string[] = [];
     for (const row of rows) {
       const { level, trigger, levelDrifted } = coerceAbuseEnums(
         row.workspace_id,
@@ -676,14 +723,18 @@ export async function restoreAbuseState(): Promise<void> {
         continue;
       }
       if (level === "none") continue; // Already reinstated
-      // Never rehydrate a suspension/throttle/warning for an allowlisted
-      // workspace — `checkAbuseStatus` would short-circuit it to "none"
-      // anyway, but leaving the in-memory ladder primed means the moment
-      // the workspace is removed from `ATLAS_LOADTEST_ALLOWED_ORGS` it
-      // would snap back to suspended without any new escalation. Count
-      // skips so operators can see the historical-state churn.
+      // Never rehydrate a non-"none" level for an allowlisted workspace.
+      // The skip is gated by *current* env-var membership: if the
+      // workspace later leaves `ATLAS_LOADTEST_ALLOWED_ORGS` and the
+      // process restarts, the next `restoreAbuseState` call will see the
+      // same row, find no allowlist match, and rehydrate it. State isn't
+      // dropped at the DB layer — only kept out of memory while
+      // allowlisted. Same read-time guard inside `checkAbuseStatus`
+      // shadows the in-memory ladder when the env var is set, so an
+      // operator removing a workspace from the allowlist *without*
+      // restarting still sees "Active" until the next escalation.
       if (isLoadTestWorkspace(row.workspace_id)) {
-        allowlistSkipped++;
+        allowlistSkippedIds.push(row.workspace_id);
         continue;
       }
 
@@ -697,16 +748,23 @@ export async function restoreAbuseState(): Promise<void> {
     }
 
     const restored = [...workspaceState.values()].filter((s) => s.level !== "none").length;
+    const allowlistSkipped = allowlistSkippedIds.length;
     if (restored > 0 || driftSkipped > 0 || allowlistSkipped > 0) {
       log.info(
-        { count: restored, driftSkipped, allowlistSkipped },
+        // IDs included so an operator who set `ATLAS_LOADTEST_ALLOWED_ORGS`
+        // to the wrong workspace ID can recover from logs alone — a
+        // bare count like `allowlistSkipped: 17` doesn't tell you
+        // *which* 17 got shadowed by an env-var typo.
+        { count: restored, driftSkipped, allowlistSkipped, allowlistSkippedIds },
         "Restored abuse state for %d workspaces (%d skipped due to enum drift, %d skipped via allowlist)",
         restored,
         driftSkipped,
         allowlistSkipped,
       );
     }
+    _restoreStatus = "ok";
   } catch (err) {
+    _restoreStatus = "load_failed";
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },
       "Failed to restore abuse state from DB — starting with empty state",

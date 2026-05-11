@@ -282,13 +282,21 @@ const noisyNeighborsRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 /**
- * Build a PlatformWorkspace from a WorkspaceRow + health counts.
- * Re-exported as `_toWorkspaceResponseForTest` below so test suites can
- * exercise the abuseLevel surfacing without standing up the full DB mock.
+ * Build a PlatformWorkspace from a WorkspaceRow + health counts. Shared
+ * between the list route (where the SQL row carries health columns
+ * inline) and the detail route (where health is loaded as a follow-up
+ * Promise.all).
  */
 function toWorkspaceResponse(
   row: WorkspaceRow,
   health: { members: number; conversations: number; queriesLast24h: number; connections: number; scheduledTasks: number },
+  /**
+   * Optional pre-resolved allowlist for batch callers. The list route
+   * parses `ATLAS_LOADTEST_ALLOWED_ORGS` once per request and threads
+   * the result through every row instead of re-parsing per workspace
+   * (#2249). Detail-route callers pass `undefined` and pay the parse.
+   */
+  allowlist: ReadonlySet<string> | null = getLoadTestAllowlist(),
 ): PlatformWorkspace {
   return {
     id: row.id,
@@ -309,15 +317,11 @@ function toWorkspaceResponse(
     region: row.region,
     regionAssignedAt: row.region_assigned_at,
     createdAt: row.createdAt,
-    // #2249 — surface the load-test allowlist override so the detail
-    // page renders the same badge as the list view.
-    neverSuspend: getLoadTestAllowlist()?.has(row.id) ?? false,
-    // Surface the in-memory abuse level so `/admin/platform` no longer
-    // shows "Active" while the chat path is blocked by
-    // `checkAbuseStatus`. `workspace_status` (the `status` field above)
-    // is the admin-mutation column — it does not reflect auto-escalation
-    // from the abuse detector. The allowlist guard inside
-    // `checkAbuseStatus` keeps never-suspend workspaces at "none" here too.
+    neverSuspend: allowlist?.has(row.id) ?? false,
+    // `status` reflects the `workspace_status` DB column; `abuseLevel`
+    // is the in-memory `checkAbuseStatus` verdict. The two diverge when
+    // the detector escalates without a corresponding admin mutation —
+    // that divergence is what surfacing both here exposes.
     abuseLevel: checkAbuseStatus(row.id).level,
   };
 }
@@ -401,34 +405,38 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
        ORDER BY o."createdAt" DESC`,
     );
 
-    // #2249 — read the load-test allowlist once per request rather
-    // than re-parsing the env var inside the per-row map.
+    // Parse the allowlist once per request and thread it through every
+    // row — `toWorkspaceResponse` defaults to calling `getLoadTestAllowlist()`
+    // itself for the detail-route single-row case (#2249).
     const allowlist = getLoadTestAllowlist();
 
-    const workspaces = rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      slug: row.slug,
-      status: row.workspace_status,
-      planTier: row.plan_tier,
-      byot: row.byot,
-      members: row.members,
-      conversations: row.conversations,
-      queriesLast24h: row.queries_last_24h,
-      connections: row.connections,
-      scheduledTasks: row.scheduled_tasks,
-      stripeCustomerId: row.stripe_customer_id,
-      trialEndsAt: row.trial_ends_at,
-      suspendedAt: row.suspended_at,
-      deletedAt: row.deleted_at,
-      region: row.region,
-      regionAssignedAt: row.region_assigned_at,
-      createdAt: row.createdAt,
-      neverSuspend: allowlist?.has(row.id) ?? false,
-      // Same rationale as `toWorkspaceResponse` — list view must agree
-      // with the detail panel about whether chat is blocked by abuse.
-      abuseLevel: checkAbuseStatus(row.id).level,
-    }));
+    const workspaces = rows.map((row) =>
+      toWorkspaceResponse(
+        {
+          id: row.id,
+          name: row.name,
+          slug: row.slug,
+          workspace_status: row.workspace_status,
+          plan_tier: row.plan_tier,
+          byot: row.byot,
+          stripe_customer_id: row.stripe_customer_id,
+          trial_ends_at: row.trial_ends_at,
+          suspended_at: row.suspended_at,
+          deleted_at: row.deleted_at,
+          region: row.region,
+          region_assigned_at: row.region_assigned_at,
+          createdAt: row.createdAt,
+        },
+        {
+          members: row.members,
+          conversations: row.conversations,
+          queriesLast24h: row.queries_last_24h,
+          connections: row.connections,
+          scheduledTasks: row.scheduled_tasks,
+        },
+        allowlist,
+      ),
+    );
 
     return c.json({ workspaces }, 200);
   }), { label: "list workspaces" });
@@ -878,7 +886,3 @@ platformAdmin.openapi(noisyNeighborsRoute, async (c) => {
 });
 
 export { platformAdmin };
-
-// Test-only re-export. Keeping it underscore-prefixed makes the
-// "do-not-import-in-prod" signal obvious at every call site.
-export { toWorkspaceResponse as _toWorkspaceResponseForTest };

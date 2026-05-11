@@ -156,12 +156,12 @@ Tracker: [milestone #42](https://github.com/AtlasDevHQ/atlas/milestones/42). Bug
 - [x] Co-locate BYOT provider + key with workspace billing ([#2309](https://github.com/AtlasDevHQ/atlas/pull/2309)) — reverts the `/admin/model-config → /platform/model-config` move from #2305 (audit miss: API is org-scoped, not platform-tier) and inlines provider/key setup on `/admin/billing` so workspace admins stop bouncing between pages.
 - [x] Extract `<MfaPanel>` shared by `/admin/account-security` + `/settings/profile` ([#2257](https://github.com/AtlasDevHQ/atlas/issues/2257), [#2317](https://github.com/AtlasDevHQ/atlas/pull/2317)) — collapses ~50 lines of duplicated passkey state + handlers + tile composition into a single component; typed `MfaPanelSurface` literal-union prop locks the two valid return paths so a typo can't silently 403 non-admins on re-auth.
 - [x] Invert `NavSubItem` default → `prefixMatch` ([#2259](https://github.com/AtlasDevHQ/atlas/issues/2259)) — renames the implicit-prefix-match flag, flips the default to exact-match so siblings sharing a prefix (e.g. `/admin/settings` vs `/admin/settings/mcp`) stop collapsing into the parent, and opts only `/admin/users` + `/admin/scheduled-tasks` into prefix-mode for legitimate detail-page children. Locks in the #2176 regression with explicit tests.
+- [x] `/admin/semantic` — Import-from-disk affordance gated on `entityCount === 0` ([#2168](https://github.com/AtlasDevHQ/atlas/issues/2168)) — toolbar button drops out once Demo populates entities; empty workspaces get a contextual "Sync from disk" link inside an empty-state block so the prominent CTA only renders when it's actually useful.
 
 ### Open
 
 - [ ] Dev-mode discoverability: banner-overlap fix + LaunchDarkly-style pending-changes counter + Publish flow ([#2177](https://github.com/AtlasDevHQ/atlas/issues/2177)).
 - [ ] Standardize all date selectors on a single shadcn DatePicker / DateRangePicker ([#2171](https://github.com/AtlasDevHQ/atlas/issues/2171)).
-- [ ] `/admin/semantic` — rethink Import-from-disk affordance once entities load from Demo ([#2168](https://github.com/AtlasDevHQ/atlas/issues/2168)).
 - [ ] Top-bar spawn follow-ups ([#2258](https://github.com/AtlasDevHQ/atlas/issues/2258), [#2260](https://github.com/AtlasDevHQ/atlas/issues/2260)–[#2262](https://github.com/AtlasDevHQ/atlas/issues/2262)) — `AdminBreadcrumb` union, `/settings/profile` loading skeleton, password/identity tests, residual `authClient as unknown as` cast cleanup.
 
 <!-- 1.4.1 — MCP: Bringing It All Together: closed 2026-05-09 with 34 issues shipped; per-theme detail above in Shipped Milestones. -->

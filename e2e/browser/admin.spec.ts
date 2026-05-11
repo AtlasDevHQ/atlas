@@ -50,6 +50,12 @@ test.describe("Admin Console", () => {
 
     // Entity files should show in the file tree
     await expect(page.locator("text=companies.yml").first()).toBeVisible({ timeout: 10_000 });
+
+    // Import-from-disk surfaces must only render when entities.length === 0.
+    // With demo data populated, neither the toolbar button nor the inline
+    // empty-state should appear — they'd otherwise imply data is missing.
+    await expect(page.locator('button:has-text("Import from disk")')).toHaveCount(0);
+    await expect(page.locator('[data-testid="semantic-empty-state"]')).toHaveCount(0);
   });
 
   test("semantic layer — click entity shows detail", async ({ page }) => {

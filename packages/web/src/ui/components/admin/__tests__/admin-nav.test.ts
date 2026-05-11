@@ -20,9 +20,9 @@ describe("resolveAdminBreadcrumb", () => {
   });
 
   test("#2176 regression — /admin/settings does not collapse /admin/settings/mcp", () => {
-    // Before the prefixMatch inversion, `exact` was opt-in and easy to forget,
-    // so `/admin/settings` prefix-matched `/admin/settings/mcp`. The default
-    // is now exact; both leaves resolve to their own entry.
+    // /admin/settings and /admin/settings/mcp are sibling leaves; if the
+    // parent ever opts into prefixMatch this test fails — that's exactly
+    // the bug #2176 shipped.
     expect(resolveAdminBreadcrumb("/admin/settings")).toEqual({
       section: "Configuration",
       page: "Settings",
@@ -31,6 +31,15 @@ describe("resolveAdminBreadcrumb", () => {
       section: "Configuration",
       page: "MCP",
     });
+  });
+
+  test("prefixMatch respects segment boundaries — sibling routes sharing a prefix don't collapse", () => {
+    // Guards the trailing "/" in `pathname.startsWith(item.href + "/")`. Without
+    // it, /admin/users would prefix-match any sibling whose path happens to
+    // begin with the same letters. A future refactor that drops the "+ "/""
+    // would silently reintroduce a #2176-class regression under a new name.
+    expect(resolveAdminBreadcrumb("/admin/usersearch")).toEqual({});
+    expect(resolveAdminBreadcrumb("/admin/scheduled-tasks-archive")).toEqual({});
   });
 
   test("prefixMatch: true items match nested child routes", () => {

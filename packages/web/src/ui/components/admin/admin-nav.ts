@@ -12,7 +12,7 @@ import {
 export interface NavSubItem {
   href: string;
   label: string;
-  /** Opt-in: match `pathname.startsWith(href + "/")` for nested routes (e.g. detail pages). Default is exact-match — siblings sharing a prefix don't collapse into the parent. */
+  /** Opt-in: match `pathname.startsWith(href + "/")` so a nested route highlights its parent (e.g. `/admin/users` covers `/admin/users/[id]`). Default is exact-match — siblings sharing a prefix don't collapse into the parent. */
   prefixMatch?: boolean;
   requiredRole?: "platform_admin";
   selfHostedOnly?: boolean;
@@ -125,16 +125,25 @@ export interface AdminBreadcrumb {
   page?: string;
 }
 
-/** Single source of truth so sidebar + breadcrumb labels can never drift. */
+/**
+ * Single source of truth for nav-item matching. Sidebar active-state and
+ * breadcrumb resolution must agree on every pathname — duplicating this rule
+ * across two sites is the failure mode that caused #2176.
+ */
+export function matchesNavItem(item: NavSubItem, pathname: string): boolean {
+  if (item.prefixMatch) {
+    return pathname === item.href || pathname.startsWith(item.href + "/");
+  }
+  return pathname === item.href;
+}
+
+/** Resolves a pathname to its sidebar section + page label via `matchesNavItem`. */
 export function resolveAdminBreadcrumb(pathname: string): AdminBreadcrumb {
   if (pathname === "/admin") return {};
 
   for (const group of navGroups) {
     for (const item of group.items) {
-      const matches = item.prefixMatch
-        ? pathname === item.href || pathname.startsWith(item.href + "/")
-        : pathname === item.href;
-      if (matches) return { section: group.title, page: item.label };
+      if (matchesNavItem(item, pathname)) return { section: group.title, page: item.label };
     }
   }
 

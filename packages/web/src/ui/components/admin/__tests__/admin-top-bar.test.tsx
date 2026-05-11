@@ -68,7 +68,7 @@ describe("AdminTopBar breadcrumb", () => {
     expect(container.textContent).not.toContain("Semantic Layer");
   });
 
-  test("/admin/settings/mcp resolves to MCP, not Settings (regression on exact-match flag)", () => {
+  test("/admin/settings/mcp resolves to MCP, not Settings (#2176 regression — sibling leaf must not collapse the child)", () => {
     mockedPath = "/admin/settings/mcp";
     cleanup();
     const { container } = render(<AdminTopBar />, { wrapper: Wrapper });

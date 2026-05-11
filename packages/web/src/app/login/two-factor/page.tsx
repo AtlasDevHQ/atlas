@@ -92,7 +92,7 @@ function logFailure(action: string, raw: TwoFactorApiError | null): void {
  * suspicious — the caller never receives an unsafe target.
  *
  * The two-factor surface is reachable from any of: login → /login,
- * passkey-tile re-auth → /admin/security, future sensitive
+ * passkey-tile re-auth → /admin/account-security, future sensitive
  * ops. Without this allowlist, an attacker who can plant a link to
  * `/login/two-factor?callbackURL=https://evil.example` would phish the
  * post-2FA bounce. The check is belt-and-suspenders alongside the

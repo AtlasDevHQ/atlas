@@ -42,7 +42,6 @@ export const navGroups: NavGroup[] = [
     title: "Intelligence",
     icon: Brain,
     items: [
-      { href: "/admin/model-config", label: "AI Provider", requiredRole: "platform_admin" },
       { href: "/admin/learned-patterns", label: "Learned Patterns" },
       { href: "/admin/prompts", label: "Prompt Library" },
       { href: "/admin/starter-prompts", label: "Starter Prompts" },
@@ -64,7 +63,7 @@ export const navGroups: NavGroup[] = [
     title: "Security",
     icon: Shield,
     items: [
-      { href: "/admin/security", label: "MFA & Sessions" },
+      { href: "/admin/account-security", label: "MFA & Sessions" },
       { href: "/admin/sso", label: "SSO" },
       { href: "/admin/scim", label: "SCIM" },
       { href: "/admin/ip-allowlist", label: "IP Allowlist" },
@@ -77,7 +76,7 @@ export const navGroups: NavGroup[] = [
     icon: BarChart3,
     items: [
       { href: "/admin/audit", label: "Audit Log" },
-      { href: "/admin/admin-actions", label: "Admin Action Log" },
+      { href: "/admin/action-log", label: "Admin Action Log" },
       { href: "/admin/token-usage", label: "Token Usage" },
       { href: "/admin/usage", label: "Usage" },
       { href: "/admin/scheduled-tasks", label: "Scheduled Tasks" },
@@ -87,7 +86,6 @@ export const navGroups: NavGroup[] = [
     title: "Configuration",
     icon: Settings,
     items: [
-      { href: "/admin/plugins", label: "Plugins", selfHostedOnly: true },
       { href: "/admin/integrations", label: "Integrations" },
       { href: "/admin/email-provider", label: "Email Provider" },
       { href: "/admin/billing", label: "Billing" },
@@ -115,6 +113,8 @@ export const navGroups: NavGroup[] = [
       { href: "/platform/domains", label: "Custom Domains" },
       { href: "/platform/settings", label: "Settings" },
       { href: "/platform/plugins", label: "Plugin Catalog", selfHostedOnly: true },
+      { href: "/platform/plugin-registry", label: "Plugin Registry", selfHostedOnly: true },
+      { href: "/platform/model-config", label: "AI Provider" },
     ],
   },
 ];

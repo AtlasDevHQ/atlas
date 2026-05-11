@@ -99,7 +99,7 @@ const myMfaFactorsRoute = createRoute({
   summary: "Per-user MFA factor snapshot",
   description:
     "Returns the calling user's password / TOTP / passkey-count snapshot " +
-    "used by the BackupMethodBanner on /admin/security to detect " +
+    "used by the BackupMethodBanner on /admin/account-security to detect " +
     "the lockout-risk profile (one passkey, no password, no TOTP). Light " +
     "auth — by definition the banner has to render before the user has a " +
     "second factor enrolled.",

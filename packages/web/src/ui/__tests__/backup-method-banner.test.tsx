@@ -24,7 +24,7 @@ let mockLoading = false;
 let mockError: { message: string; status?: number } | null = null;
 
 mock.module("next/navigation", () => ({
-  usePathname: () => "/admin/security",
+  usePathname: () => "/admin/account-security",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));

@@ -54,7 +54,6 @@ export const navGroups: NavGroup[] = [
     icon: Users,
     items: [
       { href: "/admin/users", label: "Users" },
-      { href: "/admin/organizations", label: "Organizations", requiredRole: "platform_admin" },
       { href: "/admin/roles", label: "Roles" },
       { href: "/admin/sessions", label: "Sessions" },
       { href: "/admin/api-keys", label: "API Keys" },
@@ -106,6 +105,7 @@ export const navGroups: NavGroup[] = [
     requiredRole: "platform_admin",
     items: [
       { href: "/admin/platform", label: "Overview", exact: true },
+      { href: "/admin/organizations", label: "Organizations" },
       { href: "/admin/platform/actions", label: "Action Log" },
       { href: "/admin/platform/security", label: "Security Adoption" },
       { href: "/admin/abuse", label: "Abuse Prevention" },

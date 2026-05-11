@@ -8,10 +8,15 @@
  *     mounts; no router.replace fires).
  *   - Platform admin landing on `/admin/users` is redirected to
  *     `/platform/users` so the URL matches the data they're operating on.
+ *   - Pending session on `/admin/users` blocks the render — no flash of
+ *     workspace UI for a platform admin during the loading window.
  *   - `/platform/users` short-circuits to null when the platform-admin
  *     guard is blocked (non-platform-admin walking up to the URL gets
  *     the redirect-shim from `usePlatformAdminGuard`).
  *   - `/platform/users` renders the page when the guard passes.
+ *   - Scope-driven verb divergence: `scope="platform"` shows "Ban user";
+ *     `scope="workspace"` shows "Remove from workspace". This is the
+ *     user-visible behavior the routing tests above don't reach.
  */
 
 import { describe, expect, test, mock, afterEach } from "bun:test";
@@ -20,7 +25,15 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 
-let mockUserRole: "admin" | "platform_admin" | null = "admin";
+interface MockSession {
+  data: { user: { role: string } } | undefined;
+  isPending: boolean;
+}
+
+let mockSession: MockSession = {
+  data: { user: { role: "admin" } },
+  isPending: false,
+};
 let mockGuardBlocked = false;
 const mockReplace = mock(() => {});
 
@@ -31,14 +44,19 @@ mock.module("next/navigation", () => ({
 }));
 
 mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
-  useUserRole: () => mockUserRole,
+  useUserRole: () => mockSession.data?.user?.role,
   usePlatformAdminGuard: () => ({ blocked: mockGuardBlocked }),
 }));
 
-// Stub everything the inner UsersPage tries to render so the smoke tests
-// stay focused on the routing/scoping shell.
+// useAtlasConfig is consulted both by the routing wrapper (for
+// `authClient.useSession()`) and by the inner UsersPage (for `apiUrl` /
+// `isCrossOrigin`). One mock covers both.
 mock.module("@/ui/context", () => ({
-  useAtlasConfig: () => ({ apiUrl: "http://localhost", isCrossOrigin: false }),
+  useAtlasConfig: () => ({
+    apiUrl: "http://localhost",
+    isCrossOrigin: false,
+    authClient: { useSession: () => mockSession },
+  }),
 }));
 mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({ data: null, loading: false, error: null, refetch: () => {} }),
@@ -57,6 +75,7 @@ mock.module("@/ui/hooks/use-admin-mutation", () => ({
 
 const AdminUsersPage = (await import("../../app/admin/users/page")).default;
 const PlatformUsersPage = (await import("../../app/platform/users/page")).default;
+const { UsersPage } = await import("../../app/admin/users/_users-page");
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -66,21 +85,34 @@ function wrapper({ children }: { children: ReactNode }) {
 afterEach(() => {
   cleanup();
   mockReplace.mockClear();
-  mockUserRole = "admin";
+  mockSession = { data: { user: { role: "admin" } }, isPending: false };
   mockGuardBlocked = false;
 });
 
-describe("UsersPage routing split (#PR4)", () => {
+describe("UsersPage routing split (#2306)", () => {
   test("workspace admin on /admin/users stays put — no redirect", () => {
-    mockUserRole = "admin";
+    mockSession = { data: { user: { role: "admin" } }, isPending: false };
     render(createElement(AdminUsersPage), { wrapper });
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
   test("platform admin on /admin/users is redirected to /platform/users", () => {
-    mockUserRole = "platform_admin";
+    mockSession = { data: { user: { role: "platform_admin" } }, isPending: false };
     render(createElement(AdminUsersPage), { wrapper });
     expect(mockReplace).toHaveBeenCalledWith("/platform/users");
+  });
+
+  test("pending session on /admin/users blocks render — no flash of workspace UI", () => {
+    // Reproduces the audit-flagged race: while `useSession()` returns
+    // `{ data: undefined, isPending: true }` (the initial render before
+    // Better Auth resolves the session), the page MUST render nothing.
+    // Otherwise a platform admin sees workspace data + fires three stray
+    // /api/v1/admin/users{,/stats,/invitations} requests during the
+    // milliseconds before `router.replace` fires.
+    mockSession = { data: undefined, isPending: true };
+    const { container } = render(createElement(AdminUsersPage), { wrapper });
+    expect(container.textContent).toBe("");
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 
   test("/platform/users short-circuits to null when the guard is blocked", () => {
@@ -95,5 +127,17 @@ describe("UsersPage routing split (#PR4)", () => {
     const { container } = render(createElement(PlatformUsersPage), { wrapper });
     // Header is the first user-visible string from the underlying UsersPage.
     expect(container.textContent).toContain("Users");
+  });
+
+  test("scope='workspace' renders 'Manage workspace members and roles' subtitle", () => {
+    const { container } = render(createElement(UsersPage, { scope: "workspace" }), { wrapper });
+    expect(container.textContent).toContain("Manage workspace members and roles");
+    expect(container.textContent).not.toContain("Manage all user accounts and roles");
+  });
+
+  test("scope='platform' renders 'Manage all user accounts and roles' subtitle", () => {
+    const { container } = render(createElement(UsersPage, { scope: "platform" }), { wrapper });
+    expect(container.textContent).toContain("Manage all user accounts and roles");
+    expect(container.textContent).not.toContain("Manage workspace members and roles");
   });
 });

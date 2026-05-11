@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
+import { useAtlasConfig } from "@/ui/context";
 import { UsersPage } from "./_users-page";
 
 /**
@@ -13,18 +13,29 @@ import { UsersPage } from "./_users-page";
  * be using `/platform/users` for cross-tenant operations. We redirect
  * them on mount so the URL matches the data they're about to operate
  * on. Workspace admins (`role = 'admin'`) stay here.
+ *
+ * The redirect mirrors `usePlatformAdminGuard`'s pending-aware shape:
+ * we MUST gate on `session.isPending` before deciding what to render,
+ * otherwise a platform admin briefly sees the workspace UI (and fires
+ * stray fetches for the user list / stats / invitations) during the
+ * one-render window where `useSession()` returns
+ * `{ data: undefined, isPending: true }` before resolving.
  */
 export default function AdminUsersPage() {
   const router = useRouter();
-  const userRole = useUserRole();
+  const { authClient } = useAtlasConfig();
+  const session = authClient.useSession();
+  const isPending = session.isPending;
+  const userRole = session.data?.user?.role;
 
   useEffect(() => {
+    if (isPending) return;
     if (userRole === "platform_admin") {
       router.replace("/platform/users");
     }
-  }, [router, userRole]);
+  }, [isPending, userRole, router]);
 
-  if (userRole === "platform_admin") {
+  if (isPending || userRole === "platform_admin") {
     return null;
   }
 

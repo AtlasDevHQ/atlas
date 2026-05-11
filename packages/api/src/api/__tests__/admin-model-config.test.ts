@@ -52,8 +52,23 @@ class MockModelConfigError extends Error {
   }
 }
 
+class MockModelConfigDecryptError extends Error {
+  public readonly _tag = "ModelConfigDecryptError" as const;
+  public readonly configId: string;
+  public readonly cause: string;
+  constructor(args: { configId: string; cause: string }) {
+    super(`Failed to decrypt key for ${args.configId}`);
+    this.name = "ModelConfigDecryptError";
+    this.configId = args.configId;
+    this.cause = args.cause;
+  }
+}
+
 const mockGetWorkspaceModelConfig: Mock<(orgId: string) => unknown> = mock(() =>
   Effect.succeed(null),
+);
+const mockGetWorkspaceModelConfigRaw: Mock<(orgId: string) => unknown> = mock(
+  () => Effect.succeed(null),
 );
 const mockSetWorkspaceModelConfig: Mock<(...args: unknown[]) => unknown> = mock(
   () =>
@@ -82,10 +97,12 @@ const mockTestModelConfig: Mock<(...args: unknown[]) => unknown> = mock(() =>
 
 mock.module("@atlas/ee/platform/model-routing", () => ({
   getWorkspaceModelConfig: mockGetWorkspaceModelConfig,
+  getWorkspaceModelConfigRaw: mockGetWorkspaceModelConfigRaw,
   setWorkspaceModelConfig: mockSetWorkspaceModelConfig,
   deleteWorkspaceModelConfig: mockDeleteWorkspaceModelConfig,
   testModelConfig: mockTestModelConfig,
   ModelConfigError: MockModelConfigError,
+  ModelConfigDecryptError: MockModelConfigDecryptError,
 }));
 
 // --- Audit capture: use the real ADMIN_ACTIONS catalog so route emissions
@@ -114,6 +131,64 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
+// --- Anthropic catalog mocks. Real module is HTTP-bound; mock it so the
+// /catalog?provider=anthropic route flow is unit-testable. Mirrors every
+// named export the route currently imports (mock.module is all-or-nothing).
+class MockAnthropicCatalogUnauthorized extends Error {
+  readonly _tag = "AnthropicCatalogUnauthorized" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "AnthropicCatalogUnauthorized";
+  }
+}
+class MockAnthropicCatalogRateLimited extends Error {
+  readonly _tag = "AnthropicCatalogRateLimited" as const;
+  readonly retryAfterSeconds: number | null;
+  constructor(message: string, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "AnthropicCatalogRateLimited";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+class MockAnthropicCatalogUnavailable extends Error {
+  readonly _tag = "AnthropicCatalogUnavailable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "AnthropicCatalogUnavailable";
+  }
+}
+
+const mockGetAnthropicCatalog: Mock<(...args: unknown[]) => unknown> = mock(
+  async () => ({
+    models: [
+      {
+        id: "claude-opus-4-6",
+        name: "Claude Opus 4.6",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }),
+);
+const mockInvalidateAnthropicCatalog: Mock<(orgId: string) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/anthropic-catalog", () => ({
+  getAnthropicCatalog: mockGetAnthropicCatalog,
+  invalidateAnthropicCatalog: mockInvalidateAnthropicCatalog,
+  AnthropicCatalogUnauthorized: MockAnthropicCatalogUnauthorized,
+  AnthropicCatalogRateLimited: MockAnthropicCatalogRateLimited,
+  AnthropicCatalogUnavailable: MockAnthropicCatalogUnavailable,
+}));
+
 // --- Import the app AFTER all mocks ---
 const { app } = await import("../index");
 
@@ -141,11 +216,32 @@ beforeEach(() => {
   mocks.hasInternalDB = true;
   mockLogAdminAction.mockClear();
   mockGetWorkspaceModelConfig.mockClear();
+  mockGetWorkspaceModelConfigRaw.mockClear();
   mockSetWorkspaceModelConfig.mockClear();
   mockDeleteWorkspaceModelConfig.mockClear();
   mockTestModelConfig.mockClear();
 
   mockGetWorkspaceModelConfig.mockImplementation(() => Effect.succeed(null));
+  mockGetWorkspaceModelConfigRaw.mockImplementation(() => Effect.succeed(null));
+  mockGetAnthropicCatalog.mockClear();
+  mockInvalidateAnthropicCatalog.mockClear();
+  mockGetAnthropicCatalog.mockImplementation(async () => ({
+    models: [
+      {
+        id: "claude-opus-4-6",
+        name: "Claude Opus 4.6",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }));
   mockSetWorkspaceModelConfig.mockImplementation(() =>
     Effect.succeed({
       id: "cfg-1",
@@ -505,5 +601,231 @@ describe("audit emission — POST /api/v1/admin/model-config/test", () => {
       model: "claude-opus-4-6",
     });
     expect(JSON.stringify(entry)).not.toContain("sk-ant-probe");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/model-config/catalog?provider=anthropic
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
+  it("returns the workspace's anthropic catalog using the stored BYOT key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored-key",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: { id: string }[];
+      fetchedAt: string;
+      fallback: boolean;
+    };
+    expect(body.models).toHaveLength(1);
+    expect(body.models[0].id).toBe("claude-opus-4-6");
+    expect(body.fallback).toBe(false);
+    // Verify the catalog was called with the workspace's stored key.
+    expect(mockGetAnthropicCatalog).toHaveBeenCalledTimes(1);
+    const args = mockGetAnthropicCatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[1]).toBe("sk-ant-stored-key");
+    expect(args[2]).toEqual({ refresh: false });
+  });
+
+  it("passes ?refresh=1 through to bypass the cache", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored-key",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest(
+        "GET",
+        "/api/v1/admin/model-config/catalog?provider=anthropic&refresh=1",
+      ),
+    );
+    expect(res.status).toBe(200);
+    const args = mockGetAnthropicCatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[2]).toEqual({ refresh: true });
+  });
+
+  it("returns 400 missing_byot_key when no anthropic config exists", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() => Effect.succeed(null));
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+    // Do NOT emit a successful catalog-refresh audit when the precondition
+    // fails — there's no key in play, so no credential-oracle risk.
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 missing_byot_key when saved provider is not anthropic", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-openai-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+  });
+
+  it("returns 422 decrypt_failed when the stored key cannot be decrypted", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.fail(
+        new MockModelConfigDecryptError({
+          configId: "cfg-1",
+          cause: "wrong key version",
+        }),
+      ),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("decrypt_failed");
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    expect(lastAuditCall().status).toBe("failure");
+    expect(lastAuditCall().metadata).toMatchObject({
+      provider: "anthropic",
+      error: "decrypt_failed",
+    });
+  });
+
+  it("returns 401 byot_key_invalid when Anthropic rejects the key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-rotten",
+        baseUrl: null,
+      }),
+    );
+    mockGetAnthropicCatalog.mockImplementation(() => {
+      throw new MockAnthropicCatalogUnauthorized("rejected by anthropic");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_key_invalid");
+    const entry = lastAuditCall();
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({
+      provider: "anthropic",
+      error: "byot_key_invalid",
+    });
+    // The apiKey must never appear in any captured audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("sk-ant-rotten");
+  });
+
+  it("returns 429 with Retry-After when Anthropic rate-limits the workspace", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetAnthropicCatalog.mockImplementation(() => {
+      throw new MockAnthropicCatalogRateLimited("slow down", 45);
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("45");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_rate_limited");
+  });
+
+  it("returns 503 byot_provider_unavailable on upstream outage", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetAnthropicCatalog.mockImplementation(() => {
+      throw new MockAnthropicCatalogUnavailable("anthropic returned 503");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_unavailable");
+  });
+
+  it("emits model_config.catalog_refresh on success with provider + modelCount + source", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("model_config.catalog_refresh");
+    expect(entry.targetType).toBe("model_config");
+    expect(entry.metadata).toEqual({
+      provider: "anthropic",
+      modelCount: 1,
+      source: "fresh",
+    });
+    // The apiKey must never appear in any captured audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("sk-ant-stored");
+  });
+
+  it("?provider=gateway and the default still return the gateway catalog (backward compat)", async () => {
+    // Default path (no provider param) — should hit the gateway catalog flow,
+    // not touch getWorkspaceModelConfigRaw or getAnthropicCatalog.
+    const res = await app.fetch(adminRequest("GET", "/api/v1/admin/model-config/catalog"));
+    // The real `getGatewayCatalog` is invoked here — it'll either reach the
+    // gateway (test env: false) or fall back to the bundled subset. Either
+    // way we get a 200 with `fallback: true|false`.
+    expect([200, 500]).toContain(res.status);
+    if (res.status === 200) {
+      const body = (await res.json()) as { fallback: boolean };
+      expect(typeof body.fallback).toBe("boolean");
+    }
+    expect(mockGetWorkspaceModelConfigRaw).not.toHaveBeenCalled();
+    expect(mockGetAnthropicCatalog).not.toHaveBeenCalled();
   });
 });

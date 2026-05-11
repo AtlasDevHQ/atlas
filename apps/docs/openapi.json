@@ -31164,11 +31164,42 @@
         "tags": [
           "Admin — Model Config"
         ],
-        "summary": "Vercel AI Gateway model catalog",
-        "description": "Returns the catalog of models available via the Vercel AI Gateway, grouped by provider. Cached server-side; the `fallback` field is true when the live fetch failed and a bundled subset was returned.",
+        "summary": "BYOT model catalog",
+        "description": "Returns a model catalog for the requested provider. With no `?provider` (or `?provider=gateway`), returns the Vercel AI Gateway catalog (server-cached; `fallback: true` when the live fetch failed and a bundled subset was returned). With `?provider=anthropic`, returns Anthropic /v1/models for the workspace using its saved BYOT key — requires a saved Anthropic provider configuration.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "gateway",
+                "anthropic"
+              ],
+              "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns the workspace's catalog from api.anthropic.com/v1/models using the saved BYOT key — requires a saved Anthropic configuration.",
+              "example": "anthropic"
+            },
+            "required": false,
+            "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns the workspace's catalog from api.anthropic.com/v1/models using the saved BYOT key — requires a saved Anthropic configuration.",
+            "name": "provider",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "description": "Bypass the catalog cache and force a fresh upstream fetch."
+            },
+            "required": false,
+            "description": "Bypass the catalog cache and force a fresh upstream fetch.",
+            "name": "refresh",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Gateway catalog",
+            "description": "Provider catalog",
             "content": {
               "application/json": {
                 "schema": {
@@ -31248,8 +31279,33 @@
               }
             }
           },
+          "400": {
+            "description": "Missing BYOT key for the requested provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "401": {
-            "description": "Authentication required",
+            "description": "Authentication required — or upstream rejected the BYOT key",
             "content": {
               "application/json": {
                 "schema": {
@@ -31270,8 +31326,33 @@
               }
             }
           },
+          "422": {
+            "description": "Stored BYOT key cannot be decrypted (likely key-rotation drift)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
-            "description": "Rate limit exceeded",
+            "description": "Rate limited — by Atlas or by upstream provider",
             "content": {
               "application/json": {
                 "schema": {
@@ -31283,6 +31364,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Upstream provider unavailable",
             "content": {
               "application/json": {
                 "schema": {

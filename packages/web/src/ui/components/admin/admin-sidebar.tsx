@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { navGroups, type NavGroup, type NavSubItem } from "./admin-nav";
+import { matchesNavItem, navGroups, type NavGroup } from "./admin-nav";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -80,13 +80,8 @@ export function AdminSidebar() {
   const pendingCount = usePendingAmendmentCount();
   const isSaas = deployMode === "saas";
 
-  function isSubItemActive(item: NavSubItem) {
-    if (item.exact) return pathname === item.href;
-    return pathname === item.href || pathname.startsWith(item.href + "/");
-  }
-
   function isGroupActive(group: NavGroup) {
-    return group.items.some((item) => isSubItemActive(item));
+    return group.items.some((item) => matchesNavItem(item, pathname));
   }
 
   const visibleGroups = navGroups
@@ -180,7 +175,7 @@ export function AdminSidebar() {
                     <SidebarMenuSub>
                       {group.items.map((item) => (
                         <SidebarMenuSubItem key={item.href}>
-                          <SidebarMenuSubButton asChild isActive={isSubItemActive(item)}>
+                          <SidebarMenuSubButton asChild isActive={matchesNavItem(item, pathname)}>
                             <Link href={item.href}>
                               <span>{item.label}</span>
                               {item.badge != null && item.badge > 0 && (

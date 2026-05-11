@@ -12,8 +12,8 @@ import {
 export interface NavSubItem {
   href: string;
   label: string;
-  /** When true, exact-match only (no prefix). Needed for parent routes that share a prefix with a child (e.g. `/admin/settings` vs `/admin/settings/mcp`). */
-  exact?: boolean;
+  /** Opt-in: match `pathname.startsWith(href + "/")` so a nested route highlights its parent (e.g. `/admin/users` covers `/admin/users/[id]`). Default is exact-match — siblings sharing a prefix don't collapse into the parent. */
+  prefixMatch?: boolean;
   requiredRole?: "platform_admin";
   selfHostedOnly?: boolean;
   badge?: number;
@@ -31,7 +31,7 @@ export const navGroups: NavGroup[] = [
     title: "Data",
     icon: Database,
     items: [
-      { href: "/admin/semantic", label: "Semantic Layer", exact: true },
+      { href: "/admin/semantic", label: "Semantic Layer" },
       { href: "/admin/semantic/improve", label: "Improve Layer" },
       { href: "/admin/schema-diff", label: "Schema Diff" },
       { href: "/admin/connections", label: "Connections" },
@@ -53,7 +53,7 @@ export const navGroups: NavGroup[] = [
     title: "Users & Access",
     icon: Users,
     items: [
-      { href: "/admin/users", label: "Users" },
+      { href: "/admin/users", label: "Users", prefixMatch: true },
       { href: "/admin/roles", label: "Roles" },
       { href: "/admin/sessions", label: "Sessions" },
       { href: "/admin/api-keys", label: "API Keys" },
@@ -80,7 +80,7 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/action-log", label: "Admin Action Log" },
       { href: "/admin/token-usage", label: "Token Usage" },
       { href: "/admin/usage", label: "Usage" },
-      { href: "/admin/scheduled-tasks", label: "Scheduled Tasks" },
+      { href: "/admin/scheduled-tasks", label: "Scheduled Tasks", prefixMatch: true },
     ],
   },
   {
@@ -94,7 +94,7 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/custom-domain", label: "Custom Domain" },
       { href: "/admin/sandbox", label: "Sandbox" },
       { href: "/admin/residency", label: "Data Residency" },
-      { href: "/admin/settings", label: "Settings", exact: true },
+      { href: "/admin/settings", label: "Settings" },
       { href: "/admin/settings/mcp", label: "MCP" },
     ],
   },
@@ -103,7 +103,7 @@ export const navGroups: NavGroup[] = [
     icon: Globe,
     requiredRole: "platform_admin",
     items: [
-      { href: "/platform", label: "Overview", exact: true },
+      { href: "/platform", label: "Overview" },
       { href: "/platform/organizations", label: "Organizations" },
       { href: "/platform/actions", label: "Action Log" },
       { href: "/platform/security", label: "Security Adoption" },
@@ -125,16 +125,25 @@ export interface AdminBreadcrumb {
   page?: string;
 }
 
-/** Single source of truth so sidebar + breadcrumb labels can never drift. */
+/**
+ * Single source of truth for nav-item matching. Sidebar active-state and
+ * breadcrumb resolution must agree on every pathname — duplicating this rule
+ * across two sites is the failure mode that caused #2176.
+ */
+export function matchesNavItem(item: NavSubItem, pathname: string): boolean {
+  if (item.prefixMatch) {
+    return pathname === item.href || pathname.startsWith(item.href + "/");
+  }
+  return pathname === item.href;
+}
+
+/** Resolves a pathname to its sidebar section + page label via `matchesNavItem`. */
 export function resolveAdminBreadcrumb(pathname: string): AdminBreadcrumb {
   if (pathname === "/admin") return {};
 
   for (const group of navGroups) {
     for (const item of group.items) {
-      const matches = item.exact
-        ? pathname === item.href
-        : pathname === item.href || pathname.startsWith(item.href + "/");
-      if (matches) return { section: group.title, page: item.label };
+      if (matchesNavItem(item, pathname)) return { section: group.title, page: item.label };
     }
   }
 

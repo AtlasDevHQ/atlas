@@ -190,12 +190,14 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # @useatlas/types and @useatlas/plugin-sdk both resolve to their
-      # `dist/` via their "exports" field, so non-api workspace tests
-      # can't import them until the packages have been built. Matches
-      # the api-tests pre-build below.
-      - name: Build @useatlas/types + @useatlas/plugin-sdk
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
+      # @atlas/web tests import from @useatlas/sdk (e.g. via
+      # use-starter-prompts-query.ts), and the SDK packages resolve to their
+      # `dist/` via their "exports" field — so all four must be built before
+      # test:others runs. The historic monolithic ci built them in order
+      # before test:others; we preserve that here. (Cost is ~5-7s on warm
+      # cache, dominated by the @useatlas/react widget bundle.)
+      - name: Build SDK packages
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
 
       - name: Test (non-api packages)
         run: bun run test:others
@@ -224,9 +226,11 @@ jobs:
       # E2E integration tier — contract tests that pin protocol-level
       # invariants across packages (e.g. MCP multi-replica session
       # locality, #2069). Runs in-process via mock.module(), no Docker
-      # services needed. Cross-package imports require built SDK dists.
-      - name: Build @useatlas/types + @useatlas/plugin-sdk
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
+      # services needed. Cross-package imports require all SDK dists
+      # (same set as test-others above — cheaper to build all four than
+      # to discover the dependency drift via a CI failure).
+      - name: Build SDK packages
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
 
       - name: Test (e2e integration tier)
         run: bun run test:e2e:integration

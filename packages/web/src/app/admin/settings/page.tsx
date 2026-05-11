@@ -498,7 +498,7 @@ export default function SettingsPage() {
   const settings = data?.settings ?? [];
   const manageable = data?.manageable ?? false;
 
-  // Only workspace-scoped settings — platform settings live at /admin/platform/settings
+  // Only workspace-scoped settings — platform settings live at /platform/settings
   const workspaceSections = new Map<string, SettingWithValue[]>();
   for (const s of settings) {
     if (s.scope !== "workspace") continue;

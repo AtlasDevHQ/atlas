@@ -23,7 +23,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PlatformSecurityMetrics } from "../lib/admin-schemas";
 
 mock.module("next/navigation", () => ({
-  usePathname: () => "/admin/platform/security",
+  usePathname: () => "/platform/security",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -50,7 +50,7 @@ mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
 }));
 
 const PlatformSecurityPage = (
-  await import("../../app/admin/platform/security/page")
+  await import("../../app/platform/security/page")
 ).default;
 
 function wrapper({ children }: { children: ReactNode }) {

@@ -24,6 +24,12 @@ import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
 import { invalidateAnthropicCatalog } from "@atlas/api/lib/anthropic-catalog";
 import { invalidateOpenAICatalog } from "@atlas/api/lib/openai-catalog";
+import {
+  invalidateBedrockCatalog,
+  getBedrockCatalog,
+  type BedrockDiscoveryCredentials,
+} from "@atlas/api/lib/bedrock-catalog";
+import type { BedrockRegion } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ApiKeyStatus,
@@ -64,12 +70,52 @@ interface ModelConfigRow {
   org_id: string;
   provider: string;
   model: string;
-  /** Nullable for provider='gateway' on platform credits. */
+  /**
+   * Nullable for provider='gateway' on platform credits. For
+   * provider='bedrock' this holds an encrypted JSON blob shaped as
+   * `BedrockCredentialBundle` (see `parseBedrockCredentialBundle`).
+   */
   api_key_encrypted: string | null;
   base_url: string | null;
+  bedrock_region: string | null;
   created_at: string;
   updated_at: string;
   [key: string]: unknown;
+}
+
+/**
+ * Parse a string-encoded Bedrock credential bundle. The bundle ships on
+ * the wire as JSON; we round-trip it through the URL encryption helper
+ * the same way every other secret column does (the helper is a thin
+ * AES-GCM wrapper that's content-agnostic). Returns null on malformed
+ * input so the caller can surface a clean validation error.
+ */
+function parseBedrockCredentialBundle(
+  raw: string,
+): { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.accessKeyId !== "string" || obj.accessKeyId.length === 0) return null;
+  if (typeof obj.secretAccessKey !== "string" || obj.secretAccessKey.length === 0) return null;
+  const sessionToken =
+    typeof obj.sessionToken === "string" && obj.sessionToken.length > 0
+      ? obj.sessionToken
+      : undefined;
+  return {
+    accessKeyId: obj.accessKeyId,
+    secretAccessKey: obj.secretAccessKey,
+    ...(sessionToken ? { sessionToken } : {}),
+  };
+}
+
+export function __parseBedrockCredentialBundleForTests(raw: string) {
+  return parseBedrockCredentialBundle(raw);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -101,7 +147,15 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
   } else {
     try {
       const decrypted = decryptUrl(row.api_key_encrypted);
-      apiKeyMasked = maskApiKey(decrypted);
+      if (row.provider === "bedrock") {
+        // For bedrock, the decrypted blob is JSON. Show the accessKeyId
+        // tail as the mask — the secretAccessKey half NEVER appears on
+        // the wire, not even masked.
+        const bundle = parseBedrockCredentialBundle(decrypted);
+        apiKeyMasked = bundle ? maskApiKey(bundle.accessKeyId) : "****";
+      } else {
+        apiKeyMasked = maskApiKey(decrypted);
+      }
       apiKeyStatus = "masked";
     } catch (err) {
       log.error(
@@ -113,12 +167,21 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
     }
   }
 
+  // bedrockRegion narrows on the row.provider invariant — only bedrock
+  // rows are allowed to have a non-null region per the DB CHECK
+  // (chk_model_provider_region). For every other provider it must be null.
+  const bedrockRegion =
+    row.provider === "bedrock" && row.bedrock_region
+      ? (row.bedrock_region as WorkspaceModelConfig["bedrockRegion"])
+      : null;
+
   return {
     id: row.id,
     orgId: row.org_id,
     provider: row.provider,
     model: row.model,
     baseUrl: row.base_url,
+    bedrockRegion,
     apiKeyMasked,
     apiKeyStatus,
     createdAt: String(row.created_at),
@@ -166,6 +229,33 @@ function validateConfig(
     );
   }
 
+  // Bedrock requires a region and a parseable IAM cred bundle. The
+  // bundle is stringified JSON on the wire; we don't try to validate the
+  // IAM creds themselves here (that's what testModelConfig is for) — just
+  // that the shape is right so we don't store a row the AI Layer can't use.
+  if (config.provider === "bedrock") {
+    if (!config.bedrockRegion) {
+      return Effect.fail(
+        new ModelConfigError({
+          message: 'AWS region is required for the "bedrock" provider.',
+          code: "validation",
+        }),
+      );
+    }
+    if (config.apiKey !== undefined) {
+      const parsed = parseBedrockCredentialBundle(config.apiKey);
+      if (!parsed) {
+        return Effect.fail(
+          new ModelConfigError({
+            message:
+              'Bedrock credentials must be a JSON object with `accessKeyId` and `secretAccessKey`.',
+            code: "validation",
+          }),
+        );
+      }
+    }
+  }
+
   // Validate base URL format when provided
   if (config.baseUrl) {
     let parsed: URL;
@@ -211,7 +301,7 @@ export const getWorkspaceModelConfig = (
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, created_at, updated_at
            FROM workspace_model_config
            WHERE org_id = $1
            LIMIT 1`,
@@ -242,6 +332,7 @@ export const getWorkspaceModelConfigRaw = (
     model: string;
     apiKey: string | null;
     baseUrl: string | null;
+    bedrockRegion: string | null;
   } | null,
   ModelConfigDecryptError | Error
 > =>
@@ -253,7 +344,7 @@ export const getWorkspaceModelConfigRaw = (
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, created_at, updated_at
            FROM workspace_model_config
            WHERE org_id = $1
            LIMIT 1`,
@@ -292,6 +383,7 @@ export const getWorkspaceModelConfigRaw = (
       model: row.model,
       apiKey,
       baseUrl: row.base_url,
+      bedrockRegion: row.bedrock_region,
     };
   });
 
@@ -342,15 +434,20 @@ export const setWorkspaceModelConfig = (
     // key version via COALESCE — swapping one without the other would
     // break decryption after the active version advances.
     const keyVersion = encryptedKey !== null ? activeKeyVersion() : null;
+    // Bedrock region is required on the row when provider='bedrock' (see
+    // chk_model_provider_region in migration 0057). Forcing NULL on every
+    // other provider keeps the constraint clean and prevents a left-over
+    // region from a previous bedrock row leaking into a switched provider.
+    const bedrockRegion = config.provider === "bedrock" ? config.bedrockRegion ?? null : null;
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url)
+          `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url, bedrock_region)
            VALUES (
              $1, $2, $3,
              COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)),
              COALESCE($6, (SELECT api_key_key_version FROM workspace_model_config WHERE org_id = $1), 1),
-             $5
+             $5, $7
            )
            ON CONFLICT (org_id) DO UPDATE SET
              provider = EXCLUDED.provider,
@@ -358,9 +455,18 @@ export const setWorkspaceModelConfig = (
              api_key_encrypted = COALESCE($4, workspace_model_config.api_key_encrypted),
              api_key_key_version = COALESCE($6, workspace_model_config.api_key_key_version),
              base_url = EXCLUDED.base_url,
+             bedrock_region = EXCLUDED.bedrock_region,
              updated_at = now()
-           RETURNING id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at`,
-          [orgId, config.provider, config.model.trim(), encryptedKey, config.baseUrl ?? null, keyVersion],
+           RETURNING id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, created_at, updated_at`,
+          [
+            orgId,
+            config.provider,
+            config.model.trim(),
+            encryptedKey,
+            config.baseUrl ?? null,
+            keyVersion,
+            bedrockRegion,
+          ],
         ),
       catch: promiseError,
     });
@@ -384,6 +490,8 @@ export const setWorkspaceModelConfig = (
       invalidateAnthropicCatalog(orgId);
     } else if (config.provider === "openai") {
       invalidateOpenAICatalog(orgId);
+    } else if (config.provider === "bedrock") {
+      invalidateBedrockCatalog(orgId);
     }
 
     return rowToConfig(rows[0]);
@@ -570,6 +678,43 @@ export const testModelConfig = (
                   };
                   throw new Error(body?.error?.message ?? `HTTP ${authedRes.status}`);
                 }
+              }
+              return { success: true, message: "Connection successful.", modelName: config.model };
+            }
+
+            case "bedrock": {
+              if (!config.bedrockRegion) {
+                throw new Error("AWS region is required for the bedrock provider.");
+              }
+              const bundle = parseBedrockCredentialBundle(apiKey);
+              if (!bundle) {
+                throw new Error(
+                  "Bedrock credentials must be a JSON object with `accessKeyId` and `secretAccessKey`.",
+                );
+              }
+              // Validate by hitting ListFoundationModels — it's a cheap
+              // read-only call that exercises both the cred bundle and the
+              // region without burning an inference token. The Converse
+              // path is verified at agent-loop time once the catalog
+              // selection is saved.
+              try {
+                const catalog = await getBedrockCatalog(
+                  // Use a synthetic orgId so the test doesn't poison the
+                  // cache that the workspace's saved config uses — the
+                  // catalog endpoint owns the workspace-scoped cache.
+                  `__test:${bundle.accessKeyId}`,
+                  config.bedrockRegion as BedrockRegion,
+                  bundle as BedrockDiscoveryCredentials,
+                  { refresh: true },
+                );
+                const ids = new Set(catalog.models.map((m) => m.id));
+                if (!ids.has(config.model)) {
+                  throw new Error(
+                    `Model "${config.model}" is not available in region ${config.bedrockRegion}. Pick one from the catalog.`,
+                  );
+                }
+              } catch (err) {
+                throw err instanceof Error ? err : new Error(String(err));
               }
               return { success: true, message: "Connection successful.", modelName: config.model };
             }

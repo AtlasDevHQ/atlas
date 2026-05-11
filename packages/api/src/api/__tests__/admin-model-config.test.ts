@@ -245,6 +245,63 @@ mock.module("@atlas/api/lib/openai-catalog", () => ({
   OpenAICatalogUnavailable: MockOpenAICatalogUnavailable,
 }));
 
+// --- Bedrock catalog mocks (mirror Anthropic + OpenAI; different cred shape). ---
+class MockBedrockCatalogUnauthorized extends Error {
+  readonly _tag = "BedrockCatalogUnauthorized" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "BedrockCatalogUnauthorized";
+  }
+}
+class MockBedrockCatalogRateLimited extends Error {
+  readonly _tag = "BedrockCatalogRateLimited" as const;
+  readonly retryAfterSeconds: number | null;
+  constructor(message: string, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "BedrockCatalogRateLimited";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+class MockBedrockCatalogUnavailable extends Error {
+  readonly _tag = "BedrockCatalogUnavailable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "BedrockCatalogUnavailable";
+  }
+}
+
+const mockGetBedrockCatalog: Mock<(...args: unknown[]) => unknown> = mock(
+  async () => ({
+    models: [
+      {
+        id: "anthropic.claude-opus-4-v1:0",
+        name: "Claude Opus 4",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+    region: "us-east-1" as const,
+  }),
+);
+const mockInvalidateBedrockCatalog: Mock<(orgId: string) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/bedrock-catalog", () => ({
+  getBedrockCatalog: mockGetBedrockCatalog,
+  invalidateBedrockCatalog: mockInvalidateBedrockCatalog,
+  BedrockCatalogUnauthorized: MockBedrockCatalogUnauthorized,
+  BedrockCatalogRateLimited: MockBedrockCatalogRateLimited,
+  BedrockCatalogUnavailable: MockBedrockCatalogUnavailable,
+}));
+
 // --- Import the app AFTER all mocks ---
 const { app } = await import("../index");
 
@@ -300,6 +357,26 @@ beforeEach(() => {
   }));
   mockGetOpenAICatalog.mockClear();
   mockInvalidateOpenAICatalog.mockClear();
+  mockGetBedrockCatalog.mockClear();
+  mockInvalidateBedrockCatalog.mockClear();
+  mockGetBedrockCatalog.mockImplementation(async () => ({
+    models: [
+      {
+        id: "anthropic.claude-opus-4-v1:0",
+        name: "Claude Opus 4",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+    region: "us-east-1" as const,
+  }));
   mockGetOpenAICatalog.mockImplementation(async () => ({
     models: [
       {
@@ -1044,5 +1121,164 @@ describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
       source: "fresh",
     });
     expect(JSON.stringify(entry)).not.toContain("sk-oai-stored");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/model-config/catalog?provider=bedrock (#2273)
+// ---------------------------------------------------------------------------
+
+const BEDROCK_BUNDLE = JSON.stringify({
+  accessKeyId: "AKIA-STORED",
+  secretAccessKey: "secret-stored",
+});
+
+describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
+  it("returns the workspace's bedrock catalog using the stored IAM bundle + region", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: { id: string; provider: string }[];
+      fallback: boolean;
+    };
+    expect(body.models[0].id).toBe("anthropic.claude-opus-4-v1:0");
+    expect(body.fallback).toBe(false);
+    expect(mockGetBedrockCatalog).toHaveBeenCalledTimes(1);
+    const args = mockGetBedrockCatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { accessKeyId: string; secretAccessKey: string; sessionToken?: string },
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[1]).toBe("us-east-1");
+    expect(args[2].accessKeyId).toBe("AKIA-STORED");
+    expect(args[2].secretAccessKey).toBe("secret-stored");
+    expect(args[3]).toEqual({ refresh: false });
+  });
+
+  it("returns 400 missing_byot_key when no bedrock config exists", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() => Effect.succeed(null));
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+  });
+
+  it("returns 400 missing_byot_key when region is missing on saved config", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+  });
+
+  it("returns 422 decrypt_failed when stored bundle is malformed JSON", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: "not-json",
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("decrypt_failed");
+  });
+
+  it("returns 401 byot_key_invalid when AWS rejects the IAM creds", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    mockGetBedrockCatalog.mockImplementation(() => {
+      throw new MockBedrockCatalogUnauthorized("AccessDeniedException");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_key_invalid");
+    // Audit row must NOT contain the secret access key.
+    expect(JSON.stringify(lastAuditCall())).not.toContain("secret-stored");
+  });
+
+  it("returns 503 byot_provider_unavailable on AWS outage", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    mockGetBedrockCatalog.mockImplementation(() => {
+      throw new MockBedrockCatalogUnavailable("aws region unreachable");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_unavailable");
+  });
+
+  it("emits model_config.catalog_refresh with provider:'bedrock' on success", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(200);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("model_config.catalog_refresh");
+    expect(entry.metadata).toEqual({
+      provider: "bedrock",
+      modelCount: 1,
+      source: "fresh",
+    });
+    // The secret access key must NEVER appear in audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("secret-stored");
   });
 });

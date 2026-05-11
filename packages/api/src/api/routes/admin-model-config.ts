@@ -33,6 +33,14 @@ import {
   OpenAICatalogUnavailable,
   getOpenAICatalog,
 } from "@atlas/api/lib/openai-catalog";
+import {
+  BedrockCatalogRateLimited,
+  BedrockCatalogUnauthorized,
+  BedrockCatalogUnavailable,
+  getBedrockCatalog,
+  type BedrockDiscoveryCredentials,
+} from "@atlas/api/lib/bedrock-catalog";
+import { BEDROCK_REGIONS, type BedrockRegion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
@@ -46,33 +54,38 @@ const modelConfigDomainError = domainError(ModelConfigError, { validation: 400, 
 // list is not a canonical tuple in `@useatlas/types`).
 
 const SetModelConfigBodySchema = z.object({
-  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway"]).openapi({
+  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway", "bedrock"]).openapi({
     description:
-      "LLM provider. Use 'custom' for any OpenAI-compatible endpoint. 'gateway' routes through Vercel AI Gateway — omit apiKey to use platform credits, or supply one for BYOT gateway billing.",
+      "LLM provider. Use 'custom' for any OpenAI-compatible endpoint. 'gateway' routes through Vercel AI Gateway — omit apiKey to use platform credits, or supply one for BYOT gateway billing. 'bedrock' calls AWS Bedrock using IAM creds (apiKey is the JSON-encoded `{ accessKeyId, secretAccessKey, sessionToken? }` bundle) plus `bedrockRegion`.",
     example: "anthropic",
   }),
   model: z.string().min(1).openapi({
-    description: "Model identifier (e.g. claude-opus-4-6, gpt-4o, anthropic/claude-opus-4.6 for gateway).",
+    description: "Model identifier (e.g. claude-opus-4-6, gpt-4o, anthropic/claude-opus-4.6 for gateway, anthropic.claude-opus-4-v1:0 for bedrock).",
     example: "claude-opus-4-6",
   }),
   apiKey: z.string().min(1).optional().openapi({
     description:
-      "Provider API key. Stored encrypted. Omit to keep the existing key on update. For 'gateway', omit entirely to ride on platform credits.",
+      "Provider API key. Stored encrypted. Omit to keep the existing key on update. For 'gateway', omit entirely to ride on platform credits. For 'bedrock', supply the JSON-stringified IAM cred bundle.",
     example: "sk-ant-...",
   }),
   baseUrl: z.string().optional().openapi({
     description: "Base URL for Azure OpenAI or custom endpoints. Required for azure-openai and custom providers.",
     example: "https://my-deployment.openai.azure.com/openai/deployments/gpt-4o/",
   }),
+  bedrockRegion: z.enum(BEDROCK_REGIONS).optional().openapi({
+    description: "AWS region for the 'bedrock' provider. Required when provider='bedrock'; ignored otherwise.",
+    example: "us-east-1",
+  }),
 });
 
 const TestModelConfigBodySchema = z.object({
-  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway"]),
+  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway", "bedrock"]),
   model: z.string().min(1),
   // Optional for `gateway` on platform credits; required for every other case.
   // Cross-field validation lives in the handler (see PUT) and in EE testModelConfig.
   apiKey: z.string().min(1).optional(),
   baseUrl: z.string().optional(),
+  bedrockRegion: z.enum(BEDROCK_REGIONS).optional(),
 });
 
 const TestResultSchema = z.object({
@@ -177,9 +190,9 @@ const testConfigRoute = createRoute({
 });
 
 const CatalogQuerySchema = z.object({
-  provider: z.enum(["gateway", "anthropic", "openai"]).optional().openapi({
+  provider: z.enum(["gateway", "anthropic", "openai", "bedrock"]).optional().openapi({
     description:
-      "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns api.anthropic.com/v1/models; 'openai' returns api.openai.com/v1/models filtered to chat-capable models. Both BYOT variants use the workspace's saved key and require a matching saved configuration.",
+      "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' / 'openai' / 'bedrock' return BYOT catalogs fetched with the workspace's saved key — bedrock additionally requires a saved region. Every BYOT variant requires a matching saved configuration.",
     example: "anthropic",
   }),
   refresh: z.enum(["1", "true"]).optional().openapi({
@@ -273,16 +286,20 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     // distinguishes a rotation from a metadata-only edit. Keeping the raw
     // key out of admin_action_log is the whole point of the `model_config.*`
     // catalog entries; do not relax this without a security review.
+    // `bedrockRegion` is non-secret and useful for triage so it lands in
+    // metadata; the IAM cred bundle (inside `apiKey`) does not.
     const auditBase = {
       provider: body.provider,
       model: body.model,
       hasSecret: body.apiKey !== undefined,
+      ...(body.bedrockRegion ? { bedrockRegion: body.bedrockRegion } : {}),
     };
     const config = yield* setWorkspaceModelConfig(orgId, {
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
+      bedrockRegion: body.bedrockRegion,
     }).pipe(
       Effect.tapError((err) =>
         Effect.sync(() =>
@@ -370,12 +387,17 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
     // credentials can replay stolen apiKeys here and read pass/fail from
     // the response body with zero forensic trail — the credential-oracle
     // threat. Metadata excludes apiKey / baseUrl values by construction.
-    const auditBase = { provider: body.provider, model: body.model };
+    const auditBase = {
+      provider: body.provider,
+      model: body.model,
+      ...(body.bedrockRegion ? { bedrockRegion: body.bedrockRegion } : {}),
+    };
     const result = yield* testModelConfig({
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
+      bedrockRegion: body.bedrockRegion,
     }).pipe(
       Effect.tapError((err) =>
         Effect.sync(() =>
@@ -446,11 +468,9 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       );
     }
 
-    const adapter = byotAdapter(provider);
-
     // Decrypt errors surface as 422 with a clear "re-enter the key" message
-    // rather than as a generic 500. Catch inline so the response shape is
-    // colocated with the rest of this route's envelopes.
+    // rather than as a generic 500. Shared across every BYOT direct-provider
+    // path below.
     const rawConfigOrDecryptError = yield* getWorkspaceModelConfigRaw(orgId).pipe(
       Effect.map((cfg) => ({ ok: true as const, cfg })),
       Effect.catchTag("ModelConfigDecryptError", (err) =>
@@ -464,7 +484,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
         targetType: "model_config",
         targetId: orgId,
         status: "failure",
-        metadata: { provider: adapter.providerKey, error: "decrypt_failed" },
+        metadata: { provider, error: "decrypt_failed" },
       });
       return c.json(
         {
@@ -477,6 +497,108 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       );
     }
     const rawConfig = rawConfigOrDecryptError.cfg;
+
+    if (provider === "bedrock") {
+      // Bedrock has a divergent shape: creds are a JSON bundle, region is
+      // a separate workspace_model_config column. Surface a clear envelope
+      // for each missing precondition before the dispatch tries to fetch.
+      if (
+        !rawConfig ||
+        rawConfig.provider !== "bedrock" ||
+        !rawConfig.apiKey ||
+        !rawConfig.bedrockRegion
+      ) {
+        return c.json(
+          {
+            error: "missing_byot_key",
+            message:
+              "Save AWS Bedrock IAM credentials + region on this workspace before refreshing the catalog.",
+            requestId,
+          },
+          400,
+        );
+      }
+      let bundle: BedrockDiscoveryCredentials;
+      try {
+        const parsed = JSON.parse(rawConfig.apiKey);
+        if (
+          !parsed ||
+          typeof parsed !== "object" ||
+          typeof parsed.accessKeyId !== "string" ||
+          typeof parsed.secretAccessKey !== "string"
+        ) {
+          throw new Error("malformed bundle");
+        }
+        bundle = {
+          accessKeyId: parsed.accessKeyId,
+          secretAccessKey: parsed.secretAccessKey,
+          ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
+            ? { sessionToken: parsed.sessionToken }
+            : {}),
+        };
+      } catch {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+          targetType: "model_config",
+          targetId: orgId,
+          status: "failure",
+          metadata: { provider: "bedrock", error: "decrypt_failed", detail: "malformed_bundle" },
+        });
+        return c.json(
+          {
+            error: "decrypt_failed",
+            message:
+              "Stored bedrock credentials are malformed. Re-enter the access key + secret on the AI Provider page.",
+            requestId,
+          },
+          422,
+        );
+      }
+
+      const bedrockResult = yield* Effect.tryPromise({
+        try: async (): Promise<ByotCatalogResult> => {
+          try {
+            const cat = await getBedrockCatalog(
+              orgId,
+              rawConfig.bedrockRegion as BedrockRegion,
+              bundle,
+              { refresh },
+            );
+            return {
+              kind: "ok",
+              models: cat.models,
+              fetchedAt: cat.fetchedAt,
+              source: cat.source,
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (err instanceof BedrockCatalogUnauthorized) {
+              return { kind: "byot_key_invalid", message };
+            }
+            if (err instanceof BedrockCatalogRateLimited) {
+              return {
+                kind: "byot_provider_rate_limited",
+                message,
+                retryAfter: err.retryAfterSeconds,
+              };
+            }
+            if (err instanceof BedrockCatalogUnavailable) {
+              return { kind: "byot_provider_unavailable", message };
+            }
+            throw err;
+          }
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      return finalizeByotCatalog(c, bedrockResult, {
+        orgId,
+        requestId,
+        provider: "bedrock",
+      });
+    }
+
+    const adapter = byotAdapter(provider);
 
     if (!rawConfig || rawConfig.provider !== adapter.providerKey || !rawConfig.apiKey) {
       return c.json(
@@ -518,60 +640,11 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
 
-    if (catalogResult.kind === "ok") {
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
-        targetType: "model_config",
-        targetId: orgId,
-        metadata: {
-          provider: adapter.providerKey,
-          modelCount: catalogResult.models.length,
-          source: catalogResult.source,
-        },
-      });
-
-      return c.json(
-        {
-          models: catalogResult.models,
-          fetchedAt: catalogResult.fetchedAt,
-          // BYOT direct providers have no curated fallback — upstream
-          // failures surface as the matching HTTP envelope above.
-          // `fallback` stays false for shape parity with the gateway
-          // response.
-          fallback: false,
-        },
-        200,
-      );
-    }
-
-    logAdminAction({
-      actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
-      targetType: "model_config",
-      targetId: orgId,
-      status: "failure",
-      metadata: {
-        provider: adapter.providerKey,
-        error: catalogResult.kind,
-        detail: catalogResult.message,
-      },
+    return finalizeByotCatalog(c, catalogResult, {
+      orgId,
+      requestId,
+      provider: adapter.providerKey,
     });
-
-    if (catalogResult.kind === "byot_key_invalid") {
-      return c.json({ error: "byot_key_invalid", message: catalogResult.message, requestId }, 401);
-    }
-    if (catalogResult.kind === "byot_provider_rate_limited") {
-      if (catalogResult.retryAfter !== null) {
-        c.header("Retry-After", String(catalogResult.retryAfter));
-      }
-      return c.json(
-        { error: "byot_provider_rate_limited", message: catalogResult.message, requestId },
-        429,
-      );
-    }
-    return c.json(
-      { error: "byot_provider_unavailable", message: catalogResult.message, requestId },
-      503,
-    );
   }), { label: "get model catalog", domainErrors: [modelConfigDomainError] });
 });
 
@@ -650,6 +723,75 @@ function byotAdapter(provider: "anthropic" | "openai"): ByotProviderAdapter {
       Unavailable: OpenAICatalogUnavailable,
     },
   };
+}
+
+/**
+ * Map a `ByotCatalogResult` to the matching HTTP response + audit row.
+ * Shared by every BYOT direct-provider path so the envelope stays in
+ * lockstep regardless of the per-provider fetcher shape.
+ */
+function finalizeByotCatalog(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Hono's context type carries the runtime request var bag; we only call its narrow `json` + `header` here, no need to thread the full Env type through.
+  c: any,
+  result: ByotCatalogResult,
+  meta: { orgId: string; requestId: string; provider: "anthropic" | "openai" | "bedrock" },
+) {
+  if (result.kind === "ok") {
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+      targetType: "model_config",
+      targetId: meta.orgId,
+      metadata: {
+        provider: meta.provider,
+        modelCount: result.models.length,
+        source: result.source,
+      },
+    });
+    return c.json(
+      {
+        models: result.models,
+        fetchedAt: result.fetchedAt,
+        // BYOT direct providers have no curated fallback — upstream
+        // failures surface as the matching HTTP envelope below.
+        // `fallback` stays false for shape parity with the gateway
+        // response.
+        fallback: false,
+      },
+      200,
+    );
+  }
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+    targetType: "model_config",
+    targetId: meta.orgId,
+    status: "failure",
+    metadata: {
+      provider: meta.provider,
+      error: result.kind,
+      detail: result.message,
+    },
+  });
+
+  if (result.kind === "byot_key_invalid") {
+    return c.json(
+      { error: "byot_key_invalid", message: result.message, requestId: meta.requestId },
+      401,
+    );
+  }
+  if (result.kind === "byot_provider_rate_limited") {
+    if (result.retryAfter !== null) {
+      c.header("Retry-After", String(result.retryAfter));
+    }
+    return c.json(
+      { error: "byot_provider_rate_limited", message: result.message, requestId: meta.requestId },
+      429,
+    );
+  }
+  return c.json(
+    { error: "byot_provider_unavailable", message: result.message, requestId: meta.requestId },
+    503,
+  );
 }
 
 export { adminModelConfig };

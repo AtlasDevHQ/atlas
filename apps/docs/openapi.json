@@ -30478,7 +30478,8 @@
                             "openai",
                             "azure-openai",
                             "custom",
-                            "gateway"
+                            "gateway",
+                            "bedrock"
                           ]
                         },
                         "model": {
@@ -30488,6 +30489,27 @@
                           "type": [
                             "string",
                             "null"
+                          ]
+                        },
+                        "bedrockRegion": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "us-east-1",
+                            "us-east-2",
+                            "us-west-2",
+                            "eu-central-1",
+                            "eu-west-1",
+                            "eu-west-3",
+                            "ap-northeast-1",
+                            "ap-southeast-1",
+                            "ap-southeast-2",
+                            "ap-south-1",
+                            "ca-central-1",
+                            "sa-east-1",
+                            null
                           ]
                         },
                         "apiKeyMasked": {
@@ -30519,6 +30541,7 @@
                         "provider",
                         "model",
                         "baseUrl",
+                        "bedrockRegion",
                         "apiKeyMasked",
                         "apiKeyStatus",
                         "createdAt",
@@ -30664,27 +30687,47 @@
                       "openai",
                       "azure-openai",
                       "custom",
-                      "gateway"
+                      "gateway",
+                      "bedrock"
                     ],
-                    "description": "LLM provider. Use 'custom' for any OpenAI-compatible endpoint. 'gateway' routes through Vercel AI Gateway — omit apiKey to use platform credits, or supply one for BYOT gateway billing.",
+                    "description": "LLM provider. Use 'custom' for any OpenAI-compatible endpoint. 'gateway' routes through Vercel AI Gateway — omit apiKey to use platform credits, or supply one for BYOT gateway billing. 'bedrock' calls AWS Bedrock using IAM creds (apiKey is the JSON-encoded `{ accessKeyId, secretAccessKey, sessionToken? }` bundle) plus `bedrockRegion`.",
                     "example": "anthropic"
                   },
                   "model": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Model identifier (e.g. claude-opus-4-6, gpt-4o, anthropic/claude-opus-4.6 for gateway).",
+                    "description": "Model identifier (e.g. claude-opus-4-6, gpt-4o, anthropic/claude-opus-4.6 for gateway, anthropic.claude-opus-4-v1:0 for bedrock).",
                     "example": "claude-opus-4-6"
                   },
                   "apiKey": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Provider API key. Stored encrypted. Omit to keep the existing key on update. For 'gateway', omit entirely to ride on platform credits.",
+                    "description": "Provider API key. Stored encrypted. Omit to keep the existing key on update. For 'gateway', omit entirely to ride on platform credits. For 'bedrock', supply the JSON-stringified IAM cred bundle.",
                     "example": "sk-ant-..."
                   },
                   "baseUrl": {
                     "type": "string",
                     "description": "Base URL for Azure OpenAI or custom endpoints. Required for azure-openai and custom providers.",
                     "example": "https://my-deployment.openai.azure.com/openai/deployments/gpt-4o/"
+                  },
+                  "bedrockRegion": {
+                    "type": "string",
+                    "enum": [
+                      "us-east-1",
+                      "us-east-2",
+                      "us-west-2",
+                      "eu-central-1",
+                      "eu-west-1",
+                      "eu-west-3",
+                      "ap-northeast-1",
+                      "ap-southeast-1",
+                      "ap-southeast-2",
+                      "ap-south-1",
+                      "ca-central-1",
+                      "sa-east-1"
+                    ],
+                    "description": "AWS region for the 'bedrock' provider. Required when provider='bedrock'; ignored otherwise.",
+                    "example": "us-east-1"
                   }
                 },
                 "required": [
@@ -30719,7 +30762,8 @@
                             "openai",
                             "azure-openai",
                             "custom",
-                            "gateway"
+                            "gateway",
+                            "bedrock"
                           ]
                         },
                         "model": {
@@ -30729,6 +30773,27 @@
                           "type": [
                             "string",
                             "null"
+                          ]
+                        },
+                        "bedrockRegion": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "us-east-1",
+                            "us-east-2",
+                            "us-west-2",
+                            "eu-central-1",
+                            "eu-west-1",
+                            "eu-west-3",
+                            "ap-northeast-1",
+                            "ap-southeast-1",
+                            "ap-southeast-2",
+                            "ap-south-1",
+                            "ca-central-1",
+                            "sa-east-1",
+                            null
                           ]
                         },
                         "apiKeyMasked": {
@@ -30760,6 +30825,7 @@
                         "provider",
                         "model",
                         "baseUrl",
+                        "bedrockRegion",
                         "apiKeyMasked",
                         "apiKeyStatus",
                         "createdAt",
@@ -31043,7 +31109,8 @@
                       "openai",
                       "azure-openai",
                       "custom",
-                      "gateway"
+                      "gateway",
+                      "bedrock"
                     ]
                   },
                   "model": {
@@ -31056,6 +31123,23 @@
                   },
                   "baseUrl": {
                     "type": "string"
+                  },
+                  "bedrockRegion": {
+                    "type": "string",
+                    "enum": [
+                      "us-east-1",
+                      "us-east-2",
+                      "us-west-2",
+                      "eu-central-1",
+                      "eu-west-1",
+                      "eu-west-3",
+                      "ap-northeast-1",
+                      "ap-southeast-1",
+                      "ap-southeast-2",
+                      "ap-south-1",
+                      "ca-central-1",
+                      "sa-east-1"
+                    ]
                   }
                 },
                 "required": [
@@ -31193,13 +31277,14 @@
               "enum": [
                 "gateway",
                 "anthropic",
-                "openai"
+                "openai",
+                "bedrock"
               ],
-              "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns api.anthropic.com/v1/models; 'openai' returns api.openai.com/v1/models filtered to chat-capable models. Both BYOT variants use the workspace's saved key and require a matching saved configuration.",
+              "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' / 'openai' / 'bedrock' return BYOT catalogs fetched with the workspace's saved key — bedrock additionally requires a saved region. Every BYOT variant requires a matching saved configuration.",
               "example": "anthropic"
             },
             "required": false,
-            "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns api.anthropic.com/v1/models; 'openai' returns api.openai.com/v1/models filtered to chat-capable models. Both BYOT variants use the workspace's saved key and require a matching saved configuration.",
+            "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' / 'openai' / 'bedrock' return BYOT catalogs fetched with the workspace's saved key — bedrock additionally requires a saved region. Every BYOT variant requires a matching saved configuration.",
             "name": "provider",
             "in": "query"
           },

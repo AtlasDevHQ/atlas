@@ -225,9 +225,9 @@ Token data is recorded automatically for every agent interaction (chat and query
 
 ## Plugins
 
-**Route:** `/admin/plugins`
+**Route:** `/platform/plugin-registry`
 
-Manage installed plugins — enable/disable, health checks, and configuration.
+Manage installed plugins — enable/disable, health checks, and configuration. Lifted from `/admin/plugins` to the platform tier in #2305 because the backing API uses `createPlatformRouter()` — workspace admins receive 403.
 
 In **SaaS mode**, the page includes a tabbed interface with **Installed** and **Available** tabs, providing a full plugin marketplace for browsing, installing, configuring, and uninstalling plugins. See [Plugin Marketplace](/guides/plugin-marketplace) for the full guide.
 
@@ -467,7 +467,7 @@ Non-admin users can manage their own sessions via `GET /api/v1/sessions` and `DE
 
 ## Admin Action Audit
 
-**Route:** `/admin/admin-actions`
+**Route:** `/admin/action-log`
 
 Tracks all admin mutations — settings changes, connection edits, user role changes, plugin installs, and other write operations performed through the admin console. Provides transparency into who changed what and when.
 

@@ -12,8 +12,22 @@ permissions:
 env:
   BUN_VERSION: "1.3.11"
 
+# The historic `ci` job was a single linear pipeline (install → drift → build
+# → type → lint → test:others → test:e2e:integration) that took ~3m30s end-
+# to-end. Most of those steps are independent. Splitting them into parallel
+# jobs drops the critical path to ~1m30s on warm cache. The umbrella `ci`
+# job at the bottom (`needs: [...]`, `if: always()`) keeps the single `ci`
+# context that branch protection on `main` requires — mirrors the
+# `Deploy Validation` umbrella pattern in deploy-validation.yml.
+#
+# Every job that runs `bun install` shares an `actions/cache@v4` step keyed
+# on `bun.lock`'s hash. Cold runs (new lockfile) install in full; warm runs
+# (lockfile unchanged) reuse extracted packages and drop install time from
+# ~10s to ~1-2s. The cache is also shared with api-tests below.
+
 jobs:
-  ci:
+  drift:
+    name: drift
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -21,6 +35,14 @@ jobs:
       - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
         with:
           bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -61,6 +83,78 @@ jobs:
       - name: Check vendored @atlas/oauth-helper ↔ canonical drift
         run: bash scripts/check-oauth-helper-drift.sh
 
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+  type:
+    name: type
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # `bun run type` builds the SDK packages it needs internally
+      # (@useatlas/types, plugin-sdk, sdk, react), runs tsgo --noEmit, and
+      # finishes with `@atlas/web type` — self-contained, no pre-build.
+      - name: Type check
+        run: bun run type
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
       - name: Build SDK packages
         run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
 
@@ -71,30 +165,110 @@ jobs:
         run: bun run build
 
       - name: Check OpenAPI ↔ api-reference drift
-        # Runs after SDK + widget + app builds so extract-openapi.ts can resolve
-        # @useatlas/types and other built dependencies at import time.
+        # Runs after SDK + widget + app builds so extract-openapi.ts can
+        # resolve @useatlas/types and other built dependencies at import time.
         run: bash scripts/check-openapi-drift.sh
 
-      - name: Type check
-        run: bun run type
+  test-others:
+    name: test-others
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
 
-      - name: Type check (frontend packages)
-        run: bun run --filter '@atlas/web' type
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Lint
-        run: bun run lint
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
-      # @atlas/api tests run in the parallel api-tests job (sharded 4-way).
-      # Other workspace test suites are small, stay serial here.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # @atlas/web tests import from @useatlas/sdk (e.g. via
+      # use-starter-prompts-query.ts), and the SDK packages resolve to their
+      # `dist/` via their "exports" field — so all four must be built before
+      # test:others runs. The historic monolithic ci built them in order
+      # before test:others; we preserve that here. (Cost is ~5-7s on warm
+      # cache, dominated by the @useatlas/react widget bundle.)
+      - name: Build SDK packages
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
+
       - name: Test (non-api packages)
         run: bun run test:others
+
+  test-e2e-integration:
+    name: test-e2e-integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       # E2E integration tier — contract tests that pin protocol-level
       # invariants across packages (e.g. MCP multi-replica session
       # locality, #2069). Runs in-process via mock.module(), no Docker
-      # services needed.
+      # services needed. Cross-package imports require all SDK dists
+      # (same set as test-others above — cheaper to build all four than
+      # to discover the dependency drift via a CI failure).
+      - name: Build SDK packages
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
+
       - name: Test (e2e integration tier)
         run: bun run test:e2e:integration
+
+  # Umbrella required-check for branch protection.
+  #
+  # Branch protection on `main` requires a single context named `ci`. The
+  # umbrella `needs:` every parallel sub-job above and asserts each one
+  # completed `success` — so the protection still catches every failure
+  # the historic monolithic `ci` job did, just with a parallel underbelly.
+  # `if: always()` so the check is present even when a dependent job fails.
+  ci:
+    name: ci
+    needs: [drift, lint, type, build, test-others, test-e2e-integration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all dependent jobs succeeded
+        env:
+          DRIFT_RESULT: ${{ needs.drift.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          TYPE_RESULT: ${{ needs.type.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          TEST_OTHERS_RESULT: ${{ needs.test-others.result }}
+          TEST_E2E_RESULT: ${{ needs.test-e2e-integration.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT"; do
+            name=${pair%%=*}
+            result=${pair#*=}
+            if [ "$result" != "success" ]; then
+              echo "::error::$name job result was '$result' (expected 'success')"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "All CI gates passed."
 
   api-tests:
     name: api-tests (${{ matrix.shard }}/4)
@@ -109,6 +283,14 @@ jobs:
       - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
         with:
           bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

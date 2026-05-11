@@ -30,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       scaffolds: ${{ steps.filter.outputs.scaffolds }}
+      boot-smoke: ${{ steps.filter.outputs.boot-smoke }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -51,11 +52,12 @@ jobs:
 
           # Compute the diff on a separate line so `git` failures fail the step
           # instead of piping an empty result to grep. Fail-safe default: if we
-          # can't determine what changed, run the scaffold jobs (better to burn
+          # can't determine what changed, run every gated job (better to burn
           # CI minutes than to silently skip critical validation).
           if ! CHANGED=$(git diff --name-only "$RANGE" 2>&1); then
-            echo "::warning::git diff $RANGE failed: $CHANGED — defaulting scaffolds=true"
+            echo "::warning::git diff $RANGE failed: $CHANGED — defaulting all gates to true"
             echo "scaffolds=true" >> "$GITHUB_OUTPUT"
+            echo "boot-smoke=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -67,6 +69,19 @@ jobs:
           else
             echo "scaffolds=false" >> "$GITHUB_OUTPUT"
             echo "No scaffold-relevant paths changed — skipping scaffold jobs"
+          fi
+
+          # Boot Smoke runs the production Dockerfile + /api/health probe + SaaS
+          # env contract. Only worth the ~15min spend when the PR could plausibly
+          # affect container shape, runtime, or boot-time guards. Dockerfile-shape
+          # regressions on non-runtime PRs are still caught by the unconditional
+          # boot-build job below.
+          if echo "$CHANGED" | grep -qE '^(packages/(api|web|types|schemas|plugin-sdk|sandbox-sidecar)/|plugins/|ee/|deploy/api/|scripts/saas-env-fixture\.ts|bun\.lock$|package\.json$|\.github/workflows/deploy-validation\.yml$)'; then
+            echo "boot-smoke=true" >> "$GITHUB_OUTPUT"
+            echo "Runtime-relevant paths changed — running boot-smoke"
+          else
+            echo "boot-smoke=false" >> "$GITHUB_OUTPUT"
+            echo "No runtime-relevant paths changed — skipping boot-smoke (boot-build still runs)"
           fi
 
   # Scaffold a project via create-atlas, install deps, and build.
@@ -86,6 +101,14 @@ jobs:
       - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
         with:
           bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -112,6 +135,14 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -124,6 +155,41 @@ jobs:
       - name: Build nextjs-standalone example
         run: bun run --filter '@atlas/nextjs-standalone' build
 
+  # Fast, unconditional pre-check: build the Dockerfile up to the `builder`
+  # stage. Catches the classes of Dockerfile breakage that don't depend on
+  # which files the PR touches — missing COPY when a top-level dir is added
+  # or renamed, bad base-image pin, Dockerfile syntax errors, lockfile-drift
+  # install failures. Reuses the `boot-smoke` gha cache so warm builds land
+  # in ~30s; cold builds (no shared layers) cost ~3-4min.
+  #
+  # Why this runs on every PR, including docs-only: the Dockerfile reads
+  # the whole tree. A repo-shape change (new package, renamed app dir) can
+  # break the build without touching any path in the boot-smoke gate. The
+  # cheap unconditional gate ensures Railway never sees a broken image
+  # post-merge regardless of which paths the PR touched.
+  boot-build:
+    name: Boot Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Build deploy/api image up to builder stage
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: .
+          file: deploy/api/Dockerfile
+          target: builder
+          # No --load: we don't need the image, just the build to succeed.
+          push: false
+          # Share cache with boot-smoke so the slow gate benefits when both
+          # run on the same PR, and so the fast gate stays fast on PRs that
+          # only touched non-runtime paths.
+          cache-from: type=gha,scope=boot-smoke
+          cache-to: type=gha,scope=boot-smoke,mode=max
+
   # Build the production deploy/api/Dockerfile, run it under the SaaS env
   # contract (#2226), and probe /api/health. Catches everything the
   # `migrate-pg` smoke (#2225) catches plus serverExternalPackages drift,
@@ -135,8 +201,15 @@ jobs:
   # single source of truth in packages/api/src/lib/effect/saas-env.ts.
   # Adding a new SaaS guard means adding a field to that fixture — the
   # workflow auto-picks it up with no edits here.
+  #
+  # Path-gated: only runs when the PR touches paths that could change
+  # container shape, runtime behavior, or boot guards. Non-runtime PRs
+  # skip this job; the unconditional `boot-build` above still validates
+  # Dockerfile shape on every PR.
   boot-smoke:
     name: Boot Smoke
+    needs: changes
+    if: needs.changes.outputs.boot-smoke == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -294,7 +367,7 @@ jobs:
   # failure or cancellation propagates here and blocks the merge.
   deploy-validation-required:
     name: Deploy Validation
-    needs: [changes, scaffold-smoke, standalone-build, config-validation, boot-smoke]
+    needs: [changes, scaffold-smoke, standalone-build, config-validation, boot-build, boot-smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -304,6 +377,7 @@ jobs:
           SCAFFOLD_RESULT: ${{ needs.scaffold-smoke.result }}
           STANDALONE_RESULT: ${{ needs.standalone-build.result }}
           CONFIG_RESULT: ${{ needs.config-validation.result }}
+          BOOT_BUILD_RESULT: ${{ needs.boot-build.result }}
           BOOT_SMOKE_RESULT: ${{ needs.boot-smoke.result }}
         run: |
           set -euo pipefail
@@ -314,15 +388,20 @@ jobs:
             echo "::error::changes job result was '$CHANGES_RESULT' (expected 'success')"
             fail=1
           fi
-          # The conditional jobs may legitimately skip when no scaffold-relevant
-          # paths changed; success or skipped both count as a pass.
-          # boot-smoke runs unconditionally (no `if:` guard) — its result must
-          # be `success`. A `skipped` here would mean the gate was bypassed.
-          if [ "$BOOT_SMOKE_RESULT" != "success" ]; then
-            echo "::error::boot-smoke job result was '$BOOT_SMOKE_RESULT' (expected 'success')"
+          # boot-build runs unconditionally — its result must be `success`.
+          # A `skipped` here would mean the cheap Dockerfile-shape gate was
+          # bypassed, which defeats the point of having an unconditional
+          # check at all.
+          if [ "$BOOT_BUILD_RESULT" != "success" ]; then
+            echo "::error::boot-build job result was '$BOOT_BUILD_RESULT' (expected 'success')"
             fail=1
           fi
-          for pair in "scaffold-smoke=$SCAFFOLD_RESULT" "standalone-build=$STANDALONE_RESULT" "config-validation=$CONFIG_RESULT"; do
+          # The conditional jobs may legitimately skip when their gate
+          # didn't fire; success or skipped both count as a pass. boot-smoke
+          # is path-gated on runtime-relevant changes — if it skipped, the
+          # PR didn't touch container/runtime/boot-guard paths and the
+          # cheap boot-build gate above is sufficient.
+          for pair in "scaffold-smoke=$SCAFFOLD_RESULT" "standalone-build=$STANDALONE_RESULT" "config-validation=$CONFIG_RESULT" "boot-smoke=$BOOT_SMOKE_RESULT"; do
             name=${pair%%=*}
             result=${pair#*=}
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then

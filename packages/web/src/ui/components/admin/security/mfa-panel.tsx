@@ -2,16 +2,13 @@
 
 /**
  * Shared MFA tile composition for `/admin/account-security` and
- * `/settings/profile`. Owns the passkey list state, the tile-ref scroll
- * helper, and the BackupMethodBanner → PasskeyTile → TwoFactorSetup →
- * BackupCodesStatus → PasskeyList → TrustedDevicesList stack so future MFA
- * changes ship to both surfaces at once.
+ * `/settings/profile`. Owns the passkey list state and the tile-ref scroll
+ * helper so future MFA changes ship to both surfaces at once.
  *
  * Callers control outer chrome (page header, SecurityPosturePanel,
- * section wrapper). The only per-surface difference is `reauthRedirectTo`,
- * which the PasskeyTile uses to bounce back after a 2FA challenge during
- * re-auth — admins land back on `/admin/account-security`, profile users
- * on `/settings/profile` (a 403 if non-admins are sent to the admin path).
+ * section wrapper). The only per-surface difference is `reauthRedirectTo` —
+ * non-admin profile users would 403 on `/admin/account-security`, so each
+ * caller passes its own return path for the post-2FA-challenge bounce.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -28,9 +25,17 @@ interface SessionUser {
   twoFactorEnabled?: boolean;
 }
 
+/**
+ * Surfaces that host the MFA panel. Narrowed at the panel boundary
+ * (`PasskeyTile.reauthRedirectTo` stays open for reusability) so a typo
+ * in one of the two call sites fails the type check rather than silently
+ * 403-ing a non-admin on `/admin/account-security`.
+ */
+export type MfaPanelSurface = "/admin/account-security" | "/settings/profile";
+
 export interface MfaPanelProps {
   /** Where the PasskeyTile's re-auth flow returns after a 2FA challenge. */
-  reauthRedirectTo: string;
+  reauthRedirectTo: MfaPanelSurface;
 }
 
 export function MfaPanel({ reauthRedirectTo }: MfaPanelProps) {

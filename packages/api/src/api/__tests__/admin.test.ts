@@ -365,7 +365,15 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
   importFromDisk: mock(() => Promise.resolve({ imported: 0, skipped: 0, errors: [], total: 0 })),
   reconcileAllOrgs: mock(() => Promise.resolve()),
   cleanupOrgDirectory: mock(() => Promise.resolve()),
-  getSemanticRoot: mock(() => "/tmp/test"),
+  // Mirror the real `sync.getSemanticRoot(orgId?)` shape: returns the base
+  // root (from the env-driven fixture) when no orgId, or the per-org overlay
+  // under `.orgs/<orgId>/` when an orgId is supplied. Keeping this in sync
+  // with the real signature matters because admin.ts now routes all 5
+  // semantic-root resolutions through this module (PR fix: org-scope admin
+  // disk endpoints).
+  getSemanticRoot: mock((orgId?: string) =>
+    orgId ? path.join(tmpRoot, ".orgs", orgId) : tmpRoot,
+  ),
 }));
 
 const mockPluginHealthCheck: Mock<() => Promise<unknown>> = mock(() =>
@@ -766,6 +774,170 @@ describe("GET /api/v1/admin/semantic/entities/:name", () => {
 
     const body = (await res.json()) as { entity: Record<string, unknown> };
     expect(body.entity.table).toBe("orders");
+  });
+});
+
+// Coverage for the org-scoped + DB-overlay fallback path added to
+// `getEntityRoute`. The headline regression mode is "every SaaS detail click
+// returns 404": the disk endpoint had no awareness of org-scoped overlays
+// or DB-backed user-created entities. These tests pin both branches so a
+// refactor of the resolve / fallback logic can't silently re-introduce it.
+describe("GET /api/v1/admin/semantic/entities/:name — org-scoped + DB overlay", () => {
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    mockGetEntityAdmin.mockReset();
+    mockHasInternalDB = true;
+  });
+
+  it("resolves an entity from the DB overlay when the disk file is missing", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "ent-1",
+      org_id: "org-saas-1",
+      entity_type: "entity",
+      name: "apikey",
+      yaml_content: "table: api_keys\ndescription: User-issued API keys\ndimensions:\n  id:\n    type: integer\n",
+      connection_id: null,
+      status: "published",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/apikey"));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { entity: Record<string, unknown> };
+    expect(body.entity.table).toBe("api_keys");
+    expect(body.entity.dimensions).toBeDefined();
+
+    // Confirm the DB lookup was invoked with the org-scoped key, not the
+    // base-root probe. Catches a silent revert of the fallback branch.
+    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "apikey");
+  });
+
+  it("returns 404 with requestId when both disk and DB miss", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/missing"));
+    expect(res.status).toBe(404);
+
+    const body = (await res.json()) as { error: string; requestId?: string };
+    expect(body.error).toBe("not_found");
+    // The 404 must include a requestId for log correlation per project rules.
+    expect(typeof body.requestId).toBe("string");
+    expect(body.requestId).not.toBe("");
+  });
+
+  it("returns 500 with requestId when DB row contains malformed YAML", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "ent-2",
+      org_id: "org-saas-1",
+      entity_type: "entity",
+      name: "broken",
+      // Unbalanced quote / colon — js-yaml throws on parse.
+      yaml_content: 'table: "broken\ndimensions:\n  id: {{not yaml',
+      connection_id: null,
+      status: "published",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/broken"));
+    expect(res.status).toBe(500);
+
+    const body = (await res.json()) as { error: string; message: string; requestId?: string };
+    expect(body.error).toBe("internal_error");
+    expect(body.message).toContain("broken");
+    expect(typeof body.requestId).toBe("string");
+  });
+
+  it("returns 500 when DB-backed YAML parses to a non-object (null/scalar/array)", async () => {
+    // js-yaml happily returns null / scalars / arrays for technically-valid
+    // YAML that isn't an entity definition. The frontend `<EntityDetail>`
+    // would then render garbage instead of failing — the shape guard turns
+    // that into an actionable 500.
+    setOrgScopedAdmin("org-saas-1");
+    for (const yamlContent of ["", "just a string", "- one\n- two\n", "null\n"]) {
+      mockGetEntityAdmin.mockResolvedValueOnce({
+        id: "ent-3",
+        org_id: "org-saas-1",
+        entity_type: "entity",
+        name: "bad-shape",
+        yaml_content: yamlContent,
+        connection_id: null,
+        status: "published",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/bad-shape"));
+      expect(res.status).toBe(500);
+
+      const body = (await res.json()) as { error: string; message: string; requestId?: string };
+      expect(body.error).toBe("internal_error");
+      expect(body.message).toContain("malformed");
+      expect(typeof body.requestId).toBe("string");
+    }
+  });
+
+  it("does not consult the DB overlay when no active org is present", async () => {
+    // Self-hosted single-tenant — no orgId. The DB lookup must be skipped
+    // entirely so we don't leak rows from `__global__` or another tenant
+    // into a request that has no org context.
+    setAdmin();
+    mockGetEntityAdmin.mockReset();
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/nonexistent"));
+    expect(res.status).toBe(404);
+    expect(mockGetEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("does not consult the DB overlay when internal DB is disabled", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    mockHasInternalDB = false;
+    mockGetEntityAdmin.mockReset();
+
+    try {
+      const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/nonexistent"));
+      expect(res.status).toBe(404);
+      expect(mockGetEntityAdmin).not.toHaveBeenCalled();
+    } finally {
+      mockHasInternalDB = true;
+    }
+  });
+
+  it("looks up entities under .orgs/<orgId>/ when an org is active", async () => {
+    // Org-scoped FS root resolution. Drop a fixture under the org overlay
+    // and confirm the handler finds it without falling through to the DB.
+    const orgRoot = path.join(tmpRoot, ".orgs", "org-saas-fs", "entities");
+    fs.mkdirSync(orgRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(orgRoot, "scoped.yml"),
+      `table: scoped
+description: From the org overlay
+dimensions:
+  id:
+    type: integer
+`,
+    );
+
+    setOrgScopedAdmin("org-saas-fs");
+    mockGetEntityAdmin.mockReset();
+
+    try {
+      const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/scoped"));
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { entity: Record<string, unknown> };
+      expect(body.entity.table).toBe("scoped");
+      expect(body.entity.description).toBe("From the org overlay");
+      // Disk hit short-circuits the DB fallback.
+      expect(mockGetEntityAdmin).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(path.join(tmpRoot, ".orgs", "org-saas-fs"), { recursive: true, force: true });
+    }
   });
 });
 

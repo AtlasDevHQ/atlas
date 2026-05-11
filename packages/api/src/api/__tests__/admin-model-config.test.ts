@@ -95,12 +95,17 @@ const mockTestModelConfig: Mock<(...args: unknown[]) => unknown> = mock(() =>
   }),
 );
 
+const mockReconcileModelDeprecation: Mock<(...args: unknown[]) => unknown> = mock(
+  () => Effect.succeed({ status: "healthy" as const, suggestion: null }),
+);
+
 mock.module("@atlas/ee/platform/model-routing", () => ({
   getWorkspaceModelConfig: mockGetWorkspaceModelConfig,
   getWorkspaceModelConfigRaw: mockGetWorkspaceModelConfigRaw,
   setWorkspaceModelConfig: mockSetWorkspaceModelConfig,
   deleteWorkspaceModelConfig: mockDeleteWorkspaceModelConfig,
   testModelConfig: mockTestModelConfig,
+  reconcileModelDeprecation: mockReconcileModelDeprecation,
   ModelConfigError: MockModelConfigError,
   ModelConfigDecryptError: MockModelConfigDecryptError,
 }));
@@ -333,6 +338,10 @@ beforeEach(() => {
   mockSetWorkspaceModelConfig.mockClear();
   mockDeleteWorkspaceModelConfig.mockClear();
   mockTestModelConfig.mockClear();
+  mockReconcileModelDeprecation.mockClear();
+  mockReconcileModelDeprecation.mockImplementation(() =>
+    Effect.succeed({ status: "healthy" as const, suggestion: null }),
+  );
 
   mockGetWorkspaceModelConfig.mockImplementation(() => Effect.succeed(null));
   mockGetWorkspaceModelConfigRaw.mockImplementation(() => Effect.succeed(null));

@@ -29,7 +29,8 @@ import {
   getBedrockCatalog,
   type BedrockDiscoveryCredentials,
 } from "@atlas/api/lib/bedrock-catalog";
-import type { BedrockRegion } from "@useatlas/types";
+import { suggestModelReplacement } from "@atlas/api/lib/byot-deprecation";
+import type { BedrockRegion, GatewayCatalogModel } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ApiKeyStatus,
@@ -78,6 +79,8 @@ interface ModelConfigRow {
   api_key_encrypted: string | null;
   base_url: string | null;
   bedrock_region: string | null;
+  model_status: string | null;
+  model_suggested_replacement: string | null;
   created_at: string;
   updated_at: string;
   [key: string]: unknown;
@@ -175,6 +178,15 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
       ? (row.bedrock_region as WorkspaceModelConfig["bedrockRegion"])
       : null;
 
+  // Normalize model_status. Existing rows pre-migration 0059 may have NULL
+  // until the next refresh writes through; surface those as 'healthy'.
+  const modelStatus: "healthy" | "deprecated" =
+    row.model_status === "deprecated" ? "deprecated" : "healthy";
+  const modelSuggestedReplacement =
+    modelStatus === "deprecated" && typeof row.model_suggested_replacement === "string"
+      ? row.model_suggested_replacement
+      : null;
+
   return {
     id: row.id,
     orgId: row.org_id,
@@ -184,6 +196,8 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
     bedrockRegion,
     apiKeyMasked,
     apiKeyStatus,
+    modelStatus,
+    modelSuggestedReplacement,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -301,7 +315,7 @@ export const getWorkspaceModelConfig = (
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, created_at, updated_at
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, model_status, model_suggested_replacement, created_at, updated_at
            FROM workspace_model_config
            WHERE org_id = $1
            LIMIT 1`,
@@ -344,7 +358,7 @@ export const getWorkspaceModelConfigRaw = (
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, created_at, updated_at
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, model_status, model_suggested_replacement, created_at, updated_at
            FROM workspace_model_config
            WHERE org_id = $1
            LIMIT 1`,
@@ -442,12 +456,13 @@ export const setWorkspaceModelConfig = (
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url, bedrock_region)
+          `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url, bedrock_region, model_status, model_suggested_replacement)
            VALUES (
              $1, $2, $3,
              COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)),
              COALESCE($6, (SELECT api_key_key_version FROM workspace_model_config WHERE org_id = $1), 1),
-             $5, $7
+             $5, $7,
+             'healthy', NULL
            )
            ON CONFLICT (org_id) DO UPDATE SET
              provider = EXCLUDED.provider,
@@ -456,8 +471,14 @@ export const setWorkspaceModelConfig = (
              api_key_key_version = COALESCE($6, workspace_model_config.api_key_key_version),
              base_url = EXCLUDED.base_url,
              bedrock_region = EXCLUDED.bedrock_region,
+             -- Every successful save resets the deprecation marker. The
+             -- admin picked a model — that's an explicit assertion the
+             -- new choice is healthy until the next discovery refresh
+             -- says otherwise.
+             model_status = 'healthy',
+             model_suggested_replacement = NULL,
              updated_at = now()
-           RETURNING id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, created_at, updated_at`,
+           RETURNING id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, model_status, model_suggested_replacement, created_at, updated_at`,
           [
             orgId,
             config.provider,
@@ -520,6 +541,71 @@ export const deleteWorkspaceModelConfig = (
       log.info({ orgId }, "Workspace model config deleted — reverting to platform default");
     }
     return deleted;
+  });
+
+/**
+ * After a BYOT discovery refresh, compare the workspace's saved model
+ * against the fresh catalog. If the model is missing, flip
+ * `model_status` to `deprecated` and store the suggestion (if the
+ * algorithm finds an acceptable match). If the model is present, flip
+ * back to `healthy` and clear any prior suggestion.
+ *
+ * This is a best-effort write — failures are logged but don't break
+ * the catalog response. Returns the resulting `{ status, suggestion }`
+ * so the route can echo it back if the caller wants it.
+ *
+ * #2275.
+ */
+export const reconcileModelDeprecation = (
+  orgId: string,
+  savedModelId: string,
+  savedProvider: string,
+  freshCatalog: GatewayCatalogModel[],
+): Effect.Effect<
+  { status: "healthy" | "deprecated"; suggestion: string | null },
+  Error
+> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return { status: "healthy" as const, suggestion: null };
+    }
+    const ids = new Set(freshCatalog.map((m) => m.id));
+    if (ids.has(savedModelId)) {
+      yield* Effect.tryPromise({
+        try: () =>
+          internalQuery(
+            `UPDATE workspace_model_config
+             SET model_status = 'healthy', model_suggested_replacement = NULL, updated_at = now()
+             WHERE org_id = $1 AND model_status = 'deprecated'`,
+            [orgId],
+          ),
+        catch: promiseError,
+      });
+      return { status: "healthy" as const, suggestion: null };
+    }
+
+    const suggestion = suggestModelReplacement(
+      savedModelId,
+      savedProvider,
+      freshCatalog.map((m) => ({ id: m.id, provider: m.provider })),
+    );
+    yield* Effect.tryPromise({
+      try: () =>
+        internalQuery(
+          `UPDATE workspace_model_config
+           SET model_status = 'deprecated',
+               model_suggested_replacement = $2,
+               updated_at = now()
+           WHERE org_id = $1`,
+          [orgId, suggestion],
+        ),
+      catch: promiseError,
+    });
+    log.info(
+      { orgId, savedModelId, suggestion, candidates: freshCatalog.length },
+      "Workspace model deprecated against fresh catalog",
+    );
+    return { status: "deprecated" as const, suggestion };
   });
 
 /**

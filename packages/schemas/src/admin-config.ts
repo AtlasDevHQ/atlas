@@ -52,6 +52,7 @@ export const WorkspaceBrandingSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export const API_KEY_STATUSES = ["masked", "platform_credits", "decrypt_failed"] as const;
+export const MODEL_STATUSES = ["healthy", "deprecated"] as const;
 
 export const WorkspaceModelConfigSchema = z
   .object({
@@ -63,6 +64,11 @@ export const WorkspaceModelConfigSchema = z
     bedrockRegion: z.enum(BEDROCK_REGIONS).nullable(),
     apiKeyMasked: z.string().nullable(),
     apiKeyStatus: z.enum(API_KEY_STATUSES),
+    // #2275 deprecation tracking — server populates after a discovery
+    // refresh. The cross-field refine below pairs `deprecated` status with
+    // a non-null replacement *or* `null` (suggestion was inconclusive).
+    modelStatus: z.enum(MODEL_STATUSES),
+    modelSuggestedReplacement: z.string().nullable(),
     createdAt: IsoTimestampSchema,
     updatedAt: IsoTimestampSchema,
   })
@@ -93,6 +99,18 @@ export const WorkspaceModelConfigSchema = z
     {
       message: "bedrockRegion is required for provider='bedrock' and must be null otherwise",
       path: ["bedrockRegion"],
+    },
+  )
+  // Healthy rows MUST have a null suggested-replacement — the suggestion is
+  // only meaningful when status is `deprecated`. Deprecated rows MAY carry a
+  // null replacement when the suggestion algorithm couldn't find an
+  // acceptable match.
+  .refine(
+    (c) => c.modelStatus === "deprecated" || c.modelSuggestedReplacement === null,
+    {
+      message:
+        "modelSuggestedReplacement must be null when modelStatus='healthy'",
+      path: ["modelSuggestedReplacement"],
     },
   ) satisfies z.ZodType<WorkspaceModelConfig, unknown>;
 

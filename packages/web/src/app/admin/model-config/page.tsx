@@ -578,6 +578,29 @@ export default function ModelConfigPage() {
                 description="Your provider credentials. Applies to this workspace only."
               />
 
+              {existingConfig?.modelStatus === "deprecated" && (
+                <div
+                  className="mb-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
+                  role="alert"
+                >
+                  <XCircle className="mt-0.5 size-4 shrink-0" />
+                  <div className="space-y-0.5">
+                    <div className="font-medium">
+                      Model <span className="font-mono">{existingConfig.model}</span> is no longer in {PROVIDER_LABEL[existingConfig.provider]}'s catalog.
+                    </div>
+                    <div className="text-xs">
+                      {existingConfig.modelSuggestedReplacement
+                        ? `Pick a new model — Atlas suggests `
+                        : "Pick a new model — no close replacement was found automatically."}
+                      {existingConfig.modelSuggestedReplacement && (
+                        <span className="font-mono">{existingConfig.modelSuggestedReplacement}</span>
+                      )}
+                      . Chat will keep working against the deprecated ID until the provider rejects it.
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Still resolving billing — don't flash the credential form
                   before we know whether BYOT is on. */}
               {billingLoading && !byotResolved && (
@@ -722,6 +745,16 @@ export default function ModelConfigPage() {
                         <DetailRow
                           label=""
                           value="The stored key cannot be decrypted (likely a key-rotation drift). Re-enter it below to restore this workspace; until then, chat is blocked."
+                        />
+                      )}
+                      {existingConfig.modelStatus === "deprecated" && (
+                        <DetailRow
+                          label="Model status"
+                          value={
+                            existingConfig.modelSuggestedReplacement
+                              ? `Deprecated upstream. Suggested replacement: ${existingConfig.modelSuggestedReplacement}.`
+                              : "Deprecated upstream. Pick a new model from the catalog."
+                          }
                         />
                       )}
                       {existingConfig.baseUrl && (

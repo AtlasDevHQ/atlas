@@ -30526,6 +30526,19 @@
                             "decrypt_failed"
                           ]
                         },
+                        "modelStatus": {
+                          "type": "string",
+                          "enum": [
+                            "healthy",
+                            "deprecated"
+                          ]
+                        },
+                        "modelSuggestedReplacement": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "createdAt": {
                           "type": "string",
                           "format": "date-time"
@@ -30544,6 +30557,8 @@
                         "bedrockRegion",
                         "apiKeyMasked",
                         "apiKeyStatus",
+                        "modelStatus",
+                        "modelSuggestedReplacement",
                         "createdAt",
                         "updatedAt"
                       ]
@@ -30810,6 +30825,19 @@
                             "decrypt_failed"
                           ]
                         },
+                        "modelStatus": {
+                          "type": "string",
+                          "enum": [
+                            "healthy",
+                            "deprecated"
+                          ]
+                        },
+                        "modelSuggestedReplacement": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "createdAt": {
                           "type": "string",
                           "format": "date-time"
@@ -30828,6 +30856,8 @@
                         "bedrockRegion",
                         "apiKeyMasked",
                         "apiKeyStatus",
+                        "modelStatus",
+                        "modelSuggestedReplacement",
                         "createdAt",
                         "updatedAt"
                       ]

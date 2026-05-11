@@ -101,6 +101,16 @@ export const BYOT_REQUIRED_PROVIDERS: readonly ModelConfigProvider[] = (
  */
 export type ApiKeyStatus = "masked" | "platform_credits" | "decrypt_failed";
 
+/**
+ * Tracks whether the saved `model` is still present in the upstream
+ * provider's catalog. Updated server-side after a discovery refresh
+ * (#2275): a missing model flips to `deprecated` + populates
+ * `modelSuggestedReplacement`. The admin UI surfaces a warning row
+ * with "Apply suggestion" / "Keep current" actions. Resetting the
+ * model via `setWorkspaceModelConfig` flips status back to `healthy`.
+ */
+export type ModelStatus = "healthy" | "deprecated";
+
 export interface WorkspaceModelConfig {
   id: string;
   orgId: string;
@@ -123,6 +133,19 @@ export interface WorkspaceModelConfig {
   apiKeyMasked: string | null;
   /** See `ApiKeyStatus`. UI consumers branch on this rather than guessing from `apiKeyMasked`. */
   apiKeyStatus: ApiKeyStatus;
+  /**
+   * Health of the saved `model` against the most recent provider catalog
+   * refresh. `deprecated` when the upstream catalog no longer surfaces
+   * the saved ID (#2275). The admin UI surfaces a warning row.
+   */
+  modelStatus: ModelStatus;
+  /**
+   * Atlas's best-effort closest-match for the deprecated model, sourced
+   * from the most recent provider catalog at refresh time. `null` when
+   * no close match was found (admin must pick manually) or when the
+   * status is `healthy`.
+   */
+  modelSuggestedReplacement: string | null;
   createdAt: string;
   updatedAt: string;
 }

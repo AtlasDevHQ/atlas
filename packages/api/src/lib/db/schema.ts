@@ -823,6 +823,11 @@ export const workspaceModelConfig = pgTable(
     // provider (enforced by chk_model_provider_region); NULL for every
     // other provider.
     bedrockRegion: text("bedrock_region"),
+    // #2275 deprecation tracking. Flipped to 'deprecated' after a BYOT
+    // catalog refresh discovers the saved model is no longer surfaced
+    // upstream. Reset to 'healthy' on every successful save.
+    modelStatus: text("model_status").notNull().default("healthy"),
+    modelSuggestedReplacement: text("model_suggested_replacement"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -838,6 +843,10 @@ export const workspaceModelConfig = pgTable(
     check(
       "chk_model_provider_region",
       sql`provider != 'bedrock' OR bedrock_region IS NOT NULL`,
+    ),
+    check(
+      "chk_model_status",
+      sql`model_status IN ('healthy', 'deprecated')`,
     ),
     index("idx_workspace_model_config_org").on(t.orgId),
   ],

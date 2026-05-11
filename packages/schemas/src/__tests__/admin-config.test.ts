@@ -34,6 +34,8 @@ const validModelConfig = {
   bedrockRegion: null,
   apiKeyMasked: "sk-ant-...abc",
   apiKeyStatus: "masked" as const,
+  modelStatus: "healthy" as const,
+  modelSuggestedReplacement: null,
   createdAt: "2026-04-20T12:00:00.000Z",
   updatedAt: "2026-04-20T12:00:00.000Z",
 };
@@ -161,6 +163,33 @@ describe("WorkspaceModelConfigSchema", () => {
     const stray = {
       ...validModelConfig,
       bedrockRegion: "us-east-1" as const,
+    };
+    expect(() => WorkspaceModelConfigSchema.parse(stray)).toThrow();
+  });
+
+  test("accepts deprecated modelStatus with a suggestion", () => {
+    const deprecated = {
+      ...validModelConfig,
+      modelStatus: "deprecated" as const,
+      modelSuggestedReplacement: "claude-opus-4-7",
+    };
+    expect(WorkspaceModelConfigSchema.parse(deprecated)).toEqual(deprecated);
+  });
+
+  test("accepts deprecated modelStatus with no suggestion (inconclusive)", () => {
+    const deprecated = {
+      ...validModelConfig,
+      modelStatus: "deprecated" as const,
+      modelSuggestedReplacement: null,
+    };
+    expect(WorkspaceModelConfigSchema.parse(deprecated)).toEqual(deprecated);
+  });
+
+  test("rejects healthy modelStatus with a stray suggestion", () => {
+    const stray = {
+      ...validModelConfig,
+      modelStatus: "healthy" as const,
+      modelSuggestedReplacement: "claude-opus-4-7",
     };
     expect(() => WorkspaceModelConfigSchema.parse(stray)).toThrow();
   });

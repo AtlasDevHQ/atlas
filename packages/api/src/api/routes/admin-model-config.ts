@@ -16,6 +16,7 @@ import {
   setWorkspaceModelConfig,
   deleteWorkspaceModelConfig,
   testModelConfig,
+  reconcileModelDeprecation,
   ModelConfigError,
 } from "@atlas/ee/platform/model-routing";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
@@ -40,7 +41,7 @@ import {
   getBedrockCatalog,
   type BedrockDiscoveryCredentials,
 } from "@atlas/api/lib/bedrock-catalog";
-import { BEDROCK_REGIONS, type BedrockRegion } from "@useatlas/types";
+import { BEDROCK_REGIONS, type BedrockRegion, type GatewayCatalogModel } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
@@ -591,6 +592,15 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
+      if (bedrockResult.kind === "ok") {
+        yield* reconcileModelDeprecation(
+          orgId,
+          rawConfig.model,
+          "bedrock",
+          bedrockResult.models,
+        ).pipe(Effect.catchAll(() => Effect.succeed(null)));
+      }
+
       return finalizeByotCatalog(c, bedrockResult, {
         orgId,
         requestId,
@@ -640,6 +650,19 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
 
+    // #2275 — reconcile the workspace's saved model against the fresh
+    // catalog. Best-effort: if the reconciliation fails we still serve
+    // the catalog. The deprecation marker shows up on the next
+    // workspace_model_config read.
+    if (catalogResult.kind === "ok") {
+      yield* reconcileModelDeprecation(
+        orgId,
+        rawConfig.model,
+        adapter.providerKey,
+        catalogResult.models,
+      ).pipe(Effect.catchAll(() => Effect.succeed(null)));
+    }
+
     return finalizeByotCatalog(c, catalogResult, {
       orgId,
       requestId,
@@ -664,20 +687,11 @@ interface ByotErrorClasses {
   readonly Unavailable: new (...args: never[]) => Error;
 }
 
-// Wire-shape entry. Stays mutable to match the response schema generated
-// from `GatewayCatalogResponseSchema` — Hono's typed-response narrowing
-// rejects ReadonlyArray here even though the value is never mutated.
-interface ByotCatalogEntry {
-  id: string;
-  name: string;
-  provider: string;
-  type: string;
-  contextWindow: number | null;
-  maxOutputTokens: number | null;
-  inputPrice: string | null;
-  outputPrice: string | null;
-  recommended: boolean;
-}
+// Wire-shape entry — kept structurally identical to `GatewayCatalogModel`
+// so deprecation reconciliation (#2275) can hand it directly to
+// `suggestModelReplacement` without an adapter step. Stays mutable
+// because Hono's typed-response narrowing rejects ReadonlyArray here.
+type ByotCatalogEntry = GatewayCatalogModel;
 
 interface ByotProviderAdapter {
   readonly providerKey: "anthropic" | "openai";

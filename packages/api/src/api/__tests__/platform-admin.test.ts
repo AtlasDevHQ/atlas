@@ -18,10 +18,11 @@ import {
   it,
   expect,
   beforeEach,
+  afterEach,
   afterAll,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
-import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
+import { PLAN_TIERS, asRatio, type PlanTier, type AbuseLevel } from "@useatlas/types";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { createHash } from "node:crypto";
 
@@ -32,6 +33,39 @@ const mocks = createApiTestMocks();
 // Top-level ADMIN_ACTIONS import in platform-admin.ts requires a module
 // mock before the app is imported below.
 import { mock } from "bun:test";
+// Programmable abuse status — re-register the abuse module mock so the
+// `abuseLevel` surfacing tests below can dictate per-workspace levels
+// without driving the real escalation ladder. `createApiTestMocks` pins
+// `checkAbuseStatus` to a constant `{ level: "none" }`; that fixture is
+// fine for the existing suites but blocks the regression test for the
+// "platform-admin says active while chat is suspended" bug.
+const abuseStatusByWorkspace = new Map<string, AbuseLevel>();
+mock.module("@atlas/api/lib/security/abuse", () => ({
+  listFlaggedWorkspaces: mock(() => []),
+  reinstateWorkspace: mock(() => "warning" as const),
+  getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
+  // `asRatio` brands the threshold to match the real `getAbuseConfig`
+  // boundary — keeps this fixture in lockstep with the api-test-mocks
+  // shape so a future caller can swap between the two without a cast.
+  getAbuseConfig: mock(() => ({
+    queryRateLimit: 200,
+    queryRateWindowSeconds: 300,
+    errorRateThreshold: asRatio(0.5),
+    uniqueTablesLimit: 50,
+    throttleDelayMs: 2000,
+  })),
+  getAbuseDetail: mock(async () => null),
+  checkAbuseStatus: mock((workspaceId: string) => ({
+    level: abuseStatusByWorkspace.get(workspaceId) ?? "none",
+  })),
+  recordQueryEvent: mock(() => {}),
+  restoreAbuseState: mock(async () => {}),
+  getAbuseRestoreStatus: mock(() => "ok" as const),
+  ABUSE_RESTORE_STATUSES: ["pending", "ok", "db_unavailable", "load_failed"] as const,
+  _resetAbuseState: mock(() => abuseStatusByWorkspace.clear()),
+  abuseCleanupTick: mock(() => {}),
+  ABUSE_CLEANUP_INTERVAL_MS: 300_000,
+}));
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
   logAdminActionAwait: mock(async () => {}),
@@ -300,5 +334,77 @@ describe("GET /api/v1/platform/workspaces — neverSuspend flag (#2249)", () => 
     } finally {
       if (original !== undefined) process.env.ATLAS_LOADTEST_ALLOWED_ORGS = original;
     }
+  });
+});
+
+// abuseLevel surfacing — workspace_status (DB column) and the in-memory
+// abuse level are independent. Before this field, a workspace that the
+// abuse detector had auto-suspended via `recordQueryEvent` would still
+// render "Active" on /admin/platform because the platform-admin route
+// only echoed `workspace_status`. Operators saw a healthy workspace
+// while chat returned `workspace_suspended` — the exact divergence this
+// suite is the regression floor for.
+describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
+  beforeEach(() => {
+    mocks.setPlatformAdmin();
+    mocks.hasInternalDB = true;
+    mockLogWarn.mockClear();
+  });
+
+  // Clear in afterEach (not end-of-body) so a thrown assertion doesn't
+  // leak `abuseStatusByWorkspace` entries into the next test.
+  afterEach(() => {
+    abuseStatusByWorkspace.clear();
+  });
+
+  function mockListWorkspaces(rows: Array<{ id: string; slug: string }>): void {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization o")) {
+        return rows.map((r) => ({
+          id: r.id,
+          name: r.id,
+          slug: r.slug,
+          workspace_status: "active",
+          plan_tier: "starter",
+          byot: false,
+          stripe_customer_id: null,
+          trial_ends_at: null,
+          suspended_at: null,
+          deleted_at: null,
+          region: "us",
+          region_assigned_at: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          members: 1,
+          conversations: 0,
+          queries_last_24h: 0,
+          connections: 0,
+          scheduled_tasks: 0,
+        }));
+      }
+      return [];
+    });
+  }
+
+  it("returns abuseLevel='suspended' for a workspace the abuse detector flagged, even when status='active'", async () => {
+    // The route reads `checkAbuseStatus` per row. Stub a "suspended"
+    // verdict for ws-dharma via `abuseStatusByWorkspace` so the test
+    // mirrors a production escalation without depending on the real
+    // counter/escalation machinery (covered separately in abuse.test.ts).
+    abuseStatusByWorkspace.set("ws-dharma", "suspended");
+    mockListWorkspaces([{ id: "ws-dharma", slug: "dharma" }, { id: "ws-clean", slug: "clean" }]);
+
+    const res = await app.fetch(platformRequest("GET", "/api/v1/platform/workspaces"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      workspaces: Array<{ id: string; status: string; abuseLevel?: string }>;
+      abuseRestoreStatus?: string;
+    };
+    const lookup = Object.fromEntries(body.workspaces.map((w) => [w.id, w]));
+    expect(lookup["ws-dharma"].status).toBe("active");
+    expect(lookup["ws-dharma"].abuseLevel).toBe("suspended");
+    expect(lookup["ws-clean"].abuseLevel).toBe("none");
+    // The route surfaces the boot-time rehydrate outcome so the page
+    // can banner when enforcement is dark. Mock returns "ok".
+    expect(body.abuseRestoreStatus).toBe("ok");
   });
 });

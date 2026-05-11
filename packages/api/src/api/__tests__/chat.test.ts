@@ -187,6 +187,13 @@ const mockCheckPlanLimits: Mock<() => Promise<PlanCheckMockResult>> = mock(
   () => Promise.resolve({ allowed: true } as PlanCheckMockResult),
 );
 
+// Residency precheck (chat.ts:~510) fires before the abuse gate when a
+// request carries `activeOrganizationId`. Default to "not migrating" so
+// the abuse branch is the only non-200 source in the #2269 test below.
+mock.module("@atlas/api/lib/residency/readonly", () => ({
+  isWorkspaceMigrating: mock(async () => false),
+}));
+
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkPlanLimits: mockCheckPlanLimits,
   // Mocking partial named exports causes a SyntaxError elsewhere in
@@ -1504,6 +1511,53 @@ describe("POST /api/v1/chat", () => {
       );
       const response = await app.fetch(makeRequest());
       expect(response.headers.get("Retry-After")).toBe("15");
+    });
+  });
+
+  // Asserts the chat route honors the lib-level allowlist guard
+  // end-to-end. A regression that re-reads `state.level` directly
+  // (bypassing the `checkAbuseStatus` short-circuit) passes the unit
+  // test in abuse.test.ts but fails here.
+  describe("#2269 — allowlisted-with-stale-suspended workspace", () => {
+    it("returns non-403 when checkAbuseStatus is shadowed by the allowlist", async () => {
+      const origAllowlist = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      const abuse = await import("@atlas/api/lib/security/abuse");
+      abuse._resetAbuseState();
+      try {
+        // Order matters: drive suspended BEFORE allowlisting, since
+        // recordQueryEvent short-circuits on allowlist membership.
+        delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        const config = abuse.getAbuseConfig();
+        for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+          abuse.recordQueryEvent("ws-loadtest-stale", { success: true });
+        }
+        expect(abuse.checkAbuseStatus("ws-loadtest-stale").level).toBe("suspended");
+
+        process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-loadtest-stale";
+        mockAuthenticateRequest.mockResolvedValue({
+          authenticated: true as const,
+          mode: "managed" as const,
+          user: {
+            id: "user-loadtest",
+            mode: "managed" as const,
+            label: "loadtest@useatlas.dev",
+            role: "admin",
+            activeOrganizationId: "ws-loadtest-stale",
+            claims: { twoFactorEnabled: true },
+          },
+        });
+
+        const response = await app.fetch(makeRequest());
+        // Both assertions on purpose — `not.toBe(403)` is the regression
+        // guard; `.toBe(200)` keeps a refactor that returns 503 (or any
+        // non-200) for a different reason from passing vacuously.
+        expect(response.status).not.toBe(403);
+        expect(response.status).toBe(200);
+      } finally {
+        if (origAllowlist === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = origAllowlist;
+        abuse._resetAbuseState();
+      }
     });
   });
 });

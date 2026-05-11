@@ -47,6 +47,11 @@ import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { getLoadTestAllowlist } from "@atlas/api/lib/auth/load-test-allowlist";
 import {
+  ABUSE_RESTORE_STATUSES,
+  checkAbuseStatus,
+  getAbuseRestoreStatus,
+} from "@atlas/api/lib/security/abuse";
+import {
   PlatformStatsSchema,
   PlatformWorkspaceSchema,
   PlatformWorkspaceUserSchema,
@@ -87,7 +92,19 @@ const listWorkspacesRoute = createRoute({
   responses: {
     200: {
       description: "Workspaces list",
-      content: { "application/json": { schema: z.object({ workspaces: z.array(PlatformWorkspaceSchema) }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            workspaces: z.array(PlatformWorkspaceSchema),
+            // Boot-time abuse rehydrate outcome. When `load_failed`, the
+            // engine started with empty in-memory state — every
+            // workspace's `abuseLevel` will render as `"none"` even
+            // though enforcement is effectively off. The web banner
+            // reads this and surfaces the divergence loudly.
+            abuseRestoreStatus: z.enum(ABUSE_RESTORE_STATUSES),
+          }),
+        },
+      },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -280,10 +297,22 @@ const noisyNeighborsRoute = createRoute({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Build a PlatformWorkspace from a WorkspaceRow + health counts. */
+/**
+ * Build a PlatformWorkspace from a WorkspaceRow + health counts. Shared
+ * between the list route (where the SQL row carries health columns
+ * inline) and the detail route (where health is loaded as a follow-up
+ * Promise.all).
+ */
 function toWorkspaceResponse(
   row: WorkspaceRow,
   health: { members: number; conversations: number; queriesLast24h: number; connections: number; scheduledTasks: number },
+  /**
+   * Optional pre-resolved allowlist for batch callers. The list route
+   * parses `ATLAS_LOADTEST_ALLOWED_ORGS` once per request and threads
+   * the result through every row instead of re-parsing per workspace
+   * (#2249). Detail-route callers pass `undefined` and pay the parse.
+   */
+  allowlist: ReadonlySet<string> | null = getLoadTestAllowlist(),
 ): PlatformWorkspace {
   return {
     id: row.id,
@@ -304,9 +333,12 @@ function toWorkspaceResponse(
     region: row.region,
     regionAssignedAt: row.region_assigned_at,
     createdAt: row.createdAt,
-    // #2249 — surface the load-test allowlist override so the detail
-    // page renders the same badge as the list view.
-    neverSuspend: getLoadTestAllowlist()?.has(row.id) ?? false,
+    neverSuspend: allowlist?.has(row.id) ?? false,
+    // `status` reflects the `workspace_status` DB column; `abuseLevel`
+    // is the in-memory `checkAbuseStatus` verdict. The two diverge when
+    // the detector escalates without a corresponding admin mutation —
+    // that divergence is what surfacing both here exposes.
+    abuseLevel: checkAbuseStatus(row.id).level,
   };
 }
 
@@ -389,33 +421,40 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
        ORDER BY o."createdAt" DESC`,
     );
 
-    // #2249 — read the load-test allowlist once per request rather
-    // than re-parsing the env var inside the per-row map.
+    // Parse the allowlist once per request and thread it through every
+    // row — `toWorkspaceResponse` defaults to calling `getLoadTestAllowlist()`
+    // itself for the detail-route single-row case (#2249).
     const allowlist = getLoadTestAllowlist();
 
-    const workspaces = rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      slug: row.slug,
-      status: row.workspace_status,
-      planTier: row.plan_tier,
-      byot: row.byot,
-      members: row.members,
-      conversations: row.conversations,
-      queriesLast24h: row.queries_last_24h,
-      connections: row.connections,
-      scheduledTasks: row.scheduled_tasks,
-      stripeCustomerId: row.stripe_customer_id,
-      trialEndsAt: row.trial_ends_at,
-      suspendedAt: row.suspended_at,
-      deletedAt: row.deleted_at,
-      region: row.region,
-      regionAssignedAt: row.region_assigned_at,
-      createdAt: row.createdAt,
-      neverSuspend: allowlist?.has(row.id) ?? false,
-    }));
+    const workspaces = rows.map((row) =>
+      toWorkspaceResponse(
+        {
+          id: row.id,
+          name: row.name,
+          slug: row.slug,
+          workspace_status: row.workspace_status,
+          plan_tier: row.plan_tier,
+          byot: row.byot,
+          stripe_customer_id: row.stripe_customer_id,
+          trial_ends_at: row.trial_ends_at,
+          suspended_at: row.suspended_at,
+          deleted_at: row.deleted_at,
+          region: row.region,
+          region_assigned_at: row.region_assigned_at,
+          createdAt: row.createdAt,
+        },
+        {
+          members: row.members,
+          conversations: row.conversations,
+          queriesLast24h: row.queries_last_24h,
+          connections: row.connections,
+          scheduledTasks: row.scheduled_tasks,
+        },
+        allowlist,
+      ),
+    );
 
-    return c.json({ workspaces }, 200);
+    return c.json({ workspaces, abuseRestoreStatus: getAbuseRestoreStatus() }, 200);
   }), { label: "list workspaces" });
 });
 

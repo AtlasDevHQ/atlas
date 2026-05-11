@@ -65,6 +65,7 @@ import type {
   PlanTier,
 } from "@/ui/lib/types";
 import { WORKSPACE_STATUSES, PLAN_TIERS } from "@/ui/lib/types";
+import { abuseBadge, AbuseDivergenceBanner } from "@/ui/lib/abuse-badge";
 import { formatDate } from "@/lib/format";
 
 // Dynamic import for Recharts (heavy dependency)
@@ -324,6 +325,25 @@ function PlatformPageContent() {
 
         {/* ── Workspaces Tab ────────────────────────────────────── */}
         <TabsContent value="workspaces" className="space-y-4">
+          {wsData?.abuseRestoreStatus === "load_failed" ? (
+            // Boot-time abuse rehydrate failed — every workspace will
+            // render `abuseLevel: "none"` even though in-memory state
+            // is empty and enforcement is effectively off. Operator
+            // must restart or investigate before trusting the badges.
+            <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm">
+              <AlertTriangle className="mt-0.5 size-4 text-destructive shrink-0" />
+              <div className="space-y-1">
+                <p className="font-medium text-destructive">
+                  Abuse-state rehydrate failed on boot.
+                </p>
+                <p className="text-destructive/90">
+                  In-memory enforcement is empty — every workspace below renders
+                  &quot;Active&quot; regardless of past escalations. Check the API logs for the
+                  rehydrate error and restart the API once resolved.
+                </p>
+              </div>
+            </div>
+          ) : null}
           <div className="flex items-center gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
@@ -436,7 +456,12 @@ function PlatformPageContent() {
                           </span>
                         </TableCell>
                         <TableCell>{planBadge(ws.planTier as PlanTier)}</TableCell>
-                        <TableCell>{statusBadge(ws.status as WorkspaceStatus)}</TableCell>
+                        <TableCell>
+                          <span className="flex flex-wrap items-center gap-1">
+                            {statusBadge(ws.status as WorkspaceStatus)}
+                            {abuseBadge(ws.abuseLevel)}
+                          </span>
+                        </TableCell>
                         <TableCell>{ws.members}</TableCell>
                         <TableCell>{ws.queriesLast24h.toLocaleString()}</TableCell>
                         <TableCell>{formatDate(ws.createdAt)}</TableCell>
@@ -594,6 +619,7 @@ function PlatformPageContent() {
             <MutationErrorSurface error={detailError} feature="Platform Admin" />
           ) : detailData ? (
             <div className="space-y-4">
+              <AbuseDivergenceBanner level={detailData.workspace.abuseLevel} />
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <span className="text-sm text-muted-foreground">Name</span>
@@ -616,7 +642,10 @@ function PlatformPageContent() {
                 </div>
                 <div>
                   <span className="text-sm text-muted-foreground">Status</span>
-                  <p>{statusBadge(detailData.workspace.status as WorkspaceStatus)}</p>
+                  <div className="flex flex-wrap items-center gap-1">
+                    {statusBadge(detailData.workspace.status as WorkspaceStatus)}
+                    {abuseBadge(detailData.workspace.abuseLevel)}
+                  </div>
                 </div>
                 <div>
                   <span className="text-sm text-muted-foreground">Plan</span>

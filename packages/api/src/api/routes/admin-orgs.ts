@@ -27,6 +27,8 @@ import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
+import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
+import { ABUSE_LEVELS } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -40,6 +42,13 @@ const log = createLogger("admin-orgs");
 
 const OrgIdParamSchema = createIdParamSchema("org_abc123");
 
+// In-memory abuse-detector verdict from `checkAbuseStatus`. Independent
+// of `workspaceStatus` (DB column flipped by admin actions) — that
+// divergence is the bug this field exists to surface (#2269). Default
+// `"none"` consolidates the missing-field coercion at the Zod boundary
+// so consumers don't each re-derive "missing == none."
+const AbuseLevelEnum = z.enum(ABUSE_LEVELS).default("none");
+
 const OrgSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -52,6 +61,7 @@ const OrgSummarySchema = z.object({
   planTier: z.string(),
   suspendedAt: z.string().nullable(),
   deletedAt: z.string().nullable(),
+  abuseLevel: AbuseLevelEnum,
 });
 
 const OrgDetailSchema = z.object({
@@ -65,6 +75,7 @@ const OrgDetailSchema = z.object({
   planTier: z.string(),
   suspendedAt: z.string().nullable(),
   deletedAt: z.string().nullable(),
+  abuseLevel: AbuseLevelEnum,
 });
 
 const MemberSchema = z.object({
@@ -547,6 +558,7 @@ adminOrgs.openapi(listOrgsRoute, async (c) => {
       createdAt: String(o.createdAt), memberCount: countMap.get(o.id as string) ?? 0,
       workspaceStatus: (o.workspace_status as string) ?? "active", planTier: (o.plan_tier as string) ?? "free",
       suspendedAt: o.suspended_at ? String(o.suspended_at) : null, deletedAt: o.deleted_at ? String(o.deleted_at) : null,
+      abuseLevel: checkAbuseStatus(o.id as string).level,
     }));
 
     return c.json({ organizations: result, total: result.length }, 200);
@@ -571,7 +583,7 @@ adminOrgs.openapi(getOrgRoute, async (c) => {
     ]));
 
     return c.json({
-      organization: { id: org.id as string, name: org.name as string, slug: org.slug as string, logo: (org.logo as string) ?? null, metadata: (org.metadata as Record<string, unknown>) ?? null, createdAt: String(org.createdAt), workspaceStatus: (org.workspace_status as string) ?? "active", planTier: (org.plan_tier as string) ?? "free", suspendedAt: org.suspended_at ? String(org.suspended_at) : null, deletedAt: org.deleted_at ? String(org.deleted_at) : null },
+      organization: { id: org.id as string, name: org.name as string, slug: org.slug as string, logo: (org.logo as string) ?? null, metadata: (org.metadata as Record<string, unknown>) ?? null, createdAt: String(org.createdAt), workspaceStatus: (org.workspace_status as string) ?? "active", planTier: (org.plan_tier as string) ?? "free", suspendedAt: org.suspended_at ? String(org.suspended_at) : null, deletedAt: org.deleted_at ? String(org.deleted_at) : null, abuseLevel: checkAbuseStatus(org.id as string).level },
       members: members.map((m) => ({ id: m.id as string, organizationId: m.organizationId as string, userId: m.userId as string, role: m.role as string, createdAt: String(m.createdAt), user: { id: m.userId as string, name: (m.user_name as string) ?? "", email: (m.user_email as string) ?? "", image: (m.user_image as string) ?? null } })),
       invitations: invitations.map((i) => ({ id: i.id as string, email: i.email as string, role: i.role as string, status: i.status as string, inviterId: i.inviterId as string, expiresAt: String(i.expiresAt), createdAt: String(i.createdAt) })),
     }, 200);

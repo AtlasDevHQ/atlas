@@ -12,6 +12,43 @@ import type { Percentage, Ratio } from "./percentage";
 export const ABUSE_LEVELS = ["none", "warning", "throttled", "suspended"] as const;
 export type AbuseLevel = (typeof ABUSE_LEVELS)[number];
 
+/**
+ * Coerce a possibly-missing abuse level (older API/web pair, optional
+ * wire field) to the safe `"none"` default. Replaces the `?? "none"`
+ * coercion sprinkled across SDK + admin consumers.
+ */
+export function normalizeAbuseLevel(level: AbuseLevel | undefined | null): AbuseLevel {
+  return level ?? "none";
+}
+
+// Derive the rank directly from the tuple's position so the escalation
+// ladder has a single source of truth — adding a level in `ABUSE_LEVELS`
+// (e.g. inserting `"emergency_stop"` before `"suspended"`) re-ranks
+// every consumer without a second edit. A hand-written object literal
+// would let `{ warning: 5, throttled: 1 }` typecheck against
+// `Record<AbuseLevel, number>` despite breaking the ordering invariant
+// that `compareAbuseLevel` depends on.
+const LEVEL_RANK = Object.fromEntries(
+  ABUSE_LEVELS.map((level, i) => [level, i] as const),
+) as Record<AbuseLevel, number>;
+
+/**
+ * Three-way compare on the `none < warning < throttled < suspended`
+ * escalation ladder. Returns < 0 / 0 / > 0 like every other compare fn.
+ */
+export function compareAbuseLevel(a: AbuseLevel, b: AbuseLevel): number {
+  return LEVEL_RANK[a] - LEVEL_RANK[b];
+}
+
+/**
+ * Predicate sugar over `compareAbuseLevel` — "is `level` at least as
+ * severe as `floor`?" Reads cleaner than `compareAbuseLevel(x, y) >= 0`
+ * at call sites that branch on a severity threshold.
+ */
+export function isAbuseLevelAtLeast(level: AbuseLevel, floor: AbuseLevel): boolean {
+  return compareAbuseLevel(level, floor) >= 0;
+}
+
 /** Which anomaly detector triggered the abuse event. */
 export const ABUSE_TRIGGERS = [
   "query_rate",
@@ -121,6 +158,30 @@ export interface AbuseInstance {
   peakLevel: AbuseLevel;
   events: readonly AbuseEvent[];
 }
+
+/**
+ * Boot outcome of the abuse-state rehydrate. Lives on the wire so the
+ * platform-admin page can surface a destructive banner when in-memory
+ * enforcement was lost — without this, a `load_failed` rehydrate leaves
+ * every workspace rendering `abuseLevel: "none"` despite enforcement
+ * being effectively off. Mirrors `AbuseEventsStatus` for parity.
+ *
+ *   - `pending`        — `restoreAbuseState` has not run yet. Transient
+ *                        during boot only.
+ *   - `ok`             — last run completed; in-memory state matches DB.
+ *   - `db_unavailable` — `hasInternalDB()` returned false. Expected on
+ *                        a self-hosted deploy without `DATABASE_URL`.
+ *   - `load_failed`    — the SQL read threw. UI must show a banner —
+ *                        every `checkAbuseStatus` will return `"none"`
+ *                        until the next escalation or boot.
+ */
+export const ABUSE_RESTORE_STATUSES = [
+  "pending",
+  "ok",
+  "db_unavailable",
+  "load_failed",
+] as const;
+export type AbuseRestoreStatus = (typeof ABUSE_RESTORE_STATUSES)[number];
 
 /**
  * Diagnostic channel for the `events` payload on `AbuseDetail` (#1682).

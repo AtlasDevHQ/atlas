@@ -14,6 +14,7 @@
  * `packages/schemas/README.md`.
  */
 import { z } from "zod";
+import type { AbuseRestoreStatus } from "@useatlas/types";
 import {
   BackupEntrySchema,
   CustomDomainSchema,
@@ -21,6 +22,20 @@ import {
   PlatformWorkspaceSchema,
   PlatformWorkspaceUserSchema,
 } from "@useatlas/schemas";
+
+// Local literal tuple instead of importing the value-export tuple from
+// `@useatlas/types`. The template scaffold installs `@useatlas/types`
+// from the registry — adding a new value export forces a publish-first
+// merge dance for every PR (#useatlas/types-scaffold-gotcha). The
+// `satisfies` constraint pins this tuple to the same union as the
+// canonical `AbuseRestoreStatus` so adding a level in
+// `@useatlas/types/abuse.ts` fails compile here until both sides match.
+const ABUSE_RESTORE_STATUSES = [
+  "pending",
+  "ok",
+  "db_unavailable",
+  "load_failed",
+] as const satisfies readonly AbuseRestoreStatus[];
 export {
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
@@ -84,6 +99,10 @@ export {
 
 export const PlatformWorkspacesResponseSchema = z.object({
   workspaces: z.array(PlatformWorkspaceSchema),
+  // Optional + additive — older API doesn't include this field; the
+  // platform-admin page treats absence as `"ok"` (the conservative
+  // "everything's fine" default). Sourced from `getAbuseRestoreStatus()`.
+  abuseRestoreStatus: z.enum(ABUSE_RESTORE_STATUSES).optional(),
 });
 
 export const PlatformNeighborsResponseSchema = z.object({

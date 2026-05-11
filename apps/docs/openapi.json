@@ -15796,6 +15796,16 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "abuseLevel": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "warning",
+                              "throttled",
+                              "suspended"
+                            ],
+                            "default": "none"
                           }
                         },
                         "required": [
@@ -15985,6 +15995,16 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "abuseLevel": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "warning",
+                            "throttled",
+                            "suspended"
+                          ],
+                          "default": "none"
                         }
                       },
                       "required": [
@@ -58084,6 +58104,15 @@
                           },
                           "neverSuspend": {
                             "type": "boolean"
+                          },
+                          "abuseLevel": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "warning",
+                              "throttled",
+                              "suspended"
+                            ]
                           }
                         },
                         "required": [
@@ -58107,10 +58136,20 @@
                           "createdAt"
                         ]
                       }
+                    },
+                    "abuseRestoreStatus": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "ok",
+                        "db_unavailable",
+                        "load_failed"
+                      ]
                     }
                   },
                   "required": [
-                    "workspaces"
+                    "workspaces",
+                    "abuseRestoreStatus"
                   ]
                 }
               }
@@ -58296,6 +58335,15 @@
                         },
                         "neverSuspend": {
                           "type": "boolean"
+                        },
+                        "abuseLevel": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "warning",
+                            "throttled",
+                            "suspended"
+                          ]
                         }
                       },
                       "required": [

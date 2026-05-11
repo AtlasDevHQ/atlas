@@ -21,6 +21,7 @@ import {
   ABUSE_TRIGGERS,
   asRatio,
   type AbuseLevel,
+  type AbuseRestoreStatus,
   type AbuseTrigger,
   type AbuseEvent,
   type AbuseEventsStatus,
@@ -28,6 +29,19 @@ import {
   type AbuseThresholdConfig,
   type AbuseDetail,
 } from "@useatlas/types";
+
+// Local literal tuple, not imported from `@useatlas/types`'s value
+// export — the scaffold template builds against the registry copy,
+// and a fresh value export there breaks scaffold CI until the next
+// types publish (see #useatlas/types-scaffold-gotcha). `satisfies`
+// pins this to the canonical union so a drift fails compile.
+export const ABUSE_RESTORE_STATUSES = [
+  "pending",
+  "ok",
+  "db_unavailable",
+  "load_failed",
+] as const satisfies readonly AbuseRestoreStatus[];
+export type { AbuseRestoreStatus };
 
 /**
  * A non-`"none"` abuse level — exactly the states a reinstate can lift
@@ -153,10 +167,24 @@ const workspaceState = new Map<string, WorkspaceAbuseState>();
  */
 const warnedLoadTestSkip = new Set<string>();
 
+// `AbuseRestoreStatus` doc lives in @useatlas/types/abuse.ts (the wire
+// boundary). Single-process: `_restoreStatus` reflects the boot
+// outcome of *this* Node process. Atlas's deployment model is
+// long-lived API processes (Railway/Docker), so this is the right
+// granularity. A multi-replica deploy that splits state across
+// isolates would need a per-replica surface; not a current concern.
+let _restoreStatus: AbuseRestoreStatus = "pending";
+
+/** Read the last `restoreAbuseState` outcome. */
+export function getAbuseRestoreStatus(): AbuseRestoreStatus {
+  return _restoreStatus;
+}
+
 /** Reset all in-memory state. For tests. */
 export function _resetAbuseState(): void {
   workspaceState.clear();
   warnedLoadTestSkip.clear();
+  _restoreStatus = "pending";
 }
 
 /** Get or create workspace state. */
@@ -343,11 +371,20 @@ function escalate(
 /**
  * Check the current abuse level for a workspace.
  * Returns the current level and throttle delay if applicable.
+ *
+ * Allowlisted workspaces (`ATLAS_LOADTEST_ALLOWED_ORGS`) always report
+ * `level: "none"` regardless of stored state. `recordQueryEvent` already
+ * short-circuits for these workspaces, but pre-allowlist suspensions
+ * (in-memory or rehydrated from `abuse_events`) would otherwise keep
+ * blocking chat/query indefinitely — the never-suspend semantics need to
+ * apply at *read* time too, not just at escalation time.
  */
 export function checkAbuseStatus(workspaceId: string): {
   level: AbuseLevel;
   throttleDelayMs?: number;
 } {
+  if (isLoadTestWorkspace(workspaceId)) return { level: "none" };
+
   const state = workspaceState.get(workspaceId);
   if (!state || state.level === "none" || state.level === "warning") {
     return { level: state?.level ?? "none" };
@@ -365,11 +402,23 @@ export function checkAbuseStatus(workspaceId: string): {
 // Admin operations
 // ---------------------------------------------------------------------------
 
-/** List all workspaces with non-"none" abuse levels. */
+/**
+ * List all workspaces with non-"none" abuse levels.
+ *
+ * Filters out allowlisted workspaces (`ATLAS_LOADTEST_ALLOWED_ORGS`) so
+ * the abuse console doesn't render stale-suspended rows for workspaces
+ * that every other read path (`checkAbuseStatus`, the platform-admin
+ * `abuseLevel` surface, the chat-route gate) reports as `none`. Without
+ * this filter, an admin would see a "suspended" workspace in the abuse
+ * list, click reinstate, and get back a noop — the in-memory state stays
+ * suspended but is shadowed by the allowlist guard, so the read & write
+ * paths diverge.
+ */
 export function listFlaggedWorkspaces(): AbuseStatus[] {
   const results: AbuseStatus[] = [];
   for (const [workspaceId, state] of workspaceState) {
     if (state.level === "none") continue;
+    if (isLoadTestWorkspace(workspaceId)) continue;
     results.push({
       workspaceId,
       workspaceName: null, // Resolved by the admin route
@@ -634,7 +683,10 @@ export async function getAbuseEvents(
 
 /** Restore in-memory state from DB on startup. */
 export async function restoreAbuseState(): Promise<void> {
-  if (!hasInternalDB()) return;
+  if (!hasInternalDB()) {
+    _restoreStatus = "db_unavailable";
+    return;
+  }
 
   try {
     // Get the latest event per workspace to restore current level
@@ -651,6 +703,7 @@ export async function restoreAbuseState(): Promise<void> {
     );
 
     let driftSkipped = 0;
+    const allowlistSkippedIds: string[] = [];
     for (const row of rows) {
       const { level, trigger, levelDrifted } = coerceAbuseEnums(
         row.workspace_id,
@@ -666,6 +719,20 @@ export async function restoreAbuseState(): Promise<void> {
         continue;
       }
       if (level === "none") continue; // Already reinstated
+      // Never rehydrate a non-"none" level for an allowlisted workspace.
+      // The skip is gated by *current* env-var membership: if the
+      // workspace later leaves `ATLAS_LOADTEST_ALLOWED_ORGS` and the
+      // process restarts, the next `restoreAbuseState` call will see the
+      // same row, find no allowlist match, and rehydrate it. State isn't
+      // dropped at the DB layer — only kept out of memory while
+      // allowlisted. Same read-time guard inside `checkAbuseStatus`
+      // shadows the in-memory ladder when the env var is set, so an
+      // operator removing a workspace from the allowlist *without*
+      // restarting still sees "Active" until the next escalation.
+      if (isLoadTestWorkspace(row.workspace_id)) {
+        allowlistSkippedIds.push(row.workspace_id);
+        continue;
+      }
 
       const state = getState(row.workspace_id);
       state.level = level;
@@ -677,16 +744,35 @@ export async function restoreAbuseState(): Promise<void> {
     }
 
     const restored = [...workspaceState.values()].filter((s) => s.level !== "none").length;
-    if (restored > 0 || driftSkipped > 0) {
+    const allowlistSkipped = allowlistSkippedIds.length;
+    if (restored > 0 || driftSkipped > 0 || allowlistSkipped > 0) {
       log.info(
-        { count: restored, driftSkipped },
-        "Restored abuse state for %d workspaces (%d skipped due to enum drift)",
+        // IDs included so an operator who set `ATLAS_LOADTEST_ALLOWED_ORGS`
+        // to the wrong workspace ID can recover from logs alone — a
+        // bare count like `allowlistSkipped: 17` doesn't tell you
+        // *which* 17 got shadowed by an env-var typo.
+        { count: restored, driftSkipped, allowlistSkipped, allowlistSkippedIds },
+        "Restored abuse state for %d workspaces (%d skipped due to enum drift, %d skipped via allowlist)",
         restored,
         driftSkipped,
+        allowlistSkipped,
       );
     }
+    _restoreStatus = "ok";
   } catch (err) {
-    log.warn(
+    // Clear any partial state — if the SQL read threw mid-iteration we
+    // would otherwise leave a polluted in-memory map (some workspaces
+    // rehydrated, the rest missing) under a `load_failed` status that
+    // implies "engine started with empty state." Restoring the
+    // invariant here means `load_failed` is honest.
+    workspaceState.clear();
+    _restoreStatus = "load_failed";
+    // `log.error` (not `warn`) — a boot-time enforcement-state loss is
+    // compliance-significant: every `checkAbuseStatus` will return
+    // `"none"` until either the next escalation lands a new in-memory
+    // row, or the next boot succeeds. Mirrors the `persistAbuseEvent`
+    // catch which is `log.error` for the same audit-trail reason.
+    log.error(
       { err: err instanceof Error ? err.message : String(err) },
       "Failed to restore abuse state from DB — starting with empty state",
     );

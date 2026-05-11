@@ -40,6 +40,13 @@ import {
   discoverEntities,
   findEntityFile,
 } from "@atlas/api/lib/semantic/files";
+// Org-aware filesystem root — same helper the public /semantic route uses to
+// surface per-org YAML at `semantic/.orgs/<orgId>/`. The admin disk endpoints
+// historically read from the base root only, which 404'd on SaaS workspaces
+// whose entities had been DB-synced to their org subdirectory (and double-bug:
+// user-created DB-only entities were invisible to the disk endpoint entirely).
+import { getSemanticRoot as getOrgSemanticRoot } from "@atlas/api/lib/semantic/sync";
+import * as yaml from "js-yaml";
 import { runDiff } from "@atlas/api/lib/semantic/diff";
 import { adminOrgs } from "./admin-orgs";
 import { adminAudit } from "./admin-audit";
@@ -1257,8 +1264,14 @@ admin.openapi(overviewRoute, async (c) => {
 // -- Semantic Layer ---------------------------------------------------------
 
 admin.openapi(listEntitiesRoute, async (c) => {
-  await adminAuthAndContext(c, "admin:semantic");
-  const root = getSemanticRoot();
+  const { authResult } = await adminAuthAndContext(c, "admin:semantic");
+  // Org-scope so SaaS workspaces see their own `semantic/.orgs/<orgId>/`
+  // overlay rather than the bundled NovaMart shipped in base root. The
+  // SaaS UI fetches /admin/semantic/org/entities instead (DB-backed) so
+  // this branch is what self-hosted hits — but on a SaaS self-hosted
+  // probe path or direct API caller, the org overlay is still correct.
+  const orgId = authResult.user?.activeOrganizationId;
+  const root = orgId ? getOrgSemanticRoot(orgId) : getSemanticRoot();
   const result = discoverEntities(root);
   return c.json({
     entities: result.entities,
@@ -1270,52 +1283,95 @@ admin.openapi(getEntityRoute, async (c) => {
 
   const { name } = c.req.valid("param");
 
-  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
+  const { requestId, authResult } = await adminAuthAndContext(c, "admin:semantic");
   // Path traversal protection
   if (!isValidEntityName(name)) {
     log.warn({ requestId, name }, "Rejected invalid entity name");
     return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
   }
 
-  const root = getSemanticRoot();
+  // Resolve the org-scoped root when an active org is present, mirroring the
+  // public /semantic/entities/{name} route (see PR #2303). Without this the
+  // admin disk endpoint reads from the base `semantic/` directory only, which
+  // 404s on every SaaS workspace because their entities live at
+  // `semantic/.orgs/<orgId>/`. The frontend's SaaS list path comes from the
+  // org-scoped DB endpoint (admin-semantic page.tsx:431-433), so the detail
+  // fetch *must* resolve against the same org overlay or every list-click
+  // produces `Failed to load "<entity>": HTTP 404`.
+  const orgId = authResult.user?.activeOrganizationId;
+  const root = orgId ? getOrgSemanticRoot(orgId) : getSemanticRoot();
   const filePath = findEntityFile(root, name);
-  if (!filePath) {
-    return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+
+  if (filePath) {
+    // Defense-in-depth: verify resolved path is within semantic root
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(path.resolve(root))) {
+      log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
+      return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
+    }
+
+    try {
+      const raw = readYamlFile(filePath);
+      return c.json({ entity: raw }, 200);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
+      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` , requestId}, 500);
+    }
   }
 
-  // Defense-in-depth: verify resolved path is within semantic root
-  const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(path.resolve(root))) {
-    log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-    return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
+  // Fall back to the DB overlay. User-created entities live in
+  // `semantic_entities` and the disk overlay can lag (or be wiped on a
+  // container restart — Railway/SaaS filesystems are ephemeral). Without
+  // this branch the user sees a 404 even though the entity they just
+  // clicked is in their workspace.
+  if (orgId && hasInternalDB()) {
+    try {
+      const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+      const row = await getEntity(orgId, "entity", name);
+      if (row) {
+        try {
+          const parsed = yaml.load(row.yaml_content);
+          return c.json({ entity: parsed }, 200);
+        } catch (parseErr) {
+          log.error(
+            { err: parseErr instanceof Error ? parseErr : new Error(String(parseErr)), entityName: name, orgId, requestId },
+            "Failed to parse YAML from DB-backed semantic entity",
+          );
+          return c.json({ error: "internal_error", message: `Failed to parse entity content for "${name}".`, requestId }, 500);
+        }
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), entityName: name, orgId, requestId },
+        "Failed to look up entity in DB overlay",
+      );
+      return c.json({ error: "internal_error", message: `Failed to load entity "${name}".`, requestId }, 500);
+    }
   }
 
-  try {
-    const raw = readYamlFile(filePath);
-    return c.json({ entity: raw }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-    return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` , requestId}, 500);
-  }
+  return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
 });
 
 admin.openapi(listMetricsRoute, async (c) => {
-  await adminAuthAndContext(c, "admin:semantic");
-  const root = getSemanticRoot();
+  const { authResult } = await adminAuthAndContext(c, "admin:semantic");
+  const orgId = authResult.user?.activeOrganizationId;
+  const root = orgId ? getOrgSemanticRoot(orgId) : getSemanticRoot();
   const metrics = discoverMetrics(root);
   return c.json({ metrics }, 200);
 });
 
 admin.openapi(getGlossaryRoute, async (c) => {
-  await adminAuthAndContext(c, "admin:semantic");
-  const root = getSemanticRoot();
+  const { authResult } = await adminAuthAndContext(c, "admin:semantic");
+  const orgId = authResult.user?.activeOrganizationId;
+  const root = orgId ? getOrgSemanticRoot(orgId) : getSemanticRoot();
   const glossary = loadGlossary(root);
   return c.json({ glossary }, 200);
 });
 
 admin.openapi(getCatalogRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
-  const root = getSemanticRoot();
+  const { requestId, authResult } = await adminAuthAndContext(c, "admin:semantic");
+  const orgId = authResult.user?.activeOrganizationId;
+  const root = orgId ? getOrgSemanticRoot(orgId) : getSemanticRoot();
   const catalogFile = path.join(root, "catalog.yml");
   if (!fs.existsSync(catalogFile)) {
     return c.json({ catalog: null }, 200);

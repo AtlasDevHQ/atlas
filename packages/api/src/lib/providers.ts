@@ -12,12 +12,15 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { anthropic } from "@ai-sdk/anthropic";
 import { createOpenAI, openai } from "@ai-sdk/openai";
-import { bedrock } from "@ai-sdk/amazon-bedrock";
+import { bedrock, createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { bedrockAnthropic } from "@ai-sdk/amazon-bedrock/anthropic";
 import { createGateway } from "@ai-sdk/gateway";
 import { gateway } from "ai";
 import type { LanguageModel } from "ai";
 import type { ModelConfigProvider } from "@useatlas/types";
+import { createLogger } from "./logger";
+
+const log = createLogger("providers");
 
 /** Provider strings accepted in ATLAS_PROVIDER. */
 type ConfigProvider = "anthropic" | "openai" | "bedrock" | "ollama" | "openai-compatible" | "gateway";
@@ -219,6 +222,12 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
       return "openai-compatible";
     case "gateway":
       return "gateway";
+    case "bedrock":
+      // Workspace-saved bedrock rows are pointed at Anthropic-on-Bedrock
+      // models by recommendation, but the SDK accepts any bedrock model
+      // id — treat them as 'bedrock' for cache-control purposes and let
+      // the underlying SDK handle dialect specifics.
+      return "bedrock";
     default: {
       const _exhaustive: never = provider;
       throw new Error(`Unknown workspace provider: ${_exhaustive}`);
@@ -239,6 +248,8 @@ export function getModelFromWorkspaceConfig(config: {
   model: string;
   apiKey: string | null;
   baseUrl: string | null;
+  /** Required for provider='bedrock'; ignored for every other provider. */
+  bedrockRegion?: string | null;
 }): LanguageModel {
   switch (config.provider) {
     case "anthropic": {
@@ -297,6 +308,56 @@ export function getModelFromWorkspaceConfig(config: {
         );
       }
       return gateway(config.model);
+    }
+
+    case "bedrock": {
+      if (!config.apiKey) {
+        throw new Error("AWS credentials are required for the bedrock provider.");
+      }
+      if (!config.bedrockRegion) {
+        throw new Error("AWS region is required for the bedrock provider.");
+      }
+      // The apiKey field carries the JSON-encoded credential bundle.
+      // Parse it here so AI Layer setup stays close to the SDK call.
+      let bundle: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+      try {
+        const parsed = JSON.parse(config.apiKey);
+        if (
+          !parsed ||
+          typeof parsed !== "object" ||
+          typeof parsed.accessKeyId !== "string" ||
+          typeof parsed.secretAccessKey !== "string"
+        ) {
+          throw new Error("malformed bundle");
+        }
+        bundle = {
+          accessKeyId: parsed.accessKeyId,
+          secretAccessKey: parsed.secretAccessKey,
+          ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
+            ? { sessionToken: parsed.sessionToken }
+            : {}),
+        };
+      } catch (err) {
+        // Capture the underlying parse failure (SyntaxError vs shape
+        // mismatch) for triage; the user-facing message stays generic
+        // because the AI Layer is mid-flight on a chat request and the
+        // admin's only actionable fix is re-entry.
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Workspace bedrock bundle parse failed at provider build",
+        );
+        throw new Error(
+          "Workspace bedrock credentials are malformed — re-enter the access key / secret on the AI Provider page.",
+          { cause: err },
+        );
+      }
+      const client = createAmazonBedrock({
+        region: config.bedrockRegion,
+        accessKeyId: bundle.accessKeyId,
+        secretAccessKey: bundle.secretAccessKey,
+        ...(bundle.sessionToken ? { sessionToken: bundle.sessionToken } : {}),
+      });
+      return client(config.model);
     }
 
     default: {

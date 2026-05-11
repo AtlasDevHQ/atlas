@@ -150,4 +150,62 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(rows[0]?.provider).toBe("gateway");
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0057 — bedrock provider + chk_model_provider_region. The CHECK is
+  // the DB-layer enforcement that bedrock rows always carry a region;
+  // the route-layer guards exist but a future bypass would leak through
+  // to the AI Layer if this silently drops.
+  it("workspace_model_config: chk_model_provider accepts 'bedrock'", async () => {
+    const orgId = `org-bedrock-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, bedrock_region)
+       VALUES ($1, 'bedrock', 'anthropic.claude-opus-4-v1:0', 'enc:v1:iv:tag:ciphertext', 'us-east-1')`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ provider: string; bedrock_region: string }>(
+      `SELECT provider, bedrock_region FROM workspace_model_config WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(rows[0]?.provider).toBe("bedrock");
+    expect(rows[0]?.bedrock_region).toBe("us-east-1");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_model_config: bedrock with NULL bedrock_region rejects with 23514", async () => {
+    const orgId = `org-bedrock-noRegion-${Date.now()}`;
+    await expect(
+      pool.query(
+        `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, bedrock_region)
+         VALUES ($1, 'bedrock', 'anthropic.claude-opus-4-v1:0', 'enc:v1:iv:tag:ciphertext', NULL)`,
+        [orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  // 0059 — chk_model_status whitelist. A future write that tries to
+  // store a third status value (e.g. "retired") must fail at the DB
+  // boundary so the modelStatus discriminated-union assumption holds.
+  it("workspace_model_config: model_status outside ('healthy','deprecated') rejects with 23514", async () => {
+    const orgId = `org-bad-status-${Date.now()}`;
+    await expect(
+      pool.query(
+        `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, model_status)
+         VALUES ($1, 'anthropic', 'claude-opus-4-6', 'enc:v1:iv:tag:ciphertext', 'retired')`,
+        [orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_model_config: model_status defaults to 'healthy' on insert", async () => {
+    const orgId = `org-default-status-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted)
+       VALUES ($1, 'anthropic', 'claude-opus-4-6', 'enc:v1:iv:tag:ciphertext')`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ model_status: string }>(
+      `SELECT model_status FROM workspace_model_config WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(rows[0]?.model_status).toBe("healthy");
+  }, PG_TEST_TIMEOUT_MS);
 });

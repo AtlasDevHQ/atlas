@@ -296,10 +296,11 @@ describe("ADMIN_ACTIONS catalog — BYOT credential audit", () => {
     expect(ADMIN_ACTIONS.email_provider.test).toBe("email_provider.test");
   });
 
-  it("defines model_config.update / delete / test", () => {
+  it("defines model_config.update / delete / test / catalog_refresh", () => {
     expect(ADMIN_ACTIONS.model_config.update).toBe("model_config.update");
     expect(ADMIN_ACTIONS.model_config.delete).toBe("model_config.delete");
     expect(ADMIN_ACTIONS.model_config.test).toBe("model_config.test");
+    expect(ADMIN_ACTIONS.model_config.catalogRefresh).toBe("model_config.catalog_refresh");
   });
 });
 

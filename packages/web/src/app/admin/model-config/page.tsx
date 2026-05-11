@@ -71,6 +71,7 @@ const PROVIDERS: { value: ModelConfigProvider; label: string; description: strin
   { value: "azure-openai", label: "Azure OpenAI", description: "Azure-hosted OpenAI models" },
   { value: "custom", label: "Custom (OpenAI-compatible)", description: "Any OpenAI-compatible endpoint" },
   { value: "gateway", label: "Vercel AI Gateway", description: "Any gateway model — platform credits or BYOT key" },
+  { value: "bedrock", label: "AWS Bedrock", description: "Bedrock-hosted Anthropic / Amazon / others via IAM creds" },
 ];
 
 const PROVIDER_LABEL: Record<ModelConfigProvider, string> = {
@@ -79,9 +80,27 @@ const PROVIDER_LABEL: Record<ModelConfigProvider, string> = {
   "azure-openai": "Azure OpenAI",
   custom: "Custom",
   gateway: "Vercel AI Gateway",
+  bedrock: "AWS Bedrock",
 };
 
 const NEEDS_BASE_URL: Set<ModelConfigProvider> = new Set(["azure-openai", "custom"]);
+
+// Mirrors `BEDROCK_REGIONS` from `@useatlas/types`. Kept in lockstep at the
+// type-bump boundary; the type re-export below catches drift at compile time.
+const BEDROCK_REGION_OPTIONS = [
+  { value: "us-east-1", label: "us-east-1 (N. Virginia)" },
+  { value: "us-east-2", label: "us-east-2 (Ohio)" },
+  { value: "us-west-2", label: "us-west-2 (Oregon)" },
+  { value: "eu-central-1", label: "eu-central-1 (Frankfurt)" },
+  { value: "eu-west-1", label: "eu-west-1 (Ireland)" },
+  { value: "eu-west-3", label: "eu-west-3 (Paris)" },
+  { value: "ap-northeast-1", label: "ap-northeast-1 (Tokyo)" },
+  { value: "ap-southeast-1", label: "ap-southeast-1 (Singapore)" },
+  { value: "ap-southeast-2", label: "ap-southeast-2 (Sydney)" },
+  { value: "ap-south-1", label: "ap-south-1 (Mumbai)" },
+  { value: "ca-central-1", label: "ca-central-1 (Central)" },
+  { value: "sa-east-1", label: "sa-east-1 (São Paulo)" },
+] as const;
 
 // Partial by design — unknown model IDs fall back to the raw string so that
 // a new platform model ships without a UI change. Keep in sync with billing's
@@ -97,10 +116,16 @@ function platformModelLabel(value: string): string {
 }
 
 const modelConfigSchema = z.object({
-  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway"]),
+  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway", "bedrock"]),
   model: z.string(),
   apiKey: z.string(),
   baseUrl: z.string(),
+  // Bedrock-specific. Stored as separate inputs and JSON-bundled into the
+  // apiKey wire field at submit time so the API stays uniform.
+  bedrockRegion: z.string(),
+  bedrockAccessKeyId: z.string(),
+  bedrockSecretAccessKey: z.string(),
+  bedrockSessionToken: z.string(),
 });
 
 // ── Main page ─────────────────────────────────────────────────────
@@ -113,7 +138,16 @@ export default function ModelConfigPage() {
 
   const form = useForm<z.infer<typeof modelConfigSchema>>({
     resolver: zodResolver(modelConfigSchema),
-    defaultValues: { provider: "anthropic", model: "", apiKey: "", baseUrl: "" },
+    defaultValues: {
+      provider: "anthropic",
+      model: "",
+      apiKey: "",
+      baseUrl: "",
+      bedrockRegion: "us-east-1",
+      bedrockAccessKeyId: "",
+      bedrockSecretAccessKey: "",
+      bedrockSessionToken: "",
+    },
   });
 
   const { data, loading, error, refetch } = useAdminFetch(
@@ -121,9 +155,9 @@ export default function ModelConfigPage() {
     { schema: ModelConfigResponseSchema },
   );
 
-  // Catalog only matters when the user is on or considering the gateway
-  // provider, but fetching it eagerly keeps the picker responsive on first
-  // toggle. The endpoint is server-cached so the cost is one cold hit.
+  // Gateway catalog (anonymous, server-cached) — fetched eagerly so the
+  // picker is responsive on first toggle. The endpoint is server-cached so
+  // the cost is one cold hit per pod.
   const {
     data: catalog,
     loading: catalogLoading,
@@ -131,6 +165,57 @@ export default function ModelConfigPage() {
   } = useAdminFetch(
     "/api/v1/admin/model-config/catalog",
     { schema: GatewayCatalogResponseSchema },
+  );
+
+  // BYOT direct-provider catalogs — only fetched when the workspace has
+  // a saved configuration on the matching provider with a healthy key.
+  // Without these preconditions the endpoint would return 400
+  // `missing_byot_key` on every page load, surfacing as a noisy error
+  // banner. Gating with `enabled` keeps the request firmly
+  // tied to the picker's render gate.
+  const existingConfigForGate = data?.config ?? null;
+  const anthropicCatalogEnabled =
+    existingConfigForGate?.provider === "anthropic" &&
+    existingConfigForGate.apiKeyStatus === "masked";
+  const openaiCatalogEnabled =
+    existingConfigForGate?.provider === "openai" &&
+    existingConfigForGate.apiKeyStatus === "masked";
+  const bedrockCatalogEnabled =
+    existingConfigForGate?.provider === "bedrock" &&
+    existingConfigForGate.apiKeyStatus === "masked" &&
+    !!existingConfigForGate.bedrockRegion;
+  const {
+    data: anthropicCatalog,
+    loading: anthropicCatalogLoading,
+    refetch: refetchAnthropicCatalog,
+  } = useAdminFetch(
+    "/api/v1/admin/model-config/catalog?provider=anthropic",
+    {
+      schema: GatewayCatalogResponseSchema,
+      enabled: anthropicCatalogEnabled,
+    },
+  );
+  const {
+    data: openaiCatalog,
+    loading: openaiCatalogLoading,
+    refetch: refetchOpenaiCatalog,
+  } = useAdminFetch(
+    "/api/v1/admin/model-config/catalog?provider=openai",
+    {
+      schema: GatewayCatalogResponseSchema,
+      enabled: openaiCatalogEnabled,
+    },
+  );
+  const {
+    data: bedrockCatalog,
+    loading: bedrockCatalogLoading,
+    refetch: refetchBedrockCatalog,
+  } = useAdminFetch(
+    "/api/v1/admin/model-config/catalog?provider=bedrock",
+    {
+      schema: GatewayCatalogResponseSchema,
+      enabled: bedrockCatalogEnabled,
+    },
   );
 
   // Billing drives the BYOT gate + the platform-default label. 404 means
@@ -201,9 +286,25 @@ export default function ModelConfigPage() {
         model: existingConfig.model,
         apiKey: "",
         baseUrl: existingConfig.baseUrl ?? "",
+        bedrockRegion: existingConfig.bedrockRegion ?? "us-east-1",
+        // IAM creds are never sent back to the wire — admin re-enters
+        // them on rotation. The picker remains usable from the saved
+        // bundle on the server side via the catalog endpoint.
+        bedrockAccessKeyId: "",
+        bedrockSecretAccessKey: "",
+        bedrockSessionToken: "",
       });
     } else {
-      form.reset({ provider: "anthropic", model: "", apiKey: "", baseUrl: "" });
+      form.reset({
+      provider: "anthropic",
+      model: "",
+      apiKey: "",
+      baseUrl: "",
+      bedrockRegion: "us-east-1",
+      bedrockAccessKeyId: "",
+      bedrockSecretAccessKey: "",
+      bedrockSessionToken: "",
+    });
     }
     setTestResult(null);
     clearSaveError();
@@ -229,11 +330,42 @@ export default function ModelConfigPage() {
       form.setError("model", { message: "Model is required." });
       return;
     }
+    // Bedrock credentials live in three separate inputs; the wire shape
+    // packs them into the apiKey JSON bundle.
+    const bedrockApiKey =
+      values.provider === "bedrock" &&
+      (values.bedrockAccessKeyId.trim() || values.bedrockSecretAccessKey.trim())
+        ? JSON.stringify({
+            accessKeyId: values.bedrockAccessKeyId.trim(),
+            secretAccessKey: values.bedrockSecretAccessKey.trim(),
+            ...(values.bedrockSessionToken.trim()
+              ? { sessionToken: values.bedrockSessionToken.trim() }
+              : {}),
+          })
+        : null;
+    const effectiveApiKey =
+      values.provider === "bedrock" ? bedrockApiKey ?? "" : values.apiKey;
     // Gateway tolerates an empty apiKey (platform credits); every other
     // provider needs one on initial creation.
-    if (!values.apiKey && !existingConfig && values.provider !== "gateway") {
-      form.setError("apiKey", { message: "API key is required for new configurations." });
+    if (!effectiveApiKey && !existingConfig && values.provider !== "gateway") {
+      form.setError(
+        values.provider === "bedrock" ? "bedrockAccessKeyId" : "apiKey",
+        {
+          message:
+            values.provider === "bedrock"
+              ? "Access key + secret are required for new configurations."
+              : "API key is required for new configurations.",
+        },
+      );
       return;
+    }
+    if (values.provider === "bedrock" && bedrockApiKey) {
+      if (!values.bedrockAccessKeyId.trim() || !values.bedrockSecretAccessKey.trim()) {
+        form.setError("bedrockSecretAccessKey", {
+          message: "Both access key and secret are required.",
+        });
+        return;
+      }
     }
     setTestResult(null);
     clearAllErrors();
@@ -241,12 +373,20 @@ export default function ModelConfigPage() {
       provider: values.provider,
       model: values.model.trim(),
     };
-    if (values.apiKey) body.apiKey = values.apiKey;
+    if (effectiveApiKey) body.apiKey = effectiveApiKey;
     if (NEEDS_BASE_URL.has(values.provider) && values.baseUrl) {
       body.baseUrl = values.baseUrl.trim();
     }
+    if (values.provider === "bedrock") {
+      body.bedrockRegion = values.bedrockRegion;
+    }
     const result = await saveMutate({ body });
-    if (result.ok) form.setValue("apiKey", "");
+    if (result.ok) {
+      form.setValue("apiKey", "");
+      form.setValue("bedrockAccessKeyId", "");
+      form.setValue("bedrockSecretAccessKey", "");
+      form.setValue("bedrockSessionToken", "");
+    }
   }
 
   async function handleDelete() {
@@ -254,7 +394,16 @@ export default function ModelConfigPage() {
     clearAllErrors();
     const result = await deleteMutate();
     if (result.ok) {
-      form.reset({ provider: "anthropic", model: "", apiKey: "", baseUrl: "" });
+      form.reset({
+      provider: "anthropic",
+      model: "",
+      apiKey: "",
+      baseUrl: "",
+      bedrockRegion: "us-east-1",
+      bedrockAccessKeyId: "",
+      bedrockSecretAccessKey: "",
+      bedrockSessionToken: "",
+    });
       setExpanded(false);
     }
   }
@@ -267,9 +416,28 @@ export default function ModelConfigPage() {
       provider: values.provider,
       model: values.model.trim(),
     };
-    // Gateway can test on platform credits with no key — omit apiKey entirely
-    // so the EE validator doesn't reject an empty-string sentinel.
-    if (values.apiKey) {
+    if (values.provider === "bedrock") {
+      // For bedrock, the test endpoint needs the JSON-bundled cred shape;
+      // an empty placeholder isn't enough because the AWS SDK call has no
+      // dry-run mode.
+      if (!values.bedrockAccessKeyId.trim() || !values.bedrockSecretAccessKey.trim()) {
+        form.setError("bedrockSecretAccessKey", {
+          message: "Enter both access key + secret before testing.",
+        });
+        return;
+      }
+      body.apiKey = JSON.stringify({
+        accessKeyId: values.bedrockAccessKeyId.trim(),
+        secretAccessKey: values.bedrockSecretAccessKey.trim(),
+        ...(values.bedrockSessionToken.trim()
+          ? { sessionToken: values.bedrockSessionToken.trim() }
+          : {}),
+      });
+      body.bedrockRegion = values.bedrockRegion;
+    } else if (values.apiKey) {
+      // Gateway can test on platform credits with no key — omit apiKey
+      // entirely so the EE validator doesn't reject an empty-string
+      // sentinel.
       body.apiKey = values.apiKey;
     } else if (values.provider !== "gateway") {
       body.apiKey = "placeholder-for-test";
@@ -284,17 +452,57 @@ export default function ModelConfigPage() {
   function handleCollapse() {
     setExpanded(false);
     setTestResult(null);
-    form.reset({ provider: "anthropic", model: "", apiKey: "", baseUrl: "" });
+    form.reset({
+      provider: "anthropic",
+      model: "",
+      apiKey: "",
+      baseUrl: "",
+      bedrockRegion: "us-east-1",
+      bedrockAccessKeyId: "",
+      bedrockSecretAccessKey: "",
+      bedrockSessionToken: "",
+    });
     clearAllErrors();
   }
 
   const currentProvider = form.watch("provider");
   const isGateway = currentProvider === "gateway";
+  // BYOT picker requires the saved config to match the current form
+  // provider — we use the workspace's stored BYOT key for the discovery
+  // call. Switching the form to a provider without saving falls back to
+  // the free-text input.
+  const showAnthropicPicker =
+    currentProvider === "anthropic" &&
+    existingConfig?.provider === "anthropic" &&
+    existingConfig?.apiKeyStatus === "masked";
+  const showOpenaiPicker =
+    currentProvider === "openai" &&
+    existingConfig?.provider === "openai" &&
+    existingConfig?.apiKeyStatus === "masked";
+  const showBedrockPicker =
+    currentProvider === "bedrock" &&
+    existingConfig?.provider === "bedrock" &&
+    existingConfig?.apiKeyStatus === "masked" &&
+    !!existingConfig?.bedrockRegion;
+  const isBedrock = currentProvider === "bedrock";
+  // Bedrock save requires either an existing config (key preservation) OR a
+  // freshly-entered access key + secret. Test requires the new bundle every
+  // time — the workspace-stored creds aren't echoed back.
+  const watchedAccessKey = form.watch("bedrockAccessKeyId");
+  const watchedSecret = form.watch("bedrockSecretAccessKey");
+  const hasBedrockBundleEntered = !!watchedAccessKey?.trim() && !!watchedSecret?.trim();
   const saveDisabled =
     saving ||
     !form.watch("model").trim() ||
-    (!form.watch("apiKey") && !existingConfig && !isGateway);
-  const testDisabled = testing || !form.watch("model").trim() || (!form.watch("apiKey") && !isGateway);
+    (isBedrock
+      ? !existingConfig && !hasBedrockBundleEntered
+      : !form.watch("apiKey") && !existingConfig && !isGateway);
+  const testDisabled =
+    testing ||
+    !form.watch("model").trim() ||
+    (isBedrock
+      ? !hasBedrockBundleEntered
+      : !form.watch("apiKey") && !isGateway);
 
   return (
     <div className="p-6">
@@ -369,6 +577,29 @@ export default function ModelConfigPage() {
                 title="Workspace override"
                 description="Your provider credentials. Applies to this workspace only."
               />
+
+              {existingConfig?.modelStatus === "deprecated" && (
+                <div
+                  className="mb-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
+                  role="alert"
+                >
+                  <XCircle className="mt-0.5 size-4 shrink-0" />
+                  <div className="space-y-0.5">
+                    <div className="font-medium">
+                      Model <span className="font-mono">{existingConfig.model}</span> is no longer in {PROVIDER_LABEL[existingConfig.provider]}'s catalog.
+                    </div>
+                    <div className="text-xs">
+                      {existingConfig.modelSuggestedReplacement
+                        ? `Pick a new model — Atlas suggests `
+                        : "Pick a new model — no close replacement was found automatically."}
+                      {existingConfig.modelSuggestedReplacement && (
+                        <span className="font-mono">{existingConfig.modelSuggestedReplacement}</span>
+                      )}
+                      . Chat will keep working against the deprecated ID until the provider rejects it.
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Still resolving billing — don't flash the credential form
                   before we know whether BYOT is on. */}
@@ -516,8 +747,21 @@ export default function ModelConfigPage() {
                           value="The stored key cannot be decrypted (likely a key-rotation drift). Re-enter it below to restore this workspace; until then, chat is blocked."
                         />
                       )}
+                      {existingConfig.modelStatus === "deprecated" && (
+                        <DetailRow
+                          label="Model status"
+                          value={
+                            existingConfig.modelSuggestedReplacement
+                              ? `Deprecated upstream. Suggested replacement: ${existingConfig.modelSuggestedReplacement}.`
+                              : "Deprecated upstream. Pick a new model from the catalog."
+                          }
+                        />
+                      )}
                       {existingConfig.baseUrl && (
                         <DetailRow label="Base URL" value={existingConfig.baseUrl} mono />
+                      )}
+                      {existingConfig.bedrockRegion && (
+                        <DetailRow label="AWS region" value={existingConfig.bedrockRegion} mono />
                       )}
                       <DetailRow label="Updated" value={formatDateTime(existingConfig.updatedAt)} />
                     </DetailList>
@@ -575,6 +819,30 @@ export default function ModelConfigPage() {
                                   fallback={catalog?.fallback}
                                   onRetry={refetchCatalog}
                                 />
+                              ) : showAnthropicPicker ? (
+                                <GatewayModelPicker
+                                  models={anthropicCatalog?.models ?? []}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  loading={anthropicCatalogLoading}
+                                  onRetry={refetchAnthropicCatalog}
+                                />
+                              ) : showOpenaiPicker ? (
+                                <GatewayModelPicker
+                                  models={openaiCatalog?.models ?? []}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  loading={openaiCatalogLoading}
+                                  onRetry={refetchOpenaiCatalog}
+                                />
+                              ) : showBedrockPicker ? (
+                                <GatewayModelPicker
+                                  models={bedrockCatalog?.models ?? []}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  loading={bedrockCatalogLoading}
+                                  onRetry={refetchBedrockCatalog}
+                                />
                               ) : (
                                 <Input
                                   placeholder={
@@ -589,61 +857,202 @@ export default function ModelConfigPage() {
                                 />
                               )}
                             </FormControl>
+                            {showAnthropicPicker && anthropicCatalog && (
+                              <CatalogFreshness
+                                fetchedAt={anthropicCatalog.fetchedAt}
+                                onRefresh={refetchAnthropicCatalog}
+                                refreshing={anthropicCatalogLoading}
+                              />
+                            )}
+                            {showOpenaiPicker && openaiCatalog && (
+                              <CatalogFreshness
+                                fetchedAt={openaiCatalog.fetchedAt}
+                                onRefresh={refetchOpenaiCatalog}
+                                refreshing={openaiCatalogLoading}
+                              />
+                            )}
+                            {showBedrockPicker && bedrockCatalog && (
+                              <CatalogFreshness
+                                fetchedAt={bedrockCatalog.fetchedAt}
+                                onRefresh={refetchBedrockCatalog}
+                                refreshing={bedrockCatalogLoading}
+                              />
+                            )}
+                            {currentProvider === "anthropic" && !showAnthropicPicker && (
+                              <FormDescription>
+                                Save your Anthropic API key first to pick from the live model catalog.
+                              </FormDescription>
+                            )}
+                            {currentProvider === "openai" && !showOpenaiPicker && (
+                              <FormDescription>
+                                Save your OpenAI API key first to pick from the live model catalog.
+                              </FormDescription>
+                            )}
+                            {currentProvider === "bedrock" && !showBedrockPicker && (
+                              <FormDescription>
+                                Save your AWS credentials + region first to pick from the live Bedrock model catalog.
+                              </FormDescription>
+                            )}
                             <FormMessage />
                           </FormItem>
                         )}
                       />
 
-                      <FormField
-                        control={form.control}
-                        name="apiKey"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>
-                              API key
-                              {isGateway ? (
-                                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                  (optional — leave empty for platform credits)
-                                </span>
-                              ) : (
-                                existingConfig && (
+                      {currentProvider !== "bedrock" && (
+                        <FormField
+                          control={form.control}
+                          name="apiKey"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                API key
+                                {isGateway ? (
                                   <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                    (leave empty to keep existing)
+                                    (optional — leave empty for platform credits)
                                   </span>
-                                )
-                              )}
-                            </FormLabel>
-                            <div className="relative">
-                              <FormControl>
-                                <Input
-                                  type={showApiKey ? "text" : "password"}
-                                  placeholder={
-                                    isGateway
-                                      ? "vck_... (optional)"
-                                      : existingConfig?.apiKeyMasked ?? "sk-..."
-                                  }
-                                  className="pr-10 font-mono text-sm"
-                                  {...field}
-                                />
-                              </FormControl>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
-                                onClick={() => setShowApiKey((v) => !v)}
-                              >
-                                {showApiKey ? (
-                                  <EyeOff className="size-3.5" />
                                 ) : (
-                                  <Eye className="size-3.5" />
+                                  existingConfig && (
+                                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                      (leave empty to keep existing)
+                                    </span>
+                                  )
                                 )}
-                              </Button>
-                            </div>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
+                              </FormLabel>
+                              <div className="relative">
+                                <FormControl>
+                                  <Input
+                                    type={showApiKey ? "text" : "password"}
+                                    placeholder={
+                                      isGateway
+                                        ? "vck_... (optional)"
+                                        : existingConfig?.apiKeyMasked ?? "sk-..."
+                                    }
+                                    className="pr-10 font-mono text-sm"
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+                                  onClick={() => setShowApiKey((v) => !v)}
+                                >
+                                  {showApiKey ? (
+                                    <EyeOff className="size-3.5" />
+                                  ) : (
+                                    <Eye className="size-3.5" />
+                                  )}
+                                </Button>
+                              </div>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+
+                      {currentProvider === "bedrock" && (
+                        <>
+                          <FormField
+                            control={form.control}
+                            name="bedrockRegion"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>AWS region</FormLabel>
+                                <Select value={field.value} onValueChange={field.onChange}>
+                                  <FormControl>
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Pick a region" />
+                                    </SelectTrigger>
+                                  </FormControl>
+                                  <SelectContent>
+                                    {BEDROCK_REGION_OPTIONS.map((r) => (
+                                      <SelectItem key={r.value} value={r.value}>
+                                        {r.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <FormDescription>
+                                  Bedrock surfaces a different catalog per region — pick the one your account has model access in.
+                                </FormDescription>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="bedrockAccessKeyId"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>
+                                  Access key ID
+                                  {existingConfig?.provider === "bedrock" && existingConfig.apiKeyMasked && (
+                                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                      (leave empty to keep existing — currently {existingConfig.apiKeyMasked})
+                                    </span>
+                                  )}
+                                </FormLabel>
+                                <FormControl>
+                                  <Input
+                                    placeholder="AKIA…"
+                                    className="font-mono text-sm"
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="bedrockSecretAccessKey"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Secret access key</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    type={showApiKey ? "text" : "password"}
+                                    placeholder={
+                                      existingConfig?.provider === "bedrock"
+                                        ? "(leave empty to keep existing)"
+                                        : "AWS secret"
+                                    }
+                                    className="font-mono text-sm"
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="bedrockSessionToken"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>
+                                  Session token
+                                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                    (optional — federated / STS only)
+                                  </span>
+                                </FormLabel>
+                                <FormControl>
+                                  <Input
+                                    type={showApiKey ? "text" : "password"}
+                                    className="font-mono text-sm"
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormDescription>
+                            Atlas calls Bedrock with the workspace's IAM credentials. Minimum policy: <code>bedrock:InvokeModel</code> + <code>bedrock:ListFoundationModels</code> on every model you intend to use.
+                          </FormDescription>
+                        </>
+                      )}
 
                       {NEEDS_BASE_URL.has(currentProvider) && (
                         <FormField
@@ -701,4 +1110,46 @@ export default function ModelConfigPage() {
       </ErrorBoundary>
     </div>
   );
+}
+
+// Picker freshness footer — "last refreshed N hours ago" + a manual
+// refresh action. The discovery cache TTLs at 6h server-side; this is
+// how admins force a fresh fetch after a key rotation or when a new
+// upstream model lands.
+function CatalogFreshness({
+  fetchedAt,
+  onRefresh,
+  refreshing,
+}: {
+  fetchedAt: string;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const relative = relativeTime(fetchedAt);
+  return (
+    <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+      <span>Last refreshed {relative}</span>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={refreshing}
+        className="inline-flex items-center gap-1 font-medium underline-offset-2 hover:underline disabled:opacity-50"
+      >
+        {refreshing && <Loader2 className="size-3 animate-spin" />}
+        Refresh now
+      </button>
+    </div>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return "just now";
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }

@@ -22,6 +22,15 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
+import { invalidateAnthropicCatalog } from "@atlas/api/lib/anthropic-catalog";
+import { invalidateOpenAICatalog } from "@atlas/api/lib/openai-catalog";
+import {
+  invalidateBedrockCatalog,
+  getBedrockCatalog,
+  type BedrockDiscoveryCredentials,
+} from "@atlas/api/lib/bedrock-catalog";
+import { suggestModelReplacement } from "@atlas/api/lib/byot-deprecation";
+import type { BedrockRegion, GatewayCatalogModel } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ApiKeyStatus,
@@ -62,13 +71,58 @@ interface ModelConfigRow {
   org_id: string;
   provider: string;
   model: string;
-  /** Nullable for provider='gateway' on platform credits. */
+  /**
+   * Nullable for provider='gateway' on platform credits. For
+   * provider='bedrock' this holds an encrypted JSON blob shaped as
+   * `BedrockCredentialBundle` (see `parseBedrockCredentialBundle`).
+   */
   api_key_encrypted: string | null;
   base_url: string | null;
+  bedrock_region: string | null;
+  /** Default `'healthy'` enforced by `chk_model_status`; `null` only on pre-0059 rows. */
+  model_status: "healthy" | "deprecated" | null;
+  model_suggested_replacement: string | null;
   created_at: string;
   updated_at: string;
   [key: string]: unknown;
 }
+
+/**
+ * Parse a string-encoded Bedrock credential bundle. The bundle ships on
+ * the wire as JSON; we round-trip it through the URL encryption helper
+ * the same way every other secret column does (the helper is a thin
+ * AES-GCM wrapper that's content-agnostic). Returns null on malformed
+ * input so the caller can surface a clean validation error.
+ */
+/**
+ * Parse a string-encoded Bedrock credential bundle. The route layer
+ * calls this directly to keep its malformed-bundle path consistent with
+ * the EE row mapper's `decrypt_failed` surfacing.
+ */
+export function parseBedrockCredentialBundle(
+  raw: string,
+): { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.accessKeyId !== "string" || obj.accessKeyId.length === 0) return null;
+  if (typeof obj.secretAccessKey !== "string" || obj.secretAccessKey.length === 0) return null;
+  const sessionToken =
+    typeof obj.sessionToken === "string" && obj.sessionToken.length > 0
+      ? obj.sessionToken
+      : undefined;
+  return {
+    accessKeyId: obj.accessKeyId,
+    secretAccessKey: obj.secretAccessKey,
+    ...(sessionToken ? { sessionToken } : {}),
+  };
+}
+
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -99,8 +153,30 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
   } else {
     try {
       const decrypted = decryptUrl(row.api_key_encrypted);
-      apiKeyMasked = maskApiKey(decrypted);
-      apiKeyStatus = "masked";
+      if (row.provider === "bedrock") {
+        // For bedrock, the decrypted blob is JSON. Show the accessKeyId
+        // tail as the mask — the secretAccessKey half NEVER appears on
+        // the wire, not even masked. A bundle that decrypts but fails
+        // to parse is functionally unusable (the AI Layer will reject
+        // it on next chat); surface it as `decrypt_failed` so the admin
+        // UI prompts re-entry and monitoring sees the same signal as a
+        // true crypto failure.
+        const bundle = parseBedrockCredentialBundle(decrypted);
+        if (bundle) {
+          apiKeyMasked = maskApiKey(bundle.accessKeyId);
+          apiKeyStatus = "masked";
+        } else {
+          log.error(
+            { configId: row.id },
+            "Decrypted bedrock bundle is malformed — surfacing decrypt_failed to UI",
+          );
+          apiKeyMasked = null;
+          apiKeyStatus = "decrypt_failed";
+        }
+      } else {
+        apiKeyMasked = maskApiKey(decrypted);
+        apiKeyStatus = "masked";
+      }
     } catch (err) {
       log.error(
         { err: err instanceof Error ? err.message : String(err), configId: row.id },
@@ -111,14 +187,34 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
     }
   }
 
+  // bedrockRegion narrows on the row.provider invariant — only bedrock
+  // rows are allowed to have a non-null region per the DB CHECK
+  // (chk_model_provider_region). For every other provider it must be null.
+  const bedrockRegion =
+    row.provider === "bedrock" && row.bedrock_region
+      ? (row.bedrock_region as WorkspaceModelConfig["bedrockRegion"])
+      : null;
+
+  // Normalize model_status. Existing rows pre-migration 0059 may have NULL
+  // until the next refresh writes through; surface those as 'healthy'.
+  const modelStatus: "healthy" | "deprecated" =
+    row.model_status === "deprecated" ? "deprecated" : "healthy";
+  const modelSuggestedReplacement =
+    modelStatus === "deprecated" && typeof row.model_suggested_replacement === "string"
+      ? row.model_suggested_replacement
+      : null;
+
   return {
     id: row.id,
     orgId: row.org_id,
     provider: row.provider,
     model: row.model,
     baseUrl: row.base_url,
+    bedrockRegion,
     apiKeyMasked,
     apiKeyStatus,
+    modelStatus,
+    modelSuggestedReplacement,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -162,6 +258,33 @@ function validateConfig(
         code: "validation",
       }),
     );
+  }
+
+  // Bedrock requires a region and a parseable IAM cred bundle. The
+  // bundle is stringified JSON on the wire; we don't try to validate the
+  // IAM creds themselves here (that's what testModelConfig is for) — just
+  // that the shape is right so we don't store a row the AI Layer can't use.
+  if (config.provider === "bedrock") {
+    if (!config.bedrockRegion) {
+      return Effect.fail(
+        new ModelConfigError({
+          message: 'AWS region is required for the "bedrock" provider.',
+          code: "validation",
+        }),
+      );
+    }
+    if (config.apiKey !== undefined) {
+      const parsed = parseBedrockCredentialBundle(config.apiKey);
+      if (!parsed) {
+        return Effect.fail(
+          new ModelConfigError({
+            message:
+              'Bedrock credentials must be a JSON object with `accessKeyId` and `secretAccessKey`.',
+            code: "validation",
+          }),
+        );
+      }
+    }
   }
 
   // Validate base URL format when provided
@@ -209,7 +332,7 @@ export const getWorkspaceModelConfig = (
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, model_status, model_suggested_replacement, created_at, updated_at
            FROM workspace_model_config
            WHERE org_id = $1
            LIMIT 1`,
@@ -240,6 +363,7 @@ export const getWorkspaceModelConfigRaw = (
     model: string;
     apiKey: string | null;
     baseUrl: string | null;
+    bedrockRegion: string | null;
   } | null,
   ModelConfigDecryptError | Error
 > =>
@@ -251,7 +375,7 @@ export const getWorkspaceModelConfigRaw = (
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, model_status, model_suggested_replacement, created_at, updated_at
            FROM workspace_model_config
            WHERE org_id = $1
            LIMIT 1`,
@@ -290,6 +414,10 @@ export const getWorkspaceModelConfigRaw = (
       model: row.model,
       apiKey,
       baseUrl: row.base_url,
+      // Mirror `rowToConfig`: only bedrock rows are allowed to surface
+      // a region. A stray region from a pre-migration row or a future
+      // bug elsewhere doesn't leak into the AI Layer.
+      bedrockRegion: row.provider === "bedrock" ? row.bedrock_region : null,
     };
   });
 
@@ -340,15 +468,21 @@ export const setWorkspaceModelConfig = (
     // key version via COALESCE — swapping one without the other would
     // break decryption after the active version advances.
     const keyVersion = encryptedKey !== null ? activeKeyVersion() : null;
+    // Bedrock region is required on the row when provider='bedrock' (see
+    // chk_model_provider_region in migration 0057). Forcing NULL on every
+    // other provider keeps the constraint clean and prevents a left-over
+    // region from a previous bedrock row leaking into a switched provider.
+    const bedrockRegion = config.provider === "bedrock" ? config.bedrockRegion ?? null : null;
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
-          `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url)
+          `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url, bedrock_region, model_status, model_suggested_replacement)
            VALUES (
              $1, $2, $3,
              COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)),
              COALESCE($6, (SELECT api_key_key_version FROM workspace_model_config WHERE org_id = $1), 1),
-             $5
+             $5, $7,
+             'healthy', NULL
            )
            ON CONFLICT (org_id) DO UPDATE SET
              provider = EXCLUDED.provider,
@@ -356,9 +490,24 @@ export const setWorkspaceModelConfig = (
              api_key_encrypted = COALESCE($4, workspace_model_config.api_key_encrypted),
              api_key_key_version = COALESCE($6, workspace_model_config.api_key_key_version),
              base_url = EXCLUDED.base_url,
+             bedrock_region = EXCLUDED.bedrock_region,
+             -- Every successful save resets the deprecation marker. The
+             -- admin picked a model — that's an explicit assertion the
+             -- new choice is healthy until the next discovery refresh
+             -- says otherwise.
+             model_status = 'healthy',
+             model_suggested_replacement = NULL,
              updated_at = now()
-           RETURNING id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at`,
-          [orgId, config.provider, config.model.trim(), encryptedKey, config.baseUrl ?? null, keyVersion],
+           RETURNING id, org_id, provider, model, api_key_encrypted, base_url, bedrock_region, model_status, model_suggested_replacement, created_at, updated_at`,
+          [
+            orgId,
+            config.provider,
+            config.model.trim(),
+            encryptedKey,
+            config.baseUrl ?? null,
+            keyVersion,
+            bedrockRegion,
+          ],
         ),
       catch: promiseError,
     });
@@ -372,6 +521,20 @@ export const setWorkspaceModelConfig = (
       { orgId, provider: config.provider, model: config.model },
       "Workspace model config saved",
     );
+
+    // BYOT discovery caches are keyed per (org, provider) and outlast a
+    // single save — flush the matching cache entry so a key rotation or
+    // provider switch doesn't serve a stale catalog from the previous
+    // shape. Each provider owns its own invalidator; gateway has no
+    // per-org cache so it gets no hook.
+    if (config.provider === "anthropic") {
+      invalidateAnthropicCatalog(orgId);
+    } else if (config.provider === "openai") {
+      invalidateOpenAICatalog(orgId);
+    } else if (config.provider === "bedrock") {
+      invalidateBedrockCatalog(orgId);
+    }
+
     return rowToConfig(rows[0]);
   });
 
@@ -398,6 +561,77 @@ export const deleteWorkspaceModelConfig = (
       log.info({ orgId }, "Workspace model config deleted — reverting to platform default");
     }
     return deleted;
+  });
+
+/**
+ * After a BYOT discovery refresh, compare the workspace's saved model
+ * against the fresh catalog. If the model is missing, flip
+ * `model_status` to `deprecated` and store the suggestion (if the
+ * algorithm finds an acceptable match). If the model is present, flip
+ * back to `healthy` and clear any prior suggestion.
+ *
+ * Best-effort: failures are logged but don't break the catalog
+ * response. Returns the resulting `{ status, suggestion }` so the route
+ * can echo it back if the caller wants it. Each UPDATE scopes by
+ * `(org_id, model)` — a concurrent `setWorkspaceModelConfig` that
+ * changed `model` mid-fetch is safe, because the WHERE doesn't match
+ * the new row and the next refresh reconciles against the new model.
+ */
+export const reconcileModelDeprecation = (
+  orgId: string,
+  savedModelId: string,
+  savedProvider: string,
+  freshCatalog: GatewayCatalogModel[],
+): Effect.Effect<
+  { status: "healthy" | "deprecated"; suggestion: string | null },
+  Error
+> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return { status: "healthy" as const, suggestion: null };
+    }
+    const ids = new Set(freshCatalog.map((m) => m.id));
+    // Race window: a concurrent `setWorkspaceModelConfig` may have already
+    // changed `model` since the catalog fetch started. Both UPDATEs scope
+    // by `(org_id, model)` so a stale reconcile can never clobber a
+    // freshly-saved row — if the WHERE doesn't match, nothing changes and
+    // the next refresh will reconcile against the new model.
+    if (ids.has(savedModelId)) {
+      yield* Effect.tryPromise({
+        try: () =>
+          internalQuery(
+            `UPDATE workspace_model_config
+             SET model_status = 'healthy', model_suggested_replacement = NULL, updated_at = now()
+             WHERE org_id = $1 AND model = $2 AND model_status = 'deprecated'`,
+            [orgId, savedModelId],
+          ),
+        catch: promiseError,
+      });
+      return { status: "healthy" as const, suggestion: null };
+    }
+
+    const suggestion = suggestModelReplacement(
+      savedModelId,
+      savedProvider,
+      freshCatalog.map((m) => ({ id: m.id, provider: m.provider })),
+    );
+    yield* Effect.tryPromise({
+      try: () =>
+        internalQuery(
+          `UPDATE workspace_model_config
+           SET model_status = 'deprecated',
+               model_suggested_replacement = $3,
+               updated_at = now()
+           WHERE org_id = $1 AND model = $2`,
+          [orgId, savedModelId, suggestion],
+        ),
+      catch: promiseError,
+    });
+    log.info(
+      { orgId, savedModelId, suggestion, candidates: freshCatalog.length },
+      "Workspace model deprecated against fresh catalog",
+    );
+    return { status: "deprecated" as const, suggestion };
   });
 
 /**
@@ -556,6 +790,44 @@ export const testModelConfig = (
                   };
                   throw new Error(body?.error?.message ?? `HTTP ${authedRes.status}`);
                 }
+              }
+              return { success: true, message: "Connection successful.", modelName: config.model };
+            }
+
+            case "bedrock": {
+              if (!config.bedrockRegion) {
+                throw new Error("AWS region is required for the bedrock provider.");
+              }
+              const bundle = parseBedrockCredentialBundle(apiKey);
+              if (!bundle) {
+                throw new Error(
+                  "Bedrock credentials must be a JSON object with `accessKeyId` and `secretAccessKey`.",
+                );
+              }
+              // Validate by hitting ListFoundationModels — it's a cheap
+              // read-only call that exercises both the cred bundle and the
+              // region without burning an inference token. The Converse
+              // path is verified at agent-loop time once the catalog
+              // selection is saved.
+              try {
+                const catalog = await getBedrockCatalog(
+                  // Synthetic orgId keeps the in-memory cache scoped
+                  // away from real workspaces; `persist: false` keeps the
+                  // L2 store (workspace_model_catalog) from accumulating
+                  // throwaway rows keyed by accessKeyId.
+                  `__test:${bundle.accessKeyId}`,
+                  config.bedrockRegion as BedrockRegion,
+                  bundle as BedrockDiscoveryCredentials,
+                  { refresh: true, persist: false },
+                );
+                const ids = new Set(catalog.models.map((m) => m.id));
+                if (!ids.has(config.model)) {
+                  throw new Error(
+                    `Model "${config.model}" is not available in region ${config.bedrockRegion}. Pick one from the catalog.`,
+                  );
+                }
+              } catch (err) {
+                throw err instanceof Error ? err : new Error(String(err));
               }
               return { success: true, message: "Connection successful.", modelName: config.model };
             }

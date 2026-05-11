@@ -812,24 +812,78 @@ export const workspaceModelConfig = pgTable(
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     // Nullable for provider='gateway' on platform credits (no BYOT key).
+    // For provider='bedrock' this holds an encrypted JSON blob shaped as
+    // `{ accessKeyId, secretAccessKey, sessionToken? }`.
     apiKeyEncrypted: text("api_key_encrypted"),
     // F-47 key version. When `api_key_encrypted` is NULL the version is unused —
     // `decryptUrl` is never called against a null column.
     apiKeyKeyVersion: integer("api_key_key_version").notNull().default(1),
     baseUrl: text("base_url"),
+    // AWS region for provider='bedrock'. Required when bedrock is the
+    // provider (enforced by chk_model_provider_region); NULL for every
+    // other provider.
+    bedrockRegion: text("bedrock_region"),
+    // Deprecation tracking. Flipped to 'deprecated' after a BYOT
+    // catalog refresh discovers the saved model is no longer surfaced
+    // upstream. Reset to 'healthy' on every successful save.
+    modelStatus: text("model_status").notNull().default("healthy"),
+    modelSuggestedReplacement: text("model_suggested_replacement"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check(
       "chk_model_provider",
-      sql`provider IN ('anthropic', 'openai', 'azure-openai', 'custom', 'gateway')`,
+      sql`provider IN ('anthropic', 'openai', 'azure-openai', 'custom', 'gateway', 'bedrock')`,
     ),
     check(
       "chk_model_provider_key",
       sql`provider = 'gateway' OR api_key_encrypted IS NOT NULL`,
     ),
+    check(
+      "chk_model_provider_region",
+      sql`provider != 'bedrock' OR bedrock_region IS NOT NULL`,
+    ),
+    check(
+      "chk_model_status",
+      sql`model_status IN ('healthy', 'deprecated')`,
+    ),
     index("idx_workspace_model_config_org").on(t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// BYOT model catalog cache — L2 to per-pod in-memory caches.
+//
+// Operational cache, not user-surfaced content — intentionally bypasses
+// the mode system. The `gateway` provider is excluded because that
+// catalog is anonymous + globally cached server-side.
+// ---------------------------------------------------------------------------
+
+export const workspaceModelCatalog = pgTable(
+  "workspace_model_catalog",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id").notNull(),
+    provider: text("provider").notNull(),
+    region: text("region").notNull().default(""),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_workspace_model_catalog_provider",
+      sql`provider IN ('anthropic', 'openai', 'bedrock')`,
+    ),
+    uniqueIndex("uq_workspace_model_catalog_org_provider_region").on(
+      t.orgId,
+      t.provider,
+      t.region,
+    ),
+    index("idx_workspace_model_catalog_org_provider").on(t.orgId, t.provider),
+    index("idx_workspace_model_catalog_fetched_at").on(t.fetchedAt),
   ],
 );
 

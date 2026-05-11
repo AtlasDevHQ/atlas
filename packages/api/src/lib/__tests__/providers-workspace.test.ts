@@ -81,3 +81,105 @@ describe("getModelFromWorkspaceConfig — BYOT providers reject null apiKey", ()
     });
   }
 });
+
+describe("getModelFromWorkspaceConfig — bedrock branch", () => {
+  const validBundle = JSON.stringify({
+    accessKeyId: "AKIA-EXAMPLE",
+    secretAccessKey: "secret-example",
+  });
+  const validBundleWithSession = JSON.stringify({
+    accessKeyId: "AKIA-EXAMPLE",
+    secretAccessKey: "secret-example",
+    sessionToken: "session-token-xyz",
+  });
+
+  test("happy path: returns a LanguageModel with the requested model id", () => {
+    const model = getModelFromWorkspaceConfig({
+      provider: "bedrock",
+      model: "anthropic.claude-opus-4-v1:0",
+      apiKey: validBundle,
+      baseUrl: null,
+      bedrockRegion: "us-east-1",
+    });
+    expect(typeof model).toBe("object");
+    if (typeof model !== "string") {
+      expect(model.modelId).toBe("anthropic.claude-opus-4-v1:0");
+    }
+  });
+
+  test("happy path with sessionToken: still returns a LanguageModel", () => {
+    const model = getModelFromWorkspaceConfig({
+      provider: "bedrock",
+      model: "anthropic.claude-opus-4-v1:0",
+      apiKey: validBundleWithSession,
+      baseUrl: null,
+      bedrockRegion: "us-west-2",
+    });
+    expect(typeof model).toBe("object");
+    if (typeof model !== "string") {
+      expect(model.modelId).toBe("anthropic.claude-opus-4-v1:0");
+    }
+  });
+
+  test("missing apiKey throws AWS-credentials-required error", () => {
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: null,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    ).toThrow(/AWS credentials are required/);
+  });
+
+  test("missing region throws region-required error (even with valid bundle)", () => {
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: validBundle,
+        baseUrl: null,
+        bedrockRegion: null,
+      }),
+    ).toThrow(/AWS region is required/);
+  });
+
+  test("malformed JSON bundle surfaces the friendly re-enter message", () => {
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: "not-json-at-all",
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    ).toThrow(/bedrock credentials are malformed/);
+  });
+
+  test("bundle missing secretAccessKey surfaces the friendly re-enter message", () => {
+    const half = JSON.stringify({ accessKeyId: "AKIA-EXAMPLE" });
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: half,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    ).toThrow(/bedrock credentials are malformed/);
+  });
+
+  test("bundle with non-string field surfaces the friendly re-enter message", () => {
+    const bad = JSON.stringify({ accessKeyId: "AKIA-EXAMPLE", secretAccessKey: 12345 });
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: bad,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    ).toThrow(/bedrock credentials are malformed/);
+  });
+});

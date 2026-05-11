@@ -536,7 +536,7 @@ export async function runAgent({
     model = injectedAiModel.model;
     providerType = injectedAiModel.providerType;
   } else {
-    let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string | null; baseUrl: string | null } | null = null;
+    let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string | null; baseUrl: string | null; bedrockRegion: string | null } | null = null;
     if (orgId && hasInternalDB()) {
       const { Effect } = await import("effect");
       const { getWorkspaceModelConfigRaw, ModelConfigDecryptError } =

@@ -52,8 +52,23 @@ class MockModelConfigError extends Error {
   }
 }
 
+class MockModelConfigDecryptError extends Error {
+  public readonly _tag = "ModelConfigDecryptError" as const;
+  public readonly configId: string;
+  public readonly cause: string;
+  constructor(args: { configId: string; cause: string }) {
+    super(`Failed to decrypt key for ${args.configId}`);
+    this.name = "ModelConfigDecryptError";
+    this.configId = args.configId;
+    this.cause = args.cause;
+  }
+}
+
 const mockGetWorkspaceModelConfig: Mock<(orgId: string) => unknown> = mock(() =>
   Effect.succeed(null),
+);
+const mockGetWorkspaceModelConfigRaw: Mock<(orgId: string) => unknown> = mock(
+  () => Effect.succeed(null),
 );
 const mockSetWorkspaceModelConfig: Mock<(...args: unknown[]) => unknown> = mock(
   () =>
@@ -80,12 +95,45 @@ const mockTestModelConfig: Mock<(...args: unknown[]) => unknown> = mock(() =>
   }),
 );
 
+const mockReconcileModelDeprecation: Mock<(...args: unknown[]) => unknown> = mock(
+  () => Effect.succeed({ status: "healthy" as const, suggestion: null }),
+);
+
+// Match the real exported parser shape — used by the route's malformed-
+// bundle path. Returns the parsed bundle or null on shape mismatch.
+function mockParseBedrockCredentialBundle(raw: string) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.accessKeyId !== "string" ||
+      typeof parsed.secretAccessKey !== "string"
+    ) {
+      return null;
+    }
+    return {
+      accessKeyId: parsed.accessKeyId,
+      secretAccessKey: parsed.secretAccessKey,
+      ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
+        ? { sessionToken: parsed.sessionToken }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 mock.module("@atlas/ee/platform/model-routing", () => ({
   getWorkspaceModelConfig: mockGetWorkspaceModelConfig,
+  getWorkspaceModelConfigRaw: mockGetWorkspaceModelConfigRaw,
   setWorkspaceModelConfig: mockSetWorkspaceModelConfig,
   deleteWorkspaceModelConfig: mockDeleteWorkspaceModelConfig,
   testModelConfig: mockTestModelConfig,
+  reconcileModelDeprecation: mockReconcileModelDeprecation,
+  parseBedrockCredentialBundle: mockParseBedrockCredentialBundle,
   ModelConfigError: MockModelConfigError,
+  ModelConfigDecryptError: MockModelConfigDecryptError,
 }));
 
 // --- Audit capture: use the real ADMIN_ACTIONS catalog so route emissions
@@ -114,6 +162,177 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
+// --- Anthropic catalog mocks. Real module is HTTP-bound; mock it so the
+// /catalog?provider=anthropic route flow is unit-testable. Mirrors every
+// named export the route currently imports (mock.module is all-or-nothing).
+class MockAnthropicCatalogUnauthorized extends Error {
+  readonly _tag = "AnthropicCatalogUnauthorized" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "AnthropicCatalogUnauthorized";
+  }
+}
+class MockAnthropicCatalogRateLimited extends Error {
+  readonly _tag = "AnthropicCatalogRateLimited" as const;
+  readonly retryAfterSeconds: number | null;
+  constructor(message: string, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "AnthropicCatalogRateLimited";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+class MockAnthropicCatalogUnavailable extends Error {
+  readonly _tag = "AnthropicCatalogUnavailable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "AnthropicCatalogUnavailable";
+  }
+}
+
+const mockGetAnthropicCatalog: Mock<(...args: unknown[]) => unknown> = mock(
+  async () => ({
+    models: [
+      {
+        id: "claude-opus-4-6",
+        name: "Claude Opus 4.6",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }),
+);
+const mockInvalidateAnthropicCatalog: Mock<(orgId: string) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/anthropic-catalog", () => ({
+  getAnthropicCatalog: mockGetAnthropicCatalog,
+  invalidateAnthropicCatalog: mockInvalidateAnthropicCatalog,
+  AnthropicCatalogUnauthorized: MockAnthropicCatalogUnauthorized,
+  AnthropicCatalogRateLimited: MockAnthropicCatalogRateLimited,
+  AnthropicCatalogUnavailable: MockAnthropicCatalogUnavailable,
+}));
+
+// --- OpenAI catalog mocks (mirror Anthropic — same threat model + envelope). ---
+class MockOpenAICatalogUnauthorized extends Error {
+  readonly _tag = "OpenAICatalogUnauthorized" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenAICatalogUnauthorized";
+  }
+}
+class MockOpenAICatalogRateLimited extends Error {
+  readonly _tag = "OpenAICatalogRateLimited" as const;
+  readonly retryAfterSeconds: number | null;
+  constructor(message: string, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "OpenAICatalogRateLimited";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+class MockOpenAICatalogUnavailable extends Error {
+  readonly _tag = "OpenAICatalogUnavailable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenAICatalogUnavailable";
+  }
+}
+
+const mockGetOpenAICatalog: Mock<(...args: unknown[]) => unknown> = mock(
+  async () => ({
+    models: [
+      {
+        id: "gpt-4o",
+        name: "gpt-4o",
+        provider: "openai",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }),
+);
+const mockInvalidateOpenAICatalog: Mock<(orgId: string) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/openai-catalog", () => ({
+  getOpenAICatalog: mockGetOpenAICatalog,
+  invalidateOpenAICatalog: mockInvalidateOpenAICatalog,
+  OpenAICatalogUnauthorized: MockOpenAICatalogUnauthorized,
+  OpenAICatalogRateLimited: MockOpenAICatalogRateLimited,
+  OpenAICatalogUnavailable: MockOpenAICatalogUnavailable,
+}));
+
+// --- Bedrock catalog mocks (mirror Anthropic + OpenAI; different cred shape). ---
+class MockBedrockCatalogUnauthorized extends Error {
+  readonly _tag = "BedrockCatalogUnauthorized" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "BedrockCatalogUnauthorized";
+  }
+}
+class MockBedrockCatalogRateLimited extends Error {
+  readonly _tag = "BedrockCatalogRateLimited" as const;
+  readonly retryAfterSeconds: number | null;
+  constructor(message: string, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "BedrockCatalogRateLimited";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+class MockBedrockCatalogUnavailable extends Error {
+  readonly _tag = "BedrockCatalogUnavailable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "BedrockCatalogUnavailable";
+  }
+}
+
+const mockGetBedrockCatalog: Mock<(...args: unknown[]) => unknown> = mock(
+  async () => ({
+    models: [
+      {
+        id: "anthropic.claude-opus-4-v1:0",
+        name: "Claude Opus 4",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+    region: "us-east-1" as const,
+  }),
+);
+const mockInvalidateBedrockCatalog: Mock<(orgId: string) => void> = mock(
+  () => {},
+);
+
+mock.module("@atlas/api/lib/bedrock-catalog", () => ({
+  getBedrockCatalog: mockGetBedrockCatalog,
+  invalidateBedrockCatalog: mockInvalidateBedrockCatalog,
+  BedrockCatalogUnauthorized: MockBedrockCatalogUnauthorized,
+  BedrockCatalogRateLimited: MockBedrockCatalogRateLimited,
+  BedrockCatalogUnavailable: MockBedrockCatalogUnavailable,
+}));
+
 // --- Import the app AFTER all mocks ---
 const { app } = await import("../index");
 
@@ -141,11 +360,75 @@ beforeEach(() => {
   mocks.hasInternalDB = true;
   mockLogAdminAction.mockClear();
   mockGetWorkspaceModelConfig.mockClear();
+  mockGetWorkspaceModelConfigRaw.mockClear();
   mockSetWorkspaceModelConfig.mockClear();
   mockDeleteWorkspaceModelConfig.mockClear();
   mockTestModelConfig.mockClear();
+  mockReconcileModelDeprecation.mockClear();
+  mockReconcileModelDeprecation.mockImplementation(() =>
+    Effect.succeed({ status: "healthy" as const, suggestion: null }),
+  );
 
   mockGetWorkspaceModelConfig.mockImplementation(() => Effect.succeed(null));
+  mockGetWorkspaceModelConfigRaw.mockImplementation(() => Effect.succeed(null));
+  mockGetAnthropicCatalog.mockClear();
+  mockInvalidateAnthropicCatalog.mockClear();
+  mockGetAnthropicCatalog.mockImplementation(async () => ({
+    models: [
+      {
+        id: "claude-opus-4-6",
+        name: "Claude Opus 4.6",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }));
+  mockGetOpenAICatalog.mockClear();
+  mockInvalidateOpenAICatalog.mockClear();
+  mockGetBedrockCatalog.mockClear();
+  mockInvalidateBedrockCatalog.mockClear();
+  mockGetBedrockCatalog.mockImplementation(async () => ({
+    models: [
+      {
+        id: "anthropic.claude-opus-4-v1:0",
+        name: "Claude Opus 4",
+        provider: "anthropic",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+    region: "us-east-1" as const,
+  }));
+  mockGetOpenAICatalog.mockImplementation(async () => ({
+    models: [
+      {
+        id: "gpt-4o",
+        name: "gpt-4o",
+        provider: "openai",
+        type: "language",
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputPrice: null,
+        outputPrice: null,
+        recommended: true,
+      },
+    ],
+    fetchedAt: "2026-05-11T00:00:00.000Z",
+    source: "fresh" as const,
+  }));
   mockSetWorkspaceModelConfig.mockImplementation(() =>
     Effect.succeed({
       id: "cfg-1",
@@ -505,5 +788,535 @@ describe("audit emission — POST /api/v1/admin/model-config/test", () => {
       model: "claude-opus-4-6",
     });
     expect(JSON.stringify(entry)).not.toContain("sk-ant-probe");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/model-config/catalog?provider=anthropic
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
+  it("returns the workspace's anthropic catalog using the stored BYOT key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored-key",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: { id: string }[];
+      fetchedAt: string;
+      fallback: boolean;
+    };
+    expect(body.models).toHaveLength(1);
+    expect(body.models[0].id).toBe("claude-opus-4-6");
+    expect(body.fallback).toBe(false);
+    // Verify the catalog was called with the workspace's stored key.
+    expect(mockGetAnthropicCatalog).toHaveBeenCalledTimes(1);
+    const args = mockGetAnthropicCatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[1]).toBe("sk-ant-stored-key");
+    expect(args[2]).toEqual({ refresh: false });
+  });
+
+  it("passes ?refresh=1 through to bypass the cache", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored-key",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest(
+        "GET",
+        "/api/v1/admin/model-config/catalog?provider=anthropic&refresh=1",
+      ),
+    );
+    expect(res.status).toBe(200);
+    const args = mockGetAnthropicCatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[2]).toEqual({ refresh: true });
+  });
+
+  it("returns 400 missing_byot_key when no anthropic config exists", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() => Effect.succeed(null));
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+    // Do NOT emit a successful catalog-refresh audit when the precondition
+    // fails — there's no key in play, so no credential-oracle risk.
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 missing_byot_key when saved provider is not anthropic", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-openai-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+  });
+
+  it("returns 422 decrypt_failed when the stored key cannot be decrypted", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.fail(
+        new MockModelConfigDecryptError({
+          configId: "cfg-1",
+          cause: "wrong key version",
+        }),
+      ),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("decrypt_failed");
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    expect(lastAuditCall().status).toBe("failure");
+    expect(lastAuditCall().metadata).toMatchObject({
+      provider: "anthropic",
+      error: "decrypt_failed",
+    });
+  });
+
+  it("returns 401 byot_key_invalid when Anthropic rejects the key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-rotten",
+        baseUrl: null,
+      }),
+    );
+    mockGetAnthropicCatalog.mockImplementation(() => {
+      throw new MockAnthropicCatalogUnauthorized("rejected by anthropic");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_key_invalid");
+    const entry = lastAuditCall();
+    expect(entry.status).toBe("failure");
+    expect(entry.metadata).toMatchObject({
+      provider: "anthropic",
+      error: "byot_key_invalid",
+    });
+    // The apiKey must never appear in any captured audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("sk-ant-rotten");
+  });
+
+  it("returns 429 with Retry-After when Anthropic rate-limits the workspace", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetAnthropicCatalog.mockImplementation(() => {
+      throw new MockAnthropicCatalogRateLimited("slow down", 45);
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("45");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_rate_limited");
+  });
+
+  it("returns 503 byot_provider_unavailable on upstream outage", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetAnthropicCatalog.mockImplementation(() => {
+      throw new MockAnthropicCatalogUnavailable("anthropic returned 503");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_unavailable");
+  });
+
+  it("emits model_config.catalog_refresh on success with provider + modelCount + source", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
+    );
+    expect(res.status).toBe(200);
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("model_config.catalog_refresh");
+    expect(entry.targetType).toBe("model_config");
+    expect(entry.metadata).toEqual({
+      provider: "anthropic",
+      modelCount: 1,
+      source: "fresh",
+    });
+    // The apiKey must never appear in any captured audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("sk-ant-stored");
+  });
+
+  it("?provider=gateway and the default still return the gateway catalog (backward compat)", async () => {
+    // Default path (no provider param) — should hit the gateway catalog flow,
+    // not touch getWorkspaceModelConfigRaw or getAnthropicCatalog.
+    const res = await app.fetch(adminRequest("GET", "/api/v1/admin/model-config/catalog"));
+    // The real `getGatewayCatalog` is invoked here — it'll either reach the
+    // gateway (test env: false) or fall back to the bundled subset. Either
+    // way we get a 200 with `fallback: true|false`.
+    expect([200, 500]).toContain(res.status);
+    if (res.status === 200) {
+      const body = (await res.json()) as { fallback: boolean };
+      expect(typeof body.fallback).toBe("boolean");
+    }
+    expect(mockGetWorkspaceModelConfigRaw).not.toHaveBeenCalled();
+    expect(mockGetAnthropicCatalog).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/model-config/catalog?provider=openai (#2272)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
+  it("returns the workspace's openai catalog using the stored BYOT key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: { id: string; provider: string }[];
+      fallback: boolean;
+    };
+    expect(body.models[0].id).toBe("gpt-4o");
+    expect(body.models[0].provider).toBe("openai");
+    expect(body.fallback).toBe(false);
+    expect(mockGetOpenAICatalog).toHaveBeenCalledTimes(1);
+    const args = mockGetOpenAICatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[1]).toBe("sk-oai-stored");
+    expect(args[2]).toEqual({ refresh: false });
+  });
+
+  it("returns 400 missing_byot_key when saved provider is not openai", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        apiKey: "sk-ant-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("missing_byot_key");
+    expect(body.message).toMatch(/openai/i);
+  });
+
+  it("returns 401 byot_key_invalid when OpenAI rejects the key", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-rotten",
+        baseUrl: null,
+      }),
+    );
+    mockGetOpenAICatalog.mockImplementation(() => {
+      throw new MockOpenAICatalogUnauthorized("rejected by openai");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_key_invalid");
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({ provider: "openai", error: "byot_key_invalid" });
+    // apiKey must never appear in audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("sk-oai-rotten");
+  });
+
+  it("returns 429 with Retry-After when OpenAI rate-limits the workspace", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetOpenAICatalog.mockImplementation(() => {
+      throw new MockOpenAICatalogRateLimited("slow down", 90);
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("90");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_rate_limited");
+  });
+
+  it("returns 503 byot_provider_unavailable on upstream outage", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    mockGetOpenAICatalog.mockImplementation(() => {
+      throw new MockOpenAICatalogUnavailable("openai returned 503");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_unavailable");
+  });
+
+  it("emits model_config.catalog_refresh with provider:'openai' on success", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "openai",
+        model: "gpt-4o",
+        apiKey: "sk-oai-stored",
+        baseUrl: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(200);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("model_config.catalog_refresh");
+    expect(entry.metadata).toEqual({
+      provider: "openai",
+      modelCount: 1,
+      source: "fresh",
+    });
+    expect(JSON.stringify(entry)).not.toContain("sk-oai-stored");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/model-config/catalog?provider=bedrock (#2273)
+// ---------------------------------------------------------------------------
+
+const BEDROCK_BUNDLE = JSON.stringify({
+  accessKeyId: "AKIA-STORED",
+  secretAccessKey: "secret-stored",
+});
+
+describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
+  it("returns the workspace's bedrock catalog using the stored IAM bundle + region", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: { id: string; provider: string }[];
+      fallback: boolean;
+    };
+    expect(body.models[0].id).toBe("anthropic.claude-opus-4-v1:0");
+    expect(body.fallback).toBe(false);
+    expect(mockGetBedrockCatalog).toHaveBeenCalledTimes(1);
+    const args = mockGetBedrockCatalog.mock.calls[0]! as unknown as [
+      string,
+      string,
+      { accessKeyId: string; secretAccessKey: string; sessionToken?: string },
+      { refresh?: boolean } | undefined,
+    ];
+    expect(args[1]).toBe("us-east-1");
+    expect(args[2].accessKeyId).toBe("AKIA-STORED");
+    expect(args[2].secretAccessKey).toBe("secret-stored");
+    expect(args[3]).toEqual({ refresh: false });
+  });
+
+  it("returns 400 missing_byot_key when no bedrock config exists", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() => Effect.succeed(null));
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+  });
+
+  it("returns 400 missing_byot_key when region is missing on saved config", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: null,
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_byot_key");
+  });
+
+  it("returns 422 decrypt_failed when stored bundle is malformed JSON", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: "not-json",
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    // The route now distinguishes malformed-bundle from true crypto
+    // failures (which surface earlier via rowToConfig's apiKeyStatus =
+    // 'decrypt_failed'). Bundle-shape failures map to `malformed_bedrock_bundle`.
+    expect(body.error).toBe("malformed_bedrock_bundle");
+  });
+
+  it("returns 401 byot_key_invalid when AWS rejects the IAM creds", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    mockGetBedrockCatalog.mockImplementation(() => {
+      throw new MockBedrockCatalogUnauthorized("AccessDeniedException");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_key_invalid");
+    // Audit row must NOT contain the secret access key.
+    expect(JSON.stringify(lastAuditCall())).not.toContain("secret-stored");
+  });
+
+  it("returns 503 byot_provider_unavailable on AWS outage", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    mockGetBedrockCatalog.mockImplementation(() => {
+      throw new MockBedrockCatalogUnavailable("aws region unreachable");
+    });
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("byot_provider_unavailable");
+  });
+
+  it("emits model_config.catalog_refresh with provider:'bedrock' on success", async () => {
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.succeed({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: BEDROCK_BUNDLE,
+        baseUrl: null,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(200);
+    const entry = lastAuditCall();
+    expect(entry.actionType).toBe("model_config.catalog_refresh");
+    expect(entry.metadata).toEqual({
+      provider: "bedrock",
+      modelCount: 1,
+      source: "fresh",
+    });
+    // The secret access key must NEVER appear in audit metadata.
+    expect(JSON.stringify(entry)).not.toContain("secret-stored");
   });
 });

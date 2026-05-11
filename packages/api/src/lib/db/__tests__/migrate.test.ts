@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(57);
+    expect(count).toBe(60);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -165,6 +165,9 @@ describe("runMigrations", () => {
         "0054_prompt_collections_dedup_unique.sql",
         "0055_audit_log_auth_mode_check.sql",
         "0056_workspace_model_config_gateway.sql",
+        "0057_workspace_model_config_bedrock.sql",
+        "0058_workspace_model_catalog.sql",
+        "0059_workspace_model_config_deprecation.sql",
       ],
     });
 

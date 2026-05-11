@@ -42,6 +42,7 @@ const {
   setWorkspaceModelConfig,
   deleteWorkspaceModelConfig,
   testModelConfig,
+  reconcileModelDeprecation,
   maskApiKey,
   ModelConfigError,
 } = await import("./model-routing");
@@ -511,5 +512,250 @@ describe("testModelConfig — gateway branch", () => {
         }),
       ),
     ).rejects.toThrow(/API key is required/);
+  });
+});
+
+describe("reconcileModelDeprecation", () => {
+  function catalogModel(id: string, provider = "anthropic") {
+    return {
+      id,
+      name: id,
+      provider,
+      type: "language" as const,
+      contextWindow: null,
+      maxOutputTokens: null,
+      inputPrice: null,
+      outputPrice: null,
+      recommended: false,
+    };
+  }
+
+  beforeEach(() => {
+    ee.reset();
+  });
+
+  it("returns healthy without writing when no internal DB is configured", async () => {
+    ee.setHasInternalDB(false);
+    const out = await run(
+      reconcileModelDeprecation(
+        "org-1",
+        "claude-opus-4-6",
+        "anthropic",
+        [catalogModel("claude-opus-4-6")],
+      ),
+    );
+    expect(out).toEqual({ status: "healthy", suggestion: null });
+    expect(ee.capturedQueries).toHaveLength(0);
+  });
+
+  it("saved model present → flips deprecated row back to healthy (with model guard)", async () => {
+    ee.queueMockRows([]); // UPDATE returns no rows
+    const out = await run(
+      reconcileModelDeprecation(
+        "org-1",
+        "claude-opus-4-6",
+        "anthropic",
+        [catalogModel("claude-opus-4-6")],
+      ),
+    );
+    expect(out).toEqual({ status: "healthy", suggestion: null });
+    expect(ee.capturedQueries).toHaveLength(1);
+    const q = ee.capturedQueries[0];
+    expect(q.sql).toMatch(/UPDATE workspace_model_config/);
+    expect(q.sql).toMatch(/SET model_status = 'healthy'/);
+    // CRITICAL: scope by (org_id, model) so a concurrent save isn't clobbered.
+    expect(q.sql).toMatch(/WHERE org_id = \$1 AND model = \$2 AND model_status = 'deprecated'/);
+    expect(q.params).toEqual(["org-1", "claude-opus-4-6"]);
+  });
+
+  it("saved model missing + suggestion found → writes deprecated with suggestion", async () => {
+    ee.queueMockRows([]);
+    const out = await run(
+      reconcileModelDeprecation(
+        "org-1",
+        "claude-3-opus-20240229",
+        "anthropic",
+        [catalogModel("claude-opus-4-6")],
+      ),
+    );
+    expect(out.status).toBe("deprecated");
+    expect(out.suggestion).toBe("claude-opus-4-6");
+    const q = ee.capturedQueries[0];
+    expect(q.sql).toMatch(/SET model_status = 'deprecated'/);
+    // CRITICAL: scope by (org_id, model) so a fresh save isn't clobbered.
+    expect(q.sql).toMatch(/WHERE org_id = \$1 AND model = \$2/);
+    expect(q.params).toEqual(["org-1", "claude-3-opus-20240229", "claude-opus-4-6"]);
+  });
+
+  it("saved model missing + no confident match → writes deprecated with null suggestion", async () => {
+    ee.queueMockRows([]);
+    const out = await run(
+      reconcileModelDeprecation(
+        "org-1",
+        "text-davinci-003",
+        "openai",
+        [catalogModel("gpt-4o", "openai"), catalogModel("gpt-4o-mini", "openai")],
+      ),
+    );
+    expect(out.status).toBe("deprecated");
+    expect(out.suggestion).toBeNull();
+    const q = ee.capturedQueries[0];
+    expect(q.params).toEqual(["org-1", "text-davinci-003", null]);
+  });
+
+  it("empty catalog → writes deprecated with null suggestion (no match possible)", async () => {
+    ee.queueMockRows([]);
+    const out = await run(
+      reconcileModelDeprecation("org-1", "anything", "anthropic", []),
+    );
+    expect(out.status).toBe("deprecated");
+    expect(out.suggestion).toBeNull();
+  });
+
+  it("does not write when reconciliation logic completes — only UPDATEs the matching model row", async () => {
+    // Even when the catalog has every model, the healthy-branch UPDATE
+    // fires (idempotent). Confirms we never silently skip writes.
+    ee.queueMockRows([]);
+    await run(
+      reconcileModelDeprecation(
+        "org-1",
+        "claude-opus-4-6",
+        "anthropic",
+        [catalogModel("claude-opus-4-6")],
+      ),
+    );
+    expect(ee.capturedQueries).toHaveLength(1);
+  });
+
+  it("reconcile UPDATE scopes by (org_id, model) to survive concurrent saves", async () => {
+    // Two reconcile calls — one healthy, one deprecated — both must
+    // include the savedModelId in the WHERE so a save that changed
+    // `model` mid-flight isn't clobbered.
+    ee.queueMockRows([]);
+    await run(
+      reconcileModelDeprecation(
+        "org-1",
+        "claude-opus-4-6",
+        "anthropic",
+        [catalogModel("claude-opus-4-6")],
+      ),
+    );
+    const healthyUpdate = ee.capturedQueries[0];
+    expect(healthyUpdate.sql).toMatch(/AND model = \$2/);
+
+    ee.reset();
+    ee.queueMockRows([]);
+    await run(
+      reconcileModelDeprecation(
+        "org-1",
+        "claude-3-opus-20240229",
+        "anthropic",
+        [catalogModel("claude-opus-4-6")],
+      ),
+    );
+    const deprecatedUpdate = ee.capturedQueries[0];
+    expect(deprecatedUpdate.sql).toMatch(/AND model = \$2/);
+  });
+});
+
+describe("bedrock encrypt/decrypt round-trip", () => {
+  beforeEach(() => {
+    ee.reset();
+  });
+
+  it("setWorkspaceModelConfig encrypts the JSON bundle before INSERT", async () => {
+    const bundle = JSON.stringify({
+      accessKeyId: "AKIA-EXAMPLE",
+      secretAccessKey: "secret-example-123",
+    });
+    ee.queueMockRows([
+      {
+        id: "cfg-1",
+        org_id: "org-1",
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        api_key_encrypted: `encrypted:${bundle}`,
+        base_url: null,
+        bedrock_region: "us-east-1",
+        model_status: "healthy",
+        model_suggested_replacement: null,
+        created_at: "2026-05-11T00:00:00Z",
+        updated_at: "2026-05-11T00:00:00Z",
+      },
+    ]);
+    await run(
+      setWorkspaceModelConfig("org-1", {
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        apiKey: bundle,
+        bedrockRegion: "us-east-1",
+      }),
+    );
+    const upsert = ee.capturedQueries.find((q) =>
+      q.sql.includes("INSERT INTO workspace_model_config"),
+    );
+    expect(upsert).toBeDefined();
+    // The mock's encryptUrl prefixes with "encrypted:" — confirms the
+    // bundle was passed through the encryption helper, not stored raw.
+    const encryptedParam = upsert!.params[3] as string;
+    expect(encryptedParam.startsWith("encrypted:")).toBe(true);
+    // And the secret half is inside the encrypted blob (the mock is
+    // identity-after-prefix, so this proves the bundle was serialized).
+    expect(encryptedParam).toContain("secret-example-123");
+    // The audit-log path NEVER stores the raw apiKey in the captured
+    // query params (params[3] is the ciphertext, not the plaintext).
+  });
+
+  it("rowToConfig masks the accessKeyId tail and never the secretAccessKey", async () => {
+    const bundle = JSON.stringify({
+      accessKeyId: "AKIA-EXAMPLE-XYZW",
+      secretAccessKey: "secret-that-must-never-leak",
+    });
+    ee.queueMockRows([
+      {
+        id: "cfg-1",
+        org_id: "org-1",
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        api_key_encrypted: `encrypted:${bundle}`,
+        base_url: null,
+        bedrock_region: "us-east-1",
+        model_status: "healthy",
+        model_suggested_replacement: null,
+        created_at: "2026-05-11T00:00:00Z",
+        updated_at: "2026-05-11T00:00:00Z",
+      },
+    ]);
+    const cfg = await run(getWorkspaceModelConfig("org-1"));
+    expect(cfg).not.toBeNull();
+    expect(cfg!.apiKeyStatus).toBe("masked");
+    // Mask is the accessKeyId tail (last 4 of "AKIA-EXAMPLE-XYZW").
+    expect(cfg!.apiKeyMasked).toBe("*************XYZW");
+    // The secret half must NEVER appear on the wire shape.
+    expect(JSON.stringify(cfg)).not.toContain("secret-that-must-never-leak");
+  });
+
+  it("malformed bedrock bundle inside ciphertext surfaces as decrypt_failed", async () => {
+    // Bundle decrypts cleanly (mock identity-after-prefix), but the
+    // JSON inside is missing secretAccessKey — should NOT report
+    // `masked` with a "****" placeholder.
+    ee.queueMockRows([
+      {
+        id: "cfg-1",
+        org_id: "org-1",
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        api_key_encrypted: `encrypted:${JSON.stringify({ accessKeyId: "AKIA" })}`,
+        base_url: null,
+        bedrock_region: "us-east-1",
+        model_status: "healthy",
+        model_suggested_replacement: null,
+        created_at: "2026-05-11T00:00:00Z",
+        updated_at: "2026-05-11T00:00:00Z",
+      },
+    ]);
+    const cfg = await run(getWorkspaceModelConfig("org-1"));
+    expect(cfg!.apiKeyStatus).toBe("decrypt_failed");
+    expect(cfg!.apiKeyMasked).toBeNull();
   });
 });

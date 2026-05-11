@@ -15,7 +15,7 @@ export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
 // Mirrors ENROLLMENT_URL in admin-mfa-required.ts; cross-package import
 // not worth it for one path. Used only when the server response body
 // lacks `enrollmentUrl`.
-const DEFAULT_ENROLLMENT_URL = "/admin/security";
+const DEFAULT_ENROLLMENT_URL = "/admin/account-security";
 
 /**
  * Shared fetch hook for admin pages.

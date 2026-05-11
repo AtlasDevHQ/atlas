@@ -63,7 +63,7 @@ export function usePasswordStatus(enabled: boolean) {
         if (body.error === "mfa_enrollment_required") {
           return {
             kind: "mfa-required",
-            enrollmentUrl: body.enrollmentUrl ?? "/admin/security",
+            enrollmentUrl: body.enrollmentUrl ?? "/admin/account-security",
           };
         }
         return { kind: "denied" };

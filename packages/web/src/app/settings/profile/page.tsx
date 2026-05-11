@@ -2,7 +2,7 @@
 
 /**
  * Per-user settings (no admin role required). MFA tiles reuse
- * /admin/security components — the underlying endpoints are auth-only,
+ * /admin/account-security components — the underlying endpoints are auth-only,
  * not admin-gated, so a feature added there shows up here for free.
  */
 

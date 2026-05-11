@@ -19,6 +19,7 @@ import {
 } from "@atlas/ee/platform/model-routing";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
@@ -32,16 +33,18 @@ const modelConfigDomainError = domainError(ModelConfigError, { validation: 400, 
 // list is not a canonical tuple in `@useatlas/types`).
 
 const SetModelConfigBodySchema = z.object({
-  provider: z.enum(["anthropic", "openai", "azure-openai", "custom"]).openapi({
-    description: "LLM provider. Use 'custom' for any OpenAI-compatible endpoint.",
+  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway"]).openapi({
+    description:
+      "LLM provider. Use 'custom' for any OpenAI-compatible endpoint. 'gateway' routes through Vercel AI Gateway — omit apiKey to use platform credits, or supply one for BYOT gateway billing.",
     example: "anthropic",
   }),
   model: z.string().min(1).openapi({
-    description: "Model identifier (e.g. claude-opus-4-6, gpt-4o).",
+    description: "Model identifier (e.g. claude-opus-4-6, gpt-4o, anthropic/claude-opus-4.6 for gateway).",
     example: "claude-opus-4-6",
   }),
   apiKey: z.string().min(1).optional().openapi({
-    description: "Provider API key. Will be stored encrypted. Omit to keep existing key on update.",
+    description:
+      "Provider API key. Stored encrypted. Omit to keep the existing key on update. For 'gateway', omit entirely to ride on platform credits.",
     example: "sk-ant-...",
   }),
   baseUrl: z.string().optional().openapi({
@@ -51,9 +54,11 @@ const SetModelConfigBodySchema = z.object({
 });
 
 const TestModelConfigBodySchema = z.object({
-  provider: z.enum(["anthropic", "openai", "azure-openai", "custom"]),
+  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway"]),
   model: z.string().min(1),
-  apiKey: z.string().min(1),
+  // Optional for `gateway` on platform credits; required for every other case.
+  // Cross-field validation lives in the handler (see PUT) and in EE testModelConfig.
+  apiKey: z.string().min(1).optional(),
   baseUrl: z.string().optional(),
 });
 
@@ -61,6 +66,24 @@ const TestResultSchema = z.object({
   success: z.boolean(),
   message: z.string(),
   modelName: z.string().optional(),
+});
+
+const GatewayCatalogModelSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  provider: z.string(),
+  type: z.string(),
+  contextWindow: z.number().nullable(),
+  maxOutputTokens: z.number().nullable(),
+  inputPrice: z.string().nullable(),
+  outputPrice: z.string().nullable(),
+  recommended: z.boolean(),
+});
+
+const GatewayCatalogResponseSchema = z.object({
+  models: z.array(GatewayCatalogModelSchema),
+  fetchedAt: z.string(),
+  fallback: z.boolean(),
 });
 
 // ---------------------------------------------------------------------------
@@ -140,6 +163,22 @@ const testConfigRoute = createRoute({
   },
 });
 
+const catalogRoute = createRoute({
+  method: "get",
+  path: "/catalog",
+  tags: ["Admin — Model Config"],
+  summary: "Vercel AI Gateway model catalog",
+  description:
+    "Returns the catalog of models available via the Vercel AI Gateway, grouped by provider. Cached server-side; the `fallback` field is true when the live fetch failed and a bundled subset was returned.",
+  responses: {
+    200: { description: "Gateway catalog", content: { "application/json": { schema: GatewayCatalogResponseSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -183,11 +222,22 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    // If apiKey is omitted, require an existing config to preserve the key
-    if (!body.apiKey) {
+    // For BYOT providers (anthropic/openai/azure-openai/custom): omitting
+    // apiKey is only valid when an existing healthy key can be preserved.
+    // For provider='gateway' it's always valid: no key = ride on platform
+    // AI_GATEWAY_API_KEY. A gateway-on-platform-credits row CANNOT serve as
+    // the "existing key" for a BYOT-provider transition — there's no key
+    // to preserve.
+    if (!body.apiKey && body.provider !== "gateway") {
       const existing = yield* getWorkspaceModelConfig(orgId);
-      if (!existing) {
-        return c.json({ error: "validation", message: "API key is required when no existing configuration exists." }, 400);
+      if (!existing || existing.apiKeyStatus !== "masked") {
+        return c.json(
+          {
+            error: "validation",
+            message: `API key is required for the "${body.provider}" provider.`,
+          },
+          400,
+        );
       }
     }
 
@@ -329,6 +379,17 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
 
     return c.json(result, 200);
   }), { label: "test model config", domainErrors: [modelConfigDomainError] });
+});
+
+// GET /catalog — Vercel AI Gateway model catalog (server-cached)
+adminModelConfig.openapi(catalogRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const catalog = yield* Effect.tryPromise({
+      try: () => getGatewayCatalog(),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+    return c.json(catalog, 200);
+  }), { label: "get gateway catalog", domainErrors: [modelConfigDomainError] });
 });
 
 export { adminModelConfig };

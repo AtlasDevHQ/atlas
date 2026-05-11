@@ -536,14 +536,28 @@ export async function runAgent({
     model = injectedAiModel.model;
     providerType = injectedAiModel.providerType;
   } else {
-    let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string; baseUrl: string | null } | null = null;
+    let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string | null; baseUrl: string | null } | null = null;
     if (orgId && hasInternalDB()) {
+      const { Effect } = await import("effect");
+      const { getWorkspaceModelConfigRaw, ModelConfigDecryptError } =
+        await import("@atlas/ee/platform/model-routing");
       try {
-        const { Effect } = await import("effect");
-        const { getWorkspaceModelConfigRaw } = await import("@atlas/ee/platform/model-routing");
         workspaceConfig = await Effect.runPromise(getWorkspaceModelConfigRaw(orgId));
       } catch (err) {
-        log.debug({ orgId, err: err instanceof Error ? err.message : String(err) }, "Workspace model config not available — using platform default");
+        // A decrypt failure must surface to the user — silently falling back
+        // to the platform default would bill the platform against their will.
+        // Other errors (DB unreachable, enterprise disabled, etc.) keep the
+        // existing log-and-fall-through behavior.
+        if (err instanceof ModelConfigDecryptError) {
+          throw new Error(
+            "Your workspace's API key could not be decrypted. Re-enter it on the AI Provider settings page before continuing.",
+            { cause: err },
+          );
+        }
+        log.debug(
+          { orgId, err: err instanceof Error ? err.message : String(err) },
+          "Workspace model config not available — using platform default",
+        );
       }
     }
 

@@ -51,8 +51,13 @@ import {
   EyeOff,
   ArrowUpRight,
 } from "lucide-react";
-import { WorkspaceModelConfigSchema, BillingStatusSchema } from "@/ui/lib/admin-schemas";
+import {
+  WorkspaceModelConfigSchema,
+  BillingStatusSchema,
+  GatewayCatalogResponseSchema,
+} from "@/ui/lib/admin-schemas";
 import type { ModelConfigProvider, TestModelConfigResponse } from "@/ui/lib/types";
+import { GatewayModelPicker } from "@/ui/components/admin/gateway-model-picker";
 
 // ── Schemas / constants ───────────────────────────────────────────
 
@@ -65,6 +70,7 @@ const PROVIDERS: { value: ModelConfigProvider; label: string; description: strin
   { value: "openai", label: "OpenAI", description: "GPT models via api.openai.com" },
   { value: "azure-openai", label: "Azure OpenAI", description: "Azure-hosted OpenAI models" },
   { value: "custom", label: "Custom (OpenAI-compatible)", description: "Any OpenAI-compatible endpoint" },
+  { value: "gateway", label: "Vercel AI Gateway", description: "Any gateway model — platform credits or BYOT key" },
 ];
 
 const PROVIDER_LABEL: Record<ModelConfigProvider, string> = {
@@ -72,6 +78,7 @@ const PROVIDER_LABEL: Record<ModelConfigProvider, string> = {
   openai: "OpenAI",
   "azure-openai": "Azure OpenAI",
   custom: "Custom",
+  gateway: "Vercel AI Gateway",
 };
 
 const NEEDS_BASE_URL: Set<ModelConfigProvider> = new Set(["azure-openai", "custom"]);
@@ -90,7 +97,7 @@ function platformModelLabel(value: string): string {
 }
 
 const modelConfigSchema = z.object({
-  provider: z.enum(["anthropic", "openai", "azure-openai", "custom"]),
+  provider: z.enum(["anthropic", "openai", "azure-openai", "custom", "gateway"]),
   model: z.string(),
   apiKey: z.string(),
   baseUrl: z.string(),
@@ -112,6 +119,18 @@ export default function ModelConfigPage() {
   const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/model-config",
     { schema: ModelConfigResponseSchema },
+  );
+
+  // Catalog only matters when the user is on or considering the gateway
+  // provider, but fetching it eagerly keeps the picker responsive on first
+  // toggle. The endpoint is server-cached so the cost is one cold hit.
+  const {
+    data: catalog,
+    loading: catalogLoading,
+    refetch: refetchCatalog,
+  } = useAdminFetch(
+    "/api/v1/admin/model-config/catalog",
+    { schema: GatewayCatalogResponseSchema },
   );
 
   // Billing drives the BYOT gate + the platform-default label. 404 means
@@ -210,7 +229,9 @@ export default function ModelConfigPage() {
       form.setError("model", { message: "Model is required." });
       return;
     }
-    if (!values.apiKey && !existingConfig) {
+    // Gateway tolerates an empty apiKey (platform credits); every other
+    // provider needs one on initial creation.
+    if (!values.apiKey && !existingConfig && values.provider !== "gateway") {
       form.setError("apiKey", { message: "API key is required for new configurations." });
       return;
     }
@@ -219,8 +240,8 @@ export default function ModelConfigPage() {
     const body: Record<string, string> = {
       provider: values.provider,
       model: values.model.trim(),
-      apiKey: values.apiKey,
     };
+    if (values.apiKey) body.apiKey = values.apiKey;
     if (NEEDS_BASE_URL.has(values.provider) && values.baseUrl) {
       body.baseUrl = values.baseUrl.trim();
     }
@@ -245,8 +266,14 @@ export default function ModelConfigPage() {
     const body: Record<string, string> = {
       provider: values.provider,
       model: values.model.trim(),
-      apiKey: values.apiKey || "placeholder-for-test",
     };
+    // Gateway can test on platform credits with no key — omit apiKey entirely
+    // so the EE validator doesn't reject an empty-string sentinel.
+    if (values.apiKey) {
+      body.apiKey = values.apiKey;
+    } else if (values.provider !== "gateway") {
+      body.apiKey = "placeholder-for-test";
+    }
     if (NEEDS_BASE_URL.has(values.provider) && values.baseUrl) {
       body.baseUrl = values.baseUrl.trim();
     }
@@ -262,10 +289,12 @@ export default function ModelConfigPage() {
   }
 
   const currentProvider = form.watch("provider");
+  const isGateway = currentProvider === "gateway";
   const saveDisabled =
-    saving || !form.watch("model").trim() || (!form.watch("apiKey") && !existingConfig);
-  const testDisabled =
-    testing || !form.watch("model").trim() || !form.watch("apiKey");
+    saving ||
+    !form.watch("model").trim() ||
+    (!form.watch("apiKey") && !existingConfig && !isGateway);
+  const testDisabled = testing || !form.watch("model").trim() || (!form.watch("apiKey") && !isGateway);
 
   return (
     <div className="p-6">
@@ -273,8 +302,9 @@ export default function ModelConfigPage() {
         <h1 className="text-2xl font-semibold tracking-tight">AI Provider</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Atlas routes every chat through the platform default model. Bring your own provider —
-          Anthropic, OpenAI, Azure OpenAI, or any OpenAI-compatible endpoint — to run requests
-          against your own API key.
+          Anthropic, OpenAI, Azure OpenAI, an OpenAI-compatible endpoint, or the Vercel AI Gateway
+          catalog — to run requests against your own credentials or pick any gateway model on
+          platform credits.
         </p>
       </div>
 
@@ -469,7 +499,23 @@ export default function ModelConfigPage() {
                         value={PROVIDER_LABEL[existingConfig.provider]}
                       />
                       <DetailRow label="Model" value={existingConfig.model} mono />
-                      <DetailRow label="API key" value={existingConfig.apiKeyMasked} mono />
+                      <DetailRow
+                        label="API key"
+                        value={
+                          existingConfig.apiKeyStatus === "masked"
+                            ? existingConfig.apiKeyMasked ?? "—"
+                            : existingConfig.apiKeyStatus === "platform_credits"
+                              ? "— (platform credits)"
+                              : "— (decryption failed)"
+                        }
+                        mono
+                      />
+                      {existingConfig.apiKeyStatus === "decrypt_failed" && (
+                        <DetailRow
+                          label=""
+                          value="The stored key cannot be decrypted (likely a key-rotation drift). Re-enter it below to restore this workspace; until then, chat is blocked."
+                        />
+                      )}
                       {existingConfig.baseUrl && (
                         <DetailRow label="Base URL" value={existingConfig.baseUrl} mono />
                       )}
@@ -520,17 +566,28 @@ export default function ModelConfigPage() {
                           <FormItem>
                             <FormLabel>Model</FormLabel>
                             <FormControl>
-                              <Input
-                                placeholder={
-                                  currentProvider === "anthropic"
-                                    ? "claude-opus-4-6"
-                                    : currentProvider === "openai"
-                                      ? "gpt-4o"
-                                      : "model-name"
-                                }
-                                className="font-mono text-sm"
-                                {...field}
-                              />
+                              {isGateway ? (
+                                <GatewayModelPicker
+                                  models={catalog?.models ?? []}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  loading={catalogLoading}
+                                  fallback={catalog?.fallback}
+                                  onRetry={refetchCatalog}
+                                />
+                              ) : (
+                                <Input
+                                  placeholder={
+                                    currentProvider === "anthropic"
+                                      ? "claude-opus-4-6"
+                                      : currentProvider === "openai"
+                                        ? "gpt-4o"
+                                        : "model-name"
+                                  }
+                                  className="font-mono text-sm"
+                                  {...field}
+                                />
+                              )}
                             </FormControl>
                             <FormMessage />
                           </FormItem>
@@ -544,17 +601,27 @@ export default function ModelConfigPage() {
                           <FormItem>
                             <FormLabel>
                               API key
-                              {existingConfig && (
+                              {isGateway ? (
                                 <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                  (leave empty to keep existing)
+                                  (optional — leave empty for platform credits)
                                 </span>
+                              ) : (
+                                existingConfig && (
+                                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                    (leave empty to keep existing)
+                                  </span>
+                                )
                               )}
                             </FormLabel>
                             <div className="relative">
                               <FormControl>
                                 <Input
                                   type={showApiKey ? "text" : "password"}
-                                  placeholder={existingConfig ? existingConfig.apiKeyMasked : "sk-..."}
+                                  placeholder={
+                                    isGateway
+                                      ? "vck_... (optional)"
+                                      : existingConfig?.apiKeyMasked ?? "sk-..."
+                                  }
                                   className="pr-10 font-mono text-sm"
                                   {...field}
                                 />

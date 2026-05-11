@@ -30457,7 +30457,8 @@
                             "anthropic",
                             "openai",
                             "azure-openai",
-                            "custom"
+                            "custom",
+                            "gateway"
                           ]
                         },
                         "model": {
@@ -30470,7 +30471,18 @@
                           ]
                         },
                         "apiKeyMasked": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "apiKeyStatus": {
+                          "type": "string",
+                          "enum": [
+                            "masked",
+                            "platform_credits",
+                            "decrypt_failed"
+                          ]
                         },
                         "createdAt": {
                           "type": "string",
@@ -30488,6 +30500,7 @@
                         "model",
                         "baseUrl",
                         "apiKeyMasked",
+                        "apiKeyStatus",
                         "createdAt",
                         "updatedAt"
                       ]
@@ -30630,21 +30643,22 @@
                       "anthropic",
                       "openai",
                       "azure-openai",
-                      "custom"
+                      "custom",
+                      "gateway"
                     ],
-                    "description": "LLM provider. Use 'custom' for any OpenAI-compatible endpoint.",
+                    "description": "LLM provider. Use 'custom' for any OpenAI-compatible endpoint. 'gateway' routes through Vercel AI Gateway — omit apiKey to use platform credits, or supply one for BYOT gateway billing.",
                     "example": "anthropic"
                   },
                   "model": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Model identifier (e.g. claude-opus-4-6, gpt-4o).",
+                    "description": "Model identifier (e.g. claude-opus-4-6, gpt-4o, anthropic/claude-opus-4.6 for gateway).",
                     "example": "claude-opus-4-6"
                   },
                   "apiKey": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Provider API key. Will be stored encrypted. Omit to keep existing key on update.",
+                    "description": "Provider API key. Stored encrypted. Omit to keep the existing key on update. For 'gateway', omit entirely to ride on platform credits.",
                     "example": "sk-ant-..."
                   },
                   "baseUrl": {
@@ -30684,7 +30698,8 @@
                             "anthropic",
                             "openai",
                             "azure-openai",
-                            "custom"
+                            "custom",
+                            "gateway"
                           ]
                         },
                         "model": {
@@ -30697,7 +30712,18 @@
                           ]
                         },
                         "apiKeyMasked": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "apiKeyStatus": {
+                          "type": "string",
+                          "enum": [
+                            "masked",
+                            "platform_credits",
+                            "decrypt_failed"
+                          ]
                         },
                         "createdAt": {
                           "type": "string",
@@ -30715,6 +30741,7 @@
                         "model",
                         "baseUrl",
                         "apiKeyMasked",
+                        "apiKeyStatus",
                         "createdAt",
                         "updatedAt"
                       ]
@@ -30995,7 +31022,8 @@
                       "anthropic",
                       "openai",
                       "azure-openai",
-                      "custom"
+                      "custom",
+                      "gateway"
                     ]
                   },
                   "model": {
@@ -31012,8 +31040,7 @@
                 },
                 "required": [
                   "provider",
-                  "model",
-                  "apiKey"
+                  "model"
                 ]
               }
             }
@@ -31130,6 +31157,157 @@
           }
         },
         "operationId": "postAdminModelConfigTest"
+      }
+    },
+    "/api/v1/admin/model-config/catalog": {
+      "get": {
+        "tags": [
+          "Admin — Model Config"
+        ],
+        "summary": "Vercel AI Gateway model catalog",
+        "description": "Returns the catalog of models available via the Vercel AI Gateway, grouped by provider. Cached server-side; the `fallback` field is true when the live fetch failed and a bundled subset was returned.",
+        "responses": {
+          "200": {
+            "description": "Gateway catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string"
+                          },
+                          "contextWindow": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "maxOutputTokens": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "inputPrice": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "outputPrice": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "recommended": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "provider",
+                          "type",
+                          "contextWindow",
+                          "maxOutputTokens",
+                          "inputPrice",
+                          "outputPrice",
+                          "recommended"
+                        ]
+                      }
+                    },
+                    "fetchedAt": {
+                      "type": "string"
+                    },
+                    "fallback": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "models",
+                    "fetchedAt",
+                    "fallback"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminModelConfigCatalog"
       }
     },
     "/api/v1/admin/email-provider": {

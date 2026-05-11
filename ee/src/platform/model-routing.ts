@@ -21,8 +21,10 @@ import {
   getEncryptionKey,
 } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
+import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
+  ApiKeyStatus,
   WorkspaceModelConfig,
   ModelConfigProvider,
   SetWorkspaceModelConfigRequest,
@@ -41,6 +43,18 @@ export class ModelConfigError extends Data.TaggedError("ModelConfigError")<{
   code: ModelConfigErrorCode;
 }> {}
 
+/**
+ * Raised by `getWorkspaceModelConfigRaw` when an encrypted API key cannot be
+ * decrypted (typically a key-rotation drift between `ATLAS_ENCRYPTION_KEYS`
+ * and the row's `api_key_key_version`). The agent loop must surface this to
+ * the user — silently falling back to the platform default would bill the
+ * platform without consent.
+ */
+export class ModelConfigDecryptError extends Data.TaggedError("ModelConfigDecryptError")<{
+  configId: string;
+  cause: string;
+}> {}
+
 // ── Internal row shape ──────────────────────────────────────────────
 
 interface ModelConfigRow {
@@ -48,7 +62,8 @@ interface ModelConfigRow {
   org_id: string;
   provider: string;
   model: string;
-  api_key_encrypted: string;
+  /** Nullable for provider='gateway' on platform credits. */
+  api_key_encrypted: string | null;
   base_url: string | null;
   created_at: string;
   updated_at: string;
@@ -69,20 +84,31 @@ export function maskApiKey(key: string): string {
 
 function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
   if (!isValidProvider(row.provider)) {
-    throw new Error(`Workspace model config ${row.id} has invalid provider "${row.provider}" in database`);
+    throw new Error(
+      `Workspace model config ${row.id} has invalid provider "${row.provider}" in database`,
+    );
   }
 
-  // Decrypt the API key, then mask it for the response
-  let apiKeyMasked: string;
-  try {
-    const decrypted = decryptUrl(row.api_key_encrypted);
-    apiKeyMasked = maskApiKey(decrypted);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err), configId: row.id },
-      "Failed to decrypt workspace API key — masking as redacted",
-    );
-    apiKeyMasked = "[REDACTED]";
+  let apiKeyMasked: string | null;
+  let apiKeyStatus: ApiKeyStatus;
+  if (row.api_key_encrypted === null) {
+    // Per the chk_model_provider_key DB constraint, only `gateway` rows can
+    // legally have a NULL ciphertext — surface as platform_credits.
+    apiKeyMasked = null;
+    apiKeyStatus = "platform_credits";
+  } else {
+    try {
+      const decrypted = decryptUrl(row.api_key_encrypted);
+      apiKeyMasked = maskApiKey(decrypted);
+      apiKeyStatus = "masked";
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), configId: row.id },
+        "Failed to decrypt workspace API key — surfacing decrypt_failed to UI",
+      );
+      apiKeyMasked = null;
+      apiKeyStatus = "decrypt_failed";
+    }
   }
 
   return {
@@ -92,6 +118,7 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
     model: row.model,
     baseUrl: row.base_url,
     apiKeyMasked,
+    apiKeyStatus,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -99,23 +126,42 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
 
 // ── Validation ──────────────────────────────────────────────────────
 
-function validateConfig(config: SetWorkspaceModelConfigRequest): Effect.Effect<void, ModelConfigError> {
+function validateConfig(
+  config: SetWorkspaceModelConfigRequest,
+): Effect.Effect<void, ModelConfigError> {
   if (!isValidProvider(config.provider)) {
-    return Effect.fail(new ModelConfigError({ message: `Invalid provider "${config.provider}". Supported: ${MODEL_CONFIG_PROVIDERS.join(", ")}`, code: "validation" }));
+    return Effect.fail(
+      new ModelConfigError({
+        message: `Invalid provider "${config.provider}". Supported: ${MODEL_CONFIG_PROVIDERS.join(", ")}`,
+        code: "validation",
+      }),
+    );
   }
 
   if (!config.model || config.model.trim().length === 0) {
-    return Effect.fail(new ModelConfigError({ message: "Model name is required.", code: "validation" }));
+    return Effect.fail(
+      new ModelConfigError({ message: "Model name is required.", code: "validation" }),
+    );
   }
 
   // apiKey is optional on update (preserves existing key when omitted)
   if (config.apiKey !== undefined && config.apiKey.trim().length === 0) {
-    return Effect.fail(new ModelConfigError({ message: "API key cannot be empty. Omit the field to keep the existing key.", code: "validation" }));
+    return Effect.fail(
+      new ModelConfigError({
+        message: "API key cannot be empty. Omit the field to keep the existing key.",
+        code: "validation",
+      }),
+    );
   }
 
   // Azure OpenAI and custom providers require a base URL
   if ((config.provider === "azure-openai" || config.provider === "custom") && !config.baseUrl) {
-    return Effect.fail(new ModelConfigError({ message: `Base URL is required for the "${config.provider}" provider.`, code: "validation" }));
+    return Effect.fail(
+      new ModelConfigError({
+        message: `Base URL is required for the "${config.provider}" provider.`,
+        code: "validation",
+      }),
+    );
   }
 
   // Validate base URL format when provided
@@ -124,15 +170,28 @@ function validateConfig(config: SetWorkspaceModelConfigRequest): Effect.Effect<v
     try {
       parsed = new URL(config.baseUrl);
     } catch {
-      return Effect.fail(new ModelConfigError({ message: `Invalid base URL: "${config.baseUrl}". Must be a valid URL (e.g. https://api.example.com/v1).`, code: "validation" }));
+      return Effect.fail(
+        new ModelConfigError({
+          message: `Invalid base URL: "${config.baseUrl}". Must be a valid URL (e.g. https://api.example.com/v1).`,
+          code: "validation",
+        }),
+      );
     }
     if (!["http:", "https:"].includes(parsed.protocol)) {
-      return Effect.fail(new ModelConfigError({ message: `Base URL must use http:// or https:// (got "${parsed.protocol}").`, code: "validation" }));
+      return Effect.fail(
+        new ModelConfigError({
+          message: `Base URL must use http:// or https:// (got "${parsed.protocol}").`,
+          code: "validation",
+        }),
+      );
     }
   }
 
   return Effect.void;
 }
+
+const promiseError = (err: unknown): Error =>
+  err instanceof Error ? err : new Error(String(err));
 
 // ── CRUD ─────────────────────────────────────────────────────────────
 
@@ -140,18 +199,24 @@ function validateConfig(config: SetWorkspaceModelConfigRequest): Effect.Effect<v
  * Get the workspace model configuration for an organization.
  * Returns null if no workspace config is set (falls back to platform default).
  */
-export const getWorkspaceModelConfig = (orgId: string): Effect.Effect<WorkspaceModelConfig | null, EnterpriseError> =>
+export const getWorkspaceModelConfig = (
+  orgId: string,
+): Effect.Effect<WorkspaceModelConfig | null, EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("model-routing");
     if (!hasInternalDB()) return null;
 
-    const rows = yield* Effect.promise(() => internalQuery<ModelConfigRow>(
-      `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
-       FROM workspace_model_config
-       WHERE org_id = $1
-       LIMIT 1`,
-      [orgId],
-    ));
+    const rows = yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<ModelConfigRow>(
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
+           FROM workspace_model_config
+           WHERE org_id = $1
+           LIMIT 1`,
+          [orgId],
+        ),
+      catch: promiseError,
+    });
 
     if (rows.length === 0) return null;
     return rowToConfig(rows[0]);
@@ -159,47 +224,65 @@ export const getWorkspaceModelConfig = (orgId: string): Effect.Effect<WorkspaceM
 
 /**
  * Get the raw (decrypted) workspace model configuration for provider resolution.
- * Returns null if no workspace config is set.
+ * Returns null if no workspace config is set or its provider failed validation.
+ * Fails with `ModelConfigDecryptError` when an encrypted key cannot be
+ * decrypted — the agent loop converts that into a user-visible message
+ * rather than silently falling back to the platform default (which would
+ * bill the platform without consent).
  *
  * WARNING: The returned API key is in plaintext. Never expose it to clients.
- * This is only for internal use in the provider resolution path.
  */
-export const getWorkspaceModelConfigRaw = (orgId: string): Effect.Effect<{
-  provider: ModelConfigProvider;
-  model: string;
-  apiKey: string;
-  baseUrl: string | null;
-} | null> =>
+export const getWorkspaceModelConfigRaw = (
+  orgId: string,
+): Effect.Effect<
+  {
+    provider: ModelConfigProvider;
+    model: string;
+    apiKey: string | null;
+    baseUrl: string | null;
+  } | null,
+  ModelConfigDecryptError | Error
+> =>
   Effect.gen(function* () {
     // Skip enterprise check for provider resolution — the enterprise gate
     // is enforced at the admin route level. If a config exists, we use it.
     if (!hasInternalDB()) return null;
 
-    const rows = yield* Effect.promise(() => internalQuery<ModelConfigRow>(
-      `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
-       FROM workspace_model_config
-       WHERE org_id = $1
-       LIMIT 1`,
-      [orgId],
-    ));
+    const rows = yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<ModelConfigRow>(
+          `SELECT id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at
+           FROM workspace_model_config
+           WHERE org_id = $1
+           LIMIT 1`,
+          [orgId],
+        ),
+      catch: promiseError,
+    });
 
     if (rows.length === 0) return null;
     const row = rows[0];
 
     if (!isValidProvider(row.provider)) {
-      log.error({ configId: row.id, provider: row.provider }, "Invalid provider in workspace model config — ignoring");
+      log.error(
+        { configId: row.id, provider: row.provider },
+        "Invalid provider in workspace model config — ignoring",
+      );
       return null;
     }
 
-    let apiKey: string;
-    try {
-      apiKey = decryptUrl(row.api_key_encrypted);
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err.message : String(err), configId: row.id },
-        "Failed to decrypt workspace API key — falling back to platform default",
-      );
-      return null;
+    let apiKey: string | null = null;
+    if (row.api_key_encrypted !== null) {
+      try {
+        apiKey = decryptUrl(row.api_key_encrypted);
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        log.error(
+          { err: cause, configId: row.id },
+          "Failed to decrypt workspace API key — surfacing tagged error",
+        );
+        return yield* Effect.fail(new ModelConfigDecryptError({ configId: row.id, cause }));
+      }
     }
 
     return {
@@ -223,10 +306,32 @@ export const setWorkspaceModelConfig = (
     yield* requireInternalDBEffect("workspace model configuration");
     yield* validateConfig(config);
 
+    // Provider-transition guard: switching from gateway-on-platform-credits
+    // (no stored key) to a BYOT provider without supplying a key would land
+    // a NULL key on a non-gateway row, which the DB CHECK rejects with an
+    // opaque 23514. Translate to a clean validation error here.
+    if (!config.apiKey && config.provider !== "gateway") {
+      const existing = yield* getWorkspaceModelConfig(orgId).pipe(
+        Effect.catchAll(() => Effect.succeed(null)),
+      );
+      if (!existing || existing.apiKeyStatus !== "masked") {
+        return yield* Effect.fail(
+          new ModelConfigError({
+            message: `API key is required for the "${config.provider}" provider.`,
+            code: "validation",
+          }),
+        );
+      }
+    }
+
     let encryptedKey: string | null = null;
     if (config.apiKey) {
       if (!getEncryptionKey()) {
-        return yield* Effect.die(new Error("Encryption key required for API key storage. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET."));
+        return yield* Effect.die(
+          new Error(
+            "Encryption key required for API key storage. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.",
+          ),
+        );
       }
       encryptedKey = encryptUrl(config.apiKey);
     }
@@ -235,28 +340,38 @@ export const setWorkspaceModelConfig = (
     // key version via COALESCE — swapping one without the other would
     // break decryption after the active version advances.
     const keyVersion = encryptedKey !== null ? activeKeyVersion() : null;
-    const rows = yield* Effect.promise(() => internalQuery<ModelConfigRow>(
-      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url)
-       VALUES (
-         $1, $2, $3,
-         COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)),
-         COALESCE($6, (SELECT api_key_key_version FROM workspace_model_config WHERE org_id = $1), 1),
-         $5
-       )
-       ON CONFLICT (org_id) DO UPDATE SET
-         provider = EXCLUDED.provider,
-         model = EXCLUDED.model,
-         api_key_encrypted = COALESCE($4, workspace_model_config.api_key_encrypted),
-         api_key_key_version = COALESCE($6, workspace_model_config.api_key_key_version),
-         base_url = EXCLUDED.base_url,
-         updated_at = now()
-       RETURNING id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at`,
-      [orgId, config.provider, config.model.trim(), encryptedKey, config.baseUrl ?? null, keyVersion],
-    ));
+    const rows = yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<ModelConfigRow>(
+          `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, api_key_key_version, base_url)
+           VALUES (
+             $1, $2, $3,
+             COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)),
+             COALESCE($6, (SELECT api_key_key_version FROM workspace_model_config WHERE org_id = $1), 1),
+             $5
+           )
+           ON CONFLICT (org_id) DO UPDATE SET
+             provider = EXCLUDED.provider,
+             model = EXCLUDED.model,
+             api_key_encrypted = COALESCE($4, workspace_model_config.api_key_encrypted),
+             api_key_key_version = COALESCE($6, workspace_model_config.api_key_key_version),
+             base_url = EXCLUDED.base_url,
+             updated_at = now()
+           RETURNING id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at`,
+          [orgId, config.provider, config.model.trim(), encryptedKey, config.baseUrl ?? null, keyVersion],
+        ),
+      catch: promiseError,
+    });
 
-    if (!rows[0]) return yield* Effect.die(new Error("Failed to save workspace model config — no row returned."));
+    if (!rows[0])
+      return yield* Effect.die(
+        new Error("Failed to save workspace model config — no row returned."),
+      );
 
-    log.info({ orgId, provider: config.provider, model: config.model }, "Workspace model config saved");
+    log.info(
+      { orgId, provider: config.provider, model: config.model },
+      "Workspace model config saved",
+    );
     return rowToConfig(rows[0]);
   });
 
@@ -264,15 +379,19 @@ export const setWorkspaceModelConfig = (
  * Delete the workspace model configuration for an organization.
  * After deletion, the workspace falls back to the platform default.
  */
-export const deleteWorkspaceModelConfig = (orgId: string): Effect.Effect<boolean, EnterpriseError> =>
+export const deleteWorkspaceModelConfig = (
+  orgId: string,
+): Effect.Effect<boolean, EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("model-routing");
     if (!hasInternalDB()) return false;
 
     const pool = getInternalDB();
-    const result = yield* Effect.promise(() =>
-      pool.query(`DELETE FROM workspace_model_config WHERE org_id = $1 RETURNING id`, [orgId]),
-    );
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        pool.query(`DELETE FROM workspace_model_config WHERE org_id = $1 RETURNING id`, [orgId]),
+      catch: promiseError,
+    });
 
     const deleted = result.rows.length > 0;
     if (deleted) {
@@ -285,103 +404,178 @@ export const deleteWorkspaceModelConfig = (orgId: string): Effect.Effect<boolean
  * Test a model configuration by making a minimal API call.
  * Uses a simple chat completion request with minimal tokens.
  */
-export const testModelConfig = (config: TestModelConfigRequest): Effect.Effect<{
-  success: boolean;
-  message: string;
-  modelName?: string;
-}, ModelConfigError> =>
+export const testModelConfig = (
+  config: TestModelConfigRequest,
+): Effect.Effect<
+  {
+    success: boolean;
+    message: string;
+    modelName?: string;
+  },
+  ModelConfigError | Error
+> =>
   Effect.gen(function* () {
     yield* validateConfig(config);
 
-    return yield* Effect.promise(async () => {
-      try {
-        switch (config.provider) {
-          case "anthropic": {
-            const response = await fetch("https://api.anthropic.com/v1/messages", {
-              method: "POST",
-              headers: {
-                "x-api-key": config.apiKey,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-              },
-              body: JSON.stringify({
-                model: config.model,
-                max_tokens: 1,
-                messages: [{ role: "user", content: "Hi" }],
-              }),
-            });
+    // BYOT providers require an apiKey for the test call. `gateway` is the
+    // only provider that's allowed to test without one (platform credits via
+    // catalog-membership check).
+    if (!config.apiKey && config.provider !== "gateway") {
+      return yield* Effect.fail(
+        new ModelConfigError({
+          message: `API key is required to test the "${config.provider}" provider.`,
+          code: "validation",
+        }),
+      );
+    }
+    const apiKey = config.apiKey ?? "";
 
-            if (!response.ok) {
-              const body = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } })) as { error?: { message?: string } };
-              const msg = body?.error?.message ?? `HTTP ${response.status}`;
-              throw new Error(msg);
+    return yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          switch (config.provider) {
+            case "anthropic": {
+              const response = await fetch("https://api.anthropic.com/v1/messages", {
+                method: "POST",
+                headers: {
+                  "x-api-key": apiKey,
+                  "anthropic-version": "2023-06-01",
+                  "content-type": "application/json",
+                },
+                body: JSON.stringify({
+                  model: config.model,
+                  max_tokens: 1,
+                  messages: [{ role: "user", content: "Hi" }],
+                }),
+              });
+
+              if (!response.ok) {
+                const body = (await response
+                  .json()
+                  .catch(() => ({ error: { message: `HTTP ${response.status}` } }))) as {
+                  error?: { message?: string };
+                };
+                const msg = body?.error?.message ?? `HTTP ${response.status}`;
+                throw new Error(msg);
+              }
+              return { success: true, message: "Connection successful.", modelName: config.model };
             }
-            return { success: true, message: "Connection successful.", modelName: config.model };
-          }
 
-          case "openai": {
-            const response = await fetch("https://api.openai.com/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${config.apiKey}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                model: config.model,
-                max_tokens: 1,
-                messages: [{ role: "user", content: "Hi" }],
-              }),
-            });
+            case "openai": {
+              const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  model: config.model,
+                  max_tokens: 1,
+                  messages: [{ role: "user", content: "Hi" }],
+                }),
+              });
 
-            if (!response.ok) {
-              const body = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } })) as { error?: { message?: string } };
-              const msg = body?.error?.message ?? `HTTP ${response.status}`;
-              throw new Error(msg);
+              if (!response.ok) {
+                const body = (await response
+                  .json()
+                  .catch(() => ({ error: { message: `HTTP ${response.status}` } }))) as {
+                  error?: { message?: string };
+                };
+                const msg = body?.error?.message ?? `HTTP ${response.status}`;
+                throw new Error(msg);
+              }
+              return { success: true, message: "Connection successful.", modelName: config.model };
             }
-            return { success: true, message: "Connection successful.", modelName: config.model };
-          }
 
-          case "azure-openai":
-          case "custom": {
-            if (!config.baseUrl) {
-              throw new Error("Base URL is required.");
+            case "azure-openai":
+            case "custom": {
+              if (!config.baseUrl) {
+                throw new Error("Base URL is required.");
+              }
+              const url = config.baseUrl.replace(/\/$/, "") + "/chat/completions";
+              const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  "Content-Type": "application/json",
+                  ...(config.provider === "azure-openai" ? { "api-key": apiKey } : {}),
+                },
+                body: JSON.stringify({
+                  model: config.model,
+                  max_tokens: 1,
+                  messages: [{ role: "user", content: "Hi" }],
+                }),
+              });
+
+              if (!response.ok) {
+                const body = (await response
+                  .json()
+                  .catch(() => ({ error: { message: `HTTP ${response.status}` } }))) as {
+                  error?: { message?: string };
+                };
+                const msg = body?.error?.message ?? `HTTP ${response.status}`;
+                throw new Error(msg);
+              }
+              return { success: true, message: "Connection successful.", modelName: config.model };
             }
-            // Use the OpenAI-compatible chat completions endpoint
-            const url = config.baseUrl.replace(/\/$/, "") + "/chat/completions";
-            const response = await fetch(url, {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${config.apiKey}`,
-                "Content-Type": "application/json",
-                // Azure OpenAI also accepts api-key header
-                ...(config.provider === "azure-openai" ? { "api-key": config.apiKey } : {}),
-              },
-              body: JSON.stringify({
-                model: config.model,
-                max_tokens: 1,
-                messages: [{ role: "user", content: "Hi" }],
-              }),
-            });
 
-            if (!response.ok) {
-              const body = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } })) as { error?: { message?: string } };
-              const msg = body?.error?.message ?? `HTTP ${response.status}`;
-              throw new Error(msg);
+            case "gateway": {
+              // Re-use the cached catalog rather than hitting upstream on every
+              // test — keeps the test cheap and consistent with what the picker
+              // is showing the admin.
+              const catalog = await getGatewayCatalog();
+              const ids = new Set(catalog.models.map((m) => m.id));
+              if (!ids.has(config.model)) {
+                throw new Error(
+                  `Model "${config.model}" is not in the gateway catalog. Pick one from https://ai-gateway.vercel.sh/v1/models.`,
+                );
+              }
+              if (config.apiKey) {
+                // BYOT key — verify it authenticates by hitting the gateway's
+                // OpenAI-compatible chat completions endpoint with 1 token.
+                const authedRes = await fetch(
+                  "https://ai-gateway.vercel.sh/v1/chat/completions",
+                  {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${config.apiKey}`,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      model: config.model,
+                      max_tokens: 1,
+                      messages: [{ role: "user", content: "Hi" }],
+                    }),
+                  },
+                );
+                if (!authedRes.ok) {
+                  const body = (await authedRes
+                    .json()
+                    .catch(() => ({ error: { message: `HTTP ${authedRes.status}` } }))) as {
+                    error?: { message?: string };
+                  };
+                  throw new Error(body?.error?.message ?? `HTTP ${authedRes.status}`);
+                }
+              }
+              return { success: true, message: "Connection successful.", modelName: config.model };
             }
-            return { success: true, message: "Connection successful.", modelName: config.model };
-          }
 
-          default: {
-            const _exhaustive: never = config.provider;
-            throw new Error(`Unknown provider: ${_exhaustive}`);
+            default: {
+              const _exhaustive: never = config.provider;
+              throw new Error(`Unknown provider: ${_exhaustive}`);
+            }
           }
+        } catch (err) {
+          const rawMessage = err instanceof Error ? err.message : String(err);
+          log.warn(
+            { provider: config.provider, model: config.model, err: rawMessage },
+            "Model config test failed",
+          );
+          // Truncate provider error messages to avoid leaking sensitive info
+          const sanitized = rawMessage.length > 200 ? rawMessage.slice(0, 200) + "..." : rawMessage;
+          return { success: false, message: `Connection test failed: ${sanitized}` };
         }
-      } catch (err) {
-        const rawMessage = err instanceof Error ? err.message : String(err);
-        log.warn({ provider: config.provider, model: config.model, err: rawMessage }, "Model config test failed");
-        // Truncate provider error messages to avoid leaking sensitive info
-        const sanitized = rawMessage.length > 200 ? rawMessage.slice(0, 200) + "..." : rawMessage;
-        return { success: false, message: `Connection test failed: ${sanitized}` };
-      }
+      },
+      catch: promiseError,
     });
   });

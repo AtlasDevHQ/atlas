@@ -24,12 +24,24 @@ mock.module("../lib/db-guard", () => ({
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
+// Catalog mock: keep tests offline and let each case shape the response.
+let mockCatalogModels: { id: string }[] = [{ id: "anthropic/claude-opus-4.6" }];
+const getGatewayCatalogMock = mock(async () => ({
+  models: mockCatalogModels,
+  fetchedAt: "2026-05-10T00:00:00.000Z",
+  fallback: false,
+}));
+mock.module("@atlas/api/lib/gateway-catalog", () => ({
+  getGatewayCatalog: getGatewayCatalogMock,
+}));
+
 // Import after mocks
 const {
   getWorkspaceModelConfig,
   getWorkspaceModelConfigRaw,
   setWorkspaceModelConfig,
   deleteWorkspaceModelConfig,
+  testModelConfig,
   maskApiKey,
   ModelConfigError,
 } = await import("./model-routing");
@@ -87,7 +99,32 @@ describe("getWorkspaceModelConfig", () => {
     expect(result!.provider).toBe("anthropic");
     expect(result!.model).toBe("claude-opus-4-6");
     expect(result!.apiKeyMasked).toBe("***********1234");
+    expect(result!.apiKeyStatus).toBe("masked");
     expect(result!.orgId).toBe("org-1");
+  });
+
+  it("gateway provider with NULL api_key_encrypted surfaces apiKeyStatus='platform_credits'", async () => {
+    ee.queueMockRows([
+      makeRow({
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+        api_key_encrypted: null,
+      }),
+    ]);
+    const result = await run(getWorkspaceModelConfig("org-1"));
+    expect(result).not.toBeNull();
+    expect(result!.provider).toBe("gateway");
+    expect(result!.apiKeyMasked).toBeNull();
+    expect(result!.apiKeyStatus).toBe("platform_credits");
+  });
+
+  it("decryption failure surfaces apiKeyStatus='decrypt_failed' (not a fake mask)", async () => {
+    ee.queueMockRows([makeRow({ api_key_encrypted: "corrupt-ciphertext-not-decryptable" })]);
+    ee.setDecryptThrows(true);
+    const result = await run(getWorkspaceModelConfig("org-1"));
+    expect(result).not.toBeNull();
+    expect(result!.apiKeyStatus).toBe("decrypt_failed");
+    expect(result!.apiKeyMasked).toBeNull();
   });
 
   it("throws when enterprise is not enabled", async () => {
@@ -112,6 +149,38 @@ describe("getWorkspaceModelConfigRaw", () => {
     expect(result!.provider).toBe("anthropic");
     expect(result!.model).toBe("claude-opus-4-6");
     expect(result!.apiKey).toBe("sk-ant-test1234");
+  });
+
+  it("gateway provider with NULL api_key_encrypted returns apiKey=null (platform credits)", async () => {
+    ee.queueMockRows([
+      makeRow({
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+        api_key_encrypted: null,
+      }),
+    ]);
+    const result = await run(getWorkspaceModelConfigRaw("org-1"));
+    expect(result).not.toBeNull();
+    expect(result!.provider).toBe("gateway");
+    expect(result!.apiKey).toBeNull();
+  });
+
+  it("decryption failure surfaces a ModelConfigDecryptError instead of silent null fallback", async () => {
+    ee.queueMockRows([makeRow({ api_key_encrypted: "corrupt-not-decryptable" })]);
+    ee.setDecryptThrows(true);
+    // Effect.runPromise wraps tagged errors in a FiberFailure; pull the
+    // unwrapped cause via Effect.runPromiseExit + Exit.causeOption to assert
+    // on the underlying tag.
+    const { Exit, Cause } = await import("effect");
+    const exit = await Effect.runPromiseExit(getWorkspaceModelConfigRaw("org-1"));
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const failures = Cause.failures(exit.cause);
+      const arr = [...failures];
+      expect(arr.some((e) => (e as { _tag?: string })._tag === "ModelConfigDecryptError")).toBe(
+        true,
+      );
+    }
   });
 
   it("does NOT enforce enterprise gate (called in hot path)", async () => {
@@ -169,13 +238,17 @@ describe("setWorkspaceModelConfig", () => {
     // column would disagree with the ciphertext's enc:v<N>: prefix.
     // The PR body explicitly called this out as the risky case — this
     // test pins the behavior.
-    ee.queueMockRows([makeRow()]);
+    //
+    // First batch satisfies the transition guard (existing healthy row);
+    // second batch is the UPSERT's RETURNING.
+    ee.queueMockRows([makeRow()], [makeRow()]);
     await run(setWorkspaceModelConfig("org-1", {
       provider: "anthropic",
       model: "claude-opus-4-7",
       // apiKey intentionally omitted
     }));
-    const { sql, params } = ee.capturedQueries[0];
+    // capturedQueries[0] = transition-guard SELECT; [1] = the UPSERT.
+    const { sql, params } = ee.capturedQueries[1];
     // Both columns COALESCE to the existing row when $4/$6 are null.
     expect(sql).toMatch(/api_key_encrypted\s*=\s*COALESCE\(\$4/);
     expect(sql).toMatch(/api_key_key_version\s*=\s*COALESCE\(\$6/);
@@ -185,6 +258,40 @@ describe("setWorkspaceModelConfig", () => {
     expect(sql).toContain("SELECT api_key_key_version FROM workspace_model_config");
     expect(params[3]).toBeNull();
     expect(params[5]).toBeNull();
+  });
+
+  it("transition guard: omitting apiKey for non-gateway provider with no healthy existing row rejects", async () => {
+    // Existing row is gateway-on-platform-credits (no key to preserve).
+    // Switching to anthropic without a key must fail with a clean
+    // ModelConfigError instead of letting the DB CHECK fire.
+    ee.queueMockRows([
+      makeRow({ provider: "gateway", api_key_encrypted: null }),
+    ]);
+    await expect(
+      run(
+        setWorkspaceModelConfig("org-1", {
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+        }),
+      ),
+    ).rejects.toThrow(/API key is required/);
+  });
+
+  it("gateway provider with no apiKey + no existing row succeeds (platform credits, no transition guard)", async () => {
+    // For provider=gateway the transition guard does NOT fire (it only
+    // guards non-gateway → null-key transitions), so the only query is
+    // the UPSERT itself.
+    ee.queueMockRows([
+      makeRow({ provider: "gateway", api_key_encrypted: null, model: "anthropic/claude-opus-4.6" }),
+    ]);
+    const result = await run(
+      setWorkspaceModelConfig("org-1", {
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+      }),
+    );
+    expect(result.provider).toBe("gateway");
+    expect(result.apiKeyStatus).toBe("platform_credits");
   });
 
   it("rejects invalid provider", async () => {
@@ -305,5 +412,104 @@ describe("ModelConfigError", () => {
     expect(err.message).toBe("test error");
     expect(err.name).toBe("ModelConfigError");
     expect(err._tag).toBe("ModelConfigError");
+  });
+});
+
+describe("testModelConfig — gateway branch", () => {
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    ee.reset();
+    mockCatalogModels = [
+      { id: "anthropic/claude-opus-4.6" },
+      { id: "openai/gpt-4o" },
+    ];
+    getGatewayCatalogMock.mockClear();
+    globalThis.fetch = realFetch;
+  });
+
+  it("rejects when the model id is not in the gateway catalog", async () => {
+    const result = await run(
+      testModelConfig({
+        provider: "gateway",
+        model: "made-up/not-real",
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("not in the gateway catalog");
+    expect(getGatewayCatalogMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("succeeds on platform credits when model is in catalog and no apiKey supplied", async () => {
+    // No fetch should be made — platform-credit path is catalog-only.
+    let authedCalls = 0;
+    globalThis.fetch = (async () => {
+      authedCalls++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await run(
+      testModelConfig({
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.modelName).toBe("anthropic/claude-opus-4.6");
+    expect(authedCalls).toBe(0); // No authenticated probe — saved a credit
+  });
+
+  it("BYOT apiKey: hits the authed completions endpoint after catalog passes", async () => {
+    let authedCalled = false;
+    let observedAuthHeader: string | null = null;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url.includes("/v1/chat/completions")) {
+        authedCalled = true;
+        observedAuthHeader =
+          (init?.headers as Record<string, string> | undefined)?.["Authorization"] ?? null;
+        return new Response("{}", { status: 200 });
+      }
+      throw new Error(`unexpected fetch in test: ${url}`);
+    }) as unknown as typeof fetch;
+
+    const result = await run(
+      testModelConfig({
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+        apiKey: "vck_test_byot",
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(authedCalled).toBe(true);
+    expect(observedAuthHeader as string | null).toBe("Bearer vck_test_byot");
+  });
+
+  it("BYOT apiKey: surfaces 401 from the gateway when the key is bad", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: "Invalid API key" } }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+
+    const result = await run(
+      testModelConfig({
+        provider: "gateway",
+        model: "anthropic/claude-opus-4.6",
+        apiKey: "vck_wrong",
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Invalid API key");
+  });
+
+  it("non-gateway provider without apiKey rejects with a validation error", async () => {
+    await expect(
+      run(
+        testModelConfig({
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+        }),
+      ),
+    ).rejects.toThrow(/API key is required/);
   });
 });

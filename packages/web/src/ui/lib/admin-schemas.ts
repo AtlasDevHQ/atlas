@@ -72,6 +72,8 @@ export {
   WorkspaceModelConfigSchema,
   WorkspaceSLADetailSchema,
   WorkspaceSLASummarySchema,
+  GatewayCatalogModelSchema,
+  GatewayCatalogResponseSchema,
 } from "@useatlas/schemas";
 
 // ── Platform ─────────────────────────────────────────────────────

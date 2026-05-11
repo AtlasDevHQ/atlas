@@ -81,8 +81,8 @@ export function AdminSidebar() {
   const isSaas = deployMode === "saas";
 
   function isSubItemActive(item: NavSubItem) {
-    if (item.exact) return pathname === item.href;
-    return pathname === item.href || pathname.startsWith(item.href + "/");
+    if (item.prefixMatch) return pathname === item.href || pathname.startsWith(item.href + "/");
+    return pathname === item.href;
   }
 
   function isGroupActive(group: NavGroup) {

@@ -6,9 +6,9 @@ describe("resolveAdminBreadcrumb", () => {
     expect(resolveAdminBreadcrumb("/admin")).toEqual({});
   });
 
-  test("matches an exact-mode item without prefix-matching its children", () => {
-    // /admin/semantic is exact:true so /admin/semantic/improve must not collapse
-    // into the Semantic-Layer entry.
+  test("default is exact-match — siblings with a shared prefix don't collapse", () => {
+    // Semantic Layer parent + Improve Layer child share `/admin/semantic`.
+    // Default-exact means each resolves to its own leaf entry.
     expect(resolveAdminBreadcrumb("/admin/semantic")).toEqual({
       section: "Data",
       page: "Semantic Layer",
@@ -19,14 +19,41 @@ describe("resolveAdminBreadcrumb", () => {
     });
   });
 
-  test("matches a prefix-mode item for nested routes", () => {
-    expect(resolveAdminBreadcrumb("/admin/audit")).toEqual({
-      section: "Monitoring",
-      page: "Audit Log",
+  test("#2176 regression — /admin/settings does not collapse /admin/settings/mcp", () => {
+    // Before the prefixMatch inversion, `exact` was opt-in and easy to forget,
+    // so `/admin/settings` prefix-matched `/admin/settings/mcp`. The default
+    // is now exact; both leaves resolve to their own entry.
+    expect(resolveAdminBreadcrumb("/admin/settings")).toEqual({
+      section: "Configuration",
+      page: "Settings",
     });
-    expect(resolveAdminBreadcrumb("/admin/audit/123")).toEqual({
+    expect(resolveAdminBreadcrumb("/admin/settings/mcp")).toEqual({
+      section: "Configuration",
+      page: "MCP",
+    });
+  });
+
+  test("prefixMatch: true items match nested child routes", () => {
+    // /admin/users has prefixMatch:true so the [id] detail page resolves to
+    // the Users entry rather than dropping off the sidebar.
+    expect(resolveAdminBreadcrumb("/admin/users")).toEqual({
+      section: "Users & Access",
+      page: "Users",
+    });
+    expect(resolveAdminBreadcrumb("/admin/users/abc-123")).toEqual({
+      section: "Users & Access",
+      page: "Users",
+    });
+  });
+
+  test("prefixMatch on /admin/scheduled-tasks resolves the /runs subpage", () => {
+    expect(resolveAdminBreadcrumb("/admin/scheduled-tasks")).toEqual({
       section: "Monitoring",
-      page: "Audit Log",
+      page: "Scheduled Tasks",
+    });
+    expect(resolveAdminBreadcrumb("/admin/scheduled-tasks/runs")).toEqual({
+      section: "Monitoring",
+      page: "Scheduled Tasks",
     });
   });
 

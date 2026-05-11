@@ -45,10 +45,13 @@ const FETCH_TIMEOUT_MS = 15_000;
  * region prefixes (e.g. `us.anthropic.claude-sonnet-4-5-20250929-v1:0`).
  * The set is intentionally narrow; the picker still shows everything.
  */
+// Bedrock model IDs for Claude 4.x drop the `-v1:0` suffix that earlier
+// Claude families carried. Source: AWS Bedrock model cards index
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.md).
 const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
-  "anthropic.claude-opus-4-v1:0",
-  "anthropic.claude-sonnet-4-v1:0",
-  "anthropic.claude-3-5-sonnet-20241022-v2:0",
+  "anthropic.claude-opus-4-7",
+  "anthropic.claude-sonnet-4-6",
+  "anthropic.claude-haiku-4-5",
 ]);
 
 export interface BedrockDiscoveryCredentials {

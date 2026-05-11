@@ -40,11 +40,7 @@ const VALID_PROVIDERS: ReadonlySet<ConfigProvider> = new Set([
 const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   anthropic: "claude-opus-4-7",
   openai: "gpt-4o",
-  // Bedrock's Claude Opus 4.7 isn't on AWS yet (Anthropic typically GAs
-  // on Bedrock 1-2 quarters after their direct API); keep 4-6 here
-  // until AWS lists `anthropic.claude-opus-4-7-v1:0` in
-  // ListFoundationModels for at least us-east-1.
-  bedrock: "anthropic.claude-opus-4-6-v1:0",
+  bedrock: "anthropic.claude-opus-4-7",
   ollama: "llama3.1",
   "openai-compatible": undefined,
   gateway: "anthropic/claude-opus-4.7",

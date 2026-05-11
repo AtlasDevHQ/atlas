@@ -87,8 +87,8 @@ describe("bedrock-catalog", () => {
         modelSummaries: [
           // Kept.
           {
-            modelId: "anthropic.claude-opus-4-v1:0",
-            modelName: "Claude Opus 4",
+            modelId: "anthropic.claude-opus-4-7",
+            modelName: "Claude Opus 4.7",
             providerName: "Anthropic",
             outputModalities: ["TEXT"],
           },
@@ -122,8 +122,8 @@ describe("bedrock-catalog", () => {
     expect(res.source).toBe("fresh");
     expect(res.region).toBe("us-east-1");
     const ids = res.models.map((m) => m.id).sort();
-    expect(ids).toEqual(["amazon.titan-text-v1", "anthropic.claude-opus-4-v1:0"]);
-    const opus = res.models.find((m) => m.id === "anthropic.claude-opus-4-v1:0");
+    expect(ids).toEqual(["amazon.titan-text-v1", "anthropic.claude-opus-4-7"]);
+    const opus = res.models.find((m) => m.id === "anthropic.claude-opus-4-7");
     expect(opus?.provider).toBe("anthropic");
     expect(opus?.recommended).toBe(true);
     expect(destroyCalls).toBe(1);
@@ -180,7 +180,7 @@ describe("bedrock-catalog", () => {
       payload: {
         modelSummaries: [
           {
-            modelId: "anthropic.claude-opus-4-v1:0",
+            modelId: "anthropic.claude-opus-4-7",
             modelName: "Opus",
             providerName: "Anthropic",
             outputModalities: ["TEXT"],
@@ -199,7 +199,7 @@ describe("bedrock-catalog", () => {
   test("opts.refresh bypasses the cache", async () => {
     setOutcome({
       kind: "ok",
-      payload: { modelSummaries: [{ modelId: "anthropic.claude-opus-4-v1:0", outputModalities: ["TEXT"] }] },
+      payload: { modelSummaries: [{ modelId: "anthropic.claude-opus-4-7", outputModalities: ["TEXT"] }] },
     });
     await getBedrockCatalog(ORG_A, "us-east-1", CREDS);
     const refreshed = await getBedrockCatalog(ORG_A, "us-east-1", CREDS, { refresh: true });
@@ -210,7 +210,7 @@ describe("bedrock-catalog", () => {
   test("invalidate clears every region for an org", async () => {
     setOutcome({
       kind: "ok",
-      payload: { modelSummaries: [{ modelId: "anthropic.claude-opus-4-v1:0", outputModalities: ["TEXT"] }] },
+      payload: { modelSummaries: [{ modelId: "anthropic.claude-opus-4-7", outputModalities: ["TEXT"] }] },
     });
     await getBedrockCatalog(ORG_A, "us-east-1", CREDS);
     await getBedrockCatalog(ORG_A, "us-west-2", CREDS);
@@ -224,7 +224,7 @@ describe("bedrock-catalog", () => {
   test("recommended set includes a flagship", () => {
     const ids = __getRecommendedBedrockIdsForTests();
     expect(ids.size).toBeGreaterThan(0);
-    expect(ids.has("anthropic.claude-opus-4-v1:0")).toBe(true);
+    expect(ids.has("anthropic.claude-opus-4-7")).toBe(true);
   });
 
   test("concurrent fetches for the same (orgId, region) dedupe to one AWS call", async () => {
@@ -246,12 +246,12 @@ describe("bedrock-catalog", () => {
       const p1 = getBedrockCatalog(ORG_A, "us-east-1", CREDS);
       const p2 = getBedrockCatalog(ORG_A, "us-east-1", CREDS);
       pending.resolve({
-        modelSummaries: [{ modelId: "anthropic.claude-opus-4-v1:0", outputModalities: ["TEXT"] }],
+        modelSummaries: [{ modelId: "anthropic.claude-opus-4-7", outputModalities: ["TEXT"] }],
       });
       const [r1, r2] = await Promise.all([p1, p2]);
       expect(sendCalls).toHaveLength(1);
-      expect(r1.models[0].id).toBe("anthropic.claude-opus-4-v1:0");
-      expect(r2.models[0].id).toBe("anthropic.claude-opus-4-v1:0");
+      expect(r1.models[0].id).toBe("anthropic.claude-opus-4-7");
+      expect(r2.models[0].id).toBe("anthropic.claude-opus-4-7");
     } finally {
       MockBedrockClient.prototype.send = _origSend;
       nextOutcome = originalOutcome;

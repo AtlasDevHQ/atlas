@@ -144,11 +144,11 @@ Tracker: [milestone #42](https://github.com/AtlasDevHQ/atlas/milestones/42). Bug
 
 - [x] Persistent admin top bar with org breadcrumb + avatar menu ([#2176](https://github.com/AtlasDevHQ/atlas/issues/2176), [#2254](https://github.com/AtlasDevHQ/atlas/pull/2254)) — admin chrome carries workspace context + a unified user menu; spawned six top-bar follow-ups ([#2257](https://github.com/AtlasDevHQ/atlas/issues/2257)–[#2262](https://github.com/AtlasDevHQ/atlas/issues/2262)).
 - [x] `/settings/profile` page surfaced from chat + admin avatar menus ([#2255](https://github.com/AtlasDevHQ/atlas/issues/2255), [#2264](https://github.com/AtlasDevHQ/atlas/pull/2264)) — name + password + MFA + sessions in one self-serve page (B2B-safe; email stays org-owned read-only).
+- [x] Workspace gateway provider + searchable Vercel AI Gateway model catalog picker ([#2173](https://github.com/AtlasDevHQ/atlas/issues/2173), [#2268](https://github.com/AtlasDevHQ/atlas/pull/2268)) — SaaS users see the full gateway catalog with provider/capability filters; foundation for the broader BYOT work in [#2174](https://github.com/AtlasDevHQ/atlas/issues/2174).
 
 ### Open
 
 - [ ] BYOT: own AI Gateway / Bedrock / Anthropic / OpenAI keys with provider-side model discovery ([#2174](https://github.com/AtlasDevHQ/atlas/issues/2174)) — promote to dedicated milestone if scope expands.
-- [ ] Expose Vercel AI Gateway model catalog so SaaS users see the full list ([#2173](https://github.com/AtlasDevHQ/atlas/issues/2173)).
 - [ ] Dev-mode discoverability: banner-overlap fix + LaunchDarkly-style pending-changes counter + Publish flow ([#2177](https://github.com/AtlasDevHQ/atlas/issues/2177)).
 - [ ] Standardize all date selectors on a single shadcn DatePicker / DateRangePicker ([#2171](https://github.com/AtlasDevHQ/atlas/issues/2171)).
 - [ ] `/admin/semantic` — rethink Import-from-disk affordance once entities load from Demo ([#2168](https://github.com/AtlasDevHQ/atlas/issues/2168)).

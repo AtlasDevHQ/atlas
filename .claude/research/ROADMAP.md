@@ -154,13 +154,14 @@ Tracker: [milestone #42](https://github.com/AtlasDevHQ/atlas/milestones/42). Bug
 - [x] Split `/admin/users` into workspace + `/platform/users` ([#2307](https://github.com/AtlasDevHQ/atlas/pull/2307)) — last `isPlatformAdmin`-branched page lifted to a shared `_users-page.tsx` driven by a `scope` prop; redirect on `/admin/users` for platform admins gates on `session.isPending` so workspace UI never flashes pre-resolve.
 - [x] Path-gate Boot Smoke + parallelize `ci` + cache bun installs ([#2302](https://github.com/AtlasDevHQ/atlas/issues/2302), [#2308](https://github.com/AtlasDevHQ/atlas/pull/2308)) — Boot Smoke skips on doc-only PRs (new always-on `Boot Build` keeps Dockerfile-shape gated), `ci` lint/type/test/syncpack/template-drift fan out as parallel jobs under an umbrella required check, per-package bun installs cached by `bun.lock` hash.
 - [x] Co-locate BYOT provider + key with workspace billing ([#2309](https://github.com/AtlasDevHQ/atlas/pull/2309)) — reverts the `/admin/model-config → /platform/model-config` move from #2305 (audit miss: API is org-scoped, not platform-tier) and inlines provider/key setup on `/admin/billing` so workspace admins stop bouncing between pages.
+- [x] Extract `<MfaPanel>` shared by `/admin/account-security` + `/settings/profile` ([#2257](https://github.com/AtlasDevHQ/atlas/issues/2257), [#2317](https://github.com/AtlasDevHQ/atlas/pull/2317)) — collapses ~50 lines of duplicated passkey state + handlers + tile composition into a single component; typed `MfaPanelSurface` literal-union prop locks the two valid return paths so a typo can't silently 403 non-admins on re-auth.
 
 ### Open
 
 - [ ] Dev-mode discoverability: banner-overlap fix + LaunchDarkly-style pending-changes counter + Publish flow ([#2177](https://github.com/AtlasDevHQ/atlas/issues/2177)).
 - [ ] Standardize all date selectors on a single shadcn DatePicker / DateRangePicker ([#2171](https://github.com/AtlasDevHQ/atlas/issues/2171)).
 - [ ] `/admin/semantic` — rethink Import-from-disk affordance once entities load from Demo ([#2168](https://github.com/AtlasDevHQ/atlas/issues/2168)).
-- [ ] Top-bar spawn follow-ups ([#2257](https://github.com/AtlasDevHQ/atlas/issues/2257)–[#2262](https://github.com/AtlasDevHQ/atlas/issues/2262)) — shared `<MfaPanel>`, `AdminBreadcrumb` union, `NavSubItem.exact → prefixMatch`, `/settings/profile` loading skeleton, password/identity tests, residual `authClient as unknown as` cast cleanup.
+- [ ] Top-bar spawn follow-ups ([#2258](https://github.com/AtlasDevHQ/atlas/issues/2258)–[#2262](https://github.com/AtlasDevHQ/atlas/issues/2262)) — `AdminBreadcrumb` union, `NavSubItem.exact → prefixMatch`, `/settings/profile` loading skeleton, password/identity tests, residual `authClient as unknown as` cast cleanup.
 
 <!-- 1.4.1 — MCP: Bringing It All Together: closed 2026-05-09 with 34 issues shipped; per-theme detail above in Shipped Milestones. -->
 

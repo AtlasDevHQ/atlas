@@ -33,9 +33,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
-import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
-import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
-import { PublishedContextWrapper } from "@/ui/components/admin/published-context-wrapper";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { DEMO_CONNECTION_ID } from "./columns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -805,14 +802,29 @@ function healthToStatus(
 
 // ── Page ──────────────────────────────────────────────────────────
 
-/** Tooltip text when connection mutations are blocked by published-mode demo readonly. */
-const DEMO_READONLY_TOOLTIP = "Switch to developer mode to manage connections";
+/**
+ * Tooltip text when editing a demo row is blocked in published mode.
+ *
+ * The backend's PUT handler returns 403 `demo_readonly` when atlas mode is
+ * published and id is `__demo__` — the UI gate mirrors that so the form
+ * doesn't lead the admin into a 403. Delete is treated differently because
+ * the DELETE handler implements demo-hide as a per-org `archived` row that
+ * shadows the canonical demo from this workspace; no shared mutation, so the
+ * mode gate doesn't apply.
+ */
+const DEMO_EDIT_READONLY_TOOLTIP = "Switch to developer mode to edit the demo connection";
+
+/**
+ * Tooltip text when add/connect CTAs are blocked while a demo is active in
+ * published mode. The fastest path out is to Delete the demo row (per-org
+ * hide) — that flips `demoReadOnly` to false and re-enables Add immediately.
+ */
+const DEMO_ADD_READONLY_TOOLTIP = "Delete the demo connection or switch to developer mode to add a new one";
 
 export default function ConnectionsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const { readOnly: demoReadOnly } = useDemoReadonly();
-  const showDevNoDrafts = useDevModeNoDrafts(["connections"]);
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -963,7 +975,7 @@ export default function ConnectionsPage() {
                     </Button>
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+                <TooltipContent>{DEMO_ADD_READONLY_TOOLTIP}</TooltipContent>
               </Tooltip>
             </TooltipProvider>
           ) : (
@@ -998,76 +1010,41 @@ export default function ConnectionsPage() {
             emptyTitle="No datasource connections"
             emptyDescription="Add a connection to start querying your data"
             emptyAction={{ label: "Add connection", onClick: () => handleAdd() }}
-            // Show the generic "No datasource connections" empty state for a
-            // plain admin who has zero connections — the CompactRow provider
-            // menu is useful, but a new admin deserves the focused onboarding
-            // CTA, not a list of 6 "Connect" buttons. In dev-mode-no-drafts we
-            // short-circuit below to DeveloperEmptyState / PublishedContextWrapper
-            // so the CTA language matches "start building" / "create draft"
-            // rather than "add a connection".
-            isEmpty={!loading && displayConnections.length === 0 && !showDevNoDrafts}
+            isEmpty={!loading && displayConnections.length === 0}
           >
-            {showDevNoDrafts && displayConnections.length === 0 ? (
-              <DeveloperEmptyState
-                icon={Cable}
-                title="Connect your first database to start building."
-                description="Add a connection in developer mode, then publish it when you're ready."
-                action={{ kind: "button", label: "Add connection", onClick: () => handleAdd() }}
-              />
-            ) : showDevNoDrafts ? (
-              <PublishedContextWrapper
-                resourceLabel={{ singular: "connection", plural: "connections" }}
-                action={{ kind: "button", label: "Create draft", onClick: () => handleAdd() }}
-              >
-                <section>
-                  <SectionHeading title="Datasources" description="Providers Atlas can read from" />
-                  <div className="space-y-2">
-                    {providerOrder.map((dbType) => {
-                      const conns = byType.get(dbType) ?? [];
-                      return (
-                        <ProviderBlock
-                          key={dbType}
-                          dbType={dbType}
-                          connections={conns}
-                          demoReadOnly={demoReadOnly}
-                          loadingDetail={loadingDetail}
-                          testMutation={testMutation}
-                          testStatus={testStatus}
-                          onTest={testConnection}
-                          onEdit={handleEdit}
-                          onDelete={handleDelete}
-                          onAdd={handleAdd}
-                        />
-                      );
-                    })}
-                  </div>
-                </section>
-              </PublishedContextWrapper>
-            ) : (
-              <section>
-                <SectionHeading title="Datasources" description="Providers Atlas can read from" />
-                <div className="space-y-2">
-                  {providerOrder.map((dbType) => {
-                    const conns = byType.get(dbType) ?? [];
-                    return (
-                      <ProviderBlock
-                        key={dbType}
-                        dbType={dbType}
-                        connections={conns}
-                        demoReadOnly={demoReadOnly}
-                        loadingDetail={loadingDetail}
-                        testMutation={testMutation}
-                        testStatus={testStatus}
-                        onTest={testConnection}
-                        onEdit={handleEdit}
-                        onDelete={handleDelete}
-                        onAdd={handleAdd}
-                      />
-                    );
-                  })}
-                </div>
-              </section>
-            )}
+            {/*
+              Connections aren't draft-publishable content the way prompts or
+              entities are: CREATE in developer mode produces a draft, but
+              UPDATE and DELETE are immediate, and the demo-hide flow is a
+              per-org archived tombstone that doesn't go through publish. So we
+              don't wrap in `<PublishedContextWrapper>` — doing so traps admins
+              in dev-mode-no-drafts behind an `inert` overlay and prevents the
+              very actions (test / hide demo / drain pool) that don't require
+              drafting in the first place.
+            */}
+            <section>
+              <SectionHeading title="Datasources" description="Providers Atlas can read from" />
+              <div className="space-y-2">
+                {providerOrder.map((dbType) => {
+                  const conns = byType.get(dbType) ?? [];
+                  return (
+                    <ProviderBlock
+                      key={dbType}
+                      dbType={dbType}
+                      connections={conns}
+                      demoReadOnly={demoReadOnly}
+                      loadingDetail={loadingDetail}
+                      testMutation={testMutation}
+                      testStatus={testStatus}
+                      onTest={testConnection}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
+                      onAdd={handleAdd}
+                    />
+                  );
+                })}
+              </div>
+            </section>
           </AdminContentWrapper>
         </div>
       </ErrorBoundary>
@@ -1145,7 +1122,7 @@ function ProviderBlock({
                     </Button>
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+                <TooltipContent>{DEMO_ADD_READONLY_TOOLTIP}</TooltipContent>
               </Tooltip>
             </TooltipProvider>
           ) : (
@@ -1220,7 +1197,14 @@ function ConnectionCard({
       ? "Unhealthy"
       : "Live";
   const isDemo = conn.id === DEMO_CONNECTION_ID;
-  const rowReadOnly = demoReadOnly && isDemo;
+  // Edit-only gate: PUT on `__demo__` returns 403 `demo_readonly` in
+  // published mode (matched by the backend's `demoReadonly` check), so the
+  // UI gate mirrors that. Delete uses a per-org `archived` tombstone insert
+  // — no shared mutation — so it stays enabled in both modes. Without that
+  // split, dogfood tenants got stuck unable to hide the demo: published
+  // mode disabled the button and the dev-mode toggle then trapped them
+  // behind the `<PublishedContextWrapper>` overlay.
+  const editReadOnly = demoReadOnly && isDemo;
   const isDraft = conn.status === "draft";
   const isDefault = conn.id === "default";
   const testing = testMutation.isMutating(conn.id);
@@ -1269,7 +1253,7 @@ function ConnectionCard({
       variant="ghost"
       size="sm"
       onClick={() => onEdit(conn.id)}
-      disabled={loadingDetail || rowReadOnly}
+      disabled={loadingDetail || editReadOnly}
       aria-label={`Edit connection ${conn.id}`}
     >
       <Pencil className="mr-1.5 size-3.5" />
@@ -1277,12 +1261,13 @@ function ConnectionCard({
     </Button>
   );
 
+  // Delete is never gated by editReadOnly: even on the shared demo it is a
+  // per-org tombstone, not a global mutation.
   const deleteButton = (
     <Button
       variant="ghost"
       size="sm"
       onClick={() => onDelete(conn.id)}
-      disabled={rowReadOnly}
       aria-label={`Delete connection ${conn.id}`}
       className="text-destructive hover:text-destructive"
     >
@@ -1291,20 +1276,17 @@ function ConnectionCard({
     </Button>
   );
 
-  const manageButtons = isDefault ? null : rowReadOnly ? (
+  // Wrap only the edit button in a tooltip when demo-readonly applies; the
+  // delete button stays interactive in both modes (per-workspace hide).
+  const manageButtons = isDefault ? null : editReadOnly ? (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
           <span tabIndex={0}>{editButton}</span>
         </TooltipTrigger>
-        <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+        <TooltipContent>{DEMO_EDIT_READONLY_TOOLTIP}</TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span tabIndex={0}>{deleteButton}</span>
-        </TooltipTrigger>
-        <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
-      </Tooltip>
+      {deleteButton}
     </TooltipProvider>
   ) : (
     <>

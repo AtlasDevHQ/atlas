@@ -39,3 +39,6 @@ docs/superpowers/
 # under WSL2. Pre-empt it so `git add` doesn't sweep ~50KB of garbage in.
 C:\\Users\\*
 critique-*.png
+
+# Atlas team dogfood semantic layer + setup script (internal product naming, not part of shipping repo)
+internal/

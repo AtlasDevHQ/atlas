@@ -305,6 +305,7 @@ describe("migrateAuthTables", () => {
             { name: "0057_workspace_model_config_bedrock.sql" },
             { name: "0058_workspace_model_catalog.sql" },
             { name: "0059_workspace_model_config_deprecation.sql" },
+            { name: "0060_demo_connection_to_global.sql" },
           ],
         };
       }

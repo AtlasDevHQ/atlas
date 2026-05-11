@@ -76,19 +76,33 @@ function demoReadonly(requestId: string): { error: string; message: string; requ
  */
 export async function getVisibleConnectionIds(
   orgId: string,
-  isPlatformAdmin: boolean,
+  _isPlatformAdmin: boolean,
   mode?: import("@useatlas/types/auth").AtlasMode,
 ): Promise<Set<string> | null> {
-  if (isPlatformAdmin) return null; // null = no filter
-
+  // Always scope to the active org. Platform admins requiring cross-org
+  // visibility must use the workspace switcher to set their active org or
+  // the dedicated `/admin/platform/*` surfaces — bypassing the org filter
+  // here leaks every customer's connections into every workspace's admin
+  // page, which is what the `isPlatformAdmin → return null` branch did
+  // before #<this-PR>.
   const visible = new Set<string>();
 
   if (hasInternalDB()) {
     const statusClause = Effect.runSync(
       contentModeRegistry.readFilter("connections", mode ?? "published", "c"),
     );
+    // Org's own rows + `__global__` fallback. A per-org row with the same
+    // id shadows the global row so onboarding-chosen demos (e.g. an
+    // industry-specific `__demo__`) override the canonical global one.
     const rows = await internalQuery<{ id: string }>(
-      `SELECT c.id FROM connections c WHERE c.org_id = $1 AND ${statusClause} ORDER BY c.id`,
+      `SELECT c.id FROM connections c WHERE c.org_id = $1 AND ${statusClause}
+       UNION
+       SELECT c.id FROM connections c
+       WHERE c.org_id = '__global__' AND ${statusClause}
+         AND NOT EXISTS (
+           SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = c.id
+         )
+       ORDER BY 1`,
       [orgId],
     );
     for (const row of rows) {

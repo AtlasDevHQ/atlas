@@ -1,5 +1,6 @@
 "use client";
 
+import { toast } from "sonner";
 import { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
@@ -414,10 +415,16 @@ function DeleteConnectionDialog({
 
   async function handleDelete() {
     if (!connectionId) return;
-    await deleteMutation.mutate({
+    const result = await deleteMutation.mutate({
       path: `/api/v1/admin/connections/${encodeURIComponent(connectionId)}`,
       onSuccess: () => onOpenChange(false),
     });
+    if (result.ok) {
+      toast.success(`Deleted connection “${connectionId}”`);
+    } else {
+      const message = result.error instanceof Error ? result.error.message : "Delete failed";
+      toast.error(`Couldn't delete “${connectionId}”`, { description: message });
+    }
   }
 
   return (

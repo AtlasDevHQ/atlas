@@ -344,14 +344,18 @@ describe("admin connections — org scoping", () => {
       expect(res.status).toBe(200);
     });
 
-    it("platform admin can health-check any connection", async () => {
+    it("platform admin health-checking a connection not in their active org gets 404", async () => {
+      // Mirrors the platform-admin scoping fix: per-connection routes use
+      // active-org visibility for everyone. Switch active org to reach
+      // another tenant's connection.
       setPlatformAdmin("org-alpha");
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/other-org-conn/test", "POST"),
       );
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
     });
   });
 
@@ -370,14 +374,21 @@ describe("admin connections — org scoping", () => {
       expect(res.status).toBe(404);
     });
 
-    it("platform admin can drain any connection", async () => {
+    it("platform admin draining a connection not in their active org gets 404", async () => {
+      // After the platform_admin visibility bypass was removed, the
+      // per-connection drain endpoint scopes by active org for everyone.
+      // Cross-org pool drain still works via `POST /pool/orgs/:orgId/drain`
+      // (which accepts an explicit orgId) — that surface remains
+      // platform-admin-only via its own check.
       setPlatformAdmin("org-alpha");
+      // org-alpha does not own warehouse in this fixture
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/warehouse/drain", "POST"),
       );
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
     });
   });
 
@@ -420,9 +431,17 @@ describe("admin connections — org scoping", () => {
 
   // ─── 4. Platform admin bypasses org filter ──────────────────────────
 
-  describe("platform admin — cross-org access", () => {
-    it("list returns all connections without org filter", async () => {
+  describe("platform admin — list still org-scoped", () => {
+    it("list is scoped to the active org (no cross-org bypass)", async () => {
+      // The previous implementation short-circuited getVisibleConnectionIds
+      // to `return null` for platform admins, which leaked every tenant's
+      // connections into every workspace's admin-connections page. After
+      // the fix, platform admins see the same scoped set as workspace
+      // admins — they must use the workspace switcher (or the dedicated
+      // `/admin/platform/*` surfaces) to look at another org.
       setPlatformAdmin("org-alpha");
+      // org-alpha owns only warehouse in this fixture
+      mocks.mockInternalQuery.mockResolvedValue([{ id: "warehouse" }]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections"),
@@ -432,16 +451,13 @@ describe("admin connections — org scoping", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
-      // Platform admin sees everything — no filtering
-      expect(ids).toContain("default");
-      expect(ids).toContain("warehouse");
-      expect(ids).toContain("other-org-conn");
+      expect(ids).toEqual(["warehouse"]);
 
-      // getVisibleConnectionIds returns null for platform admins (no DB query), so no org filter applied
+      // Org filter SQL was issued (no platform_admin bypass)
       const orgFilterCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("SELECT c.id FROM connections c WHERE c.org_id"),
       );
-      expect(orgFilterCall).toBeUndefined();
+      expect(orgFilterCall).toBeDefined();
     });
 
     it("update scopes by active org even for platform admin", async () => {
@@ -547,8 +563,12 @@ describe("admin connections — org scoping", () => {
       expect(ids).toEqual(["warehouse"]);
     });
 
-    it("returns null (no filter) for platform admins — all connections visible", async () => {
+    it("scopes platform admin to their active org's connections (no bypass)", async () => {
+      // The platform_admin "null = no filter" bypass was removed — platform
+      // admins now see the same set as workspace admins. Cross-org views
+      // belong in `/admin/platform/*`.
       setPlatformAdmin("org-alpha");
+      mocks.mockInternalQuery.mockResolvedValue([{ id: "warehouse" }]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections"),
@@ -557,8 +577,32 @@ describe("admin connections — org scoping", () => {
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
-      // All 3 connections from describe() are returned
-      expect(body.connections).toHaveLength(3);
+      const ids = body.connections.map((c: { id: string }) => c.id);
+      expect(ids).toEqual(["warehouse"]);
+    });
+
+    it("visibility query UNIONs `__global__` connections as a fallback", async () => {
+      // The new visibility SQL UNIONs the org's own rows with rows at
+      // org_id = '__global__' (with an EXISTS check so an own-row shadows
+      // a same-id global row). Used for canonical demos like `__demo__`.
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockResolvedValue([{ id: "warehouse" }]);
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections"),
+      );
+
+      expect(res.status).toBe(200);
+
+      // Verify the SQL queried `__global__` in addition to the active org.
+      const visibilityCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("SELECT c.id FROM connections c WHERE c.org_id"),
+      );
+      expect(visibilityCall).toBeDefined();
+      expect(visibilityCall![0]).toContain("__global__");
+      // Shadow-precedence is enforced via NOT EXISTS, not at the SQL UNION
+      // level — same-id own-rows mask the global counterpart.
+      expect(visibilityCall![0]).toContain("NOT EXISTS");
     });
 
     it("get-by-id returns 404 for connection not visible to org", async () => {

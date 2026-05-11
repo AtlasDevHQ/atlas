@@ -28,7 +28,7 @@
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.214.0",
     "@opentelemetry/resources": "^2.6.1",
-    "@opentelemetry/sdk-node": "^0.214.0",
+    "@opentelemetry/sdk-node": "^0.217.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@radix-ui/react-slot": "^1.2.4",
     "@tanstack/react-query": "^5.96.2",

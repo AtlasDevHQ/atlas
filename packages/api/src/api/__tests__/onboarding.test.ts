@@ -1173,6 +1173,47 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
   });
 
+  it("RACE: ON CONFLICT DO NOTHING — a 0-row INSERT followed by a successful verify SELECT still returns 201 (#2304)", async () => {
+    // The first onboarder pinned the global `__demo__` URL. A second
+    // onboarder whose INSERT is no-op'd by ON CONFLICT must still see
+    // 201 if the verify SELECT confirms the row already exists. Without
+    // this test, a future change that flips `DO NOTHING` back to
+    // `DO UPDATE SET url=...` would silently re-introduce per-onboarder
+    // URL clobbering.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("INSERT INTO connections")) return [];
+      if (sql.includes("SELECT id FROM connections WHERE id = $1 AND org_id = '__global__'")) {
+        return [{ id: "__demo__" }];
+      }
+      return [];
+    });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+  });
+
+  it("RACE: skip in-memory `connections.register` when the pool already has the id (#2304)", async () => {
+    // Concurrent onboarders would otherwise needlessly drain and recreate
+    // the pool. If a future refactor flips `if (!connections.has(id))` to
+    // unconditional `unregister + register`, this test will catch the
+    // regression.
+    mockHas.mockReturnValueOnce(true);
+    const registerCallsBefore = mockRegister.mock.calls.length;
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    // No new register() since the pool already had `__demo__`.
+    expect(mockRegister.mock.calls.length).toBe(registerCallsBefore);
+  });
+
   it("ATOMICITY: idempotent retry — a successful retry after a failure persists everything", async () => {
     // First call fails on import (no connection committed). Second call
     // succeeds (import is upsert-safe; connection upsert is idempotent).

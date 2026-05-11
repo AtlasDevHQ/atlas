@@ -81,10 +81,10 @@ export async function getVisibleConnectionIds(
 ): Promise<Set<string> | null> {
   // Always scope to the active org. Platform admins requiring cross-org
   // visibility must use the workspace switcher to set their active org or
-  // the dedicated `/admin/platform/*` surfaces — bypassing the org filter
-  // here leaks every customer's connections into every workspace's admin
-  // page, which is what the `isPlatformAdmin → return null` branch did
-  // before #<this-PR>.
+  // the dedicated `/platform/*` surfaces — bypassing the org filter here
+  // leaks every customer's connections into every workspace's admin page,
+  // which is what the `isPlatformAdmin → return null` branch did before
+  // #2303.
   const visible = new Set<string>();
 
   if (hasInternalDB()) {
@@ -387,14 +387,11 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
 // GET /pool — pool metrics scoped to active org
 adminConnections.openapi(getPoolMetricsRoute, async (c) => runHandler(c, "get pool metrics", async () => {
   const { orgId } = c.get("orgContext");
-  const authResult = c.get("authResult");
-  const isPlatformAdmin = authResult.user?.role === "platform_admin";
-
-  if (isPlatformAdmin) {
-    const metrics = connections.getAllPoolMetrics();
-    return c.json({ metrics }, 200);
-  }
-
+  // Same scoping rule as the connections list: platform admins see the
+  // active org's pools, not every tenant's. Cross-org pool views belong
+  // to `/platform/*`. Pre-fix, platform admins saw pools for every
+  // tenant's `__demo__` and wizard-created connections aggregated into
+  // the default Pool stats card.
   const metrics = connections.getOrgPoolMetrics(orgId);
   return c.json({ metrics }, 200);
 }));
@@ -620,9 +617,12 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL).", requestId }, 404);
   }
 
-  // Enforce plan connection limit before proceeding
+  // Enforce plan connection limit before proceeding. Exclude archived
+  // rows so per-org delete-as-hide tombstones (the shadow rows for
+  // hidden `__global__` connections) don't count against the org's plan
+  // limit. A workspace that hides the demo shouldn't lose a slot for it.
   const connCountRows = await internalQuery<{ count: number }>(
-    `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`,
+    `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`,
     [orgId],
   );
   const connCount = connCountRows[0]?.count ?? 0;
@@ -780,9 +780,14 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     return c.json(demoReadonly(requestId), 403);
   }
 
-  // Check it exists in the DB and belongs to this org
+  // Check it exists in the DB and belongs to this org. Excludes archived
+  // rows so per-org delete-as-hide tombstones (whose `url = ''` placeholder
+  // would crash `decryptUrl` below) read as "not found here, did you mean
+  // to restore first?" rather than a misleading "encryption key changed"
+  // 500.
   const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null }>(
-    `SELECT id, url, type, description, schema_name FROM connections WHERE id = $1 AND org_id = $2`,
+    `SELECT id, url, type, description, schema_name FROM connections
+     WHERE id = $1 AND org_id = $2 AND status != 'archived'`,
     [id, orgId],
   );
 
@@ -928,27 +933,44 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     return c.json({ error: "forbidden", message: "Cannot delete the default connection.", requestId }, 403);
   }
 
-  // Demo content is read-only in published mode — writes in published mode
-  // against __demo__ must be blocked. Developer mode can archive the demo.
-  if (id === DEMO_CONNECTION_ID && getAtlasMode(c) !== "developer") {
-    return c.json(demoReadonly(requestId), 403);
-  }
+  // The published-mode `__demo__` block used to live here. With the global
+  // demo + per-org tombstone model (#2304), "delete" no longer mutates
+  // shared state — it inserts a per-org archived row that hides
+  // the global from this workspace only. Other tenants are untouched.
+  // Updates to the canonical demo URL/description still go through the
+  // PUT handler which keeps the demoReadonly guard.
 
-  // Must exist in the DB and belong to the org
-  const existing = await internalQuery<{ id: string }>(
-    `SELECT id FROM connections WHERE id = $1 AND org_id = $2`,
+  // Two cases:
+  //   - Org-owned row exists → archive in place (existing behavior).
+  //   - Only a `__global__` row exists for this id (e.g. the shared
+  //     `__demo__` provisioned by onboarding under #2304) → insert a
+  //     per-org archived shadow row. The visibility query's NOT EXISTS
+  //     check then hides the global from this org's view while leaving
+  //     it intact for every other workspace.
+  // `type` is NOT NULL in the schema (migration 0000_baseline.sql:170,
+  // schema.ts:276) — declare it as `string`, not `string | null`. The
+  // previous annotation invented a nullable case the DB cannot produce.
+  const existing = await internalQuery<{ id: string; org_id: string; type: string }>(
+    `SELECT id, org_id, type FROM connections WHERE id = $1 AND org_id IN ($2, '__global__')`,
     [id, orgId],
   );
+  const ownRow = existing.find((r) => r.org_id === orgId);
+  const globalRow = existing.find((r) => r.org_id === "__global__");
 
-  if (existing.length === 0) {
+  if (!ownRow && !globalRow) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
   }
 
-  // Check for scheduled tasks referencing this connection
+  // Check for scheduled tasks referencing this connection. MUST scope by
+  // org_id — `__demo__` is now a single shared connection across every
+  // workspace (#2304), so without the org_id filter any tenant's task on
+  // `__demo__` would trigger a 409 conflict for every other tenant trying
+  // to "hide" the demo with an error message pointing at tasks they
+  // cannot see.
   try {
     const refs = await internalQuery<{ count: string }>(
-      "SELECT COUNT(*) as count FROM scheduled_tasks WHERE connection_id = $1",
-      [id],
+      "SELECT COUNT(*) as count FROM scheduled_tasks WHERE connection_id = $1 AND org_id = $2",
+      [id, orgId],
     );
     const refCount = parseInt(String(refs[0]?.count ?? "0"), 10);
     if (refCount > 0) {
@@ -968,22 +990,44 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     log.warn({ connectionId: id, requestId }, "Scheduled tasks table does not exist — skipping reference check");
   }
 
-  // Archive instead of hard-delete so drafts can be restored and the
-  // publish flow retains history. Cascades to entities is handled at publish time.
   try {
-    await internalQuery(
-      `UPDATE connections SET status = 'archived', updated_at = now() WHERE id = $1 AND org_id = $2`,
-      [id, orgId],
-    );
+    if (ownRow) {
+      // Archive in place — drafts can be restored, publish flow retains history.
+      await internalQuery(
+        `UPDATE connections SET status = 'archived', updated_at = now() WHERE id = $1 AND org_id = $2`,
+        [id, orgId],
+      );
+    } else {
+      // Global-only row: insert a per-org archived shadow. URL is empty
+      // because we never want to mutate the canonical global URL — the
+      // archived status alone hides it from this org's lists.
+      //
+      // Readers must filter by `status != 'archived'` before passing this
+      // row to `decryptUrl` or runtime registration — the empty URL is a
+      // marker, not a value. Those filters live in `wizard.ts`,
+      // `internal.ts::loadSavedConnections`, and the PUT/GET handlers in
+      // this file.
+      await internalQuery(
+        `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status)
+         VALUES ($1, '', 1, $2, $3, $4, 'archived')
+         ON CONFLICT (id, org_id) DO UPDATE SET status = 'archived', updated_at = now()`,
+        [id, globalRow!.type, `Hidden from this workspace`, orgId],
+      );
+    }
   } catch (err) {
     log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to archive connection");
     return c.json({ error: "internal_error", message: "Failed to archive connection.", requestId }, 500);
   }
 
-  try {
-    connections.unregister(id);
-  } catch (err) {
-    log.warn({ err: errorMessage(err), connectionId: id, requestId }, "Failed to unregister connection from in-memory registry — will reconcile on restart");
+  // Only unregister from the in-memory pool when we actually archived the
+  // org-owned row. Global-only delete is a per-org hide — the underlying
+  // connection must stay registered for other workspaces.
+  if (ownRow) {
+    try {
+      connections.unregister(id);
+    } catch (err) {
+      log.warn({ err: errorMessage(err), connectionId: id, requestId }, "Failed to unregister connection from in-memory registry — will reconcile on restart");
+    }
   }
 
   log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection archived");
@@ -1024,8 +1068,11 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
   let managed = false;
   if (hasInternalDB()) {
     try {
+      // Defense-in-depth: even though visibility already filters out
+      // archived rows, exclude them here too so a future visibility-layer
+      // bug can never feed the empty-string tombstone marker to decryptUrl.
       const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-        "SELECT url, schema_name FROM connections WHERE id = $1 AND org_id = $2",
+        "SELECT url, schema_name FROM connections WHERE id = $1 AND org_id = $2 AND status != 'archived'",
         [id, orgId],
       );
       if (rows.length > 0) {

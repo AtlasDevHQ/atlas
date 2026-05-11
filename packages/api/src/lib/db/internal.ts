@@ -849,8 +849,17 @@ export async function loadSavedConnections(): Promise<number> {
 
   try {
     type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
+    // Exclude `status = 'archived'` so per-org tombstone rows (the shadow
+    // rows from the delete-as-hide flow in admin-connections.ts) never feed
+    // their empty-string `url` marker to `decryptUrl`. Without this filter
+    // a tombstone's newer `updated_at` would win the DISTINCT ON (id) race
+    // and silently knock the canonical global row out of the in-memory
+    // registry across every workspace on the next process restart.
     const rows = await internalQuery<ConnRow>(
-      "SELECT DISTINCT ON (id) id, url, type, description, schema_name FROM connections ORDER BY id, updated_at DESC, org_id ASC",
+      `SELECT DISTINCT ON (id) id, url, type, description, schema_name
+       FROM connections
+       WHERE status != 'archived'
+       ORDER BY id, updated_at DESC, org_id ASC`,
     );
 
     let registered = 0;
@@ -1748,7 +1757,10 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
       countQuery(`SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`, [orgId]),
       countQuery(`SELECT COUNT(*)::int as count FROM conversations WHERE org_id = $1`, [orgId]),
       countQuery(`SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`, [orgId]),
-      countQuery(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`, [orgId]),
+      // Exclude archive tombstones for the same reason as the plan-limit
+      // and billing counts — hidden `__global__` connections shouldn't
+      // inflate workspace health summaries.
+      countQuery(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`, [orgId]),
       countQuery(`SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`, [orgId]),
     ], { concurrency: "unbounded" }).pipe(
       Effect.timeoutFail({

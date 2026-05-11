@@ -248,4 +248,52 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     const rows = await listEntitiesWithOverlay("org-1", "entity");
     expect(rows).toHaveLength(0);
   });
+
+  it("entities tied to a __global__ connection are visible to any org (#2304)", async () => {
+    // The canonical `__demo__` lives at org_id = '__global__'. Per-org
+    // entities reference it via connection_id; the connection-visibility
+    // subquery now accepts `__global__` rows so those entities resolve.
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+    );
+    seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
+
+    const rows = await listEntitiesWithOverlay("org-1", "entity");
+    expect(rowsByName(rows)).toEqual({ novamart_orders: "published" });
+  });
+
+  it("per-org tombstone hides entities tied to a `__global__` connection — exact archived/non-archived precedence (#2304)", async () => {
+    // Pin the *transition* sequence so a future refactor that flips
+    // `NOT IN (... org's rows ...)` to `NOT IN (... non-archived org rows ...)`
+    // can't silently start surfacing tombstoned demos to the agent. Visible
+    // before tombstone → hidden after.
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+    );
+    seedEntity({ id: "demo-ent-pre", name: "novamart_orders", status: "published", connectionId: "__demo__" });
+    expect(rowsByName(await listEntitiesWithOverlay("org-1", "entity"))).toEqual({ novamart_orders: "published" });
+
+    // Tombstone arrives — same id, status='archived', org-1 scope.
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', 'org-1', 'archived')`,
+    );
+    expect(await listEntitiesWithOverlay("org-1", "entity")).toHaveLength(0);
+  });
+
+  it("per-org tombstone hides entities tied to a `__global__` connection (#2304)", async () => {
+    // The "delete the demo from my workspace" flow inserts a per-org
+    // archived row at the same id as the global. The shadow check excludes
+    // the global from the visible-connection set, so any entities the org
+    // owns at that connection_id drop out of the overlay alongside it.
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+    );
+    db.public.none(
+      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', 'org-1', 'archived')`,
+    );
+    seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
+
+    const rows = await listEntitiesWithOverlay("org-1", "entity");
+    expect(rows).toHaveLength(0);
+  });
 });

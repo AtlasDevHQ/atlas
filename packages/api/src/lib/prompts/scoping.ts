@@ -123,10 +123,25 @@ export async function resolvePromptScope(opts: {
 
   const demoIndustry =
     getSettingAuto(DEMO_INDUSTRY_SETTING, opts.orgId) ?? null;
+  // Mirror the OWN_OR_GLOBAL shadow rule from `getVisibleConnectionIds` so
+  // an org using the canonical `__global__/__demo__` connection (the model
+  // introduced in #2304) gets `demoConnectionActive = true` and the
+  // demo-industry global builtin prompt collections show up. Without this
+  // the demo prompt library silently drops out for every workspace that
+  // doesn't have a legacy per-org __demo__ row.
   const rows = await internalQuery<{ active: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM connections
-       WHERE id = '__demo__' AND org_id = $1 AND status = 'published'
+       WHERE id = '__demo__' AND status = 'published'
+         AND (
+           org_id = $1
+           OR (
+             org_id = '__global__'
+             AND NOT EXISTS (
+               SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
+             )
+           )
+         )
      ) AS active`,
     [opts.orgId],
   );

@@ -285,7 +285,9 @@ describe("admin connections — org scoping", () => {
       setOrgAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
-          return Promise.resolve([{ id: "warehouse" }]);
+          // Delete handler now selects (id, org_id, type) so it can decide
+          // archive-in-place vs per-org tombstone for global connections.
+          return Promise.resolve([{ id: "warehouse", org_id: "org-alpha", type: "postgres" }]);
         }
         // scheduled_tasks check + DELETE
         return Promise.resolve([{ count: "0" }]);
@@ -438,7 +440,7 @@ describe("admin connections — org scoping", () => {
       // connections into every workspace's admin-connections page. After
       // the fix, platform admins see the same scoped set as workspace
       // admins — they must use the workspace switcher (or the dedicated
-      // `/admin/platform/*` surfaces) to look at another org.
+      // `/platform/*` surfaces) to look at another org.
       setPlatformAdmin("org-alpha");
       // org-alpha owns only warehouse in this fixture
       mocks.mockInternalQuery.mockResolvedValue([{ id: "warehouse" }]);
@@ -496,7 +498,7 @@ describe("admin connections — org scoping", () => {
       setPlatformAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
-          return Promise.resolve([{ id: "other-org-conn" }]);
+          return Promise.resolve([{ id: "other-org-conn", org_id: "org-alpha", type: "mysql" }]);
         }
         return Promise.resolve([{ count: "0" }]);
       });
@@ -566,7 +568,7 @@ describe("admin connections — org scoping", () => {
     it("scopes platform admin to their active org's connections (no bypass)", async () => {
       // The platform_admin "null = no filter" bypass was removed — platform
       // admins now see the same set as workspace admins. Cross-org views
-      // belong in `/admin/platform/*`.
+      // belong in `/platform/*`.
       setPlatformAdmin("org-alpha");
       mocks.mockInternalQuery.mockResolvedValue([{ id: "warehouse" }]);
 
@@ -869,7 +871,7 @@ describe("admin connections — org scoping", () => {
       setOrgAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
-          return Promise.resolve([{ id: "warehouse" }]);
+          return Promise.resolve([{ id: "warehouse", org_id: "org-alpha", type: "postgres" }]);
         }
         return Promise.resolve([{ count: "0" }]);
       });
@@ -893,21 +895,44 @@ describe("admin connections — org scoping", () => {
       expect(hardDelete).toBeUndefined();
     });
 
-    it("rejects DELETE on __demo__ in published mode with 403", async () => {
-      setOrgAdmin("org-alpha");
-      const res = await app.fetch(
-        adminRequest("/api/v1/admin/connections/__demo__", "DELETE"),
-      );
-      expect(res.status).toBe(403);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.error).toBe("demo_readonly");
-    });
-
-    it("allows DELETE on __demo__ in developer mode (archives instead of hard delete)", async () => {
+    it("DELETE on __demo__ in any mode hides it from the workspace via per-org tombstone", async () => {
+      // Replaces the previous "rejects in published mode" + "allows in
+      // developer" pair. After the global-demo + per-org-tombstone
+      // refactor (#2304), delete is non-destructive: it inserts a
+      // per-org archived shadow row that hides the canonical global
+      // `__demo__` from this workspace only. Other tenants keep seeing
+      // it. The published-mode demoReadonly guard remains on the PUT
+      // handler since URL/description edits would mutate shared state.
       setOrgAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
-          return Promise.resolve([{ id: "__demo__" }]);
+          return Promise.resolve([{ id: "__demo__", org_id: "__global__", type: "postgres" }]);
+        }
+        return Promise.resolve([{ count: "0" }]);
+      });
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/__demo__", "DELETE"),
+      );
+      expect(res.status).toBe(200);
+
+      // Per-org tombstone INSERT (not UPDATE on the global row)
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("INSERT INTO connections") &&
+          sql.includes("'archived'"),
+      );
+      expect(insertCall).toBeDefined();
+    });
+
+    it("DELETE on org-owned __demo__ in developer mode archives in place", async () => {
+      // Backward-compat path: orgs that still have a per-org `__demo__`
+      // row (pre-global-demo onboarding) get the original archive-in-place
+      // behavior, not a tombstone.
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT") && sql.includes("connections")) {
+          return Promise.resolve([{ id: "__demo__", org_id: "org-alpha", type: "postgres" }]);
         }
         return Promise.resolve([{ count: "0" }]);
       });

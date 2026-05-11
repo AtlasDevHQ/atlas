@@ -1657,8 +1657,22 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     // Caller must already own a `__demo__` connection — otherwise a stale
     // URL or programmatic caller could write NovaMart entities into an
     // unrelated workspace under a phantom connection id.
+    // Same OWN_OR_GLOBAL shadow rule as `getVisibleConnectionIds` —
+    // an org using the canonical `__global__/__demo__` (no per-org row)
+    // counts as owning the demo for the purposes of this recovery
+    // probe. Without this, every post-#2304 onboarding gets a 409 here.
     const ownsDemo = await internalQuery<{ id: string }>(
-      `SELECT id FROM connections WHERE org_id = $1 AND id = '__demo__' AND status IN ('published', 'draft')`,
+      `SELECT id FROM connections
+       WHERE id = '__demo__' AND status IN ('published', 'draft')
+         AND (
+           org_id = $1
+           OR (
+             org_id = '__global__'
+             AND NOT EXISTS (
+               SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
+             )
+           )
+         )`,
       [orgId],
     ).then((rows) => rows.length > 0).catch((err) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), requestId, orgId }, "Demo-ownership probe failed during recovery");
@@ -1697,7 +1711,18 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
       let ownsDemo = false;
       try {
         const demoRows = await internalQuery<{ id: string }>(
-          `SELECT id FROM connections WHERE org_id = $1 AND id = '__demo__' AND status IN ('published', 'draft')`,
+          // OWN_OR_GLOBAL shadow rule — see the matching probe above.
+          `SELECT id FROM connections
+           WHERE id = '__demo__' AND status IN ('published', 'draft')
+             AND (
+               org_id = $1
+               OR (
+                 org_id = '__global__'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
+                 )
+               )
+             )`,
           [orgId],
         );
         ownsDemo = demoRows.length > 0;

@@ -750,18 +750,25 @@ onboarding.openapi(
       // ---------------------------------------------------------------
       // Phase 3 — commit point. Once this row lands, the entities
       // imported in phase 2 become visible to the agent and Schema Diff.
-      // Failure here leaves orphan entity rows (filtered out by
-      // visibility), so the user sees nothing partial — they can retry.
+      //
+      // The demo connection lives once at `org_id = '__global__'` rather
+      // than being cloned per workspace as customer count grows (#2304).
+      // ON CONFLICT DO NOTHING means the first onboarding write is
+      // canonical — subsequent onboarders inherit whatever URL it pinned.
+      // Per-org entity rows imported in phase 2 remain org-scoped; the
+      // connection-visibility subquery in `listEntitiesWithOverlay`
+      // accepts both own-org and `__global__` connections so those
+      // entities resolve correctly.
       // ---------------------------------------------------------------
       const demoLabel = DEMO_LABEL;
       const urlKeyVersion = activeKeyVersion();
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
           `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status)
-           VALUES ($1, $2, $6, $3, $4, $5, 'published')
-           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, description = $4, status = 'published', updated_at = NOW()
+           VALUES ($1, $2, $5, $3, $4, '__global__', 'published')
+           ON CONFLICT (id, org_id) DO NOTHING
            RETURNING id`,
-          [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, orgId, urlKeyVersion],
+          [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, urlKeyVersion],
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
@@ -772,15 +779,40 @@ onboarding.openapi(
       if (upsertResult === null) {
         return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
       }
+      // INSERT-or-no-op: zero rows just means the global demo was already
+      // provisioned by an earlier onboarder; verify the row really exists
+      // before we declare success. Distinguish "verify SELECT errored"
+      // from "verify SELECT returned no row" so flaky-read-replica blips
+      // don't masquerade as missing data in the operator logs.
       if (upsertResult.length === 0) {
-        log.error({ connectionId: id, orgId, requestId }, "Demo connection upsert returned 0 rows — data may not have been persisted");
-        return c.json({ error: "internal_error", message: "Failed to save connection — database did not confirm the write.", requestId }, 500);
+        const existing = yield* Effect.tryPromise({
+          try: () => internalQuery<{ id: string }>(
+            `SELECT id FROM connections WHERE id = $1 AND org_id = '__global__' AND status = 'published'`,
+            [id],
+          ),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.error({ err: err.message, connectionId: id, orgId, requestId }, "Demo connection verify SELECT failed — treating as not-found");
+          return Effect.succeed([] as Array<{ id: string }>);
+        }));
+        if (existing.length === 0) {
+          log.error({ connectionId: id, orgId, requestId }, "Demo connection upsert returned 0 rows and no global row found");
+          return c.json({
+            error: "internal_error",
+            message: "Demo connection write may have succeeded but the database did not confirm. Retry the request — the operation is idempotent.",
+            requestId,
+          }, 500);
+        }
       }
 
-      // Register in runtime
+      // Skip re-registration if the in-memory pool already has this id —
+      // concurrent onboarders would otherwise needlessly drain and recreate
+      // the pool. The DB-level race (different URLs racing to commit) is
+      // resolved by ON CONFLICT DO NOTHING above.
       try {
-        if (connections.has(id)) connections.unregister(id);
-        connections.register(id, { url, description: `${demoLabel} — demo ${dbType} datasource` });
+        if (!connections.has(id)) {
+          connections.register(id, { url, description: `${demoLabel} — demo ${dbType} datasource` });
+        }
       } catch (err) {
         log.warn({ err: errorMessage(err), requestId }, "Demo connection saved but runtime registration failed");
       }

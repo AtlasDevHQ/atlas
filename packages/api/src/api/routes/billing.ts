@@ -296,9 +296,11 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         );
         return [{ count: 1 }] as Array<{ count: number }>;
       }),
-      // Connection count for this workspace
+      // Connection count for this workspace. Exclude per-org archive
+      // tombstones so hidden `__global__` connections (e.g. the demo a
+      // workspace hid) don't inflate the billing-page count.
       internalQuery<{ count: number }>(
-        `SELECT COUNT(*)::int AS count FROM connections WHERE org_id = $1`,
+        `SELECT COUNT(*)::int AS count FROM connections WHERE org_id = $1 AND status != 'archived'`,
         [orgId],
       ).catch((err) => {
         log.warn(

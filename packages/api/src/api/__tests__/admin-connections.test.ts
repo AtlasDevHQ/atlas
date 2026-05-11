@@ -440,7 +440,7 @@ describe("admin connections — org scoping", () => {
       // connections into every workspace's admin-connections page. After
       // the fix, platform admins see the same scoped set as workspace
       // admins — they must use the workspace switcher (or the dedicated
-      // `/admin/platform/*` surfaces) to look at another org.
+      // `/platform/*` surfaces) to look at another org.
       setPlatformAdmin("org-alpha");
       // org-alpha owns only warehouse in this fixture
       mocks.mockInternalQuery.mockResolvedValue([{ id: "warehouse" }]);
@@ -568,7 +568,7 @@ describe("admin connections — org scoping", () => {
     it("scopes platform admin to their active org's connections (no bypass)", async () => {
       // The platform_admin "null = no filter" bypass was removed — platform
       // admins now see the same set as workspace admins. Cross-org views
-      // belong in `/admin/platform/*`.
+      // belong in `/platform/*`.
       setPlatformAdmin("org-alpha");
       mocks.mockInternalQuery.mockResolvedValue([{ id: "warehouse" }]);
 
@@ -898,7 +898,7 @@ describe("admin connections — org scoping", () => {
     it("DELETE on __demo__ in any mode hides it from the workspace via per-org tombstone", async () => {
       // Replaces the previous "rejects in published mode" + "allows in
       // developer" pair. After the global-demo + per-org-tombstone
-      // refactor (#<this-PR>), delete is non-destructive: it inserts a
+      // refactor (#2304), delete is non-destructive: it inserts a
       // per-org archived shadow row that hides the canonical global
       // `__demo__` from this workspace only. Other tenants keep seeing
       // it. The published-mode demoReadonly guard remains on the PUT
@@ -927,7 +927,7 @@ describe("admin connections — org scoping", () => {
 
     it("DELETE on org-owned __demo__ in developer mode archives in place", async () => {
       // Backward-compat path: orgs that still have a per-org `__demo__`
-      // row (pre-#2304 onboarding) get the original archive-in-place
+      // row (pre-global-demo onboarding) get the original archive-in-place
       // behavior, not a tombstone.
       setOrgAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {

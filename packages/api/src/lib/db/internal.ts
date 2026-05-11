@@ -849,8 +849,17 @@ export async function loadSavedConnections(): Promise<number> {
 
   try {
     type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
+    // Exclude `status = 'archived'` so per-org tombstone rows (the shadow
+    // rows from the delete-as-hide flow in admin-connections.ts) never feed
+    // their empty-string `url` marker to `decryptUrl`. Without this filter
+    // a tombstone's newer `updated_at` would win the DISTINCT ON (id) race
+    // and silently knock the canonical global row out of the in-memory
+    // registry across every workspace on the next process restart.
     const rows = await internalQuery<ConnRow>(
-      "SELECT DISTINCT ON (id) id, url, type, description, schema_name FROM connections ORDER BY id, updated_at DESC, org_id ASC",
+      `SELECT DISTINCT ON (id) id, url, type, description, schema_name
+       FROM connections
+       WHERE status != 'archived'
+       ORDER BY id, updated_at DESC, org_id ASC`,
     );
 
     let registered = 0;

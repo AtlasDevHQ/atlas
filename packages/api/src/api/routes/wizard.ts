@@ -903,8 +903,16 @@ async function resolveConnectionUrl(
       // The describe() method masks the URL, so we need the raw URL for profiling.
       // Check internal DB first (it has the encrypted URL).
       if (hasInternalDB()) {
+        // Exclude `status = 'archived'` so per-org tombstone rows (the
+        // shadow rows inserted by the delete-as-hide flow in
+        // admin-connections.ts) never reach `decryptUrl`. Their `url` is
+        // the empty-string marker and `decryptUrl('')` throws an
+        // unrecognized-format error. Status filter is the cheapest way to
+        // keep the tombstone invariant local to the visibility layer.
         const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-          "SELECT url, schema_name FROM connections WHERE id = $1 AND (org_id = $2 OR org_id = '__global__') ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1",
+          `SELECT url, schema_name FROM connections
+           WHERE id = $1 AND status != 'archived' AND (org_id = $2 OR org_id = '__global__')
+           ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1`,
           [connectionId, orgId ?? "__global__"],
         );
         if (rows.length > 0) {

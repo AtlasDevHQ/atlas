@@ -204,21 +204,26 @@ export async function listEntityRows(
 ): Promise<SemanticEntityRow[]> {
   if (!hasInternalDB()) return [];
 
-  // When filtering to status='published' we apply the same connection-
-  // visibility filter as `listEntitiesWithOverlay` so the published-mode
-  // agent path doesn't surface entities tied to a connection the org
-  // archived (or to a `__global__` connection the org tombstoned). Other
-  // call sites (admin reads at status='draft', count queries) keep the
-  // simpler org-scoped query — they intentionally see archive/draft state.
+  // When filtering to status='published' we apply a connection-visibility
+  // filter that mirrors `getVisibleConnectionIds` in *published* mode —
+  // i.e. only `status = 'published'` connections count, never drafts. The
+  // overlay variant in `listEntitiesWithOverlay` accepts drafts because
+  // it's developer-mode by construction. Pinning published mode here
+  // prevents the published-mode agent from surfacing an entity tied to a
+  // draft connection that the SQL whitelist would reject anyway.
+  //
+  // Other call sites (admin reads at status='draft', count queries) keep
+  // the simpler org-scoped query — they intentionally see archive/draft
+  // state.
   const visibilityClause = statusFilter === "published"
     ? `AND (
          connection_id IS NULL
          OR connection_id IN (
-           SELECT id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
+           SELECT id FROM connections WHERE org_id = $1 AND status = 'published'
          )
          OR (
            connection_id IN (
-             SELECT id FROM connections WHERE org_id = '__global__' AND status IN ('published', 'draft')
+             SELECT id FROM connections WHERE org_id = '__global__' AND status = 'published'
            )
            AND connection_id NOT IN (
              SELECT id FROM connections WHERE org_id = $1
@@ -445,8 +450,9 @@ export async function listEntitiesWithOverlay(
   const baseSelect =
     "id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at";
 
-  // Connection visibility mirrors `getVisibleConnectionIds`:
-  //   1. The org's own non-archived connections.
+  // Connection visibility mirrors `getVisibleConnectionIds`'s
+  // *developer-mode* shape (this overlay is developer-mode by construction):
+  //   1. The org's own published-or-draft connections.
   //   2. PLUS `__global__` connections the org hasn't shadowed (any per-org
   //      row of the same id — including an archived tombstone — masks the
   //      global counterpart). This is what makes "delete the demo" work

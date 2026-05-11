@@ -3,7 +3,7 @@
 -- Before this migration each workspace that completed onboarding owned its
 -- own `__demo__` row. Combined with the platform_admin visibility bypass,
 -- workspaces saw other tenants' demo connections in their admin
--- connections list — see #<this-PR>. After this migration `__demo__`
+-- connections list — see #2303. After this migration `__demo__`
 -- lives once at org_id = '__global__' and is surfaced to every org by the
 -- updated `getVisibleConnectionIds` global-fallback rule.
 --

@@ -42,6 +42,7 @@ export const navGroups: NavGroup[] = [
     title: "Intelligence",
     icon: Brain,
     items: [
+      { href: "/admin/model-config", label: "AI Provider" },
       { href: "/admin/learned-patterns", label: "Learned Patterns" },
       { href: "/admin/prompts", label: "Prompt Library" },
       { href: "/admin/starter-prompts", label: "Starter Prompts" },
@@ -115,7 +116,6 @@ export const navGroups: NavGroup[] = [
       { href: "/platform/users", label: "Users (All Tenants)" },
       { href: "/platform/plugins", label: "Plugin Catalog", selfHostedOnly: true },
       { href: "/platform/plugin-registry", label: "Plugin Registry", selfHostedOnly: true },
-      { href: "/platform/model-config", label: "AI Provider" },
     ],
   },
 ];

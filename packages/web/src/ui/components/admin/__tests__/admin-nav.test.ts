@@ -50,11 +50,13 @@ describe("resolveAdminBreadcrumb", () => {
   test("every nav href has a matching page.tsx on disk (#2305 + #2306)", async () => {
     // Guards against typo'd sidebar entries — a 404 in production from
     // a sidebar link is invisible to CI without this check. PR3 + PR4
-    // moved 4 routes (`/platform/users`, `/platform/model-config`,
-    // `/platform/plugin-registry`, `/admin/account-security`,
-    // `/admin/action-log`) plus the existing 11-entry Platform group;
-    // single typo'd entry like `/platform/plugins-registry` would slip
-    // past every other test today.
+    // moved 4 routes (`/platform/users`, `/platform/plugin-registry`,
+    // `/admin/account-security`, `/admin/action-log`) plus the existing
+    // 11-entry Platform group; single typo'd entry like
+    // `/platform/plugins-registry` would slip past every other test
+    // today. (#2305 also moved `/admin/model-config` → `/platform/`
+    // but that move was reverted — BYOT is workspace-scoped and now
+    // lives inline on /admin/billing plus the dedicated /admin/model-config.)
     const fs = await import("node:fs");
     const path = await import("node:path");
     const appDir = path.resolve(__dirname, "../../../../app");

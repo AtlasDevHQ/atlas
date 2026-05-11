@@ -31192,13 +31192,14 @@
               "type": "string",
               "enum": [
                 "gateway",
-                "anthropic"
+                "anthropic",
+                "openai"
               ],
-              "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns the workspace's catalog from api.anthropic.com/v1/models using the saved BYOT key — requires a saved Anthropic configuration.",
+              "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns api.anthropic.com/v1/models; 'openai' returns api.openai.com/v1/models filtered to chat-capable models. Both BYOT variants use the workspace's saved key and require a matching saved configuration.",
               "example": "anthropic"
             },
             "required": false,
-            "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns the workspace's catalog from api.anthropic.com/v1/models using the saved BYOT key — requires a saved Anthropic configuration.",
+            "description": "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns api.anthropic.com/v1/models; 'openai' returns api.openai.com/v1/models filtered to chat-capable models. Both BYOT variants use the workspace's saved key and require a matching saved configuration.",
             "name": "provider",
             "in": "query"
           },

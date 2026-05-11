@@ -27,6 +27,12 @@ import {
   AnthropicCatalogUnavailable,
   getAnthropicCatalog,
 } from "@atlas/api/lib/anthropic-catalog";
+import {
+  OpenAICatalogRateLimited,
+  OpenAICatalogUnauthorized,
+  OpenAICatalogUnavailable,
+  getOpenAICatalog,
+} from "@atlas/api/lib/openai-catalog";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
@@ -171,9 +177,9 @@ const testConfigRoute = createRoute({
 });
 
 const CatalogQuerySchema = z.object({
-  provider: z.enum(["gateway", "anthropic"]).optional().openapi({
+  provider: z.enum(["gateway", "anthropic", "openai"]).optional().openapi({
     description:
-      "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns the workspace's catalog from api.anthropic.com/v1/models using the saved BYOT key — requires a saved Anthropic configuration.",
+      "Provider catalog to return. Defaults to 'gateway' (Vercel AI Gateway, anonymous). 'anthropic' returns api.anthropic.com/v1/models; 'openai' returns api.openai.com/v1/models filtered to chat-capable models. Both BYOT variants use the workspace's saved key and require a matching saved configuration.",
     example: "anthropic",
   }),
   refresh: z.enum(["1", "true"]).optional().openapi({
@@ -422,13 +428,25 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       return c.json(catalog, 200);
     }
 
-    // Anthropic BYOT catalog — requires a saved anthropic configuration.
+    // BYOT direct-provider catalogs (anthropic, openai) share a flow:
+    //   1. The workspace must have a saved config matching the requested
+    //      provider and a healthy (decryptable) key.
+    //   2. The catalog fetch is credentialed — audit the outcome (never
+    //      the key).
+    //   3. Provider-specific exceptions map to a small set of HTTP
+    //      envelopes: 401 / 429 / 503.
+    //
+    // The dispatch table below keeps the per-provider knobs (fetcher,
+    // error classes, friendly provider name) in one place so adding
+    // a new direct-provider (e.g. Bedrock #2273) is a single entry.
     if (!orgId) {
       return c.json(
         { error: "bad_request", message: "No active organization. Set an active org first.", requestId },
         400,
       );
     }
+
+    const adapter = byotAdapter(provider);
 
     // Decrypt errors surface as 422 with a clear "re-enter the key" message
     // rather than as a generic 500. Catch inline so the response shape is
@@ -446,7 +464,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
         targetType: "model_config",
         targetId: orgId,
         status: "failure",
-        metadata: { provider: "anthropic", error: "decrypt_failed" },
+        metadata: { provider: adapter.providerKey, error: "decrypt_failed" },
       });
       return c.json(
         {
@@ -460,36 +478,21 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
     }
     const rawConfig = rawConfigOrDecryptError.cfg;
 
-    if (!rawConfig || rawConfig.provider !== "anthropic" || !rawConfig.apiKey) {
+    if (!rawConfig || rawConfig.provider !== adapter.providerKey || !rawConfig.apiKey) {
       return c.json(
         {
           error: "missing_byot_key",
-          message:
-            "Save an Anthropic API key on this workspace before refreshing the catalog.",
+          message: `Save a ${adapter.displayName} API key on this workspace before refreshing the catalog.`,
           requestId,
         },
         400,
       );
     }
 
-    // Discovery fetches against an external provider are credentialed
-    // operations: same audit threat model as `model_config.test`. Log the
-    // fetch outcome (never the apiKey). The provider-specific exceptions
-    // are caught inside the promise so the Effect channel carries a clean
-    // discriminated result rather than tunneling through `Effect.tryPromise`'s
-    // generic catch (which becomes "unmapped tagged error" at the bridge).
-    type CatalogResult =
-      | { kind: "ok"; models: typeof rawConfig extends never ? never : Awaited<ReturnType<typeof getAnthropicCatalog>>["models"]; fetchedAt: string; source: "cache" | "fresh" }
-      | { kind: "byot_key_invalid"; message: string }
-      | { kind: "byot_provider_rate_limited"; message: string; retryAfter: number | null }
-      | { kind: "byot_provider_unavailable"; message: string };
-
     const catalogResult = yield* Effect.tryPromise({
-      try: async (): Promise<CatalogResult> => {
+      try: async (): Promise<ByotCatalogResult> => {
         try {
-          const cat = await getAnthropicCatalog(orgId, rawConfig.apiKey ?? "", {
-            refresh,
-          });
+          const cat = await adapter.fetch(orgId, rawConfig.apiKey ?? "", { refresh });
           return {
             kind: "ok",
             models: cat.models,
@@ -498,17 +501,15 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
           };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (err instanceof AnthropicCatalogUnauthorized) {
+          if (err instanceof adapter.errors.Unauthorized) {
             return { kind: "byot_key_invalid", message };
           }
-          if (err instanceof AnthropicCatalogRateLimited) {
-            return {
-              kind: "byot_provider_rate_limited",
-              message,
-              retryAfter: err.retryAfterSeconds,
-            };
+          if (err instanceof adapter.errors.RateLimited) {
+            // Both error classes carry `retryAfterSeconds: number | null`.
+            const retryAfter = (err as unknown as { retryAfterSeconds: number | null }).retryAfterSeconds;
+            return { kind: "byot_provider_rate_limited", message, retryAfter };
           }
-          if (err instanceof AnthropicCatalogUnavailable) {
+          if (err instanceof adapter.errors.Unavailable) {
             return { kind: "byot_provider_unavailable", message };
           }
           throw err;
@@ -523,7 +524,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
         targetType: "model_config",
         targetId: orgId,
         metadata: {
-          provider: "anthropic",
+          provider: adapter.providerKey,
           modelCount: catalogResult.models.length,
           source: catalogResult.source,
         },
@@ -533,9 +534,10 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
         {
           models: catalogResult.models,
           fetchedAt: catalogResult.fetchedAt,
-          // Anthropic discovery has no curated fallback — upstream failures
-          // surface as the matching HTTP envelope above. `fallback` stays
-          // false for shape parity with the gateway response.
+          // BYOT direct providers have no curated fallback — upstream
+          // failures surface as the matching HTTP envelope above.
+          // `fallback` stays false for shape parity with the gateway
+          // response.
           fallback: false,
         },
         200,
@@ -548,7 +550,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       targetId: orgId,
       status: "failure",
       metadata: {
-        provider: "anthropic",
+        provider: adapter.providerKey,
         error: catalogResult.kind,
         detail: catalogResult.message,
       },
@@ -572,5 +574,82 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
     );
   }), { label: "get model catalog", domainErrors: [modelConfigDomainError] });
 });
+
+// ---------------------------------------------------------------------------
+// BYOT direct-provider catalog adapter
+//
+// Anthropic + OpenAI share an identical flow (config gate → fetch →
+// classified-error envelope). The adapter is the smallest surface that
+// captures the per-provider knobs without abstracting away the per-route
+// audit + envelope logic. Future direct providers (Bedrock #2273) plug in
+// by adding a single case to `byotAdapter`.
+// ---------------------------------------------------------------------------
+
+interface ByotErrorClasses {
+  readonly Unauthorized: new (...args: never[]) => Error;
+  readonly RateLimited: new (...args: never[]) => Error;
+  readonly Unavailable: new (...args: never[]) => Error;
+}
+
+// Wire-shape entry. Stays mutable to match the response schema generated
+// from `GatewayCatalogResponseSchema` — Hono's typed-response narrowing
+// rejects ReadonlyArray here even though the value is never mutated.
+interface ByotCatalogEntry {
+  id: string;
+  name: string;
+  provider: string;
+  type: string;
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  inputPrice: string | null;
+  outputPrice: string | null;
+  recommended: boolean;
+}
+
+interface ByotProviderAdapter {
+  readonly providerKey: "anthropic" | "openai";
+  readonly displayName: string;
+  readonly fetch: (
+    orgId: string,
+    apiKey: string,
+    opts: { refresh?: boolean },
+  ) => Promise<{
+    models: ByotCatalogEntry[];
+    fetchedAt: string;
+    source: "cache" | "fresh";
+  }>;
+  readonly errors: ByotErrorClasses;
+}
+
+type ByotCatalogResult =
+  | { kind: "ok"; models: ByotCatalogEntry[]; fetchedAt: string; source: "cache" | "fresh" }
+  | { kind: "byot_key_invalid"; message: string }
+  | { kind: "byot_provider_rate_limited"; message: string; retryAfter: number | null }
+  | { kind: "byot_provider_unavailable"; message: string };
+
+function byotAdapter(provider: "anthropic" | "openai"): ByotProviderAdapter {
+  if (provider === "anthropic") {
+    return {
+      providerKey: "anthropic",
+      displayName: "Anthropic",
+      fetch: getAnthropicCatalog,
+      errors: {
+        Unauthorized: AnthropicCatalogUnauthorized,
+        RateLimited: AnthropicCatalogRateLimited,
+        Unavailable: AnthropicCatalogUnavailable,
+      },
+    };
+  }
+  return {
+    providerKey: "openai",
+    displayName: "OpenAI",
+    fetch: getOpenAICatalog,
+    errors: {
+      Unauthorized: OpenAICatalogUnauthorized,
+      RateLimited: OpenAICatalogRateLimited,
+      Unavailable: OpenAICatalogUnavailable,
+    },
+  };
+}
 
 export { adminModelConfig };

@@ -23,6 +23,7 @@ import {
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
 import { invalidateAnthropicCatalog } from "@atlas/api/lib/anthropic-catalog";
+import { invalidateOpenAICatalog } from "@atlas/api/lib/openai-catalog";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ApiKeyStatus,
@@ -381,6 +382,8 @@ export const setWorkspaceModelConfig = (
     // per-org cache so it gets no hook.
     if (config.provider === "anthropic") {
       invalidateAnthropicCatalog(orgId);
+    } else if (config.provider === "openai") {
+      invalidateOpenAICatalog(orgId);
     }
 
     return rowToConfig(rows[0]);

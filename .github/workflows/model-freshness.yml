@@ -5,8 +5,7 @@ name: Model freshness check
 # /v1/models endpoint monthly, compares against the IDs hardcoded in
 # our defaults/recommended/fallback sites, and opens a tracking issue
 # when our pins are behind. No auto-bumps — the labels we use are
-# tier-stable choices that humans should curate (we skipped Opus 4.5
-# entirely; we wouldn't want CI to auto-bump to a borked release).
+# tier-stable choices that humans should curate.
 
 on:
   schedule:
@@ -27,43 +26,19 @@ jobs:
         id: drift
         run: |
           set -euo pipefail
-
-          # Pull the gateway catalog and grab the latest version per
-          # family. Catalog IDs are slash+dot; family extraction below
-          # splits on the version dot and keeps the family stem.
           catalog=$(curl -sf https://ai-gateway.vercel.sh/v1/models)
-
           latest_for() {
-            # $1 = family prefix, e.g. "anthropic/claude-opus-"
-            echo "$catalog" \
-              | jq -r --arg prefix "$1" \
-                  '[.data[] | select(.id | startswith($prefix)) | .id] | sort | last'
+            echo "$catalog" | jq -r --arg prefix "$1" \
+              '[.data[] | select(.id | startswith($prefix)) | .id] | sort | last'
           }
-
           latest_opus=$(latest_for "anthropic/claude-opus-")
           latest_sonnet=$(latest_for "anthropic/claude-sonnet-")
           latest_haiku=$(latest_for "anthropic/claude-haiku-")
-
-          echo "Latest from gateway:"
-          echo "  opus:   $latest_opus"
-          echo "  sonnet: $latest_sonnet"
-          echo "  haiku:  $latest_haiku"
-
-          # Compare against the gateway-format pin in providers.ts (the
-          # SaaS-resolved default). Other sites either mirror this or
-          # are tier-specific labels that follow once a flagship moves.
           pinned_opus=$(grep -oE 'gateway: "anthropic/claude-opus-[0-9.]+"' \
             packages/api/src/lib/providers.ts \
             | grep -oE 'anthropic/claude-opus-[0-9.]+')
-
-          echo "Pinned in providers.ts gateway default: $pinned_opus"
-
-          # All four values are sourced from upstream JSON (Vercel
-          # catalog) or a grep against checked-in code; both are
-          # nominally trusted but third-party data is third-party data.
-          # The downstream issue-creation step uses env: not ${{ }} to
-          # avoid any shell-metachar weirdness if a model ID ever
-          # contains unexpected characters.
+          echo "Latest on gateway — opus:$latest_opus sonnet:$latest_sonnet haiku:$latest_haiku"
+          echo "Pinned (providers.ts gateway): $pinned_opus"
           {
             echo "latest_opus=$latest_opus"
             echo "latest_sonnet=$latest_sonnet"
@@ -79,49 +54,47 @@ jobs:
         if: steps.drift.outputs.drift == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Pass step outputs in via env so the run: script never
-          # expands ${{ … }} into shell context — protects against any
-          # future weirdness in Vercel's catalog IDs.
+          # Pass step outputs through env (not ${{ … }} expansion in the
+          # script body) so unexpected characters in a model ID can't
+          # land in shell context.
           LATEST_OPUS: ${{ steps.drift.outputs.latest_opus }}
           LATEST_SONNET: ${{ steps.drift.outputs.latest_sonnet }}
           LATEST_HAIKU: ${{ steps.drift.outputs.latest_haiku }}
           PINNED_OPUS: ${{ steps.drift.outputs.pinned_opus }}
         run: |
           set -euo pipefail
-          # Idempotent: only open if no matching issue is already open.
-          existing=$(gh issue list -R "${GITHUB_REPOSITORY}" \
-            --state open --search "Model defaults drift in:title" \
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" \
+            --state open --search 'Model defaults drift in:title' \
             --json number --jq '.[0].number' || true)
           if [ -n "$existing" ]; then
-            echo "Drift issue #${existing} already open — skipping."
+            echo "Drift issue #$existing already open — skipping."
             exit 0
           fi
           title="chore: model defaults drift vs Vercel AI Gateway (Opus $PINNED_OPUS → $LATEST_OPUS)"
-          body=$(cat <<'BODY_END'
-          Monthly freshness check detected drift between our pinned Opus default and Vercel AI Gateway's latest Opus.
-
-          **Latest on gateway:**
-          BODY_END
-          )
-          body="$body
-          - opus:   \`$LATEST_OPUS\`
-          - sonnet: \`$LATEST_SONNET\`
-          - haiku:  \`$LATEST_HAIKU\`
-
-          **Currently pinned (providers.ts gateway default):**
-          \`$PINNED_OPUS\`
-
-          ### Sites to update when bumping
-
-          1. \`packages/web/src/app/admin/billing/page.tsx\` — \`MODEL_OPTIONS\` (SaaS tier picker)
-          2. \`packages/api/src/lib/billing/plans.ts\` — \`defaultModel\` per plan tier (only if the tier-flagship changed)
-          3. \`packages/api/src/lib/providers.ts\` — \`PROVIDER_DEFAULTS.anthropic\` + \`.gateway\` (and \`.bedrock\` once AWS GAs the new version)
-          4. \`packages/api/src/lib/anthropic-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` (sparkles in BYOT direct picker)
-          5. \`packages/api/src/lib/gateway-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` + \`FALLBACK_MODELS\` (gateway picker)
-          6. \`packages/web/src/app/admin/model-config/page.tsx\` — \`PLATFORM_MODEL_LABELS\` (admin UI label map)
-
-          The picker for direct-BYOT users (Anthropic / OpenAI / Bedrock) is driven by the live provider catalog — it doesn't need a code change to surface new models. Only the *defaults / recommendations / labels* are hardcoded and need updating."
-          gh issue create -R "${GITHUB_REPOSITORY}" \
+          # Build the body as a single printf — heredocs inside the
+          # YAML run: block need column-0 terminators, which we can't
+          # provide without breaking GitHub's indentation parser.
+          body=$(printf '%s\n' \
+            "Monthly freshness check detected drift between our pinned Opus default and Vercel AI Gateway's latest Opus." \
+            "" \
+            "**Latest on gateway:**" \
+            "- opus:   \`$LATEST_OPUS\`" \
+            "- sonnet: \`$LATEST_SONNET\`" \
+            "- haiku:  \`$LATEST_HAIKU\`" \
+            "" \
+            "**Currently pinned (providers.ts gateway default):** \`$PINNED_OPUS\`" \
+            "" \
+            "### Sites to update when bumping" \
+            "" \
+            "1. \`packages/web/src/app/admin/billing/page.tsx\` — \`MODEL_OPTIONS\` (SaaS tier picker)" \
+            "2. \`packages/api/src/lib/billing/plans.ts\` — \`defaultModel\` per plan tier (only if the tier-flagship changed)" \
+            "3. \`packages/api/src/lib/providers.ts\` — \`PROVIDER_DEFAULTS.anthropic\` + \`.gateway\` (and \`.bedrock\` once AWS GAs the new version)" \
+            "4. \`packages/api/src/lib/anthropic-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` (sparkles in BYOT direct picker)" \
+            "5. \`packages/api/src/lib/gateway-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` + \`FALLBACK_MODELS\` (gateway picker)" \
+            "6. \`packages/web/src/app/admin/model-config/page.tsx\` — \`PLATFORM_MODEL_LABELS\` (admin UI label map)" \
+            "" \
+            "The BYOT-direct picker (Anthropic / OpenAI / Bedrock) is driven by the live provider catalog and doesn't need a code change to surface new models — only the defaults / recommendations / labels are hardcoded.")
+          gh issue create -R "$GITHUB_REPOSITORY" \
             --title "$title" \
             --label "chore,area: api" \
             --body "$body"

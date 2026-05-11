@@ -224,7 +224,7 @@ describe("billing routes", () => {
       // Per-seat pricing fields
       expect(body.seats).toEqual({ count: 3, max: 10 });
       expect(body.connections).toEqual({ count: 2, max: 1 });
-      expect(body.currentModel).toBe("claude-haiku-4-5"); // plan default since no setting override
+      expect(body.currentModel).toBe("anthropic/claude-haiku-4.5"); // plan default since no setting override (gateway-canonical format — SaaS resolves via Vercel)
       expect(body.overagePerMillionTokens).toBe(1.0);
       // Total token budget = tokenBudgetPerSeat * seatCount = 2M * 3 = 6M
       expect(body.limits.totalTokenBudget).toBe(6_000_000);
@@ -268,7 +268,7 @@ describe("billing routes", () => {
     });
 
     it("uses setting override for currentModel when available", async () => {
-      mockSettingLiveValue = "claude-opus-4-6";
+      mockSettingLiveValue = "anthropic/claude-opus-4.7";
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
         const sql = args[0];
         if (typeof sql === "string" && sql.includes("member")) {
@@ -281,7 +281,7 @@ describe("billing routes", () => {
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
-      expect(body.currentModel).toBe("claude-opus-4-6");
+      expect(body.currentModel).toBe("anthropic/claude-opus-4.7");
     });
 
     it("returns 401 when unauthenticated", async () => {

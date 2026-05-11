@@ -412,6 +412,13 @@ export default function SemanticPage() {
 
   const refetchAll = () => setFetchKey((k) => k + 1);
 
+  const runImport = async () => {
+    const result = await mutateImport();
+    if (result.ok && result.data) {
+      setImportResult(result.data);
+    }
+  };
+
   // Fetch all semantic data.
   //
   // On SaaS we read entities from the DB-scoped org endpoint so the file
@@ -690,17 +697,12 @@ export default function SemanticPage() {
                 Improve
               </Button>
             </Link>
-            {isSaas && (
+            {isSaas && entities.length === 0 && (
               <Button
                 variant="outline"
                 className="gap-1.5"
                 disabled={importing}
-                onClick={async () => {
-                  const result = await mutateImport();
-                  if (result.ok && result.data) {
-                    setImportResult(result.data);
-                  }
-                }}
+                onClick={runImport}
               >
                 <Download className="size-4" />
                 {importing ? "Importing..." : "Import from disk"}
@@ -754,6 +756,24 @@ export default function SemanticPage() {
             description="Entities are generated from your database schema. Add a connection first, then come back here to import."
             action={{ kind: "link", label: "Go to connections", href: "/admin/connections" }}
           />
+        </div>
+      ) : isSaas && !loading && entities.length === 0 ? (
+        <div className="p-6" data-testid="semantic-empty-state">
+          <EmptyState
+            icon={BookOpen}
+            title="No semantic entities yet"
+            description="Atlas reads semantic/entities/*.yml from the deployment image. Use this to populate the editor from disk."
+          >
+            <Button
+              variant="link"
+              size="xs"
+              onClick={runImport}
+              disabled={importing}
+              className="mt-3"
+            >
+              {importing ? "Syncing..." : "Sync from disk"}
+            </Button>
+          </EmptyState>
         </div>
       ) : (
       <>

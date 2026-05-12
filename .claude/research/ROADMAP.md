@@ -158,12 +158,14 @@ Tracker: [milestone #42](https://github.com/AtlasDevHQ/atlas/milestones/42). Bug
 - [x] Conversation sidebar chat titles no longer overflow past the right border ([#2316](https://github.com/AtlasDevHQ/atlas/issues/2316), [#2318](https://github.com/AtlasDevHQ/atlas/pull/2318)) — Radix ScrollArea viewport needs `min-w-0` on the inner flex container so long titles truncate instead of pushing the right edge off-screen on `/` and `/notebook`.
 - [x] Invert `NavSubItem` default → `prefixMatch` ([#2259](https://github.com/AtlasDevHQ/atlas/issues/2259)) — renames the implicit-prefix-match flag, flips the default to exact-match so siblings sharing a prefix (e.g. `/admin/settings` vs `/admin/settings/mcp`) stop collapsing into the parent, and opts only `/admin/users` + `/admin/scheduled-tasks` into prefix-mode for legitimate detail-page children. Locks in the #2176 regression with explicit tests.
 - [x] `/admin/semantic` — Import-from-disk affordance gated on `entityCount === 0` ([#2168](https://github.com/AtlasDevHQ/atlas/issues/2168)) — toolbar button drops out once Demo populates entities; empty workspaces get a contextual "Sync from disk" link inside an empty-state block so the prominent CTA only renders when it's actually useful.
+- [x] Dev-mode discoverability — PendingChangesPill + always-draft writes ([#2177](https://github.com/AtlasDevHQ/atlas/issues/2177), [#2324](https://github.com/AtlasDevHQ/atlas/pull/2324)) — fixes admin banner overlap and adds a LaunchDarkly-style pending-changes counter; admin mutations always write drafts so Publish stays the canonical promote-to-live step.
+- [x] Chat-first front door + per-user default landing ([#2022](https://github.com/AtlasDevHQ/atlas/issues/2022), [#2323](https://github.com/AtlasDevHQ/atlas/pull/2323)) — root `/` lands non-admins on chat; admins pick a per-user default landing (chat / notebook / dashboards / admin). Lead 1.4.3 item shipped during 1.4.2 closeout.
+- [x] Chat surface critique pass ([#2326](https://github.com/AtlasDevHQ/atlas/pull/2326)) — sidebar polish, empty state, command palette, nav lift on the chat front door.
 
 ### Open
 
-- [ ] Dev-mode discoverability: banner-overlap fix + LaunchDarkly-style pending-changes counter + Publish flow ([#2177](https://github.com/AtlasDevHQ/atlas/issues/2177)).
 - [ ] Standardize all date selectors on a single shadcn DatePicker / DateRangePicker ([#2171](https://github.com/AtlasDevHQ/atlas/issues/2171)).
-- [ ] Top-bar spawn follow-ups ([#2258](https://github.com/AtlasDevHQ/atlas/issues/2258), [#2260](https://github.com/AtlasDevHQ/atlas/issues/2260)–[#2262](https://github.com/AtlasDevHQ/atlas/issues/2262)) — `AdminBreadcrumb` union, `/settings/profile` loading skeleton, password/identity tests, residual `authClient as unknown as` cast cleanup.
+- [ ] Top-bar spawn follow-ups ([#2258](https://github.com/AtlasDevHQ/atlas/issues/2258), [#2262](https://github.com/AtlasDevHQ/atlas/issues/2262)) — `AdminBreadcrumb` discriminated union + residual `authClient as unknown as` cast cleanup.
 
 <!-- 1.4.1 — MCP: Bringing It All Together: closed 2026-05-09 with 34 issues shipped; per-theme detail above in Shipped Milestones. -->
 

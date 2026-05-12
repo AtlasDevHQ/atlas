@@ -46,13 +46,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
         with:
           bun-version: "1.3.11"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
@@ -65,116 +65,116 @@ jobs:
 
       - name: Build and publish @useatlas/types
         if: startsWith(github.ref, 'refs/tags/types-v')
-        run: cd packages/types && bun run build && npm publish --access public
+        run: cd packages/types && bun run build && npm publish --access public --provenance
 
       - name: Publish create-atlas-agent
         if: startsWith(github.ref, 'refs/tags/atlas-agent-v')
-        run: cd create-atlas && npm publish --access public
+        run: cd create-atlas && npm publish --access public --provenance
 
       - name: Publish create-atlas-plugin
         if: startsWith(github.ref, 'refs/tags/atlas-plugin-v')
-        run: cd create-atlas-plugin && npm publish --access public
+        run: cd create-atlas-plugin && npm publish --access public --provenance
 
       - name: Build, test, and publish @useatlas/sdk
         if: startsWith(github.ref, 'refs/tags/sdk-v')
-        run: cd packages/sdk && bun run build && bun run test && npm publish --access public
+        run: cd packages/sdk && bun run build && bun run test && npm publish --access public --provenance
 
       - name: Build, test, and publish @useatlas/plugin-sdk
         if: startsWith(github.ref, 'refs/tags/plugin-sdk-v')
-        run: cd packages/plugin-sdk && bun run build && bun run test && npm publish --access public
+        run: cd packages/plugin-sdk && bun run build && bun run test && npm publish --access public --provenance
 
       - name: Build and publish @useatlas/react
         if: startsWith(github.ref, 'refs/tags/react-v')
-        run: cd packages/react && bun run build && npm publish --access public
+        run: cd packages/react && bun run build && npm publish --access public --provenance
 
       # Plugins — ship raw TypeScript, no build step needed
       # Tests are already run by CI on every push to main; tags are always cut from main
       # Datasource
       - name: Publish @useatlas/bigquery
         if: startsWith(github.ref, 'refs/tags/bigquery-v')
-        run: cd plugins/bigquery && npm publish --access public
+        run: cd plugins/bigquery && npm publish --access public --provenance
 
       - name: Publish @useatlas/clickhouse
         if: startsWith(github.ref, 'refs/tags/clickhouse-v')
-        run: cd plugins/clickhouse && npm publish --access public
+        run: cd plugins/clickhouse && npm publish --access public --provenance
 
       - name: Publish @useatlas/snowflake
         if: startsWith(github.ref, 'refs/tags/snowflake-v')
-        run: cd plugins/snowflake && npm publish --access public
+        run: cd plugins/snowflake && npm publish --access public --provenance
 
       - name: Publish @useatlas/duckdb
         if: startsWith(github.ref, 'refs/tags/duckdb-v')
-        run: cd plugins/duckdb && npm publish --access public
+        run: cd plugins/duckdb && npm publish --access public --provenance
 
       - name: Publish @useatlas/mysql
         if: startsWith(github.ref, 'refs/tags/mysql-v')
-        run: cd plugins/mysql && npm publish --access public
+        run: cd plugins/mysql && npm publish --access public --provenance
 
       - name: Publish @useatlas/salesforce
         if: startsWith(github.ref, 'refs/tags/salesforce-v')
-        run: cd plugins/salesforce && npm publish --access public
+        run: cd plugins/salesforce && npm publish --access public --provenance
 
       # Sandbox
       - name: Publish @useatlas/e2b
         if: startsWith(github.ref, 'refs/tags/e2b-v')
-        run: cd plugins/e2b && npm publish --access public
+        run: cd plugins/e2b && npm publish --access public --provenance
 
       - name: Publish @useatlas/daytona
         if: startsWith(github.ref, 'refs/tags/daytona-v')
-        run: cd plugins/daytona && npm publish --access public
+        run: cd plugins/daytona && npm publish --access public --provenance
 
       - name: Publish @useatlas/nsjail
         if: startsWith(github.ref, 'refs/tags/nsjail-v')
-        run: cd plugins/nsjail && npm publish --access public
+        run: cd plugins/nsjail && npm publish --access public --provenance
 
       - name: Publish @useatlas/sidecar
         if: startsWith(github.ref, 'refs/tags/sidecar-v')
-        run: cd plugins/sidecar && npm publish --access public
+        run: cd plugins/sidecar && npm publish --access public --provenance
 
       - name: Publish @useatlas/vercel-sandbox
         if: startsWith(github.ref, 'refs/tags/vercel-sandbox-v')
-        run: cd plugins/vercel-sandbox && npm publish --access public
+        run: cd plugins/vercel-sandbox && npm publish --access public --provenance
 
       # Interaction
       - name: Publish @useatlas/chat
         if: startsWith(github.ref, 'refs/tags/chat-v')
-        run: cd plugins/chat && npm publish --access public
+        run: cd plugins/chat && npm publish --access public --provenance
 
       - name: Publish @useatlas/slack
         if: startsWith(github.ref, 'refs/tags/slack-v')
-        run: cd plugins/slack && npm publish --access public
+        run: cd plugins/slack && npm publish --access public --provenance
 
       - name: Publish @useatlas/webhook
         if: startsWith(github.ref, 'refs/tags/webhook-v')
-        run: cd plugins/webhook && npm publish --access public
+        run: cd plugins/webhook && npm publish --access public --provenance
 
       - name: Publish @useatlas/teams
         if: startsWith(github.ref, 'refs/tags/teams-v')
-        run: cd plugins/teams && npm publish --access public
+        run: cd plugins/teams && npm publish --access public --provenance
 
       - name: Publish @useatlas/email-digest
         if: startsWith(github.ref, 'refs/tags/email-digest-v')
-        run: cd plugins/email-digest && npm publish --access public
+        run: cd plugins/email-digest && npm publish --access public --provenance
 
       - name: Publish @useatlas/mcp
         if: startsWith(github.ref, 'refs/tags/mcp-v')
-        run: cd plugins/mcp && npm publish --access public
+        run: cd plugins/mcp && npm publish --access public --provenance
 
       # Action
       - name: Publish @useatlas/email
         if: startsWith(github.ref, 'refs/tags/email-v')
-        run: cd plugins/email && npm publish --access public
+        run: cd plugins/email && npm publish --access public --provenance
 
       - name: Publish @useatlas/jira
         if: startsWith(github.ref, 'refs/tags/jira-v')
-        run: cd plugins/jira && npm publish --access public
+        run: cd plugins/jira && npm publish --access public --provenance
 
       # Context
       - name: Publish @useatlas/yaml-context
         if: startsWith(github.ref, 'refs/tags/yaml-context-v')
-        run: cd plugins/yaml-context && npm publish --access public
+        run: cd plugins/yaml-context && npm publish --access public --provenance
 
       # Community
       - name: Publish obsidian-atlas
         if: startsWith(github.ref, 'refs/tags/obsidian-v')
-        run: cd plugins/obsidian && npm publish --access public
+        run: cd plugins/obsidian && npm publish --access public --provenance

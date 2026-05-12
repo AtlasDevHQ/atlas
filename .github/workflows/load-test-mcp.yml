@@ -104,7 +104,7 @@ jobs:
       DURATION: ${{ inputs.mix_duration }}
       TTL_SECONDS: ${{ inputs.ttl_seconds }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Verify required secrets are configured
         # Surface a clean actionable failure when the secrets aren't
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload load-test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mcp-load-test-results
           path: |

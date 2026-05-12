@@ -15731,6 +15731,226 @@
         "operationId": "getMeMcpUsage"
       }
     },
+    "/api/v1/me/preferences": {
+      "get": {
+        "tags": [
+          "Me — Preferences"
+        ],
+        "summary": "Read your UI preferences",
+        "description": "Returns the calling user's UI preferences. `defaultLanding` decides which surface (`chat` or `admin`) the root route resolves to after sign-in.",
+        "responses": {
+          "200": {
+            "description": "User preferences",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "defaultLanding": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "admin"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "defaultLanding"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not available — requires managed auth + internal DB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getMePreferences"
+      },
+      "patch": {
+        "tags": [
+          "Me — Preferences"
+        ],
+        "summary": "Update your UI preferences",
+        "description": "Persists `defaultLanding` on the calling user's row. Setting `admin` requires the caller to be an admin / owner / platform-admin.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "defaultLanding": {
+                    "type": "string",
+                    "enum": [
+                      "chat",
+                      "admin"
+                    ]
+                  }
+                },
+                "required": [
+                  "defaultLanding"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preferences updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "defaultLanding": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "admin"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "defaultLanding"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`admin` landing requires an admin role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not available — requires managed auth + internal DB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patchMePreferences"
+      }
+    },
     "/api/v1/admin/organizations": {
       "get": {
         "tags": [
@@ -66984,6 +67204,9 @@
     },
     {
       "name": "Me — OAuth Clients"
+    },
+    {
+      "name": "Me — Preferences"
     },
     {
       "name": "Mode"

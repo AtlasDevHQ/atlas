@@ -58,8 +58,17 @@ CREATE INDEX IF NOT EXISTS idx_connections_group
   ON connections (group_id, org_id);
 
 -- 1:1 backfill. Every existing connection that lacks a group_id gets a
--- single-member group named after itself. Idempotent: ON CONFLICT keeps
--- the existing row.
+-- single-member group named after itself.
+--
+-- Idempotency notes:
+--   - `ON CONFLICT (id, org_id) DO NOTHING` on the INSERT keeps any pre-
+--     existing matching group row intact, so re-runs (mid-migration retry,
+--     follow-up migration sweep) are safe.
+--   - The UPDATE's `EXISTS (...)` predicate stamps `group_id` only when
+--     the matching group row is present in connection_groups, so a future
+--     re-run that finds the connection already grouped takes no action,
+--     and a re-run that finds the group row missing leaves `group_id` NULL
+--     rather than dangling a FK violation.
 --
 -- Group id strategy: prefix the source connection id with `g_` so a
 -- subsequent "rename" doesn't conflict with the connection's own id.

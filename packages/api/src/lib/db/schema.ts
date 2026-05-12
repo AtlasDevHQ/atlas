@@ -23,6 +23,7 @@ import {
   index,
   uniqueIndex,
   check,
+  foreignKey,
   primaryKey,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -261,6 +262,30 @@ export const scheduledTaskRuns = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Connection groups — multi-environment semantic layer
+// ---------------------------------------------------------------------------
+//
+// Declared above `connections` so the composite FK on `connections.group_id`
+// can name `connectionGroups` directly; the chronological-by-introduction
+// ordering of this file is a soft convention, not a runtime requirement.
+
+export const connectionGroups = pgTable(
+  "connection_groups",
+  {
+    id: text("id").notNull(),
+    orgId: text("org_id").notNull().default("__global__"),
+    name: text("name").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.id, t.orgId] }),
+    index("idx_connection_groups_org").on(t.orgId),
+    uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Admin-managed connections
 // ---------------------------------------------------------------------------
 
@@ -282,38 +307,27 @@ export const connections = pgTable(
     orgId: text("org_id").notNull().default("__global__"),
     // Developer/published mode status
     status: text("status").notNull().default("published"),
-    // #2339 — connection groups (multi-environment semantic layer). Nullable
-    // during the transition; every existing row is backfilled by migration
-    // 0062 to a single-member group named after the connection. FK target
-    // is composite (id, org_id) — declared in the migration, not here, so
-    // co-located membership is enforced at the DB layer.
+    // Connection group membership (multi-environment semantic layer).
+    // Nullable during the transition; every existing row is backfilled
+    // by the introducing migration to a single-member group named after
+    // the connection.
     groupId: text("group_id"),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.orgId] }),
     index("idx_connections_org").on(t.orgId),
     index("idx_connections_group").on(t.groupId, t.orgId),
+    // Composite FK so a connection can never reference a group in a
+    // different org. ON DELETE SET NULL keeps the connection alive when
+    // its group is deleted — the admin UI surfaces ungrouped connections
+    // as a recoverable state, while the DELETE handler additionally
+    // refuses to drop a non-empty group up-front.
+    foreignKey({
+      columns: [t.groupId, t.orgId],
+      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
+      name: "fk_connections_group",
+    }).onDelete("set null"),
     check("chk_connections_status", sql`status IN ('published', 'draft', 'archived')`),
-  ],
-);
-
-// ---------------------------------------------------------------------------
-// Connection groups — multi-environment semantic layer (#2336 / #2339)
-// ---------------------------------------------------------------------------
-
-export const connectionGroups = pgTable(
-  "connection_groups",
-  {
-    id: text("id").notNull(),
-    orgId: text("org_id").notNull().default("__global__"),
-    name: text("name").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.id, t.orgId] }),
-    index("idx_connection_groups_org").on(t.orgId),
-    uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
   ],
 );
 

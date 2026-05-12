@@ -1,17 +1,15 @@
 "use client";
 
 /**
- * Admin surface for connection groups — UI calls these "environments"
- * (PRD #2336 § Vocabulary). One group bundles connections that share a
- * logical schema, e.g. `us-int + eu + apac` for a multi-region prod
- * deployment.
+ * Admin surface for connection groups — UI calls these "environments".
+ * One group bundles connections that share a logical schema, e.g.
+ * `us-int + eu + apac` for a multi-region prod deployment.
  *
- * This slice (#2339) ships create / rename / delete and a member roster.
- * Moving connections into / out of a group happens here too, so admins
- * don't have to bounce between two pages. Content tables (entities /
- * dashboards / scheduled tasks / approvals / PII classifications) move
- * to group scoping in #2340–#2344 — this page intentionally doesn't show
- * those yet.
+ * Ships create / rename / delete and a member roster. Moving connections
+ * into / out of a group happens here too so admins don't have to bounce
+ * between two pages. Content-table scoping (entities, dashboards,
+ * scheduled tasks, approvals, PII classifications) belongs to separate
+ * admin surfaces.
  */
 
 import { useState } from "react";

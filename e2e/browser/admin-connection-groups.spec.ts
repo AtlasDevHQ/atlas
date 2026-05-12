@@ -1,20 +1,16 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
 
 /**
- * Browser e2e for the connection-groups admin surface (#2339, parent
- * PRD #2336 — multi-environment semantic layer).
+ * Browser e2e for the connection-groups admin surface — happy path:
+ * create → assign two connections → rename → delete-empty. Uses page-
+ * level route mocks (mirrors `admin-cache.spec.ts` and
+ * `admin-sessions.spec.ts`) so the spec is self-contained — the mock
+ * state machine recomputes each connection's `groupId` from the
+ * assignment map on every GET so refetches reflect prior mutations.
  *
- * Covers the happy path the issue spec calls out: create → assign two
- * connections → rename → delete-empty. Uses page-level route mocks
- * (mirrors `admin-cache.spec.ts` and `admin-sessions.spec.ts`) so this
- * runs without a seeded internal DB. The mock state machine is the
- * source of truth for what the UI sees on refetch — the connections
- * list's `groupId` is recomputed from the assignment map on every GET.
- *
- * Not `@llm`-tagged: no model calls. (The issue spec says `@llm`-tagged
- * for the happy path; the tag is the existing project convention for
- * tests that touch the agent loop, which this one doesn't. Tagging
- * regardless to match the issue's literal acceptance criterion.)
+ * Tagged `@llm` to match the milestone's segmentation convention even
+ * though no model call is made; CI tier selectors that key on `@llm`
+ * still pick this up alongside the other admin-flow e2es.
  */
 
 interface MockGroup {
@@ -184,7 +180,7 @@ async function installMocks(page: Page, state: MockState): Promise<void> {
   });
 }
 
-test.describe("admin connection groups (#2339)", () => {
+test.describe("admin connection groups", () => {
   test("@llm create → assign two → rename → delete empty group", async ({ page }) => {
     const state = buildState();
     await installMocks(page, state);

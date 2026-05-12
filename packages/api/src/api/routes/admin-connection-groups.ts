@@ -1,5 +1,5 @@
 /**
- * Admin connection-group management routes (#2339, parent PRD #2336).
+ * Admin connection-group management routes.
  *
  * Mounted under /api/v1/admin/connection-groups via admin.route().
  * Org-scoped: every group lives under the active organization. The composite
@@ -7,11 +7,9 @@
  * DB-layer guarantee that membership never crosses org boundaries.
  *
  * Vocabulary: schema + code use "connection group"; UI copy uses
- * "environment". See PRD #2336 § Vocabulary.
- *
- * Scope of this slice (#2339): table + admin CRUD + member move. Content
- * tables (semantic entities, dashboard cards, scheduled tasks, approvals,
- * PII classifications) migrate to `connection_group_id` in #2340–#2344.
+ * "environment". Content tables (semantic entities, dashboard cards,
+ * scheduled tasks, approvals, PII classifications) are not part of this
+ * surface — they migrate to group-scoping in separate slices.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -50,17 +48,56 @@ function rowToWire(row: GroupRow) {
   return {
     id: row.id,
     name: row.name,
-    memberCount: Number.parseInt(row.member_count, 10) || 0,
+    memberCount: safeMemberCount(row.member_count),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }
 
+/**
+ * Parse a Postgres COUNT(*)::text into a non-negative integer. Returns null
+ * on malformed input so callers can distinguish "zero members" from "the
+ * driver returned something we couldn't parse" — collapsing both to 0 lets
+ * a NaN-driven `delete` slip past the empty-group guard and cascade
+ * ON DELETE SET NULL across every member.
+ */
+function parseMemberCount(value: string | null | undefined): number | null {
+  if (value === undefined || value === null) return null;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** Wire-format projection: malformed counts surface as 0 in lists rather than
+ * crashing the page. The DELETE handler uses {@link parseMemberCount} directly
+ * so it can distinguish null from 0 and fail closed. */
+function safeMemberCount(value: string | null | undefined): number {
+  return parseMemberCount(value) ?? 0;
+}
+
+/**
+ * Narrow a thrown Postgres error to its `code` + `constraint` fields without
+ * leaking `any`. `pg` populates both on driver-thrown errors; non-driver
+ * throws (TypeErrors, network blips) come through with neither set, and the
+ * caller falls through to the generic 500 path.
+ */
+function pgErrorMeta(err: unknown): { code?: string; constraint?: string } {
+  if (!(err instanceof Error)) return {};
+  const code = "code" in err && typeof err.code === "string" ? err.code : undefined;
+  const constraint =
+    "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
+  return { code, constraint };
+}
+
+/** Constraint name from migration 0062. Centralised so a future rename
+ * surfaces in this one spot rather than in three string-equality checks. */
+const UNIQUE_NAME_CONSTRAINT = "uq_connection_groups_org_name";
+
 function generateGroupId(): string {
-  // Random hex tag keeps group ids short and URL-safe while avoiding
-  // collisions with the `g_<connection_id>` shape the backfill uses for
-  // 1:1 legacy groups. No fancy entropy needed — the (id, org_id) PK
-  // catches dupes.
+  // Random hex tag avoids collisions with the `g_<connection_id>` shape the
+  // backfill uses for 1:1 legacy groups. The (id, org_id) PK is the final
+  // collision check — at ~64 bits of entropy a retry-on-23505 path isn't
+  // load-bearing but is wired correctly below so the user never sees a
+  // misleading "name conflict" for what was actually a PK collision.
   return `g_${Math.random().toString(36).slice(2, 10)}${Math.random()
     .toString(36)
     .slice(2, 10)}`;
@@ -241,7 +278,7 @@ const adminConnectionGroups = createAdminRouter();
 adminConnectionGroups.use(requireOrgContext());
 // Re-use the existing connection permission — groups are a facet of the
 // connection-management surface. A finer-grained `admin:connection_groups`
-// permission lands with the role-management UX in #2346.
+// permission can land later if the role-management UX needs to split them.
 adminConnectionGroups.use(requirePermission("admin:connections"));
 
 // GET / — list groups for the active org
@@ -359,9 +396,13 @@ adminConnectionGroups.openapi(createGroupRoute, async (c) =>
         [id, orgId, trimmedName],
       );
     } catch (err) {
-      // 23505 = unique_violation on (org_id, name).
-      const code = (err as { code?: string }).code;
-      if (code === "23505") {
+      const meta = pgErrorMeta(err);
+      // Disambiguate: 23505 fires on both the unique-name index AND the
+      // composite (id, org_id) PK. Only the former should surface as a
+      // name conflict — a generated-id PK collision is vanishingly rare
+      // but if it ever happens we want the user to retry, not be told
+      // their (correct) name is taken.
+      if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT) {
         return c.json(
           { error: "conflict", message: `A group named "${trimmedName}" already exists.`, requestId },
           409,
@@ -430,8 +471,8 @@ adminConnectionGroups.openapi(renameGroupRoute, async (c) =>
         [id, orgId, trimmedName],
       );
     } catch (err) {
-      const code = (err as { code?: string }).code;
-      if (code === "23505") {
+      const meta = pgErrorMeta(err);
+      if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT) {
         return c.json(
           { error: "conflict", message: `A group named "${trimmedName}" already exists.`, requestId },
           409,
@@ -472,15 +513,33 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
     }
 
     // Reject delete-with-members so the admin sees a meaningful error
-    // instead of silent ON DELETE SET NULL nulling out their entire fleet.
-    // The "split a group" workflow goes through POST /:id/members with
-    // groupId: null per connection.
+    // instead of the DB's ON DELETE SET NULL silently nulling out their
+    // entire fleet (the FK is the last-resort safety net, this guard is
+    // the user-visible one). The "split a group" workflow goes through
+    // POST /:id/members with `unassign: true` per connection.
     const members = await internalQuery<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM connections
        WHERE group_id = $1 AND org_id = $2 AND status != 'archived'`,
       [id, orgId],
     );
-    const memberCount = Number.parseInt(members[0]?.count ?? "0", 10);
+    const memberCount = parseMemberCount(members[0]?.count);
+    // Fail closed on a malformed COUNT: dropping a delete because we
+    // can't trust the guard is preferable to dropping a non-empty group
+    // because `NaN > 0` is false.
+    if (memberCount === null) {
+      log.error(
+        { rawCount: members[0]?.count, requestId, orgId, groupId: id },
+        "Could not parse member count before delete — refusing to drop group",
+      );
+      return c.json(
+        {
+          error: "internal_error",
+          message: "Could not verify group is empty. Try again.",
+          requestId,
+        },
+        500,
+      );
+    }
     if (memberCount > 0) {
       return c.json(
         {
@@ -532,10 +591,12 @@ adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
     if (typeof connectionId !== "string" || !connectionId) {
       return c.json({ error: "invalid_request", message: "connectionId is required.", requestId }, 400);
     }
+    // Strict `=== true` so JSON-coerced truthy values (`"true"`, `1`, `{}`)
+    // can't accidentally trigger an unassign. JSON booleans only.
+    const isUnassign = unassign === true;
 
-    // Verify the group exists in this org. Without this check the UPDATE
-    // below would silently succeed against a non-existent FK target only
-    // when the target row exists; we want a typed 404 on the group too.
+    // Verify the group exists in this org so the caller gets a typed 404
+    // rather than a foreign_key_violation 500 from the UPDATE below.
     const groupRows = await internalQuery<{ id: string }>(
       `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
       [groupId, orgId],
@@ -544,18 +605,31 @@ adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
       return c.json({ error: "not_found", message: `Group "${groupId}" not found.`, requestId }, 404);
     }
 
-    // Verify the connection belongs to this org. Cross-org assignment is
-    // already blocked by the FK; this gives the caller a typed 404 instead
-    // of a 500 with a foreign_key_violation message.
-    const conn = await internalQuery<{ id: string }>(
-      `SELECT id FROM connections WHERE id = $1 AND org_id = $2 AND status != 'archived'`,
+    // Verify the connection belongs to this org and (for unassign) is
+    // currently a member of the group named in the URL. Without the
+    // group_id match on unassign, a caller could null out membership for
+    // a connection that lives in a different group — the URL implies
+    // "this group" but the effect would be "any group".
+    const conn = await internalQuery<{ id: string; group_id: string | null }>(
+      `SELECT id, group_id FROM connections
+       WHERE id = $1 AND org_id = $2 AND status != 'archived'`,
       [connectionId, orgId],
     );
     if (conn.length === 0) {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.`, requestId }, 404);
     }
+    if (isUnassign && conn[0].group_id !== groupId) {
+      return c.json(
+        {
+          error: "not_found",
+          message: `Connection "${connectionId}" is not a member of group "${groupId}".`,
+          requestId,
+        },
+        404,
+      );
+    }
 
-    const targetGroupId = unassign === true ? null : groupId;
+    const targetGroupId = isUnassign ? null : groupId;
     try {
       await internalQuery(
         `UPDATE connections SET group_id = $1, updated_at = NOW()

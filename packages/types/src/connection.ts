@@ -86,10 +86,11 @@ export interface ConnectionDetail {
   schema: string | null;
   managed: boolean;
   /**
-   * Connection group membership. Null for pre-#2339 rows that haven't been
-   * backfilled or for connections that were unassigned via the admin UI.
+   * Connection group membership. Three states are meaningful:
+   * - `undefined` — older serializer / client predating the field.
+   * - `null` — explicitly unassigned (no group, or moved out via admin UI).
+   * - `string` — current membership.
    * Schema + code use `group_id`; UI copy renders this as "environment".
-   * See PRD #2336.
    */
   groupId?: string | null;
 }
@@ -100,12 +101,10 @@ export interface ConnectionDetail {
  * across every member.
  *
  * Vocabulary: schema + code call this a `ConnectionGroup`; UI copy says
- * "environment". See PRD #2336 § Vocabulary. The `name` is a mutable
- * display label — references key off `id`, never `name`.
- *
- * Added in 1.4.4 (#2339). Content tables (semantic entities, dashboard
- * cards, scheduled tasks, approvals, PII classifications) move from
- * connection-scoped to group-scoped in #2340–#2344.
+ * "environment". The `name` is a mutable display label — references key
+ * off `id`, never `name`. `memberCount` is a denormalized read-side
+ * projection (snapshot at query time) — split into a dedicated summary
+ * shape once a second read site needs a different denormalization.
  */
 export interface ConnectionGroup {
   id: string;

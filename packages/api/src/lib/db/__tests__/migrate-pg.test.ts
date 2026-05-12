@@ -209,12 +209,14 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.model_status).toBe("healthy");
   }, PG_TEST_TIMEOUT_MS);
 
-  // 0062 — connection groups foundation (#2339). The migration creates the
-  // `connection_groups` table, adds a nullable `connections.group_id` column,
-  // and backfills 1:1 so every existing connection lands in a single-member
-  // group named after itself. The 0028-class risk this guards against is a
-  // future migration that introduces a NOT NULL group_id without a backfill,
-  // breaking boot for any org that already has connection rows.
+  // 0062 — connection groups. The migration creates `connection_groups`,
+  // adds a nullable `connections.group_id`, and backfills 1:1 so every
+  // existing connection lands in a single-member group named after itself.
+  // What this set of assertions guards against: a future migration that
+  // tightens group_id to NOT NULL without a backfill, breaking boot for
+  // any org that already has connection rows — the same failure mode that
+  // a prior migration introduced when it added a column to a unique index
+  // without backfilling the column first.
   it("connection_groups: table exists with composite PK (id, org_id)", async () => {
     const { rows } = await pool.query<{ column_name: string; is_nullable: string; data_type: string }>(
       `SELECT column_name, is_nullable, data_type

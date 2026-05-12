@@ -111,8 +111,8 @@ export const ADMIN_ACTIONS = {
     poolDrain: "connection.pool_drain",
   },
   /**
-   * Connection-group admin actions (#2339). Renames are display-label
-   * changes only — `id` is the foreign key. `assignMember` covers both
+   * Connection-group admin actions. Renames are display-label changes
+   * only — `id` is the foreign key. `assignMember` covers both
    * "move into group" and "unassign" (target group_id may be null).
    * Snake-cased key matches the wire-format convention of every other
    * multi-word target-type (oauth_client, mcp_session, etc.).

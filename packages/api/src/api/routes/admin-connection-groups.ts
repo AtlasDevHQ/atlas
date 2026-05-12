@@ -512,10 +512,9 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
       return c.json({ error: "not_found", message: `Group "${id}" not found.`, requestId }, 404);
     }
 
-    // Reject delete-with-members so the admin sees a meaningful error
-    // instead of the DB's ON DELETE SET NULL silently nulling out their
-    // entire fleet (the FK is the last-resort safety net, this guard is
-    // the user-visible one). The "split a group" workflow goes through
+    // Reject delete-with-members so the admin sees a meaningful 409 with
+    // a member count rather than a raw 23503 from the underlying
+    // ON DELETE RESTRICT. The "split a group" workflow goes through
     // POST /:id/members with `unassign: true` per connection.
     const members = await internalQuery<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM connections

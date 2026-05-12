@@ -306,6 +306,8 @@ describe("migrateAuthTables", () => {
             { name: "0058_workspace_model_catalog.sql" },
             { name: "0059_workspace_model_config_deprecation.sql" },
             { name: "0060_demo_connection_to_global.sql" },
+            { name: "0061_user_default_landing.sql" },
+            { name: "0062_connection_groups.sql" },
           ],
         };
       }

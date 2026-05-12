@@ -36,9 +36,19 @@ CREATE INDEX IF NOT EXISTS idx_connection_groups_org
 ALTER TABLE connections
   ADD COLUMN IF NOT EXISTS group_id TEXT;
 
--- FK target is composite (id, org_id). Use a paired check rather than a
--- single-column FK so the (group_id, org_id) tuple is co-located with the
--- group itself — cross-org membership cannot exist.
+-- FK target is composite (id, org_id) so the (group_id, org_id) tuple
+-- is co-located with the group itself — cross-org membership cannot
+-- exist at the DB layer.
+--
+-- ON DELETE RESTRICT: the DELETE handler already rejects non-empty
+-- groups with a typed 409. The FK is the last-resort defence — if a
+-- future caller bypasses the handler (raw SQL, integration test), it
+-- fails loudly with 23503 rather than silently. SET NULL semantics
+-- can't be used here because Postgres' default SET NULL action nulls
+-- every column in the composite FK, and `connections.org_id` is NOT
+-- NULL — the column-list variant (`SET NULL (group_id)`, PG 15+) would
+-- work but isn't exposed through Drizzle's `onDelete` API, so the
+-- schema mirror would drift from the migration.
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1
@@ -50,7 +60,7 @@ DO $$ BEGIN
       ADD CONSTRAINT fk_connections_group
       FOREIGN KEY (group_id, org_id)
       REFERENCES connection_groups (id, org_id)
-      ON DELETE SET NULL;
+      ON DELETE RESTRICT;
   END IF;
 END $$;
 

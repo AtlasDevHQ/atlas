@@ -326,29 +326,43 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     ).rejects.toMatchObject({ code: "23503" });
   }, PG_TEST_TIMEOUT_MS);
 
-  it("connections.group_id: deleting a group nulls out member connection group_id", async () => {
-    const orgId = `org-cascade-${Date.now()}`;
+  it("connections.group_id: deleting a non-empty group is rejected with 23503", async () => {
+    const orgId = `org-restrict-${Date.now()}`;
     const groupId = `g-tmp-${Date.now()}`;
     await pool.query(
       `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'temp')`,
       [groupId, orgId],
     );
-    const connId = `conn-cascade-${Date.now()}`;
+    const connId = `conn-restrict-${Date.now()}`;
     await pool.query(
       `INSERT INTO connections (id, url, type, org_id, status, group_id)
        VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
       [connId, orgId, groupId],
     );
+    // ON DELETE RESTRICT: dropping a group with members fails loudly at
+    // the DB layer (23503 = foreign_key_violation). The route-layer
+    // DELETE handler maps the same case to a typed 409 with a member
+    // count up-front; this assertion guards the last-resort defence.
+    await expect(
+      pool.query(
+        `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+
+    // Emptying the group lets the delete proceed.
+    await pool.query(
+      `UPDATE connections SET group_id = NULL WHERE id = $1 AND org_id = $2`,
+      [connId, orgId],
+    );
     await pool.query(
       `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
       [groupId, orgId],
     );
-    const { rows } = await pool.query<{ group_id: string | null }>(
-      `SELECT group_id FROM connections WHERE id = $1 AND org_id = $2`,
-      [connId, orgId],
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
     );
-    // ON DELETE SET NULL keeps the connection alive; the admin UX must
-    // surface ungrouped connections as a recoverable state, not a 404.
-    expect(rows[0]?.group_id).toBeNull();
+    expect(rows.length).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 });

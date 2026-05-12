@@ -318,15 +318,16 @@ export const connections = pgTable(
     index("idx_connections_org").on(t.orgId),
     index("idx_connections_group").on(t.groupId, t.orgId),
     // Composite FK so a connection can never reference a group in a
-    // different org. ON DELETE SET NULL keeps the connection alive when
-    // its group is deleted — the admin UI surfaces ungrouped connections
-    // as a recoverable state, while the DELETE handler additionally
-    // refuses to drop a non-empty group up-front.
+    // different org. ON DELETE RESTRICT: the DELETE handler already
+    // rejects non-empty groups with a typed 409; the FK is the
+    // last-resort defence against raw-SQL or test-path bypasses. SET NULL
+    // would have been the friendlier action, but PG nulls every column
+    // in a composite FK on cascade and `connections.org_id` is NOT NULL.
     foreignKey({
       columns: [t.groupId, t.orgId],
       foreignColumns: [connectionGroups.id, connectionGroups.orgId],
       name: "fk_connections_group",
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
     check("chk_connections_status", sql`status IN ('published', 'draft', 'archived')`),
   ],
 );

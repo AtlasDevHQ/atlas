@@ -261,7 +261,7 @@ export function ModelProviderSection({ showByotGate = true }: ModelProviderSecti
   // clobber in-flight edits and dismiss mutation errors the user hasn't seen.
   //
   // `apiKeyStatus` is in the key alongside `updatedAt` because it's derived
-  // at GET time from the decryptUrl outcome on the server — an encryption-key
+  // at GET time from the decryptSecret outcome on the server — an encryption-key
   // rotation can flip a workspace from `apiKeyStatus: "masked"` to
   // `"decrypt_failed"` without writing to the row, so `updatedAt` alone
   // wouldn't catch it and a stale `testResult: "passed"` could remain visible

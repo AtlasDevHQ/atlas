@@ -816,7 +816,7 @@ export const workspaceModelConfig = pgTable(
     // `{ accessKeyId, secretAccessKey, sessionToken? }`.
     apiKeyEncrypted: text("api_key_encrypted"),
     // F-47 key version. When `api_key_encrypted` is NULL the version is unused —
-    // `decryptUrl` is never called against a null column.
+    // `decryptSecret` is never called against a null column.
     apiKeyKeyVersion: integer("api_key_key_version").notNull().default(1),
     baseUrl: text("base_url"),
     // AWS region for provider='bedrock'. Required when bedrock is the

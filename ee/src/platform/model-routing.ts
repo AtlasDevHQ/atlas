@@ -16,8 +16,8 @@ import {
   hasInternalDB,
   internalQuery,
   getInternalDB,
-  encryptUrl,
-  decryptUrl,
+  encryptSecret,
+  decryptSecret,
   getEncryptionKey,
 } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
@@ -152,7 +152,7 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
     apiKeyStatus = "platform_credits";
   } else {
     try {
-      const decrypted = decryptUrl(row.api_key_encrypted);
+      const decrypted = decryptSecret(row.api_key_encrypted);
       if (row.provider === "bedrock") {
         // For bedrock, the decrypted blob is JSON. Show the accessKeyId
         // tail as the mask — the secretAccessKey half NEVER appears on
@@ -398,7 +398,7 @@ export const getWorkspaceModelConfigRaw = (
     let apiKey: string | null = null;
     if (row.api_key_encrypted !== null) {
       try {
-        apiKey = decryptUrl(row.api_key_encrypted);
+        apiKey = decryptSecret(row.api_key_encrypted);
       } catch (err) {
         const cause = err instanceof Error ? err.message : String(err);
         log.error(
@@ -461,7 +461,7 @@ export const setWorkspaceModelConfig = (
           ),
         );
       }
-      encryptedKey = encryptUrl(config.apiKey);
+      encryptedKey = encryptSecret(config.apiKey);
     }
 
     // When apiKey is omitted, preserve the existing encrypted key AND its

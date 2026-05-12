@@ -33,9 +33,20 @@
 
 import { Pool, type PoolClient } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
+// `internal.ts` and `secret-encryption.ts` both export `encryptSecret` /
+// `decryptSecret` post-#2285 (the internal pair is the URL-aware helper,
+// the secret-encryption pair is the versioned-prefix helper for
+// integration credentials). Alias the internal pair as `*UrlSecret`
+// locally to keep this script's two cipher paths visually distinct.
+//
+// DO NOT remove these aliases without first renaming one of the two
+// source helpers — the same name in both source modules would clash on
+// a single import block, and the kind:"url" path would silently bind to
+// the secret-encryption helper (which lacks plaintext-URL passthrough,
+// so legacy `postgres://…` rows would re-encrypt incorrectly).
 import {
-  decryptUrl,
-  encryptUrl,
+  decryptSecret as decryptUrlSecret,
+  encryptSecret as encryptUrlSecret,
   isPlaintextUrl,
 } from "@atlas/api/lib/db/internal";
 import {
@@ -62,14 +73,14 @@ const log = createLogger("rotate-encryption-key");
  * shape extends `IntegrationTable` (the F-41 catalog) with a `kind`
  * discriminator that picks the right cipher helper pair:
  *
- *   `url`    → `encryptUrl` / `decryptUrl` (connection URL, with
- *              plaintext `postgres://…` fallback for pre-encryption
- *              rows)
- *   `secret` → `encryptSecret` / `decryptSecret` (every F-41
- *              integration column plus the workspace model-config API
- *              key, which historically used `encryptUrl` but reads
- *              identically now that both helpers share the versioned-
- *              keyset decryptor)
+ *   `url`    → `db/internal.ts` pair (aliased `encryptUrlSecret` /
+ *              `decryptUrlSecret`) — connection URL, with plaintext
+ *              `postgres://…` fallback for pre-encryption rows
+ *   `secret` → `db/secret-encryption.ts` pair (`encryptSecret` /
+ *              `decryptSecret`) — every F-41 integration column plus
+ *              the workspace model-config API key, which historically
+ *              used the URL helper but reads identically now that both
+ *              helpers share the versioned-keyset decryptor
  */
 type RotateTarget = IntegrationTable & { kind: "url" | "secret" };
 
@@ -111,15 +122,26 @@ function assertIdentifier(name: string, role: string): void {
  * side. Throws on decryption failure (caller handles orphan counting).
  */
 function rotateValue(kind: RotateTarget["kind"], stored: string): string {
-  if (kind === "url") {
-    if (isPlaintextUrl(stored)) {
-      return encryptUrl(stored);
+  switch (kind) {
+    case "url": {
+      if (isPlaintextUrl(stored)) {
+        return encryptUrlSecret(stored);
+      }
+      const decoded = decryptUrlSecret(stored);
+      return encryptUrlSecret(decoded);
     }
-    const decoded = decryptUrl(stored);
-    return encryptUrl(decoded);
+    case "secret": {
+      const decoded = decryptSecret(stored);
+      return encryptSecret(decoded);
+    }
+    default: {
+      // Exhaustiveness check — adding a third `kind` value forces a
+      // compile error here, so a new variant can't silently fall through
+      // to either cipher pair.
+      const _exhaustive: never = kind;
+      throw new Error(`Unhandled rotation kind: ${String(_exhaustive)}`);
+    }
   }
-  const decoded = decryptSecret(stored);
-  return encryptSecret(decoded);
 }
 
 export interface RotateResult {

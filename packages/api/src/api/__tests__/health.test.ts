@@ -186,7 +186,7 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
 // Internal DB mock — defaults to a successful SELECT 1, individual tests
 // can override by reassigning `internalDBQueryImpl` to reject. We spread the
 // real module so the dozens of route files that statically import other
-// helpers (internalQuery, hasInternalDB, encryptUrl, etc.) keep working.
+// helpers (internalQuery, hasInternalDB, encryptSecret, etc.) keep working.
 const realInternalDBModule = await import("@atlas/api/lib/db/internal");
 let internalDBQueryImpl: () => Promise<unknown> = () =>
   Promise.resolve({ rows: [{ "?column?": 1 }] });

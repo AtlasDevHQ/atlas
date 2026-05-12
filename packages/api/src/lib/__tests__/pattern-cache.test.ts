@@ -31,8 +31,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   loadSavedConnections: async () => 0,
   getEncryptionKey: () => null,
   _resetEncryptionKeyCache: () => {},
-  encryptUrl: (v: string) => v,
-  decryptUrl: (v: string) => v,
+  encryptSecret: (v: string) => v,
+  decryptSecret: (v: string) => v,
   isPlaintextUrl: () => true,
   getApprovedPatterns: async () => {
     getApprovedPatternsCallCount++;

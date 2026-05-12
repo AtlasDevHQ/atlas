@@ -53,7 +53,7 @@ export interface EEMock {
   setEnterpriseLicenseKey: (key: string | undefined) => void;
   /** Toggle hasInternalDB return value. */
   setHasInternalDB: (has: boolean) => void;
-  /** When true, the mocked `decryptUrl` throws to simulate key-rotation drift. */
+  /** When true, the mocked `decryptSecret` throws to simulate key-rotation drift. */
   setDecryptThrows: (throws: boolean) => void;
   /** Reset all mock state (call in beforeEach). */
   reset: () => void;
@@ -128,6 +128,15 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
       });
     },
     internalExecute: () => {},
+    encryptSecret: (v: string) => `encrypted:${v}`,
+    decryptSecret: (v: string) => {
+      if (decryptThrows) throw new Error("mocked decrypt failure (key-rotation drift)");
+      return v.startsWith("encrypted:") ? v.slice(10) : v;
+    },
+    // Deprecated re-exports preserved post-#2285 — declared so any
+    // partial-mock consumer still importing the alias from
+    // `@atlas/api/lib/db/internal` doesn't trip the loader's
+    // `Export not found` guard. Same behavior as the canonical pair.
     encryptUrl: (v: string) => `encrypted:${v}`,
     decryptUrl: (v: string) => {
       if (decryptThrows) throw new Error("mocked decrypt failure (key-rotation drift)");

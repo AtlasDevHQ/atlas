@@ -22,7 +22,7 @@ import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, decryptSecret } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists, invalidateOrgWhitelist } from "@atlas/api/lib/semantic";
 import { DEMO_CONNECTION_ID, bulkUpsertEntities } from "@atlas/api/lib/semantic/entities";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic/sync";
@@ -905,8 +905,8 @@ async function resolveConnectionUrl(
       if (hasInternalDB()) {
         // Exclude `status = 'archived'` so per-org tombstone rows (the
         // shadow rows inserted by the delete-as-hide flow in
-        // admin-connections.ts) never reach `decryptUrl`. Their `url` is
-        // the empty-string marker and `decryptUrl('')` throws an
+        // admin-connections.ts) never reach `decryptSecret`. Their `url` is
+        // the empty-string marker and `decryptSecret('')` throws an
         // unrecognized-format error. Status filter is the cheapest way to
         // keep the tombstone invariant local to the visibility layer.
         const rows = await internalQuery<{ url: string; schema_name: string | null }>(
@@ -916,7 +916,7 @@ async function resolveConnectionUrl(
           [connectionId, orgId ?? "__global__"],
         );
         if (rows.length > 0) {
-          const url = decryptUrl(rows[0].url);
+          const url = decryptSecret(rows[0].url);
           const dbType = detectDBType(url);
           return { url, dbType, schema: rows[0].schema_name ?? "public" };
         }
@@ -943,7 +943,7 @@ async function resolveConnectionUrl(
 
   // Second try: internal DB only (connection not in runtime registry).
   // Excludes archived rows so per-org delete-as-hide tombstones (whose
-  // `url = ''` placeholder would crash `decryptUrl` below) read as
+  // `url = ''` placeholder would crash `decryptSecret` below) read as
   // not-found here, mirroring the first-try filter at L907.
   if (hasInternalDB()) {
     const orgFilter = orgId ? " AND (org_id = $2 OR org_id = '__global__') ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1" : "";
@@ -955,7 +955,7 @@ async function resolveConnectionUrl(
       params,
     );
     if (rows.length > 0) {
-      const url = decryptUrl(rows[0].url);
+      const url = decryptSecret(rows[0].url);
       const dbType = detectDBType(url);
       return { url, dbType, schema: rows[0].schema_name ?? "public" };
     }

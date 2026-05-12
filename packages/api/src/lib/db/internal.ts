@@ -70,7 +70,7 @@ function parseVersionedCiphertext(stored: string): { version: number; body: stri
 function decryptBody(body: string, key: Buffer): string {
   const parts = body.split(":");
   if (parts.length !== 3) {
-    throw new Error("Failed to decrypt connection URL: unrecognized format");
+    throw new Error("Failed to decrypt stored secret: unrecognized format");
   }
   const iv = Buffer.from(parts[0], "base64");
   const authTag = Buffer.from(parts[1], "base64");
@@ -82,13 +82,23 @@ function decryptBody(body: string, key: Buffer): string {
 }
 
 /**
- * Encrypts a connection URL using AES-256-GCM under the active keyset
- * entry. New writes carry the `enc:v<N>:` prefix so the rotation script
- * can identify rows below the active version. Returns the plaintext
+ * Encrypts an arbitrary string secret (connection URL, API key, JSON
+ * cred bundle) using AES-256-GCM under the active keyset entry. New
+ * writes carry the `enc:v<N>:` prefix so the rotation script can
+ * identify rows below the active version. Returns the plaintext
  * unchanged if no encryption key is available (dev / self-hosted
  * passthrough).
+ *
+ * Companion: `db/secret-encryption.ts` also exports `encryptSecret` —
+ * that helper is for new integration-credential columns where the
+ * URL-shape passthrough in `decryptSecret` (below) would misclassify
+ * inputs like Telegram tokens or JSON blobs. See its module header
+ * for the picking guide.
+ *
+ * The historic name `encryptUrl` is preserved as a deprecated
+ * re-export at the bottom of this file.
  */
-export function encryptUrl(plaintext: string): string {
+export function encryptSecret(plaintext: string): string {
   const keyset = getEncryptionKeyset();
   if (!keyset) return plaintext;
 
@@ -102,7 +112,7 @@ export function encryptUrl(plaintext: string): string {
 }
 
 /**
- * Decrypts a connection URL encrypted by `encryptUrl()`.
+ * Decrypts a string secret encrypted by `encryptSecret()`.
  * Read order (each case short-circuits):
  *   1. Looks like a plaintext URL (`scheme://…`) → return as-is.
  *   2. Carries `enc:v<N>:` prefix → look up key by version; fail loudly
@@ -111,13 +121,13 @@ export function encryptUrl(plaintext: string): string {
  *      format; decrypt with the active key (same as pre-F-47 behavior).
  *   4. Anything else → unrecognized format, throw.
  */
-export function decryptUrl(stored: string): string {
+export function decryptSecret(stored: string): string {
   if (isPlaintextUrl(stored)) return stored;
 
   const keyset = getEncryptionKeyset();
   if (!keyset) {
-    log.error("Encrypted connection URL found but no encryption key is available — set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET");
-    throw new Error("Cannot decrypt connection URL: no encryption key available");
+    log.error("Encrypted secret found but no encryption key is available — set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET");
+    throw new Error("Cannot decrypt stored secret: no encryption key available");
   }
 
   const versioned = parseVersionedCiphertext(stored);
@@ -126,10 +136,10 @@ export function decryptUrl(stored: string): string {
     if (!key) {
       log.error(
         { version: versioned.version, active: keyset.active.version },
-        "Encrypted connection URL references an unknown key version — ATLAS_ENCRYPTION_KEYS missing this version",
+        "Encrypted secret references an unknown key version — ATLAS_ENCRYPTION_KEYS missing this version",
       );
       throw new Error(
-        `Cannot decrypt connection URL: key version v${versioned.version} not present in ATLAS_ENCRYPTION_KEYS`,
+        `Cannot decrypt stored secret: key version v${versioned.version} not present in ATLAS_ENCRYPTION_KEYS`,
       );
     }
     try {
@@ -137,9 +147,9 @@ export function decryptUrl(stored: string): string {
     } catch (err) {
       log.error(
         { err: err instanceof Error ? err.message : String(err), version: versioned.version },
-        "Failed to decrypt versioned connection URL — data may be corrupted",
+        "Failed to decrypt versioned secret — data may be corrupted",
       );
-      throw new Error("Failed to decrypt connection URL", { cause: err });
+      throw new Error("Failed to decrypt stored secret", { cause: err });
     }
   }
 
@@ -154,8 +164,8 @@ export function decryptUrl(stored: string): string {
   // that successfully decrypts is the right one).
   const parts = stored.split(":");
   if (parts.length !== 3) {
-    log.error({ partCount: parts.length }, "Stored connection URL is not plaintext and does not match encrypted format (expected 3 colon-separated parts)");
-    throw new Error("Failed to decrypt connection URL: unrecognized format");
+    log.error({ partCount: parts.length }, "Stored secret is not plaintext and does not match encrypted format (expected 3 colon-separated parts)");
+    throw new Error("Failed to decrypt stored secret: unrecognized format");
   }
   const legacyKey = keyset.byVersion.get(1);
   const usingActiveFallback = legacyKey === undefined;
@@ -166,7 +176,7 @@ export function decryptUrl(stored: string): string {
     // original key back under `v1:…` is the fix, not a ciphertext audit.
     log.warn(
       { active: keyset.active.version },
-      "F-47 legacy-unversioned connection URL encountered with no v1 key in ATLAS_ENCRYPTION_KEYS — " +
+      "F-47 legacy-unversioned secret encountered with no v1 key in ATLAS_ENCRYPTION_KEYS — " +
       "falling back to the active key. If this row was written pre-F-47 under a different raw value, " +
       "decryption will fail; add the original key back as v1:<raw> in ATLAS_ENCRYPTION_KEYS.",
     );
@@ -180,11 +190,27 @@ export function decryptUrl(stored: string): string {
         err: err instanceof Error ? err.message : String(err),
         usingActiveFallback,
       },
-      "Failed to decrypt connection URL — data may be corrupted or key may have changed",
+      "Failed to decrypt stored secret — data may be corrupted or key may have changed",
     );
-    throw new Error("Failed to decrypt connection URL", { cause: err });
+    throw new Error("Failed to decrypt stored secret", { cause: err });
   }
 }
+
+/**
+ * @deprecated Use `encryptSecret`. Kept as a re-export only so external
+ *   `@useatlas/sdk` / `@useatlas/react` consumers pinned to pre-#2285
+ *   versions don't break on a same-PR upgrade. **Remove in milestone
+ *   1.5.0** — by then the published SDK has shipped a release that
+ *   uses the canonical name. Tracked: #2285.
+ */
+export const encryptUrl = encryptSecret;
+
+/**
+ * @deprecated Use `decryptSecret`. See `encryptUrl` above for the
+ *   removal trigger (milestone 1.5.0, after the SDK consumer surface
+ *   migrates). Tracked: #2285.
+ */
+export const decryptUrl = decryptSecret;
 
 /**
  * Returns true when the value looks like a plaintext URL. Rejects
@@ -853,7 +879,7 @@ export async function loadSavedConnections(): Promise<number> {
     type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
     // Exclude `status = 'archived'` so per-org tombstone rows (the shadow
     // rows from the delete-as-hide flow in admin-connections.ts) never feed
-    // their empty-string `url` marker to `decryptUrl`. Without this filter
+    // their empty-string `url` marker to `decryptSecret`. Without this filter
     // a tombstone's newer `updated_at` would win the DISTINCT ON (id) race
     // and silently knock the canonical global row out of the in-memory
     // registry across every workspace on the next process restart.
@@ -871,7 +897,7 @@ export async function loadSavedConnections(): Promise<number> {
         continue;
       }
       try {
-        const url = decryptUrl(row.url);
+        const url = decryptSecret(row.url);
         connections.register(row.id, {
           url,
           description: row.description ?? undefined,

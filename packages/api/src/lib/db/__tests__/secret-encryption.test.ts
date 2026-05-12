@@ -58,8 +58,11 @@ describe("secret encryption helpers", () => {
 
     it("round-trips a Telegram bot token that contains colons", () => {
       // Telegram tokens look like "1234:ABC..." — colons in the plaintext
-      // would trip up encryptUrl's colon-count heuristic. encryptSecret
-      // uses a versioned prefix instead so this round-trips cleanly.
+      // would trip up the URL-helper's (db/internal.ts encryptSecret)
+      // legacy 3-part fallback: a 3-colon plaintext is read as
+      // `iv:authTag:ciphertext`, attempted as ciphertext, and silently
+      // mangled. The secret-encryption.ts encryptSecret here gates only
+      // on the `enc:v<N>:` prefix, so colon-rich plaintext round-trips.
       const plaintext = "1234567890:ABC-DEF_ghij1234:klmnopqrstuv";
       const encrypted = encryptSecret(plaintext);
       expect(decryptSecret(encrypted)).toBe(plaintext);

@@ -91,7 +91,12 @@ function NotebookContent() {
 
   // Fetch conversation list after auth is resolved
   useEffect(() => {
-    convos.fetchList();
+    convos.fetchList().catch((err: unknown) => {
+      console.debug(
+        "[notebook] convos.fetchList rejected:",
+        err instanceof Error ? err.message : String(err),
+      );
+    });
   }, [authMode, convos.fetchList]);
 
   // useChat
@@ -160,12 +165,14 @@ function NotebookContent() {
   // clear notebook state when the param goes empty (shell's "New chat").
   const lastLoadedIdRef = useRef<string | null>(null);
   useEffect(() => {
+    // Clear first — the page now stays mounted across sibling navigations, so
+    // a stale failure on B would otherwise persist when the user returns to A.
+    setError(null);
     if (!conversationId) {
       if (lastLoadedIdRef.current !== null) {
         setMessages([]);
         setServerNotebookState(null);
         setForkInfo(null);
-        setError(null);
         lastLoadedIdRef.current = null;
       }
       return;
@@ -207,8 +214,12 @@ function NotebookContent() {
 
   // Fork navigation callback
   const handleNavigateToBranch = useCallback((branchId: string) => {
-    setParams({ id: branchId, cell: "" });
-    convos.setSelectedId(branchId);
+    setParams({ id: branchId, cell: "" }).catch((err: unknown) => {
+      console.warn(
+        "[notebook] failed to set branch id param:",
+        err instanceof Error ? err.message : String(err),
+      );
+    });
     // Refresh sidebar to show new conversation
     setTimeout(() => {
       refreshConvosRef.current().catch((err: unknown) => {
@@ -218,7 +229,7 @@ function NotebookContent() {
         );
       });
     }, 500);
-  }, [setParams, convos]);
+  }, [setParams]);
 
   // useNotebook
   const notebook = useNotebook({
@@ -250,15 +261,22 @@ function NotebookContent() {
         };
 
   // Workspace shell delivers schema-explorer / prompt-library picks via the
-  // `prompt` URL param. Send the message once, then clear the param so a
-  // refresh doesn't replay it.
-  const promptDispatchedRef = useRef(false);
+  // `prompt` URL param. Send the message, then clear the param so a refresh
+  // doesn't replay it. Key on the dispatched value (not a once-per-mount
+  // flag) — the page stays mounted across sibling navigations, and a second
+  // pick on the same surface must re-fire.
+  const lastDispatchedPromptRef = useRef<string | null>(null);
   useEffect(() => {
-    if (promptDispatchedRef.current) return;
     if (!params.prompt) return;
+    if (params.prompt === lastDispatchedPromptRef.current) return;
     const text = params.prompt;
-    promptDispatchedRef.current = true;
-    setParams({ prompt: "" }).catch(() => undefined);
+    lastDispatchedPromptRef.current = text;
+    setParams({ prompt: "" }).catch((err: unknown) => {
+      console.warn(
+        "[notebook] failed to clear prompt param:",
+        err instanceof Error ? err.message : String(err),
+      );
+    });
     sendMessage({ text }).catch((err: unknown) => {
       console.warn(
         "[notebook] sendMessage from workspace prompt failed:",

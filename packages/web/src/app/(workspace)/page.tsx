@@ -200,15 +200,20 @@ function ChatPage() {
   const isLoading = status === "streaming" || status === "submitted";
 
   // When a caller deep-links with `?prompt=...` (wizard Done, signup success
-  // starters), prefill the input. We only set the input here — auto-submit
-  // would race with auth/transport readiness; users press Enter or click Send.
-  const prefilledRef = useRef(false);
+  // starters) or the workspace shell delivers a schema-explorer / prompt-
+  // library pick, prefill the input. Auto-submit would race with auth /
+  // transport readiness; users press Enter or click Send.
+  //
+  // Key on the dispatched value, not a once-per-mount flag — the page now
+  // stays mounted across sibling navigations (the workspace shell keeps it
+  // alive), and a second pick on the same surface must re-fire.
+  const lastPrefilledRef = useRef<string | null>(null);
   useEffect(() => {
-    if (prefilledRef.current) return;
     if (!params.prompt) return;
-    prefilledRef.current = true;
-    setInput(params.prompt);
-    // Clear the param so a refresh doesn't re-prefill, and the URL stays clean.
+    if (params.prompt === lastPrefilledRef.current) return;
+    const text = params.prompt;
+    lastPrefilledRef.current = text;
+    setInput(text);
     setParams({ prompt: "" }).catch((err: unknown) => {
       console.warn("[chat] failed to clear prompt param:", err instanceof Error ? err.message : String(err));
     });
@@ -268,17 +273,19 @@ function ChatPage() {
   // surface follows the URL: load on a new id, clear on an empty id after one
   // was loaded.
   useEffect(() => {
+    // Clear first — when the page stays mounted across navigations (the
+    // workspace shell keeps it alive), a stale load failure for B would
+    // otherwise persist when the user returns to A.
+    setError(null);
     if (!conversationId) {
       if (lastLoadedIdRef.current !== null) {
         setMessages([]);
-        setError(null);
         lastLoadedIdRef.current = null;
       }
       return;
     }
     if (conversationId === lastLoadedIdRef.current) return;
     let cancelled = false;
-    setError(null);
     async function load() {
       try {
         const convData = await convos.getConversationData(conversationId!);

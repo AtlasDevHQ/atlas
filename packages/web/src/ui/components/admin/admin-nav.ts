@@ -121,15 +121,14 @@ export const navGroups: NavGroup[] = [
 ];
 
 /**
- * Discriminated union over the three legal breadcrumb states. The previous
- * `{ section?: string; page?: string }` interface allowed `{ page: "X" }`
- * (illegal) and `{ section: "X" }` (never produced by the resolver but
- * representable). Encoding the invariant in the type lets `switch (b.kind)`
- * prove exhaustiveness in consumers.
+ * Discriminated union over the two legal breadcrumb states the resolver
+ * produces. The previous `{ section?: string; page?: string }` interface
+ * allowed `{ page: "X" }` (illegal) — encoding the invariant in the type
+ * lets `switch (b.kind)` prove exhaustiveness in consumers. Add a
+ * `section`-only variant if a future group-landing page needs one.
  */
 export type AdminBreadcrumb =
   | { kind: "overview" }
-  | { kind: "section"; title: string }
   | { kind: "page"; section: string; page: string };
 
 /**

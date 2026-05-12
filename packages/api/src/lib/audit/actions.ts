@@ -110,6 +110,19 @@ export const ADMIN_ACTIONS = {
     healthCheck: "connection.health_check",
     poolDrain: "connection.pool_drain",
   },
+  /**
+   * Connection-group admin actions (#2339). Renames are display-label
+   * changes only — `id` is the foreign key. `assignMember` covers both
+   * "move into group" and "unassign" (target group_id may be null).
+   * Snake-cased key matches the wire-format convention of every other
+   * multi-word target-type (oauth_client, mcp_session, etc.).
+   */
+  connection_group: {
+    create: "connection_group.create",
+    rename: "connection_group.rename",
+    delete: "connection_group.delete",
+    assignMember: "connection_group.assign_member",
+  },
   user: {
     invite: "user.invite",
     remove: "user.remove",

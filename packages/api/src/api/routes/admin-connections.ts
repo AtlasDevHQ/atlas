@@ -369,7 +369,27 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 
-  return c.json({ connections: filtered }, 200);
+  // Decorate with `group_id` from the internal DB (#2339). The in-memory
+  // registry tracks runtime metadata but not group membership; merging
+  // here keeps both surfaces in lockstep without a second round-trip from
+  // the admin UI. Missing internal DB (self-hosted no-internal-DB mode)
+  // falls back to undefined groupId on every row.
+  let groupIdByConnection = new Map<string, string | null>();
+  if (hasInternalDB() && filtered.length > 0) {
+    const ids = filtered.map((c) => c.id);
+    const rows = await internalQuery<{ id: string; group_id: string | null }>(
+      `SELECT id, group_id FROM connections WHERE org_id = $1 AND id = ANY($2::text[])`,
+      [orgId, ids],
+    );
+    groupIdByConnection = new Map(rows.map((r) => [r.id, r.group_id]));
+  }
+
+  const decorated = filtered.map((c) => ({
+    ...c,
+    groupId: groupIdByConnection.get(c.id) ?? null,
+  }));
+
+  return c.json({ connections: decorated }, 200);
 }));
 
 // GET /pool — pool metrics scoped to active org

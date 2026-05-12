@@ -85,4 +85,46 @@ export interface ConnectionDetail {
   maskedUrl: string | null;
   schema: string | null;
   managed: boolean;
+  /**
+   * Connection group membership. Null for pre-#2339 rows that haven't been
+   * backfilled or for connections that were unassigned via the admin UI.
+   * Schema + code use `group_id`; UI copy renders this as "environment".
+   * See PRD #2336.
+   */
+  groupId?: string | null;
+}
+
+/**
+ * A connection group bundles connections that share a logical schema
+ * (e.g. multi-region prod replicas). Content scoped to a group is shared
+ * across every member.
+ *
+ * Vocabulary: schema + code call this a `ConnectionGroup`; UI copy says
+ * "environment". See PRD #2336 § Vocabulary. The `name` is a mutable
+ * display label — references key off `id`, never `name`.
+ *
+ * Added in 1.4.4 (#2339). Content tables (semantic entities, dashboard
+ * cards, scheduled tasks, approvals, PII classifications) move from
+ * connection-scoped to group-scoped in #2340–#2344.
+ */
+export interface ConnectionGroup {
+  id: string;
+  name: string;
+  /** Number of connections currently assigned to this group. */
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * One connection's membership in a {@link ConnectionGroup}. Returned by
+ * the group detail endpoint so the admin UI can render member chips
+ * without a second round-trip to `/admin/connections`.
+ */
+export interface ConnectionGroupMember {
+  connectionId: string;
+  /** Mirrors {@link ConnectionInfo.dbType} so member chips can show an icon. */
+  dbType: DBType | "unknown";
+  /** Optional human-readable description from the underlying connection. */
+  description: string | null;
 }

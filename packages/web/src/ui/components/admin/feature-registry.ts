@@ -41,6 +41,7 @@ export const FEATURE_NAMES = [
   "Data Residency",
   "Delete workspace",
   "Email Provider",
+  "Environments",
   "Integrations",
   "IP Allowlist",
   "Learned Patterns",

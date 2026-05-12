@@ -1,7 +1,13 @@
 FROM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 AS base
 
-# Cache-bust: increment to force apt layer rebuild
-ARG CACHE_BUST=1
+# Cache-bust: increment to force apt layer rebuild.
+# Bumped to 2 after the 1.4.3 dogfood incident — the running container's PATH
+# lookup couldn't resolve bash (lived in /usr/local/bin in the cached image,
+# while /exec passed only /bin:/usr/bin), so every explore call returned
+# `ENOENT: posix_spawn 'bash'`. Bumping forces Railway to rebuild from a fresh
+# apt layer; server.ts now resolves bash to an absolute path at boot so the
+# resolved PATH no longer matters at /exec time.
+ARG CACHE_BUST=2
 
 # Install tools needed for explore mode + Python for executePython
 RUN apt-get update && apt-get install -y --no-install-recommends \

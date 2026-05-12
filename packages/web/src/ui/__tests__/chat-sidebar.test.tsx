@@ -43,13 +43,9 @@ mock.module("@/ui/components/conversations/conversation-list", () => ({
     ),
 }));
 
-mock.module("@/ui/components/org-switcher", () => ({
-  OrgSwitcher: () =>
-    React.createElement("div", { "data-testid": "org-switcher" }),
-}));
-
-mock.module("@/ui/components/user-menu", () => ({
-  UserMenu: () => React.createElement("div", { "data-testid": "user-menu" }),
+mock.module("@/ui/components/chat/sidebar-user-menu", () => ({
+  SidebarUserMenu: () =>
+    React.createElement("div", { "data-testid": "sidebar-user-menu" }),
 }));
 
 mock.module("@/ui/components/demo-indicator-chip", () => ({

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 import { Loader2, NotebookPen, Star, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -84,121 +84,120 @@ export function ConversationItem({
 
   const convertToNotebook =
     onConvertToNotebook && conversation.surface !== "notebook" ? onConvertToNotebook : null;
-  // Title fades on its right edge to make room for absolutely-positioned action buttons.
-  // Width is set via CSS var (Tailwind's JIT can't see interpolated arbitrary values).
-  // Hover reveals trash + optional convert (~4.75rem / ~7rem); the star button
-  // is always laid out — only its visibility flips when the row isn't starred.
-  const hoverMaskW = convertToNotebook ? "7rem" : "4.75rem";
 
+  // Named group (`group/convo-item`) keeps hover scoped to this row. shadcn's
+  // <Sidebar> root has a bare `.group` class, so a plain `group-hover:` would
+  // trigger from anywhere inside the rail.
   return (
     <div
-      className={`group relative w-full rounded-lg transition-colors ${
+      className={cn(
+        "group/convo-item w-full rounded-lg transition-colors",
         isActive
           ? "bg-primary/10 ring-1 ring-inset ring-primary/30 dark:bg-primary/15 dark:ring-primary/40"
-          : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
-      }`}
+          : "hover:bg-zinc-100 dark:hover:bg-zinc-800",
+      )}
     >
-      <button
-        type="button"
-        onClick={onSelect}
-        aria-current={isActive ? "page" : undefined}
-        className={`block w-full cursor-pointer rounded-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
-          isActive
-            ? "text-zinc-900 dark:text-zinc-100"
-            : "text-zinc-700 dark:text-zinc-300"
-        }`}
-      >
-        <span
-          style={{ "--mask-w": hoverMaskW } as CSSProperties}
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-current={isActive ? "page" : undefined}
           className={cn(
-            "block truncate text-sm font-medium",
-            conversation.starred &&
-              "[mask-image:linear-gradient(to_right,black_calc(100%-2.25rem),transparent)]",
-            "group-hover:[mask-image:linear-gradient(to_right,black_calc(100%-var(--mask-w)),transparent)]",
+            "min-w-0 flex-1 cursor-pointer rounded-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+            isActive
+              ? "text-zinc-900 dark:text-zinc-100"
+              : "text-zinc-700 dark:text-zinc-300",
           )}
         >
-          {conversation.title || "New conversation"}
-        </span>
-        <span className="block text-xs text-zinc-600 dark:text-zinc-400">
-          {relativeTime(conversation.updatedAt)}
-        </span>
-      </button>
+          <span className="block truncate text-sm font-medium">
+            {conversation.title || "New conversation"}
+          </span>
+          <span className="block text-xs text-zinc-600 dark:text-zinc-400">
+            {relativeTime(conversation.updatedAt)}
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-0.5 pr-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={async () => {
+              if (starPending) return;
+              setStarPending(true);
+              try {
+                await onStar(!conversation.starred);
+              } catch (err: unknown) {
+                console.warn("Failed to update star:", err instanceof Error ? err.message : String(err));
+                setError(`Couldn't update star — ${explainError(err)}.`);
+                setTimeout(() => setError(null), 4000);
+              } finally {
+                setStarPending(false);
+              }
+            }}
+            disabled={starPending}
+            className={cn(
+              "size-8 transition-opacity",
+              conversation.starred
+                ? "text-amber-400 opacity-100 hover:text-amber-500 dark:text-amber-400 dark:hover:text-amber-300"
+                : "text-zinc-400 opacity-100 hover:text-amber-400 md:opacity-0 md:group-hover/convo-item:opacity-100 dark:hover:text-amber-400",
+              starPending && "opacity-50",
+            )}
+            aria-label={conversation.starred ? "Unstar conversation" : "Star conversation"}
+          >
+            {starPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
+            )}
+          </Button>
+          {convertToNotebook && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={async () => {
+                if (converting) return;
+                setConverting(true);
+                try {
+                  const { id } = await convertToNotebook();
+                  router.push(`/notebook?id=${id}`);
+                } catch (err: unknown) {
+                  console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));
+                  setError(`Couldn't convert — ${explainError(err)}.`);
+                  setTimeout(() => setError(null), 4000);
+                } finally {
+                  setConverting(false);
+                }
+              }}
+              disabled={converting}
+              className={cn(
+                "size-8 text-zinc-400 opacity-100 transition-opacity hover:text-zinc-600 md:opacity-0 md:group-hover/convo-item:opacity-100 dark:hover:text-zinc-300",
+                converting && "opacity-50",
+              )}
+              aria-label="Convert to notebook"
+            >
+              {converting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <NotebookPen className="size-3.5" />
+              )}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setConfirmDelete(true)}
+            disabled={deleting}
+            className="size-8 shrink-0 text-zinc-400 opacity-100 transition-opacity hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover/convo-item:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
+            aria-label="Delete conversation"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
       {error && (
         <p role="alert" className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">
           {error}
         </p>
       )}
-      <div className="absolute right-1 top-1 flex items-center gap-0.5">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={async () => {
-            if (starPending) return;
-            setStarPending(true);
-            try {
-              await onStar(!conversation.starred);
-            } catch (err: unknown) {
-              console.warn("Failed to update star:", err instanceof Error ? err.message : String(err));
-              setError(`Couldn't update star — ${explainError(err)}.`);
-              setTimeout(() => setError(null), 4000);
-            } finally {
-              setStarPending(false);
-            }
-          }}
-          disabled={starPending}
-          className={`size-8 transition-all ${
-            conversation.starred
-              ? "text-amber-400 opacity-100 hover:text-amber-500 dark:text-amber-400 dark:hover:text-amber-300"
-              : "text-zinc-400 opacity-100 md:opacity-0 hover:text-amber-400 md:group-hover:opacity-100 dark:hover:text-amber-400"
-          } ${starPending ? "opacity-50" : ""}`}
-          aria-label={conversation.starred ? "Unstar conversation" : "Star conversation"}
-        >
-          {starPending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
-          )}
-        </Button>
-        {convertToNotebook && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={async () => {
-              if (converting) return;
-              setConverting(true);
-              try {
-                const { id } = await convertToNotebook();
-                router.push(`/notebook?id=${id}`);
-              } catch (err: unknown) {
-                console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));
-                setError(`Couldn't convert — ${explainError(err)}.`);
-                setTimeout(() => setError(null), 4000);
-              } finally {
-                setConverting(false);
-              }
-            }}
-            disabled={converting}
-            className={`size-8 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:text-zinc-600 md:group-hover:opacity-100 dark:hover:text-zinc-300 ${converting ? "opacity-50" : ""}`}
-            aria-label="Convert to notebook"
-          >
-            {converting ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <NotebookPen className="size-3.5" />
-            )}
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setConfirmDelete(true)}
-          disabled={deleting}
-          className="size-8 shrink-0 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:bg-red-50 hover:text-red-500 md:group-hover:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
-          aria-label="Delete conversation"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-      </div>
     </div>
   );
 }

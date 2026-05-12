@@ -28,7 +28,6 @@ import { invalidateOpenAICatalog } from "@atlas/api/lib/openai-catalog";
 import {
   invalidateBedrockCatalog,
   getBedrockCatalog,
-  type BedrockDiscoveryCredentials,
 } from "@atlas/api/lib/bedrock-catalog";
 import { suggestModelReplacement } from "@atlas/api/lib/byot-deprecation";
 import type { BedrockRegion, GatewayCatalogModel } from "@useatlas/types";
@@ -89,20 +88,47 @@ interface ModelConfigRow {
 }
 
 /**
- * Parse a string-encoded Bedrock credential bundle. The bundle ships on
- * the wire as JSON; we round-trip it through the URL encryption helper
- * the same way every other secret column does (the helper is a thin
- * AES-GCM wrapper that's content-agnostic). Returns null on malformed
- * input so the caller can surface a clean validation error.
+ * AWS IAM credential bundle for Bedrock. Mirrored from
+ * `BedrockDiscoveryCredentials` in `@atlas/api/lib/bedrock-catalog` —
+ * kept here so the `WorkspaceCredentials` union owns its own cred shape
+ * without re-exporting the catalog-fetcher's internal type. The two
+ * stay structurally identical; a drift would surface as a TypeScript
+ * error at the `getBedrockCatalog` call sites that pass this shape in.
  */
+export interface BedrockCredentialBundle {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+}
+
 /**
- * Parse a string-encoded Bedrock credential bundle. The route layer
- * calls this directly to keep its malformed-bundle path consistent with
- * the EE row mapper's `decrypt_failed` surfacing.
+ * Discriminated union over the typed cred material a workspace row
+ * carries after `api_key_encrypted` is decrypted. Internal to the
+ * BYOT boundary — never appears on the wire.
+ *
+ * The bedrock arm's `bundle` is nullable so `getWorkspaceModelConfigRaw`
+ * can carry the malformed-bundle signal forward (post-decrypt JSON
+ * shape failure) without conflating it with a true crypto failure —
+ * `extractCred` in the route adapter then maps the null state to the
+ * `malformed_bedrock_bundle` 422 envelope while a thrown
+ * `ModelConfigDecryptError` maps to `decrypt_failed` 422.
  */
-export function parseBedrockCredentialBundle(
-  raw: string,
-): { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null {
+export type WorkspaceCredentials =
+  | { provider: "bedrock"; bundle: BedrockCredentialBundle | null }
+  | {
+      provider: Exclude<ModelConfigProvider, "bedrock" | "gateway">;
+      apiKey: string;
+    }
+  | { provider: "gateway"; apiKey: string | null };
+
+/**
+ * Parse a string-encoded Bedrock credential bundle. Private to this
+ * module — call sites consume the typed `WorkspaceCredentials` union
+ * built in `getWorkspaceModelConfigRaw` / `rowToConfig` instead. The
+ * one remaining direct caller is `testModelConfig`, which parses
+ * user-supplied form input rather than a stored row.
+ */
+function parseBedrockCredentialBundle(raw: string): BedrockCredentialBundle | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -347,6 +373,55 @@ export const getWorkspaceModelConfig = (
   });
 
 /**
+ * Decrypted workspace model configuration, internal shape. Returned by
+ * `getWorkspaceModelConfigRaw` for the AI Layer + admin route layer.
+ *
+ * The `credentials` field carries the typed cred material via a
+ * discriminated union, so consumers no longer re-parse the JSON bundle
+ * for bedrock or fork on `provider === "bedrock"` to read a separate
+ * `apiKey` shape — they switch on `credentials.provider` and read the
+ * matching field. The wire shape of `WorkspaceModelConfig` is
+ * unchanged (it carries a masked `apiKeyMasked` + `apiKeyStatus`).
+ */
+export interface RawWorkspaceModelConfig {
+  readonly provider: ModelConfigProvider;
+  readonly model: string;
+  readonly baseUrl: string | null;
+  readonly bedrockRegion: string | null;
+  readonly credentials: WorkspaceCredentials;
+}
+
+/**
+ * Build a `WorkspaceCredentials` value from a successfully decrypted
+ * plaintext + the row's provider. The bedrock arm parses the JSON
+ * bundle here; a malformed bundle carries forward as
+ * `{ provider: "bedrock", bundle: null }` so the route adapter can map
+ * it to the `malformed_bedrock_bundle` envelope distinct from a true
+ * decrypt failure.
+ */
+function buildWorkspaceCredentials(
+  provider: ModelConfigProvider,
+  decrypted: string | null,
+): WorkspaceCredentials {
+  switch (provider) {
+    case "bedrock":
+      return {
+        provider: "bedrock",
+        bundle: decrypted === null ? null : parseBedrockCredentialBundle(decrypted),
+      };
+    case "gateway":
+      return { provider: "gateway", apiKey: decrypted };
+    default:
+      // `decrypted === null` is rejected by the DB CHECK
+      // (`chk_model_provider_key`) for every non-gateway provider, so
+      // by the time we land here the helper has a non-null plaintext.
+      // The fallback to "" keeps the union strict and gives a clearly
+      // wrong value if a future schema change ever lets null through.
+      return { provider, apiKey: decrypted ?? "" };
+  }
+}
+
+/**
  * Get the raw (decrypted) workspace model configuration for provider resolution.
  * Returns null if no workspace config is set or its provider failed validation.
  * Fails with `ModelConfigDecryptError` when an encrypted key cannot be
@@ -354,20 +429,11 @@ export const getWorkspaceModelConfig = (
  * rather than silently falling back to the platform default (which would
  * bill the platform without consent).
  *
- * WARNING: The returned API key is in plaintext. Never expose it to clients.
+ * WARNING: The returned credentials are in plaintext. Never expose to clients.
  */
 export const getWorkspaceModelConfigRaw = (
   orgId: string,
-): Effect.Effect<
-  {
-    provider: ModelConfigProvider;
-    model: string;
-    apiKey: string | null;
-    baseUrl: string | null;
-    bedrockRegion: string | null;
-  } | null,
-  ModelConfigDecryptError | Error
-> =>
+): Effect.Effect<RawWorkspaceModelConfig | null, ModelConfigDecryptError | Error> =>
   Effect.gen(function* () {
     // Skip enterprise check for provider resolution — the enterprise gate
     // is enforced at the admin route level. If a config exists, we use it.
@@ -396,10 +462,10 @@ export const getWorkspaceModelConfigRaw = (
       return null;
     }
 
-    let apiKey: string | null = null;
+    let decrypted: string | null = null;
     if (row.api_key_encrypted !== null) {
       try {
-        apiKey = decryptSecret(row.api_key_encrypted);
+        decrypted = decryptSecret(row.api_key_encrypted);
       } catch (err) {
         const cause = err instanceof Error ? err.message : String(err);
         log.error(
@@ -413,12 +479,12 @@ export const getWorkspaceModelConfigRaw = (
     return {
       provider: row.provider,
       model: row.model,
-      apiKey,
       baseUrl: row.base_url,
       // Mirror `rowToConfig`: only bedrock rows are allowed to surface
       // a region. A stray region from a pre-migration row or a future
       // bug elsewhere doesn't leak into the AI Layer.
       bedrockRegion: row.provider === "bedrock" ? row.bedrock_region : null,
+      credentials: buildWorkspaceCredentials(row.provider, decrypted),
     };
   });
 
@@ -818,7 +884,7 @@ export const testModelConfig = (
                   // throwaway rows keyed by accessKeyId.
                   `__test:${bundle.accessKeyId}`,
                   config.bedrockRegion as BedrockRegion,
-                  bundle as BedrockDiscoveryCredentials,
+                  bundle,
                   { refresh: true, persist: false },
                 );
                 const ids = new Set(catalog.models.map((m) => m.id));

@@ -17,8 +17,9 @@ import {
   deleteWorkspaceModelConfig,
   testModelConfig,
   reconcileModelDeprecation,
-  parseBedrockCredentialBundle,
   ModelConfigError,
+  type BedrockCredentialBundle,
+  type RawWorkspaceModelConfig,
 } from "@atlas/ee/platform/model-routing";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -454,18 +455,18 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       return c.json(catalog, 200);
     }
 
-    // BYOT direct-provider catalogs (anthropic, openai) share a flow:
+    // BYOT direct-provider catalogs (anthropic, openai, bedrock) share
+    // one flow:
     //   1. The workspace must have a saved config matching the requested
-    //      provider and a healthy (decryptable) key.
+    //      provider and a healthy (decryptable) key/bundle.
     //   2. The catalog fetch is credentialed — audit the outcome (never
     //      the key).
     //   3. Provider-specific exceptions map to a small set of HTTP
     //      envelopes: 401 / 429 / 503.
     //
-    // The dispatch table below keeps the per-provider knobs (fetcher,
-    // error classes, friendly provider name) in one place. Bedrock
-    // forks into a parallel inline flow because its cred shape is
-    // `(region, bundle)` instead of `(apiKey)`.
+    // Each provider plugs in as a `ByotAdapter<Cred>` entry; bedrock's
+    // cred shape (`{ region, bundle }`) joins the same table as the
+    // string-apiKey shape, so the inline bedrock branch deletes.
     if (!orgId) {
       return c.json(
         { error: "bad_request", message: "No active organization. Set an active org first.", requestId },
@@ -503,19 +504,17 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
     }
     const rawConfig = rawConfigOrDecryptError.cfg;
 
-    if (provider === "bedrock") {
-      // Bedrock has a divergent shape: creds are a JSON bundle, region is
-      // a separate workspace_model_config column. Surface a clear envelope
-      // for each missing precondition before the dispatch tries to fetch.
-      if (
-        !rawConfig ||
-        rawConfig.provider !== "bedrock" ||
-        !rawConfig.apiKey ||
-        !rawConfig.bedrockRegion
-      ) {
-        // Audit the missing-key envelope to match the success path —
+    const adapter = byotAdapter(provider);
+    const extracted = rawConfig
+      ? adapter.extractCred(rawConfig)
+      : ({ kind: "missing_byot_key" } as const);
+
+    if (extracted.kind === "missing_byot_key") {
+      if (provider === "bedrock") {
+        // Bedrock's missing-precondition envelope mirrors the
+        // anthropic/openai path but is audited explicitly — historic
         // forensic queries scanning catalog_refresh attempts shouldn't
-        // see silent 400s for misconfigured workspaces.
+        // see a silent 400 for a misconfigured bedrock workspace.
         logAdminAction({
           actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
           targetType: "model_config",
@@ -533,115 +532,6 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
           400,
         );
       }
-      // Reuse the shared parser so the route and EE row mapper stay
-      // in lockstep. `null` is the malformed-bundle signal — distinct
-      // from a true decrypt failure (`decryptSecret` throwing), which
-      // would have already surfaced via `rowToConfig`'s
-      // `apiKeyStatus = "decrypt_failed"` path.
-      const bundle = parseBedrockCredentialBundle(rawConfig.apiKey);
-      if (!bundle) {
-        log.warn(
-          { orgId },
-          "Stored bedrock bundle decrypted but parsed as null — surfacing malformed_bedrock_bundle 422",
-        );
-        logAdminAction({
-          actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
-          targetType: "model_config",
-          targetId: orgId,
-          status: "failure",
-          metadata: { provider: "bedrock", error: "malformed_bedrock_bundle" },
-        });
-        return c.json(
-          {
-            error: "malformed_bedrock_bundle",
-            message:
-              "Stored bedrock credentials are malformed. Re-enter the access key + secret on the AI Provider page.",
-            requestId,
-          },
-          422,
-        );
-      }
-
-      const bedrockResult = yield* Effect.tryPromise({
-        try: async (): Promise<ByotCatalogResult> => {
-          try {
-            const cat = await getBedrockCatalog(
-              orgId,
-              rawConfig.bedrockRegion as BedrockRegion,
-              bundle,
-              { refresh },
-            );
-            return {
-              kind: "ok",
-              models: cat.models,
-              fetchedAt: cat.fetchedAt,
-              source: cat.source,
-            };
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            if (err instanceof BedrockCatalogUnauthorized) {
-              return { kind: "byot_key_invalid", message };
-            }
-            if (err instanceof BedrockCatalogRateLimited) {
-              return {
-                kind: "byot_provider_rate_limited",
-                message,
-                retryAfter: err.retryAfterSeconds,
-              };
-            }
-            if (err instanceof BedrockCatalogUnavailable) {
-              return { kind: "byot_provider_unavailable", message };
-            }
-            // Unmapped error class — the three instanceof arms above
-            // cover every error the bedrock fetcher is documented to
-            // throw, but a future addition that forgets to add an arm
-            // would land here and bubble up as a generic 500 with the
-            // `_tag` lost. Log loudly so the gap is visible in prod
-            // before users hit it.
-            log.error(
-              {
-                err: err instanceof Error ? err.message : String(err),
-                errName: err instanceof Error ? err.name : "Unknown",
-                provider: "bedrock",
-              },
-              "Unmapped bedrock catalog error class — add an instanceof arm",
-            );
-            throw err;
-          }
-        },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
-
-      if (bedrockResult.kind === "ok") {
-        yield* reconcileModelDeprecation(
-          orgId,
-          rawConfig.model,
-          "bedrock",
-          bedrockResult.models,
-        ).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              const message = err instanceof Error ? err.message : String(err);
-              log.warn(
-                { orgId, provider: "bedrock", err: message },
-                "reconcileModelDeprecation failed — modelStatus may be stale until next refresh",
-              );
-              return null;
-            }),
-          ),
-        );
-      }
-
-      return finalizeByotCatalog(c, bedrockResult, {
-        orgId,
-        requestId,
-        provider: "bedrock",
-      });
-    }
-
-    const adapter = byotAdapter(provider);
-
-    if (!rawConfig || rawConfig.provider !== adapter.providerKey || !rawConfig.apiKey) {
       return c.json(
         {
           error: "missing_byot_key",
@@ -652,10 +542,33 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       );
     }
 
+    if (extracted.kind === "malformed_bedrock_bundle") {
+      log.warn(
+        { orgId },
+        "Stored bedrock bundle decrypted but parsed as null — surfacing malformed_bedrock_bundle 422",
+      );
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.model_config.catalogRefresh,
+        targetType: "model_config",
+        targetId: orgId,
+        status: "failure",
+        metadata: { provider: "bedrock", error: "malformed_bedrock_bundle" },
+      });
+      return c.json(
+        {
+          error: "malformed_bedrock_bundle",
+          message:
+            "Stored bedrock credentials are malformed. Re-enter the access key + secret on the AI Provider page.",
+          requestId,
+        },
+        422,
+      );
+    }
+
     const catalogResult = yield* Effect.tryPromise({
       try: async (): Promise<ByotCatalogResult> => {
         try {
-          const cat = await adapter.fetch(orgId, rawConfig.apiKey ?? "", { refresh });
+          const cat = await adapter.fetch(orgId, extracted.cred, { refresh });
           return {
             kind: "ok",
             models: cat.models,
@@ -680,9 +593,11 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
           if (err instanceof adapter.errors.Unavailable) {
             return { kind: "byot_provider_unavailable", message };
           }
-          // Unmapped error class — see the parallel comment in the
-          // bedrock branch. Log so production sees the missing arm
-          // before the user-facing 500.
+          // Unmapped error class — the three instanceof arms above
+          // cover every error the fetcher is documented to throw, but
+          // a future addition that forgets an arm would land here and
+          // bubble up as a generic 500 with the `_tag` lost. Log
+          // loudly so the gap is visible in prod before users hit it.
           log.error(
             {
               err: err instanceof Error ? err.message : String(err),
@@ -697,7 +612,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
 
-    if (catalogResult.kind === "ok") {
+    if (catalogResult.kind === "ok" && rawConfig) {
       // Best-effort reconciliation: a DB hiccup here leaves
       // `model_status` stale until the next refresh. We log the failure
       // explicitly so prod dashboards can spot a degraded reconcile
@@ -732,14 +647,22 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
 // ---------------------------------------------------------------------------
 // BYOT direct-provider catalog adapter
 //
-// Anthropic + OpenAI share an identical flow (config gate → fetch →
-// classified-error envelope). The adapter is the smallest surface that
-// captures the per-provider knobs without abstracting away the per-route
-// audit + envelope logic. A direct provider whose cred shape matches
-// `(orgId, apiKey)` plugs in by adding a single entry to `byotAdapter`;
-// providers with a different cred shape (Bedrock takes a region + a
-// bundle) get a parallel inline flow.
+// Anthropic, OpenAI, and Bedrock share an identical route flow (config
+// gate → fetch → classified-error envelope). The adapter is the
+// smallest surface that captures the per-provider knobs without
+// abstracting away the per-route audit + envelope logic. Each provider
+// joins the table by adding a single `ByotAdapter<Cred>` entry — the
+// `Cred` shape varies (string apiKey for anthropic/openai vs
+// `{ region, bundle }` for bedrock), but the dispatch is uniform.
 // ---------------------------------------------------------------------------
+
+type ByotProviderKey = "anthropic" | "openai" | "bedrock";
+
+/** Cred shape for the bedrock arm — region + IAM bundle from the union. */
+interface BedrockCred {
+  readonly region: BedrockRegion;
+  readonly bundle: BedrockCredentialBundle;
+}
 
 interface ByotErrorClasses {
   // `abstract new (...args: never)` is the honest type for these — the
@@ -747,7 +670,7 @@ interface ByotErrorClasses {
   // discriminators. `abstract` blocks `new adapter.errors.X(...)` calls
   // (which would be wrong here) while keeping `instanceof` lawful, and
   // typing `RateLimited`'s instance with `retryAfterSeconds` removes the
-  // `(err as unknown as …)` cast at the read site below.
+  // `(err as unknown as …)` cast at the read site above.
   readonly Unauthorized: abstract new (...args: never) => Error;
   readonly RateLimited: abstract new (...args: never) => Error & {
     readonly retryAfterSeconds: number | null;
@@ -761,12 +684,22 @@ interface ByotErrorClasses {
 // because Hono's typed-response narrowing rejects ReadonlyArray here.
 type ByotCatalogEntry = GatewayCatalogModel;
 
-interface ByotProviderAdapter {
-  readonly providerKey: "anthropic" | "openai";
+/**
+ * Per-provider classification of the saved workspace config. Built
+ * from the typed `WorkspaceCredentials` union — no inline JSON.parse,
+ * no per-provider raw-config probes outside the adapter.
+ */
+type ExtractCredResult<Cred> =
+  | { readonly kind: "ok"; readonly cred: Cred }
+  | { readonly kind: "missing_byot_key" }
+  | { readonly kind: "malformed_bedrock_bundle" };
+
+interface ByotAdapter<Cred> {
+  readonly providerKey: ByotProviderKey;
   readonly displayName: string;
   readonly fetch: (
     orgId: string,
-    apiKey: string,
+    cred: Cred,
     opts: { refresh?: boolean },
   ) => Promise<{
     models: ByotCatalogEntry[];
@@ -774,6 +707,10 @@ interface ByotProviderAdapter {
     source: "cache" | "fresh";
   }>;
   readonly errors: ByotErrorClasses;
+  /** Inspect the typed credentials union and return one of the three
+   * preconditions for the catalog fetch. `malformed_bedrock_bundle`
+   * is only ever returned by the bedrock adapter. */
+  readonly extractCred: (rawConfig: RawWorkspaceModelConfig) => ExtractCredResult<Cred>;
 }
 
 type ByotCatalogResult =
@@ -782,29 +719,85 @@ type ByotCatalogResult =
   | { kind: "byot_provider_rate_limited"; message: string; retryAfter: number | null }
   | { kind: "byot_provider_unavailable"; message: string };
 
-function byotAdapter(provider: "anthropic" | "openai"): ByotProviderAdapter {
-  if (provider === "anthropic") {
-    return {
-      providerKey: "anthropic",
-      displayName: "Anthropic",
-      fetch: getAnthropicCatalog,
-      errors: {
-        Unauthorized: AnthropicCatalogUnauthorized,
-        RateLimited: AnthropicCatalogRateLimited,
-        Unavailable: AnthropicCatalogUnavailable,
-      },
-    };
-  }
-  return {
-    providerKey: "openai",
-    displayName: "OpenAI",
-    fetch: getOpenAICatalog,
-    errors: {
-      Unauthorized: OpenAICatalogUnauthorized,
-      RateLimited: OpenAICatalogRateLimited,
-      Unavailable: OpenAICatalogUnavailable,
-    },
+/** Generic key-apiKey extractor — bound to a string-cred provider. */
+function extractApiKeyCred(
+  providerKey: Exclude<ByotProviderKey, "bedrock">,
+): (rawConfig: RawWorkspaceModelConfig) => ExtractCredResult<string> {
+  return (rawConfig) => {
+    const { credentials } = rawConfig;
+    if (credentials.provider !== providerKey) return { kind: "missing_byot_key" };
+    // `credentials.apiKey: string` by union narrowing — the gateway arm
+    // (which allows null) is gated out by the providerKey mismatch above.
+    if (!credentials.apiKey) return { kind: "missing_byot_key" };
+    return { kind: "ok", cred: credentials.apiKey };
   };
+}
+
+const ANTHROPIC_ADAPTER: ByotAdapter<string> = {
+  providerKey: "anthropic",
+  displayName: "Anthropic",
+  fetch: getAnthropicCatalog,
+  errors: {
+    Unauthorized: AnthropicCatalogUnauthorized,
+    RateLimited: AnthropicCatalogRateLimited,
+    Unavailable: AnthropicCatalogUnavailable,
+  },
+  extractCred: extractApiKeyCred("anthropic"),
+};
+
+const OPENAI_ADAPTER: ByotAdapter<string> = {
+  providerKey: "openai",
+  displayName: "OpenAI",
+  fetch: getOpenAICatalog,
+  errors: {
+    Unauthorized: OpenAICatalogUnauthorized,
+    RateLimited: OpenAICatalogRateLimited,
+    Unavailable: OpenAICatalogUnavailable,
+  },
+  extractCred: extractApiKeyCred("openai"),
+};
+
+const BEDROCK_ADAPTER: ByotAdapter<BedrockCred> = {
+  providerKey: "bedrock",
+  displayName: "AWS Bedrock",
+  fetch: (orgId, cred, opts) =>
+    getBedrockCatalog(orgId, cred.region, cred.bundle, opts),
+  errors: {
+    Unauthorized: BedrockCatalogUnauthorized,
+    RateLimited: BedrockCatalogRateLimited,
+    Unavailable: BedrockCatalogUnavailable,
+  },
+  extractCred: (rawConfig) => {
+    const { credentials, bedrockRegion } = rawConfig;
+    if (credentials.provider !== "bedrock") return { kind: "missing_byot_key" };
+    if (!bedrockRegion) return { kind: "missing_byot_key" };
+    if (credentials.bundle === null) return { kind: "malformed_bedrock_bundle" };
+    return {
+      kind: "ok",
+      cred: { region: bedrockRegion as BedrockRegion, bundle: credentials.bundle },
+    };
+  },
+};
+
+/**
+ * Adapter dispatch keyed on the route's `?provider=` value. The return
+ * type widens to `ByotAdapter<unknown>` so the route doesn't need to
+ * branch on the cred shape — the cred is private to the adapter's
+ * `extractCred` / `fetch` pair, which are typed in lockstep.
+ */
+function byotAdapter(provider: Exclude<ByotProviderKey, never>): ByotAdapter<unknown> {
+  switch (provider) {
+    case "anthropic":
+      return ANTHROPIC_ADAPTER as ByotAdapter<unknown>;
+    case "openai":
+      return OPENAI_ADAPTER as ByotAdapter<unknown>;
+    case "bedrock":
+      return BEDROCK_ADAPTER as ByotAdapter<unknown>;
+    default: {
+      const _exhaustive: never = provider;
+      throw new Error(`Unknown BYOT provider: ${String(_exhaustive)}`);
+    }
+  }
 }
 
 /**
@@ -816,7 +809,7 @@ function finalizeByotCatalog(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Hono's context type carries the runtime request var bag; we only call its narrow `json` + `header` here, no need to thread the full Env type through.
   c: any,
   result: ByotCatalogResult,
-  meta: { orgId: string; requestId: string; provider: "anthropic" | "openai" | "bedrock" },
+  meta: { orgId: string; requestId: string; provider: ByotProviderKey },
 ) {
   if (result.kind === "ok") {
     logAdminAction({

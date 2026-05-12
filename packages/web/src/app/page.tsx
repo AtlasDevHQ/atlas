@@ -422,19 +422,15 @@ function ChatPage() {
       >
         <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
         <div className="flex flex-1 overflow-hidden">
-          <main
+          <div
             className={cn(
               "flex flex-1 flex-col overflow-hidden",
               canvasOpen && "min-w-0",
             )}
           >
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
-              {/* Per-conversation toolbar — only the Share affordance lives
-                  here now; Prompt library / Schema explorer moved into the
-                  rail footer. SidebarTrigger replaces the hand-rolled mobile
-                  menu button. */}
               <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
-                <SidebarTrigger className="md:hidden" />
+                {convos.available && <SidebarTrigger className="md:hidden" />}
                 <div className="ml-auto flex items-center gap-1">
                   {conversationId && (
                     <ShareDialog
@@ -672,7 +668,7 @@ function ChatPage() {
                 </Button>
               </form>
             </div>
-          </main>
+          </div>
 
           <DashboardCanvas
             apiUrl={getApiUrl()}

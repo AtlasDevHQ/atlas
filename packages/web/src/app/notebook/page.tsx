@@ -11,6 +11,7 @@ import { useConversations, transformMessages } from "@/ui/hooks/use-conversation
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { authClient } from "@/lib/auth/client";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AppLayout } from "@/ui/components/app-layout";
 import { ChatSidebar } from "@/ui/components/chat/chat-sidebar";
 import { SchemaExplorer } from "@/ui/components/schema-explorer/schema-explorer";
@@ -329,7 +330,12 @@ function NotebookContent() {
           ) : null
         }
       >
-        <main className="flex h-full flex-1 flex-col overflow-hidden">
+        <div className="flex h-full flex-1 flex-col overflow-hidden">
+          {convos.available && (
+            <div className="border-b border-zinc-100 px-4 py-2 dark:border-zinc-800/60 md:hidden">
+              <SidebarTrigger />
+            </div>
+          )}
           {(error || convos.fetchError) && (
             <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
               <p>{error || convos.fetchError}</p>
@@ -349,11 +355,9 @@ function NotebookContent() {
               enabled: authResolved,
             }}
           />
-        </main>
+        </div>
       </AppLayout>
 
-      {/* Modals — same surface area as /, so Schema explorer and Prompt
-          library work from the rail on /notebook too. */}
       <SchemaExplorer
         open={schemaExplorerOpen}
         onOpenChange={setSchemaExplorerOpen}
@@ -363,6 +367,7 @@ function NotebookContent() {
               "[notebook] sendMessage from schema explorer failed:",
               err instanceof Error ? err.message : String(err),
             );
+            setError("Failed to send query. Please try again.");
           });
         }}
         getHeaders={getHeaders}
@@ -377,6 +382,7 @@ function NotebookContent() {
               "[notebook] sendMessage from prompt library failed:",
               err instanceof Error ? err.message : String(err),
             );
+            setError("Failed to send prompt. Please try again.");
           });
         }}
         getHeaders={getHeaders}

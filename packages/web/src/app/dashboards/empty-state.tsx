@@ -17,7 +17,7 @@ export function DashboardsEmptyState() {
 
   return (
     <AppShellWithRail>
-      <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-8">
+      <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-8">
         <div className="flex flex-col items-center justify-center py-24 text-center">
           <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
             <LayoutDashboard className="size-8 text-zinc-400 dark:text-zinc-500" />
@@ -39,7 +39,7 @@ export function DashboardsEmptyState() {
             </Button>
           </div>
         </div>
-      </main>
+      </div>
 
       <NewDashboardDialog
         open={createOpen}

@@ -247,7 +247,7 @@ export default function DashboardViewPage() {
 
   return (
     <AppShellWithRail>
-      <main className="flex h-full flex-1 flex-col overflow-auto">
+      <div className="flex h-full flex-1 flex-col overflow-auto">
         {loading && (
           <div className="space-y-4 px-4 py-6 sm:px-6">
             <Skeleton className="h-8 w-1/3" />
@@ -402,7 +402,7 @@ export default function DashboardViewPage() {
             )}
           </>
         )}
-      </main>
+      </div>
 
       <AlertDialog
         open={!!deleteCardTarget}

@@ -3,14 +3,7 @@
 import type { ReactNode } from "react";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 
-/**
- * Shared shell for `/`, `/notebook`, `/dashboards`. Mirrors `AdminLayout` —
- * one `SidebarProvider` per page, sidebar passed in as a slot so each route
- * can wire its own conversation handlers without lifting state.
- *
- * `/admin` and `/platform` keep their own `AdminLayout` (admin-role + MFA
- * gating live there, not here).
- */
+// Separate from AdminLayout because admin-role + MFA gating lives there.
 export function AppLayout({
   sidebar,
   children,

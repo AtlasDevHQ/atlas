@@ -20,9 +20,8 @@ import {
 } from "lucide-react";
 import type { Conversation } from "../../lib/types";
 import { useTourContext } from "@/ui/components/tour/guided-tour";
+import { PALETTE_EVENT, SHORTCUTS_EVENT } from "./palette-events";
 
-const SHORTCUTS_EVENT = "atlas:open-shortcuts";
-const PALETTE_EVENT = "atlas:open-palette";
 const MAX_RECENT_CONVERSATIONS = 8;
 
 export function CommandPalette({

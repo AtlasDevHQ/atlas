@@ -36,13 +36,8 @@ import { ConversationList } from "@/ui/components/conversations/conversation-lis
 import { OrgSwitcher } from "@/ui/components/org-switcher";
 import { UserMenu } from "@/ui/components/user-menu";
 import { DemoIndicatorChip } from "@/ui/components/demo-indicator-chip";
+import { PALETTE_EVENT } from "./palette-events";
 import type { Conversation } from "@/ui/lib/types";
-
-/**
- * Custom event the {@link CommandPalette} listens for so the rail's Search
- * row can open it without lifting palette state out of its module.
- */
-const PALETTE_EVENT = "atlas:open-palette";
 
 type SidebarFilter = "all" | "saved";
 
@@ -60,12 +55,8 @@ interface ChatSidebarProps {
   onOpenSchemaExplorer: () => void;
 }
 
-/**
- * Unified left rail used across `/`, `/notebook`, and `/dashboards`. Replaces
- * the section-less `<ConversationSidebar>` + the deleted `<ChatTopBar>` /
- * `<NavBar>` shells. Mirrors `<AdminSidebar>`'s shadcn `<Sidebar
- * collapsible="icon">` pattern so the two app halves share one shell.
- */
+// Mirrors AdminSidebar's shadcn collapsible="icon" pattern so both halves
+// of the app share one shell.
 export function ChatSidebar({
   conversations,
   selectedId,
@@ -147,7 +138,6 @@ export function ChatSidebar({
       </SidebarHeader>
 
       <SidebarContent>
-        {/* Quick actions — New conversation (primary CTA) + Search */}
         <SidebarGroup>
           <SidebarGroupContent>
             <div className="px-2 pb-1 group-data-[collapsible=icon]:hidden">
@@ -161,7 +151,6 @@ export function ChatSidebar({
               </Button>
             </div>
             <SidebarMenu>
-              {/* Collapsed mirror of the New-conversation CTA — icon-only. */}
               <SidebarMenuItem className="hidden group-data-[collapsible=icon]:block">
                 <SidebarMenuButton
                   onClick={onNewChat}
@@ -184,7 +173,6 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Workspace section nav — Chat / Notebook / Dashboards */}
         <SidebarGroup>
           <SidebarGroupLabel>Workspace</SidebarGroupLabel>
           <SidebarMenu>
@@ -209,7 +197,6 @@ export function ChatSidebar({
           </SidebarMenu>
         </SidebarGroup>
 
-        {/* Recents — conversation history, hidden in icon-collapsed mode. */}
         <SidebarGroup className="min-h-0 flex-1 group-data-[collapsible=icon]:hidden">
           <SidebarGroupLabel className="flex items-center justify-between">
             <span>Recents</span>
@@ -221,7 +208,7 @@ export function ChatSidebar({
               size="sm"
               value={filter}
               onValueChange={(val) => {
-                if (val) setFilter(val as SidebarFilter);
+                if (val === "all" || val === "saved") setFilter(val);
               }}
               className="gap-1"
             >
@@ -320,5 +307,3 @@ export function ChatSidebar({
     </Sidebar>
   );
 }
-
-export { PALETTE_EVENT as CHAT_SIDEBAR_PALETTE_EVENT };

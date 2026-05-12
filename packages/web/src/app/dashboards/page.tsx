@@ -59,7 +59,7 @@ export default async function DashboardsPage() {
     if (result.reason === "auth-required") redirect("/login?redirect=/dashboards");
     return (
       <AppShellWithRail>
-        <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
+        <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
           <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
             Couldn&rsquo;t load your dashboards
           </h1>
@@ -71,7 +71,7 @@ export default async function DashboardsPage() {
           <Button asChild size="sm" variant="outline" className="mt-6">
             <Link href="/dashboards">Try again</Link>
           </Button>
-        </main>
+        </div>
       </AppShellWithRail>
     );
   }

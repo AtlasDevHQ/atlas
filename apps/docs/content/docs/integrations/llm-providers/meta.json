@@ -1,0 +1,7 @@
+{
+  "title": "LLM Providers",
+  "description": "BYOT setup guides for direct LLM providers — IAM, regions, key rotation",
+  "pages": [
+    "bedrock"
+  ]
+}

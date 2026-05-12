@@ -1015,7 +1015,16 @@ export function ModelProviderSection({ showByotGate = true }: ModelProviderSecti
                     )}
                   />
                   <FormDescription>
-                    Atlas calls Bedrock with the workspace's IAM credentials. Minimum policy: <code>bedrock:InvokeModel</code> + <code>bedrock:ListFoundationModels</code> on every model you intend to use.
+                    Atlas calls Bedrock with the workspace's IAM credentials. Minimum policy: <code>bedrock:InvokeModel</code> + <code>bedrock:ListFoundationModels</code> on every model you intend to use.{" "}
+                    <a
+                      href="https://docs.useatlas.dev/integrations/llm-providers/bedrock"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-medium underline underline-offset-2 hover:text-foreground"
+                    >
+                      Setup guide
+                    </a>
+                    {" "}— IAM policy JSON, region availability, and key rotation.
                   </FormDescription>
                 </>
               )}

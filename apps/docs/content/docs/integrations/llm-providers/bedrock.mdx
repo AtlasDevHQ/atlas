@@ -1,0 +1,140 @@
+---
+title: AWS Bedrock (BYOT)
+description: Minimum IAM policy, region selection, and rotation procedure for the AWS Bedrock workspace provider.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+When a workspace picks **AWS Bedrock** on the [AI Provider](/guides/model-routing#admin-ui) admin page, Atlas calls Bedrock with that workspace's static IAM credentials. This page documents the minimum IAM policy, region-to-catalog mapping, key rotation, and the failure modes you'll see when the IAM principal is misconfigured.
+
+<Callout title="Prerequisites">
+- An AWS account with [Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) granted for the model families you intend to use
+- An IAM principal (user or role) with a long-lived access key + secret (federated / STS session tokens are supported — see [Session tokens](#session-tokens))
+- The encryption key for credential storage configured on the deploy (`ATLAS_ENCRYPTION_KEYS` / `ATLAS_ENCRYPTION_KEY`)
+</Callout>
+
+---
+
+## Minimum IAM policy
+
+The Bedrock provider needs exactly two actions:
+
+- `bedrock:ListFoundationModels` — the admin page's model picker hits `ListFoundationModels` at save time and refreshes the cached catalog (TTL `ATLAS_BYOT_CATALOG_TTL_MS`, default 6h).
+- `bedrock:InvokeModel` — every chat the workspace runs against a Bedrock model goes through `InvokeModel`.
+
+Bedrock does not need any other permissions (no S3, no logs, no Bedrock agents). Scope the policy to the specific model ARNs your workspace will use:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AtlasBedrockListCatalog",
+      "Effect": "Allow",
+      "Action": "bedrock:ListFoundationModels",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AtlasBedrockInvoke",
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": [
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-7",
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5"
+      ]
+    }
+  ]
+}
+```
+
+Replace the region prefix and model IDs with the ones your workspace will route to. `ListFoundationModels` is account-scoped — narrowing its `Resource` to a list of ARNs makes the catalog probe return an empty model list, so leave it at `"*"`.
+
+<Callout type="info" title="Why two separate statements?">
+  Separating the list action from the invoke action keeps the invoke `Resource` list as the audit trail of which models the workspace actually uses. If you later need to revoke access to a single model, edit the `AtlasBedrockInvoke` statement — the catalog probe keeps working, the admin UI will just show the model as removed.
+</Callout>
+
+---
+
+## Region selection
+
+Bedrock surfaces a different catalog per region — `ap-northeast-1` is not the same set as `us-east-1`. Atlas keys the catalog cache on `${orgId}:${region}` for that reason, so a region change rotates the cache key entirely.
+
+| Region | Anthropic Claude | Amazon Titan | Amazon Nova |
+| --- | --- | --- | --- |
+| `us-east-1` (N. Virginia) | ✅ | ✅ | ✅ |
+| `us-east-2` (Ohio) | ✅ | Embeddings only | ✅ |
+| `us-west-2` (Oregon) | ✅ | ✅ | ✅ |
+| `eu-central-1` (Frankfurt) | ✅ | ✅ | ✅ |
+| `eu-west-1` (Ireland) | ✅ | ✅ | ✅ |
+| `eu-west-3` (Paris) | ✅ | — | ✅ |
+| `ap-northeast-1` (Tokyo) | ✅ | Embeddings only | ✅ |
+| `ap-southeast-1` (Singapore) | ✅ | — | ✅ |
+| `ap-southeast-2` (Sydney) | ✅ | Embeddings only | ✅ |
+| `ap-south-1` (Mumbai) | ✅ | Embeddings only | ✅ |
+| `ca-central-1` (Central) | ✅ | Embeddings only | ✅ |
+| `sa-east-1` (São Paulo) | ✅ | Embeddings only | — |
+
+Atlas only surfaces **text-generation** models in the picker — embedding-only and image / video models are filtered out at discovery time. Source of truth: [AWS Bedrock model availability by region](https://docs.aws.amazon.com/bedrock/latest/userguide/models-region-compatibility.html); the [model cards index](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html) drills into per-model regional support.
+
+<Callout type="warn" title="Model access still has to be granted">
+  Having the IAM permission is necessary but not sufficient. Anthropic models on Bedrock require an explicit, per-region [model-access grant](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) on the AWS console. If the workspace picks a region where the account has IAM access but no model-access grant, the picker shows the model but `InvokeModel` returns `AccessDeniedException` at chat time.
+</Callout>
+
+---
+
+## Session tokens
+
+Atlas does **not** call `sts:AssumeRole` today — admins paste a static access key + secret + an optional session token on the AI Provider page, and Atlas uses them verbatim. There is no live refresh.
+
+For federated workspaces that issue temporary credentials, the optional **Session token** field on the AI Provider page accepts an STS session token alongside the access key and secret. The bundle is encrypted at rest with `encryptSecret` and stored in `workspace_model_config.api_key_encrypted` as a JSON blob:
+
+```json
+{
+  "accessKeyId": "ASIA…",
+  "secretAccessKey": "…",
+  "sessionToken": "…"
+}
+```
+
+Atlas reads the bundle on every chat — there's no in-memory caching across sessions. When the session token expires upstream, `InvokeModel` will return `AccessDeniedException` until the admin re-enters a fresh triple. Configure your federation TTL to match the cadence your operators can re-enter; Atlas surfaces a "verify the access key + secret on the AI Provider page" prompt on the catalog refresh that follows expiry.
+
+---
+
+## Key rotation
+
+Bedrock credentials rotate the same way every other BYOT provider does — re-enter them on the admin page. There is no live JWT-style refresh and no rotation API:
+
+1. Generate a new IAM access key (and session token, if federated) on AWS.
+2. Open `/admin/model-config` → **Workspace override** → expand the AWS Bedrock row.
+3. Paste the new **Access key ID** and **Secret access key**. Leave the region unchanged unless you're also moving regions. The session token field is optional.
+4. Click **Save**. Atlas immediately:
+   - Encrypts the new bundle with the current `ATLAS_ENCRYPTION_KEYS` version.
+   - Invalidates the per-org Bedrock catalog cache (both L1 in-memory and the L2 `workspace_model_catalog` row).
+   - Refreshes the picker against `ListFoundationModels` using the new creds.
+5. The old key can be deactivated on AWS immediately after Save returns — no requests are still using it.
+
+If you also need to retire a model family from the workspace's allow-list, tighten the `AtlasBedrockInvoke` statement on AWS and then click **Refresh** in the admin model picker to drop the model from the catalog cache.
+
+---
+
+## Failure modes
+
+The IAM probe runs at two distinct times: at **Save** (called via `POST /api/v1/admin/model-config/test`) and on every **catalog refresh** (`GET /api/v1/admin/model-config/catalog?refresh=1`). Both classify failures the same way.
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| `byot_key_invalid` 401 — banner reads "Verify the access key + secret on the AI Provider page and that the IAM principal has `bedrock:ListFoundationModels`." | AWS returned `AccessDeniedException`, `UnrecognizedClientException`, or `InvalidSignatureException`. The IAM principal either has the wrong key/secret, or is missing `bedrock:ListFoundationModels`. | Re-enter the credentials. If they're correct, re-check the IAM policy — `ListFoundationModels` is the most commonly omitted action. |
+| `byot_provider_rate_limited` 429 | AWS threw `ThrottlingException` on `ListFoundationModels`. | Wait and retry. The picker auto-retries on the next manual refresh. |
+| `byot_provider_unavailable` 502 | The region is unreachable, the response was malformed, or the request timed out (15s). | Check the [AWS Health Dashboard](https://health.aws.amazon.com/health/status) for Bedrock incidents in the selected region. |
+| Save succeeds but a later chat returns `AccessDeniedException` | The IAM principal lost `bedrock:InvokeModel` on the specific model ARN, or the account doesn't have model-access granted for the picked region. | Verify both the [model-access grant](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) and the `AtlasBedrockInvoke` statement covers the model ID in use. |
+
+When the IAM principal **loses `ListFoundationModels` after the workspace was saved**, the next catalog refresh surfaces the same `byot_key_invalid` banner — chat continues to work as long as `InvokeModel` is still permitted, but the model picker stops updating. The fix is the same: restore the permission and click **Refresh** on the picker.
+
+---
+
+## Out of scope
+
+- **AWS account setup, billing, model-access requests.** Use [AWS's own onboarding docs](https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html).
+- **Choosing between Bedrock BYOT and Vercel AI Gateway BYOT.** See [Workspace model routing](/guides/model-routing) for the resolution order and gateway-side configuration.
+- **Cross-region inference profiles, provisioned throughput, latency-optimized inference.** Atlas calls `InvokeModel` directly against a single region — provisioned-throughput ARNs and inference-profile IDs are not surfaced in the picker today.

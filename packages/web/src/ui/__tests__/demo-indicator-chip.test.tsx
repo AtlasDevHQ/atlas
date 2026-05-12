@@ -31,6 +31,7 @@ function activeMode(industry: string | null): ModeStatusResponse {
     demoConnectionActive: industry !== null,
     hasDrafts: false,
     draftCounts: null,
+    draftActivity: null,
   };
 }
 
@@ -82,6 +83,7 @@ describe("DemoIndicatorChip", () => {
         demoConnectionActive: false,
         hasDrafts: false,
         draftCounts: null,
+        draftActivity: null,
       },
       loading: false,
     };

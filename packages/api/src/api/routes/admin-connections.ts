@@ -41,18 +41,6 @@ function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types
   return (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
 }
 
-/** Reserved ID for the onboarding demo connection. Writes in published mode are read-only. */
-const DEMO_CONNECTION_ID = "__demo__";
-
-/** Demo-readonly response for writes in published mode against `__demo__`. */
-function demoReadonly(requestId: string): { error: string; message: string; requestId: string } {
-  return {
-    error: "demo_readonly",
-    message: "Demo connection is read-only in published mode. Switch to developer mode to manage connections.",
-    requestId,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -710,10 +698,11 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
   }
 
-  // Mode-aware status: in developer mode, new connections are saved as drafts
-  // so non-admin users don't see them until publish. In published mode, new
-  // connections go live immediately (preserves existing single-mode behavior).
-  const status = getAtlasMode(c) === "developer" ? "draft" : "published";
+  // All new connections stamp `status = 'draft'` regardless of the caller's
+  // `atlasMode` header (#2177). The pending-changes pill in the admin top bar
+  // surfaces the draft count; the admin publishes via the atomic
+  // `/api/v1/admin/publish` endpoint instead of flipping a mode toggle first.
+  const status = "draft";
 
   try {
     const urlKeyVersion = activeKeyVersion();
@@ -772,12 +761,6 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
 
   if (id === "default") {
     return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead.", requestId }, 403);
-  }
-
-  // Demo content is read-only in published mode — admins must toggle to
-  // developer mode to edit demo data.
-  if (id === DEMO_CONNECTION_ID && getAtlasMode(c) !== "developer") {
-    return c.json(demoReadonly(requestId), 403);
   }
 
   // Check it exists in the DB and belongs to this org. Excludes archived
@@ -933,12 +916,12 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     return c.json({ error: "forbidden", message: "Cannot delete the default connection.", requestId }, 403);
   }
 
-  // The published-mode `__demo__` block used to live here. With the global
-  // demo + per-org tombstone model (#2304), "delete" no longer mutates
-  // shared state — it inserts a per-org archived row that hides
-  // the global from this workspace only. Other tenants are untouched.
-  // Updates to the canonical demo URL/description still go through the
-  // PUT handler which keeps the demoReadonly guard.
+  // With the global demo + per-org tombstone model (#2304), "delete" no
+  // longer mutates shared state — it inserts a per-org archived row that
+  // hides the global from this workspace only. Other tenants are
+  // untouched. Updates to the canonical demo URL/description go through
+  // the PUT handler; #2177 removed the demo-readonly 403 there so admins
+  // can edit demo data without flipping the mode toggle first.
 
   // Two cases:
   //   - Org-owned row exists → archive in place (existing behavior).

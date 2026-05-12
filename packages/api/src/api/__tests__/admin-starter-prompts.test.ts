@@ -325,21 +325,22 @@ function postBody(path: string, body: unknown, headers: Record<string, string> =
 }
 
 /**
- * Capture the `status` param the route passed to the UPDATE. The position
- * differs per mutation (approve: $4, hide/unhide: $3). Both flows issue
- * a guard SELECT first, then the UPDATE — so we pick the UPDATE call out
- * of the recorded call list rather than relying on ordinal position.
+ * Capture the `status` literal the route stamped on the UPDATE. Post-#2177
+ * the status is hard-coded in the SQL itself (no longer a parameterized
+ * slot), so we read it out of the SQL string with a small regex rather
+ * than the params array.
  */
 function captureUpdateStatusParam(): string | undefined {
   const updateCall = mocks.mockInternalQuery.mock.calls.find(
     ([sql]) => typeof sql === "string" && /UPDATE\s+query_suggestions/i.test(sql),
   );
   if (!updateCall) return undefined;
-  const params = updateCall[1] as unknown[] | undefined;
-  // The status value is the last parameter in every mode-aware UPDATE.
-  return typeof params?.[params.length - 1] === "string"
-    ? (params[params.length - 1] as string)
-    : undefined;
+  const sql = updateCall[0] as string;
+  // Match the bare `status` column, not `approval_status`. The negative
+  // lookbehind avoids the `approval_status = 'approved'` slot earlier in
+  // every UPDATE statement.
+  const match = sql.match(/(?<!_)status\s*=\s*'(\w+)'/i);
+  return match?.[1];
 }
 
 describe("POST /api/v1/admin/starter-prompts/:id/approve", () => {
@@ -583,7 +584,7 @@ describe("POST /api/v1/admin/starter-prompts/author", () => {
     expect(res.status).toBe(422);
   });
 
-  it("returns 200 with a newly-approved row (approval_status=approved, status=published)", async () => {
+  it("returns 200 with a newly-authored row stamped status='draft' (#2177)", async () => {
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("INSERT INTO query_suggestions")) {
         return [
@@ -591,7 +592,7 @@ describe("POST /api/v1/admin/starter-prompts/author", () => {
             id: "new-sug",
             description: "Admin-authored question",
             approval_status: "approved",
-            status: "published",
+            status: "draft",
             approved_by: "admin-1",
             approved_at: "2026-04-17T00:00:00.000Z",
           }),
@@ -615,7 +616,7 @@ describe("POST /api/v1/admin/starter-prompts/author", () => {
       };
     };
     expect(body.suggestion.approvalStatus).toBe("approved");
-    expect(body.suggestion.status).toBe("published");
+    expect(body.suggestion.status).toBe("draft");
     expect(body.suggestion.description).toBe("Admin-authored question");
     expect(body.suggestion.approvedBy).toBe("admin-1");
   });
@@ -638,16 +639,15 @@ describe("POST /api/v1/admin/starter-prompts/author", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 1.2.0 mode participation (#1478)
+// Always-write-to-draft semantics (#2177, supersedes #1478)
 //
-// Verifies that the four moderation mutations (approve / hide / unhide /
-// author) honor the caller's `atlasMode` by writing `status = 'draft'`
-// in developer mode and `'published'` otherwise. We assert the SQL
-// parameter rather than the mocked RETURNING row so the test exercises
-// the real route → store plumbing, not the mock's echo-back shape.
+// All four moderation mutations (approve / hide / unhide / author) stamp
+// `status = 'draft'` regardless of the caller's `atlasMode` header. The
+// pending-changes pill in the admin top bar surfaces the queued change;
+// `/api/v1/admin/publish` promotes it.
 // ---------------------------------------------------------------------------
 
-describe("mode participation — approve/hide/unhide write status based on atlasMode", () => {
+describe("always-draft semantics — approve/hide/unhide stamp status='draft' regardless of atlasMode (#2177)", () => {
   beforeEach(() => {
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("SELECT org_id")) return [{ org_id: "org-alpha" }];
@@ -659,7 +659,7 @@ describe("mode participation — approve/hide/unhide write status based on atlas
   });
 
   for (const verb of ["approve", "hide", "unhide"] as const) {
-    it(`${verb}: developer mode writes status='draft'`, async () => {
+    it(`${verb}: developer-mode cookie → status='draft'`, async () => {
       const res = await postNoBody(
         `/api/v1/admin/starter-prompts/sug-1/${verb}`,
         { Cookie: "atlas-mode=developer" },
@@ -668,27 +668,28 @@ describe("mode participation — approve/hide/unhide write status based on atlas
       expect(captureUpdateStatusParam()).toBe("draft");
     });
 
-    it(`${verb}: published mode writes status='published'`, async () => {
-      // No mode cookie/header — resolveMode() defaults to 'published'.
+    it(`${verb}: no cookie (defaults to published) → status='draft' too`, async () => {
       const res = await postNoBody(
         `/api/v1/admin/starter-prompts/sug-1/${verb}`,
       );
       expect(res.status).toBe(200);
-      expect(captureUpdateStatusParam()).toBe("published");
+      expect(captureUpdateStatusParam()).toBe("draft");
     });
   }
 });
 
-describe("mode participation — author writes status based on atlasMode", () => {
-  function captureInsertStatusParam(): string | undefined {
+describe("always-draft semantics — author stamps status='draft' regardless of atlasMode (#2177)", () => {
+  function captureInsertStatusLiteral(): string | undefined {
     const insertCall = mocks.mockInternalQuery.mock.calls.find(
       ([sql]) =>
         typeof sql === "string" && sql.includes("INSERT INTO query_suggestions"),
     );
     if (!insertCall) return undefined;
-    const params = insertCall[1] as unknown[] | undefined;
-    // createApprovedSuggestion passes mode status as the 5th parameter.
-    return typeof params?.[4] === "string" ? (params[4] as string) : undefined;
+    const sql = insertCall[0] as string;
+    // Post-#2177 the status is hard-coded in the VALUES tuple — pull it
+    // out alongside the 'approved' literal to make the match unambiguous.
+    const match = sql.match(/'approved',\s*'(\w+)'/);
+    return match?.[1];
   }
 
   beforeEach(() => {
@@ -700,22 +701,22 @@ describe("mode participation — author writes status based on atlasMode", () =>
     });
   });
 
-  it("developer mode: author writes status='draft'", async () => {
+  it("developer-mode cookie → status='draft'", async () => {
     const res = await postBody(
       "/api/v1/admin/starter-prompts/author",
       { text: "Drafted in dev mode" },
       { Cookie: "atlas-mode=developer" },
     );
     expect(res.status).toBe(200);
-    expect(captureInsertStatusParam()).toBe("draft");
+    expect(captureInsertStatusLiteral()).toBe("draft");
   });
 
-  it("published mode: author writes status='published'", async () => {
+  it("no cookie (defaults to published) → status='draft' too", async () => {
     const res = await postBody("/api/v1/admin/starter-prompts/author", {
       text: "Authored in published mode",
     });
     expect(res.status).toBe(200);
-    expect(captureInsertStatusParam()).toBe("published");
+    expect(captureInsertStatusLiteral()).toBe("draft");
   });
 });
 

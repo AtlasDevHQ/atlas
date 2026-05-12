@@ -37,6 +37,12 @@ import {
 } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { matchesNavItem, navGroups, type NavGroup } from "./admin-nav";
 
 // ---------------------------------------------------------------------------
@@ -198,22 +204,40 @@ export function AdminSidebar() {
 
       <SidebarFooter>
         {isAdmin && (
-          <div className="flex items-center gap-2 px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-            <Code className="size-4 shrink-0 text-muted-foreground" />
-            <Label
-              htmlFor="mode-toggle"
-              className="flex-1 cursor-pointer text-xs font-medium text-muted-foreground group-data-[collapsible=icon]:hidden"
-            >
-              Developer mode
-            </Label>
-            <Switch
-              id="mode-toggle"
-              size="sm"
-              checked={mode === "developer"}
-              onCheckedChange={(checked) => setMode(checked ? "developer" : "published")}
-              className="group-data-[collapsible=icon]:hidden"
-            />
-          </div>
+          <TooltipProvider delayDuration={250}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-2 px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+                  <Code className="size-4 shrink-0 text-muted-foreground" />
+                  <Label
+                    htmlFor="mode-toggle"
+                    className="flex-1 cursor-pointer text-xs font-medium text-muted-foreground group-data-[collapsible=icon]:hidden"
+                  >
+                    Show drafts
+                  </Label>
+                  <Switch
+                    id="mode-toggle"
+                    size="sm"
+                    checked={mode === "developer"}
+                    onCheckedChange={(checked) => setMode(checked ? "developer" : "published")}
+                    className="group-data-[collapsible=icon]:hidden"
+                  />
+                </div>
+              </TooltipTrigger>
+              {/*
+                Mode toggle controls *visibility*, not write semantics
+                (#2177). Edits always stage as drafts; the pending-changes
+                pill in the top bar surfaces them, and `/api/v1/admin/publish`
+                promotes them. The toggle's only job is letting an admin
+                preview the staged surface alongside the live one.
+              */}
+              <TooltipContent side="top" align="start" className="max-w-xs text-xs">
+                Preview unpublished drafts alongside the live surface. Saves
+                always stage as drafts regardless — flip this off to see the
+                workspace exactly as non-admins do.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
         <SidebarMenu>
           <SidebarMenuItem>

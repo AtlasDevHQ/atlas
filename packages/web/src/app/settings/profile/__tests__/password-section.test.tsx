@@ -12,14 +12,16 @@
  *   2. When the auth mode probe denies (the simple-key / byot 404 path),
  *      the section renders nothing rather than a form that always 404s on
  *      submit. That's the "friendly error" — no broken form, no scary
- *      message; the surface disappears entirely.
+ *      message; the surface disappears entirely. The 5xx-probe path is
+ *      tested separately because it lands in the same null-render branch
+ *      but via `isError` instead of `denied`.
  *
  * `mock.module(...)` mocks the entire `@/lib/auth/client` surface so a
  * sibling test importing any other export from it doesn't trip a
  * partial-mock SyntaxError.
  */
 
-import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, mock, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
 import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -60,13 +62,32 @@ function renderSection() {
   return render(<PasswordSection />, { wrapper });
 }
 
-/** Three password inputs render in source order: current, new, confirm. */
-function getInputs() {
-  return document.querySelectorAll<HTMLInputElement>('input[type="password"]');
+/**
+ * Resolve the three password inputs by their stable IDs (assigned in the
+ * source: profile-current-password / profile-new-password / profile-confirm-
+ * password). Earlier revisions of this file used `querySelectorAll('input
+ * [type="password"]')[i]`, which would silently shift indices if a new
+ * password-type input ever lands above the three rows — IDs fail loudly
+ * with a clear error instead.
+ */
+function getCurrentInput(): HTMLInputElement {
+  const el = document.querySelector<HTMLInputElement>("#profile-current-password");
+  if (!el) throw new Error("current-password input not rendered");
+  return el;
+}
+function getNewInput(): HTMLInputElement {
+  const el = document.querySelector<HTMLInputElement>("#profile-new-password");
+  if (!el) throw new Error("new-password input not rendered");
+  return el;
+}
+function getConfirmInput(): HTMLInputElement {
+  const el = document.querySelector<HTMLInputElement>("#profile-confirm-password");
+  if (!el) throw new Error("confirm-password input not rendered");
+  return el;
 }
 
-function getForm() {
-  return document.querySelector("form");
+function getForm(): HTMLFormElement | null {
+  return document.querySelector<HTMLFormElement>("form");
 }
 
 function fill({
@@ -78,10 +99,9 @@ function fill({
   next: string;
   confirm: string;
 }) {
-  const inputs = getInputs();
-  fireEvent.change(inputs[0], { target: { value: current } });
-  fireEvent.change(inputs[1], { target: { value: next } });
-  fireEvent.change(inputs[2], { target: { value: confirm } });
+  fireEvent.change(getCurrentInput(), { target: { value: current } });
+  fireEvent.change(getNewInput(), { target: { value: next } });
+  fireEvent.change(getConfirmInput(), { target: { value: confirm } });
 }
 
 function submit() {
@@ -90,6 +110,11 @@ function submit() {
   act(() => {
     fireEvent.submit(getForm()!);
   });
+}
+
+/** Wait until the form has mounted (probe resolved, allowed branch). */
+async function waitForFormMounted(): Promise<void> {
+  await waitFor(() => expect(getForm()).not.toBeNull());
 }
 
 /**
@@ -108,8 +133,8 @@ function getErrorBannerText(): string {
  * exactly what state PasswordSection is rendering against.
  */
 function mockFetch(opts: {
-  statusKind?: "allowed" | "denied" | "mfa-required";
-  changeResponse?: () => Response;
+  statusKind?: "allowed" | "denied" | "mfa-required" | "error-500";
+  changeResponse?: () => Response | Promise<Response>;
 }): ReturnType<typeof mock> {
   const { statusKind = "allowed", changeResponse } = opts;
   return mock(async (input: RequestInfo | URL): Promise<Response> => {
@@ -130,6 +155,9 @@ function mockFetch(opts: {
           { status: 403, headers: { "content-type": "application/json" } },
         );
       }
+      if (statusKind === "error-500") {
+        return new Response("upstream down", { status: 500 });
+      }
       return new Response(
         JSON.stringify({ passwordChangeRequired: false }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -137,7 +165,7 @@ function mockFetch(opts: {
     }
     if (url.includes("/api/v1/admin/me/password")) {
       return (
-        changeResponse?.() ??
+        (await changeResponse?.()) ??
         new Response(JSON.stringify({}), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -148,7 +176,21 @@ function mockFetch(opts: {
   });
 }
 
+// Hoist `originalFetch` / `originalWarn` capture to file scope so a thrown
+// `mockFetch(...)` constructor can't leave the previous suite's stub
+// installed. `afterEach` restores fetch; the warn stub is restored per-test.
 const originalFetch = globalThis.fetch;
+const originalWarn = console.warn;
+
+beforeAll(() => {
+  // Silence the parse-failure log that the non-JSON 500 fallback path
+  // emits — keeps the test output focused on assertion failures.
+  console.warn = mock(() => {}) as typeof console.warn;
+});
+
+afterAll(() => {
+  console.warn = originalWarn;
+});
 
 beforeEach(() => {
   queryClient = new QueryClient({
@@ -187,14 +229,38 @@ describe("PasswordSection — auth-mode gating", () => {
     expect(getForm()).toBeNull();
   });
 
+  test("renders nothing on probe transient failure (5xx → isError → same null branch)", async () => {
+    // `usePasswordStatus` is configured with `retry: 1`, so a persistent 500
+    // turns the query into `isError: true` after the retry window. The
+    // section then short-circuits via `!canChangePassword`. Without this
+    // test, a user on a flaky network would see the section vanish with
+    // zero indication why — keep the null-on-error branch pinned.
+    const fetchMock = mockFetch({ statusKind: "error-500" });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { container } = renderSection();
+
+    await waitFor(
+      () => {
+        // After retries settle, the form must NOT be rendered.
+        expect(getForm()).toBeNull();
+      },
+      { timeout: 5000 },
+    );
+    expect(container.textContent).toBe("");
+    // Sanity: the probe was actually attempted (otherwise this test would
+    // pass with any pre-flight null branch).
+    expect(
+      (fetchMock as unknown as ReturnType<typeof mock>).mock.calls.length,
+    ).toBeGreaterThan(0);
+  });
+
   test("renders the form when allowed", async () => {
     globalThis.fetch = mockFetch({ statusKind: "allowed" }) as unknown as typeof fetch;
 
     renderSection();
 
-    await waitFor(() => {
-      expect(getInputs().length).toBe(3);
-    });
+    await waitForFormMounted();
     expect(document.body.textContent).toContain("Password");
     expect(document.body.textContent).toContain(
       "Use a unique password",
@@ -206,9 +272,7 @@ describe("PasswordSection — auth-mode gating", () => {
 
     renderSection();
 
-    await waitFor(() => {
-      expect(getInputs().length).toBe(3);
-    });
+    await waitForFormMounted();
   });
 });
 
@@ -219,7 +283,7 @@ describe("PasswordSection — cross-field validation order", () => {
 
   test("(a) empty current password short-circuits before any other check", async () => {
     renderSection();
-    await waitFor(() => expect(getInputs().length).toBe(3));
+    await waitForFormMounted();
 
     // New and confirm intentionally trip other rules — if the order
     // regresses, this test will start asserting on a downstream message.
@@ -237,7 +301,7 @@ describe("PasswordSection — cross-field validation order", () => {
 
   test("(b) new < MIN_PASSWORD is reported before the mismatch / equals-current checks", async () => {
     renderSection();
-    await waitFor(() => expect(getInputs().length).toBe(3));
+    await waitForFormMounted();
 
     fill({ current: "old-secret", next: "short", confirm: "mismatch" });
     submit();
@@ -251,7 +315,7 @@ describe("PasswordSection — cross-field validation order", () => {
 
   test("(c) new ≠ confirm is reported before the equals-current check", async () => {
     renderSection();
-    await waitFor(() => expect(getInputs().length).toBe(3));
+    await waitForFormMounted();
 
     // If the equals-current rule shadowed the mismatch rule, this case
     // (next === current, but confirm differs) would surface the wrong
@@ -271,7 +335,7 @@ describe("PasswordSection — cross-field validation order", () => {
 
   test("(d) new === current is rejected (regression guard — dropping this branch silently accepts password reuse)", async () => {
     renderSection();
-    await waitFor(() => expect(getInputs().length).toBe(3));
+    await waitForFormMounted();
 
     fill({
       current: "same-secret-12",
@@ -289,12 +353,12 @@ describe("PasswordSection — cross-field validation order", () => {
 });
 
 describe("PasswordSection — submit + error paths", () => {
-  test("POSTs to /api/v1/admin/me/password with the typed payload on success", async () => {
+  test("POSTs the typed payload, shows confirmation, AND clears the three inputs", async () => {
     const fetchMock = mockFetch({ statusKind: "allowed" });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     renderSection();
-    await waitFor(() => expect(getInputs().length).toBe(3));
+    await waitForFormMounted();
 
     fill({
       current: "old-secret",
@@ -318,6 +382,13 @@ describe("PasswordSection — submit + error paths", () => {
       currentPassword: "old-secret",
       newPassword: "new-secret-123",
     });
+
+    // `reset()` on success — without this, the user's password sits in
+    // three plaintext inputs after submit. Pin the field clear so a
+    // refactor that drops `reset()` is loud, not silent.
+    expect(getCurrentInput().value).toBe("");
+    expect(getNewInput().value).toBe("");
+    expect(getConfirmInput().value).toBe("");
   });
 
   test("surfaces the API error message on non-ok JSON response", async () => {
@@ -331,7 +402,7 @@ describe("PasswordSection — submit + error paths", () => {
     }) as unknown as typeof fetch;
 
     renderSection();
-    await waitFor(() => expect(getInputs().length).toBe(3));
+    await waitForFormMounted();
 
     fill({
       current: "wrong-secret",
@@ -341,36 +412,63 @@ describe("PasswordSection — submit + error paths", () => {
     submit();
 
     await waitFor(() => {
-      expect(document.body.textContent).toContain("Wrong current password");
+      expect(getErrorBannerText()).toContain("Wrong current password");
     });
+
+    // On error the form keeps the user's draft so they can correct just
+    // the current-password field without retyping the new one.
+    expect(getCurrentInput().value).toBe("wrong-secret");
+    expect(getNewInput().value).toBe("new-secret-123");
   });
 
   test("falls back to a status-code error when the body isn't parseable", async () => {
-    const originalWarn = console.warn;
-    console.warn = mock(() => {}) as typeof console.warn;
-    try {
-      globalThis.fetch = mockFetch({
-        statusKind: "allowed",
-        changeResponse: () => new Response("Internal Server Error", { status: 500 }),
-      }) as unknown as typeof fetch;
+    globalThis.fetch = mockFetch({
+      statusKind: "allowed",
+      changeResponse: () => new Response("Internal Server Error", { status: 500 }),
+    }) as unknown as typeof fetch;
 
-      renderSection();
-      await waitFor(() => expect(getInputs().length).toBe(3));
+    renderSection();
+    await waitForFormMounted();
 
-      fill({
-        current: "old-secret",
-        next: "new-secret-123",
-        confirm: "new-secret-123",
-      });
-      submit();
+    fill({
+      current: "old-secret",
+      next: "new-secret-123",
+      confirm: "new-secret-123",
+    });
+    submit();
 
-      await waitFor(() => {
-        expect(document.body.textContent).toContain(
-          "Failed to change password (HTTP 500)",
-        );
-      });
-    } finally {
-      console.warn = originalWarn;
-    }
+    await waitFor(() => {
+      expect(getErrorBannerText()).toContain(
+        "Failed to change password (HTTP 500)",
+      );
+    });
+  });
+
+  test("network rejection on submit surfaces as a typed error in the banner", async () => {
+    // Pins the `catch` branch in PasswordSection.handleSubmit — without
+    // coverage, a future refactor that swaps `setError(message)` for
+    // `setError(null)` would silently swallow connectivity errors. Use a
+    // changeResponse that rejects to drive that path; the probe still
+    // resolves "allowed" so the form is mounted.
+    globalThis.fetch = mockFetch({
+      statusKind: "allowed",
+      changeResponse: async () => {
+        throw new Error("net::ERR_CONNECTION_REFUSED");
+      },
+    }) as unknown as typeof fetch;
+
+    renderSection();
+    await waitForFormMounted();
+
+    fill({
+      current: "old-secret",
+      next: "new-secret-123",
+      confirm: "new-secret-123",
+    });
+    submit();
+
+    await waitFor(() => {
+      expect(getErrorBannerText()).toContain("net::ERR_CONNECTION_REFUSED");
+    });
   });
 });

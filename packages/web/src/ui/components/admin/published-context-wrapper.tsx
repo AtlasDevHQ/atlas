@@ -53,7 +53,7 @@ export interface PublishedContextWrapperProps {
  * `/admin/connections`; the fix was to remove the wrapper, not work around
  * it.
  *
- * ### Audit (as of 2026-05)
+ * ### Audit snapshot (as of 2026-05 — re-verify before relying on it)
  *
  * | Page | Wrapper? | All mutations draft-aware? | Trap risk |
  * | --- | --- | --- | --- |
@@ -61,6 +61,16 @@ export interface PublishedContextWrapperProps {
  * | `/admin/prompts` | yes (conditional) | Yes — CREATE/PATCH/DELETE all set `status='draft'` in dev mode | none |
  * | `/admin/semantic` | hook only (no wrapper) | Yes — entity edits/deletes go through the overlay tables | none |
  * | `/admin/schema-diff` | hook only (no wrapper) | n/a — read-only page | none |
+ *
+ * The table is a snapshot — the decision rule below is what's load-bearing.
+ * To re-audit, list every current caller:
+ *
+ *     grep -rln 'PublishedContextWrapper' packages/web/src/app
+ *
+ * and for each hit, verify the page's mutations are all draft-publishable
+ * by reading its backend route(s). If a mutation in dev mode does NOT
+ * write `status='draft'` (or go through an overlay table that publish
+ * promotes), the wrapper traps that action.
  *
  * ### Decision rule
  *

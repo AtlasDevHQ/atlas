@@ -6,8 +6,19 @@ import { Skeleton } from "@/components/ui/skeleton";
  * skeleton-side keeps the layout from collapsing-then-jumping on first paint.
  */
 export default function Loading() {
+  // `role="status"` + a polite live region so screen readers announce a load
+  // is in progress rather than narrate a silent stretch of decorative pulse
+  // rectangles. The shadcn primitive is a bare div with no ARIA of its own
+  // (packages/web/src/components/ui/skeleton.tsx), so the announcement has
+  // to live on the wrapper.
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
+    <div
+      className="mx-auto max-w-3xl px-6 py-10"
+      role="status"
+      aria-busy
+      aria-live="polite"
+      aria-label="Loading profile settings"
+    >
       <header className="mb-10 flex flex-col gap-2">
         <Skeleton className="h-3 w-32" />
         <Skeleton className="h-9 w-40" />

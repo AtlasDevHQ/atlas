@@ -28,6 +28,7 @@ import {
   afterEach,
 } from "bun:test";
 import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import { useEffect, useState } from "react";
 
 interface MockUser {
   email: string;
@@ -37,14 +38,15 @@ interface MockUser {
 let currentUser: MockUser | null = null;
 let refetchCalls = 0;
 
-// Re-render mechanism — Better Auth's real `useSession` subscribes to a
-// store; we approximate that with a forceUpdate counter that consumers can
-// nudge. `session.refetch()` bumps the counter so the component re-reads
-// `currentUser` via the new render.
-let forceUpdateTick = 0;
+// External-store simulation. Better Auth's real `useSession` subscribes
+// through `useSyncExternalStore`; we approximate just enough of that here.
+// Mutating `currentUser` alone isn't enough — React won't re-render unless
+// something tells it to. `notify()` fans out to every mounted `Harness`
+// instance, which holds a tiny `useState` counter so calling its listener
+// schedules a render. The component then re-runs the mocked `useSession`
+// and picks up the new `currentUser`.
 const subscribers = new Set<() => void>();
 function notify() {
-  forceUpdateTick++;
   for (const fn of subscribers) fn();
 }
 
@@ -57,34 +59,32 @@ const updateUserMock = mock(
 mock.module("@/lib/auth/client", () => ({
   authClient: {
     updateUser: (opts: { name: string }) => updateUserMock(opts),
-    useSession: () => {
-      // The component reads `session.data?.user` and `session.refetch`; the
-      // tick is in the hook body so React captures a stable reference per
-      // render but re-runs the hook on each `notify()`.
-      void forceUpdateTick;
-      // Subscribe each render so notify() can trigger a forceUpdate in the
-      // consumer via the use-sync-external-store-like trick below.
-      return {
-        data: currentUser ? { user: currentUser } : null,
-        isPending: false,
-        refetch: () => {
-          refetchCalls++;
-          // The default behaviour is "refetch returns the same data" — tests
-          // that want to simulate a server update mutate `currentUser` first
-          // and then trigger the rerender via `notify()`.
-          notify();
-        },
-      };
-    },
+    useSession: () => ({
+      data: currentUser ? { user: currentUser } : null,
+      isPending: false,
+      refetch: () => {
+        refetchCalls++;
+        // Default behaviour: refetch returns the same data. Tests that
+        // simulate a server update mutate `currentUser` *before* calling
+        // refetch (or inside the `updateUser` mock, before resolving) so
+        // that the subsequent `notify()` re-render reads the new shape.
+        notify();
+      },
+    }),
   },
 }));
 
 import { IdentitySection } from "@/ui/components/settings/identity-section";
 
-// A wrapper that subscribes to `notify()` so the component re-renders when
-// the mocked session changes — without this, our mutable `currentUser`
-// updates wouldn't reach React's reconciliation.
-import { useEffect, useState } from "react";
+/**
+ * The harness mounts `<IdentitySection>` once and exposes a single React
+ * state-driven re-render handle to the module-level `notify()`. We can't
+ * just call RTL's `rerender(<IdentitySection />)` from a test because that
+ * would remount the component, and a fresh mount re-seeds `name` from the
+ * new session data — masking the very dirty-flag bug we're trying to pin.
+ * Keeping the *same* component instance and feeding it new `useSession()`
+ * return values is what reproduces the post-save flush in production.
+ */
 function Harness() {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -100,7 +100,6 @@ function Harness() {
 beforeEach(() => {
   currentUser = { email: "user@example.com", name: "Alice" };
   refetchCalls = 0;
-  forceUpdateTick = 0;
   updateUserMock.mockReset();
   updateUserMock.mockImplementation(async () => ({ error: null }));
 });
@@ -119,6 +118,12 @@ function getNameInput(): HTMLInputElement {
 function getSaveButton(): HTMLButtonElement {
   const el = document.querySelector<HTMLButtonElement>('button[type="submit"]');
   if (!el) throw new Error("save button not rendered");
+  return el;
+}
+
+function getForm(): HTMLFormElement {
+  const el = document.querySelector<HTMLFormElement>("form");
+  if (!el) throw new Error("identity form not rendered");
   return el;
 }
 
@@ -169,7 +174,7 @@ describe("IdentitySection — save + refetch flushes dirty back to false (#2256 
     });
 
     await act(async () => {
-      fireEvent.submit(document.querySelector("form")!);
+      fireEvent.submit(getForm());
     });
 
     // 3. Refetch was called exactly once.
@@ -177,11 +182,18 @@ describe("IdentitySection — save + refetch flushes dirty back to false (#2256 
       expect(refetchCalls).toBe(1);
     });
 
-    // 4. The saved confirmation shows up — sanity check that the success
+    // 4. The mocked `updateUser` actually ran with the typed name — pin
+    //    this so a future refactor that bypasses `authClient.updateUser`
+    //    (e.g. swapping it for a fetch call) fails loudly instead of
+    //    passing under a stale assertion.
+    expect(updateUserMock.mock.calls.length).toBe(1);
+    expect(updateUserMock.mock.calls[0]?.[0]).toEqual({ name: "Alice Updated" });
+
+    // 5. The saved confirmation shows up — sanity check that the success
     //    path ran end to end.
     expect(document.body.textContent).toContain("Saved.");
 
-    // 5. Critical assertion: after the refetch flushed `user.name = "Alice
+    // 6. Critical assertion: after the refetch flushed `user.name = "Alice
     //    Updated"`, the trimmed-name comparison resolves dirty=false and
     //    the save button re-disables. This is the exact regression from
     //    PR #2256 — losing it means a saved form stays "dirty" forever.
@@ -192,6 +204,13 @@ describe("IdentitySection — save + refetch flushes dirty back to false (#2256 
   });
 
   test("API error: refetch is NOT called and dirty state is preserved", async () => {
+    // Use `expect.assertions` to guarantee the rejection path actually
+    // ran. Without it, a refactor that made the banner render via a
+    // local-validation branch (no API call) could leave `refetchCalls`
+    // at 0 and the dirty-state preservation assertions still pass — a
+    // silent skip of the very branch this test is pinning.
+    expect.assertions(5);
+
     updateUserMock.mockImplementation(async () => ({
       error: { message: "Name too long" },
     }));
@@ -200,13 +219,16 @@ describe("IdentitySection — save + refetch flushes dirty back to false (#2256 
 
     fireEvent.change(getNameInput(), { target: { value: "Alice Updated" } });
     await act(async () => {
-      fireEvent.submit(document.querySelector("form")!);
+      fireEvent.submit(getForm());
     });
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Name too long");
     });
 
+    // The mock was actually invoked — i.e. the API rejection path ran
+    // rather than a local validation branch short-circuiting.
+    expect(updateUserMock.mock.calls.length).toBe(1);
     // No refetch — the server rejected the update.
     expect(refetchCalls).toBe(0);
     // Dirty preserved — the user's draft hasn't been clobbered.
@@ -214,7 +236,7 @@ describe("IdentitySection — save + refetch flushes dirty back to false (#2256 
     expect(getSaveButton().disabled).toBe(false);
   });
 
-  test("a session refetch that drifts the user's name does NOT clobber an active edit", async () => {
+  test("a session refetch that drifts the user's name does NOT clobber an active edit", () => {
     render(<Harness />);
 
     // User starts editing — dirty=true.
@@ -230,6 +252,31 @@ describe("IdentitySection — save + refetch flushes dirty back to false (#2256 
     });
 
     expect(getNameInput().value).toBe("Mid-edit");
+    expect(getSaveButton().disabled).toBe(false);
+  });
+
+  test("typing after a successful save dismisses the 'Saved.' banner", async () => {
+    // Pins the savedAt-clears-on-edit branch in handleNameChange — without
+    // it, the banner sticks around stale while the user types a new draft,
+    // misrepresenting the form's state.
+    updateUserMock.mockImplementation(async (opts) => {
+      currentUser = { email: "user@example.com", name: opts.name };
+      return { error: null };
+    });
+
+    render(<Harness />);
+
+    fireEvent.change(getNameInput(), { target: { value: "Alice Updated" } });
+    await act(async () => {
+      fireEvent.submit(getForm());
+    });
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Saved.");
+    });
+
+    // A second edit starts — the success banner must go away.
+    fireEvent.change(getNameInput(), { target: { value: "Alice Updated 2" } });
+    expect(document.body.textContent).not.toContain("Saved.");
     expect(getSaveButton().disabled).toBe(false);
   });
 });

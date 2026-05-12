@@ -93,7 +93,7 @@ describe("completions", () => {
 
     test("lists commands with descriptions", () => {
       for (const [cmd, spec] of Object.entries(COMMANDS)) {
-        expect(script).toContain(`'${cmd}:${spec.description}'`);
+        expect(script).toContain(`$'${cmd}:${spec.description}'`);
       }
     });
 
@@ -124,7 +124,7 @@ describe("completions", () => {
           }
           inBlock = false;
         }
-        if (inBlock && line.trim().startsWith("'--")) {
+        if (inBlock && line.trim().startsWith("$'--")) {
           blockFlags.push(line);
         }
       }

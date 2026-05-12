@@ -15,7 +15,9 @@ function escapeHtml(str: string): string {
 
 /** Escape pipe and newline characters for safe embedding in Markdown table cells. */
 function escapeMarkdownTableCell(str: string): string {
-  return str.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  // Backslash first: a stray `\` in the input would otherwise pair with our `\|` escape
+  // and turn into `\\|` (escaped backslash + literal pipe — breaks the table).
+  return str.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 
 /** Format column/row data as a Markdown table. Caps output at 100 rows for readability. */

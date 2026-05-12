@@ -19,6 +19,13 @@ import type { FileUploadConfig } from "../config";
 /** Default row threshold for auto-attaching CSV files. */
 const DEFAULT_AUTO_ATTACH_THRESHOLD = 20;
 
+/** Drop trailing `/` characters. Non-regex to keep the polynomial-ReDoS checker happy. */
+function stripTrailingSlashes(s: string): string {
+  let i = s.length;
+  while (i > 0 && s[i - 1] === "/") i--;
+  return i === s.length ? s : s.slice(0, i);
+}
+
 /** Platforms that support file uploads via Chat SDK. */
 const FILE_UPLOAD_PLATFORMS = new Set([
   "slack",
@@ -140,7 +147,7 @@ export function buildFallbackMessage(
   webBaseUrl?: string,
 ): string {
   if (webBaseUrl) {
-    const url = webBaseUrl.replace(/\/+$/, "");
+    const url = stripTrailingSlashes(webBaseUrl);
     return `CSV export is not available on this platform. [View full results in Atlas](${url})`;
   }
   return "CSV export is not available on this platform. Configure `fileUpload.webBaseUrl` to enable a link to the Atlas web UI.";

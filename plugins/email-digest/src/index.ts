@@ -73,8 +73,18 @@ const DIGEST_SUBSCRIPTIONS_SCHEMA = {
  * into separate name and email fields for the SendGrid API.
  */
 function parseFromAddress(from: string): { email: string; name?: string } {
-  const match = from.match(/^(.+?)\s*<([^>]+)>$/);
-  if (match) return { name: match[1].trim(), email: match[2] };
+  // Use lastIndexOf to find the address brackets — the regex form was flagged
+  // for polynomial backtracking against pathological "a<<<...<<" inputs.
+  if (from.endsWith(">")) {
+    const lt = from.lastIndexOf("<");
+    if (lt > 0) {
+      const name = from.slice(0, lt).trim();
+      const email = from.slice(lt + 1, from.length - 1);
+      if (name && email && !email.includes("<") && !email.includes(">")) {
+        return { name, email };
+      }
+    }
+  }
   return { email: from };
 }
 

@@ -108,8 +108,16 @@ function mockTeamsFetch(): typeof globalThis.fetch {
       );
     }
 
-    // Azure AD token endpoint
-    if (url.includes("login.microsoftonline.com") && url.includes("oauth2/v2.0/token")) {
+    // Azure AD token endpoint — match by parsed host + path so we don't route
+    // "attacker.com/login.microsoftonline.com" through this branch.
+    let host = "";
+    let path = "";
+    try {
+      const parsed = new URL(url);
+      host = parsed.hostname;
+      path = parsed.pathname;
+    } catch { /* fall through with empty host/path */ }
+    if (host === "login.microsoftonline.com" && path.includes("oauth2/v2.0/token")) {
       return Promise.resolve(
         new Response(
           JSON.stringify({

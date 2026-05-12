@@ -1,6 +1,13 @@
 import { OAuthHelperError } from "./errors";
 import { FETCH_TIMEOUT_MS } from "./_internal/http";
 
+/** Drop trailing `/` characters. Non-regex to keep the polynomial-ReDoS checker happy. */
+function stripTrailingSlashes(s: string): string {
+  let i = s.length;
+  while (i > 0 && s[i - 1] === "/") i--;
+  return i === s.length ? s : s.slice(0, i);
+}
+
 /**
  * Subset of RFC 8414 server metadata Atlas's flow consumes. Better Auth's
  * discovery doc carries more fields (`userinfo_endpoint`,
@@ -31,7 +38,7 @@ export async function discover(
   options?: DiscoverOptions,
 ): Promise<AuthServerMetadata> {
   const fetchImpl = options?.fetchImpl ?? fetch;
-  const url = `${apiUrl.replace(/\/+$/, "")}${DISCOVERY_PATH}`;
+  const url = `${stripTrailingSlashes(apiUrl)}${DISCOVERY_PATH}`;
   let res: Response;
   try {
     res = await fetchImpl(url, {

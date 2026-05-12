@@ -28,6 +28,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
+/** Drop trailing `/` characters. Non-regex to keep the polynomial-ReDoS checker happy. */
+function stripTrailingSlashes(s: string): string {
+  let i = s.length;
+  while (i > 0 && s[i - 1] === "/") i--;
+  return i === s.length ? s : s.slice(0, i);
+}
+
 export interface EvalMcpClientOptions {
   /** Base URL of the in-process MCP server, e.g. `http://localhost:54321`. */
   readonly baseUrl: string;
@@ -71,7 +78,7 @@ export class EvalMcpClient {
   private connected = false;
 
   constructor(opts: EvalMcpClientOptions) {
-    const url = new URL(`${opts.baseUrl.replace(/\/+$/, "")}/mcp/${opts.workspaceId}/sse`);
+    const url = new URL(`${stripTrailingSlashes(opts.baseUrl)}/mcp/${opts.workspaceId}/sse`);
     this.transport = new StreamableHTTPClientTransport(url, {
       requestInit: {
         headers: { Authorization: `Bearer ${opts.bearer}` },

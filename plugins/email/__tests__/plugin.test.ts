@@ -644,7 +644,10 @@ describe("emailPlugin — initialize", () => {
     };
 
     await plugin.initialize!(mockCtx as never);
-    expect(logged.some((m) => m.includes("myco.com"))).toBe(true);
+    // Exact-match the rendered initialize log so the assertion isn't a substring host check.
+    expect(logged).toContain(
+      `Email plugin initialized (domains: ${VALID_CONFIG_WITH_DOMAINS.allowedDomains.join(", ")})`,
+    );
   });
 
   test("does not log credentials", async () => {

@@ -417,12 +417,20 @@ export function createApiTestMocks(
 
   mock.module("@atlas/api/lib/semantic/entities", () => ({
     listEntityRows: mock(() => Promise.resolve([])),
+    listEntitiesWithOverlay: mock(() => Promise.resolve([])),
     listEntities: mock(() => Promise.resolve([])),
     getEntity: mock(() => Promise.resolve(null)),
     upsertEntity: mock(() => Promise.resolve()),
+    upsertDraftEntity: mock(() => Promise.resolve()),
+    upsertTombstone: mock(() => Promise.resolve()),
     deleteEntity: mock(() => Promise.resolve(false)),
+    deleteDraftEntity: mock(() => Promise.resolve(false)),
     countEntities: mock(() => Promise.resolve(0)),
     bulkUpsertEntities: mock(() => Promise.resolve(0)),
+    createVersion: mock(() => Promise.resolve("v1")),
+    listVersions: mock(() => Promise.resolve({ versions: [], total: 0 })),
+    getVersion: mock(() => Promise.resolve(null)),
+    generateChangeSummary: mock(() => Promise.resolve(null)),
     // Publish helpers (#1429) — default no-ops. Tests that exercise the
     // publish endpoint override `@atlas/api/lib/db/internal.getInternalDB`
     // to drive the transactional client directly.

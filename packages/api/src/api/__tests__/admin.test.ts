@@ -315,6 +315,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
 
 // Org-scoped semantic entities mock
 const mockListEntitiesAdmin: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
+const mockListEntitiesWithOverlay: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
 const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<unknown>> = mock(() => Promise.resolve(null));
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
@@ -328,6 +329,7 @@ const mockGenerateChangeSummary: Mock<(oldYaml: string | null, newYaml: string) 
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntitiesAdmin,
+  listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mockGetEntityAdmin,
   upsertEntity: mockUpsertEntityAdmin,

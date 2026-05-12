@@ -115,8 +115,8 @@ When an `activeOrganizationId` is present in the session, the agent reads from t
 Manage org-scoped entities via the admin API. The session must have an active organization set (via `organization.setActive()`) before calling these endpoints:
 
 ```bash
-# List entities for the active org
-curl https://your-atlas.com/api/v1/admin/semantic/org/entities \
+# List entities for the active org (unified DB + disk view)
+curl https://your-atlas.com/api/v1/admin/semantic/entities \
   -H "Cookie: better-auth.session_token=<session>"
 
 # Create or update an entity
@@ -131,6 +131,10 @@ curl -X PUT https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
 curl -X DELETE https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
   -H "Cookie: better-auth.session_token=<session>"
 ```
+
+<Callout type="info" title="Read endpoints unified in v0.4">
+As of v0.4, `GET /api/v1/admin/semantic/entities` and `GET /api/v1/admin/semantic/entities/{name}` are the unified read endpoints — they merge org-scoped DB rows with the disk view and apply the developer-mode overlay rules, so the admin console list and detail can't disagree on what's visible. The previous `GET /api/v1/admin/semantic/org/entities[/{name}]` routes still work for backward compatibility but are deprecated. Write operations (`PUT` / `DELETE` / `/org/import`) remain on the `/org/` path.
+</Callout>
 
 Entity changes are written to the DB first, then synced to disk atomically (write-to-temp + rename to prevent partial reads by the explore tool).
 
@@ -360,7 +364,7 @@ DATABASE_URL=postgresql://user:pass@host:5432/atlas
 **Cause:** The new org doesn't have any entities yet, or the disk sync hasn't completed.
 
 **Fix:**
-1. Check if entities exist for the org: `curl /api/v1/admin/semantic/org/entities`
+1. Check if entities exist for the org: `curl /api/v1/admin/semantic/entities`
 2. If empty, run `atlas init --org <orgId>` to profile the datasource for that org
 3. If entities exist in DB but the agent can't find them, the disk sync may have failed — check logs for `semantic-sync` errors. Atlas retries the sync on next access
 

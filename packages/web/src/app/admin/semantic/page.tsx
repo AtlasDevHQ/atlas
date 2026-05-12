@@ -421,12 +421,13 @@ export default function SemanticPage() {
 
   // Fetch all semantic data.
   //
-  // On SaaS we read entities from the DB-scoped org endpoint so the file
-  // tree reflects what's actually queryable for this workspace. The disk-
-  // baked /api/v1/admin/semantic/entities returns the bundled NovaMart YAML
-  // present on every API container — for SaaS orgs that's misleading
-  // (empty-DB workspaces looked "fully populated"). Self-hosted with no
-  // internal DB still uses the disk endpoint as the authoritative source.
+  // `/admin/semantic/entities` is the unified DB-overlay-aware list (#2312):
+  // it merges org-scoped DB rows with disk entities, applies the developer-
+  // mode overlay + connection-visibility rules, and returns the same shape
+  // on SaaS and self-hosted. The pre-#2312 `isSaas` ternary that forked
+  // between the org and disk endpoints is gone — list and detail now read
+  // from the same source so a draft entity surfaced in the tree always
+  // resolves on click.
   //
   // Glossary / metrics / catalog stay disk-based for now: those are not yet
   // org-scoped in the DB schema, so until the broader migration they're
@@ -435,11 +436,8 @@ export default function SemanticPage() {
     let cancelled = false;
 
     async function fetchAll() {
-      const entitiesPath = isSaas
-        ? `/api/v1/admin/semantic/org/entities?type=entity`
-        : `/api/v1/admin/semantic/entities`;
       const [entitiesRes, glossaryRes, metricsRes, catalogRes] = await Promise.allSettled([
-        fetch(`${apiUrl}${entitiesPath}`, fetchOpts).then((r) => {
+        fetch(`${apiUrl}/api/v1/admin/semantic/entities`, fetchOpts).then((r) => {
           if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
           return r.json();
         }),
@@ -462,9 +460,6 @@ export default function SemanticPage() {
       if (entitiesRes.status === "fulfilled") {
         const data = entitiesRes.value;
         const rawEntities = Array.isArray(data?.entities) ? data.entities : Array.isArray(data) ? data : [];
-        // Org endpoint returns rows with { name, entityType, status, connectionId, updatedAt }.
-        // File endpoint returns rows with { table, description, columnCount }.
-        // Normalize to the shared EntitySummary shape regardless of source.
         const normalized: EntitySummary[] = (rawEntities as Record<string, unknown>[]).map((e) => ({
           table: typeof e.table === "string" ? e.table : (typeof e.name === "string" ? e.name : ""),
           description: typeof e.description === "string" ? e.description : "",
@@ -477,10 +472,20 @@ export default function SemanticPage() {
           // (e.g., a renamed `name` column) is visible in dev tools instead
           // of looking like an empty workspace.
           console.debug(
-            `admin/semantic: dropped ${dropped} entities with unrecognized shape from ${entitiesPath}`,
+            `admin/semantic: dropped ${dropped} entities with unrecognized shape from /api/v1/admin/semantic/entities`,
           );
         }
         setEntities(normalized);
+
+        // Same payload also carries `status`/`name` per entity, so the
+        // draft-accent set is derived from it — no second request to
+        // `/admin/semantic/org/entities` for what the unified endpoint
+        // already returned (#2312).
+        const drafts = new Set<string>();
+        for (const e of rawEntities as Array<{ name?: unknown; status?: unknown }>) {
+          if (typeof e.name === "string" && e.status === "draft") drafts.add(e.name);
+        }
+        setDraftEntityNames(drafts);
       } else {
         const err = entitiesRes.reason;
         setError({ message: err.message, status: err.status });
@@ -511,40 +516,6 @@ export default function SemanticPage() {
     });
     return () => { cancelled = true; };
   }, [apiUrl, fetchKey]);
-
-  // Fetch org-scoped draft entity names so the file tree can render the
-  // amber accent on drafts. Non-SaaS self-hosted installs without an
-  // internal DB get a 501 — we swallow that, since drafts are a SaaS-only
-  // concept there.
-  useEffect(() => {
-    if (!isSaas) return;
-    let cancelled = false;
-
-    async function fetchDrafts() {
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/admin/semantic/org/entities?type=entity`,
-          fetchOpts,
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        const entries = Array.isArray(data?.entities) ? data.entities as Array<{ name?: unknown; status?: unknown }> : [];
-        const names = new Set<string>();
-        for (const e of entries) {
-          if (typeof e.name === "string" && e.status === "draft") names.add(e.name);
-        }
-        if (!cancelled) setDraftEntityNames(names);
-      } catch (err) {
-        console.debug(
-          "Failed to fetch draft entity names:",
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
-
-    fetchDrafts();
-    return () => { cancelled = true; };
-  }, [apiUrl, fetchKey, isSaas]);
 
   const handleSelect = (sel: SemanticSelection) => {
     startTransition(() => {

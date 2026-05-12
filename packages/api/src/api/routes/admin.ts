@@ -38,7 +38,6 @@ import {
   isValidEntityName,
   readYamlFile,
   discoverEntities,
-  findEntityFile,
 } from "@atlas/api/lib/semantic/files";
 // Org-aware filesystem root — same helper the public /semantic route uses to
 // surface per-org YAML at `semantic/.orgs/<orgId>/`. Accepts an optional orgId
@@ -49,7 +48,11 @@ import {
 // double-bug: user-created DB-only entities were invisible to the disk
 // endpoint entirely).
 import { getSemanticRoot as resolveSemanticRoot } from "@atlas/api/lib/semantic/sync";
-import * as yaml from "js-yaml";
+import {
+  listAdminEntities,
+  getAdminEntity,
+  AdminEntityYamlError,
+} from "@atlas/api/lib/semantic/admin-source";
 import { runDiff } from "@atlas/api/lib/semantic/diff";
 import { adminOrgs } from "./admin-orgs";
 import { adminAudit } from "./admin-audit";
@@ -758,13 +761,23 @@ const getSemanticDiffRoute = createRoute({
 });
 
 // -- Org-scoped semantic CRUD -----------------------------------------------
+//
+// The GET routes below (`/semantic/org/entities` + `/semantic/org/entities/{name}`)
+// are kept for backward compatibility — they're documented in
+// `docs/guides/multi-tenancy.mdx` and the OpenAPI surface. As of #2312 the
+// admin UI no longer calls them: the unified `/semantic/entities[/{name}]`
+// pair feeds both list and detail from the same DB-overlay-aware source.
+// Removing these GET routes is a follow-up once the docs land + downstream
+// integrations migrate. The PUT / DELETE / import write paths below remain
+// the canonical mutation surface — they have no equivalent on the unified
+// read-only routes.
 
 const listOrgEntitiesRoute = createRoute({
   method: "get",
   path: "/semantic/org/entities",
   tags: ["Admin — Semantic"],
-  summary: "List org semantic entities",
-  description: "Lists DB-backed semantic entities for the active organization.",
+  summary: "List org semantic entities (deprecated — use /semantic/entities)",
+  description: "Lists DB-backed semantic entities for the active organization. Prefer the unified `/semantic/entities` endpoint (#2312), which merges DB + disk and applies overlay rules.",
   responses: {
     200: {
       description: "Org entity list",
@@ -783,8 +796,8 @@ const getOrgEntityRoute = createRoute({
   method: "get",
   path: "/semantic/org/entities/{name}",
   tags: ["Admin — Semantic"],
-  summary: "Get org semantic entity",
-  description: "Returns a single DB-backed semantic entity for the active organization.",
+  summary: "Get org semantic entity (deprecated — use /semantic/entities/{name})",
+  description: "Returns a single DB-backed semantic entity for the active organization. Prefer the unified `/semantic/entities/{name}` endpoint (#2312).",
   request: {
     params: z.object({
       name: z.string().min(1).openapi({ param: { name: "name", in: "path" }, example: "users" }),
@@ -1269,14 +1282,23 @@ admin.openapi(overviewRoute, async (c) => {
 
 // -- Semantic Layer ---------------------------------------------------------
 
+// Unified entity list (#2312).
+//
+// Previously this handler scanned disk only; the org-scoped list lived at
+// `/admin/semantic/org/entities` and the frontend forked by `isSaas`. The
+// fork meant a SaaS list could surface a draft entity the disk detail
+// handler couldn't resolve — every click became HTTP 404 (#2310).
+//
+// The unified source merges org-scoped DB rows (with the overlay CTE's
+// visibility / connection-shadow rules) with the disk view, so list and
+// detail can't disagree on what's visible. See
+// `packages/api/src/lib/semantic/admin-source.ts`.
 admin.openapi(listEntitiesRoute, async (c) => {
   const { authResult } = await adminAuthAndContext(c, "admin:semantic");
-  // `activeOrganizationId` is present on both SaaS and self-hosted requests
-  // once a workspace is selected, so the org overlay is the right root
-  // whenever we have one. Falls back to the base root for the no-org case.
   const orgId = authResult.user?.activeOrganizationId;
-  const root = resolveSemanticRoot(orgId);
-  const result = discoverEntities(root);
+  const atlasMode = getAtlasMode(c);
+  const mode = atlasMode === "developer" ? "developer" : "published";
+  const result = await listAdminEntities({ orgId, mode });
   return c.json({
     entities: result.entities,
     ...(result.warnings.length > 0 && { warnings: result.warnings }),
@@ -1284,108 +1306,42 @@ admin.openapi(listEntitiesRoute, async (c) => {
 });
 
 admin.openapi(getEntityRoute, async (c) => {
-
   const { name } = c.req.valid("param");
-
   const { requestId, authResult } = await adminAuthAndContext(c, "admin:semantic");
-  // Path traversal protection
   if (!isValidEntityName(name)) {
     log.warn({ requestId, name }, "Rejected invalid entity name");
     return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
   }
 
-  // Resolve the org-scoped root when an active org is present, mirroring the
-  // public `/semantic/entities/{name}` route. Without this, the admin disk
-  // endpoint reads from the base `semantic/` directory only, which 404s on
-  // every SaaS workspace because their entities live at
-  // `semantic/.orgs/<orgId>/`. The frontend's SaaS list branch fetches from
-  // `/admin/semantic/org/entities` (DB-backed) — see the `isSaas` ternary in
-  // `admin/semantic/page.tsx` — so the detail fetch must resolve against the
-  // same org overlay or every list-click produces
-  // `Failed to load "<entity>": HTTP 404`.
   const orgId = authResult.user?.activeOrganizationId;
-  const root = resolveSemanticRoot(orgId);
-  const filePath = findEntityFile(root, name);
-
-  if (filePath) {
-    // Defense-in-depth: verify resolved path is within semantic root
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(path.resolve(root))) {
-      log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-      return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
+  let result: Awaited<ReturnType<typeof getAdminEntity>>;
+  try {
+    result = await getAdminEntity({ name, orgId, requestId });
+  } catch (err) {
+    if (err instanceof AdminEntityYamlError) {
+      // `kind` distinguishes a parser failure from a non-object projection —
+      // the response message differs so the frontend's error toast tells the
+      // operator which way the content is broken. Three failure modes
+      // intentionally stay distinct so the wrong on-call playbook can't
+      // start running.
+      const message = err.kind === "parse"
+        ? err.entitySource === "db"
+          ? `Failed to parse entity content for "${name}".`
+          : `Failed to parse entity file for "${name}".`
+        : `Entity content for "${name}" is malformed.`;
+      return c.json({ error: "internal_error", message, requestId }, 500);
     }
-
-    try {
-      const raw = readYamlFile(filePath);
-      return c.json({ entity: raw }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` , requestId}, 500);
-    }
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), entityName: name, orgId, requestId },
+      "Failed to resolve admin entity",
+    );
+    return c.json({ error: "internal_error", message: `Failed to load entity "${name}".`, requestId }, 500);
   }
 
-  // Fall back to the DB overlay. User-created entities live in
-  // `semantic_entities` and the disk overlay can lag (or be wiped on a
-  // container restart — Railway/SaaS filesystems are ephemeral). Without
-  // this branch the user sees a 404 even though the entity they just
-  // clicked is in their workspace.
-  if (orgId && hasInternalDB()) {
-    // Three failure modes are kept distinct so the wrong on-call playbook
-    // doesn't run: (a) the dynamic import of `entities` is a module-
-    // resolution / bundler problem, (b) the DB call is an infra / pool
-    // problem, (c) yaml.load is a data-integrity problem in the row.
-    // Lumping them into one catch produced "Failed to look up entity in DB
-    // overlay" for all three, which sent investigation down the wrong path.
-    let getEntity: typeof import("@atlas/api/lib/semantic/entities").getEntity;
-    try {
-      ({ getEntity } = await import("@atlas/api/lib/semantic/entities"));
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)), entityName: name, orgId, requestId },
-        "Failed to load semantic entities module — bundler/module resolution issue, not a DB problem",
-      );
-      return c.json({ error: "internal_error", message: `Failed to load entity "${name}".`, requestId }, 500);
-    }
-
-    let row: Awaited<ReturnType<typeof getEntity>>;
-    try {
-      row = await getEntity(orgId, "entity", name);
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)), entityName: name, orgId, requestId },
-        "Failed to query DB overlay for semantic entity",
-      );
-      return c.json({ error: "internal_error", message: `Failed to load entity "${name}".`, requestId }, 500);
-    }
-
-    if (row) {
-      let parsed: unknown;
-      try {
-        parsed = yaml.load(row.yaml_content);
-      } catch (parseErr) {
-        log.error(
-          { err: parseErr instanceof Error ? parseErr : new Error(String(parseErr)), entityName: name, orgId, requestId },
-          "Failed to parse YAML from DB-backed semantic entity",
-        );
-        return c.json({ error: "internal_error", message: `Failed to parse entity content for "${name}".`, requestId }, 500);
-      }
-      // Shape-validate: a valid entity YAML deserializes to an object
-      // (dimensions / measures / joins / query_patterns are all keyed maps).
-      // js-yaml will happily return `null`, a string, a number, or an array
-      // for malformed input — the frontend `<EntityDetail>` would then
-      // render garbage instead of failing loudly. Reject those here.
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        log.error(
-          { entityName: name, orgId, requestId, parsedType: parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed },
-          "DB-backed entity YAML did not parse to an object",
-        );
-        return c.json({ error: "internal_error", message: `Entity content for "${name}" is malformed.`, requestId }, 500);
-      }
-      return c.json({ entity: parsed }, 200);
-    }
+  if (!result) {
+    return c.json({ error: "not_found", message: `Entity "${name}" not found.`, requestId }, 404);
   }
-
-  return c.json({ error: "not_found", message: `Entity "${name}" not found.`, requestId }, 404);
+  return c.json({ entity: result.entity }, 200);
 });
 
 admin.openapi(listMetricsRoute, async (c) => {

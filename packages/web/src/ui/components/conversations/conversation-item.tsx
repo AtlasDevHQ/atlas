@@ -82,7 +82,8 @@ export function ConversationItem({
     onConvertToNotebook && conversation.surface !== "notebook" ? onConvertToNotebook : null;
   // Title fades on its right edge to make room for absolutely-positioned action buttons.
   // Width is set via CSS var (Tailwind's JIT can't see interpolated arbitrary values).
-  // Hover reveals trash + optional convert (~4.75rem / ~7rem); starred adds the always-on star.
+  // Hover reveals trash + optional convert (~4.75rem / ~7rem); the star button
+  // is always laid out — only its visibility flips when the row isn't starred.
   const hoverMaskW = convertToNotebook ? "7rem" : "4.75rem";
 
   return (

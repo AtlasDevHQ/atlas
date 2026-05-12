@@ -22,6 +22,7 @@ import type { Conversation } from "../../lib/types";
 import { useTourContext } from "@/ui/components/tour/guided-tour";
 
 const SHORTCUTS_EVENT = "atlas:open-shortcuts";
+const MAX_RECENT_CONVERSATIONS = 8;
 
 export function CommandPalette({
   conversations,
@@ -73,17 +74,28 @@ export function CommandPalette({
     };
   }, []);
 
-  function run(action: () => void) {
+  function run(action: () => void | Promise<void>) {
     setOpen(false);
-    // Defer so the dialog can close before the action mutates state
-    // (e.g. opening another dialog/sheet).
-    setTimeout(action, 0);
+    // Defer past Radix's close cleanup so a follow-on dialog/sheet doesn't
+    // open into an inert body (Radix Dialog leaves `pointer-events: none`
+    // on `<body>` for a frame after close). `Promise.resolve(...).catch`
+    // guards against both synchronous throws and async rejections from the
+    // user-supplied action — without this the rejection has no owner.
+    setTimeout(() => {
+      Promise.resolve()
+        .then(() => action())
+        .catch((err: unknown) => {
+          console.warn(
+            "[command-palette] action failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+    }, 0);
   }
 
-  // Top 8 recent conversations as quick switchers; starred float to the top.
   const recent = [...conversations]
     .toSorted((a, b) => Number(!!b.starred) - Number(!!a.starred))
-    .slice(0, 8);
+    .slice(0, MAX_RECENT_CONVERSATIONS);
 
   return (
     <CommandDialog
@@ -116,7 +128,9 @@ export function CommandPalette({
           )}
           <CommandItem
             onSelect={() =>
-              run(() => window.open("https://docs.useatlas.dev", "_blank", "noopener"))
+              run(() => {
+                window.open("https://docs.useatlas.dev", "_blank", "noopener");
+              })
             }
           >
             <ExternalLink />

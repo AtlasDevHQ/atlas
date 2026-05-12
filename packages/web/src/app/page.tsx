@@ -125,8 +125,8 @@ function ChatPage() {
     getCredentials,
   });
 
-  // Datasource summary for the empty-state transparency line. Gated on
-  // signed-in + auth-resolved so we don't fetch before auth lands.
+  // Datasource summary for the empty-state transparency line. Gated until
+  // auth resolves to avoid a guaranteed-401 round trip on first paint.
   const datasource = useDatasourceSummary({
     apiUrl: getApiUrl(),
     isCrossOrigin: isCrossOrigin(),
@@ -606,12 +606,8 @@ function ChatPage() {
                     );
                   })}
 
-                  {/*
-                    When the last message is from the user and the agent hasn't
-                    pushed anything back yet, surface the typing indicator
-                    inside its own assistant gutter so it's anchored to the
-                    in-progress turn rather than floating loose below.
-                  */}
+                  {/* Anchor the typing indicator inside an AssistantTurn so it
+                      sits in the gutter rather than floating loose below. */}
                   {isLoading &&
                     messages.length > 0 &&
                     messages[messages.length - 1].role === "user" && (

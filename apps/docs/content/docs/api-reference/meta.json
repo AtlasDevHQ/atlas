@@ -38,6 +38,7 @@
     "admin-scim",
     "admin-sso",
     "admin-sandbox",
+    "admin-scheduler",
     "admin-security",
     "admin-semantic",
     "admin-semantic-improve",

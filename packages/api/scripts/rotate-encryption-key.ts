@@ -36,8 +36,14 @@ import { createLogger } from "@atlas/api/lib/logger";
 // `internal.ts` and `secret-encryption.ts` both export `encryptSecret` /
 // `decryptSecret` post-#2285 (the internal pair is the URL-aware helper,
 // the secret-encryption pair is the versioned-prefix helper for
-// integration credentials). Alias the internal pair as `*Url` locally to
-// keep this script's two cipher paths visually distinct.
+// integration credentials). Alias the internal pair as `*UrlSecret`
+// locally to keep this script's two cipher paths visually distinct.
+//
+// DO NOT remove these aliases without first renaming one of the two
+// source helpers — the same name in both source modules would clash on
+// a single import block, and the kind:"url" path would silently bind to
+// the secret-encryption helper (which lacks plaintext-URL passthrough,
+// so legacy `postgres://…` rows would re-encrypt incorrectly).
 import {
   decryptSecret as decryptUrlSecret,
   encryptSecret as encryptUrlSecret,
@@ -116,15 +122,26 @@ function assertIdentifier(name: string, role: string): void {
  * side. Throws on decryption failure (caller handles orphan counting).
  */
 function rotateValue(kind: RotateTarget["kind"], stored: string): string {
-  if (kind === "url") {
-    if (isPlaintextUrl(stored)) {
-      return encryptUrlSecret(stored);
+  switch (kind) {
+    case "url": {
+      if (isPlaintextUrl(stored)) {
+        return encryptUrlSecret(stored);
+      }
+      const decoded = decryptUrlSecret(stored);
+      return encryptUrlSecret(decoded);
     }
-    const decoded = decryptUrlSecret(stored);
-    return encryptUrlSecret(decoded);
+    case "secret": {
+      const decoded = decryptSecret(stored);
+      return encryptSecret(decoded);
+    }
+    default: {
+      // Exhaustiveness check — adding a third `kind` value forces a
+      // compile error here, so a new variant can't silently fall through
+      // to either cipher pair.
+      const _exhaustive: never = kind;
+      throw new Error(`Unhandled rotation kind: ${String(_exhaustive)}`);
+    }
   }
-  const decoded = decryptSecret(stored);
-  return encryptSecret(decoded);
 }
 
 export interface RotateResult {

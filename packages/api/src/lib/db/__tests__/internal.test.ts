@@ -21,6 +21,8 @@ import {
   _resetCircuitBreaker,
   encryptSecret,
   decryptSecret,
+  encryptUrl,
+  decryptUrl,
   getEncryptionKey,
   isPlaintextUrl,
   _resetEncryptionKeyCache,
@@ -857,19 +859,14 @@ describe("connection URL encryption", () => {
   });
 
   describe("deprecated encryptUrl / decryptUrl re-exports", () => {
-    it("encryptUrl is a re-export of encryptSecret and round-trips via decryptUrl", async () => {
-      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-deprecated-aliases!";
-      const { encryptUrl, decryptUrl, encryptSecret: canonicalEncrypt, decryptSecret: canonicalDecrypt } = await import("../internal");
-
-      // Identity check — alias and canonical name resolve to the same function reference.
-      expect(encryptUrl).toBe(canonicalEncrypt);
-      expect(decryptUrl).toBe(canonicalDecrypt);
-
-      const url = "postgresql://user:pass@host/db";
-      const encrypted = encryptUrl(url);
-      expect(decryptUrl(encrypted)).toBe(url);
-      // Cross-alias decrypt also works — proves they're the same implementation.
-      expect(canonicalDecrypt(encrypted)).toBe(url);
+    it("alias resolves to the same function reference as the canonical export", () => {
+      // Reference equality is the load-bearing assertion: it pins that
+      // the alias is `export const encryptUrl = encryptSecret` (not a
+      // wrapper), so any test that mocks the canonical name also stubs
+      // the alias automatically. A future "wrap, don't alias" refactor
+      // would break this and silently divert calls past mocks.
+      expect(encryptUrl).toBe(encryptSecret);
+      expect(decryptUrl).toBe(decryptSecret);
     });
   });
 
@@ -912,7 +909,7 @@ describe("connection URL encryption", () => {
       delete process.env.ATLAS_ENCRYPTION_KEY;
       delete process.env.BETTER_AUTH_SECRET;
       _resetEncryptionKeyCache();
-      expect(() => decryptSecret(encrypted)).toThrow("Cannot decrypt connection URL: no encryption key available");
+      expect(() => decryptSecret(encrypted)).toThrow("Cannot decrypt stored secret: no encryption key available");
     });
   });
 
@@ -925,7 +922,7 @@ describe("connection URL encryption", () => {
       // F-47 format: enc:v1:iv:authTag:ciphertext — ciphertext is parts[4].
       parts[4] = "AAAA" + parts[4].slice(4);
       const tampered = parts.join(":");
-      expect(() => decryptSecret(tampered)).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret(tampered)).toThrow("Failed to decrypt stored secret");
     });
 
     it("throws on wrong encryption key", () => {
@@ -934,13 +931,13 @@ describe("connection URL encryption", () => {
       const encrypted = encryptSecret(url);
 
       process.env.ATLAS_ENCRYPTION_KEY = "key-two-for-encryption-testing!!";
-      expect(() => decryptSecret(encrypted)).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret(encrypted)).toThrow("Failed to decrypt stored secret");
     });
 
     it("throws on non-base64 3-part string that is not a URL", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
       // 3 colon-separated parts but not valid encrypted data
-      expect(() => decryptSecret("foo:bar:baz")).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret("foo:bar:baz")).toThrow("Failed to decrypt stored secret");
     });
 
     it("throws on tampered auth tag", () => {
@@ -951,7 +948,7 @@ describe("connection URL encryption", () => {
       // F-47 format: enc:v1:iv:authTag:ciphertext — auth tag is parts[3].
       parts[3] = "AAAA" + parts[3].slice(4);
       const tampered = parts.join(":");
-      expect(() => decryptSecret(tampered)).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret(tampered)).toThrow("Failed to decrypt stored secret");
     });
 
     it("throws on non-3-part format when value is not a URL", () => {
@@ -1037,7 +1034,7 @@ describe("connection URL encryption", () => {
       // v1 dropped — active is now a totally different raw value.
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:never-used-to-encrypt-this";
       _resetEncryptionKeyCache();
-      expect(() => decryptSecret(unversioned)).toThrow(/Failed to decrypt connection URL/);
+      expect(() => decryptSecret(unversioned)).toThrow(/Failed to decrypt stored secret/);
     });
 
     it("throws a configuration-specific error when the ciphertext version is missing from the keyset", () => {

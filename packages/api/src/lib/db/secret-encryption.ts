@@ -1,21 +1,35 @@
 /**
  * Symmetric encryption for arbitrary secret payloads (F-41).
  *
- * Lives alongside the same-named `encryptSecret` in `db/internal.ts`
- * (formerly `encryptUrl`, renamed under #2285) but covers payloads the
- * internal helper's plaintext detection can't safely handle: the
- * internal helper gates plaintext detection on a URL-scheme regex
- * (`^<scheme>://`) plus a 3-colon-count check. Neither works for integration credentials —
- * Telegram bot tokens like `1234:abc…` aren't URLs and don't split into
- * three parts (the plaintext would be rejected on read), and JSON blobs
- * can coincidentally produce three colon-separated parts (triggering a
- * spurious decrypt attempt). The versioned `enc:v1:` prefix used here
- * sidesteps both problems and leaves room for `enc:v2:` once key
- * rotation lands (F-47 / #1820).
+ * **WARNING — name collision with `db/internal.ts`.** Both modules
+ * export `encryptSecret` / `decryptSecret` post-#2285 with identical
+ * `(string) => string` signatures and divergent runtime semantics. An
+ * IDE auto-import will silently bind to whichever it picks first; the
+ * `db/internal.ts` pair has URL-scheme plaintext passthrough on read
+ * (a `https://…` opaque secret would be returned unchanged), the pair
+ * here has only `enc:v<N>:` prefix gating. **Always pick by the
+ * column's payload type, not by the auto-import suggestion.**
+ *
+ * Picking guide:
+ *   • New integration credential column / opaque secret blob → use
+ *     this module (`db/secret-encryption.ts`).
+ *   • URL column, or a column matching one of the legacy `db/internal.ts`
+ *     call sites (`connections.url`, `workspace_model_config.api_key_encrypted`,
+ *     `sso_providers.config.clientSecret`) → use `db/internal.ts`.
+ *
+ * Why two helpers exist: `db/internal.ts`'s `decryptSecret` gates
+ * plaintext detection on a URL-scheme regex (`^<scheme>://`) plus a
+ * 3-colon-count check. Neither works for integration credentials —
+ * Telegram bot tokens like `1234:abc…` aren't URLs and don't split
+ * into three parts (the plaintext would be rejected on read), and JSON
+ * blobs can coincidentally produce three colon-separated parts
+ * (triggering a spurious decrypt attempt). The versioned `enc:v1:`
+ * prefix used here sidesteps both problems and leaves room for
+ * `enc:v2:` once key rotation lands (F-47 / #1820).
  *
  * Kept in a dedicated module so tests that partially-mock `db/internal`
- * (common in admin route tests) aren't forced to declare three extra
- * no-op exports to avoid `SyntaxError: Export not found`. Mock
+ * (common in admin route tests) aren't forced to declare extra no-op
+ * exports to avoid `SyntaxError: Export not found`. Mock
  * `db/secret-encryption` separately when a test needs it.
  */
 

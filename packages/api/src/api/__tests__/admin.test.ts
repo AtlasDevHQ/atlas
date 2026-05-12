@@ -315,6 +315,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
 
 // Org-scoped semantic entities mock
 const mockListEntitiesAdmin: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
+const mockListEntitiesWithOverlay: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
 const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<unknown>> = mock(() => Promise.resolve(null));
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
@@ -328,6 +329,7 @@ const mockGenerateChangeSummary: Mock<(oldYaml: string | null, newYaml: string) 
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntitiesAdmin,
+  listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mockGetEntityAdmin,
   upsertEntity: mockUpsertEntityAdmin,
@@ -730,6 +732,97 @@ describe("GET /api/v1/admin/semantic/entities", () => {
     expect(orders).toBeDefined();
     expect(orders!.source).toBe("warehouse");
     expect(orders!.connection).toBe("warehouse");
+  });
+});
+
+// Mode-fan-out for the unified list route. The orchestrator picks
+// `listEntitiesWithOverlay` in developer mode and `listEntityRows(..., "published")`
+// otherwise — without these tests, swapping the branch in admin-source.ts
+// would still pass CI.
+describe("GET /api/v1/admin/semantic/entities — DB branch + mode fan-out", () => {
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    mockListEntitiesAdmin.mockReset();
+    mockListEntitiesWithOverlay.mockReset();
+    mockListEntitiesAdmin.mockResolvedValue([]);
+    mockListEntitiesWithOverlay.mockResolvedValue([]);
+    mockHasInternalDB = true;
+  });
+
+  it("published mode (default) calls listEntityRows with status='published'", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities"));
+    expect(res.status).toBe(200);
+    expect(mockListEntitiesAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "published");
+    expect(mockListEntitiesWithOverlay).not.toHaveBeenCalled();
+  });
+
+  it("developer mode (atlas-mode=developer cookie) calls listEntitiesWithOverlay", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities", {
+      headers: {
+        Authorization: "Bearer test-key",
+        Cookie: "atlas-mode=developer",
+      },
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockListEntitiesWithOverlay).toHaveBeenCalledWith("org-saas-1", "entity");
+    expect(mockListEntitiesAdmin).not.toHaveBeenCalled();
+  });
+
+  it("DB-row's status reaches the response (draft shadows disk on name collision)", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    mockListEntitiesWithOverlay.mockResolvedValue([
+      {
+        id: "e1", org_id: "org-saas-1", entity_type: "entity", name: "companies",
+        yaml_content: "table: companies\ndescription: From DB draft\n",
+        connection_id: null, status: "draft",
+        created_at: "2026-01-01", updated_at: "2026-01-02",
+      },
+    ]);
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities", {
+      headers: { Authorization: "Bearer test-key", Cookie: "atlas-mode=developer" },
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entities: Array<Record<string, unknown>> };
+    const companies = body.entities.find((e) => e.table === "companies");
+    expect(companies?.status).toBe("draft");
+    expect(companies?.sourceKind).toBe("db");
+    expect(companies?.description).toBe("From DB draft");
+  });
+
+  it("no orgId → skips DB and reads disk only", async () => {
+    setAdmin(); // no org
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities"));
+    expect(res.status).toBe(200);
+    expect(mockListEntitiesAdmin).not.toHaveBeenCalled();
+    expect(mockListEntitiesWithOverlay).not.toHaveBeenCalled();
+  });
+
+  it("no internal DB → skips DB even with orgId", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    mockHasInternalDB = false;
+    try {
+      const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities"));
+      expect(res.status).toBe(200);
+      expect(mockListEntitiesAdmin).not.toHaveBeenCalled();
+      expect(mockListEntitiesWithOverlay).not.toHaveBeenCalled();
+    } finally {
+      mockHasInternalDB = true;
+    }
+  });
+
+  it("DB query failure returns 500 with requestId (does not silently degrade to disk)", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    mockListEntitiesAdmin.mockRejectedValue(new Error("pool exhausted"));
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities"));
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; requestId?: string };
+    expect(body.error).toBe("internal_error");
+    expect(typeof body.requestId).toBe("string");
+    expect(body.requestId).not.toBe("");
   });
 });
 

@@ -43,6 +43,7 @@ let mockActiveOrgId: string | undefined;
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntities,
+  listEntitiesWithOverlay: mock(() => Promise.resolve([])),
   listEntities: mock(async () => []),
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,

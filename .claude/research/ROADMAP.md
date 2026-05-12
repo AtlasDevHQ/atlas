@@ -145,16 +145,17 @@ Tracker: [milestone #44](https://github.com/AtlasDevHQ/atlas/milestones/44). Two
 
 - [x] Chat-first front door + per-user default landing ([#2022](https://github.com/AtlasDevHQ/atlas/issues/2022), [#2323](https://github.com/AtlasDevHQ/atlas/pull/2323)) — pulled forward into 1.4.2 closeout. Root `/` lands non-admins on chat; admins pick a per-user default landing (chat / notebook / dashboards / admin).
 - [x] Unified left rail across `/`, `/notebook`, `/dashboards` ([#2349](https://github.com/AtlasDevHQ/atlas/issues/2349), [#2350](https://github.com/AtlasDevHQ/atlas/pull/2350)) — shadcn Sidebar shell parity with `/admin` so the chat surface picks up the same nav primitives.
+- [x] Rename `encryptUrl`/`decryptUrl` → `encryptSecret`/`decryptSecret` ([#2285](https://github.com/AtlasDevHQ/atlas/issues/2285), [#2361](https://github.com/AtlasDevHQ/atlas/pull/2361)) — naming aligned with post-#1832 reality. Spawned [#2370](https://github.com/AtlasDevHQ/atlas/issues/2370) to brand return types and disambiguate the two helper modules.
+- [x] AWS Bedrock BYOT — IAM policy + region selection guide ([#2286](https://github.com/AtlasDevHQ/atlas/issues/2286), [#2360](https://github.com/AtlasDevHQ/atlas/pull/2360)) — minimum-permission policy, region table, rotation playbook.
+- [x] Document Anthropic + OpenAI BYOT direct-provider model picker ([#2351](https://github.com/AtlasDevHQ/atlas/issues/2351), [#2359](https://github.com/AtlasDevHQ/atlas/pull/2359)) — sibling section to `model-routing.mdx#gateway-model-picker`.
 
 ### Open
 
 - [ ] Internal `WorkspaceCredentials` discriminated union ([#2282](https://github.com/AtlasDevHQ/atlas/issues/2282)) — post-#2174 BYOT review S25.
 - [ ] Unified `ByotAdapter<Cred>` parameterized over cred shape ([#2283](https://github.com/AtlasDevHQ/atlas/issues/2283)) — post-#2174 BYOT review S26.
 - [ ] Scheduler-driven periodic refresh for BYOT discovery catalogs ([#2284](https://github.com/AtlasDevHQ/atlas/issues/2284)) — graduate the cron-shaped refresh into the scheduler.
-- [ ] Rename `encryptUrl`/`decryptUrl` → `encryptSecret`/`decryptSecret` ([#2285](https://github.com/AtlasDevHQ/atlas/issues/2285)) — naming no longer reflects what the helpers do post-#1832.
-- [ ] AWS Bedrock BYOT — minimum IAM policy + region selection guide ([#2286](https://github.com/AtlasDevHQ/atlas/issues/2286)) — close the Bedrock-side docs gap.
 - [ ] L1↔L2 wiring integration test for BYOT catalog modules ([#2287](https://github.com/AtlasDevHQ/atlas/issues/2287)) — locks in the post-#2174 cache hand-off.
-- [ ] Document Anthropic + OpenAI BYOT direct-provider model picker ([#2351](https://github.com/AtlasDevHQ/atlas/issues/2351)) — sibling section to `model-routing.mdx#gateway-model-picker`.
+- [ ] Brand `encryptSecret` return types to disambiguate `db/internal` vs `db/secret-encryption` ([#2370](https://github.com/AtlasDevHQ/atlas/issues/2370)) — follow-up surfaced in #2361 review; type-system enforcement of the URL-passthrough vs opaque-secret split.
 - [ ] Expose multi-workspace MCP shape in `@useatlas/sdk` ([#2196](https://github.com/AtlasDevHQ/atlas/issues/2196)) — surface the C3 cross-workspace identity shape now that #2073 landed.
 - [ ] Widen `useSession()` return type for `session.fields` extras ([#2334](https://github.com/AtlasDevHQ/atlas/issues/2334)) — followup to #2262 authClient cast collapse.
 

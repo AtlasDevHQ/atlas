@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { getModelFromWorkspaceConfig } from "../providers";
 
+// Post-#2282: `getModelFromWorkspaceConfig` consumes the typed
+// `WorkspaceCredentials` union built by the EE row mapper. The "missing
+// apiKey for a BYOT provider" precondition moved upstream — the union's
+// non-bedrock arms type `apiKey` as a non-nullable string, so a null key
+// is unrepresentable at this boundary. The negative cases that used to
+// live here are now pinned in the EE `getWorkspaceModelConfigRaw` /
+// admin-model-config route tests (decrypt_failed / missing_byot_key
+// envelopes). What remains is the AI Layer's behavior given a
+// well-formed union value — happy paths for each provider and the one
+// negative case the union still carries: a bedrock `bundle: null`
+// signaling a malformed stored bundle.
+
 const savedGatewayKey = process.env.AI_GATEWAY_API_KEY;
 
 afterEach(() => {
@@ -15,13 +27,11 @@ describe("getModelFromWorkspaceConfig — gateway branch", () => {
 
   test("BYOT gateway: apiKey supplied → returns a LanguageModel via createGateway", () => {
     const model = getModelFromWorkspaceConfig({
-      provider: "gateway",
       model: "anthropic/claude-opus-4.6",
-      apiKey: "vck_test_byot",
       baseUrl: null,
+      bedrockRegion: null,
+      credentials: { provider: "gateway", apiKey: "vck_test_byot" },
     });
-    // Vercel AI SDK models expose `.modelId`; this confirms we got a valid
-    // model object back rather than throwing or returning the bare string.
     expect(typeof model).toBe("object");
     if (typeof model !== "string") {
       expect(model.modelId).toBe("anthropic/claude-opus-4.6");
@@ -31,10 +41,10 @@ describe("getModelFromWorkspaceConfig — gateway branch", () => {
   test("platform credits: AI_GATEWAY_API_KEY set + no apiKey → returns env-keyed gateway()", () => {
     process.env.AI_GATEWAY_API_KEY = "vck_platform_default";
     const model = getModelFromWorkspaceConfig({
-      provider: "gateway",
       model: "openai/gpt-4o",
-      apiKey: null,
       baseUrl: null,
+      bedrockRegion: null,
+      credentials: { provider: "gateway", apiKey: null },
     });
     expect(typeof model).toBe("object");
     if (typeof model !== "string") {
@@ -45,61 +55,75 @@ describe("getModelFromWorkspaceConfig — gateway branch", () => {
   test("platform credits: no AI_GATEWAY_API_KEY + no apiKey → throws actionable error", () => {
     expect(() =>
       getModelFromWorkspaceConfig({
-        provider: "gateway",
         model: "openai/gpt-4o",
-        apiKey: null,
         baseUrl: null,
+        bedrockRegion: null,
+        credentials: { provider: "gateway", apiKey: null },
       }),
     ).toThrow(/AI_GATEWAY_API_KEY/);
   });
 });
 
-describe("getModelFromWorkspaceConfig — BYOT providers reject null apiKey", () => {
-  for (const provider of ["anthropic", "openai"] as const) {
-    test(`${provider} provider without apiKey throws`, () => {
-      expect(() =>
-        getModelFromWorkspaceConfig({
-          provider,
-          model: "x",
-          apiKey: null,
-          baseUrl: null,
-        }),
-      ).toThrow(/API key is required/);
+describe("getModelFromWorkspaceConfig — BYOT happy paths", () => {
+  test("anthropic returns a LanguageModel with the requested model id", () => {
+    const model = getModelFromWorkspaceConfig({
+      model: "claude-opus-4-6",
+      baseUrl: null,
+      bedrockRegion: null,
+      credentials: { provider: "anthropic", apiKey: "sk-ant-test" },
     });
-  }
+    expect(typeof model).toBe("object");
+    if (typeof model !== "string") {
+      expect(model.modelId).toBe("claude-opus-4-6");
+    }
+  });
 
-  for (const provider of ["azure-openai", "custom"] as const) {
-    test(`${provider} provider without apiKey throws (before baseUrl check)`, () => {
-      expect(() =>
-        getModelFromWorkspaceConfig({
-          provider,
-          model: "x",
-          apiKey: null,
-          baseUrl: "https://example.com/v1",
-        }),
-      ).toThrow(/API key is required/);
+  test("openai returns a LanguageModel with the requested model id", () => {
+    const model = getModelFromWorkspaceConfig({
+      model: "gpt-4o",
+      baseUrl: null,
+      bedrockRegion: null,
+      credentials: { provider: "openai", apiKey: "sk-oai-test" },
     });
-  }
+    expect(typeof model).toBe("object");
+    if (typeof model !== "string") {
+      expect(model.modelId).toBe("gpt-4o");
+    }
+  });
+
+  test("azure-openai requires baseUrl", () => {
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        model: "gpt-4o",
+        baseUrl: null,
+        bedrockRegion: null,
+        credentials: { provider: "azure-openai", apiKey: "az-key" },
+      }),
+    ).toThrow(/Base URL is required/);
+  });
+
+  test("custom requires baseUrl", () => {
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        model: "x",
+        baseUrl: null,
+        bedrockRegion: null,
+        credentials: { provider: "custom", apiKey: "custom-key" },
+      }),
+    ).toThrow(/Base URL is required/);
+  });
 });
 
 describe("getModelFromWorkspaceConfig — bedrock branch", () => {
-  const validBundle = JSON.stringify({
-    accessKeyId: "AKIA-EXAMPLE",
-    secretAccessKey: "secret-example",
-  });
-  const validBundleWithSession = JSON.stringify({
-    accessKeyId: "AKIA-EXAMPLE",
-    secretAccessKey: "secret-example",
-    sessionToken: "session-token-xyz",
-  });
-
   test("happy path: returns a LanguageModel with the requested model id", () => {
     const model = getModelFromWorkspaceConfig({
-      provider: "bedrock",
       model: "anthropic.claude-opus-4-v1:0",
-      apiKey: validBundle,
       baseUrl: null,
       bedrockRegion: "us-east-1",
+      credentials: {
+        provider: "bedrock",
+        bundle: { accessKeyId: "AKIA-EXAMPLE", secretAccessKey: "secret-example" },
+      },
     });
     expect(typeof model).toBe("object");
     if (typeof model !== "string") {
@@ -109,11 +133,17 @@ describe("getModelFromWorkspaceConfig — bedrock branch", () => {
 
   test("happy path with sessionToken: still returns a LanguageModel", () => {
     const model = getModelFromWorkspaceConfig({
-      provider: "bedrock",
       model: "anthropic.claude-opus-4-v1:0",
-      apiKey: validBundleWithSession,
       baseUrl: null,
       bedrockRegion: "us-west-2",
+      credentials: {
+        provider: "bedrock",
+        bundle: {
+          accessKeyId: "AKIA-EXAMPLE",
+          secretAccessKey: "secret-example",
+          sessionToken: "session-token-xyz",
+        },
+      },
     });
     expect(typeof model).toBe("object");
     if (typeof model !== "string") {
@@ -121,65 +151,28 @@ describe("getModelFromWorkspaceConfig — bedrock branch", () => {
     }
   });
 
-  test("missing apiKey throws AWS-credentials-required error", () => {
+  test("bundle === null (malformed signal from EE row mapper) surfaces re-enter message", () => {
     expect(() =>
       getModelFromWorkspaceConfig({
-        provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
-        apiKey: null,
         baseUrl: null,
         bedrockRegion: "us-east-1",
+        credentials: { provider: "bedrock", bundle: null },
       }),
-    ).toThrow(/AWS credentials are required/);
+    ).toThrow(/bedrock credentials are malformed/);
   });
 
   test("missing region throws region-required error (even with valid bundle)", () => {
     expect(() =>
       getModelFromWorkspaceConfig({
-        provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
-        apiKey: validBundle,
         baseUrl: null,
         bedrockRegion: null,
+        credentials: {
+          provider: "bedrock",
+          bundle: { accessKeyId: "AKIA-EXAMPLE", secretAccessKey: "secret-example" },
+        },
       }),
     ).toThrow(/AWS region is required/);
-  });
-
-  test("malformed JSON bundle surfaces the friendly re-enter message", () => {
-    expect(() =>
-      getModelFromWorkspaceConfig({
-        provider: "bedrock",
-        model: "anthropic.claude-opus-4-v1:0",
-        apiKey: "not-json-at-all",
-        baseUrl: null,
-        bedrockRegion: "us-east-1",
-      }),
-    ).toThrow(/bedrock credentials are malformed/);
-  });
-
-  test("bundle missing secretAccessKey surfaces the friendly re-enter message", () => {
-    const half = JSON.stringify({ accessKeyId: "AKIA-EXAMPLE" });
-    expect(() =>
-      getModelFromWorkspaceConfig({
-        provider: "bedrock",
-        model: "anthropic.claude-opus-4-v1:0",
-        apiKey: half,
-        baseUrl: null,
-        bedrockRegion: "us-east-1",
-      }),
-    ).toThrow(/bedrock credentials are malformed/);
-  });
-
-  test("bundle with non-string field surfaces the friendly re-enter message", () => {
-    const bad = JSON.stringify({ accessKeyId: "AKIA-EXAMPLE", secretAccessKey: 12345 });
-    expect(() =>
-      getModelFromWorkspaceConfig({
-        provider: "bedrock",
-        model: "anthropic.claude-opus-4-v1:0",
-        apiKey: bad,
-        baseUrl: null,
-        bedrockRegion: "us-east-1",
-      }),
-    ).toThrow(/bedrock credentials are malformed/);
   });
 });

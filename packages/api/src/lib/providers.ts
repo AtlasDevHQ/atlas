@@ -19,6 +19,7 @@ import { gateway } from "ai";
 import type { LanguageModel } from "ai";
 import type { ModelConfigProvider } from "@useatlas/types";
 import { createLogger } from "./logger";
+import type { WorkspaceCredentials } from "@atlas/ee/platform/model-routing";
 
 const log = createLogger("providers");
 
@@ -239,66 +240,48 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
  * Create a LanguageModel from a workspace-level model configuration.
  * Uses the provider's SDK with the workspace's own API key and settings.
  *
- * `apiKey` is `null` only for `provider='gateway'` on platform credits;
- * every other provider requires a BYOT key (enforced upstream by the
- * `chk_model_provider_key` constraint on `workspace_model_config`).
+ * Consumes the typed `WorkspaceCredentials` union — no inline parsing
+ * on the bedrock bundle. A `null` bedrock `bundle` is the union's
+ * malformed-bundle signal, surfaced here as the same actionable
+ * re-entry error the catalog refresh's `malformed_bedrock_bundle`
+ * envelope points at.
  */
 export function getModelFromWorkspaceConfig(config: {
-  provider: ModelConfigProvider;
   model: string;
-  apiKey: string | null;
   baseUrl: string | null;
   /** Required for provider='bedrock'; ignored for every other provider. */
-  bedrockRegion?: string | null;
+  bedrockRegion: string | null;
+  credentials: WorkspaceCredentials;
 }): LanguageModel {
-  switch (config.provider) {
+  const { credentials } = config;
+  switch (credentials.provider) {
     case "anthropic": {
-      if (!config.apiKey) {
-        throw new Error("API key is required for the anthropic provider.");
-      }
-      const client = createAnthropic({ apiKey: config.apiKey });
+      const client = createAnthropic({ apiKey: credentials.apiKey });
       return client(config.model);
     }
 
     case "openai": {
-      if (!config.apiKey) {
-        throw new Error("API key is required for the openai provider.");
-      }
-      const client = createOpenAI({ apiKey: config.apiKey });
+      const client = createOpenAI({ apiKey: credentials.apiKey });
       return client(config.model);
     }
 
-    case "azure-openai": {
-      if (!config.apiKey) {
-        throw new Error("API key is required for the azure-openai provider.");
-      }
-      if (!config.baseUrl) {
-        throw new Error("Base URL is required for the azure-openai provider.");
-      }
-      const client = createOpenAI({
-        apiKey: config.apiKey,
-        baseURL: config.baseUrl,
-      });
-      return client(config.model);
-    }
-
+    case "azure-openai":
     case "custom": {
-      if (!config.apiKey) {
-        throw new Error("API key is required for the custom provider.");
-      }
       if (!config.baseUrl) {
-        throw new Error("Base URL is required for the custom provider.");
+        throw new Error(
+          `Base URL is required for the ${credentials.provider} provider.`,
+        );
       }
       const client = createOpenAI({
-        apiKey: config.apiKey,
+        apiKey: credentials.apiKey,
         baseURL: config.baseUrl,
       });
       return client(config.model);
     }
 
     case "gateway": {
-      if (config.apiKey) {
-        const client = createGateway({ apiKey: config.apiKey });
+      if (credentials.apiKey) {
+        const client = createGateway({ apiKey: credentials.apiKey });
         return client(config.model);
       }
       if (!process.env.AI_GATEWAY_API_KEY) {
@@ -311,46 +294,26 @@ export function getModelFromWorkspaceConfig(config: {
     }
 
     case "bedrock": {
-      if (!config.apiKey) {
-        throw new Error("AWS credentials are required for the bedrock provider.");
+      if (!credentials.bundle) {
+        // The union carries `bundle: null` when the decrypted row's
+        // inner JSON failed to parse. User-facing message stays
+        // generic — the admin's only fix is re-entry, which is what
+        // the catalog refresh's `malformed_bedrock_bundle` 422
+        // envelope already points at. The EE row mapper logs the
+        // configId-scoped event; this log marks the AI-Layer surface
+        // that tripped on it.
+        log.warn(
+          { provider: "bedrock", model: config.model },
+          "Workspace bedrock bundle is null — re-entry required",
+        );
+        throw new Error(
+          "Workspace bedrock credentials are malformed — re-enter the access key / secret on the AI Provider page.",
+        );
       }
       if (!config.bedrockRegion) {
         throw new Error("AWS region is required for the bedrock provider.");
       }
-      // The apiKey field carries the JSON-encoded credential bundle.
-      // Parse it here so AI Layer setup stays close to the SDK call.
-      let bundle: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-      try {
-        const parsed = JSON.parse(config.apiKey);
-        if (
-          !parsed ||
-          typeof parsed !== "object" ||
-          typeof parsed.accessKeyId !== "string" ||
-          typeof parsed.secretAccessKey !== "string"
-        ) {
-          throw new Error("malformed bundle");
-        }
-        bundle = {
-          accessKeyId: parsed.accessKeyId,
-          secretAccessKey: parsed.secretAccessKey,
-          ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
-            ? { sessionToken: parsed.sessionToken }
-            : {}),
-        };
-      } catch (err) {
-        // Capture the underlying parse failure (SyntaxError vs shape
-        // mismatch) for triage; the user-facing message stays generic
-        // because the AI Layer is mid-flight on a chat request and the
-        // admin's only actionable fix is re-entry.
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "Workspace bedrock bundle parse failed at provider build",
-        );
-        throw new Error(
-          "Workspace bedrock credentials are malformed — re-enter the access key / secret on the AI Provider page.",
-          { cause: err },
-        );
-      }
+      const { bundle } = credentials;
       const client = createAmazonBedrock({
         region: config.bedrockRegion,
         accessKeyId: bundle.accessKeyId,
@@ -361,8 +324,8 @@ export function getModelFromWorkspaceConfig(config: {
     }
 
     default: {
-      const _exhaustive: never = config.provider;
-      throw new Error(`Unknown workspace provider: ${_exhaustive}`);
+      const _exhaustive: never = credentials;
+      throw new Error(`Unknown workspace provider: ${JSON.stringify(_exhaustive)}`);
     }
   }
 }

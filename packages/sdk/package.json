@@ -49,7 +49,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@useatlas/types": "^0.0.25"
+    "@useatlas/types": "^0.0.26"
   },
   "devDependencies": {
     "@atlas/oauth-helper": "workspace:*"

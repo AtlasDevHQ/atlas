@@ -32,6 +32,7 @@ import {
   makeInternalDBShimLayer,
   queryEffect,
 } from "@atlas/api/lib/db/internal";
+import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
 import {
   ContentModeRegistry,
   ContentModeRegistryLive,
@@ -168,7 +169,7 @@ const DRAFT_ACTIVITY_SQL = `
     INNER JOIN semantic_entities pub
       ON d.org_id = pub.org_id
      AND d.name = pub.name
-     AND COALESCE(d.connection_id, '__default__') = COALESCE(pub.connection_id, '__default__')
+     AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub" })}
    WHERE d.org_id = $1 AND d.status = 'draft' AND pub.status = 'published'
   UNION ALL
   SELECT 'entityDeletes' AS key, MAX(updated_at) AS at FROM semantic_entities

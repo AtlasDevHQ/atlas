@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import { makeArchiveRestoreStubs } from "@atlas/api/testing/archive-restore";
+import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
 
 // Controls the value `getSettingAuto("ATLAS_DEMO_INDUSTRY", orgId)` returns
 // per test. `throwOnGet` simulates a transient settings cache failure so the
@@ -134,7 +135,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
        WHERE p.org_id = $1 AND p.status = 'published'
          AND d.org_id = p.org_id
          AND d.name = p.name
-         AND COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')
+         AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p" })}
          AND d.status = 'draft_delete'
        RETURNING p.id`,
       [orgId],
@@ -155,7 +156,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
        WHERE p.org_id = $1 AND p.status = 'published'
          AND d.org_id = p.org_id
          AND d.name = p.name
-         AND COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')
+         AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p" })}
          AND d.status = 'draft'`,
       [orgId],
     );

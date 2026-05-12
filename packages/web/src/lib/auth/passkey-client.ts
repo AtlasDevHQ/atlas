@@ -86,11 +86,11 @@ export type PasskeySignIn = (opts?: {
  * `TypeError: addPasskey is not a function` at click time.
  */
 export function getPasskeyClient(): PasskeyClient | null {
-  // The cast is the documented workaround for Better Auth's plugin-inference
-  // gap under TS6. Same pattern as `getTwoFactorClient()` in
-  // `lib/auth/two-factor-client.ts` and the `@ts-expect-error` on
-  // `apiKeyClient()` in `client.ts`.
-  const namespace = (authClient as unknown as { passkey?: Partial<PasskeyClient> }).passkey;
+  // `authClient.passkey` is typed at the export boundary in
+  // `lib/auth/client.ts` so the read is now compile-time safe; the runtime
+  // method-presence check still surfaces Better Auth API drift as a precise
+  // null rather than a `TypeError` at click time.
+  const namespace = authClient.passkey;
   if (
     !namespace ||
     typeof namespace.addPasskey !== "function" ||
@@ -110,11 +110,9 @@ export function getPasskeyClient(): PasskeyClient | null {
  * the plugin still has email + password.
  */
 export function getPasskeySignIn(): PasskeySignIn | null {
-  const signInNamespace = (
-    authClient as unknown as { signIn?: { passkey?: PasskeySignIn } }
-  ).signIn;
-  if (!signInNamespace || typeof signInNamespace.passkey !== "function") {
+  const passkeySignIn = authClient.signIn.passkey;
+  if (typeof passkeySignIn !== "function") {
     return null;
   }
-  return signInNamespace.passkey;
+  return passkeySignIn as PasskeySignIn;
 }

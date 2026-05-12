@@ -45,21 +45,10 @@ export function VerifyEmailOTPForm({ email, onVerified }: VerifyEmailOTPFormProp
     setSubmitting(true);
     setError(null);
     try {
-      // The cast is the documented workaround for Better Auth's
-      // plugin-augmented client type — `emailOtp` is added at runtime by
-      // emailOTPClient() but TS6 strictness loses it through the plugin
-      // chain. Same pattern as `getPasskeyClient()` in
-      // lib/auth/passkey-client.ts.
-      const verifyEmail = (
-        authClient as unknown as {
-          emailOtp?: {
-            verifyEmail: (opts: { email: string; otp: string }) => Promise<{
-              data: unknown;
-              error: { message?: string; code?: string } | null;
-            }>;
-          };
-        }
-      ).emailOtp?.verifyEmail;
+      // `authClient.emailOtp` is typed at the export boundary in
+      // `lib/auth/client.ts`. Runtime presence guard catches Better Auth
+      // method renames at the boundary.
+      const verifyEmail = authClient.emailOtp?.verifyEmail;
       if (typeof verifyEmail !== "function") {
         throw new Error("emailOtp.verifyEmail action not available on this client");
       }
@@ -95,19 +84,7 @@ export function VerifyEmailOTPForm({ email, onVerified }: VerifyEmailOTPFormProp
     setResendState("sending");
     setError(null);
     try {
-      const send = (
-        authClient as unknown as {
-          emailOtp?: {
-            sendVerificationOtp: (opts: {
-              email: string;
-              type: "email-verification";
-            }) => Promise<{
-              data: unknown;
-              error: { message?: string } | null;
-            }>;
-          };
-        }
-      ).emailOtp?.sendVerificationOtp;
+      const send = authClient.emailOtp?.sendVerificationOtp;
       if (typeof send !== "function") {
         throw new Error("emailOtp.sendVerificationOtp not available on this client");
       }

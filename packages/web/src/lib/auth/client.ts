@@ -97,7 +97,35 @@ const _authClient = createAuthClient({
 // reference identical types.
 type OrgResult<T> = { data: T | null; error: { message: string } | null };
 
-type OrgClient = typeof _authClient & {
+// `session.fields` extras stamped onto the session payload by Better Auth's
+// organization plugin (see `auth.ts :: session.fields`). The client-side
+// `useSession()` return type from `createAuthClient` doesn't carry these, so
+// callers had to widen `session.data?.session as { ... }` per read. Declared
+// once here and intersected into the widened `useSession` below so consumers
+// can read `session.data?.session.activeOrganizationId` directly.
+type SessionFieldExtras = {
+  activeOrganizationId?: string;
+  activeOrganizationName?: string;
+};
+
+type BaseUseSessionReturn = ReturnType<typeof _authClient.useSession>;
+type BaseUseSessionData = NonNullable<BaseUseSessionReturn["data"]>;
+type WidenedUseSessionReturn = Omit<BaseUseSessionReturn, "data"> & {
+  data:
+    | (Omit<BaseUseSessionData, "session"> & {
+        session: BaseUseSessionData["session"] & SessionFieldExtras;
+      })
+    | null;
+};
+
+type OrgClient = Omit<typeof _authClient, "useSession"> & {
+  // Widened `useSession` — preserves the inferred base shape (so reads like
+  // `session.data?.session.id` and `session.data?.user.email` still flow)
+  // while exposing the org-plugin `session.fields` extras directly.
+  useSession: (
+    ...args: Parameters<typeof _authClient.useSession>
+  ) => WidenedUseSessionReturn;
+
   // Better Auth core — present at runtime, lost through plugin chain.
   updateUser?: (opts: { name?: string }) => Promise<{ error?: { message?: string } | null }>;
 

@@ -459,16 +459,8 @@ export function WorkspaceIdentityCard({
 
 function WorkspaceIdentitySection() {
   const session = authClient.useSession();
-  // Better Auth's public session type doesn't expose `activeOrganizationId` /
-  // `activeOrganizationName`; the Atlas org plugin stamps them on the session
-  // payload, so cast through `Record<string, unknown>` to read them — same
-  // pattern as `org-switcher.tsx` and `connect-wizard.tsx`.
-  const sessionData = session.data?.session as
-    | Record<string, unknown>
-    | undefined;
-  const orgId = (sessionData?.activeOrganizationId as string | undefined) ?? null;
-  const orgName =
-    (sessionData?.activeOrganizationName as string | undefined) ?? null;
+  const orgId = session.data?.session.activeOrganizationId ?? null;
+  const orgName = session.data?.session.activeOrganizationName ?? null;
 
   return <WorkspaceIdentityCard orgId={orgId} orgName={orgName} />;
 }

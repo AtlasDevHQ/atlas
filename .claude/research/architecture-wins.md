@@ -1490,3 +1490,26 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **Spawn:** #2252 filed during /pr-review for pre-existing silent failures in `PluginConfigGuardLive`'s warn-only branches (both `PluginConfigCheckFailedError` and `PluginConfigStaleError` paths drop the cause without logging when `ATLAS_STRICT_PLUGIN_SECRETS` is unset). Out of scope for this PR; tracked separately.
 
 **Category:** Module-deepening refactor that consolidates a scattered env-read pattern into a single typed contract, plus a CI gate that exercises the production Dockerfile under that contract. Sibling to wins #50 (`PromptListEntry` per-source discriminated union, #2193) and #52 (`CanonicalPrompt` discriminated union, #2185) — every "implicit invariant living in scattered code" gets one type, one fixture, and one gate. The exhaustiveness pattern (`as const satisfies` + `_ExhaustiveCheck` + literal construction + runtime test) is now the canonical Atlas template for "list + type that must stay in lockstep."
+
+---
+
+## 54. `OrgClient.useSession` widened to expose `session.fields` extras (#2334)
+
+**Date:** 2026-05-12
+**Issue:** #2334
+**Milestone:** 1.4.3 — Agent-first front door + BYOT polish
+
+**Before:** PR #2333 (#2262) collapsed 5 of 7 `(authClient as unknown as { ... })` casts by extending `OrgClient` in `packages/web/src/lib/auth/client.ts` with the plugin namespaces TS6 strictness loses through `createAuthClient`'s plugin chain. Two casts were deferred because they cast `session.data?.session` (not `authClient`) — the `activeOrganizationId` / `activeOrganizationName` extras stamped by Better Auth's server-side `session.fields` runtime config never surface on the client's inferred `useSession()` return type. Three callsites (`admin/settings/page.tsx :: WorkspaceIdentitySection`, `ui/components/org-switcher.tsx`, `settings/ai-agents/connect-wizard.tsx`) each carried a local `as { activeOrganizationId?: string; activeOrganizationName?: string } | undefined` narrow with a paragraph of comment explaining why. Same shape, three copies, three places it could drift.
+
+**The win:** A `WidenedUseSessionReturn` type built from `Omit<BaseUseSessionReturn, "data"> & { data: ... | null }` intersects `SessionFieldExtras` into the inferred `data.session` shape. `OrgClient` then replaces `useSession` via `Omit<typeof _authClient, "useSession"> & { useSession: ... }`, preserving every base field (so `session.data?.session.id` and `session.data?.user.email` still flow through inference) while adding `activeOrganizationId` / `activeOrganizationName` as first-class properties. All three deferred sites collapse to direct reads — `session.data?.session.activeOrganizationId` — with their narrow comments deleted.
+
+**What got unbundled:**
+- **The cast pattern is structurally extinct at the read site.** Adding a new `session.fields` extra (e.g. `activeOrganizationRole`) is now a one-line addition to `SessionFieldExtras` in `client.ts` — every `useSession()` consumer picks it up with no per-callsite ceremony, and TS catches typos at the read.
+- **Both the deferred sites (#2334) and the same-pattern third site (`connect-wizard.tsx`, identified by the cleanup-comment chain in the deferred site) collapse together.** Cross-callsite drift between the three local narrows (e.g. one site forgetting `activeOrganizationName`) can no longer happen.
+- **Predecessor pattern reused — same file, same boundary.** The `OrgClient` intersection from #2262/#2333 already patches plugin namespaces (`organization`, `passkey`, `twoFactor`, `oauth2`, `emailOtp`). #2334 extends the same boundary with `useSession`'s widened return — one file owns every "the plugin chain erased the inferred shape" patch.
+
+**Impact:**
+- **3 cast sites collapsed; ~15 net LOC removed across 3 callsites + ~22 added at the type boundary.** Net cost of the widening is concentrated at one declaration site; the savings compound at every future read.
+- **Sibling cleanup spawned.** `sessions-section.tsx:97` casts `session.data?.session as { id?: string }` (a base field, not `session.fields` extras — different cast pattern). Confirmed during this work that the widening also makes that direct read typecheck; tracked in **#2371** to keep #2334's PR scoped.
+
+**Category:** Module-deepening type-system refactor at the auth-client export boundary. Direct sibling of PR #2333 (#2262, the `OrgClient` namespace patches that didn't get its own win entry) — both extend the same `OrgClient` intersection in `client.ts` with shapes the Better Auth plugin chain erases, so the typed surface stays the single place to declare "what's actually on `authClient` at runtime." The pattern (declare extras once, intersect into the inferred return, replace via `Omit & { ... }`) generalizes to any future `session.fields` extra or plugin-method addition.

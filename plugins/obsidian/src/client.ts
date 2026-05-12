@@ -118,6 +118,7 @@ export function resultToMarkdown(
 
   const escape = (v: unknown) =>
     String(v ?? "")
+      .replace(/\\/g, "\\\\")
       .replace(/\|/g, "\\|")
       .replace(/\n/g, " ");
 

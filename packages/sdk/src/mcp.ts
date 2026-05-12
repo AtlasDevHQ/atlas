@@ -480,7 +480,10 @@ export interface RevokeAgentResponse {
 // ── Internals ─────────────────────────────────────────────────────────
 
 function trimTrailingSlash(s: string): string {
-  return s.replace(/\/+$/, "");
+  // Non-regex to keep the polynomial-ReDoS checker happy on `\/+$`.
+  let i = s.length;
+  while (i > 0 && s[i - 1] === "/") i--;
+  return i === s.length ? s : s.slice(0, i);
 }
 
 function extractWorkspaceClaim(payload: Record<string, unknown>): string {

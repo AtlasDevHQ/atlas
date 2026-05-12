@@ -229,10 +229,15 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
 
     const existingJoinTables = new Set(
       entity.joins.map((j) => {
-        // Extract target table from join SQL like "table_a.col = table_b.col"
-        const match = j.sql.match(/(\w+)\.\w+\s*=\s*(\w+)\.\w+/);
-        if (!match) return "";
-        return match[1] === profile.table_name ? match[2] : match[1];
+        // Extract target table from join SQL like "table_a.col = table_b.col".
+        // Split on `=` first so each per-side regex anchors and avoids the
+        // O(n²) backtracking CodeQL flagged on the original unanchored pattern.
+        const parts = j.sql.split(/\s*=\s*/);
+        if (parts.length !== 2) return "";
+        const lhs = parts[0].match(/^(\w+)\.\w+$/);
+        const rhs = parts[1].match(/^(\w+)\.\w+$/);
+        if (!lhs || !rhs) return "";
+        return lhs[1] === profile.table_name ? rhs[1] : lhs[1];
       }).filter(Boolean).map((t) => t.toLowerCase()),
     );
 

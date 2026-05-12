@@ -40,7 +40,10 @@ const originalFetch = globalThis.fetch;
 // @ts-expect-error — mock fetch for Railway API calls only; preconnect not needed in tests
 globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-  if (url.includes("railway.com")) {
+  // Parse hostname instead of substring match — "attacker.com/railway.com" must not route here.
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* fall through with empty host */ }
+  if (host === "railway.com" || host.endsWith(".railway.com")) {
     const body = init?.body ? JSON.parse(init.body as string) : {};
     capturedFetches.push({ url, body });
     const response = mockFetchResponses[fetchCallCount] ?? { ok: true, status: 200, json: { data: {} } };

@@ -96,7 +96,7 @@ export async function upsertEntity(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  const scope = withGroupScope(orgId, connectionId);
+  const scope = withGroupScope(connectionId);
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, $4, $5, 'published')
@@ -126,7 +126,7 @@ export async function upsertDraftEntity(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  const scope = withGroupScope(orgId, connectionId);
+  const scope = withGroupScope(connectionId);
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, $4, $5, 'draft')
@@ -156,7 +156,7 @@ export async function upsertTombstone(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  const scope = withGroupScope(orgId, connectionId);
+  const scope = withGroupScope(connectionId);
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, '', $4, 'draft_delete')
@@ -179,7 +179,7 @@ export async function deleteDraftEntity(
   connectionId?: string,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
-  const scope = withGroupScope(orgId, connectionId);
+  const scope = withGroupScope(connectionId);
   const rows = await internalQuery<{ id: string }>(
     `DELETE FROM semantic_entities
      WHERE org_id = $1

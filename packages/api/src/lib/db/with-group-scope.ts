@@ -6,16 +6,20 @@
  * Migration 0028 made `(org_id, entity_type, name, COALESCE(connection_id,
  * '__default__'))` the natural key of `semantic_entities`. That sentinel
  * literal then leaks into every consumer that joins drafts to published rows
- * or upserts via the matching partial index. Five files inlined the same
- * fragment — `semantic/entities.ts`, `api/routes/admin-publish-preview.ts`,
- * `api/routes/mode.ts`, `lib/content-mode/tables.ts`, and the test mocks in
- * `api/__tests__/admin-publish.test.ts` (kept inlined intentionally — see the
- * `makeArchiveRestoreStubs` comment block).
+ * or upserts via the matching partial index. Four production files inlined
+ * the same fragment across ten sites — `semantic/entities.ts` (×6),
+ * `api/routes/admin-publish-preview.ts` (×2), `api/routes/mode.ts` (×1), and
+ * `lib/content-mode/tables.ts` (×1). The test mocks in
+ * `api/__tests__/admin-publish.test.ts` (the `mock.module("@atlas/api/lib/
+ * semantic/entities", ...)` block) keep the SQL inlined intentionally — that
+ * mock fully replaces the real `applyTombstones` / `promoteDraftEntities`, so
+ * its SQL fixture is independent of the production query. A drift-guard test
+ * in `admin-publish.test.ts` pins the mock substring to this helper's output.
  *
  * This module is the pre-cursor to #2336 (multi-environment semantic layer):
  * by funnelling the COALESCE shape through one helper, the eventual
  * `connection_id` → `connection_group_id` column rename becomes a one-line
- * change here instead of a five-file sweep.
+ * change here instead of a four-file sweep.
  *
  * The helpers are pure — they produce SQL string fragments only. Callers
  * remain responsible for composing them into a larger query and binding the
@@ -38,20 +42,21 @@ export interface ScopeColumnRef {
 }
 
 export interface GroupScope {
-  /** Org the scope belongs to. Kept for future helpers that fold org + scope
-   *  into a single WHERE clause; today's helpers only operate on the scope
-   *  column. */
-  readonly orgId: string;
-  /** Normalised scope id — `null` when the caller passed `null` or `undefined`. */
-  readonly scopeId: string | null;
-  /** Bind value to pass at the placeholder produced by `.match()`. */
+  /**
+   * Bind value to pass at the placeholder produced by `.match()`. Equal to the
+   * caller's `scopeId` argument, with `undefined` and the empty string both
+   * normalised to `null` so a "no scope" caller can't accidentally split rows
+   * across distinct partial-index buckets.
+   */
   readonly param: string | null;
   /**
    * SQL fragment matching the scope column against `$paramIndex`, using
    * COALESCE-with-sentinel so a NULL row matches a NULL/undefined scope.
    *
    * The fragment is parameter-free aside from `$paramIndex`; the caller must
-   * pass `.param` at that placeholder.
+   * pass `.param` at that placeholder. `paramIndex` must be a positive
+   * integer — the helper throws on `0`, negatives, or non-integers rather
+   * than producing a SQL fragment `pg` will reject opaquely at execution.
    */
   match(paramIndex: number, ref?: ScopeColumnRef): string;
 }
@@ -92,20 +97,26 @@ export function matchScopeAcrossAliases(opts: ScopeAliasMatch): string {
 }
 
 /**
- * Factory returning a `GroupScope` bound to the given org + scope id. Use
+ * Factory returning a `GroupScope` bound to the given scope id. Use
  * `.match(paramIndex)` to produce the COALESCE'd equality clause and bind
  * `.param` at that placeholder.
+ *
+ * `undefined` and `""` (empty string) both normalise to `null` so a partial
+ * client payload can't accidentally land a row in a distinct partial-index
+ * bucket from rows with no scope at all.
  */
 export function withGroupScope(
-  orgId: string,
   scopeId: string | null | undefined,
 ): GroupScope {
-  const normalised = scopeId ?? null;
+  const normalised = scopeId == null || scopeId === "" ? null : scopeId;
   return {
-    orgId,
-    scopeId: normalised,
     param: normalised,
     match(paramIndex, ref) {
+      if (!Number.isInteger(paramIndex) || paramIndex < 1) {
+        throw new Error(
+          `withGroupScope.match: paramIndex must be a positive integer, got ${paramIndex}`,
+        );
+      }
       return `${coalescedScopeColumn(ref)} = COALESCE($${paramIndex}, '${GROUP_SCOPE_SENTINEL}')`;
     },
   };

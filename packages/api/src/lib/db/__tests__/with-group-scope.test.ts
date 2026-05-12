@@ -1,14 +1,13 @@
 /**
- * Tests for the `withGroupScope` helper that consolidates the
- * `COALESCE(connection_id, '__default__')` sentinel pattern duplicated across
- * the developer-mode publish flow (`semantic/entities.ts`,
- * `admin-publish-preview.ts`, `mode.ts`, `content-mode/tables.ts`).
+ * These tests pin the helper's output to migration 0028's
+ * `COALESCE(connection_id, '__default__')` expression so any drift between
+ * the helper and the partial-unique-index expression baked into the schema
+ * surfaces here instead of as silent natural-key duplication at runtime.
  *
- * The helper is pure — no DB, no I/O. These tests pin the produced SQL
- * fragments byte-for-byte so the call-site refactor is provably no-op against
- * the existing migration 0028 partial-index expressions and against the
- * `admin-publish.test.ts` mock SQL that mirrors `applyTombstones` /
- * `promoteDraftEntities`.
+ * Pure unit tests — no DB, no I/O. The four boundary cases the issue called
+ * out (null sentinel, single-member resolution, missing scope, sentinel-
+ * coalesce semantics) live in named `describe` blocks; the input-validation
+ * and forward-compat checks live alongside them.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -79,20 +78,25 @@ describe("matchScopeAcrossAliases", () => {
 describe("withGroupScope", () => {
   describe("null sentinel (legacy single-default-scope rows)", () => {
     it("resolves a `null` scope id to a `null` bind value", () => {
-      const scope = withGroupScope("org_1", null);
-      expect(scope.orgId).toBe("org_1");
-      expect(scope.scopeId).toBeNull();
+      const scope = withGroupScope(null);
       expect(scope.param).toBeNull();
     });
 
     it("normalises `undefined` to `null` so callers can pass optional ids through", () => {
-      const scope = withGroupScope("org_1", undefined);
-      expect(scope.scopeId).toBeNull();
+      const scope = withGroupScope(undefined);
+      expect(scope.param).toBeNull();
+    });
+
+    it("normalises `\"\"` to `null` so a partial client payload can't split rows", () => {
+      // Without this, a row inserted with `connection_id = ""` would land in a
+      // distinct partial-index bucket from rows with no scope at all — a silent
+      // failure where deletion by undefined scope no longer matches.
+      const scope = withGroupScope("");
       expect(scope.param).toBeNull();
     });
 
     it("emits a sentinel-coalesced equality clause when scope is null", () => {
-      const scope = withGroupScope("org_1", null);
+      const scope = withGroupScope(null);
       expect(scope.match(4)).toBe(
         "COALESCE(connection_id, '__default__') = COALESCE($4, '__default__')",
       );
@@ -101,8 +105,7 @@ describe("withGroupScope", () => {
 
   describe("single-member resolution (one connection per scope)", () => {
     it("passes the scope id through unchanged as the bind value", () => {
-      const scope = withGroupScope("org_1", "conn_us");
-      expect(scope.scopeId).toBe("conn_us");
+      const scope = withGroupScope("conn_us");
       expect(scope.param).toBe("conn_us");
     });
 
@@ -110,16 +113,16 @@ describe("withGroupScope", () => {
       // `withGroupScope` should not branch its SQL on whether the scope id is
       // null or not — the COALESCE-with-sentinel form makes both cases match
       // the partial index on `(org_id, name, COALESCE(connection_id, '__default__'))`.
-      const withId = withGroupScope("org_1", "conn_us").match(4);
-      const withoutId = withGroupScope("org_1", null).match(4);
+      const withId = withGroupScope("conn_us").match(4);
+      const withoutId = withGroupScope(null).match(4);
       expect(withId).toBe(withoutId);
     });
   });
 
   describe("missing scope (undefined ≡ legacy default)", () => {
     it("treats undefined and null as the same logical scope", () => {
-      const a = withGroupScope("org_1", undefined);
-      const b = withGroupScope("org_1", null);
+      const a = withGroupScope(undefined);
+      const b = withGroupScope(null);
       expect(a.param).toBe(b.param);
       expect(a.match(4)).toBe(b.match(4));
     });
@@ -127,27 +130,49 @@ describe("withGroupScope", () => {
 
   describe("sentinel-coalesce semantics", () => {
     it("threads custom column names through `.match()` for forward-compat", () => {
-      const scope = withGroupScope("org_1", "conn_us");
+      const scope = withGroupScope("conn_us");
       expect(scope.match(2, { column: "connection_group_id" })).toBe(
         "COALESCE(connection_group_id, '__default__') = COALESCE($2, '__default__')",
       );
     });
 
     it("qualifies the column with an alias in `.match()`", () => {
-      const scope = withGroupScope("org_1", "conn_us");
+      const scope = withGroupScope("conn_us");
       expect(scope.match(2, { alias: "d" })).toBe(
         "COALESCE(d.connection_id, '__default__') = COALESCE($2, '__default__')",
       );
     });
 
     it("supports any positive `$N` placeholder", () => {
-      const scope = withGroupScope("org_1", "conn_us");
+      const scope = withGroupScope("conn_us");
       expect(scope.match(1)).toBe(
         "COALESCE(connection_id, '__default__') = COALESCE($1, '__default__')",
       );
       expect(scope.match(10)).toBe(
         "COALESCE(connection_id, '__default__') = COALESCE($10, '__default__')",
       );
+    });
+  });
+
+  describe("paramIndex validation", () => {
+    it("throws on zero (placeholders are 1-indexed in pg)", () => {
+      const scope = withGroupScope("conn_us");
+      expect(() => scope.match(0)).toThrow(/positive integer/);
+    });
+
+    it("throws on negatives", () => {
+      const scope = withGroupScope("conn_us");
+      expect(() => scope.match(-1)).toThrow(/positive integer/);
+    });
+
+    it("throws on non-integers", () => {
+      const scope = withGroupScope("conn_us");
+      expect(() => scope.match(1.5)).toThrow(/positive integer/);
+    });
+
+    it("throws on NaN", () => {
+      const scope = withGroupScope("conn_us");
+      expect(() => scope.match(Number.NaN)).toThrow(/positive integer/);
     });
   });
 });
